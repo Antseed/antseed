@@ -58,6 +58,10 @@ describe('readPlainMultipartParts', () => {
     ['another disposition parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
     ['another header on a file part', `${part('Content-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\nX-Note: taken today', 'PNG')}${closing}`],
     ['a disposition line quoted in a part\'s content', `${named('prompt', 'Content-Disposition: form-data; name="model"')}${closing}`],
+    ['a file named after the header', `${part('Content-Disposition: form-data; name="image"; filename="content-disposition.png"', 'PNG')}${closing}`],
+    ['the header name without a colon in another header', `${part('Content-Disposition: form-data; name="image"; filename="a.png"\r\nX-Note: no content-disposition here', 'PNG')}${closing}`],
+    ['a filename in continuations', `${part('Content-Disposition: form-data; name="image"; filename*0="a"; filename*1=".png"', 'PNG')}${closing}`],
+    ['another parameter before a quoted name', `${part('Content-Disposition: form-data; x="1"; name="a"', 'svc')}${closing}`],
   ])('reads %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).not.toBeNull();
   });
@@ -100,8 +104,11 @@ describe('readPlainMultipartParts', () => {
     ['a quoted disposition line after the real one', `${part('Content-Disposition: form-data; name="image"; filename="a.png"\r\nX-Note: Content-Disposition: form-data; name="model"', 'PNG')}${closing}`],
     ['a disposition line quoted in a Content-Type parameter', `${part('Content-Type: image/png; content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"', 'PNG')}${closing}`],
     ['a disposition line quoted in upper case', `${part('X-Note: CONTENT-DISPOSITION:\tFORM-DATA;NAME="model"\r\nContent-Disposition: form-data; name="prompt"', 'x')}${closing}`],
-    ['the header name alone in another header', `${part('X-Note: see content-disposition\r\nContent-Disposition: form-data; name="prompt"', 'x')}${closing}`],
-    ['the header name in a filename', `${part('Content-Disposition: form-data; name="image"; filename="content-disposition.png"', 'PNG')}${closing}`],
+    ['the header name and a colon in another header', `${part('X-Note: see content-disposition : x\r\nContent-Disposition: form-data; name="prompt"', 'x')}${closing}`],
+    ['the header name and a colon in a filename', `${part('Content-Disposition: form-data; name="image"; filename="content-disposition: form-data; .png"', 'PNG')}${closing}`],
+    ['a parameter that starts like filename and ends in name', `${part('Content-Disposition: form-data; filenamename="size"; name="user"', 'x')}${closing}`],
+    ['such a parameter after an unquoted name', `${part('Content-Disposition: form-data; name=user; filename-x-name="quality"', 'x')}${closing}`],
+    ['a parameter value billing would read as the name', `${part('Content-Disposition: form-data; x="name="; y="size"; name="user"', 'x')}${closing}`],
   ])('refuses %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).toBeNull();
   });

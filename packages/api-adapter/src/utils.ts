@@ -296,12 +296,19 @@ function splitMultipart(body: Uint8Array, contentType: string | undefined) {
   return { parts, text, delimiter, framed: false };
 }
 
-/** The name billing reads a part's text under; undefined for a file, an unnamed part or one over the size limit. */
-function multipartTextFieldName({ headers, content }: MultipartPart): string | undefined {
+/**
+ * The name a text part goes by to billing and to a relay, which both take the
+ * first `name="..."` in its disposition; undefined for a file or an unnamed part.
+ */
+function looseTextFieldName(headers: string): string | undefined {
   const dispositionParams = /(?:^|\r\n)content-disposition:[ \t]*form-data[ \t]*;([^\r\n]*)/i.exec(headers)?.[1];
   if (dispositionParams === undefined || /filename\s*=/i.test(dispositionParams)) return undefined;
-  if (content.length > MAX_MULTIPART_TEXT_FIELD_BYTES) return undefined;
   return /name="([^"]*)"/.exec(dispositionParams)?.[1];
+}
+
+/** The name billing reads a part's text under; undefined for a file, an unnamed part or one over the size limit. */
+function multipartTextFieldName({ headers, content }: MultipartPart): string | undefined {
+  return content.length > MAX_MULTIPART_TEXT_FIELD_BYTES ? undefined : looseTextFieldName(headers);
 }
 
 /** A charset parameter under which ASCII text reads the same. */
@@ -337,8 +344,8 @@ function plainDispositionName(value: string): string | undefined {
   let name: string | undefined;
   for (let param = DISPOSITION_PARAM.exec(value); param; param = DISPOSITION_PARAM.exec(value)) {
     end = DISPOSITION_PARAM.lastIndex;
-    // `name*`, `name*0`, `NAME` and the like read as the name to some reader; `filename` never does.
-    if (/name(?:\*|$)/i.test(param[1]!) && !/^filename/i.test(param[1]!)) {
+    // `name*`, `name*0`, `NAME`, `xname` and the like read as the name to some reader; `filename` and its extended forms never do.
+    if (/name(?:\*|$)/i.test(param[1]!) && !/^filename(?:\*(?:\d+\*?)?)?$/i.test(param[1]!)) {
       const plain = param[1] === 'name' ? PLAIN_NAME.exec(param[2]!) : null;
       if (!plain || name !== undefined) return undefined;
       name = plain[1] ?? plain[2];
@@ -349,12 +356,12 @@ function plainDispositionName(value: string): string | undefined {
 
 /**
  * The field name in a part's headers, when they are one to a line and name it plainly.
- * The words `content-disposition` may appear only as that header's own name: a reader
- * that searches the whole header block for them, as relays in plugins installed before
+ * `content-disposition:` may appear only once, as that header's own start: a reader
+ * that searches the whole header block for it, as relays in plugins installed before
  * this rule do, would otherwise take a line quoted in another header for the part's own.
  */
 function plainPartName(headers: string): string | undefined {
-  if (headers.match(/content-disposition/gi)?.length !== 1) return undefined;
+  if (headers.match(/content-disposition\s*:/gi)?.length !== 1) return undefined;
   let name: string | undefined;
   for (const line of headers.split('\r\n').slice(1)) {
     const header = /^([!-9;-~]+):[ \t]*(.*)$/.exec(line);
@@ -385,8 +392,9 @@ function isPlainText({ headers, content }: MultipartPart): boolean {
  * encoder writes it; null for any other. Plain means a simple boundary, found
  * only where it frames a part, with each delimiter starting its line and only
  * whitespace before the first and after the last, and part headers one to a line, each with a
- * simply written name and no other mention of `Content-Disposition`. Readers
- * agree on such a body, where they can disagree on one written any other way.
+ * simply written name that the looser readers find too, and no second
+ * `Content-Disposition:`. Readers agree on such a body, where they can disagree
+ * on one written any other way.
  */
 export function readPlainMultipartParts(body: Uint8Array, contentType: string | undefined): PlainMultipartPart[] | null {
   if (!contentType || !PLAIN_MULTIPART_TYPE.test(contentType.trim())) return null;
@@ -397,6 +405,9 @@ export function readPlainMultipartParts(body: Uint8Array, contentType: string | 
     const name = plainPartName(part.headers);
     // `_charset_` sets the charset of every other field, for the readers that honor it.
     if (name === undefined || name.toLowerCase() === '_charset_') return null;
+    // Billing and the relays find a text part's name by a looser match, which has to find this name.
+    const loose = looseTextFieldName(part.headers);
+    if (loose !== undefined && loose !== name) return null;
     parts.push({ ...part, name, billedText: multipartTextFieldName(part) === name && isPlainText(part) });
   }
   return parts;
