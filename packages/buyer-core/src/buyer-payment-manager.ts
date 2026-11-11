@@ -294,6 +294,9 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
   private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
 
+  /** sellerPeerId -> the highest deposit a chain read has shown for the active channel */
+  private readonly _depositRead = new Map<string, { channelId: string; amount: bigint }>();
+
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
 
@@ -568,6 +571,7 @@ export class BuyerPaymentManager {
   cleanupSession(sellerPeerId: string): void {
     this._cumulativeAmount.delete(sellerPeerId);
     this._sellerAccepted.delete(sellerPeerId);
+    this._depositRead.delete(sellerPeerId);
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
     this._requestLedgers.delete(sellerPeerId);
@@ -909,18 +913,19 @@ export class BuyerPaymentManager {
   }
 
   /**
-   * Reconcile the locally usable ceiling with an on-chain read. A channel's
-   * deposit only grows while it is open, so a read below what the chain has
-   * already confirmed comes from a node that is behind and lowers nothing.
+   * Reconcile the locally usable ceiling with an on-chain read, and return the
+   * channel's deposit. A deposit only grows while the channel is open, so a
+   * read below an earlier one comes from a node that is behind: the earlier
+   * one stands.
    */
-  async reconcileReserveAmount(sellerPeerId: string, onChainAmount: bigint): Promise<void> {
+  async reconcileReserveAmount(sellerPeerId: string, onChainAmount: bigint): Promise<bigint> {
     const session = this.getActiveSession(sellerPeerId);
-    if (!session) return;
+    if (!session) return onChainAmount;
 
+    const earlier = this._depositRead.get(sellerPeerId);
+    const deposit = earlier?.channelId === session.sessionId && earlier.amount > onChainAmount ? earlier.amount : onChainAmount;
+    this._depositRead.set(sellerPeerId, { channelId: session.sessionId, amount: deposit });
     const pending = this._pendingReserveAuth.get(sellerPeerId);
-    // Confirmed so far: what a waiting top-up started from, else the ceiling.
-    const confirmed = pending ? pending.confirmedAmount : this._currentReserveCeiling.get(sellerPeerId) ?? 0n;
-    const deposit = onChainAmount > confirmed ? onChainAmount : confirmed;
     const applied = pending != null && deposit >= pending.maxAmount;
     // The chain is authoritative even when it is ahead of our latest locally
     // persisted authorization (for example after recovery on another device).
@@ -941,6 +946,7 @@ export class BuyerPaymentManager {
       confirmedReserveAmount: deposit.toString(),
       updatedAt: Date.now(),
     }, metadata);
+    return deposit;
   }
 
   private _reopenOverdraftWindowIfCollapsed(

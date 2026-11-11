@@ -71,8 +71,8 @@ export interface BuyerNegotiatorConfig {
 /**
  * How long a resent authorization gets to reach the seller and release the
  * requests parked on it: the seller waits up to 5 s for a catch-up before it
- * answers 402, plus the round trip. The same target asked for within this
- * time is the same burst, not a refusal.
+ * answers 402, plus the round trip. A 402 for the same target that arrives
+ * within this time is the same burst, not a refusal.
  */
 const RESEND_SETTLE_MS = 7_000;
 /** How long to wait for a seller's CloseChannelResult before giving up. */
@@ -171,7 +171,7 @@ function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
     && a.requestCost === b.requestCost;
 }
 
-/** Whether `conn` has closed or failed, so nothing can be sent on it again. */
+/** Whether `conn` is closing, closed or failed, so nothing can be sent on it again. */
 function isConnectionDown(conn: BuyerConnection): boolean {
   return conn.state === ConnectionState.Closing || conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
 }
@@ -233,7 +233,11 @@ export class BuyerPaymentNegotiator {
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
-  /** Sellers a cooperative close is being asked of, from its first check until its answer. */
+  /**
+   * Sellers a cooperative close is being asked of, from the call until it
+   * settles. `_pendingCloseRequests` covers only the request on the wire, not
+   * the signing before it.
+   */
   private readonly _closesInFlight = new Set<string>();
   /** Payment calls in flight per seller peerId, counted by `_withPaymentWork`. */
   private readonly _paymentWork = new Map<string, number>();
@@ -283,15 +287,16 @@ export class BuyerPaymentNegotiator {
 
   getOrCreatePaymentMux(peerId: PeerId, conn: BuyerConnection): PaymentMux {
     const existing = this._muxes.get(peerId);
-    // Payment work still finishing on a connection that has since closed can
-    // set the mux up on it again: every frame it sends would go into the dead
-    // connection. A live connection to the peer replaces it.
+    // Payment work still finishing on a connection that has since closed must
+    // not set the mux up on it again: every frame it sent would go into the
+    // dead connection. That work shares the live mux or gets one that is not
+    // kept, and a live connection to the peer replaces a mux bound to a closed one.
     if (existing && (existing.sendsOver(conn) || isConnectionDown(conn))) {
       return existing;
     }
 
     const pmux = new PaymentMux(conn);
-    this._muxes.set(peerId, pmux);
+    if (!isConnectionDown(conn)) this._muxes.set(peerId, pmux);
 
     pmux.onAuthAck((payload) => this._bpm.handleAuthAck(peerId, payload));
 
@@ -1062,7 +1067,7 @@ export class BuyerPaymentNegotiator {
         // A connection that dropped meanwhile says nothing about the channel:
         // this attempt failed like any other request on that connection.
         if (isConnectionDown(conn)) {
-          throw new Error(`Connection to ${peer.peerId} ${conn.state} during request ${req.requestId}`);
+          throw new Error(`Connection to ${peer.peerId} ${conn.state.toLowerCase()} during request ${req.requestId}`);
         }
         // Usually transient (the seller was busy, or a chain read failed): a
         // retryable 503 lets routers fail over and clients retry.
@@ -1774,6 +1779,8 @@ export class BuyerPaymentNegotiator {
       return false;
     }
 
+    // When the 402 arrived: the chain read below can take seconds.
+    const receivedAt = Date.now();
     const onChain = await this._getOnChainSessionState(session.sessionId);
     if (onChain === null) {
       return false;
@@ -1811,7 +1818,7 @@ export class BuyerPaymentNegotiator {
     }
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
-    await this._bpm.reconcileReserveAmount(peer.peerId, onChain.channel.deposit);
+    const deposit = await this._bpm.reconcileReserveAmount(peer.peerId, onChain.channel.deposit);
     this._assertLiveChannel(peer.peerId, session.sessionId);
     const hasPendingReserve = this._bpm.hasPendingReserveAuth(peer.peerId);
     let recoveredBeforeTopUp = false;
@@ -1835,16 +1842,15 @@ export class BuyerPaymentNegotiator {
       this._assertLiveChannel(peer.peerId, session.sessionId);
     }
     const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
-    const deposit = onChain.channel.deposit;
     if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
       // We already signed at least what the seller asks for, so our latest
       // SpendingAuth has not reached it (or the 402 predates it). Signing more
       // would only raise what the seller may claim without delivering
       // anything new: resend the highest authorization unchanged. An
-      // authorization above the reserve (what the chain confirmed, plus a
-      // top-up on its way) can never be accepted, so such a channel goes
-      // straight to a close capped at the deposit. One above only this read
-      // can be: the read may lag the chain.
+      // authorization above the reserve can never be accepted, so such a
+      // channel goes straight to a close capped at the deposit. The reserve
+      // is the deposit plus a top-up on its way: replaying that top-up above
+      // restored its ceiling.
       if (this._bpm.getSellerAcceptedCumulative(peer.peerId) >= targetCumulative) {
         // The seller has since reported accepting this target: the 402 was
         // waiting behind other work while the channel moved on. Retry, even
@@ -1852,11 +1858,11 @@ export class BuyerPaymentNegotiator {
         return true;
       }
       const resendable = deposit <= 0n || signedCumulative <= this._bpm.getReserveCeiling(peer.peerId);
-      // A resend over another connection (one that has since dropped) never
-      // reached the seller this 402 came from.
+      // A resend over another connection (one that has since dropped) says
+      // nothing about this one.
       const resent = this._resentForTarget.get(peer.peerId);
       const resentAt = resent?.target === targetCumulative && resent.pmux === pmux ? resent.at : null;
-      if (resendable && resentAt != null && Date.now() - resentAt < RESEND_SETTLE_MS) {
+      if (resendable && resentAt != null && receivedAt - resentAt < RESEND_SETTLE_MS) {
         // Parallel requests parked on the same spend get the same target at
         // once: the resend for it is already on its way, so retry instead of
         // reading their 402s as the seller refusing it.

@@ -64,10 +64,11 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
-  // Like the manager: the reserve ceiling is the deposit it last reconciled with the chain.
+  // Like the manager: the reserve ceiling is the highest deposit a reconciled read has shown.
   let reserveCeiling: bigint | undefined;
   bpm.reconcileReserveAmount = vi.fn(async (_peerId: string, onChainAmount: bigint) => {
-    reserveCeiling = onChainAmount;
+    if (reserveCeiling === undefined || onChainAmount > reserveCeiling) reserveCeiling = onChainAmount;
+    return reserveCeiling;
   });
   bpm.getReserveCeiling = vi.fn(() => reserveCeiling ?? bpm.maxReserveAmountUsdc);
   // Like the manager: the higher of the in-memory and the stored cumulative.
@@ -1489,10 +1490,17 @@ describe('BuyerPaymentNegotiator', () => {
 
       const outcomes = (await closes).map((outcome) => outcome.status === 'fulfilled'
         ? outcome.value.status
-        : (outcome.reason as Error).message.replace(/ for [0-9a-f]+\.\.\.$/, ''));
-      expect({ sent: (conn.send as ReturnType<typeof vi.fn>).mock.calls.length, outcomes }).toEqual({
-        sent: 1,
-        outcomes: ['rejected', 'A channel close request is already in flight', 'A channel close request is already in flight'],
+        : (outcome.reason as Error).message);
+      const sentForThem = (conn.send as ReturnType<typeof vi.fn>).mock.calls.length;
+      // Once that close is answered, the seller can be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn, { timeoutMs: 300 });
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalledTimes(sentForThem + 1));
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+
+      expect({ sentForThem, outcomes, again: (await again).status }).toEqual({
+        sentForThem: 1,
+        outcomes: ['rejected', expect.stringMatching(/already in flight/), expect.stringMatching(/already in flight/)],
+        again: 'rejected',
       });
     });
 

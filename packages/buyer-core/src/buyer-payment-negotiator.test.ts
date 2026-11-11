@@ -34,6 +34,15 @@ describe('BuyerPaymentNegotiator', () => {
       const closing = connection(ConnectionState.Closing);
       expect(negotiator.getOrCreatePaymentMux(peer, closing)).toBe(replaced);
     });
+
+    it('keeps no mux over a connection that has already dropped', () => {
+      const negotiator = negotiatorWithMuxes();
+      const peer = toPeerId('ab'.repeat(20));
+      // Payment work finishing after the seller dropped, before any new connection.
+      negotiator.getOrCreatePaymentMux(peer, connection(ConnectionState.Failed));
+
+      expect(negotiator.getPaymentMux(peer)).toBeUndefined();
+    });
   });
 
   describe('external spending auth header', () => {
