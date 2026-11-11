@@ -268,7 +268,8 @@ describe('parseSseBuffer', () => {
     ['comments as nothing', ': one\n:two\ndata:x\n\n', [frame('x')]],
     ['id and retry as nothing', 'id: 7\nretry: 3000\ndata:x\n\n', [frame('x')]],
     ['a frame with no data as no event', 'event:e\nid:7\n: c\n\n', []],
-    ['only the exact field names', 'dataset:x\nData:x\n data:x\nevents:y\n\n', []],
+    ['only the exact data field name', 'dataset:x\nData:x\n data:x\n\n', []],
+    ['only the exact event field name', 'events:y\nEvent:y\n event:y\ndata:x\n\n', [frame('x')]],
     ['extra blank lines as nothing', '\n\ndata:a\n\n\n\ndata:b\n\n', [frame('a'), frame('b')]],
   ])('reads %s', (_name, input, events) => {
     expect(parseSseBuffer(input)).toEqual({ events, remainder: '' });

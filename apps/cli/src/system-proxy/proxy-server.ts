@@ -3,6 +3,7 @@ import * as https from 'node:https'
 import * as net from 'node:net'
 import * as tls from 'node:tls'
 import { randomUUID } from 'node:crypto'
+import { parseSseBuffer } from '@antseed/api-adapter'
 import { SYSTEM_PROXY_SOURCE_HEADER, SYSTEM_ROUTED_MODEL_HEADER } from '../proxy/request-utils.js'
 import type { CertCache } from './cert-cache.js'
 import type {
@@ -752,16 +753,10 @@ export class ConversationSseAdapter {
     if (chunk.length > 0) {
       this.buffer += chunk.toString('utf8')
     }
-    const normalized = this.buffer.replace(/\r\n/g, '\n')
-    const blocks = normalized.split('\n\n')
-    this.buffer = blocks.pop() ?? ''
+    const { events, remainder } = parseSseBuffer(this.buffer)
+    this.buffer = remainder
 
-    for (const block of blocks) {
-      const data = block
-        .split('\n')
-        .filter((line) => line.startsWith('data: '))
-        .map((line) => line.slice('data: '.length))
-        .join('\n')
+    for (const { data } of events) {
       if (!data) continue
       if (data === '[DONE]') {
         out.push(this.finish())
@@ -893,20 +888,12 @@ export class ResponsesSseNormalizer {
   }
 
   private normalizeBlock(block: string): string {
-    const lines = block.split('\n')
-    const event = lines
-      .find((line) => line.startsWith('event: '))
-      ?.slice('event: '.length)
-      .trim()
-    const dataLines = lines
-      .filter((line) => line.startsWith('data: '))
-      .map((line) => line.slice('data: '.length))
-
-    if (!event || dataLines.length === 0) {
+    const [frame] = parseSseBuffer(`${block}\n\n`).events
+    if (!frame?.event) {
       return `${block}\n\n`
     }
 
-    const data = dataLines.join('\n')
+    const { event, data } = frame
     if (data === '[DONE]') {
       return `data: [DONE]\n\n`
     }

@@ -40,6 +40,8 @@ export {
   extractRequestBodyFields,
   parseJsonObject,
   parseMultipartFormFields,
+  parseSseBuffer,
+  type ParsedSseEvent,
   extractSpeechRequestFacts,
   speechAudioDelivered,
   type SpeechRequestFacts,

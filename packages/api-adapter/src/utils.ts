@@ -372,10 +372,18 @@ export function mapFinishReasonToAnthropicStopReason(value: unknown): string | n
   return value;
 }
 
+/**
+ * Reads the complete events in `buffer`, an SSE stream's text so far, as the
+ * WHATWG standard defines them. `remainder` goes in front of the next chunk.
+ */
 export function parseSseBuffer(buffer: string): { events: ParsedSseEvent[]; remainder: string } {
-  const normalized = buffer.replace(/\r\n/g, '\n');
+  // A line ends at CRLF, LF or CR.
+  const normalized = buffer.replace(/\r\n?/g, '\n');
   const blocks = normalized.split('\n\n');
-  const remainder = blocks.pop() ?? '';
+  const tail = blocks.pop() ?? '';
+  // A CR at the very end has ended its line, but it may be half of a CRLF whose
+  // LF is in the next chunk, so it stays a CR until that chunk arrives.
+  const remainder = buffer.endsWith('\r') ? `${tail.slice(0, -1)}\r` : tail;
   const events: ParsedSseEvent[] = [];
 
   for (const block of blocks) {
@@ -383,10 +391,16 @@ export function parseSseBuffer(buffer: string): { events: ParsedSseEvent[]; rema
     let event: string | null = null;
     const dataLines: string[] = [];
     for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        event = line.slice('event: '.length);
-      } else if (line.startsWith('data: ')) {
-        dataLines.push(line.slice('data: '.length));
+      // The name ends at the first colon, and one space after the colon is not
+      // part of the value. A line with no colon is a name with an empty value.
+      // A comment has an empty name, so like `id` and `retry` it is not read.
+      const colon = line.indexOf(':');
+      const field = colon === -1 ? line : line.slice(0, colon);
+      const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+      if (field === 'event') {
+        event = value || null;
+      } else if (field === 'data') {
+        dataLines.push(value);
       }
     }
     if (dataLines.length > 0) {
