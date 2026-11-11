@@ -4491,15 +4491,33 @@ test('non-stream transformed responses requests force upstream stream without st
   assert.equal(body.content?.[0]?.text, 'hi')
 })
 
-/** Forwards one request to a seller of `service` that speaks only `protocol`, and returns the body the seller got. */
+/** What a seller that speaks only that protocol answers. */
+const UPSTREAM_ANSWERS = {
+  'anthropic-messages': {
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'test-model',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  },
+  'openai-chat-completions': {
+    id: 'chatcmpl-1',
+    object: 'chat.completion',
+    model: 'test-model',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'hi' } }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  },
+}
+
+/** Forwards one request to a seller that speaks only `protocol`, and returns the body the seller got. */
 async function forwardedBodyFor(
-  protocol: 'anthropic-messages' | 'openai-chat-completions',
-  service: string,
-  upstreamBody: Record<string, unknown>,
+  protocol: keyof typeof UPSTREAM_ANSWERS,
   clientRequest: { path: string; body: Record<string, unknown> },
 ): Promise<Record<string, unknown>> {
   const peer = makePeer('a', ['seller'])
-  peer.providerServiceApiProtocols = { seller: { services: { [service]: [protocol] } } }
+  peer.providerServiceApiProtocols = { seller: { services: { [String(clientRequest.body['model'])]: [protocol] } } }
   const forwarded: Array<Record<string, unknown>> = []
   const proxy = makeBuyerProxyWithPeers([peer], [peer])
   ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
@@ -4508,7 +4526,7 @@ async function forwardedBodyFor(
       requestId: request.requestId,
       statusCode: 200,
       headers: { 'content-type': 'application/json' },
-      body: Buffer.from(JSON.stringify(upstreamBody)),
+      body: Buffer.from(JSON.stringify(UPSTREAM_ANSWERS[protocol])),
     }
   }
 
@@ -4523,15 +4541,7 @@ async function forwardedBodyFor(
 }
 
 test('a Chat Completions developer message reaches a Messages-only seller as the system prompt', async () => {
-  const forwarded = await forwardedBodyFor('anthropic-messages', 'test-model', {
-    id: 'msg_1',
-    type: 'message',
-    role: 'assistant',
-    model: 'test-model',
-    content: [{ type: 'text', text: 'hi' }],
-    stop_reason: 'end_turn',
-    usage: { input_tokens: 1, output_tokens: 1 },
-  }, {
+  const forwarded = await forwardedBodyFor('anthropic-messages', {
     path: '/v1/chat/completions',
     body: {
       model: 'test-model',
@@ -4547,13 +4557,7 @@ test('a Chat Completions developer message reaches a Messages-only seller as the
 })
 
 test('Responses developer and system input items reach a Chat-only seller as one system message', async () => {
-  const forwarded = await forwardedBodyFor('openai-chat-completions', 'test-model', {
-    id: 'chatcmpl-1',
-    object: 'chat.completion',
-    model: 'test-model',
-    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'hi' } }],
-    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-  }, {
+  const forwarded = await forwardedBodyFor('openai-chat-completions', {
     path: '/v1/responses',
     body: {
       model: 'test-model',
