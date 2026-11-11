@@ -1635,6 +1635,8 @@ export class SellerRequestHandler {
     const requestProtocol = detectRequestServiceApiProtocol(request);
     const selected = selectTargetProtocolForRequest(requestProtocol, candidates);
     if (selected) return selected.targetProtocol;
+    // Billing it under another of the service's protocols would measure nothing it delivered.
+    if (requestProtocol && candidates.length > 0) throw new Error(`Service "${service}" does not offer ${requestProtocol}`);
     if (protocols?.[0]) return protocols[0];
     return billingProtocols[0] ?? "openai-chat-completions";
   }

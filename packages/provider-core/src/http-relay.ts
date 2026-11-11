@@ -8,6 +8,9 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
+/** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
+const COMPLETIONS_PATH = /\/(?:chat\/)?completions\/?$/i;
+
 export interface RelayConfig {
   /**
    * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
@@ -366,7 +369,7 @@ export class HttpRelay {
 
   private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
     // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
-    const requestPath = wirePath(request.path);
+    const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
 
     // Resolve dynamic auth token if provider uses OAuth / keychain
     let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
@@ -448,12 +451,12 @@ export class HttpRelay {
           // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
           // and the seller has no figure to bill by.
           //
-          // We only touch `/v1/chat/completions` on a streaming request, and
-          // we preserve the caller's other `stream_options` fields. A caller's
+          // We only touch completions paths on a streaming request, and we
+          // preserve the caller's other `stream_options` fields. A caller's
           // `include_usage:false` does not count: the figure is what the
           // answer is billed by. Operators can still disable it via
           // `injectJsonFields` below if they really need to.
-          if (requestPath.toLowerCase().startsWith('/v1/chat/completions') && transformed.stream) {
+          if (COMPLETIONS_PATH.test(pathname) && transformed.stream) {
             const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
               ? transformed.stream_options as Record<string, unknown>
               : {};
@@ -462,7 +465,7 @@ export class HttpRelay {
 
           // Body injection targets chat-style APIs. Image and speech APIs
           // reject unknown fields (Venice validates them strictly).
-          const lowerPath = requestPath.toLowerCase();
+          const lowerPath = pathname.toLowerCase();
           const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
           const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
@@ -477,11 +480,7 @@ export class HttpRelay {
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
-    let path = requestPath;
-    if (upstream.pathRewrite && path in upstream.pathRewrite) {
-      path = upstream.pathRewrite[path]!;
-    }
-    const url = `${base}${path}`;
+    const url = `${base}${upstream.pathRewrite?.[pathname] ?? pathname}${search}`;
 
     // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
     const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
@@ -712,12 +711,6 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
   } catch {
     return '';
   }
-}
-
-/** The path and query fetch requests for a request path: dot segments resolved, as the upstream receives it. */
-function wirePath(requestPath: string): string {
-  const { pathname, search } = new URL(requestPath.startsWith('/') ? requestPath : `/${requestPath}`, 'http://local');
-  return `${pathname}${search}`;
 }
 
 function cooldownMs(retryAfter: string | null): number {

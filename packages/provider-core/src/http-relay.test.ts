@@ -158,6 +158,19 @@ describe('HttpRelay', () => {
     expect(url).toBe('https://api.example.com/v4/chat/completions');
   });
 
+  it('applies a path rewrite to a path with a query string, and keeps the query', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v4/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?client_version=1' }));
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v4/chat/completions?client_version=1');
+  });
+
   it('does not inject chat-only fields into speech requests', async () => {
     fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2]), { status: 200, headers: { 'content-type': 'audio/mpeg' } }));
 
@@ -614,6 +627,24 @@ describe('HttpRelay', () => {
       }));
       const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe('https://api.example.com/v1/chat/completions');
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it.each([
+      ['no version prefix', '/chat/completions'],
+      ['a deployment prefix', '/openai/deployments/d1/chat/completions'],
+      ['legacy completions', '/v1/completions'],
+      ['a trailing slash', '/v1/chat/completions/'],
+      ['a leading double slash', '//v1/chat/completions'],
+    ])('asks for usage on a completions path with %s', async (_shape, path) => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path,
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', stream: true })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://api.example.com${path}`);
       expect(upstreamBody().stream_options).toEqual({ include_usage: true });
     });
 

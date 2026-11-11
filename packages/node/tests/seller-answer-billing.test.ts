@@ -141,6 +141,36 @@ describe('seller billing of an answer without a usage report', () => {
     expect(needAuth).toMatchObject({ inputTokens: String(REQUEST_TOKENS), outputTokens: String(estimateTokensFromText(text)) });
   });
 
+  it('counts an attachment as a flat allowance, not by its encoded size or its link', async () => {
+    const answer = { choices: [{ index: 0, message: { role: 'assistant', content: 'A seed.' } }] };
+    const withImage = (url: string) => encoder.encode(JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url } }] }] }));
+    const inline = await serve(plainProvider(200, answer), { body: withImage(`data:image/png;base64,${'A'.repeat(1_000_000)}`) });
+    const linked = await serve(plainProvider(200, answer), { body: withImage('https://example.com/seed.png') });
+    const text = estimateTokensFromBytesSampled(encoder.encode(JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url' }] }] })));
+    expect(inline.needAuth?.inputTokens).toBe(String(text + 1290));
+    expect(linked.needAuth?.inputTokens).toBe(String(text + 1290));
+  });
+
+  it('counts a tool schema property named like an attachment as text', async () => {
+    const body = encoder.encode(JSON.stringify({ model: 'test-model', messages: [], tools: [{ type: 'function', function: { name: 'read', parameters: { properties: { file: { type: 'string' } } } } }] }));
+    const { needAuth } = await serve(plainProvider(200, { choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }] }), { body });
+    expect(needAuth?.inputTokens).toBe(String(estimateTokensFromBytesSampled(body)));
+  });
+
+  it('counts only what the model wrote, not metadata beside it', async () => {
+    const { needAuth } = await serve(streamingProvider([
+      chunk({ choices: [{ index: 0, delta: { content: 'Seeds.', reasoning_details: [{ type: 'reasoning.encrypted', data: 'x'.repeat(4_000), signature: 'y'.repeat(4_000) }], annotations: [{ url: 'https://example.com/a-very-long-link' }] }, logprobs: { content: [{ token: 'Seeds' }] }, finish_reason: 'stop' }] }),
+      DONE,
+    ]));
+    expect(needAuth?.outputTokens).toBe(String(estimateTokensFromText('Seeds.')));
+  });
+
+  it('treats a usage report of all zeros as no report', async () => {
+    const text = 'Seeds store a young plant.';
+    const { needAuth } = await serve(streamingProvider([textDelta(text), chunk({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }), DONE]));
+    expect(needAuth).toMatchObject({ inputTokens: String(REQUEST_TOKENS), outputTokens: String(estimateTokensFromText(text)) });
+  });
+
   it('charges a legacy completion that reports no usage', async () => {
     const text = 'Seeds store a young plant.';
     const { needAuth } = await serve(plainProvider(200, { id: 'x', object: 'text_completion', choices: [{ index: 0, text, finish_reason: 'stop' }] }), { path: '/v1/completions' });
@@ -184,6 +214,31 @@ describe('seller billing of an answer without a usage report', () => {
 
 describe('seller request paths', () => {
   const chatAnswer = { choices: [{ index: 0, message: { role: 'assistant', content: 'hi' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+
+  it.each([
+    ['a chat request to an image service', '/v1/chat/completions', ['openai-images']],
+    ['a legacy completion to a chat service', '/v1/completions', ['openai-chat-completions']],
+    ['an image request to a chat service', '/v1/images/generations', ['openai-chat-completions']],
+  ] as const)('refuses %s before billing or reaching the provider', async (_shape, path, protocols) => {
+    const provider = { ...plainProvider(200, chatAnswer), serviceApiProtocols: { 'test-model': [...protocols] } };
+    const { response, spent, needAuth } = await serve(provider, { path });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error.code).toBe('invalid_billing_request');
+    expect(provider.handleRequest).not.toHaveBeenCalled();
+    expect(needAuth).toBeUndefined();
+    expect(spent).toBe(0n);
+  });
+
+  it.each([
+    ['its own protocol', '/v1/chat/completions', ['openai-chat-completions']],
+    ['a protocol the buyer can translate to it', '/v1/messages', ['openai-chat-completions']],
+    ['a path no protocol claims', '/v1/embeddings', ['openai-chat-completions']],
+  ] as const)('serves a request on %s', async (_shape, path, protocols) => {
+    const provider = { ...plainProvider(200, chatAnswer), serviceApiProtocols: { 'test-model': [...protocols] } };
+    const { response } = await serve(provider, { path });
+    expect(response.statusCode).toBe(200);
+    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
+  });
 
   it.each([
     ['a dot segment', '/v1/./chat/completions'],
