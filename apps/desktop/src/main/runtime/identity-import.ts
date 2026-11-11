@@ -45,12 +45,7 @@ export async function importIdentityKey(rawKey: string, deps: IdentityImportDeps
   } catch (err) {
     return { ok: false, error: `Invalid private key: ${err instanceof Error ? err.message : String(err)}` };
   }
-  let backupPath: string | null;
-  try {
-    backupPath = await deps.backup();
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  const backupPath = await deps.backup();
   await deps.save(hex);
   return { ok: true, address: identity.wallet.address, backupPath, identity };
 }

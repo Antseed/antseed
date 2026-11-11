@@ -5,7 +5,6 @@ import * as nodeModule from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import type { StreamingRunContext } from './chat/streaming-run.js';
 import type { RuntimeProcessState, StartOptions } from './runtime/process-manager.js';
 
@@ -41,38 +40,21 @@ type IpcHandler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 const ipcHandlers = new Map<string, IpcHandler>();
 const openedUrls: string[] = [];
 
-// Answers anything a module does with an Electron API this test doesn't care about.
-const anything: unknown = new Proxy(function () {}, {
-  get: (_target, key) => (key === 'then' ? undefined : key === Symbol.toPrimitive ? () => 'stub' : anything),
-  apply: () => anything,
-  construct: () => anything as object,
-});
-const orAnything = <T extends object>(target: T): T => new Proxy(target, {
-  get: (object, key) => (key in object ? Reflect.get(object, key) : anything),
-});
-
-Object.assign(globalThis, {
-  identityTestElectron: orAnything({
-    safeStorage,
-    app: orAnything({ getPath: () => home, getAppPath: () => home, getVersion: () => '0.0.0', getName: () => 'test', isPackaged: false, whenReady: () => new Promise(() => {}) }),
-    ipcMain: orAnything({ handle: (channel: string, handler: IpcHandler) => { ipcHandlers.set(channel, handler); } }),
-    shell: orAnything({ openExternal: async (url: string) => { openedUrls.push(url); } }),
-  }),
-});
-
-// ES imports need the names up front, so export whatever the compiled app imports.
-const mainDir = path.dirname(fileURLToPath(import.meta.url));
-const electronNames = new Set<string>();
-for (const file of readdirSync(mainDir, { recursive: true, encoding: 'utf8' })) {
-  if (!file.endsWith('.js')) continue;
-  for (const [, names = ''] of readText(path.join(mainDir, file)).matchAll(/import\s*\{([^}]*)\}\s*from\s*["']electron["']/g)) {
-    for (const name of names.split(',')) {
-      const imported = name.trim().split(/\s+as\s+/)[0];
-      if (imported) electronNames.add(imported);
-    }
-  }
-}
-const electronSource = [...electronNames].map((name) => `export const ${name} = globalThis.identityTestElectron.${name};`).join('\n');
+// The parts of Electron the code under test uses. Anything else fails loudly,
+// so a test can't lean on an Electron call it doesn't declare.
+const unexpected = (name: string): unknown => {
+  const fail = (): never => { throw new Error(`Unexpected use of electron.${name}`); };
+  return new Proxy(fail, { get: fail, construct: fail });
+};
+const electron: Record<string, unknown> = {
+  safeStorage,
+  app: { isPackaged: false, setName: () => {} },
+  ipcMain: { handle: (channel: string, handler: IpcHandler) => { ipcHandlers.set(channel, handler); } },
+  shell: { openExternal: async (url: string) => { openedUrls.push(url); } },
+  ...Object.fromEntries(['BrowserWindow', 'clipboard', 'dialog', 'Menu', 'nativeImage', 'net', 'protocol', 'screen', 'Tray'].map((name) => [name, unexpected(name)])),
+};
+Object.assign(globalThis, { identityTestElectron: electron });
+const electronSource = Object.keys(electron).map((name) => `export const ${name} = globalThis.identityTestElectron.${name};`).join('\n');
 
 // Not in this repo's @types/node yet.
 const { registerHooks } = nodeModule as unknown as {
@@ -91,6 +73,8 @@ registerHooks({
 
 // "operation:path" → the code its next calls fail with, and how many of them fail.
 const faults = new Map<string, { code: string; times: number }>();
+// "operation:path" → a call that has done its work but returns only when released.
+const holds = new Map<string, { onDone: () => void; released: Promise<void> }>();
 
 type FileOperation = (file: unknown, ...rest: unknown[]) => Promise<unknown>;
 const fileOperations = fsPromises as unknown as Record<'readFile' | 'copyFile', FileOperation>;
@@ -102,7 +86,13 @@ for (const name of ['readFile', 'copyFile'] as const) {
       fault.times -= 1;
       throw Object.assign(new Error(`${fault.code}: simulated failure, ${name} '${String(file)}'`), { code: fault.code });
     }
-    return real(file, ...rest);
+    const result = await real(file, ...rest);
+    const hold = holds.get(`${name}:${String(file)}`);
+    if (hold) {
+      hold.onDone();
+      await hold.released;
+    }
+    return result;
   };
 }
 nodeModule.syncBuiltinESMExports();
@@ -113,6 +103,16 @@ function failRead(file: string, code: string, times = Infinity): void {
 
 function failBackup(file: string, code: string, times = Infinity): void {
   faults.set(`copyFile:${file}`, { code, times });
+}
+
+/** The next read of a file finishes (`done` resolves) but doesn't return until `release` is called. */
+function holdRead(file: string): { done: Promise<void>; release: () => void } {
+  let onDone = (): void => {};
+  let release = (): void => {};
+  const done = new Promise<void>((resolve) => { onDone = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  holds.set(`readFile:${file}`, { onDone, released });
+  return { done, release };
 }
 
 let dir = '';
@@ -134,6 +134,7 @@ beforeEach(() => {
   encryptedPath = path.join(dir, 'identity.enc');
   plaintextPath = path.join(dir, 'identity.key');
   faults.clear();
+  holds.clear();
   encryptCalls = 0;
   decryptCalls = 0;
   logged = [];
@@ -349,14 +350,30 @@ for (const code of ['EIO', 'EACCES', 'ENOSPC']) {
     const identity = await loadIdentityModule();
     await identity.ensureSecureIdentity();
 
-    const result = await identity.importIdentityPrivateKeyHex(OTHER_KEY);
+    await assert.rejects(identity.importIdentityPrivateKeyHex(OTHER_KEY), (err: Error) => {
+      assertClearToUser(err.message, new RegExp(`couldn't be backed up \\(${code}\\)`));
+      return true;
+    });
 
     assertStoredSignerUntouched();
-    assert.equal(result.ok, false);
-    assertClearToUser(result.error, new RegExp(`couldn't be backed up \\(${code}\\)`));
     assert.deepEqual(identity.secureIdentityEnv(), { ANTSEED_IDENTITY_HEX: KEY }, 'the loaded signer stays in use');
   });
 }
+
+test('a load still running when an import lands keeps the imported key', async () => {
+  writeFileSync(encryptedPath, sealed(KEY));
+  const identity = await loadIdentityModule();
+  const { done, release } = holdRead(encryptedPath);
+
+  const load = identity.ensureSecureIdentity();
+  await done;
+  const result = await identity.importIdentityPrivateKeyHex(OTHER_KEY);
+  release();
+  await load;
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(identity.secureIdentityEnv(), { ANTSEED_IDENTITY_HEX: OTHER_KEY });
+});
 
 test('an import backs up the current signer first', async () => {
   writeFileSync(encryptedPath, sealed(KEY));
@@ -440,11 +457,13 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   // Not a valid port, so the portal could never take a real one or hold this process open.
   process.env['ANTSEED_PAYMENTS_PORT'] = '70000';
 
-  const [{ registerAppIpc }, { registerPaymentsIpc }, { registerRuntimeIpc }, { ProcessManager }] = await Promise.all([
+  const [{ registerAppIpc }, { registerFreeTierIpc }, { registerPaymentsIpc }, { registerRuntimeIpc }, { ProcessManager }, { stakingSessions }] = await Promise.all([
     import('./ipc/app.js'),
+    import('./ipc/free-tier.js'),
     import('./ipc/payments.js'),
     import('./ipc/runtime.js'),
     import('./runtime/process-manager.js'),
+    import('./staking/portal.js'),
   ]);
 
   const spawned: StartOptions[] = [];
@@ -457,6 +476,7 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   }
   const processManager = new RecordingProcessManager((_mode, _stream, line) => { runtimeLog.push(line); });
   registerAppIpc();
+  registerFreeTierIpc();
   registerPaymentsIpc();
   registerRuntimeIpc({
     processManager,
@@ -489,11 +509,17 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   assertClearToUser(payPage.error, UNREADABLE);
   assert.deepEqual(openedUrls, [], 'no payment page may open');
 
-  for (const channel of ['deposits:watch-start', 'payments:open-card-provider']) {
-    const refused = await invoke(channel);
-    assert.equal(refused.ok, false);
+  const signAuth = { channelId: `0x${'ab'.repeat(32)}`, cumulativeAmountBaseUnits: '1', metadataHash: `0x${'cd'.repeat(32)}` };
+  for (const [channel, arg] of [['deposits:watch-start'], ['payments:open-card-provider'], ['payments:sign-spending-auth', signAuth], ['freeTier:list']] as const) {
+    const refused = await invoke(channel, arg);
+    assert.equal(refused.ok, false, channel);
     assertClearToUser(refused.error, UNREADABLE);
   }
+
+  await assert.rejects(stakingSessions.open(), (err: Error) => {
+    assertClearToUser(err.message, UNREADABLE);
+    return true;
+  });
 
   const imported = await invoke('identity:import-key', OTHER_KEY);
   assert.equal(imported.ok, false);

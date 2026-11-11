@@ -25,11 +25,10 @@ test('an attach-only desktop refuses identity import before touching secure stor
   assert.deepEqual(identityImportRefusal({ ANTSEED_DESKTOP_ATTACH_ONLY: '1' }), { ok: false, error: ATTACH_ONLY_IMPORT_REFUSED });
 });
 
-test('a failed backup stops the import and says why', async () => {
+test('a failed backup stops the import', async () => {
   const { calls, deps } = recordingDeps({});
   deps.backup = async () => { calls.push('backup'); throw new Error('The current key could not be backed up.'); };
-  const result = await importIdentityKey(KEY, deps);
-  assert.deepEqual(result, { ok: false, error: 'The current key could not be backed up.' });
+  await assert.rejects(importIdentityKey(KEY, deps), /could not be backed up/);
   assert.equal(calls.some((call) => call.startsWith('save:')), false, 'nothing is written without a backup');
 });
 

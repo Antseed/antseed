@@ -187,7 +187,8 @@ export async function ensureSecureIdentity(): Promise<void> {
         return;
       }
       if (encHex) {
-        secureIdentity = identityFromHex(encHex);
+        // Not over a key imported while this read ran: the file it read is then the old one.
+        secureIdentity ??= identityFromHex(encHex);
         console.log(`[desktop] secure identity loaded from encrypted store: ${secureIdentity.peerId.slice(0, 12)}...`);
         return;
       }
