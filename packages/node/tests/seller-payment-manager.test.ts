@@ -2641,43 +2641,44 @@ describe('SellerPaymentManager', () => {
     });
   });
 
-  describe('validateHydratedChannels', () => {
-    function seedChannel(
-      channelStore: ChannelStore,
-      channelId: string,
-      buyer: Identity,
-      seller: Identity,
-      opts: Partial<StoredChannel> = {},
-    ): StoredChannel {
-      const now = Date.now();
-      const channel: StoredChannel = {
-        sessionId: channelId,
-        peerId: buyer.peerId,
-        role: CHANNEL_ROLE.SELLER,
-        sellerEvmAddr: seller.wallet.address,
-        buyerEvmAddr: buyer.wallet.address,
-        nonce: 0,
-        authMax: '1000000',
-        previousConsumption: '2000000',
-        tokensDelivered: '500000',
-        deadline: Math.floor(now / 1000) + 3600,
-        previousSessionId: '',
-        requestCount: 0,
-        reservedAt: now,
-        settledAt: null,
-        settledAmount: null,
-        status: CHANNEL_STATUS.ACTIVE,
-        latestBuyerSig: '0xdead',
-        latestSpendingAuthSig: '0xdead',
-        latestMetadata: null,
-        createdAt: now,
-        updatedAt: now,
-        ...opts,
-      };
-      channelStore.upsertChannel(channel);
-      return channel;
-    }
+  /** A seller channel as the store holds it, with `opts` over the defaults. */
+  function seedChannel(
+    channelStore: ChannelStore,
+    channelId: string,
+    buyer: Identity,
+    seller: Identity,
+    opts: Partial<StoredChannel> = {},
+  ): StoredChannel {
+    const now = Date.now();
+    const channel: StoredChannel = {
+      sessionId: channelId,
+      peerId: buyer.peerId,
+      role: CHANNEL_ROLE.SELLER,
+      sellerEvmAddr: seller.wallet.address,
+      buyerEvmAddr: buyer.wallet.address,
+      nonce: 0,
+      authMax: '1000000',
+      previousConsumption: '2000000',
+      tokensDelivered: '500000',
+      deadline: Math.floor(now / 1000) + 3600,
+      previousSessionId: '',
+      requestCount: 0,
+      reservedAt: now,
+      settledAt: null,
+      settledAmount: null,
+      status: CHANNEL_STATUS.ACTIVE,
+      latestBuyerSig: '0xdead',
+      latestSpendingAuthSig: '0xdead',
+      latestMetadata: null,
+      createdAt: now,
+      updatedAt: now,
+      ...opts,
+    };
+    channelStore.upsertChannel(channel);
+    return channel;
+  }
 
+  describe('validateHydratedChannels', () => {
     const ZERO_CHANNEL = {
       buyer: '0x0000000000000000000000000000000000000000',
       seller: '0x0000000000000000000000000000000000000000',
@@ -3314,18 +3315,12 @@ describe('SellerPaymentManager', () => {
   describe('askAfterRestart', () => {
     /** A channel this seller stored before it stopped: accepted `accepted`, its reserve ceiling `ceiling`, `spent` served (0.3 USDC past the ceiling unless given). */
     async function storeChannel(channelId: string, accepted: bigint, ceiling: bigint, spent = ceiling + 300_000n): Promise<void> {
-      const now = Date.now();
       const latestSpendingAuthSig = await signSpendingAuth(buyerIdentity.wallet, makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR), {
         channelId, cumulativeAmount: accepted, metadataHash: ZERO_METADATA_HASH,
       });
-      store.upsertChannel({
-        sessionId: channelId, peerId: buyerIdentity.peerId, role: CHANNEL_ROLE.SELLER,
-        sellerEvmAddr: sellerIdentity.wallet.address, buyerEvmAddr: buyerIdentity.wallet.address,
-        nonce: 0, authMax: accepted.toString(), previousConsumption: ceiling.toString(), tokensDelivered: spent.toString(),
-        deadline: Math.floor(now / 1000) + 3600, previousSessionId: '', requestCount: 0, reservedAt: now,
-        settledAt: null, settledAmount: null, status: CHANNEL_STATUS.ACTIVE,
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+        authMax: accepted.toString(), previousConsumption: ceiling.toString(), tokensDelivered: spent.toString(),
         latestBuyerSig: latestSpendingAuthSig, latestSpendingAuthSig, latestMetadata: encodeMetadata(ZERO_METADATA),
-        createdAt: now, updatedAt: now,
       });
     }
 
@@ -3596,6 +3591,25 @@ describe('SellerPaymentManager', () => {
       await restarted.checkTimeouts();
 
       expect({ closes: closeWhenIdle.mock.calls.length, ask: await restarted.askAfterRestart(channelId) }).toEqual({ closes: 0, ask: null });
+    });
+
+    it('takes the deposit it read as the ceiling when it stops treating the channel as restored', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const channelId = makeChannelId(168);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      // A top-up to 2 USDC landed while the seller was down: the stored ceiling lags it.
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }) as never,
+      );
+      await restarted.askAfterRestart(channelId);
+      const before = { lags: restarted.ceilingMayLagChain(channelId), ceiling: restarted.getReserveMax(channelId) };
+
+      vi.setSystemTime(Date.now() + 30_000);
+      await restarted.checkTimeouts();
+
+      expect({ before, after: { lags: restarted.ceilingMayLagChain(channelId), ceiling: restarted.getReserveMax(channelId) } })
+        .toEqual({ before: { lags: true, ceiling: 1_000_000n }, after: { lags: false, ceiling: 2_000_000n } });
     });
 
     it('waits for a top-up being submitted when its window passes, and closes once that top-up fails', async () => {
