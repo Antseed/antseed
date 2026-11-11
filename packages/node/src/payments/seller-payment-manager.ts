@@ -434,8 +434,9 @@ export class SellerPaymentManager {
     peerId: string,
     reason: string,
     status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT = CHANNEL_STATUS.SETTLED,
+    settledAmount?: string,
   ): void {
-    this._channelStore.updateChannelStatus(channelId, status);
+    this._channelStore.updateChannelStatus(channelId, status, settledAmount);
     this._acceptedCumulative.delete(channelId);
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
@@ -1370,8 +1371,13 @@ export class SellerPaymentManager {
         if (!state.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!state.exists || (state.status !== 'active' && state.status !== 'unknown')) {
           // What the chain settled is what the channel earned, even if its close was never recorded here.
-          if (state.exists) this._channelStore.updateChannelStatus(channel.sessionId, CHANNEL_STATUS.SETTLED, state.channel.settled.toString());
-          this._evictStaleChannel(channel.sessionId, channel.peerId, `one-off on-chain status=${state.exists ? state.status : 'missing'}`);
+          this._evictStaleChannel(
+            channel.sessionId,
+            channel.peerId,
+            `one-off on-chain status=${state.exists ? state.status : 'missing'}`,
+            CHANNEL_STATUS.SETTLED,
+            state.exists ? state.channel.settled.toString() : undefined,
+          );
           continue;
         }
         this._oneOffChannelIds.add(channel.sessionId);
