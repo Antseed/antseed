@@ -374,6 +374,17 @@ export function openAIResponsesEnding(finishReason: string | null): {
   return { status: 'completed' };
 }
 
+/** Whether a tool call's arguments end where they should: none at all, or one whole JSON value. */
+export function toolArgumentsWhole(args: unknown): boolean {
+  if (typeof args !== 'string' || args.trim() === '') return true;
+  try {
+    JSON.parse(args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function mapFinishReasonToAnthropicStopReason(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0) return null;
   if (value === 'stop') return 'end_turn';

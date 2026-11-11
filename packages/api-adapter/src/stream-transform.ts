@@ -12,6 +12,7 @@ import {
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
+  toolArgumentsWhole,
   parseSseBuffer,
   type StreamingResponseAdapter,
   type TokenUsage,
@@ -834,9 +835,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
           const ending = openAIResponsesEnding(event.finishReason);
-          // An answer cut at a limit was cut in the item it was writing: the items before it are whole.
-          const itemStatus = (item: 'text' | number): 'completed' | 'incomplete' => (item === lastWritten ? ending.status : 'completed');
-          const messageStatus = itemStatus('text');
+          // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments
+          // stop mid-value; the other items are whole.
+          const itemStatus = (cut: boolean): 'completed' | 'incomplete' => (cut ? ending.status : 'completed');
+          const messageStatus = itemStatus(lastWritten === 'text');
+          const toolCallStatus = (toolCall: CanonicalStreamToolCall) =>
+            itemStatus(toolCall.index === lastWritten || !toolArgumentsWhole(toolCall.arguments));
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           const msgId = getMessageId();
           if (outputStarted) {
@@ -884,7 +888,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                 call_id: toolCall.id,
                 name: toolCall.name,
                 arguments: toolCall.arguments,
-                status: itemStatus(toolCall.index),
+                status: toolCallStatus(toolCall),
               },
             });
           }
@@ -911,7 +915,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
-                  status: itemStatus(toolCall.index),
+                  status: toolCallStatus(toolCall),
                 })),
               ],
               output_text: textBuffer,

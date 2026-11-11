@@ -5,6 +5,7 @@ import {
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
+  toolArgumentsWhole,
   RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
   type TokenUsage,
@@ -778,7 +779,8 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
   const ending = openAIResponsesEnding(response.stopReason);
-  // An answer cut at a limit was cut in the item it was writing: the items before it are whole.
+  // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments stop
+  // mid-value; the other items are whole.
   const cut = response.output.at(-1);
   const status = (cutHere: boolean): 'completed' | 'incomplete' => (cutHere ? ending.status : 'completed');
 
@@ -801,7 +803,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: status(item === cut),
+      status: status(item === cut || !toolArgumentsWhole(item.arguments)),
     });
   }
 

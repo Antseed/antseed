@@ -535,6 +535,50 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(final.response.output.map((item: Json) => [item.call_id, item.status])).toEqual([['call_1', 'completed'], ['call_2', 'incomplete']]);
   });
 
+  // Chat streams each tool call's arguments by index, so several can be unfinished when the answer is cut.
+  it('marks every tool call whose arguments stop mid-value incomplete', () => {
+    const calls = (finishReason: string) => [
+      chatChunk({ role: 'assistant', content: '' }),
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"x":' } }] }),
+      chatChunk({ tool_calls: [{ index: 1, id: 'call_2', type: 'function', function: { name: 'write', arguments: '{"y":' } }] }),
+      chatChunk({}, finishReason),
+      frame('[DONE]'),
+    ];
+    const statuses = (output: Json[]) => output.map((item) => [item.call_id, item.status]);
+    const final = JSON.parse(translate(CHAT, RESPONSES, calls('length')).at(-2)!.data) as Json;
+    expect(statuses(final.response.output)).toEqual([['call_1', 'incomplete'], ['call_2', 'incomplete']]);
+
+    const body = chatBody('length');
+    body.choices[0].message = {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"x":' } },
+        { id: 'call_2', type: 'function', function: { name: 'write', arguments: '{"y":' } },
+      ],
+    };
+    const answer = JSON.parse(decoder.decode(transformResponse(response(body), { from: CHAT, to: RESPONSES, fallbackModel: 'm' })!.body)) as Json;
+    expect(statuses(answer.output)).toEqual([['call_1', 'incomplete'], ['call_2', 'incomplete']]);
+
+    // An answer that finished on its own says its items are whole, whatever the arguments look like.
+    const finished = JSON.parse(translate(CHAT, RESPONSES, calls('tool_calls')).at(-2)!.data) as Json;
+    expect(statuses(finished.response.output)).toEqual([['call_1', 'completed'], ['call_2', 'completed']]);
+  });
+
+  it('leaves a finished tool call that takes no arguments completed', () => {
+    const events = translate(MESSAGES, RESPONSES, [
+      MESSAGE_START,
+      typed('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'list', input: {} } }),
+      typed('content_block_stop', { index: 0 }),
+      typed('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      typed('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'The answer is' } }),
+      typed('message_delta', { delta: { stop_reason: 'max_tokens', stop_sequence: null }, usage: { output_tokens: 7 } }),
+      typed('message_stop', {}),
+    ]);
+    const final = JSON.parse(events.at(-2)!.data) as Json;
+    expect(final.response.output.map((item: Json) => [item.type, item.status])).toEqual([['message', 'incomplete'], ['function_call', 'completed']]);
+  });
+
   // The message is rendered before the tool calls, but here the model wrote it after one and was cut in it.
   it('marks text cut after a finished tool call incomplete, not the tool call', () => {
     const statuses = (output: Json[]) => output.map((item) => [item.type, item.status]);
