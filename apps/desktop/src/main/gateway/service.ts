@@ -5,7 +5,7 @@
  * keys, limits and funding are managed.
  */
 import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf, type KeyUsage } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayRewardsSummary, GatewaySavings, GatewayStatus } from '../../shared/gateway-types.js';
 import { applyPrivacyToKeys, publishUnderCurrentPrivacy } from './privacy-keys.js';
@@ -18,9 +18,9 @@ import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager,
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
 import { attachedGateway } from '../runtime/attach-only.js';
+import { gatewayKeyScope } from './key-scope.js';
 import { buyerSignerMismatchMessage, compareBuyerSigner, liveBuyerAddress } from './buyer-signer.js';
 import { isDesktopDebugEnabled } from '../app-context.js';
-import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -525,11 +525,15 @@ export async function getGatewayBalanceInfo(options: { fresh?: boolean } = {}): 
 }
 
 /**
- * Which gateway and key a balance belongs to, so a balance cached for one is
- * never shown for another. The key enters only as a digest.
+ * The gateway and key the next balance read is for, from saved settings and
+ * keys alone (it starts nothing), so the balance read cache can never answer
+ * one key's read with another key's balance.
  */
-export function gatewayKeyScope(mode: string, origin: string, apiKey: string): string {
-  return `${mode} ${origin} ${createHash('sha256').update(apiKey).digest('hex').slice(0, 16)}`;
+export function currentBalanceScope(): string {
+  const settings = getGatewaySettings();
+  return settings.mode === 'remote'
+    ? gatewayKeyScope('remote', settings.remoteUrl ?? '', getRemoteKey() ?? '')
+    : gatewayKeyScope('local', localGatewayOrigin(), getLocalKey(DESKTOP_KEY_SCOPE)?.secret ?? '');
 }
 
 /**
@@ -575,7 +579,7 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
       readRetiredUsage(),
     ]);
     // Apps that stopped using a key of their own keep their history in the totals.
-    return withUsageOf(desktop, [...infos, retired?.usage ?? null].filter((info): info is GatewayKeyInfo => info !== null));
+    return withUsageOf(desktop, [...infos, retired?.usage ?? null].filter((usage): usage is KeyUsage => usage !== null));
   } catch {
     return null;
   }

@@ -49,7 +49,7 @@ export function keysUsage(store: GatewayStore, ids: readonly string[], prices: R
   return {
     requests: keys.reduce((sum, id) => sum + (summaries.get(id)?.requests ?? 0), 0),
     spent_usd: usdcToDecimalString(spent),
-    savings: prices ? savingsJson(keySavings(keys.flatMap((id) => store.usageByModel(id)), prices)) : null,
+    savings: prices ? savingsJson(keySavings(store.usageByModelForKeys(keys), prices)) : null,
   }
 }
 

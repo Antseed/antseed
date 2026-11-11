@@ -58,7 +58,14 @@ export class TeeVerification {
       ...outcome, ok: !policy.require || (requireSellerNode ? outcome.sellerNodeVerified === true : outcome.verified),
     })
     const entry = previous?.state.data
-    if (!pending && !force && entry?.outcome && !entry.outcome.transient && this.cacheExpiry(entry, maxAgeMs) > this.now()) return allow(entry.outcome)
+    // A pass that a newer failure (another identity's check) has overtaken is
+    // not reused: the seller is checked again before it counts.
+    const overtaken = entry?.outcome?.verified === true
+      && cache.findAll({ queryKey: [peer.peerId, chosen ?? '', fingerprint] }).some((other) => {
+        const verdict = other.state.data as Entry | undefined
+        return Boolean(verdict?.outcome && !verdict.outcome.transient && !verdict.outcome.verified && verdict.checkedAt > entry.checkedAt)
+      })
+    if (!pending && !force && !overtaken && entry?.outcome && !entry.outcome.transient && this.cacheExpiry(entry, maxAgeMs) > this.now()) return allow(entry.outcome)
     if (!pending && this.activeChecks >= 8) {
       return { ok: !policy.require, verified: false, transient: true, code: 'busy', reason: 'Verification busy; retry shortly' }
     }
@@ -102,8 +109,8 @@ export class TeeVerification {
    * verifier but fails it (an unapproved build) is not one Private can send to.
    */
   teeFailure(peer: Peer): string | null {
-    const newest = this.newestSettledCheck(peer, TEE_MAX_AGE_MS, { skipRefetching: true })
-    if (!newest?.outcome || newest.outcome.sellerNodeVerified) return null
+    const newest = this.newestSettledCheck(peer, { skipRefetching: true })
+    if (!newest?.outcome || newest.outcome.sellerNodeVerified || this.cacheExpiry(newest, TEE_MAX_AGE_MS) <= this.now()) return null
     return newest.outcome.reason ?? 'TEE attestation did not pass'
   }
 
@@ -112,27 +119,29 @@ export class TeeVerification {
    * still in date, when that one passed: `end-to-end` when its model provider
    * is attested too, `seller-node` when only the seller is. Null until a
    * check passes (or when none can run): advertising the TEE verifier is only
-   * a claim. A newer failure ends it, even while an older pass is in date.
+   * a claim. A newer failure ends it, even once that failure is past its
+   * date: only a pass checked after it brings the scope back.
    */
   teeProvenScope(peer: Peer): TeeScope | null {
     // A check being re-run keeps its last verdict, so the badge doesn't flicker.
-    const newest = this.newestSettledCheck(peer, TEE_BADGE_MAX_AGE_MS, { skipRefetching: false })
-    if (newest?.outcome?.sellerNodeVerified !== true) return null
+    const newest = this.newestSettledCheck(peer, { skipRefetching: false })
+    if (newest?.outcome?.sellerNodeVerified !== true || this.cacheExpiry(newest, TEE_BADGE_MAX_AGE_MS) <= this.now()) return null
     return teeScope({ claims: newest.outcome.claims ?? [] }) === 'end-to-end' ? 'end-to-end' : 'seller-node'
   }
 
   /**
-   * The newest check with a verdict (not a transient error) still within
-   * `maxAgeMs`, across the per-identity checks for the seller's current
-   * capabilities. Both the failure and the scope follow it, so they agree.
+   * The newest check with a verdict (not a transient error), across the
+   * per-identity checks for the seller's current capabilities, whether or not
+   * it is still in date. Both the failure and the scope follow it, so they
+   * agree, and an expired newer verdict never lets an older one back: the
+   * caller treats it as no verdict until the seller is checked again.
    */
-  private newestSettledCheck(peer: Peer, maxAgeMs: number, options: { skipRefetching: boolean }): Entry | null {
+  private newestSettledCheck(peer: Peer, options: { skipRefetching: boolean }): Entry | null {
     let newest: Entry | null = null
     for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
       if (options.skipRefetching && query.state.fetchStatus === 'fetching') continue
       if (!entry?.outcome || entry.outcome.transient) continue
-      if (this.cacheExpiry(entry, maxAgeMs) <= this.now()) continue
       if (!newest || entry.checkedAt > newest.checkedAt) newest = entry
     }
     return newest

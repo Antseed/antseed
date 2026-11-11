@@ -20,6 +20,7 @@ import {
 } from '../gateway/service.js';
 import { clearGatewayModelCache } from '../gateway/models.js';
 import { clearRoutePreviewCache } from '../gateway/route-preview.js';
+import { invalidateCreditsCache } from '../payments/credits.js';
 import {
   getGatewaySettings,
   hasRemoteKey,
@@ -68,6 +69,9 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   const endpointChanged = async (restartApps: boolean): Promise<string | null> => {
     clearGatewayModelCache();
     clearRoutePreviewCache();
+    // The balance belonged to the old gateway or key: reads already started
+    // for it finish under a key nobody asks for again.
+    invalidateCreditsCache();
     deps.onEndpointChanged();
     await reconnectAllApps({ restart: restartApps });
     return syncInstalledAgentSkills().then(() => null, (err: unknown) => skillsNotUpdated(err));

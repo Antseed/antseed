@@ -64,18 +64,20 @@ export function parseKeySavings(payload: unknown): GatewaySavings | null {
   return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: num(body['matched_requests']) ?? 0 };
 }
 
+/** What `withUsageOf` adds up from each other key: its requests and spend. */
+export type KeyUsage = Pick<GatewayKeyInfo, 'requests' | 'spentUsd'>;
+
 /**
  * `antseed gateway key usage --json` over keys the desktop retired: their
- * requests and spend, shaped as key info so `withUsageOf` can add them, and
- * their savings. Null when the answer isn't one.
+ * requests and spend, and their savings. Null when the answer isn't one.
  */
-export function parseRetiredUsage(payload: unknown): { usage: GatewayKeyInfo; savings: GatewaySavings | null } | null {
+export function parseRetiredUsage(payload: unknown): { usage: KeyUsage; savings: GatewaySavings | null } | null {
   const body = (payload as { data?: Record<string, unknown> | null } | null)?.data;
   if (!body || typeof body !== 'object') return null;
   const requests = typeof body['requests'] === 'number' && Number.isFinite(body['requests']) ? body['requests'] : 0;
   const spentUsd = typeof body['spent_usd'] === 'string' ? body['spent_usd'] : null;
   return {
-    usage: { label: null, buyerAddress: null, requests, spentUsd, limits: {}, balance: null },
+    usage: { requests, spentUsd },
     savings: parseKeySavings({ data: body['savings'] }),
   };
 }
@@ -94,7 +96,7 @@ export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewayS
  * shares its wallet (apps with a key of their own), so Home's usage counts
  * the apps too. Limits stay the desktop key's own.
  */
-export function withUsageOf(desktop: GatewayKeyInfo, others: GatewayKeyInfo[]): GatewayKeyInfo {
+export function withUsageOf(desktop: GatewayKeyInfo, others: readonly KeyUsage[]): GatewayKeyInfo {
   const micros = (value: string | null) => Math.round((Number(value) || 0) * 1_000_000);
   const spent = [desktop, ...others].reduce((sum, info) => sum + micros(info.spentUsd), 0);
   return {

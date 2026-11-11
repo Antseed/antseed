@@ -188,6 +188,33 @@ test('request log records outcomes and content, prunes by age, and reports peer 
   }
 })
 
+test('usage by model over several keys sums each key\'s usage, counting requests per key', () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const keys = ['A', 'B', 'C'].map((label) => store.createKey({ label, buyerIdentity: 'team-x', limits: { daily: null, monthly: null, total: null }, expiresAt: null }).key)
+    keys.slice(0, 2).forEach((key, index) => {
+      const tag = `req-${index}`
+      store.startRequest({ tag, keyId: key.id, buyerIdentity: 'team-x', method: 'POST', path: '/v1/chat/completions', model: 'example-model', startedAt: 1 })
+      for (const part of [1, 2]) {
+        store.recordLedgerEntry({
+          kind: 'spend', keyId: key.id, buyerIdentity: 'team-x', amountUsdc: 10, externalRef: `${tag}-${part}`, requestTag: tag,
+          inputTokens: 5, cachedInputTokens: 0, outputTokens: 1, createdAt: 2,
+        })
+      }
+    })
+    const [usage] = store.usageByModelForKeys(keys.map((key) => key.id))
+    assert.equal(usage?.requests, 2)
+    assert.equal(usage?.amountUsdc, 40)
+    assert.equal(usage?.inputTokens, 20)
+    assert.deepEqual(store.usageByModelForKeys([keys[2]!.id]), [])
+    assert.deepEqual(store.usageByModelForKeys([]), [])
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
 test('usage by model counts requests, not spend entries: several deltas or both sources count once', () => {
   const { dir, cleanup } = tempDir()
   const store = new GatewayStore(dir)

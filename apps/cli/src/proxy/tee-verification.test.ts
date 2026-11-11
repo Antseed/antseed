@@ -316,6 +316,26 @@ test('a newer failed attestation ends the TEE scope an older, still-dated pass g
   service.close();
 });
 
+test('an expired newer failure never brings back an older pass; only a fresh check does', async () => {
+  let now = 100;
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' });
+  const service = new TeeVerification(strict, () => now);
+  await service.verifyForDisplay(peer, async () => pass);
+  now += 1_000;
+  await service.verify(peer, strict, fail, false, 'team-a');
+  now += TEE_MAX_AGE_MS + 1;
+  assert.ok(TEE_MAX_AGE_MS + 1_001 < TEE_BADGE_MAX_AGE_MS, 'the old pass is still in its display date');
+  assert.equal(service.teeProvenScope(peer), null, 'the failure expired, but it was the newest verdict');
+  assert.equal(service.teeFailure(peer), null, 'an expired failure no longer blocks a request on its own');
+
+  // The display check doesn't reuse the overtaken pass: it runs again.
+  let runs = 0;
+  await service.verifyForDisplay(peer, async () => { runs += 1; return pass; });
+  assert.equal(runs, 1);
+  assert.equal(service.teeProvenScope(peer), 'seller-node', 'a fresh pass brings it back');
+  service.close();
+});
+
 test('a seller counts as proven TEE only once its own attestation passed, while it is in date, with how far it reaches', async () => {
   let now = 100;
   const service = new TeeVerification(strict, () => now);
