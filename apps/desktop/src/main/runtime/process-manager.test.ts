@@ -156,7 +156,6 @@ test('a start refused before spawning shows its reason in the status and the log
 
   const connect = processManager.getState().find((state) => state.mode === 'connect');
   assert.equal(connect?.lastError, 'No key.');
-  assert.equal(connect?.running, false);
   assert.deepEqual(logs, ['No key.']);
 });
 

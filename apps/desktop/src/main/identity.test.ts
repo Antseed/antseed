@@ -75,12 +75,15 @@ registerHooks({
 const faults = new Map<string, { code: string; times: number }>();
 // "operation:path" → a call that has done its work but returns only when released.
 const holds = new Map<string, { onDone: () => void; released: Promise<void> }>();
+// Every file operation started, as "operation:path".
+let fileCalls: string[] = [];
 
 type FileOperation = (file: unknown, ...rest: unknown[]) => Promise<unknown>;
 const fileOperations = fsPromises as unknown as Record<'readFile' | 'copyFile', FileOperation>;
 for (const name of ['readFile', 'copyFile'] as const) {
   const real = fileOperations[name];
   fileOperations[name] = async (file, ...rest) => {
+    fileCalls.push(`${name}:${String(file)}`);
     const fault = faults.get(`${name}:${String(file)}`);
     if (fault && fault.times > 0) {
       fault.times -= 1;
@@ -105,13 +108,13 @@ function failBackup(file: string, code: string, times = Infinity): void {
   faults.set(`copyFile:${file}`, { code, times });
 }
 
-/** The next read of a file finishes (`done` resolves) but doesn't return until `release` is called. */
-function holdRead(file: string): { done: Promise<void>; release: () => void } {
+/** The next such call on a file finishes (`done` resolves) but doesn't return until `release` is called. */
+function hold(operation: 'readFile' | 'copyFile', file: string): { done: Promise<void>; release: () => void } {
   let onDone = (): void => {};
   let release = (): void => {};
   const done = new Promise<void>((resolve) => { onDone = resolve; });
   const released = new Promise<void>((resolve) => { release = resolve; });
-  holds.set(`readFile:${file}`, { onDone, released });
+  holds.set(`${operation}:${file}`, { onDone, released });
   return { done, release };
 }
 
@@ -135,6 +138,7 @@ beforeEach(() => {
   plaintextPath = path.join(dir, 'identity.key');
   faults.clear();
   holds.clear();
+  fileCalls = [];
   encryptCalls = 0;
   decryptCalls = 0;
   logged = [];
@@ -208,6 +212,29 @@ test('a plaintext key that can\'t be read stays on disk and no new signer is mad
   assert.equal(existsSync(encryptedPath), false, 'no encrypted signer may be created');
   assert.equal(encryptCalls, 0, 'no new key may be encrypted');
   assert.equal(identity.getSecureIdentity(), null);
+  for (const handOut of [identity.secureIdentityEnv, identity.exportIdentityPrivateKeyHex]) {
+    assert.throws(handOut, (err: Error) => {
+      assertClearToUser(err.message, /^Your signer key at ~.\.antseed.identity\.key can't be read \(EACCES\)\./);
+      return true;
+    });
+  }
+});
+
+test('a plaintext read that keeps failing recovers on a later call, without a restart', async () => {
+  writeFileSync(plaintextPath, KEY);
+  const failures = 6;
+  failRead(plaintextPath, 'EACCES', failures);
+  const identity = await loadIdentityModule();
+
+  for (let call = 0; call < failures; call += 1) {
+    await identity.ensureSecureIdentity();
+    assert.throws(identity.secureIdentityEnv, /can't be read \(EACCES\)/);
+  }
+  await identity.ensureSecureIdentity();
+
+  assert.deepEqual(identity.secureIdentityEnv(), { ANTSEED_IDENTITY_HEX: KEY });
+  assert.equal(readText(encryptedPath), sealed(KEY));
+  assert.equal(existsSync(plaintextPath), false);
 });
 
 test('while the stored signer can\'t be read, handing out a key fails with the reason', async () => {
@@ -360,18 +387,45 @@ for (const code of ['EIO', 'EACCES', 'ENOSPC']) {
   });
 }
 
-test('a load still running when an import lands keeps the imported key', async () => {
+const nextTurnOfTheEventLoop = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });
+
+for (const [kind, stored] of [['stored signer', () => encryptedPath], ['plaintext key', () => plaintextPath]] as const) {
+  test(`an import waits for a load of a ${kind} that is still running`, async () => {
+    writeFileSync(stored(), kind === 'stored signer' ? sealed(KEY) : KEY);
+    const identity = await loadIdentityModule();
+    const { done, release } = hold('readFile', stored());
+
+    const load = identity.ensureSecureIdentity();
+    await done;
+    const imported = identity.importIdentityPrivateKeyHex(OTHER_KEY);
+    await nextTurnOfTheEventLoop();
+    assert.equal(fileCalls.includes(`copyFile:${encryptedPath}`), false, 'the import must not start during the load');
+    release();
+    await load;
+    const result = await imported;
+
+    assert.equal(result.ok, true);
+    assert.equal(readText(encryptedPath), sealed(OTHER_KEY), 'the imported key must end up on disk');
+    assert.equal(readText(result.backupPath ?? ''), sealed(KEY), 'the loaded key must be backed up');
+    assert.deepEqual(identity.secureIdentityEnv(), { ANTSEED_IDENTITY_HEX: OTHER_KEY });
+  });
+}
+
+test('a load that waited for an import keeps the imported key', async () => {
   writeFileSync(encryptedPath, sealed(KEY));
   const identity = await loadIdentityModule();
-  const { done, release } = holdRead(encryptedPath);
+  const { done, release } = hold('copyFile', encryptedPath);
 
-  const load = identity.ensureSecureIdentity();
+  const imported = identity.importIdentityPrivateKeyHex(OTHER_KEY);
   await done;
-  const result = await identity.importIdentityPrivateKeyHex(OTHER_KEY);
+  const load = identity.ensureSecureIdentity();
+  await nextTurnOfTheEventLoop();
+  assert.equal(fileCalls.includes(`readFile:${encryptedPath}`), false, 'the load must not start during the import');
   release();
-  await load;
+  await Promise.all([imported, load]);
 
-  assert.equal(result.ok, true);
+  assert.equal(decryptCalls, 0, 'the load has nothing left to do');
+  assert.equal(readText(encryptedPath), sealed(OTHER_KEY));
   assert.deepEqual(identity.secureIdentityEnv(), { ANTSEED_IDENTITY_HEX: OTHER_KEY });
 });
 

@@ -149,6 +149,15 @@ async function loadAttachOnlyIdentity(): Promise<void> {
   }
 }
 
+// Loads and imports take turns, so neither can write or publish over the other.
+let identityTurn: Promise<unknown> = Promise.resolve();
+
+function inTurn<T>(work: () => Promise<T>): Promise<T> {
+  const result = identityTurn.then(work);
+  identityTurn = result.catch(() => {});
+  return result;
+}
+
 export async function ensureSecureIdentity(): Promise<void> {
   if (secureIdentity) return;
   if (secureIdentityPromise) {
@@ -161,7 +170,8 @@ export async function ensureSecureIdentity(): Promise<void> {
     return;
   }
 
-  const attempt = (async () => {
+  const attempt = inTurn(async () => {
+    if (secureIdentity) return; // An import landed while this waited its turn.
     let readError: string | null = null;
     try {
       if (!safeStorageAvailable()) {
@@ -187,8 +197,7 @@ export async function ensureSecureIdentity(): Promise<void> {
         return;
       }
       if (encHex) {
-        // Not over a key imported while this read ran: the file it read is then the old one.
-        secureIdentity ??= identityFromHex(encHex);
+        secureIdentity = identityFromHex(encHex);
         console.log(`[desktop] secure identity loaded from encrypted store: ${secureIdentity.peerId.slice(0, 12)}...`);
         return;
       }
@@ -228,7 +237,7 @@ export async function ensureSecureIdentity(): Promise<void> {
       // Updated only now, so a caller can't catch the failure blank while a retry runs.
       identityReadError = readError;
     }
-  })();
+  });
 
   secureIdentityPromise = attempt;
   try {
@@ -280,12 +289,14 @@ export async function importIdentityPrivateKeyHex(rawKey: string): Promise<{
   backupPath?: string | null;
   error?: string;
 }> {
-  const { identity, ...result } = await importIdentityKey(rawKey, {
-    safeStorageAvailable,
-    toIdentity: identityFromHex,
-    backup: backupIdentityBeforeImport,
-    save: saveEncryptedIdentity,
+  return inTurn(async () => {
+    const { identity, ...result } = await importIdentityKey(rawKey, {
+      safeStorageAvailable,
+      toIdentity: identityFromHex,
+      backup: backupIdentityBeforeImport,
+      save: saveEncryptedIdentity,
+    });
+    if (identity) secureIdentity = identity;
+    return result;
   });
-  if (identity) secureIdentity = identity;
-  return result;
 }
