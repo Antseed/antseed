@@ -101,8 +101,8 @@ export function createStreamingAdapter(
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
 
-  // A stream ends exactly once, and says how. Normalizers report what the source said;
-  // the first ending stands, and a source that stopped without one was cut off.
+  // A stream ends exactly once, and says how. Normalizers report what the source said: the first ending
+  // stands, nothing after it reaches the client, and a source that stopped without one was cut off.
   let ended = false;
 
   return {
@@ -112,11 +112,9 @@ export function createStreamingAdapter(
       if (chunk.done) reported.push(STREAM_CUT_OFF);
       const events: CanonicalStreamEvent[] = [];
       for (const event of reported) {
-        if (event.type === 'response_done' || event.type === 'response_error') {
-          if (ended) continue;
-          ended = true;
-        }
+        if (ended) break;
         events.push(event);
+        ended = event.type === 'response_done' || event.type === 'response_error';
       }
       return renderer.render(events, chunk);
     },

@@ -551,13 +551,14 @@ export function createChatStreamParser(
       rawBuffer = remainder;
 
       for (const event of events) {
-        if (event.data === '[DONE]') {
+        // [DONE] is the stream's last word: nothing after it is part of the answer.
+        if (sawDoneMarker || event.data === '[DONE]') {
           sawDoneMarker = true;
           continue;
         }
         const parsed = parseJsonSafe(event.data);
         if (isSseFailure(event, parsed)) {
-          if (finishReason === null && !sawDoneMarker) callbacks.onError(parsed);
+          if (finishReason === null) callbacks.onError(parsed);
           continue;
         }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
