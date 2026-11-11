@@ -4,9 +4,7 @@ Local router for AI coding tools. Drop-in replacement for `ANTHROPIC_BASE_URL` o
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/router-local
-```
+`local` is the buyer's default router, so `antseed buyer start` installs this plugin when it isn't installed yet.
 
 ## Usage
 
