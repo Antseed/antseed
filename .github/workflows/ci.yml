@@ -169,8 +169,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
-        shards: [2]
+        shard: [1, 2, 3]
+        shards: [3]
 
     steps:
       - *checkout

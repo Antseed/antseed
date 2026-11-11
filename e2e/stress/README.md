@@ -38,6 +38,7 @@ After the load, the harness closes every channel and compares the seller's and b
 | `images` | 32 concurrent, 30% unit-billed image generations |
 | `faults` | 32 concurrent with upstream 500s, mid-stream disconnects and client aborts |
 | `restart-buyer`, `restart-seller` | 32 concurrent, the buyer or seller restarted 40% of the way through |
+| `restart-seller-topup` | 32 concurrent on a small reserve; the seller's RPC holds back its first `topUp()` transaction and the seller restarts 3 s later, so a verified top-up never reaches the chain while work above the deposit is served (the held transaction is dropped unsent) |
 | `issue-1050` | pay, stop the buyer (the seller closes the channel), restart it, check every channel count, pay again |
 | `smoke`, `seq`, `c8`, `mixed` | lighter loads for local debugging |
 
@@ -49,8 +50,8 @@ Needs Foundry (`anvil`, `forge`, `cast`) and a full build (`pnpm run build`, or 
 # Every gated scenario once, two at a time
 node e2e/stress/ci.mjs --parallel 2
 
-# What CI runs: the same, split over two jobs. Shards 1/N to N/N run each scenario exactly once
-node e2e/stress/ci.mjs --parallel 2 --shard 1/2
+# What CI runs: the same, split over three jobs. Shards 1/N to N/N run each scenario exactly once
+node e2e/stress/ci.mjs --parallel 2 --shard 1/3
 
 # Some scenarios, or the gates against another built checkout's CLI
 node e2e/stress/ci.mjs --scenarios c64,restart-buyer
