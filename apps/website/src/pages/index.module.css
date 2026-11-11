@@ -1783,6 +1783,43 @@
   overflow-x: auto;
 }
 
+/* Static examples retain code indentation and scroll within the card. */
+.terminalCode {
+  max-width: 100%;
+  margin: 16px 0 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #FFFFFF;
+  font-family: var(--as-font-data);
+  font-size: 13px;
+  line-height: 22px;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  overflow-x: auto;
+}
+
+.terminalCode code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  white-space: inherit;
+}
+
+.terminalCode:focus-visible {
+  outline: 2px solid var(--as-primary-4);
+  outline-offset: 2px;
+}
+
+.terminalScrollHint {
+  display: none;
+}
+
 .tComment { color: #A3A29F; }
 .tWhite { color: #FFFFFF; }
 .tGreen { color: var(--as-green); }
@@ -2348,9 +2385,8 @@
   }
 
   .priceModel strong {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
     display: block;
   }
 
@@ -2521,6 +2557,14 @@
 
   .terminalTagline {
     display: none;
+  }
+
+  .terminalScrollHint {
+    display: block;
+    margin: 12px 8px 0;
+    color: #B9CEC4;
+    font-size: 11px;
+    line-height: 18px;
   }
 
   .flowLine {
