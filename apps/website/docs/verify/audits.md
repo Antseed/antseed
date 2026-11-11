@@ -223,7 +223,7 @@ Run the same `antseed verifier run` command again; it continues the epoch. It fi
 - **Close call:** a close call whose extra questions couldn't be asked yet.
 - **New:** a seller or model not audited yet, or skipped earlier (for example its price was above the reference).
 
-A seller audit runs as long as the seller keeps answering: it stops when no batch is answered for `verifier.auditPeerTimeoutMs` (default 10 minutes), or after `verifier.auditPeerMaxTimeoutMs` in total (default 60 minutes). Slow reasoning models need 30 to 90 seconds per batch, so an audit of 20 batches can take half an hour. Reaching the total limit is our limit, not the seller's fault, so it doesn't use up the seller's retry.
+A seller audit runs as long as the seller keeps answering: it stops when no batch is answered for `verifier.auditPeerTimeoutMs` (default 10 minutes), or after `verifier.auditPeerMaxTimeoutMs` in total (default 60 minutes). The first limit counts only time spent waiting on the seller: the verifier's own work between batches, such as writing its checkpoint or waiting for a free slot in the run's shared batch queue, doesn't count against the seller. The total limit counts everything. Slow reasoning models need 30 to 90 seconds per batch, so an audit of 20 batches can take half an hour. Reaching the total limit is our limit, not the seller's fault, so it doesn't use up the seller's retry.
 
 One run does this in rounds: after the first round it retries what is left (failures, close calls waiting for their extra questions) with another probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 
