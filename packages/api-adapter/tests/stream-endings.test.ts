@@ -532,6 +532,31 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(final.response.output.map((item: Json) => [item.call_id, item.status])).toEqual([['call_1', 'completed'], ['call_2', 'incomplete']]);
   });
 
+  // The message is rendered before the tool calls, but here the model wrote it after one and was cut in it.
+  it('marks text cut after a finished tool call incomplete, not the tool call', () => {
+    const statuses = (output: Json[]) => output.map((item) => [item.type, item.status]);
+    const cutInText = [['message', 'incomplete'], ['function_call', 'completed']];
+    const body = messagesBody('max_tokens');
+    body.content = [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: 'a' } }, { type: 'text', text: 'The answer is' }];
+    const answer = JSON.parse(decoder.decode(transformResponse(response(body), { from: MESSAGES, to: RESPONSES, fallbackModel: 'm' })!.body)) as Json;
+    expect(statuses(answer.output)).toEqual(cutInText);
+
+    const events = translate(MESSAGES, RESPONSES, [
+      MESSAGE_START,
+      typed('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'read', input: {} } }),
+      typed('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' } }),
+      typed('content_block_stop', { index: 0 }),
+      typed('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      typed('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'The answer is' } }),
+      typed('message_delta', { delta: { stop_reason: 'max_tokens', stop_sequence: null }, usage: { output_tokens: 7 } }),
+      typed('message_stop', {}),
+    ]);
+    const final = JSON.parse(events.at(-2)!.data) as Json;
+    expect(final.type).toBe('response.incomplete');
+    expect(statuses(final.response.output)).toEqual(cutInText);
+    expect(statuses(jsonFrames(events).filter((frame) => frame.type === 'response.output_item.done').map((frame) => frame.item))).toEqual(cutInText);
+  });
+
   it('marks only the cut item incomplete in a not-streamed answer', () => {
     const body = chatBody('length');
     body.choices[0].message.tool_calls = [{ id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":' } }];

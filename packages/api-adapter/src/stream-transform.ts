@@ -688,6 +688,8 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // The item the answer wrote to last, its text or a tool call's index: where a cut at a limit fell.
+  let lastWritten: 'text' | number | null = null;
 
   const pushEvent = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -761,6 +763,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'text_delta') {
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
+          if (event.delta.length > 0) lastWritten = 'text';
           pushEvent(emitted, 'response.output_text.delta', {
             output_index: 0,
             item_id: getMessageId(),
@@ -780,6 +783,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             arguments: '',
           };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           const itemId = openAIResponsesFunctionCallId(toolCall.id);
           pushEvent(emitted, 'response.output_item.added', {
             output_index: getToolOutputIndex(event.index),
@@ -804,6 +808,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           };
           const toolCall = { ...existing, arguments: existing.arguments + event.argumentsDelta };
           toolCalls.set(event.index, toolCall);
+          if (event.argumentsDelta.length > 0) lastWritten = event.index;
           pushEvent(emitted, 'response.function_call_arguments.delta', {
             output_index: getToolOutputIndex(event.index),
             item_id: openAIResponsesFunctionCallId(toolCall.id),
@@ -816,11 +821,9 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
           const ending = openAIResponsesEnding(event.finishReason);
-          const finishedToolCalls = sortedToolCalls(toolCalls);
-          // An answer cut at a limit was cut in its last item: the items before it are whole.
-          const itemStatus = (last: boolean): 'completed' | 'incomplete' => (last ? ending.status : 'completed');
-          const messageStatus = itemStatus(finishedToolCalls.length === 0);
-          const toolCallStatus = (position: number) => itemStatus(position === finishedToolCalls.length - 1);
+          // An answer cut at a limit was cut in the item it was writing: the items before it are whole.
+          const itemStatus = (item: 'text' | number): 'completed' | 'incomplete' => (item === lastWritten ? ending.status : 'completed');
+          const messageStatus = itemStatus('text');
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           const msgId = getMessageId();
           if (outputStarted) {
@@ -850,7 +853,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             });
           }
 
-          for (const [position, toolCall] of finishedToolCalls.entries()) {
+          for (const toolCall of sortedToolCalls(toolCalls)) {
             const outputIndex = getToolOutputIndex(toolCall.index);
             const itemId = openAIResponsesFunctionCallId(toolCall.id);
             pushEvent(emitted, 'response.function_call_arguments.done', {
@@ -868,7 +871,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                 call_id: toolCall.id,
                 name: toolCall.name,
                 arguments: toolCall.arguments,
-                status: toolCallStatus(position),
+                status: itemStatus(toolCall.index),
               },
             });
           }
@@ -889,13 +892,13 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
                   ...(messagePhase ? { phase: messagePhase } : {}),
                 }] : []),
-                ...finishedToolCalls.map((toolCall, position) => ({
+                ...sortedToolCalls(toolCalls).map((toolCall) => ({
                   type: 'function_call' as const,
                   id: openAIResponsesFunctionCallId(toolCall.id),
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
-                  status: toolCallStatus(position),
+                  status: itemStatus(toolCall.index),
                 })),
               ],
               output_text: textBuffer,

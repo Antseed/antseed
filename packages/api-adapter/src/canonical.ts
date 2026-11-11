@@ -772,18 +772,22 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
 }
 
 export function renderCanonicalResponseToOpenAIResponsesBody(response: CanonicalLlmResponse): Record<string, unknown> {
-  const output: Array<Record<string, unknown>> = [];
+  const output: unknown[] = [];
   const textItems = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+  const ending = openAIResponsesEnding(response.stopReason);
+  // An answer cut at a limit was cut in the item it was writing: the items before it are whole.
+  const cut = response.output.at(-1);
+  const status = (cutHere: boolean): 'completed' | 'incomplete' => (cutHere ? ending.status : 'completed');
 
   if (text.length > 0) {
     output.push({
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: 'completed',
+      status: status(cut?.type === 'text'),
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -797,14 +801,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: 'completed',
+      status: status(item === cut),
     });
   }
-
-  const ending = openAIResponsesEnding(response.stopReason);
-  // An answer cut at a limit was cut in its last item: the items before it are whole.
-  const last = output.at(-1);
-  if (last) last.status = ending.status;
 
   return {
     id: response.id,
