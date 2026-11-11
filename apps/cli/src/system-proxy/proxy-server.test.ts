@@ -624,6 +624,14 @@ test('ResponsesSseNormalizer: delivers a complete frame before the stream ends',
   assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
 })
 
+test('ResponsesSseNormalizer: forwards the tail of a stream that ends without a blank line', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+
+  assert.deepEqual(normalizer.feed(Buffer.from('event:a\ndata:{"type":"a","n":1}\n'), false), [])
+  const output = normalizer.feed(Buffer.alloc(0), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
+})
+
 test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
   const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
   const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'
