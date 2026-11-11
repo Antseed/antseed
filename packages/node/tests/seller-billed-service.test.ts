@@ -124,6 +124,22 @@ describe('the seller serves the service it bills', () => {
     expect(target.received).toEqual([]);
   });
 
+  it.each(['quality', 'n', 'size', 'resolution'])('refuses repeated %s before calling a paid provider', async (name) => {
+    const target = provider(PAID);
+    const sent = multipartRequest([['model', 'billed-model'], [name, 'first'], [name, 'second']]);
+    const result = await serve(target, sent, {
+      channelsClient: {},
+      sellerPaymentManager: {
+        hasSession: () => false,
+        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
+      },
+    });
+    expect(result.response.statusCode).toBe(400);
+    expect(result.error.code).toBe('model_required');
+    expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    expect(target.received).toEqual([]);
+  });
+
   it.each<[string, Record<string, string>]>([
     ['lower case', { 'x-antseed-service': 'other-model' }],
     ['another case', { 'X-Antseed-Service': 'other-model' }],

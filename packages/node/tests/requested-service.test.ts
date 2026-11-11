@@ -95,6 +95,43 @@ describe('requestBodyService', () => {
     });
   });
 
+  describe('refuses ambiguous multipart billing fields', () => {
+    const fields = ['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio',
+      'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input'];
+
+    it.each(fields)('refuses repeated multipart billing field %s, even with equal values', (name) => {
+      for (const next of ['second', 'first']) {
+        expect(requestBodyService(multipart(model, field(name, 'first'), field(name, next)))).toBeNull();
+      }
+    });
+
+    it.each(['n', 'size', 'quality', 'resolution'])('refuses unreadable or differently named billing field %s', (name) => {
+      const requests = [
+        multipart(model, field(name.toUpperCase(), 'first')),
+        multipart(model, field(`${name}[]`, 'first')),
+        multipart(model, field(` ${name} `, 'first')),
+        multipart(model, field(name, 'x'.repeat(4097))),
+        multipart(model, [`Content-Disposition: form-data; name="${name}"; filename="value.txt"`, 'first']),
+        multipart(model, [`Content-Disposition: form-data; name="${name}"\r\nContent-Transfer-Encoding: base64`, 'Zmlyc3Q=']),
+      ];
+      for (const request of requests) expect(requestBodyService(request)).toBeNull();
+    });
+
+    it('allows repeated files and collection fields alongside single billing values', async () => {
+      const request = await encoded((form) => {
+        form.append('model', 'svc');
+        form.append('quality', 'high');
+        form.append('n', '2');
+        form.append('size', '1024x1024');
+        form.append('image', png(), 'first.png');
+        form.append('image', png(), 'second.png');
+        form.append('timestamp_granularities[]', 'word');
+        form.append('timestamp_granularities[]', 'segment');
+      });
+      expect(requestBodyService(request)).toBe('svc');
+    });
+  });
+
   describe('reads the one service a multipart body names', () => {
     it.each<[string, ReturnType<typeof raw>]>([
       ['a model field', multipart(model, field('prompt', 'x'))],
