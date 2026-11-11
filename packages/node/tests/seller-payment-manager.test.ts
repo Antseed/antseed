@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { SellerPaymentManager, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
+import type { ChannelInfo } from '../src/payments/evm/channels-client.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
 import type { SpendingAuthPayload } from '../src/types/protocol.js';
@@ -107,7 +108,7 @@ function makeChannelId(n: number): string {
   return '0x' + n.toString(16).padStart(2, '0').repeat(32);
 }
 
-function makeOnChainChannel(buyer: Identity, seller: Identity, overrides: Record<string, unknown> = {}) {
+function makeOnChainChannel(buyer: Identity, seller: Identity, overrides: Partial<ChannelInfo> = {}): ChannelInfo {
   return {
     buyer: buyer.wallet.address,
     seller: seller.wallet.address,
@@ -3385,7 +3386,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 900_000n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 900_000n }),
       );
 
       const beforeRead = await restarted.askAfterRestart(channelId);
@@ -3400,7 +3401,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }),
       );
       const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockResolvedValue('0xtopup');
       expect(await restarted.askAfterRestart(channelId)).toBe(900_000n);
@@ -3421,7 +3422,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }),
       );
       vi.spyOn(restarted.channelsClient, 'topUp').mockResolvedValue('0xtopup');
       expect(await restarted.askAfterRestart(channelId)).toBe(900_000n);
@@ -3443,7 +3444,7 @@ describe('SellerPaymentManager', () => {
       const restarted = restart();
       // The RPC still shows the deposit from before a top-up to 2 USDC that landed while the seller was down.
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }),
       );
       const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockRejectedValue(new Error('execution reverted: TopUpAmountTooLow()'));
       const close = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose');
@@ -3473,12 +3474,12 @@ describe('SellerPaymentManager', () => {
       const restarted = restart();
       // A top-up to 3 USDC landed while the seller was down; the RPC still shows the deposit from before it.
       const getSession = vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }),
       );
       // While an older top-up to 2 USDC is sent again, a read shows the 3 USDC. The contract
       // then rejects the 2 USDC one, reported the way a raw RPC does: by its selector only.
       const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockImplementation(async () => {
-        getSession.mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 3_000_000n, settled: 900_000n }) as never);
+        getSession.mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 3_000_000n, settled: 900_000n }));
         vi.setSystemTime(Date.now() + 10_000);
         await restarted.refreshReserveMaxFromChain(channelId);
         throw Object.assign(new Error('execution reverted (unknown custom error)'), { code: 'CALL_EXCEPTION', data: '0x16d054aa' });
@@ -3504,7 +3505,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n, 900_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }),
       );
       const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
 
@@ -3522,7 +3523,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n, 900_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }),
       );
 
       vi.setSystemTime(Date.now() + 10 * 60_000 - 1);
@@ -3539,7 +3540,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }),
       );
       const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
 
@@ -3555,7 +3556,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }),
       );
       const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
       expect(await restarted.askAfterRestart(channelId)).toBe(900_000n);
@@ -3579,7 +3580,7 @@ describe('SellerPaymentManager', () => {
       const restarted = restart();
       // A top-up to 2 USDC landed while the seller was down: the stored ceiling lags it.
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }),
       );
       const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
       await restarted.askAfterRestart(channelId);
@@ -3600,7 +3601,7 @@ describe('SellerPaymentManager', () => {
       const restarted = restart();
       // A top-up to 2 USDC landed while the seller was down: the stored ceiling lags it.
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }),
       );
       await restarted.askAfterRestart(channelId);
       const before = { lags: restarted.ceilingMayLagChain(channelId), ceiling: restarted.getReserveMax(channelId) };
@@ -3618,7 +3619,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }),
       );
       let failTopUp!: (err: Error) => void;
       const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockReturnValue(new Promise<string>((_resolve, reject) => { failTopUp = reject; }));
@@ -3650,7 +3651,7 @@ describe('SellerPaymentManager', () => {
       await storeChannel(goneId, 900_000n, 1_000_000n);
       const restartedAgain = restart();
       vi.spyOn(restartedAgain.channelsClient, 'getSession').mockResolvedValue(
-        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }) as never,
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }),
       );
       await restartedAgain.validateHydratedChannels();
 
