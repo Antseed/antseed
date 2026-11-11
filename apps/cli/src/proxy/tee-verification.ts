@@ -102,32 +102,40 @@ export class TeeVerification {
    * verifier but fails it (an unapproved build) is not one Private can send to.
    */
   teeFailure(peer: Peer): string | null {
-    let newest: Entry | null = null
-    for (const query of this.teeQueries(peer)) {
-      const entry = query.state.data as Entry | undefined
-      if (query.state.fetchStatus === 'fetching' || !entry?.outcome || entry.outcome.transient) continue
-      if (this.cacheExpiry(entry, TEE_MAX_AGE_MS) <= this.now()) continue
-      if (!newest || entry.checkedAt > newest.checkedAt) newest = entry
-    }
+    const newest = this.newestSettledCheck(peer, TEE_MAX_AGE_MS, { skipRefetching: true })
     if (!newest?.outcome || newest.outcome.sellerNodeVerified) return null
     return newest.outcome.reason ?? 'TEE attestation did not pass'
   }
 
   /**
-   * How far the seller's TEE reaches, from its own attestation that passed and
-   * is still in date: `end-to-end` when its model provider is attested too,
-   * `seller-node` when only the seller is. Null until a check passes (or when
-   * none can run): advertising the TEE verifier is only a claim.
+   * How far the seller's TEE reaches, from its newest settled attestation
+   * still in date, when that one passed: `end-to-end` when its model provider
+   * is attested too, `seller-node` when only the seller is. Null until a
+   * check passes (or when none can run): advertising the TEE verifier is only
+   * a claim. A newer failure ends it, even while an older pass is in date.
    */
   teeProvenScope(peer: Peer): TeeScope | null {
-    let scope: TeeScope | null = null
+    // A check being re-run keeps its last verdict, so the badge doesn't flicker.
+    const newest = this.newestSettledCheck(peer, TEE_BADGE_MAX_AGE_MS, { skipRefetching: false })
+    if (newest?.outcome?.sellerNodeVerified !== true) return null
+    return teeScope({ claims: newest.outcome.claims ?? [] }) === 'end-to-end' ? 'end-to-end' : 'seller-node'
+  }
+
+  /**
+   * The newest check with a verdict (not a transient error) still within
+   * `maxAgeMs`, across the per-identity checks for the seller's current
+   * capabilities. Both the failure and the scope follow it, so they agree.
+   */
+  private newestSettledCheck(peer: Peer, maxAgeMs: number, options: { skipRefetching: boolean }): Entry | null {
+    let newest: Entry | null = null
     for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
-      if (entry?.outcome?.sellerNodeVerified !== true || entry.outcome.transient || this.cacheExpiry(entry, TEE_BADGE_MAX_AGE_MS) <= this.now()) continue
-      if (teeScope({ claims: entry.outcome.claims ?? [] }) === 'end-to-end') return 'end-to-end'
-      scope = 'seller-node'
+      if (options.skipRefetching && query.state.fetchStatus === 'fetching') continue
+      if (!entry?.outcome || entry.outcome.transient) continue
+      if (this.cacheExpiry(entry, maxAgeMs) <= this.now()) continue
+      if (!newest || entry.checkedAt > newest.checkedAt) newest = entry
     }
-    return scope
+    return newest
   }
 
   /** The cached TEE checks for the seller's current capabilities. */

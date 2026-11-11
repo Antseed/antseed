@@ -301,6 +301,21 @@ test('an older or expired TEE pass never hides a newer failure from another iden
   newer.close();
 });
 
+test('a newer failed attestation ends the TEE scope an older, still-dated pass gave', async () => {
+  let now = 100;
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' });
+  const service = new TeeVerification(strict, () => now);
+  await service.verifyForDisplay(peer, async () => pass);
+  assert.equal(service.teeProvenScope(peer), 'seller-node');
+  now += 1_000;
+  await service.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(service.teeProvenScope(peer), null, 'the newest check failed');
+  now += 1_000;
+  await service.verify(peer, strict, async () => pass, false, 'team-b');
+  assert.equal(service.teeProvenScope(peer), 'seller-node', 'a newer pass restores it');
+  service.close();
+});
+
 test('a seller counts as proven TEE only once its own attestation passed, while it is in date, with how far it reaches', async () => {
   let now = 100;
   const service = new TeeVerification(strict, () => now);
