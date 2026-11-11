@@ -134,6 +134,7 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     store.close();
     rmSync(tempDir, { recursive: true, force: true });
@@ -393,6 +394,26 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
 
       expect(seller.closeRequests()).toEqual(['1500000']);
+    });
+
+    it('warns about a read below the confirmed deposit, and only about that', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, true);
+      vi.stubEnv('ANTSEED_DEBUG', '1');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await manager.reconcileReserveAmount(SELLER, 2n * RESERVE);
+      const afterSameRead = warn.mock.calls.length;
+      await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+      expect({ afterSameRead, warnings: warn.mock.calls.map((args) => args.join(' ')) }).toEqual({
+        afterSameRead: 0,
+        warnings: [
+          '[BuyerPayment] Ignoring a chain read of deposit 1000000 below the confirmed 2000000: ' +
+          `channel=${channelId.slice(0, 18)}... seller=${SELLER.slice(0, 12)}...`,
+        ],
+      });
     });
 
     it.each([

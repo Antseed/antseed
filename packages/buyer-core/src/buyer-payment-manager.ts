@@ -925,7 +925,17 @@ export class BuyerPaymentManager {
     const known = this._confirmedDeposit.get(sellerPeerId);
     let deposit = BigInt(session.confirmedReserveAmount ?? '0');
     if (known?.channelId === session.sessionId && known.amount > deposit) deposit = known.amount;
-    if (onChainAmount > deposit) deposit = onChainAmount;
+    if (onChainAmount > deposit) {
+      deposit = onChainAmount;
+    } else if (onChainAmount < deposit) {
+      // Usually a node that is behind. A read that stays below the confirmed
+      // deposit means the confirmed one is too high (a top-up a read showed
+      // was rolled back), and this line is the only sign of it.
+      debugWarn(
+        `[BuyerPayment] Ignoring a chain read of deposit ${onChainAmount} below the confirmed ${deposit}: ` +
+        `channel=${session.sessionId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}...`,
+      );
+    }
     this._confirmedDeposit.set(sellerPeerId, { channelId: session.sessionId, amount: deposit });
     const pending = this._pendingReserveAuth.get(sellerPeerId);
     const applied = pending != null && deposit >= pending.maxAmount;
