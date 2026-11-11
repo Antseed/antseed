@@ -32,6 +32,8 @@ function chain(deploymentBlock = 1_000) {
     models: [] as ModelAuditedEvent[],
     reads: [] as Array<[string, number, number]>,
     timestamps: (block: number) => block * 10,
+    /** Changes every block's hash, as another chain (a fork of the same contract) would. */
+    chainId: 'base',
   }
   const raw: RawEventSource = {
     contractAddress: CONTRACT,
@@ -51,7 +53,11 @@ function chain(deploymentBlock = 1_000) {
       return Math.min(Math.ceil(timestamp / 10), state.head)
     },
     async latestBlockNumber() { return state.head },
-    provider: { getBlock: async (block: number) => (block <= state.head ? { timestamp: state.timestamps(block) } : null) },
+    provider: {
+      getBlock: async (block: number) => (block <= state.head
+        ? { timestamp: state.timestamps(block), hash: `0x${state.chainId}${block.toString(16)}` }
+        : null),
+    },
   }
   return { state, raw }
 }
@@ -81,7 +87,27 @@ test('a second read only scans the blocks after the first one, plus the reorg ma
 
   state.reads.length = 0
   await cache.serviceAudits(null, null, 30_000)
-  assert.deepEqual(state.reads, [], 'nothing new on-chain and the range is covered: no eth_getLogs at all')
+  assert.deepEqual(state.reads, [['service', 60_000 - REORG_BLOCKS + 1, 60_000]], 'a head that did not move: only its tail is read again')
+  state.reads.length = 0
+  await cache.serviceAudits(null, null, 10_000, 40_000)
+  assert.deepEqual(state.reads, [], 'a read up to an older block is served from the cache')
+})
+
+test('the tail is read again when the head stays at the same height or moves back', async () => {
+  const { state, raw } = chain()
+  state.services = [service(49_990, 1, A)]
+  const cache = new VerifierEventCache(raw, null)
+  assert.equal((await cache.serviceAudits(null, null, 10_000))[0]!.auditor, A)
+
+  // A reorg replaced the event without the height moving on.
+  state.services = [service(49_995, 1, B)]
+  assert.deepEqual((await cache.serviceAudits(null, null, 10_000)).map((event) => [event.blockNumber, event.auditor]), [[49_995, B]])
+
+  // The RPC answers from a node two blocks behind: the newer event drops out until it is read again.
+  state.head = 49_993
+  assert.deepEqual(await cache.serviceAudits(null, null, 10_000), [])
+  state.head = 50_010
+  assert.deepEqual((await cache.serviceAudits(null, null, 10_000)).map((event) => event.blockNumber), [49_995])
 })
 
 test('an event replaced by a short reorg is corrected on the next read', async () => {
@@ -103,7 +129,7 @@ test('a read from an earlier block fills in only the missing part', async () => 
   assert.equal((await cache.modelAudits({}, 20_000)).length, 1)
   state.reads.length = 0
   assert.equal((await cache.modelAudits({})).length, 2)
-  assert.deepEqual(state.reads, [['model', 1_000, 19_999]])
+  assert.deepEqual(state.reads, [['model', 1_000, 19_999], ['model', 50_000 - REORG_BLOCKS + 1, 50_000]], 'the missing older part, and the tail as on every read up to the head')
 })
 
 test('filters match what the contract filters would return', async () => {
@@ -163,3 +189,43 @@ test('a failed read leaves the cache as it was, and the next read tries again', 
   state.services.push(service(65_000, 2))
   assert.equal((await cache.serviceAudits(null, null, 10_000)).length, 2)
 })
+
+test('an epoch\'s first block is remembered only when the block before it is earlier', () => withDir(async (dir) => {
+  const { state, raw } = chain()
+  const path = eventCachePath(dir, CONTRACT)
+  // A wrong answer (the head, or any block past the true first one) is used once but never kept.
+  raw.firstBlockAtOrAfter = async () => 40_000
+  const cache = new VerifierEventCache(raw, path)
+  assert.equal(await cache.firstBlockAtOrAfter(300_000), 40_000)
+  raw.firstBlockAtOrAfter = async () => 30_000
+  assert.equal(await new VerifierEventCache(raw, path).firstBlockAtOrAfter(300_000), 30_000)
+  assert.equal(state.head, 50_000)
+}))
+
+test('a cache read from another chain, or from a fork restarted at an older block, is read again', () => withDir(async (dir) => {
+  const { state, raw } = chain()
+  state.services = [service(20_000, 1)]
+  const path = eventCachePath(dir, CONTRACT)
+  await new VerifierEventCache(raw, path).serviceAudits(null, null, 10_000)
+
+  // The same contract address on another chain: every block hash differs.
+  state.chainId = 'fork'
+  state.services = []
+  state.reads.length = 0
+  assert.deepEqual(await new VerifierEventCache(raw, path).serviceAudits(null, null, 10_000), [])
+  assert.deepEqual(state.reads, [['service', 10_000, 50_000]], 'read from the start again, not trusted')
+
+  // A fork restarted below the cached block: the block is gone and the head is far behind it.
+  state.head = 30_000
+  state.reads.length = 0
+  await new VerifierEventCache(raw, path).serviceAudits(null, null, 10_000)
+  assert.deepEqual(state.reads, [['service', 10_000, 30_000]])
+
+  // A node a few blocks behind is no reason to read everything again.
+  state.head = 30_500
+  await new VerifierEventCache(raw, path).serviceAudits(null, null, 10_000)
+  state.head = 30_499
+  state.reads.length = 0
+  await new VerifierEventCache(raw, path).serviceAudits(null, null, 10_000)
+  assert.deepEqual(state.reads, [['service', 30_499 - REORG_BLOCKS + 1, 30_499]])
+}))

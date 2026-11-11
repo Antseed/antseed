@@ -81,7 +81,11 @@ function buildProvider(
     stallTimeout: FALLBACK_STALL_TIMEOUT_MS,
     weight: 1,
   }));
-  return new FallbackProvider(configs, network, { quorum: 1 });
+  // The fallback provider has a read cache of its own, in front of its backends': disable both.
+  return new FallbackProvider(configs, network, {
+    quorum: 1,
+    ...(options.cacheTimeout === undefined ? {} : { cacheTimeout: options.cacheTimeout }),
+  });
 }
 
 function revertError(receipt: TransactionReceipt): CallExceptionError {

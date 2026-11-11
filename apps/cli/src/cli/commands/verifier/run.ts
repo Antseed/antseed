@@ -606,7 +606,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
-    .option('--fresh', 'ignore this epoch\'s earlier runs and audit every eligible seller again')
+    .option('--fresh', 'ignore this epoch\'s earlier runs and audit the sellers of every open audit window again (a closed window stays closed: its questions may already be public)')
     .option('--skip-version-check', 'run even if the latest release audits differently from this CLI (its results may not match other auditors)')
   for (const option of RUN_TUNING_OPTIONS) run.option(option.flags, option.description)
   run
@@ -1198,6 +1198,15 @@ export async function runVerifierRound(
           return { model, skipped, targets, doneCount, windowClosed }
         }
         const plannedModels = runModels.map((model) => planModel(model, selectedPeers))
+        if (options.fresh) {
+          // A closed window was submitted, and with it this epoch's questions for the model: auditing its
+          // sellers again on them would test answers a seller can look up. It is audited next epoch.
+          for (const entry of plannedModels) {
+            if (entry.windowClosed && entry.targets.length === 0) {
+              console.log(chalk.yellow(`${entry.model}: --fresh does not audit it again: its audit window closed earlier this epoch, so its questions may already be public. It is audited again next epoch.`))
+            }
+          }
+        }
         // A confirmation that gets no audit stays waiting; say why instead of dropping it silently.
         if (!resumeOnly) {
           // A --peer run only answers for the selected seller's confirmations.

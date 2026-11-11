@@ -744,8 +744,9 @@ skipped sellers. One run retries
 what is left in up to `--max-rounds` rounds (default 3), with another
 enrollment budget each round, and stops early when nothing is left or a round
 makes no progress. `--fresh` ignores the earlier runs, including close calls
-waiting for extra questions and an interrupted run's checkpoints, and audits every eligible
-seller again from the start.
+waiting for extra questions and an interrupted run's checkpoints, and audits the
+sellers of every open audit window again from the start. A closed window stays
+closed: its questions may already be public, so the model is audited next epoch.
 
 `verifier run` and `verifier submit` first check that this CLI audits the same
 way as the latest `@antseed/cli` on npm (the version `antseed update` installs):

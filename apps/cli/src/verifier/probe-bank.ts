@@ -23,6 +23,7 @@ import {
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock, readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
+import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import type {
   ReferenceBuildCostV1,
   ReferenceExchangesFileV1,
@@ -36,8 +37,6 @@ import {
 } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
-
-const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '7'
 
 interface BankProbeV1 {
   probe: KbfProbe
@@ -1336,10 +1335,10 @@ async function readRequiredBank(path: string, model: string): Promise<ProbeBankV
 
 function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
   if (bank.referenceTemplate.generator.name === 'antseed-simple-reference-builder'
-    && bank.referenceTemplate.generator.version !== CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION) {
+    && bank.referenceTemplate.generator.version !== REFERENCE_BUILDER_VERSION) {
     throw new Error(
       `probe bank for ${model} uses reference enrollment ${bank.referenceTemplate.generator.version}; `
-      + `archive it and rebuild with enrollment ${CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION}`,
+      + `archive it and rebuild with enrollment ${REFERENCE_BUILDER_VERSION}`,
     )
   }
 }

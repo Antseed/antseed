@@ -442,7 +442,8 @@ export function createVerifierClient(config: AntseedConfig, overrides?: CryptoCo
     receiptWaitLimitMs: VERIFIER_RECEIPT_WAIT_LIMIT_MS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
-  return withEventCache(client, verifierEventCacheDataDir, (message) => console.log(chalk.dim(message)));
+  // stderr: commands such as `verifier check --json` print their result on stdout.
+  return withEventCache(client, verifierEventCacheDataDir, (message) => console.error(chalk.dim(message)));
 }
 
 /**

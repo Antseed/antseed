@@ -297,7 +297,7 @@ A seller audit runs as long as the seller keeps answering: it stops when no batc
 
 One run does this in rounds: after the first round it retries what is left (failures, close calls waiting for their extra questions) with another probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 
-The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including close calls waiting for extra questions and an interrupted run, and audits the window's sellers again from the start.
+The run ends with a table of the whole epoch and the next command. `--fresh` ignores the earlier runs, including close calls waiting for extra questions and an interrupted run, and audits an open window's sellers again from the start. A closed window stays closed, and `verifier run` says so: its results were submitted with the epoch's questions for the model, so a seller could look up the answers. The model is audited again next epoch.
 
 ### Audit windows
 
@@ -310,7 +310,7 @@ Each auditor audits each of its models once per epoch:
 3. **Closes:** once none of its sellers has anything left, or with less than 45 minutes left in the epoch. `submit` then sends the model's results in one audit. A seller that was tried but couldn't be decided is submitted as `UNDETERMINED`, as is a close call whose extra questions couldn't be asked.
 4. **Late sellers:** a seller that came online after the window opened gets no result this epoch, not even `UNDETERMINED`. Its earlier verdict runs out as usual, and it is audited in the next epoch with new questions.
 
-Confirmations of other auditors' `DIFF`s and the models you stand in for are audited as before: a stand-in model opens its own window when it is handed to you, and confirmations are submitted as soon as they are done. A seller that stops listing the model during a confirmation is given up the same way, and its `UNDETERMINED` is submitted, as after the last failed attempt.
+Confirmations of other auditors' `DIFF`s and the models you stand in for are audited as before: a stand-in model opens its own window when it is handed to you, and confirmations are submitted as soon as they are done. The exception is a confirmation on a model whose own window you still have open, for example as its stand-in: it waits for the window to close, since its evidence would publish the questions that window's sellers are still being asked. If your confirmation turn ends first, the next auditor is asked and your result is not sent. A seller that stops listing the model during a confirmation is given up the same way, and its `UNDETERMINED` is submitted, as after the last failed attempt.
 
 ## Running every epoch
 
@@ -334,6 +334,6 @@ All keys live in the `verifier` block of the config file. The most used:
 | `upstreams`, `models.<model>.upstream` | | Other sources for one model's genuine answers. See [Reference upstreams](#reference-upstreams) |
 | `keystore` | | Keystore that signs `submit` and `rewards --claim` |
 | `auditor` | data-dir identity | Your approved auditor address |
-| `logQueryChunkBlocks` | 1000 | Most blocks one `eth_getLogs` request spans. The contract's events are kept in `<data dir>/verifier/chain-cache/`, so only the first read of a data dir scans the whole history (about 2,200 requests of 1,000 blocks in November 2026); later ones read only new blocks. A keyed RPC that accepts wider ranges makes that first read cheaper |
+| `logQueryChunkBlocks` | 1000 | Most blocks one `eth_getLogs` request spans. The contract's events are kept in `<data dir>/verifier/chain-cache/`, so only the first read of a data dir scans the whole history (about 2,200 requests of 1,000 blocks in November 2026); later ones read only new blocks. A keyed RPC that accepts wider ranges makes that first read cheaper. A cache read from another chain (a fork of the same contract, or a restarted fork) is noticed by its block hash and read again; deleting `verifier/chain-cache/` and `verifier/auditor-set.json` is always safe and costs one first read |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |
 | `models.<model>.pricing` | | The model's upstream price, if not taken from OpenRouter |

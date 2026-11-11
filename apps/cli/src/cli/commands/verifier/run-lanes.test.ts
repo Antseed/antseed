@@ -838,3 +838,21 @@ test('the command\'s exit code: a failure in round 1 that round 2 finishes is 0,
   assert.equal(runCommandExitCode({ failed: false, enrollmentFailures: new Map([['model-a', 'out of credit']]) }), 1)
   assert.equal(runCommandExitCode(null), 0)
 })
+
+test('--fresh does not reopen a closed window: its questions may be public, and the run says so', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.snapshots = [snapshot([{ ...seller('aa'.repeat(20), ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+  await scenario.run()
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+
+  scenario.log.length = 0
+  const printed: string[] = []
+  const quiet = console.log
+  console.log = (...args: unknown[]) => { printed.push(args.join(' ')) }
+  try {
+    await scenario.run({ fresh: true })
+  } finally {
+    console.log = quiet
+  }
+  assert.ok(!scenario.log.some((line) => line.startsWith('audit model-a')), scenario.log.join('\n'))
+  assert.ok(printed.some((line) => /model-a: --fresh does not audit it again: its audit window closed earlier this epoch/.test(line)), printed.join('\n'))
+}))

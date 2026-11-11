@@ -76,8 +76,9 @@ import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
 import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
+import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 
-export const REFERENCE_BUILDER_VERSION = '7'
+export { REFERENCE_BUILDER_VERSION }
 const CANDIDATE_COUNT = 300
 const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000

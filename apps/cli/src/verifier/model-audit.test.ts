@@ -500,6 +500,13 @@ test('an open audit window submits nothing; a closed one submits its sellers, op
     // model-b has no window (a confirmation model): submitted as before.
     assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-b'])
     assert.equal(prepared.excluded.filter((entry) => /audit window is still open/.test(entry.reason)).length, 3)
+    // Held for later this epoch, so a submit that sends nothing does not count the run as submitted.
+    assert.equal(prepared.heldBack.filter((entry) => /^model-a .*: its audit window is still open$/.test(entry)).length, 3)
+  }, { auditWindow: window('open') })
+  // A confirmation on the model waits for the window too: its evidence would publish the window's questions.
+  await withRun([{ ...audit('1', sellers[0]!, 'model-a', 'DIFF'), confirmsDiff: true }], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.match(prepared.excluded[0]!.reason, /a confirmation on a model whose audit window is still open: it is submitted when the window closes/)
   }, { auditWindow: window('open') })
   await withRun(audits, async ({ prepared }) => {
     const entry = prepared.audits.find((value) => value.key === 'model-a')!

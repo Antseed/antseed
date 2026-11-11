@@ -57,6 +57,8 @@ export interface FixtureAudit {
   verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
+  /** The run flagged the result as a confirmation of another auditor's DIFF. */
+  confirmsDiff?: boolean
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -197,6 +199,7 @@ export async function writeSignedAuditRun(input: {
         agentId: audit.agentId,
         service: audit.service,
         status: audit.verdict,
+        ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,

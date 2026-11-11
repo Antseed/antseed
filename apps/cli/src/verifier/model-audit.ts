@@ -359,7 +359,11 @@ export async function prepareModelAudits(input: {
         continue
       }
       if (window?.state === 'open') {
-        exclude('its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
+        // A confirmation waits too: its evidence would publish the epoch's questions for this model while
+        // the window's other sellers are still being asked them.
+        exclude(result.confirmsDiff
+          ? 'a confirmation on a model whose audit window is still open: it is submitted when the window closes, so the window\'s questions stay unpublished while its sellers are asked'
+          : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
         continue
       }

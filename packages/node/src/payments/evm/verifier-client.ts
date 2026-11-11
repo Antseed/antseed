@@ -609,7 +609,10 @@ export class VerifierClient extends BaseEvmClient {
     let low = floor;
     let high = await this._provider.getBlockNumber();
     const latest = await this._provider.getBlock(high);
-    if (!latest || latest.timestamp < timestamp) return high;
+    // A head the node cannot return yet (a load-balanced RPC answering from a node behind) is an error,
+    // never "no block is that late yet": a caller may remember the answer as the epoch's first block.
+    if (!latest) throw new Error(`block ${high} (the chain head) is unavailable`);
+    if (latest.timestamp < timestamp) return high;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
       const block = await this._provider.getBlock(middle);
