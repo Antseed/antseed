@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
@@ -6,6 +9,7 @@ import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { MessageType } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
+import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { VerificationMux } from '../src/verification/index.js';
 
 const FREE = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
@@ -116,6 +120,27 @@ describe('the seller serves the service it bills', () => {
       expect(serviceHeaders(target.received[0]!)).toEqual([['x-antseed-service', 'billed-model']]);
       expect(target.received[0]!.body).toEqual(sent.body);
     }
+  });
+
+  it('serves a video by the model it bills and passes its body through unchanged', async () => {
+    const video = provider(FREE, {
+      name: 'venice',
+      services: ['video'],
+      serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0 }] } } },
+      handleRequest: async (request) => {
+        video.received.push(request);
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ queue_id: 'job' })) };
+      },
+    });
+    const store = new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-billed-video-')), 'metering.db'));
+    try {
+      const sent = { ...jsonRequest({ model: 'video', service: 'extension', prompt: 'x', duration: 5 }, { 'x-antseed-service': 'other' }), path: '/api/v1/video/queue' };
+      const { response } = await serve(video, sent, { sellerPaymentManager: null, channelsClient: null, resourceOwnershipStore: store });
+      expect(response.statusCode).toBe(200);
+      expect(serviceHeaders(video.received[0]!)).toEqual([['x-antseed-service', 'video']]);
+      expect(video.received[0]!.body).toEqual(sent.body);
+    } finally { store.close(); }
   });
 
   it('leaves services not read from the body to their own readers', () => {

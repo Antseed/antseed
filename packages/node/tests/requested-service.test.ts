@@ -62,6 +62,11 @@ describe('requestBodyService', () => {
         'Content-Type: text/plain; charset=utf-8\r\nContent-Disposition: form-data; name="model"\r\nContent-Length: 3',
         'svc',
       ])],
+      ['a Latin-1 text part with an 8bit encoding', multipart([
+        'Content-Disposition: form-data; name="model"\r\nContent-Type: text/plain; charset=ISO-8859-1\r\nContent-Transfer-Encoding: 8bit',
+        'svc',
+      ])],
+      ['another field in its own charset', multipart(model, ['Content-Disposition: form-data; name="prompt"\r\nContent-Type: text/plain; charset=utf-16', 'x'])],
       ['an unquoted name on another field', multipart(model, ['Content-Disposition: form-data; name=prompt', 'x'])],
       ['an empty part', multipart(model, field('prompt', ''))],
       ['a CRLF before the first delimiter', raw(`\r\n${frame([model])}${closing}`)],
@@ -70,6 +75,11 @@ describe('requestBodyService', () => {
       ['a quoted boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary="${boundary}"` })],
       ['a charset before the boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; charset=utf-8; boundary=${boundary}` })],
       ['a capitalized header', raw(`${frame([model])}${closing}`, { 'Content-Type': `multipart/form-data; boundary=${boundary}` })],
+      ['no space before the boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data;boundary=${boundary}` })],
+      ['a charset after the boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; charset=UTF-8` })],
+      ['an extended filename', multipart(model, ["Content-Disposition: form-data; name=\"image\"; filename*=UTF-8''%E2%82%AC.png", 'png'])],
+      ['both filename forms', multipart(model, ["Content-Disposition: form-data; name=\"image\"; filename=\"a.png\"; filename*=UTF-8''a.png", 'png'])],
+      ['a field name containing a service field', multipart(model, field('model_version', '2'), field('service_tier', 'default'))],
     ])('%s', (_name, request) => {
       expect(requestBodyService(request)).toBe('svc');
     });
@@ -110,6 +120,8 @@ describe('requestBodyService', () => {
       ['modelId differs', { model: 'svc', modelId: 'other' }],
       ['modelId next to model', { model: 'svc', modelId: 'svc' }],
       ['modelId next to service', { service: 'svc', modelId: 'svc' }],
+      ['a null model next to a service', { service: 'svc', model: null }],
+      ['model as an array name', { model: 'svc', 'model[]': 'other' }],
     ])('%s', (_name, body) => {
       expect(requestBodyService(json(body))).toBeNull();
     });
@@ -147,10 +159,70 @@ describe('requestBodyService', () => {
       ['no closing delimiter', raw(frame([model, field('prompt', 'x')]))],
       ['two boundary parameters', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; boundary=other` })],
       ['an escaped boundary', raw(`--a\\\r\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n--a\\--\r\n`, { 'content-type': 'multipart/form-data; boundary="a\\"b"' })],
+      ['a boundary with a leading space', raw(`--abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n--abc--\r\n`, { 'content-type': 'multipart/form-data; boundary=" abc"' })],
+      ['another parameter ending in boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; xboundary=${boundary}; boundary*=us-ascii''other` })],
+      ['a space before the boundary sign', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; xboundary=${boundary}; boundary =other` })],
+      ['an unknown content type parameter', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; x=y` })],
+      ['a name in continuations', multipart(['Content-Disposition: form-data; name*0="mod"; name*1="el"', 'other'], model)],
+      ['a name with a trailing space', multipart(model, field('model ', 'other'))],
+      ['a name in array form', multipart(model, field('model[]', 'other'))],
+      ['a name with a control character', multipart(model, field('model\u0000x', 'other'))],
+      ['a parameter ending in name', multipart(model, ['Content-Disposition: form-data; xname="model"; name="prompt"', 'other'])],
+      ['an unknown disposition parameter', multipart(model, ['Content-Disposition: form-data; name="prompt"; size=1', 'other'])],
+      ['a part with no disposition', multipart(model, ['Content-Type: text/plain', 'other'])],
+      ['a service part in an unknown charset', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Type: text/plain; charset=x', 'svc'])],
+      ['a service part in another charset', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Type: text/plain; charset=utf-16', 'svc'])],
+      ['a service part that is not text', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Type: application/json', 'svc'])],
+      ['a service part in base64', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Transfer-Encoding: base64', 'svc'])],
+      ['a service part with an unknown header', multipart(['Content-Disposition: form-data; name="model"\r\nX-Other: 1', 'svc'])],
+      ['a field setting the charset of the others', multipart(model, field('_charset_', 'utf-16'))],
+      ['a nested multipart part', multipart(model, ['Content-Disposition: form-data; name="files"\r\nContent-Type: multipart/mixed; boundary=inner', '--inner--'])],
+      ['the delimiter inside a part', multipart(model, field('prompt', `x\n--${boundary}\nContent-Disposition: form-data; name="model"\n\nother\n--${boundary}\ny`))],
       ['two Content-Type headers', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}`, 'Content-Type': 'multipart/form-data; boundary=other' })],
     ])('%s', (_name, request) => {
       expect(requestBodyService(request)).toBeNull();
     });
+  });
+
+  it('never reads a service another multipart parser would read differently', async () => {
+    let seed = 20261110;
+    const random = (limit: number) => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let mixed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+      return ((mixed ^ (mixed >>> 14)) >>> 0) % limit;
+    };
+    const pieces = [
+      '\r\n', '\n', '\r', ' ', '"', ';', '\\', '%', `--${boundary}`, `--${boundary}--`, 'name="model"', 'NAME="model"', 'name=model', 'name*=x', 'name*0="model"',
+      'filename=""', 'Content-Disposition: form-data; name="model"', 'Content-Disposition: form-data; name="service"', 'other', 'model', 'service',
+      `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`,
+    ];
+    const seeds = [frame([model, field('prompt', 'x')]) + closing, frame([field('service', 'svc'), model]) + closing];
+    let accepted = 0;
+    let read = 0;
+    for (let round = 0; round < 4000; round += 1) {
+      let text = seeds[random(seeds.length)]!;
+      for (let edit = random(3) + 1; edit > 0; edit -= 1) {
+        const at = random(text.length + 1);
+        text = random(4) === 0
+          ? text.slice(0, at) + text.slice(Math.min(text.length, at + 1 + random(6)))
+          : text.slice(0, at) + pieces[random(pieces.length)]! + text.slice(at);
+      }
+      const request = raw(text);
+      const service = requestBodyService(request);
+      if (service === null) continue;
+      accepted += 1;
+      // A parser that refuses the body serves nothing, so only one that reads it can disagree.
+      const form = await new Response(request.body, { headers: request.headers }).formData().catch(() => null);
+      if (!form) continue;
+      read += 1;
+      for (const name of ['service', 'model', 'modelId']) {
+        for (const value of form.getAll(name)) expect(String(value).trim()).toBe(service);
+      }
+    }
+    expect(accepted).toBeGreaterThan(100);
+    expect(accepted).toBeLessThan(3000);
+    expect(read).toBeGreaterThan(100);
   });
 
   it('names no service for a body with no usable name', () => {

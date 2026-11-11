@@ -22,6 +22,7 @@ const CONFIG = {
 const boundary = 'form-boundary';
 
 type Part = [headers: string, content: string];
+type UpstreamCall = { url: string; init: RequestInit };
 const field = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
 const json = (body: unknown, headers: Record<string, string> = {}): Omit<SerializedHttpRequest, 'requestId'> => ({
   method: 'POST',
@@ -36,19 +37,16 @@ const multipart = (parts: Part[], headers: Record<string, string> = {}): Omit<Se
   body: new TextEncoder().encode(`${parts.map(([partHeaders, content]) => `--${boundary}\r\n${partHeaders}\r\n\r\n${content}\r\n`).join('')}--${boundary}--\r\n`),
 });
 
-/** Every value an upstream could take the model from, in any spelling of the field. */
-function modelFieldsSent(init: RequestInit): string[] {
-  const body = Buffer.from(init.body as Uint8Array).toString('latin1');
-  const contentType = new Headers(init.headers).get('content-type') ?? '';
-  const multipartBoundary = /boundary=(.+)$/.exec(contentType)?.[1];
-  if (!multipartBoundary) {
-    return Object.entries(JSON.parse(body) as Record<string, string>)
-      .filter(([name]) => /^(model|modelid)$/i.test(name))
-      .map(([, value]) => value);
+/** Every model field the upstream receives, read by a parser the seller's code does not share. */
+async function modelFieldsSent({ url, init }: UpstreamCall): Promise<string[]> {
+  const request = new Request(url, { method: 'POST', headers: init.headers, body: init.body });
+  if (request.headers.get('content-type')?.startsWith('multipart/')) {
+    const form = await request.formData();
+    return [...form.getAll('model'), ...form.getAll('modelId')].map(String);
   }
-  return body.split(`--${multipartBoundary}`)
-    .filter((part) => /name\*?=\s*"?(model|modelid)"?/i.test(part.split('\r\n\r\n')[0]!))
-    .map((part) => part.split('\r\n\r\n')[1]!.trim());
+  return Object.entries(await request.json() as Record<string, string>)
+    .filter(([name]) => /^(model|modelid)$/i.test(name))
+    .map(([, value]) => value);
 }
 
 async function serve(provider: Provider, sent: Omit<SerializedHttpRequest, 'requestId'>) {
@@ -69,7 +67,7 @@ async function serve(provider: Provider, sent: Omit<SerializedHttpRequest, 'requ
 }
 
 function stubUpstream(answer: () => Response = () => Response.json({ created: 1, data: [{ b64_json: 'aGk=' }] })) {
-  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const calls: UpstreamCall[] = [];
   vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     calls.push({ url: String(input), init: init! });
     return answer();
@@ -98,7 +96,7 @@ describe('the seller serves exactly the service it bills', () => {
     const response = await serve(provider, sent);
     expect(response.statusCode).toBe(200);
     expect(calls).toHaveLength(1);
-    expect(modelFieldsSent(calls[0]!.init), 'the upstream serves only the billed service').toEqual([upstreamModel]);
+    expect(await modelFieldsSent(calls[0]!), 'the upstream serves only the billed service').toEqual([upstreamModel]);
   });
 
   it.each<[string, Omit<SerializedHttpRequest, 'requestId'>]>([
@@ -112,11 +110,18 @@ describe('the seller serves exactly the service it bills', () => {
     ['an upper-case multipart model parameter', multipart([field('model', 'billed-model'), ['Content-Disposition: form-data; NAME="model"', 'other-model']])],
     ['a repeated multipart model', multipart([field('model', 'billed-model'), field('model', 'other-model')])],
     ['multipart modelId next to model', multipart([field('model', 'billed-model'), field('modelId', 'other-model')])],
+    ['a multipart boundary with a leading space', {
+      ...multipart([]),
+      headers: { 'content-type': 'multipart/form-data; boundary=" abc"' },
+      body: new TextEncoder().encode('--abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--abc\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n-- abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n-- abc--\r\n--abc--\r\n'),
+    }],
+    ['a multipart name in continuations', multipart([['Content-Disposition: form-data; name*0="mod"; name*1="el"', 'other-model'], field('model', 'billed-model')])],
+    ['JSON with a null model beside a service', json({ service: 'billed-model', model: null })],
   ])('%s never reaches the upstream', async (_name, sent) => {
     const calls = stubUpstream();
     const provider = await openaiPlugin.createProvider(CONFIG);
     const response = await serve(provider, sent);
-    expect(calls.map(({ init }) => modelFieldsSent(init)), 'the upstream serves only the billed service').toEqual([]);
+    expect(await Promise.all(calls.map(modelFieldsSent)), 'the upstream serves only the billed service').toEqual([]);
     expect(response.statusCode).toBe(400);
   });
 

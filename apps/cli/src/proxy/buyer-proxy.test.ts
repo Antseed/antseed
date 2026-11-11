@@ -17,6 +17,7 @@ import {
   adaptPeerFaultErrorResponse,
   buyerFault,
   computeTrustScore,
+  requestBodyService,
   type ModelRoutingPreferences,
   type RouteSelectionContext,
   type RouteRecommendation,
@@ -1666,6 +1667,33 @@ test('a video job that reports failed is retired: later retrieves never reach th
     assert.equal(persisted, 2, 'the route is saved when accepted and again when retired')
   }
 })
+
+// The seller refuses a body that names more than one service, so what the proxy
+// sends must name exactly the service it routed to, read by the seller's own reader.
+for (const [label, fields] of [
+  ['a model', (_peer: string) => ({ model: 'glm-5' })],
+  ['a model spelled differently from the service', (_peer: string) => ({ model: 'GLM-5' })],
+  ['service and model together', (_peer: string) => ({ service: 'glm-5', model: 'glm-5' })],
+  ['a pinned model', (peer: string) => ({ model: `${peer}@glm-5` })],
+  ['a pinned model spelled differently', (peer: string) => ({ model: `${peer}@GLM-5` })],
+  ['a pinned service', (peer: string) => ({ service: `${peer}@glm-5` })],
+  ['a pinned model next to its service', (peer: string) => ({ model: `${peer}@glm-5`, service: 'glm-5' })],
+  ['a model next to the service it routes by', (_peer: string) => ({ model: 'other-model', service: 'glm-5' })],
+] as const) {
+  test(`a request with ${label} reaches the seller naming the routed service`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+      sent = request
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    const response = await invokeProxy(proxy, makeProxyRequest({ body: { ...fields(peer.peerId), messages: [] } }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(requestBodyService(sent!), 'glm-5')
+  })
+}
 
 function failingVideoProxy(persist: () => Promise<void>, answer: (call: number) => Promise<object>) {
   const peer = makePeer('a', ['venice'])
