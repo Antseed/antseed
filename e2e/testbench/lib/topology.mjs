@@ -181,6 +181,8 @@ export function normalizeMock(mock, id) {
   const usage = mock.usage ?? 'fixed';
   if (!MOCK_USAGE_MODES.has(usage)) throw new Error(`seller ${id} mock.usage must be one of ${[...MOCK_USAGE_MODES].join(', ')}`);
   const normalized = { latencyMs, usage, fault500Rate: rate(mock.fault500Rate, `seller ${id} mock.fault500Rate`), disconnectRate: rate(mock.disconnectRate, `seller ${id} mock.disconnectRate`) };
+  if (mock.compactSse !== undefined && typeof mock.compactSse !== 'boolean') throw new Error(`seller ${id} mock.compactSse must be a boolean`);
+  if (mock.compactSse) normalized.compactSse = true;
   if (usage === 'load') {
     normalized.latencyRangeMs = range(mock.latencyRangeMs ?? LOAD_MOCK_DEFAULTS.latencyRangeMs, `seller ${id} mock.latencyRangeMs`, 60_000);
     normalized.outTokens = range(mock.outTokens ?? LOAD_MOCK_DEFAULTS.outTokens, `seller ${id} mock.outTokens`, 100_000);

@@ -36,6 +36,21 @@ describe('mock upstream', () => {
     }
   });
 
+  it('writes SSE lines with no space after the colon when asked', async () => {
+    const mock = await startMock({ models: ['m'], compactSse: true });
+    try {
+      const stream = await fetch(`${mock.url}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', stream: true, messages: [] }) });
+      const text = await stream.text();
+      const lines = text.split('\n').filter((line) => line.length > 0);
+      assert.ok(lines.length >= 4, text);
+      assert.ok(lines.every((line) => line.startsWith('data:') && !line.startsWith('data: ')), text);
+      assert.equal(lines.at(-1), 'data:[DONE]');
+      assert.match(JSON.parse(lines[1].slice('data:'.length)).choices[0].delta.content, /Hello from/);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('applies configurable latency', async () => {
     const mock = await startMock({ models: ['m'], latencyMs: 150 });
     try {

@@ -47,8 +47,10 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  *
  * `random` only seeds the mock: each request draws from its own stream keyed by tag and attempt, so what a request
  * gets does not depend on the order concurrent requests arrive in. The ledger records the drawn `latencyMs`.
+ *
+ * `compactSse` writes SSE lines with no space after the colon (`data:{...}`), which the standard allows.
  */
-export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, pricing = {}, random = Math.random }) {
+export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, compactSse = false, pricing = {}, random = Math.random }) {
   const png = await readFile(FIXTURE_PNG);
   const state = { latencyMs, faults: { fault500Rate, disconnectRate }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
   const known = new Set(models);
@@ -105,7 +107,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     if (gone()) { entry.status = 'client-gone'; return; }
     entry.started = true;
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
+    const dataField = compactSse ? 'data:' : 'data: ';
+    const chunk = (choices, usageChunk = null) => `${dataField}${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
     const pieces = load ? Math.max(2, Math.min(40, Math.ceil(text.length / 400))) : 1;
     const step = Math.ceil(text.length / pieces);
     const cutAt = disconnect ? Math.max(1, betweenInt(draw, [1, Math.max(1, pieces - 1)])) : -1;
@@ -119,7 +122,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     if (gone()) { entry.status = 'client-gone'; return; }
     response.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]));
     response.write(chunk([], usageBody));
-    response.end('data: [DONE]\n\n');
+    response.end(`${dataField}[DONE]\n\n`);
     entry.status = 'ok';
   }
 
