@@ -24,6 +24,7 @@ const FREE_TIER_EXHAUSTED_MESSAGES = {
 } as const;
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
+import { ConnectionState } from './types/connection.js';
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -902,9 +903,10 @@ export class SellerRequestHandler {
             return;
           }
 
-          // The buyer left while this request waited: nothing it could receive
-          // is worth starting, and the upstream has not been paid for yet.
-          if (spmAuthorized && !spm.hasSession(buyerPeerId)) {
+          // The connection ended or the session was dropped while this request
+          // waited: don't start work that cannot reach the buyer or be billed.
+          const connectionEnded = conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+          if (spmAuthorized && (connectionEnded || !spm.hasSession(buyerPeerId))) {
             sendSessionExpired('the admission checks');
             return;
           }

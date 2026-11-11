@@ -65,7 +65,8 @@ function makeUpstream(kind: AnswerKind) {
   let open: (() => void) | null = null;
   const serve = async (): Promise<void> => {
     calls += 1;
-    if (held) await held;
+    const gate = held;
+    if (gate) await gate;
   };
   const firstChunk = 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n';
   const lastChunk = `data: {"choices":[],"usage":${JSON.stringify(USAGE)}}\n\ndata: [DONE]\n\n`;
@@ -102,7 +103,13 @@ function makeUpstream(kind: AnswerKind) {
   return {
     provider,
     get calls() { return calls; },
-    hold() { held = new Promise<void>((resolve) => { open = resolve; }); },
+    /** Holds the answers started from now on; returns what releases just those. */
+    hold() {
+      let release!: () => void;
+      held = new Promise<void>((resolve) => { release = resolve; });
+      open = release;
+      return release;
+    },
     release() { open?.(); held = null; open = null; },
     /** Resolves once `count` answers have started. */
     started(count: number) { return vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(count)); },
@@ -180,7 +187,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     const frames: Uint8Array[] = [];
     let open = true;
     const conn = {
-      state: ConnectionState.Open,
+      get state() { return open ? ConnectionState.Open : ConnectionState.Closed; },
       send(frame: Uint8Array) {
         if (!open) throw new Error('connection closed');
         frames.push(frame);
@@ -238,6 +245,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     upstream,
     onChain,
     get manager() { return manager; },
+    get tracker() { return tracker; },
     get needAuths() { return connection.needAuths; },
     get paymentMux() { return connection.paymentMux; },
     buyerPeerId: buyer.peerId,
@@ -513,7 +521,8 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.needAuths).not.toHaveBeenCalled();
   });
 
-  // The buyer's on-chain exit ended the channel: no signature can collect this answer any more.
+  // Known limit, not a guarantee: the seller gives a channel up as soon as the
+  // buyer asks to exit on-chain, so an answer still running then goes unbilled.
   it('records nothing and asks for nothing when the admitting channel ended during the answer', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
@@ -541,6 +550,76 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.upstream.calls, 'upstream calls for a buyer that is gone').toBe(0);
     expect(response.statusCode).toBe(402);
     expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
+  });
+
+  it('does not start a request whose connection ended, even if the buyer came back on a new one', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    vi.spyOn(h.manager, 'waitForPendingAuths').mockImplementationOnce(async () => {
+      h.disconnect();
+      await h.reconnect(CHANNEL_A, 0n);
+    });
+
+    await h.send('left-on-the-old-connection');
+
+    expect(h.upstream.calls, 'upstream calls for a connection that is gone').toBe(0);
+    expect(h.manager.hasSession(h.buyerPeerId)).toBe(true);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
+  });
+
+  it('keeps the channel until every running answer is recorded', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('paid');
+    await h.sign(CHANNEL_A, COST);
+
+    const releaseFirst = h.upstream.hold();
+    const first = h.send('first');
+    await h.upstream.started(2);
+    const releaseSecond = h.upstream.hold();
+    const second = h.send('second');
+    await h.upstream.started(3);
+    h.disconnect();
+
+    releaseFirst();
+    await first;
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(2n * COST);
+    await h.manager.checkTimeouts();
+    expect(h.close(), 'no close while another answer runs').not.toHaveBeenCalled();
+
+    releaseSecond();
+    await second;
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(3n * COST);
+    await h.manager.checkTimeouts();
+    expect(h.close()).toHaveBeenCalledOnce();
+    expect(h.close().mock.calls[0]![2]).toBe(COST);
+  });
+
+  it('keeps the channel through the metering step that comes before the spend is recorded', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('paid');
+    await h.sign(CHANNEL_A, COST);
+
+    let finishMetering!: () => void;
+    const metering = new Promise<void>((started) => {
+      vi.spyOn(h.tracker, 'recordMetering').mockImplementation(async () => {
+        started();
+        await new Promise<void>((resolve) => { finishMetering = resolve; });
+      });
+    });
+    const answered = h.send('cut-off');
+    await metering;
+    h.disconnect();
+    await h.manager.checkTimeouts();
+    expect(h.close(), 'no close before the answer is recorded').not.toHaveBeenCalled();
+
+    finishMetering();
+    await answered;
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(2n * COST);
+    await h.manager.checkTimeouts();
+    expect(h.close()).toHaveBeenCalledOnce();
+    expect(h.close().mock.calls[0]![2]).toBe(COST);
   });
 
   it('holds the channel against a close or a replacement while the answer runs after the buyer came back', async () => {

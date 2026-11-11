@@ -12,8 +12,9 @@ export const meta = {
   requires: ['buyerControl', 'mockControl'],
 };
 
-// Long enough for the client to cut the stream and the buyer to stop while the upstream is still answering.
-export const topology = stressTopology({ seller: { mock: { latencyRangeMs: [20_000, 20_000], outTokens: [400, 400] } } });
+// Long enough for the client to cut the stream and the buyer to stop, within its 20 s stop limit, while the upstream
+// is still answering.
+export const topology = stressTopology({ seller: { mock: { latencyRangeMs: [30_000, 30_000], outTokens: [400, 400] } } });
 
 export async function run(tb) {
   const [seller] = tb.sellers;
@@ -60,7 +61,12 @@ export async function run(tb) {
     await tb.startBuyer();
   }
 
-  const next = await tb.chat({ model: STRESS_MODEL, prompt: `[req:${nextTag}] and one more` });
+  const nextAnswer = tb.chat({ model: STRESS_MODEL, prompt: `[req:${nextTag}] and one more` });
+  nextAnswer.catch(() => {}); // Judged below; a check failing first must not leave it unhandled.
+  await tb.waitFor(async () => Boolean(await delivery(nextTag)), 'the upstream starting the next answer', { timeoutMs: 120_000 });
+  const whenServed = sellerRows();
+  tb.check('the buyer paid for the cut-off answer before the next one started', whenServed.length === 1 && BigInt(whenServed[0].auth_max) >= cutCost, { whenServed, owed: String(cutCost) });
+  const next = await nextAnswer;
   tb.check('the buyer is served again after it comes back', next.content.length > 0, next.content);
 
   const nextCost = BigInt((await delivery(nextTag)).cost);
