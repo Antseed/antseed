@@ -1,6 +1,8 @@
 // A Responses client can send instructions as input items as well as in `instructions`. Translated for a seller that
 // speaks only Chat Completions, they arrive as system instructions. The client gets a normal answer either way, so
 // only what the upstream received can show it.
+import { isDeepStrictEqual } from 'node:util';
+
 export const meta = {
   description: 'Responses developer and system input items reach a Chat Completions seller as one leading system message, in the order sent, and the request settles exactly.',
   targets: ['local', 'fork'],
@@ -41,11 +43,9 @@ export async function run(tb) {
   const upstream = await chats();
   tb.check('the seller received one translated Chat Completions request', upstream.length === 1, upstream.map((entry) => entry.path));
 
-  const messages = upstream[0]?.messages ?? [];
-  const systems = messages.filter((message) => message.role === 'system');
-  tb.check('the instructions arrived as one leading system message, in the order sent', systems.length === 1 && messages[0] === systems[0] && systems[0].content === INSTRUCTIONS, messages);
-  const users = messages.filter((message) => message.role === 'user');
-  tb.check('only the user turn arrived as a user message', users.length === 1 && users[0].content === PROMPT, users);
+  const messages = upstream[0]?.messages;
+  const expected = [{ role: 'system', content: INSTRUCTIONS }, { role: 'user', content: PROMPT }];
+  tb.check('the instructions arrived as one leading system message, in the order sent, followed only by the user turn', isDeepStrictEqual(messages, expected), messages);
 
   const open = await tb.waitForPaidChannels(seller.id, { requests: 1, signed: cost });
   tb.check('buyer holds one open channel with the seller', open.length === 1, open.length);
