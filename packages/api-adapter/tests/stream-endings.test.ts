@@ -36,15 +36,27 @@ function parseSse(text: string): SseEvent[] {
     });
 }
 
-/** Feeds an adapter the way a seller's relay does: the upstream's frames one by one, then an empty final chunk. */
-function translate(from: StreamProtocol, to: StreamProtocol, frames: string[]): SseEvent[] {
+/** Feeds an adapter the way a seller's relay does: what each read of the upstream returned, then an empty final chunk. */
+function adapt(from: StreamProtocol, to: StreamProtocol, reads: Uint8Array[]): SseEvent[] {
   const adapter = createStreamingAdapter({ from, to, fallbackModel: 'm' });
   expect(adapter).not.toBeNull();
   const chunks = [
-    ...frames.map((frame) => ({ requestId: 'req', data: encoder.encode(frame), done: false })),
+    ...reads.map((data) => ({ requestId: 'req', data, done: false })),
     { requestId: 'req', data: new Uint8Array(0), done: true },
   ];
   return parseSse(chunks.flatMap((chunk) => adapter!.adaptChunk(chunk)).map((chunk) => decoder.decode(chunk.data)).join(''));
+}
+
+/** The upstream's frames, one read each. */
+const translate = (from: StreamProtocol, to: StreamProtocol, frames: string[]): SseEvent[] =>
+  adapt(from, to, frames.map((frame) => encoder.encode(frame)));
+
+/** The same bytes in reads of `size` bytes, which split frames and characters anywhere. */
+function translateInReads(from: StreamProtocol, to: StreamProtocol, frames: string[], size: number): SseEvent[] {
+  const bytes = encoder.encode(frames.join(''));
+  const reads: Uint8Array[] = [];
+  for (let start = 0; start < bytes.length; start += size) reads.push(bytes.subarray(start, start + size));
+  return adapt(from, to, reads);
 }
 
 const frame = (data: unknown, event?: string): string =>
@@ -57,9 +69,12 @@ const CHAT_USAGE = frame({ id: 'chatcmpl-1', object: 'chat.completion.chunk', mo
 const MESSAGE_START = typed('message_start', { message: { id: 'msg_1', model: 'm', usage: { input_tokens: 100, output_tokens: 0 } } });
 const RESPONSE_CREATED = typed('response.created', { response: { id: 'resp_1', object: 'response', model: 'm', status: 'in_progress', output: [], usage: null } });
 const RESPONSE_TEXT = typed('response.output_text.delta', { output_index: 0, item_id: 'msg_1', content_index: 0, delta: 'The answer is' });
+const RESPONSE_COMPLETED = typed('response.completed', {
+  response: { id: 'resp_1', object: 'response', model: 'm', status: 'completed', usage: { input_tokens: 100, output_tokens: 7, total_tokens: 107 }, output: [] },
+});
 
-/** Each source protocol's stream cut in the middle of an answer. */
-const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialFrame: string; errorEvent: string }> = {
+/** Each source protocol's stream cut in the middle of an answer, and the frames that would have finished its text. */
+const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialFrame: string; errorEvent: string; finish: string[] }> = {
   [CHAT]: {
     text: [chatChunk({ role: 'assistant', content: '' }), chatChunk({ content: 'The answer is' })],
     tool: [
@@ -69,6 +84,7 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     ],
     partialFrame: 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"The ans',
     errorEvent: frame({ error: { message: 'upstream failed', type: 'server_error', code: null } }),
+    finish: [chatChunk({}, 'stop'), CHAT_USAGE, frame('[DONE]')],
   },
   [MESSAGES]: {
     text: [
@@ -86,6 +102,11 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     ],
     partialFrame: 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_del',
     errorEvent: frame({ type: 'error', error: { type: 'overloaded_error', message: 'upstream failed' } }, 'error'),
+    finish: [
+      typed('content_block_stop', { index: 0 }),
+      typed('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 7 } }),
+      typed('message_stop', {}),
+    ],
   },
   [RESPONSES]: {
     text: [
@@ -102,6 +123,7 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     ],
     partialFrame: 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","output_index":0,"del',
     errorEvent: frame({ type: 'error', code: 'server_error', message: 'upstream failed', param: null, sequence_number: 9 }, 'error'),
+    finish: [RESPONSE_COMPLETED],
   },
 };
 
@@ -174,6 +196,29 @@ const streamedText = (to: StreamProtocol, events: SseEvent[]): string => jsonFra
   return body.type === 'response.output_text.delta' ? body.delta : '';
 }).join('');
 
+/**
+ * Asserts the stream ended once, as finished, with the reason it reported: a Messages stop_reason or a Chat
+ * finish_reason (end_turn and stop by default). A Responses client only learns completed, so it gets no reason.
+ */
+function expectFinished(to: StreamProtocol, events: SseEvent[], reason: string | null = to === MESSAGES ? 'end_turn' : 'stop'): void {
+  if (to === MESSAGES) {
+    expect(names(events)).not.toContain('error');
+    expect(names(events).filter((name) => name === 'message_stop')).toHaveLength(1);
+    expect(events.at(-1)?.event).toBe('message_stop');
+    expect(jsonFrames(events).find((body) => body.type === 'message_delta')?.delta.stop_reason).toBe(reason);
+    return;
+  }
+  expect(doneMarkers(events)).toHaveLength(1);
+  expect(events.at(-1)?.data).toBe('[DONE]');
+  if (to === CHAT) {
+    expect(jsonFrames(events).filter((chunk) => chunk.error)).toEqual([]);
+    expect(finishChunks(events).map((chunk) => chunk.choices[0].finish_reason)).toEqual([reason]);
+    return;
+  }
+  expect(names(events)).not.toContain('response.failed');
+  expect(names(events).filter((name) => name === 'response.completed')).toHaveLength(1);
+}
+
 describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
   const source = SOURCES[from];
 
@@ -226,6 +271,23 @@ describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
 
   it('reports a relay error frame with no text', () => {
     EXPECT_FAILED[to](translate(from, to, [...source.text, 'event: error\ndata: \n\n']), 'Upstream error');
+  });
+
+  it('keeps the failure when the stream says it finished after it', () => {
+    const frames = [...source.text, source.errorEvent, ...source.finish];
+    EXPECT_FAILED[to](translate(from, to, frames), 'upstream failed');
+    EXPECT_FAILED[to](translate(from, to, [frames.join('')]), 'upstream failed');
+  });
+
+  it('reads a stream whose reads split frames and characters', () => {
+    const text = 'Réponse — 答え 🙂';
+    const answer = source.text.map((frame) => frame.replace('The answer is', text));
+    const whole = translateInReads(from, to, [...answer, ...source.finish], 3);
+    expectFinished(to, whole);
+    expect(streamedText(to, whole)).toBe(text);
+    const cut = translateInReads(from, to, [...answer, 'event: error\ndata: coupé 🙂\n\n'], 3);
+    EXPECT_FAILED[to](cut, 'coupé 🙂');
+    expect(streamedText(to, cut)).toBe(text);
   });
 });
 
@@ -314,18 +376,19 @@ describe('a Responses stream that ends with response.incomplete', () => {
   const notStreamed = (reason: string, to: StreamProtocol): Json =>
     JSON.parse(decoder.decode(transformResponse(body(reason), { from: RESPONSES, to, fallbackModel: 'm' })!.body)) as Json;
 
+  // Which Messages stop reason a content filter becomes is the stop reason table's to say; the stream only agrees with it.
   it.each([
     ['max_output_tokens', 'max_tokens'],
-    ['content_filter', 'content_filter'],
+    ['content_filter', undefined],
   ])('ends normally for a Messages client on %s, like the not-streamed answer', (reason, stopReason) => {
     const events = translate(RESPONSES, MESSAGES, [RESPONSE_CREATED, RESPONSE_TEXT, incomplete(reason)]);
 
     expect(names(events).slice(-3), FAILURE).toEqual(['content_block_stop', 'message_delta', 'message_stop']);
     const delta = JSON.parse(events.at(-2)!.data) as Json;
-    expect(delta.delta.stop_reason).toBe(stopReason);
     expect(delta.usage).toMatchObject({ input_tokens: 100, output_tokens: 7 });
     const answer = notStreamed(reason, MESSAGES);
-    expect(answer.stop_reason).toBe(stopReason);
+    expect(answer.stop_reason).toEqual(stopReason ?? expect.any(String));
+    expect(delta.delta.stop_reason).toBe(answer.stop_reason);
     expect(delta.usage).toMatchObject(answer.usage);
   });
 
@@ -421,6 +484,18 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(events.at(-1)?.data).toBe('[DONE]');
   });
 
+  it.each(CASES)('reports %s in a stream cut after its stop reason', (_label, from, _body, frames, reason) => {
+    // Without the closing [DONE] or message_stop, and with the relay's error frame where the stream was cut.
+    const cut = frames.slice(0, -1);
+    for (const tail of [[], [RELAY_ERROR_FRAME]]) {
+      const events = translate(from, RESPONSES, [...cut, ...tail]);
+      expect(names(events)).not.toContain('response.failed');
+      const final = JSON.parse(events.at(-2)!.data) as Json;
+      expect(final.type).toBe('response.incomplete');
+      expect(final.response.incomplete_details).toEqual({ reason });
+    }
+  });
+
   it.each(CASES)('reports %s when the seller answers a streamed request with JSON', (_label, from, body, _frames, reason) => {
     const transformed = transformResponse(response(body), { from, to: RESPONSES, streamRequested: true, fallbackModel: 'm' })!;
     const events = parseSse(decoder.decode(transformed.body));
@@ -492,38 +567,15 @@ describe('an answer cut at a limit, for a Responses client', () => {
 });
 
 describe('an answer that finished stays finished', () => {
-  const completed = typed('response.completed', {
-    response: { id: 'resp_1', object: 'response', model: 'm', status: 'completed', usage: { input_tokens: 100, output_tokens: 7, total_tokens: 107 }, output: [] },
-  });
-  const chatFinished = [...SOURCES[CHAT].text, chatChunk({}, 'stop')];
-  const messagesFinished = [
+  // The text, then the frames that said how it finished, without the closing [DONE] or message_stop.
+  const chatCutAfter = (finishReason: string): string[] => [...SOURCES[CHAT].text, chatChunk({}, finishReason)];
+  const messagesCutAfter = (stopReason: string): string[] => [
     ...SOURCES[MESSAGES].text,
     typed('content_block_stop', { index: 0 }),
-    typed('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 7 } }),
+    typed('message_delta', { delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 7 } }),
   ];
-
-  /**
-   * Asserts the stream ended once, as finished, with the reason it reported: a Messages stop_reason or a Chat
-   * finish_reason (end_turn and stop by default). A Responses client only learns completed, so it gets no reason.
-   */
-  const expectFinished = (to: StreamProtocol, events: SseEvent[], reason: string | null = to === MESSAGES ? 'end_turn' : 'stop'): void => {
-    if (to === MESSAGES) {
-      expect(names(events)).not.toContain('error');
-      expect(names(events).filter((name) => name === 'message_stop')).toHaveLength(1);
-      expect(events.at(-1)?.event).toBe('message_stop');
-      expect(jsonFrames(events).find((body) => body.type === 'message_delta')?.delta.stop_reason).toBe(reason);
-      return;
-    }
-    expect(doneMarkers(events)).toHaveLength(1);
-    expect(events.at(-1)?.data).toBe('[DONE]');
-    if (to === CHAT) {
-      expect(jsonFrames(events).filter((chunk) => chunk.error)).toEqual([]);
-      expect(finishChunks(events).map((chunk) => chunk.choices[0].finish_reason)).toEqual([reason]);
-      return;
-    }
-    expect(names(events)).not.toContain('response.failed');
-    expect(names(events).filter((name) => name === 'response.completed')).toHaveLength(1);
-  };
+  const chatFinished = chatCutAfter('stop');
+  const messagesFinished = messagesCutAfter('end_turn');
 
   it.each([MESSAGES, RESPONSES] as const)('a whole Chat stream to %s', (to) => {
     expectFinished(to, translate(CHAT, to, [...chatFinished, CHAT_USAGE, frame('[DONE]')]));
@@ -534,7 +586,7 @@ describe('an answer that finished stays finished', () => {
   });
 
   it.each([MESSAGES, CHAT] as const)('a whole Responses stream to %s', (to) => {
-    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, completed]));
+    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, RESPONSE_COMPLETED]));
   });
 
   it.each([MESSAGES, RESPONSES] as const)('a Chat stream cut after its finish_reason to %s', (to) => {
@@ -572,11 +624,20 @@ describe('an answer that finished stays finished', () => {
   });
 
   it.each([MESSAGES, CHAT] as const)('a Responses stream that failed after response.completed to %s', (to) => {
-    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, completed, RELAY_ERROR_FRAME]));
+    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, RESPONSE_COMPLETED, RELAY_ERROR_FRAME]));
   });
 
   it.each([MESSAGES, CHAT] as const)('a Responses stream with two response.completed events to %s', (to) => {
-    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, completed, completed]));
+    expectFinished(to, translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, RESPONSE_COMPLETED, RESPONSE_COMPLETED]));
+  });
+
+  // The reason itself must survive a missing closing frame, not just the fact that the answer finished.
+  it.each([
+    ['Messages max_tokens', MESSAGES, CHAT, messagesCutAfter('max_tokens'), 'length'],
+    ['Chat length', CHAT, MESSAGES, chatCutAfter('length'), 'max_tokens'],
+  ] as const)('a stream cut after a %s reason keeps it', (_label, from, to, frames, reason) => {
+    expectFinished(to, translate(from, to, [...frames]), reason);
+    expectFinished(to, translate(from, to, [...frames, RELAY_ERROR_FRAME]), reason);
   });
 
   it('a final chunk that carries the last frames still counts them', () => {
