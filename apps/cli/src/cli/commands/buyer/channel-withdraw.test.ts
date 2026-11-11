@@ -192,6 +192,81 @@ test('channels request-close says when no channel with the id is recorded on-cha
   assert.equal(requestClose.mock.callCount(), 0);
 });
 
+// The chain can hold a reserve for a channel this data directory has no row for; its full id is enough to exit it.
+test('channels request-close starts the exit for a full channel id the store has no row for', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'B4'.repeat(32);
+  const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`Unexpected process.exit(${code})`); });
+
+  const { stdout } = await harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id, '--json'], { [id.toLowerCase()]: onChain(harness.buyer, 1) });
+
+  assert.deepEqual(JSON.parse(stdout), { channelId: id.toLowerCase(), transaction: 'close-tx', withdrawAfterSeconds: CHANNEL_CLOSE_GRACE_PERIOD_SECONDS });
+  assert.equal(requestClose.mock.calls[0]!.arguments[1], id.toLowerCase());
+});
+
+test('channels withdraw releases the reserve of a full channel id the store has no row for', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'b5'.repeat(32);
+  const withdraw = context.mock.method(ChannelsClient.prototype, 'withdraw', async () => 'withdraw-tx');
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`Unexpected process.exit(${code})`); });
+
+  const { stdout } = await harness.run(registerBuyerChannelsCommand, ['channels', 'withdraw', id, '--json'], {
+    [id]: { ...onChain(harness.buyer, 1, 250_000n), closeRequestedAt: BigInt(Math.floor(Date.now() / 1000) - 901) },
+  });
+
+  assert.deepEqual(JSON.parse(stdout), { channelId: id, transaction: 'withdraw-tx', deposit: '1000000', settled: '250000', estimatedRefund: '750000' });
+  assert.equal(withdraw.mock.calls[0]!.arguments[1], id);
+});
+
+for (const operation of ['request-close', 'withdraw'] as const) {
+  test(`channels ${operation} refuses a full channel id that belongs to another buyer on-chain`, async (context) => {
+    const harness = await buyerCommandHarness(context);
+    const id = '0x' + 'b6'.repeat(32);
+    const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+    const withdraw = context.mock.method(ChannelsClient.prototype, 'withdraw', async () => 'withdraw-tx');
+    const written: string[] = [];
+    context.mock.method(process.stderr, 'write', (chunk: string | Uint8Array) => { written.push(String(chunk)); return true; });
+    context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+
+    await assert.rejects(
+      harness.run(registerBuyerChannelsCommand, ['channels', operation, id], { [id]: onChain('0x' + '77'.repeat(20), 1) }),
+      /process\.exit\(1\)/,
+    );
+
+    assert.match(written.join(''), /is not the on-chain buyer for this channel/);
+    assert.equal(requestClose.mock.callCount() + withdraw.mock.callCount(), 0);
+  });
+
+  test(`channels ${operation} still refuses a prefix or a short id the store has no row for`, async (context) => {
+    const harness = await buyerCommandHarness(context);
+    harness.seed(buyerChannel('0x' + 'b7'.repeat(32), harness.buyer));
+    context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+
+    await assert.rejects(
+      harness.run(registerBuyerChannelsCommand, ['channels', operation, '0xb8b8'], {}),
+      /No local buyer channel found for 0xb8b8/,
+    );
+  });
+}
+
+test('channels withdraw says when no channel with the id is recorded on-chain', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'b9'.repeat(32);
+  const withdraw = context.mock.method(ChannelsClient.prototype, 'withdraw', async () => 'withdraw-tx');
+  const written: string[] = [];
+  context.mock.method(process.stderr, 'write', (chunk: string | Uint8Array) => { written.push(String(chunk)); return true; });
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+
+  await assert.rejects(
+    harness.run(registerBuyerChannelsCommand, ['channels', 'withdraw', id], { [id]: MISSING_ON_CHAIN }),
+    /process\.exit\(1\)/,
+  );
+
+  assert.match(written.join(''), /No channel with this id is recorded on-chain/);
+  assert.equal(withdraw.mock.callCount(), 0);
+});
+
 // `channels` declares --json too, so commander gives it the flag: every placement a user can type must print JSON.
 for (const placement of ['after the subcommand', 'before the subcommand'] as const) {
   const argv = (subcommand: string, ...rest: string[]) => (placement === 'after the subcommand'
