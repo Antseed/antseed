@@ -256,7 +256,7 @@ export interface PlainMultipartPart extends MultipartPart {
   billedText: boolean;
 }
 
-/** Splits a body at its delimiters. `framed` says nothing lies before, between or after them. */
+/** Splits a body at its delimiters. `framed` says each delimiter has a line to itself and only white space follows the last. */
 function splitMultipart(body: Uint8Array, contentType: string | undefined) {
   if (!contentType) return null;
   const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
