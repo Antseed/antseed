@@ -14,6 +14,8 @@ import {
   type WslTool,
 } from './wsl.js';
 import {
+  CONNECTED_APP_DEFAULT_REASONING,
+  CONNECTED_APP_REASONING_LEVELS,
   ROUTED_MODEL_ALIAS,
   backupConfigFile,
   expandTilde,
@@ -29,6 +31,7 @@ import {
   tryReadConfigPatchFile,
   writeJsonFile,
   writePrivateFile,
+  type ConfigPatchModel,
   type JsonObject,
 } from './config-patch-files.js';
 import {
@@ -49,12 +52,15 @@ import {
 } from './config-patch/codex.js';
 
 export { ROUTED_MODEL_ALIAS, parseJsoncObject, stripJsoncComments, stripJsoncTrailingCommas };
+export type { ConfigPatchModel };
 export { unescapeTomlBasicString } from './config-patch/codex.js';
 
 const ROUTED_MODEL_ALIAS_LABEL = 'Antseed Auto';
 // Droid requires the `custom:` namespace to resolve this through `customModels`;
 // an unprefixed value is treated as a Factory-managed model and triggers Factory authentication.
 const DROID_ROUTED_MODEL_ID = 'custom:Antseed-Auto-0';
+/** Where Droid's effort picker starts for a reasoning model. */
+const DROID_DEFAULT_REASONING = 'high';
 
 /**
  * Config patches point a tool's own configuration at the buyer proxy. Each
@@ -116,7 +122,7 @@ export type PiConfigPatchDef = {
   readonly baseURL: string;
   readonly api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
   readonly originator?: string;
-  readonly installProbe?: 'pi';
+  readonly installProbe?: 'pi' | 'prime-agent';
 };
 
 export type CrushConfigPatchDef = {
@@ -287,6 +293,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
   if (format === 'pi') {
     const api = raw['api'];
     const originator = readString(raw, 'originator');
+    const installProbe = raw['installProbe'];
     return {
       format: 'pi',
       configPath,
@@ -295,7 +302,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
       baseURL,
       api: api === 'openai-responses' || api === 'anthropic-messages' ? api : 'openai-completions',
       ...(originator ? { originator } : {}),
-      ...(raw['installProbe'] === 'pi' ? { installProbe: 'pi' as const } : {}),
+      ...(installProbe === 'pi' || installProbe === 'prime-agent' ? { installProbe } : {}),
     };
   }
   if (format === 'crush') {
@@ -385,8 +392,12 @@ export type ConfigPatchTarget = {
    * copy, until the user confirms it is in).
    */
   apiKey: string;
-  /** Text models the gateway serves; tools that need a static model list get all of them. */
-  models: ReadonlyArray<{ id: string; label?: string }>;
+  /**
+   * Text models the gateway serves; tools that need a static model list get
+   * all of them. Tools that take effort levels in their config get them for
+   * the models marked `reasoning`.
+   */
+  models: ReadonlyArray<ConfigPatchModel>;
   /** Model to select when the tool has none (or still has a stale managed one). Defaults to models[0]. */
   defaultModel?: string;
 };
@@ -396,7 +407,7 @@ export type ResolvedTarget = {
   /** True for the numeric buyer-port form: writers keep their pre-gateway output byte for byte. */
   readonly legacy: boolean;
   readonly apiKey: string;
-  readonly models: ReadonlyArray<{ id: string; label?: string }>;
+  readonly models: ReadonlyArray<ConfigPatchModel>;
   readonly modelIds: readonly string[];
   readonly defaultModel?: string;
   /** Whether WSL configs get the distro-reachable host substituted in. */
@@ -752,6 +763,7 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
         name: modelLabel(model),
         attachment: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
+        ...(model.reasoning ? { reasoning: true } : {}),
         limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
       }]))
       : asObject(asObject(providers[patch.providerKey])['models']),
@@ -927,11 +939,20 @@ function isManagedDroidModel(value: unknown, patch: DroidConfigPatchDef, managed
   return typeof id === 'string' && managedIds.has(id);
 }
 
+/** Every customModels entry Antseed writes has an id under this prefix. */
+const DROID_MANAGED_ID_PREFIX = 'custom:Antseed-';
+
+/** Without the restore state, the id prefix is all that marks an entry (or a
+    selection) left behind by an earlier connect as Antseed's. */
+function hasDroidManagedId(id: unknown): id is string {
+  return typeof id === 'string' && id.startsWith(DROID_MANAGED_ID_PREFIX);
+}
+
 /** Droid's `custom:` namespace resolves ids through customModels; the index
     suffix mirrors the ids Droid generates itself. */
 function droidGatewayModelId(model: { id: string; label?: string }, index: number): string {
   const slug = modelLabel(model).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
-  return `custom:Antseed-${slug}-${index}`;
+  return `${DROID_MANAGED_ID_PREFIX}${slug}-${index}`;
 }
 
 function droidSessionDefaultSettings(config: JsonObject, filePath: string): JsonObject | undefined {
@@ -987,20 +1008,27 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       id: droidGatewayModelId(model, index),
       displayName: modelLabel(model),
       ...commonFields,
+      // Droid has no per-model list of levels: it offers off/low/medium/high
+      // for a model that names a default effort, starting at that one.
+      ...(model.reasoning ? { reasoningEffort: DROID_DEFAULT_REASONING } : {}),
       apiKey: t.apiKey,
     }));
   const newIds = entries.map((entry) => entry.id);
   // Membership is checked per model; a gateway can list hundreds.
   const newIdSet = new Set(newIds);
 
-  const managedIds = state?.managedModelIds ?? [];
+  // With the restore state gone (deleted, say), entries under our id prefix
+  // are what an earlier connect left: take them over instead of refusing to
+  // connect, and drop them like entries the state recorded.
+  const leftoverIds = state ? [] : customModels.map(droidEntryId).filter(hasDroidManagedId);
+  const managedIds = state?.managedModelIds ?? leftoverIds;
   const managedIdSet = new Set(managedIds);
   // Never replace a model the user defined: on a first connect that includes
-  // one named like Antseed's alias; on a refresh, any entry the last patch
-  // didn't write whose id a new gateway model would take. Disconnect couldn't
-  // give such an entry back.
+  // one named like Antseed's alias without our id; on a refresh, any entry the
+  // last patch didn't write whose id a new gateway model would take.
+  // Disconnect couldn't give such an entry back.
   const conflict = customModels.find((model) => {
-    if (state && isManagedDroidModel(model, patch, managedIdSet)) return false;
+    if (state ? isManagedDroidModel(model, patch, managedIdSet) : hasDroidManagedId(droidEntryId(model))) return false;
     const id = droidEntryId(model);
     return (!state && isDroidModel(model, patch.providerKey)) || (typeof id === 'string' && newIdSet.has(id));
   });
@@ -1023,13 +1051,21 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   let narrowStateAfterWrite = false;
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
-    const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined;
+    // A selection of a leftover entry is not the user's to restore, and a
+    // settings object or list holding nothing else was ours. An empty list is
+    // the user's.
+    const leftoverSessionDefault = existingSessionDefaultSettings !== undefined
+      && hasDroidManagedId(existingSessionDefaultSettings['model']);
+    const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined
+      && !(leftoverSessionDefault && Object.keys(existingSessionDefaultSettings).length === 1);
     const sessionDefaultModelPresent = existingSessionDefaultSettings !== undefined
-      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model');
+      && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model')
+      && !leftoverSessionDefault;
     writeDroidPatchState(filePath, {
       version: 2,
       configExisted,
-      customModelsPresent,
+      customModelsPresent: customModelsPresent
+        && (customModels.length === 0 || customModels.some((model) => !hasDroidManagedId(droidEntryId(model)))),
       modelPresent,
       ...(modelPresent ? { modelValue: config['model'] } : {}),
       sessionDefaultSettingsPresent,
@@ -1189,7 +1225,8 @@ function removeCodexConfigPatch(patch: CodexConfigPatchDef, wslTargetsFile?: str
 function applyPiConfigPatch(patch: PiConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
   const native = { configPath: expandTilde(patch.configPath), settingsPath: expandTilde(patch.settingsPath) };
   applyToolPatch({
-    tool: 'pi',
+    // Prime Agent uses pi's file format with its own install probe.
+    tool: patch.installProbe ?? 'pi',
     probe: patch.installProbe,
     template: patch.baseURL,
     native,
@@ -1215,6 +1252,7 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
       ? t.models.map((model) => ({
         id: model.id,
         name: modelLabel(model),
+        ...(model.reasoning ? { reasoning: true } : {}),
         contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
         maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
       }))
@@ -1246,8 +1284,8 @@ function isAntseedPiProvider(provider: unknown): boolean {
 
 function removePiConfigPatch(patch: PiConfigPatchDef, wslTargetsFile?: string): boolean {
   let changed = removePiProviderFromFiles(expandTilde(patch.configPath), expandTilde(patch.settingsPath), patch);
-  if (patch.installProbe === 'pi') {
-    changed = removeWslInstalls('pi', wslTargetsFile, (target) =>
+  if (patch.installProbe) {
+    changed = removeWslInstalls(patch.installProbe, wslTargetsFile, (target) =>
       removePiProviderFromFiles(target.configPath, target.settingsPath ?? '', patch)) || changed;
   }
   return changed;
@@ -1323,9 +1361,15 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
     base_url: baseURL,
     api_key: t.apiKey,
     models: t.models.length > 0
-      ? t.models.map((model) => (
-        { id: model.id, name: modelLabel(model), context_window: ANTSEED_MODEL_CONTEXT_WINDOW, default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS }
-      ))
+      ? t.models.map((model) => ({
+        id: model.id,
+        name: modelLabel(model),
+        context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+        default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+        ...(model.reasoning
+          ? { can_reason: true, reasoning_levels: [...CONNECTED_APP_REASONING_LEVELS], default_reasoning_effort: CONNECTED_APP_DEFAULT_REASONING }
+          : {}),
+      }))
       : savedList(asObject(providers[patch.providerKey])['models']),
   };
   config['providers'] = providers;
@@ -1433,6 +1477,11 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
   backupConfigFile(filePath);
   const saved = asObject(asObject(asObject(document.toJS())['providers'])[patch.providerKey]);
   const providerDefault = t.defaultModel ?? t.models[0]?.id ?? saved['default_model'];
+  const models = t.models.length > 0
+    ? Object.fromEntries(t.models.map((model) => [model.id, {
+      context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
+    }]))
+    : asObject(saved['models']);
   document.setIn(['providers', patch.providerKey], {
     name: HERMES_PROVIDER_NAME,
     api: t.baseUrl(patch.baseURL),
@@ -1441,12 +1490,14 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
     extra_headers: {
       originator: 'hermes',
     },
+    // A provider with an api_key otherwise replaces this list with the
+    // gateway's whole /v1/models, image, video and speech models included.
+    // With no list at all discovery stays on so Hermes still finds models; a
+    // kept earlier list (models didn't load this time) still turns it off.
+    // Legacy entries list only the alias, so they keep it on too.
+    ...(!t.legacy && Object.keys(models).length > 0 ? { discover_models: false } : {}),
     ...(providerDefault ? { default_model: providerDefault } : {}),
-    models: t.models.length > 0
-      ? Object.fromEntries(t.models.map((model) => [model.id, {
-        context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
-      }]))
-      : asObject(saved['models']),
+    models,
   });
   const selected = pickModel(
     t,
@@ -1857,14 +1908,58 @@ function ownsT3CodeInstance(instance: JsonObject): boolean {
   });
 }
 
+/**
+ * Antseed owns only its `<providerKey>` entry in `providerInstances`, which a
+ * user may already have defined. The first connect saves that entry (or that
+ * there was none) beside the config, so disconnect can put it back; reconnects
+ * and model refreshes keep the saved original. The copy can hold the user's
+ * own environment values, so only the owner may read it.
+ */
+type T3CodeState = { readonly hadInstance: boolean; readonly instance?: unknown };
+
+function t3CodeStatePath(filePath: string): string {
+  return `${filePath}.antseed.state.json`;
+}
+
+function readT3CodeState(filePath: string): T3CodeState | null {
+  const state = tryReadConfigPatchFile(t3CodeStatePath(filePath));
+  if (!state) return null;
+  if (state['version'] !== 1 || typeof state['hadInstance'] !== 'boolean') {
+    throw new Error(`Invalid Antseed T3 Code restore state at ${t3CodeStatePath(filePath)}`);
+  }
+  return state['hadInstance'] ? { hadInstance: true, instance: state['instance'] } : { hadInstance: false };
+}
+
+function writeT3CodeState(filePath: string, state: T3CodeState): void {
+  writePrivateFile(t3CodeStatePath(filePath), `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`);
+}
+
+function deleteT3CodeState(filePath: string): void {
+  try {
+    unlinkSync(t3CodeStatePath(filePath));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
 function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, t: ResolvedTarget): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providerInstances = asObject(config['providerInstances']);
+  const existing = providerInstances[patch.providerKey];
+  const ownsExisting = ownsT3CodeInstance(asObject(existing));
+  if (!readT3CodeState(filePath)) {
+    // An entry of ours without a state (from a connect before the state
+    // existed, or one whose state was deleted) is not the user's to restore.
+    writeT3CodeState(filePath, existing === undefined || ownsExisting
+      ? { hadInstance: false }
+      : { hadInstance: true, instance: existing });
+  }
+  // With no models yet, keep the list we wrote last; a user's own list isn't ours.
   const customModels = t.modelIds.length > 0
     ? [...t.modelIds]
-    : savedList(asObject(asObject(providerInstances[patch.providerKey])['config'])['customModels']);
+    : ownsExisting ? savedList(asObject(asObject(existing)['config'])['customModels']) : [];
   // Gateways take the key as a bearer token; the empty ANTHROPIC_API_KEY
   // stops the Claude agent from also sending x-api-key.
   const auth = t.legacy
@@ -1897,17 +1992,27 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, t: ResolvedTarget):
 
 function removeT3CodeConfigPatch(patch: T3CodeConfigPatchDef): boolean {
   const filePath = expandTilde(patch.configPath);
+  const state = readT3CodeState(filePath);
   const config = tryReadConfigPatchFile(filePath);
-  if (!config) return false;
-  const providerInstances = config['providerInstances'];
-  if (!providerInstances || typeof providerInstances !== 'object' || Array.isArray(providerInstances)) return false;
-  const instance = (providerInstances as JsonObject)[patch.providerKey];
-  if (!instance || typeof instance !== 'object' || Array.isArray(instance)) return false;
-  if (!ownsT3CodeInstance(instance as JsonObject)) return false;
-  delete (providerInstances as JsonObject)[patch.providerKey];
-  if (Object.keys(providerInstances as JsonObject).length === 0) delete config['providerInstances'];
+  const providerInstances = config?.['providerInstances'];
+  const instance = providerInstances && typeof providerInstances === 'object' && !Array.isArray(providerInstances)
+    ? (providerInstances as JsonObject)[patch.providerKey]
+    : undefined;
+  // An entry the user put there while connected stays.
+  if (!config || !instance || typeof instance !== 'object' || Array.isArray(instance)
+    || !ownsT3CodeInstance(instance as JsonObject)) {
+    deleteT3CodeState(filePath);
+    return false;
+  }
+  if (state?.hadInstance) {
+    (providerInstances as JsonObject)[patch.providerKey] = state.instance;
+  } else {
+    delete (providerInstances as JsonObject)[patch.providerKey];
+    if (Object.keys(providerInstances as JsonObject).length === 0) delete config['providerInstances'];
+  }
   backupConfigFile(filePath);
   writeJsonFile(filePath, config);
+  deleteT3CodeState(filePath);
   return true;
 }
 

@@ -32,9 +32,20 @@ export function findChatModel(models: ChatModel[], modelId: string | null | unde
 }
 
 /**
+ * The picker's rows: the models the connected apps list (a trusted seller
+ * serves them), plus any of `inUse` (the chat's text and image models), so a
+ * chat or saved default on another model still shows it.
+ */
+export function pickerChatModels(models: ChatModel[], inUse: Array<string | null | undefined>): ChatModel[] {
+  const kept = new Set(inUse.flatMap((id) => (id ? [splitPinnedModel(id).modelId] : [])));
+  return models.filter((model) => !model.lowTrust || kept.has(model.id));
+}
+
+/**
  * The new-chat default: the last model used while the gateway still lists it as
- * text, else one that works without funds (the catalog's order isn't stable, so
- * a first chat could otherwise land on a paid model and fail).
+ * text, else one a trusted seller serves that works without funds (the
+ * catalog's order isn't stable, so a first chat could otherwise land on a paid
+ * model and fail).
  */
 export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string | null): string | null {
   const last = findChatModel(models, lastModelId);
@@ -57,7 +68,8 @@ export function shouldWaitForFreeModel(
 ): boolean {
   if (options.chosen || options.funded) return false;
   if (selectedId && findChatModel(models, selectedId)?.free) return false;
-  return !models.some((model) => model.type === 'text' && model.free);
+  // A default never picks a low-trust model while a trusted one is listed.
+  return !models.some((model) => model.type === 'text' && model.free && !model.lowTrust);
 }
 
 /**
@@ -97,9 +109,11 @@ export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: st
   const price = (model: ChatModel) => (model.inputUsdPerMillion ?? Infinity) + (model.outputUsdPerMillion ?? Infinity);
   // Priced $0 for stakers only, a model looks cheapest and then refuses anyone else.
   const payable = hasFunds ? text.filter((model) => !model.freeForStakers && price(model) > 0) : text;
-  const ranked = [...(payable.length > 0 ? payable : text)].sort((left, right) => (hasFunds
-    ? Number(left.free) - Number(right.free)
-    : Number(right.free) - Number(left.free))
+  // A stand-in comes from the models a trusted seller serves, as defaults do.
+  const ranked = [...(payable.length > 0 ? payable : text)].sort((left, right) => Number(left.lowTrust === true) - Number(right.lowTrust === true)
+    || (hasFunds
+      ? Number(left.free) - Number(right.free)
+      : Number(right.free) - Number(left.free))
     || Number(right.toolUse) - Number(left.toolUse)
     || (hasFunds ? price(left) - price(right) : 0)
     || right.sellers - left.sellers);

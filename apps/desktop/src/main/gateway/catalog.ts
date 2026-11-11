@@ -6,7 +6,7 @@
 import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-types.js';
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
-import type { GatewayModelEntry } from './models.js';
+import { entryReasons, trustedAppEntries, type GatewayModelEntry } from './models.js';
 import { finiteNumber, record } from './response-fields.js';
 import { normalizeSellerId } from '../../shared/pinned-model.js';
 
@@ -100,7 +100,7 @@ function entryContextWindow(entry: GatewayModelEntry): number | undefined {
 function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>, options: CatalogOptions = {}): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'teeEndToEnd' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const declared = record(entry['capabilities']);
   // Coverage only counts sellers that reported at all, including those reporting false.
-  const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
+  const anyPeerDeclares = (capability: 'toolUse'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
   // Free means every token price is $0, cached input included, as the buyer decides it.
   const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0
@@ -138,7 +138,7 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
     // Only the seller's own TEE is checked unless its model provider is attested too.
     ...(peers.some((peer) => isTee(peer) && peer['teeScope'] === 'end-to-end') ? { teeEndToEnd: true } : {}),
     toolUse: declared['tool_use'] === true || anyPeerDeclares('toolUse'),
-    reasoning: declared['reasoning'] === true || anyPeerDeclares('reasoning'),
+    reasoning: entryReasons(entry),
     inputUsdPerMillion: cheapest('inputUsdPerMillion', pricedPeers),
     outputUsdPerMillion: cheapest('outputUsdPerMillion', pricedPeers),
   };
@@ -186,9 +186,19 @@ export function toChatModels(entries: GatewayModelEntry[], options: CatalogOptio
 }
 
 /**
- * Models worth defaulting connected apps to, best first: free for everyone
- * (an app's background calls must not need funds), then able to use tools,
- * then the most sellers.
+ * The chat's rows: every model, with `lowTrust` on those the connected apps
+ * leave out (`trustedAppEntries`), so the chat lists the apps' set. The rest
+ * stay in the list for a chat or saved default already on one.
+ */
+export function toTrustedChatModels(entries: GatewayModelEntry[], options: CatalogOptions = {}): ChatModel[] {
+  const trusted = new Set(trustedAppEntries(entries).map((entry) => entry.id));
+  return toChatModels(entries, options).map((model) => (trusted.has(model.id) ? model : { ...model, lowTrust: true }));
+}
+
+/**
+ * Models worth defaulting connected apps to, best first: served by a trusted
+ * seller, then free for everyone (an app's background calls must not need
+ * funds), then able to use tools, then the most sellers.
  */
 export function recommendAppModels(models: ChatModel[]): ChatModel[] {
   return models

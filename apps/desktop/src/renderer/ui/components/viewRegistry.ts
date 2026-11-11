@@ -4,6 +4,7 @@ import type { IconSvgElement } from '@hugeicons/react';
 import {
   Home01Icon,
   ConnectIcon,
+  DashboardSquare01Icon,
   Settings01Icon,
 } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../types';
@@ -96,6 +97,15 @@ export const VIEW_REGISTRY = {
       slideIndex: 3,
       preloadPriority: 'idle',
       nav: { slot: 'main', label: 'Rewards', icon: AntIcon },
+    },
+  ),
+  gateway: createViewEntry(
+    async () => (await import('./views/GatewayView')).GatewayView as ComponentType<RoutedViewProps>,
+    {
+      receivesOnSelectView: true,
+      slideIndex: 4,
+      preloadPriority: 'idle',
+      nav: { slot: 'bottom', label: 'Gateway', icon: DashboardSquare01Icon },
     },
   ),
   preferences: createViewEntry(

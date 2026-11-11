@@ -249,6 +249,11 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       api_key_env: '',
       base_url: `${baseURL}/v1/chat/completions`,
       models,
+      // Goose otherwise lists the gateway's whole /v1/models (image, video and
+      // speech models included) instead of `models`. It refuses `false` with
+      // no models, so the key is left out when there is no list at all; a
+      // kept earlier list (models didn't load this time) still turns it off.
+      ...(Array.isArray(models) && models.length > 0 ? { dynamic_models: false } : {}),
       headers: { Authorization: `Bearer ${t.apiKey}` },
       supports_streaming: true,
       requires_auth: false,

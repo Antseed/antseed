@@ -4653,8 +4653,8 @@ export class BuyerProxy {
     let trackedConversationId = storedConversation?.id ?? null
     // Resolve the `antseed` model alias to the session's default route first,
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // substituted value. Tools connected to the buyer without a gateway can
+    // carry the alias, so route changes apply without config rewrites.
     const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
@@ -4663,8 +4663,9 @@ export class BuyerProxy {
         error: {
           type: 'no_default_route',
           code: 'no_default_route',
-          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in Antseed Desktop, but no route is set. `
-            + 'Pick a model in the desktop app, or request "<peerId>@<model>" explicitly.',
+          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the buyer's default route, but none is set. `
+            + 'Request a model by name ("<model>" or "<peerId>@<model>"), or set a default route with '
+            + 'POST /_antseed/route {"model":"<peerId>@<model>"}.',
           param: 'model',
         },
       }))

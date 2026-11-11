@@ -15,7 +15,7 @@ import {
   SecurityWarningIcon,
   Shield01Icon
 } from '@hugeicons/core-free-icons';
-import { findChatModel, fundsNoticeAction } from '../../../modules/chat/models';
+import { findChatModel, fundsNoticeAction, pickerChatModels } from '../../../modules/chat/models';
 import { modelAcceptsImages } from '../../../../shared/pinned-model.js';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
@@ -1399,7 +1399,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 <div className={styles.serviceSwitcherAnchor}>
                   <ChatModelDropdown
                     onOpenChange={setModelMenuOpen}
-                    models={modelsForPrivacy(snap.chatModels, privateMode)}
+                    models={pickerChatModels(modelsForPrivacy(snap.chatModels, privateMode), [snap.chatSelectedModelId, snap.chatImageModelId])}
                     selectedModelId={imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId}
                     loading={snap.chatModelsLoading}
                     error={snap.chatModelsError}

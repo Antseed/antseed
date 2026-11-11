@@ -8,7 +8,13 @@ import { ANTSEED_MODEL_CONTEXT_WINDOW } from '@antseed/protocol/service-api';
 import { execFile } from 'node:child_process';
 import { readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
-import { sha256Hex, writeTextFile } from './config-patch-files.js';
+import {
+  CONNECTED_APP_DEFAULT_REASONING,
+  CONNECTED_APP_REASONING_LEVELS,
+  sha256Hex,
+  writeTextFile,
+  type ConfigPatchModel,
+} from './config-patch-files.js';
 
 export const CODEX_MODEL_CATALOG_FILE = 'antseed-models.json';
 
@@ -32,11 +38,28 @@ function runCodexDebugModels(configPath: string, args: readonly string[] = []): 
   });
 }
 
+const CODEX_REASONING_DESCRIPTIONS: Record<string, string> = {
+  low: 'Fast responses with lighter reasoning',
+  medium: 'Balances speed and reasoning depth for everyday tasks',
+  high: 'Greater reasoning depth for complex problems',
+  xhigh: 'Extra high reasoning depth for complex problems',
+};
+
+/** A reasoning model gets Codex's effort selector; any other gets none, so Codex sends no effort. */
+function codexReasoningFields(model: ConfigPatchModel): JsonObject {
+  return model.reasoning
+    ? {
+        default_reasoning_level: CONNECTED_APP_DEFAULT_REASONING,
+        supported_reasoning_levels: CONNECTED_APP_REASONING_LEVELS.map((effort) => ({ effort, description: CODEX_REASONING_DESCRIPTIONS[effort] ?? effort })),
+      }
+    : { supported_reasoning_levels: [] };
+}
+
 /**
  * The catalog for `models`. Entries take their instructions and limits from
  * the installed Codex's bundled models. Null when Codex can't be asked.
  */
-export async function buildCodexModelCatalog(configPath: string, models: ReadonlyArray<{ id: string; label?: string }>): Promise<string | null> {
+export async function buildCodexModelCatalog(configPath: string, models: ReadonlyArray<ConfigPatchModel>): Promise<string | null> {
   try {
     const bundled = JSON.parse(await runCodexDebugModels(configPath, ['--bundled'])) as { models?: JsonObject[] };
     const base = bundled.models?.[0];
@@ -46,8 +69,7 @@ export async function buildCodexModelCatalog(configPath: string, models: Readonl
         slug: model.id,
         display_name: model.label ?? model.id,
         description: '',
-        default_reasoning_level: 'medium',
-        supported_reasoning_levels: [{ effort: 'medium', description: 'Default' }],
+        ...codexReasoningFields(model),
         // The bundled GPT entries use tools other models can't call.
         shell_type: 'shell_command',
         apply_patch_tool_type: 'freeform',

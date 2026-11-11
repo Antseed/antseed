@@ -944,7 +944,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     troubleshooting: [
       {
         problem: '`no_default_route`',
-        fix: 'The model id `antseed` routes to the model picked in the desktop app, and none is picked. Use a concrete id from the model test.',
+        fix: 'The model id `antseed` routes to the buyer\'s default route, and none is set. Use a concrete id from the model test.',
       },
       {
         problem: '`model_not_found … No policy-allowed peer currently serves model`',

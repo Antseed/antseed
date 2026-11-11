@@ -23,7 +23,7 @@ import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '..
 import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
 import { createSerialQueue } from '../../serial-queue.js';
 import { oncePerGatewayKey } from './once-per-key.js';
-import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
+import { APP_MODEL_MIN_TRUST, fetchGatewayModelEntries, toGatewayModel, trustedAppEntries, type GatewayModel } from '../../gateway/models.js';
 import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';
 import { getGatewaySettings } from '../../gateway/settings.js';
 import {
@@ -168,7 +168,7 @@ function patchTarget(endpoint: GatewayEndpoint, { models, recommended }: AppMode
   return {
     origin: endpoint.origin,
     apiKey: endpoint.apiKey,
-    models: models.map((model) => ({ id: model.id, label: model.label })),
+    models: models.map((model) => ({ id: model.id, label: model.label, ...(model.reasoning ? { reasoning: true } : {}) })),
     // An app without a model of its own starts on one that works without
     // funds; a model the user picked inside the app is kept.
     ...(recommended[0] ? { defaultModel: recommended[0].id } : {}),
@@ -234,9 +234,12 @@ async function syncRelays(): Promise<void> {
   await syncWslRelays(hosts, target.port, log, target.upstreamHost);
 }
 
-async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {
+async function textModels(endpoint: GatewayEndpoint, fresh: boolean): Promise<AppModels> {
   try {
-    const entries = await fetchGatewayModelEntries(endpoint);
+    // Only models a trusted seller serves, so apps don't list ones from low-trust sellers alone.
+    const all = await fetchGatewayModelEntries(endpoint, { force: fresh });
+    const entries = trustedAppEntries(all);
+    if (entries.length < all.length) log(`Apps list ${entries.length} of ${all.length} models: the rest have no seller at trust ${APP_MODEL_MIN_TRUST} or more`);
     const models = entries.map(toGatewayModel).filter((model) => model.type === null || model.type === 'text');
     return { models, recommended: recommendAppModels(toChatModels(entries)) };
   } catch (err) {
@@ -250,8 +253,8 @@ async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {
  * caller is adding) fails, it is rethrown after the rest are wired, so the
  * click that asked for it sees the error.
  */
-async function applyPatches(names: string[], requiredApp?: string): Promise<void> {
-  const modelsFor = oncePerGatewayKey(textModels);
+async function applyPatches(names: string[], requiredApp?: string, options: { freshModels?: boolean } = {}): Promise<void> {
+  const modelsFor = oncePerGatewayKey((endpoint: GatewayEndpoint) => textModels(endpoint, options.freshModels === true));
   let addError: Error | null = null;
   for (const name of names) {
     try {
@@ -332,14 +335,17 @@ export function disconnectApp(name: string): Promise<ConnectedAppsState> {
 }
 
 /**
- * Re-applies every connected app: at launch, and after the gateway, its key
- * or the key mode changed. `restart` bounces running apps so they read the
- * new address or key (not needed for a launch-time restore of the same one).
+ * Re-applies every connected app: at launch, and after the gateway, its key,
+ * the key mode or the privacy mode changed. `restart` bounces running apps so
+ * they read the new address or key (not needed for a launch-time restore of
+ * the same one, or for a new model list on the same key). `freshModels` reads
+ * the model list past its cache, which a read that began under the old
+ * routing policy may have filled.
  */
-export function reconnectAllApps(options: { restart?: boolean } = {}): Promise<ConnectedAppsState> {
+export function reconnectAllApps(options: { restart?: boolean; freshModels?: boolean } = {}): Promise<ConnectedAppsState> {
   return serialized(async () => {
     if (connected.length === 0 || machineWideChangesDisabled()) return getConnectedAppsState();
-    await applyPatches(connected);
+    await applyPatches(connected, undefined, { freshModels: options.freshModels === true });
     await persist();
     if (options.restart) await restartApps(connected);
     return getConnectedAppsState();

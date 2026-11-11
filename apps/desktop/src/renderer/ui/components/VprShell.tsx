@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { BubbleChatIcon, DashboardSquare01Icon, LinkSquare02Icon, PencilEdit02Icon, SidebarLeftIcon } from '@hugeicons/core-free-icons';
+import { BubbleChatIcon, PencilEdit02Icon, SidebarLeftIcon } from '@hugeicons/core-free-icons';
 import { Logo, LogoMark } from '@antseed/ui';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
@@ -10,7 +10,7 @@ import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
 import { homeProgress } from '../../modules/app/home-progress';
 import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
-import { navViews } from './viewRegistry';
+import { navViews, type NavView } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
 import { NetworkAlertBanner } from './NetworkAlertBanner';
@@ -138,9 +138,6 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
 
   const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
-  const openDashboard = useCallback(() => {
-    void openGatewayConsole('/');
-  }, []);
   // A remote gateway pays from its own wallet: Add funds opens its console's
   // Wallet page, never this computer's checkout.
   const gatewayMode = gateway.data?.status.mode;
@@ -249,30 +246,15 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
         )}
         <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={addFunds} compact={collapsed} />
-        <button
-          type="button"
-          className={styles.navButton}
-          onClick={openDashboard}
-          aria-label={collapsed ? 'Dashboard' : undefined}
-          title="Open your gateway dashboard in the browser"
-        >
-          <HugeiconsIcon icon={DashboardSquare01Icon} size={18} strokeWidth={1.7} />
-          <span className={styles.navLabel}>Dashboard</span>
-          <HugeiconsIcon icon={LinkSquare02Icon} size={14} strokeWidth={1.8} className={styles.navExternal} />
-        </button>
-        {bottomNavEntries.map(({ view, nav }) => (
-          <button
-            key={view}
-            type="button"
-            className={`${styles.navButton}${activeView === view ? ` ${styles.navButtonActive}` : ''}`}
-            aria-current={activeView === view ? 'page' : undefined}
-            aria-label={collapsed ? nav.label : undefined}
-            title={collapsed ? nav.label : undefined}
-            onClick={() => onSelectView(view)}
-          >
-            <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
-            <span className={styles.navLabel}>{nav.label}</span>
-          </button>
+        {/* Gateway, then Settings: both open in the app. */}
+        {bottomNavEntries.map((entry) => (
+          <SidebarNavItem
+            key={entry.view}
+            entry={entry}
+            active={activeView === entry.view}
+            collapsed={collapsed}
+            onSelectView={onSelectView}
+          />
         ))}
         <p className={styles.status} title={collapsed ? `${gatewayStatusText(gatewayStatus)} · v${appVersion}` : undefined}>
           <span
@@ -307,5 +289,28 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         <DepositProgressBanner onAddFunds={addFunds} onDepositView={activeView === 'deposit'} />
       </main>
     </div>
+  );
+}
+
+/** A nav item pinned to the rail's bottom. It opens its view in the app. */
+export function SidebarNavItem({ entry, active, collapsed, onSelectView }: {
+  entry: NavView;
+  active: boolean;
+  collapsed: boolean;
+  onSelectView: (view: ViewName) => void;
+}) {
+  const { view, nav } = entry;
+  return (
+    <button
+      type="button"
+      className={`${styles.navButton}${active ? ` ${styles.navButtonActive}` : ''}`}
+      aria-current={active ? 'page' : undefined}
+      aria-label={collapsed ? nav.label : undefined}
+      title={collapsed ? nav.label : undefined}
+      onClick={() => onSelectView(view)}
+    >
+      <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
+      <span className={styles.navLabel}>{nav.label}</span>
+    </button>
   );
 }

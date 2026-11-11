@@ -27,6 +27,7 @@ import {
   updateGatewaySettings,
 } from '../gateway/settings.js';
 import { reconnectAllApps } from '../connected-apps/patching/connection.js';
+import { readPrivacy, switchPrivacy, type PrivacySwitchDeps } from '../gateway/privacy-switch.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
 import { openAgent } from '../agent-open.js';
 import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
@@ -132,9 +133,24 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
 
   ipcMain.handle('gateway:get-key-info', () => getGatewayKeyInfo());
 
+  const privacyDeps: PrivacySwitchDeps = {
+    setPrivacy: setGatewayPrivacy,
+    getPrivacy: getGatewayPrivacy,
+    savedPrivacy: () => getGatewaySettings().privacy,
+    gatewayMode: () => getGatewaySettings().mode,
+    // Previews and the model list cached under the old policy would show the
+    // wrong sellers and prices.
+    clearCaches: () => {
+      clearRoutePreviewCache();
+      clearGatewayModelCache();
+    },
+    // Each app's failure is recorded in its row; nothing else is left to report.
+    refreshApps: () => { void reconnectAllApps({ freshModels: true }).catch(() => undefined); },
+  };
+
   ipcMain.handle('gateway:get-privacy', async () => {
     try {
-      return { ok: true, privacy: await getGatewayPrivacy() };
+      return { ok: true, privacy: await readPrivacy(privacyDeps) };
     } catch (err) {
       return errorResult(err);
     }
@@ -143,12 +159,7 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   ipcMain.handle('gateway:set-privacy', async (_event, opts: { mode?: string }) => {
     try {
       const mode = opts?.mode === 'private' ? 'private' : 'anonymous';
-      const privacy = await setGatewayPrivacy(mode);
-      // Previews and the model list cached under the old policy would show the
-      // wrong sellers and prices.
-      clearRoutePreviewCache();
-      clearGatewayModelCache();
-      return { ok: true, privacy };
+      return { ok: true, privacy: await switchPrivacy(mode, privacyDeps) };
     } catch (err) {
       return errorResult(err);
     }

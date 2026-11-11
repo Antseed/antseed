@@ -18,6 +18,18 @@ export const ROUTED_MODEL_ALIAS = 'antseed';
 
 export type JsonObject = Record<string, unknown>;
 
+/** A gateway model as a connected app lists it. */
+export type ConfigPatchModel = {
+  readonly id: string;
+  readonly label?: string;
+  /** A seller reports reasoning support: the app's picker offers effort levels for it. */
+  readonly reasoning?: boolean;
+};
+
+/** Effort levels offered for a reasoning model, where an app lets its config name them. */
+export const CONNECTED_APP_REASONING_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
+export const CONNECTED_APP_DEFAULT_REASONING = 'medium';
+
 /**
  * The model a (re)patch should select: the tool's current selection when it
  * is still one of the target's models (the user picked it in the tool),

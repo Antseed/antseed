@@ -318,7 +318,8 @@ export function initChatModule({
     }
     // The saved choice counts only while it is the model selected: a fallback
     // picked because it went unlisted is still provisional.
-    const keep = listed?.type === 'text' && (current === lastModel || listed.free || splitPinnedModel(current).peerId);
+    // A free one nobody chose moves too once the apps leave it out (no trusted seller).
+    const keep = listed?.type === 'text' && (current === lastModel || (listed.free && !listed.lowTrust) || splitPinnedModel(current).peerId);
     if (keep) return;
     const next = chooseDefaultChatModel(uiState.chatModels, lastModel);
     if (next && next !== current) {

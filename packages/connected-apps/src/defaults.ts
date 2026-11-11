@@ -186,6 +186,28 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
   {
+    name: 'prime-agent',
+    displayName: 'Prime Agent',
+    kind: 'config-patch',
+    method: 'Config patch',
+    toolSlugs: ['prime-agent'],
+    domains: [],
+    pathPrefixes: [],
+    configPatch: {
+      // Prime Agent (Prime Intellect's `prime-agent` CLI) reads pi's
+      // models.json/settings.json schema from ~/.prime/agent on every
+      // platform, in its own files, so it doesn't share pi's provider.
+      format: 'pi',
+      configPath: '~/.prime/agent/models.json',
+      settingsPath: '~/.prime/agent/settings.json',
+      providerKey: 'antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+      api: 'openai-responses',
+      originator: 'prime-agent',
+      installProbe: 'prime-agent',
+    },
+  },
+  {
     name: 'crush',
     displayName: 'Crush',
     kind: 'config-patch',

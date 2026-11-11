@@ -3,7 +3,7 @@ import { Alert02Icon } from '@hugeicons/core-free-icons';
 import { BottomNotice } from './BottomNotice';
 import { dismissConsoleLaunchFailure, openGatewayConsole, useConsoleLaunchFailure } from '../../modules/app/console-launch';
 
-/** Says why a link to the gateway console (Dashboard, API keys) didn't open. */
+/** Says why a link to the gateway console (Gateway, API keys) didn't open. */
 export function ConsoleLaunchNotice({ onOpenSettings }: { onOpenSettings: () => void }) {
   const failure = useConsoleLaunchFailure();
   if (!failure) return null;

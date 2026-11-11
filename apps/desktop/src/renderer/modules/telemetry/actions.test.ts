@@ -17,6 +17,7 @@ describe('telemetrySurfaceForView', () => {
     expect(telemetrySurfaceForView('home')).toBe('home');
     expect(telemetrySurfaceForView('tools')).toBe('apps');
     expect(telemetrySurfaceForView('connection')).toBe('connection');
+    expect(telemetrySurfaceForView('gateway')).toBe('gateway');
   });
 });
 

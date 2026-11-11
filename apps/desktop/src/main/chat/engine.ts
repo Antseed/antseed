@@ -47,7 +47,7 @@ import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
 import type { PiChatEngine } from './engine-types.js';
-import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from '../gateway/catalog.js';
+import { recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
@@ -245,7 +245,9 @@ export function registerPiChatHandlers({
       const endpoint = await getGatewayEndpoint();
       const entries = await fetchGatewayModelEntries(endpoint, { force: payload?.force === true });
       lastEntries = entries;
-      const models: ChatModel[] = toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
+      // Every model, the ones the apps leave out marked: the picker lists the
+      // apps' set and still finds a chat's model among the rest.
+      const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
       return { ok: true, data: models };
     } catch (error) {
       const message = asErrorMessage(error);
@@ -556,7 +558,8 @@ export function registerPiChatHandlers({
       await whenPrivacySettled();
       const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
       lastEntries = entries;
-      return recommendAppModels(toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
+      // Trusted sellers' models first, so a default lands on one; the rest still resolve a saved pick.
+      return recommendAppModels(toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
     },
   };
 }
