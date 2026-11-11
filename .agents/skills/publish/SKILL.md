@@ -149,7 +149,8 @@ packages/*   @antseed/node, @antseed/protocol, @antseed/buyer-core,
 plugins/*    provider-anthropic, provider-claude-code, provider-claude-oauth,
              provider-openai, provider-openai-responses, provider-local-llm,
              provider-typesafe, provider-venice-video, provider-fal-video,
-             provider-fal-image, provider-alibaba-video, router-local
+             provider-fal-image, provider-alibaba-video, provider-irp-router,
+             provider-free-model-router, router-local
 apps/*       @antseed/cli, @antseed/network-stats, @antseed/payments
              @antseed/ants, @antseed/relay, @antseed/gateway-console
 ```

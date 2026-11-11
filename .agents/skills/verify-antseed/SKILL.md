@@ -42,7 +42,7 @@ When a scenario, a test file or a command named here changes, update its row.
 
 ### Gotchas
 
-- `issue-1200-spendingauth-catchup` needs `tb.faults.loseNeedAuths`, armed right before the chat it targets. Without it the scenario passes on buggy code. A delay of about 5 s on a 402 catch-up is the seller waiting (`DEFAULT_CATCH_UP_WAIT_MS`), not a timeout.
+- `issue-1200-spendingauth-catchup` needs `tb.faults.loseNeedAuths`, armed right before the chat it targets. The seller sends the catch-up NeedAuth twice for chat 3 (when the request arrives, and with its 402), so the scenario loses both. With either one delivered, NeedAuth signs the target, the 402 negotiator never signs, and the scenario passes on buggy code. A delay of about 5 s on a 402 catch-up is the seller waiting (`DEFAULT_CATCH_UP_WAIT_MS`), not a timeout.
 - Read `cumulativeSigned` from `tb.channels()` as `BigInt`: `payment:spend` events do not report the negotiator's catch-up.
 - Without `topology.payments.minBudgetPerRequestUsdc`, SDK sellers use 0.5 USDC, the amount the #1200 bug over-signs. `stressTopology()` sets the CLI seller's 0.01.
 - Waiting does not move Anvil's clock: use `tb.warp`, for example 15 min + 60 s before `withdraw()` after `tb.buyerRequestClose()`. CLI commands that check the time need `tb.cli(args, { clock: 'chain' })`.
