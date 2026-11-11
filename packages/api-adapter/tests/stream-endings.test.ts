@@ -142,6 +142,8 @@ const doneMarkers = (events: SseEvent[]): SseEvent[] => events.filter((event) =>
 const finishChunks = (events: SseEvent[]): Json[] => jsonFrames(events).filter((chunk) => typeof chunk.choices?.[0]?.finish_reason === 'string');
 
 const FAILURE = 'a translated stream must report the failure';
+/** The events that end a Responses stream: a stream has exactly one of them. */
+const RESPONSES_ENDINGS = ['response.completed', 'response.incomplete', 'response.failed'];
 
 /** Asserts the client was told, in its own protocol, that the answer failed, and never told that it finished. */
 const EXPECT_FAILED: Record<StreamProtocol, (events: SseEvent[], message: string) => void> = {
@@ -226,8 +228,7 @@ function expectFinished(to: StreamProtocol, events: SseEvent[], reason: string |
     expect(finishChunks(events).map((chunk) => chunk.choices[0].finish_reason)).toEqual([reason]);
     return;
   }
-  expect(names(events)).not.toContain('response.failed');
-  expect(names(events).filter((name) => name === 'response.completed')).toHaveLength(1);
+  expect(names(events).filter((name) => RESPONSES_ENDINGS.includes(name ?? ''))).toEqual(['response.completed']);
 }
 
 describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
@@ -311,6 +312,21 @@ describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
     const adapter = createStreamingAdapter({ from, to, fallbackModel: 'm' })!;
     const sent = source.text.flatMap((frame) => adapter.adaptChunk({ requestId: 'req', data: encoder.encode(frame), done: false }));
     expect(streamedText(to, parseSse(sent.map((chunk) => decoder.decode(chunk.data)).join('')))).toBe('The answer is');
+  });
+
+  it('keeps the request id, and marks only its last chunk done', () => {
+    const run = (chunks: Array<{ data: Uint8Array; done: boolean }>) => {
+      const adapter = createStreamingAdapter({ from, to, fallbackModel: 'm' })!;
+      return chunks.flatMap((chunk) => adapter.adaptChunk({ requestId: 'req-7', ...chunk }));
+    };
+    // A whole answer, a cut one and a failed one; with an empty final chunk, and with everything in the final chunk.
+    for (const frames of [[...source.text, ...source.finish], source.text, [...source.text, RELAY_ERROR_FRAME]]) {
+      const data = encoder.encode(frames.join(''));
+      for (const sent of [run([{ data, done: false }, { data: new Uint8Array(0), done: true }]), run([{ data, done: true }])]) {
+        expect(sent.map((chunk) => chunk.requestId)).toEqual(sent.map(() => 'req-7'));
+        expect(sent.map((chunk) => chunk.done)).toEqual([...sent.slice(1).map(() => false), true]);
+      }
+    }
   });
 });
 
@@ -464,6 +480,13 @@ describe('a Responses stream that ends with response.incomplete', () => {
     expect(answer.choices[0].finish_reason).toBe(finishReason);
     expect(answer.usage).toEqual(finishes[0]!.usage);
   });
+
+  // A tool call the limit cut is not a hand-off to the client's tool.
+  it.each([[MESSAGES, 'max_tokens'], [CHAT, 'length']] as const)('reports a tool call cut by the limit to a %s client as cut', (to, reason) => {
+    const events = translate(RESPONSES, to, [...SOURCES[RESPONSES].tool, incomplete('max_output_tokens')]);
+    expectFinished(to, events, reason);
+    expect(streamedArguments(to, events)).toBe('{"path":');
+  });
 });
 
 describe('a Responses stream that ends with response.failed', () => {
@@ -473,6 +496,12 @@ describe('a Responses stream that ends with response.failed', () => {
 
   it.each([MESSAGES, CHAT] as const)('reports the failure to a %s client', (to) => {
     EXPECT_FAILED[to](translate(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, failed]), 'backend failed');
+  });
+
+  it.each([MESSAGES, CHAT] as const)('reports the failure in the middle of a tool call to a %s client', (to) => {
+    const events = translate(RESPONSES, to, [...SOURCES[RESPONSES].tool, failed]);
+    EXPECT_FAILED[to](events, 'backend failed');
+    expectToolCallLeftOpen(to, events);
   });
 
   it('keeps the error code for a Chat client', () => {
