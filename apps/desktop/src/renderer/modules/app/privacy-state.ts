@@ -165,9 +165,10 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
   requestedPrivacyMode = null;
   privacyGeneration += 1;
   if (!confirmed) {
-    // Keep showing what was asked for, held, until the gateway can say.
+    // Keep showing what was asked for, held and still pending (not in
+    // effect), until the gateway can say.
     privacyUnconfirmedError = error;
-    publishPrivacySwitch({ switching: true, error });
+    publishPrivacySwitch({ switching: true, error, target });
     window.setTimeout(() => { void privacyResource.refresh(); }, PRIVACY_RECHECK_MS);
     return;
   }

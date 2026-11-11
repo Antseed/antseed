@@ -139,7 +139,9 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
     setPendingSwitch({ mode, explain, privateHistory: leaving, conversationId: openChat, apply });
   }
 
-  const pending = switching && !error && target ? target : null;
+  // Pending until the gateway confirms, error or not: a failed write whose
+  // readback also failed leaves the mode unknown, never in effect.
+  const pending = switching && target ? target : null;
   const currentOption = OPTIONS.find((option) => option.mode === current);
   const hint = error
     ?? (pending ? pendingHint(pending)
@@ -225,7 +227,7 @@ export function PrivacyNote({ control, className, switches = 0, plain = false }:
   if (!control.hint) return null;
   // A mode still being applied isn't in effect: no Private styling until it is,
   // and the note stays up so the user knows apps aren't covered yet.
-  const pending = control.pending !== null && !control.error;
+  const pending = control.pending !== null;
   const isPrivate = control.current === 'private' && !pending;
   const dismissed = seen[control.current] === true;
   if (dismissed && !reminding && !control.error && !pending) return null;

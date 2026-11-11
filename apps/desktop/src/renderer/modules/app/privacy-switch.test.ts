@@ -115,7 +115,8 @@ describe('requestPrivacyMode', () => {
     const done = requestPrivacyMode('private');
     calls[0].settle({ ok: false, error: 'nope' });
     await done;
-    expect(getPrivacySwitchState()).toEqual({ switching: true, error: 'nope' });
+    // Still pending, not in effect: the gateway hasn't said which mode it is in.
+    expect(getPrivacySwitchState()).toEqual({ switching: true, error: 'nope', target: 'private' });
     readable = true;
     await privacyResource.refresh();
     expect(getPrivacySwitchState()).toEqual({ switching: false, error: 'nope' });

@@ -894,6 +894,9 @@ export function initChatModule({
     uiState.chatOpeningConversationId = convId;
     clearChatNotices();
     uiState.chatFundsNotice = fundsNoticeByConversation.get(convId) ?? null;
+    // Its sending state shows while it loads: a prompt already on its way to
+    // it (a new chat's first) keeps the composer busy.
+    syncActiveConversationSendingState();
     notifyUiStateChanged();
 
     // A model choice still being saved, or made while this read was out, is
@@ -1178,14 +1181,18 @@ export function initChatModule({
         const convId = await createConversationForModel(modelId, { activate: false });
         // Stopped while the chat was being made: it stays, empty, and nothing is sent.
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        // The new chat's send is this prompt's from here on, before it opens:
+        // a second submit while it loads finds it busy, and Stop there cancels this.
+        const reserved = convId ? beginSend(convId) : null;
         // Only the draft on screen owns the composer's sending state.
         if (shownDraft === draftToken) {
           shownDraft = 0;
           if (uiState.chatActiveConversation === null) setDraftSending(false);
         }
-        if (!convId) return;
+        if (!convId || reserved === null) return;
         if (draftVersion === newChatDraftVersion) await openConversation(convId);
-        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit });
+        if (!ownsSend(convId, reserved)) return;
+        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
       })();
       return;
     }
@@ -1231,21 +1238,30 @@ export function initChatModule({
   }
 
   /** `privateAtSubmit`: Private was on screen when Send was pressed (read now when not given). */
-  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean } = {}): void {
+  /**
+   * `reservedToken`: the send a new chat's first prompt took before the chat
+   * opened (see `sendMessage`); it goes out under that ownership, and not at
+   * all if Stop took it meanwhile.
+   */
+  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean; reservedToken?: number } = {}): void {
     const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
-    if (isConversationSending(convId)) {
+    const reserved = options.reservedToken;
+    if (reserved !== undefined) {
+      if (!ownsSend(convId, reserved)) return;
+    } else if (isConversationSending(convId)) {
       showChatError('This conversation already has a request in progress.');
       return;
     }
     // Refused at once when it plainly can't go; the send itself checks again.
     if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
       showChatError(PRIVATE_HISTORY_REFUSAL);
+      if (reserved !== undefined) endSend(convId, reserved);
       return;
     }
     const content = text.trim();
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
-    const token = beginSend(convId);
+    const token = reserved ?? beginSend(convId);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
       try {
@@ -1475,9 +1491,10 @@ export function initChatModule({
   const imageRetryByConversation = new Map<string, ImageRequest>();
 
   /** The prompt is already in the conversation, from the first attempt. */
-  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false): Promise<void> {
+  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
-    const token = beginSend(convId);
+    if (reservedToken !== undefined && !ownsSend(convId, reservedToken)) return;
+    const token = reservedToken ?? beginSend(convId);
     queueScrollChatToBottom();
     try {
       const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
@@ -1533,6 +1550,8 @@ export function initChatModule({
     if (!uiState.chatActiveConversation && shownDraft) return;
     void (async () => {
       let convId = uiState.chatActiveConversation;
+      // A new chat's send, taken before it opens (as for a first text message).
+      let reserved: number | undefined;
       if (!convId) {
         const textModelId = uiState.chatSelectedModelId;
         if (!textModelId) {
@@ -1548,6 +1567,7 @@ export function initChatModule({
         setDraftSending(true);
         convId = await createConversationForModel(textModelId, { activate: false });
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        if (convId) reserved = beginSend(convId);
         if (shownDraft === draftToken) {
           shownDraft = 0;
           if (uiState.chatActiveConversation === null) setDraftSending(false);
@@ -1555,15 +1575,18 @@ export function initChatModule({
         if (!convId) return;
         // Follow-ups in this chat are image requests too.
         if (draftVersion === newChatDraftVersion) await openConversation(convId, { keepImageModel: true });
+        // Stopped while the chat opened: nothing is sent.
+        if (reserved !== undefined && !ownsSend(convId, reserved)) return;
       }
       if (!convId) return;
-      if (isConversationSending(convId)) {
+      if (reserved === undefined && isConversationSending(convId)) {
         showChatError('This conversation already has a request in progress.');
         return;
       }
       // An earlier image of a chat sent in Private would go out as the one to edit.
       if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
         showChatError(PRIVATE_HISTORY_REFUSAL);
+        if (reserved !== undefined) endSend(convId, reserved);
         return;
       }
 
@@ -1613,7 +1636,7 @@ export function initChatModule({
         prompt: requestPrompt,
         model: imageModelId,
         ...(editing ? { sourceImageAttachmentId } : {}),
-      }, privateAtSubmit);
+      }, privateAtSubmit, reserved);
     })();
   }
 

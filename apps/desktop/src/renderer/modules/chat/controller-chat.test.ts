@@ -485,6 +485,59 @@ describe('chat controller', () => {
     expect(uiState.chatActiveConversation).toBe('conv-a');
   });
 
+  it('a first message keeps its new chat busy while the chat opens, so a second submit cannot displace it', async () => {
+    const opening = deferred<void>();
+    const conversations = [conv('conv-a', 'model-a')];
+    const base = (id: string) => {
+      const found = conversations.find((candidate) => candidate.id === id);
+      return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+    };
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiGetConversation: async (id: string) => {
+        if (id !== 'conv-a') await opening.promise;
+        return base(id);
+      },
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('first');
+    await waitFor(() => uiState.chatActiveConversation !== null && uiState.chatActiveConversation !== 'conv-a');
+    // The chat is still loading: the composer stays busy and a second submit is refused.
+    expect(uiState.chatSending).toBe(true);
+    api.sendMessage('second');
+    opening.resolve();
+    await waitFor(() => sends.length >= 1);
+    await tick(20);
+    expect(sends.map((send) => send.content)).toEqual(['first']);
+  });
+
+  it('a first image keeps its new chat busy while the chat opens, so a second submit cannot displace it', async () => {
+    const opening = deferred<void>();
+    const conversations = [conv('conv-a', 'model-a')];
+    const base = (id: string) => {
+      const found = conversations.find((candidate) => candidate.id === id);
+      return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+    };
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        if (id !== 'conv-a') await opening.promise;
+        return base(id);
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    uiState.chatImageModelId = 'image-model';
+    await api.refreshChatConversations();
+    api.generateImage('a cat');
+    await waitFor(() => uiState.chatActiveConversation !== null && uiState.chatActiveConversation !== 'conv-a');
+    expect(uiState.chatSending).toBe(true);
+    api.generateImage('a dog');
+    opening.resolve();
+    await waitFor(() => chatGenerateImage.mock.calls.length >= 1);
+    await tick(20);
+    expect(chatGenerateImage.mock.calls.map(([request]) => request.prompt)).toEqual(['a cat']);
+  });
+
   it('a background chat finishing keeps Sending and Stop on a new chat\'s first message still being prepared', async () => {
     const streamEnded = deferred<{ ok: boolean }>();
     const creation = deferred<void>();

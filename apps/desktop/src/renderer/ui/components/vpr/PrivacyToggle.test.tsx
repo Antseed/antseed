@@ -51,3 +51,16 @@ it('keeps a pending note up after "Got it", without the reminder that fades it o
     (globalThis as { window?: unknown }).window = previousWindow;
   }
 });
+
+it('keeps an unconfirmed switch pending after an error, never shown as Private in effect', () => {
+  // The write failed and so did the readback: connected apps may still be on Anonymous.
+  const failed = control({ pending: 'private', error: 'gateway down', hint: 'gateway down' });
+  const toggle = renderToStaticMarkup(<PrivacyToggle control={failed} />);
+  expect(toggle).toContain(styles.pending);
+  expect(toggle).not.toContain(styles.activePrivate);
+
+  const note = renderToStaticMarkup(<PrivacyNote control={failed} />);
+  expect(note).toContain('gateway down');
+  expect(note).not.toContain('<b>Private.</b>');
+  expect(note).not.toContain(styles.notePrivate);
+});

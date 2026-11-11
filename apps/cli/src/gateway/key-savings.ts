@@ -43,10 +43,9 @@ export function savingsJson(savings: KeySavings | null) {
  */
 export function keysUsage(store: GatewayStore, ids: readonly string[], prices: RetailPriceMap | null) {
   const keys = [...new Set(ids.map((id) => id.trim()))].filter((id) => store.getKey(id))
-  // Only lifetime spend is used, so only that period is computed.
-  const spent = keys.reduce((sum, id) => sum + store.spendByPeriod({ keyId: id }, undefined, ['total']).total, 0)
-  // Lifetime request counts for every key in one batched read.
+  // Lifetime requests and spend for every key in one batched read.
   const summaries = store.keyUsageSummaries(keys, 0)
+  const spent = keys.reduce((sum, id) => sum + (summaries.get(id)?.spentUsdc ?? 0), 0)
   return {
     requests: keys.reduce((sum, id) => sum + (summaries.get(id)?.requests ?? 0), 0),
     spent_usd: usdcToDecimalString(spent),
