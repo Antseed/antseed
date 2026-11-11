@@ -300,11 +300,15 @@ describe('the failure a client is told', () => {
     expect(error).toEqual({ error: { message: 'upstream failed', type } });
   });
 
+  // A failed Responses answer's error code is one of a fixed set: the source's code maps onto it.
   it.each([
-    [CHAT, 'server_error'],
-    [MESSAGES, 'overloaded_error'],
-  ] as const)('keeps the error code of a %s stream for a Responses client', (from, code) => {
-    expect(failedResponse(translate(from, RESPONSES, [SOURCES[from].errorEvent])).error).toEqual({ code, message: 'upstream failed' });
+    ['a Chat server_error', CHAT, SOURCES[CHAT].errorEvent, 'server_error'],
+    ['a Messages overloaded_error', MESSAGES, SOURCES[MESSAGES].errorEvent, 'server_error'],
+    ['a Messages rate_limit_error', MESSAGES, frame({ type: 'error', error: { type: 'rate_limit_error', message: 'upstream failed' } }, 'error'), 'rate_limit_exceeded'],
+    ['a Chat rate_limit_exceeded', CHAT, frame({ error: { message: 'upstream failed', type: 'requests', code: 'rate_limit_exceeded' } }), 'rate_limit_exceeded'],
+    ['a Chat context_length_exceeded', CHAT, frame({ error: { message: 'upstream failed', type: 'invalid_request_error', code: 'context_length_exceeded' } }), 'server_error'],
+  ] as const)('gives a Responses client a Responses error code for %s', (_label, from, errorEvent, code) => {
+    expect(failedResponse(translate(from, RESPONSES, [errorEvent])).error).toEqual({ code, message: 'upstream failed' });
   });
 
   it('uses a generic type and code when the upstream names none', () => {
@@ -317,8 +321,8 @@ describe('the failure a client is told', () => {
   });
 
   it('prefers the error code to its type', () => {
-    const chunk = frame({ error: { type: 'invalid_request_error', code: 'context_length_exceeded', message: 'too long' } });
-    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'context_length_exceeded', message: 'too long' });
+    const chunk = frame({ error: { type: 'invalid_request_error', code: 'rate_limit_exceeded', message: 'slow down' } });
+    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'rate_limit_exceeded', message: 'slow down' });
   });
 
   it.each([
@@ -330,7 +334,7 @@ describe('the failure a client is told', () => {
 
   it('keeps a string error type when the code is a number', () => {
     const chunk = frame({ error: { code: 429, type: 'rate_limit_error', message: 'slow down' } });
-    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'rate_limit_error', message: 'slow down' });
+    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'rate_limit_exceeded', message: 'slow down' });
   });
 
   it('keeps relay error text that reads as JSON', () => {
