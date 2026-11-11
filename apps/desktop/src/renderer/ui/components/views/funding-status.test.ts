@@ -89,6 +89,14 @@ test('a $1.00 deposit fully held by one session names the seller and the way out
   assert.equal(status.sessions[0]!.unusedBaseUnits, 750_000n);
 });
 
+test('a session signed in full still names what the chain holds for it', () => {
+  const status = deriveFundingStatus({ ...base, reserved: '1', channels: [channel({ cumulativeSigned: '1000000' })] });
+  assert.equal(status.kind, 'all-reserved');
+  assert.equal(status.sessions.length, 1);
+  assert.equal(status.sessions[0]!.heldBaseUnits, 1_000_000n);
+  assert.equal(status.sessions[0]!.unusedBaseUnits, 0n);
+});
+
 test('partial availability below one session block is still blocked', () => {
   const status = deriveFundingStatus({ ...base, available: '0.5', reserved: '1' });
   assert.equal(status.kind, 'all-reserved');

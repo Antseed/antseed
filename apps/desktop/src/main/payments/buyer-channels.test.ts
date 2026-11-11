@@ -94,6 +94,50 @@ test('on-chain snapshots advance cached closing channels to withdrawable', () =>
   assert.equal(laterPoll.status, 'withdrawable');
 });
 
+// The store retires a row when the buyer gives up on it, which does not close the channel.
+for (const retired of ['ghost', 'settled', 'timeout']) {
+  test(`a row the store calls ${retired} reads as active while the chain holds it open`, () => {
+    const row = normalizePaymentChannelSummary({
+      sessionId: `retired-open-${retired}`,
+      status: retired,
+      cooperativeCloseSupported: true,
+      live: false,
+    });
+    assert.ok(row);
+
+    applyChannelOnChainSnapshot(row, { status: 1, deposit: '1000000', settled: '250000', closeRequestedAt: 0 });
+
+    assert.equal(row.status, 'active');
+    assert.equal(row.onChainStateKnown, true);
+    assert.equal(row.onChainDeposit, '1000000');
+    assert.equal(row.onChainSettled, '250000');
+    // Only the live session can be closed by its seller: the row offers the on-chain close.
+    assert.equal(row.cooperativeCloseSupported, false);
+  });
+}
+
+test('a retired row stays retired when the chain has no record of it', () => {
+  const row = normalizePaymentChannelSummary({ sessionId: 'retired-missing', status: 'ghost' });
+  assert.ok(row);
+
+  applyChannelOnChainSnapshot(row, { status: 0, deposit: '0', settled: '0', closeRequestedAt: 0 });
+
+  assert.equal(row.status, 'ghost');
+  assert.equal(row.onChainStateKnown, false);
+});
+
+test('a retired row keeps the ended status the chain shows', () => {
+  const settled = normalizePaymentChannelSummary({ sessionId: 'retired-settled', status: 'ghost' });
+  const timedOut = normalizePaymentChannelSummary({ sessionId: 'retired-timed-out', status: 'ghost' });
+  assert.ok(settled && timedOut);
+
+  applyChannelOnChainSnapshot(settled, { status: 2, deposit: '1000000', settled: '1000000', closeRequestedAt: 0 });
+  applyChannelOnChainSnapshot(timedOut, { status: 3, deposit: '1000000', settled: '0', closeRequestedAt: 900 });
+
+  assert.equal(settled.status, 'settled');
+  assert.equal(timedOut.status, 'timedout');
+});
+
 test('runInBatches processes active-looking channels beyond the first batch', async () => {
   const processed: number[] = [];
   await runInBatches(Array.from({ length: 14 }, (_, index) => index), 12, async (index) => {

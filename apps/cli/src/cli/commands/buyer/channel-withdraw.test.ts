@@ -136,6 +136,37 @@ for (const operation of ['list', 'request-close', 'withdraw', 'close'] as const)
   });
 }
 
+// The store retires a row when the buyer gives up on it, which does not close the channel: the chain decides.
+for (const status of ['ghost', 'settled', 'timeout'] as const) {
+  test(`channels request-close starts the exit for a ${status} row the chain holds open`, async (context) => {
+    const harness = await buyerCommandHarness(context);
+    const id = '0x' + 'b1'.repeat(32);
+    harness.seed(buyerChannel(id, harness.buyer, { status }));
+    const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+    context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`Unexpected process.exit(${code})`); });
+
+    const { stdout } = await harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id, '--json'], { [id]: onChain(harness.buyer, 1) });
+
+    assert.deepEqual(JSON.parse(stdout), { channelId: id, transaction: 'close-tx', withdrawAfterSeconds: CHANNEL_CLOSE_GRACE_PERIOD_SECONDS });
+    assert.equal(requestClose.mock.callCount(), 1);
+  });
+}
+
+test('channels request-close refuses a row the chain shows ended', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'b2'.repeat(32);
+  harness.seed(buyerChannel(id, harness.buyer, { status: 'ghost' }));
+  const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+
+  await assert.rejects(
+    harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id, '--json'], { [id]: onChain(harness.buyer, 2) }),
+    /process\.exit\(1\)/,
+  );
+
+  assert.equal(requestClose.mock.callCount(), 0);
+});
+
 // `channels` declares --json too, so commander gives it the flag: every placement a user can type must print JSON.
 for (const placement of ['after the subcommand', 'before the subcommand'] as const) {
   const argv = (subcommand: string, ...rest: string[]) => (placement === 'after the subcommand'

@@ -30,7 +30,12 @@ test('formatChannelLockedAmount shows the recoverable amount, not the raw reserv
   assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '5000000', onChainSettled: '700000', cumulativeSigned: '0' }), '$4.30 locked');
   // Signed-but-unsettled spend reduces what shows as locked.
   assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '1000000', onChainSettled: '0', cumulativeSigned: '630000' }), '$0.37 locked');
-  assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '1000000', onChainSettled: '0', cumulativeSigned: '1000000' }), 'No funds locked');
+});
+
+test('formatChannelLockedAmount names what a fully signed channel still holds on-chain', () => {
+  assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '1000000', onChainSettled: '0', cumulativeSigned: '1000000' }), '$1.00 unsettled');
+  assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '1000000', onChainSettled: '250000', cumulativeSigned: '2000000' }), '$0.75 unsettled');
+  assert.equal(formatChannelLockedAmount({ onChainStateKnown: true, onChainDeposit: '1000000', onChainSettled: '995000', cumulativeSigned: '1000000' }), '<$0.01 unsettled');
 });
 
 test('compareChannelsByLockedAmount sorts highest recoverable amount first', () => {
@@ -63,13 +68,16 @@ test('isCurrentChannelStatus keeps only channels that still hold funds', () => {
   }
 });
 
-test('isFundedCurrentChannel hides channels only after confirming nothing is recoverable', () => {
+test('isFundedCurrentChannel hides channels only after confirming the chain holds nothing', () => {
   assert.equal(isFundedCurrentChannel({ status: 'active', onChainStateKnown: false, onChainDeposit: '0', onChainSettled: '0', cumulativeSigned: '0' }), true);
   assert.equal(isFundedCurrentChannel({ status: 'active', onChainStateKnown: true, onChainDeposit: '5000000', onChainSettled: '700000', cumulativeSigned: '0' }), true);
   assert.equal(isFundedCurrentChannel({ status: 'active', onChainStateKnown: true, onChainDeposit: '5000000', onChainSettled: '5000000', cumulativeSigned: '0' }), false);
-  // Fully spent via signed-but-unsettled auths — nothing recoverable, hide it.
-  assert.equal(isFundedCurrentChannel({ status: 'active', onChainStateKnown: true, onChainDeposit: '5000000', onChainSettled: '0', cumulativeSigned: '5000000' }), false);
   assert.equal(isFundedCurrentChannel({ status: 'settled', onChainStateKnown: false, onChainDeposit: '5000000', onChainSettled: '0', cumulativeSigned: '0' }), false);
+});
+
+test('isFundedCurrentChannel lists a channel the buyer signed in full while the chain still holds it', () => {
+  // If the seller never settles, withdraw() returns all of it, so it must stay reachable.
+  assert.equal(isFundedCurrentChannel({ status: 'active', onChainStateKnown: true, onChainDeposit: '5000000', onChainSettled: '0', cumulativeSigned: '5000000' }), true);
 });
 
 test('cooperativeCloseRejectionMessage maps actionable rejection codes', () => {
