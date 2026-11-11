@@ -112,6 +112,7 @@ import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
 import type { OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
+import { sendTagOf } from './send-options.js';
 
 /** What the engine knows about a gateway model, for one send. */
 export type ResolvedChatModel = {
@@ -172,10 +173,6 @@ type StreamingRunArgs = [
   permissionModeInput?: unknown,
   options?: OutgoingPrivacy,
 ];
-/** The send id a run's terminal events carry back, when the renderer gave one. */
-function sendTagOf(options: OutgoingPrivacy): { sendId?: number } {
-  return typeof options.sendId === 'number' ? { sendId: options.sendId } : {};
-}
 
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {

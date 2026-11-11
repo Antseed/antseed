@@ -13,7 +13,7 @@ import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
 import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
 import { createSerialQueue } from '../serial-queue.js';
-import { startUnlessClosing } from './start-guard.js';
+import { CLOSING_ERROR, START_CANCELLED_ERROR, StartGenerations, startUnlessCancelled } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
@@ -60,6 +60,7 @@ type Deps = {
 let injected: Deps | null = null;
 let lastError: string | null = null;
 let startPromise: Promise<void> | null = null;
+const localStarts = new StartGenerations();
 /** Starts in flight (ensureLocalGateway calls, including their wait for the plugin install). */
 let startsInFlight = 0;
 /** Whether any start has finished, either way, since launch. */
@@ -162,7 +163,7 @@ export async function ensureLocalGateway(): Promise<void> {
 
 async function startLocalGateway(): Promise<void> {
   await startGate;
-  if (closing) throw new Error('Antseed Desktop is closing');
+  if (closing) throw new Error(CLOSING_ERROR);
   if (getGatewaySettings().mode !== 'local') return;
   const foreignBuyerPort = foreignBuyerGuard().get();
   if (foreignBuyerPort !== null) {
@@ -175,6 +176,14 @@ async function startLocalGateway(): Promise<void> {
     return;
   }
   startPromise ??= (async () => {
+    // A stop (a switch to a remote gateway) overtakes this start: it must not
+    // launch the local gateway afterwards, even mid-preparation.
+    const generation = localStarts.begin();
+    const cancelled = (): string | null => {
+      if (closing) return CLOSING_ERROR;
+      if (localStarts.overtaken(generation) || getGatewaySettings().mode !== 'local') return START_CANCELLED_ERROR;
+      return null;
+    };
     try {
       if (!isLocalRunning()) {
         signerVerified = false;
@@ -184,7 +193,7 @@ async function startLocalGateway(): Promise<void> {
         if (isStoredIdentityUnreadable()) {
           throw new Error(`Your signer key (${encryptedIdentityPath()}) can't be read by this version of the app, so the gateway won't start with a different wallet. A backup was saved next to it. Reopen the app, or reinstall the previous version to read it.`);
         }
-        await startUnlessClosing(() => closing, () => deps().processManager.start({
+        await startUnlessCancelled(cancelled, () => deps().processManager.start({
           mode: 'gateway',
           configPath: ACTIVE_CONFIG_PATH,
           ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
@@ -203,7 +212,8 @@ async function startLocalGateway(): Promise<void> {
       // The gateway waits for its buyer (up to a minute) before it serves.
       const deadline = Date.now() + 90_000;
       while (Date.now() < deadline) {
-        if (closing) throw new Error('Antseed Desktop is closing');
+        const why = cancelled();
+        if (why) throw new Error(why);
         if (await probe(localGatewayOrigin(), 1_500)) {
           await verifyBuyerSigner();
           lastError = null;
@@ -231,6 +241,9 @@ async function localBuyerPort(): Promise<number> {
 
 export async function stopLocalGateway(): Promise<void> {
   signerVerified = false;
+  // Any start in flight is overtaken: it stops what it launched and fails.
+  localStarts.end();
+  await startPromise?.catch(() => undefined);
   await deps().processManager.stop('gateway');
 }
 
@@ -295,8 +308,7 @@ export async function reopenLocalGateway(): Promise<void> {
 /** For quitting: no gateway starts after this, and one that was starting is waited for and stopped. */
 export async function closeLocalGateway(): Promise<void> {
   closing = true;
-  await stopLocalGateway();
-  await startPromise?.catch(() => undefined);
+  // Waits for a start in flight, which stops what it launched.
   await stopLocalGateway();
 }
 

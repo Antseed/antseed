@@ -4,11 +4,11 @@
  * the desktop's key, and persists conversations as pi sessions.
  */
 import { PendingRuns } from './pending-runs.js';
+import { sendStreamHandler } from './send-options.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
   prepareChatAttachments,
-  type PreparedChatAttachment,
   type RawChatAttachment,
 } from './attachments/prepare.js';
 import {
@@ -498,16 +498,7 @@ export function registerPiChatHandlers({
     }
   });
 
-  ipcMain.handle(
-    'chat:ai-send-stream',
-    async (_event, conversationId: string, userMessage: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: unknown, options?: unknown) => {
-      const given = options && typeof options === 'object' ? options as { requirePrivate?: unknown; allowPrivateHistory?: unknown } : {};
-      return await runStreamingPrompt(conversationId, userMessage, model, attachments, permissionMode, {
-        requirePrivate: given.requirePrivate === true,
-        allowPrivateHistory: given.allowPrivateHistory === true,
-      });
-    },
-  );
+  ipcMain.handle('chat:ai-send-stream', sendStreamHandler(runStreamingPrompt));
 
   const abortConversations = async (conversationId?: string): Promise<void> => {
     const trimmedConversationId = typeof conversationId === 'string' ? conversationId.trim() : '';

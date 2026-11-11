@@ -7,18 +7,8 @@
  */
 import { totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
 import type { KeySavings } from './server.js'
-import type { GatewayStore } from './store.js'
+import type { GatewayStore, ModelUsage } from './store.js'
 import { usdcToDecimalString } from './money.js'
-
-/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
-export interface ModelUsage {
-  model: string
-  amountUsdc: number
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-  requests: number
-}
 
 export function keySavings(rows: readonly ModelUsage[], prices: RetailPriceMap): KeySavings | null {
   const totals = totalRetailUsage(rows.map((row) => ({ ...row, serviceName: row.model, requestCount: row.requests })), prices)

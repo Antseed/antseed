@@ -21,7 +21,6 @@ import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
 import { parseServedSelection, type ServedSelection } from '../proxy/route-selection.js'
 import { requestVideoJob } from './video-jobs.js'
-import type { ModelUsage } from './key-savings.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
 export type ApiKeyStatus = 'active' | 'revoked'
@@ -309,6 +308,16 @@ export interface RequestRouter {
   service: string | null
   /** The recommendation tried last (1 = the router's first pick): it served the request unless the request failed. Null when none was tried. */
   rank: number | null
+}
+
+/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
+export interface ModelUsage {
+  model: string
+  amountUsdc: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  requests: number
 }
 
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */

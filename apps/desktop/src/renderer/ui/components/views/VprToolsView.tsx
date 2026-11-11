@@ -15,7 +15,8 @@ import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedbac
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
 import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
 import { offersConnectAnyway } from './app-card-actions';
-import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { appsResource, gatewayResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { createEndpointReads } from './endpoint-reads';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
 import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
@@ -107,10 +108,22 @@ function CopyRow({ label, value, display }: { label: string; value: string; disp
 function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
+  const status = useCachedResource(gatewayResource).data?.status;
+  // Which gateway the card would read: a switch reads the key again.
+  const gatewayKey = status ? `${status.mode} ${status.origin ?? ''}` : '';
+  const reads = useMemo(() => createEndpointReads(() => window.antseedDesktop?.gatewayGetEndpoint?.(), setEndpoint), []);
   useEffect(() => {
-    if (!open || endpoint?.ok) return;
-    void window.antseedDesktop?.gatewayGetEndpoint?.()?.then(setEndpoint);
-  }, [endpoint?.ok, open]);
+    if (!open) {
+      reads.close();
+      return undefined;
+    }
+    // Every opening, focus return and gateway switch reads the key again: it
+    // may have been rotated in the console meanwhile.
+    void reads.refresh();
+    const onFocus = () => { void reads.refresh(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [open, gatewayKey, reads]);
   return (
     <div className={styles.endpointCard}>
       <button type="button" className={styles.endpointHead} aria-expanded={open} onClick={() => setOpen(!open)}>
