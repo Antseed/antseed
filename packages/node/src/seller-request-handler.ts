@@ -717,9 +717,15 @@ export class SellerRequestHandler {
             // and every parked request would end in a 402. Once per spend level,
             // and only for spend the reserve can cover, now or once the top-up
             // being submitted lands (beyond it the channel is closed below).
-            // The stored ceiling can lag the chain (a top-up that landed while
-            // the seller was down): read it before judging the spend too high.
-            if (reserveMax > 0n && spent > reserveMax) reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+            // The stored ceiling of a channel restored from disk can lag the
+            // chain (a top-up that landed while the seller was down): read it
+            // before judging the spend too high. Any other channel is read
+            // only after its top-up wait below: chain reads are rate-limited,
+            // and a read here would turn that one into a no-op, answering 402
+            // before the auths parked on the top-up are accepted.
+            if (reserveMax > 0n && spent > reserveMax && spm.ceilingMayLagChain(session.sessionId)) {
+              reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+            }
             const signable = reserveMax <= 0n || spent <= reserveMax || spm.isTopUpRunning(session.sessionId);
             if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
               this._catchUpPrompted.delete(session.sessionId);

@@ -1885,6 +1885,15 @@ export class SellerPaymentManager {
     return this.getReserveMax(channelId);
   }
 
+  /**
+   * Whether the stored ceiling may be behind the chain: only on a channel
+   * restored from disk, until what the restart lost is made good or its
+   * deposit was read to cover the work.
+   */
+  ceilingMayLagChain(channelId: string): boolean {
+    return this._restartAsks.has(channelId);
+  }
+
   /** Whether the buyer had its window, from the first ask, to send again what a restart lost. */
   private _restartWindowPassed(channelId: string, now = Date.now()): boolean {
     const ask = this._restartAsks.get(channelId);
@@ -2425,7 +2434,13 @@ export class SellerPaymentManager {
         if (onChainState.status === 'active') {
           const windowPassed = this._restartWindowPassed(channel.sessionId);
           if ((this._spent.get(channel.sessionId) ?? 0n) <= onChainState.channel.deposit) {
-            if (windowPassed || this._restartAskExpired(channel.sessionId)) this._restartAsks.delete(channel.sessionId);
+            if (windowPassed || this._restartAskExpired(channel.sessionId)) {
+              // The mark also stood for a ceiling that may lag the chain: take the deposit just read.
+              if (onChainState.channel.deposit > (this._reserveMax.get(channel.sessionId) ?? 0n)) {
+                this._updateReserveCeiling(channel.sessionId, onChainState.channel.deposit);
+              }
+              this._restartAsks.delete(channel.sessionId);
+            }
           } else if (windowPassed && !this.isTopUpRunning(channel.sessionId)) {
             debugLog(`[SellerPayment] The buyer had its chance to send again what the restart lost: closing ${channel.sessionId.slice(0, 18)}...`);
             void this.closeSessionWhenIdle(channel.peerId).catch((err) => {
