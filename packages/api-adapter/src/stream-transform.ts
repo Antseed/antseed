@@ -612,7 +612,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
               // client keeps the message_start value instead of a made-up zero.
               // When they are reported, cache reads are written even at 0, so
               // a cache count message_start showed can't outlive the final split.
-              usage: event.usage.inputTokens > 0
+              usage: reportsInput(event.usage)
                 ? { ...anthropicUsage(event.usage), cache_read_input_tokens: event.usage.cachedInputTokens }
                 : { output_tokens: event.usage.outputTokens },
             },
@@ -922,10 +922,15 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Whether a usage reported any input, fresh or cached (a cache hit can come with a zero prompt count). */
+function reportsInput(usage: TokenUsage): boolean {
+  return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
+}
+
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
   // The input counts are one split: take them together from whichever event
   // reported input, so a stale cached or fresh count can't outlive its total.
-  const input = next.inputTokens > 0 ? next : previous;
+  const input = reportsInput(next) ? next : previous;
   return {
     inputTokens: input.inputTokens,
     outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens,
