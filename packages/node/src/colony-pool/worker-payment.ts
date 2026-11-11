@@ -101,8 +101,8 @@ export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: 
 interface ChannelAccount {
   /** The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it). */
   paid: bigint;
-  /** Answers served, oldest first, not yet covered by `paid`: each one's cost, and `paid` when it was served. */
-  owed: Array<{ cost: bigint; paidBefore: bigint }>;
+  /** The cost of each answer served and not yet covered by `paid`, oldest first. */
+  owed: bigint[];
   /** Cost of every answer served before `owed`. */
   settledCost: bigint;
   /** Requests admitted and still running. */
@@ -130,14 +130,10 @@ export class WorkerPaymentLedger {
       this.accounts.set(key, account);
     }
     if (attributed > account.paid) account.paid = attributed;
-    // Answers paid for leave `owed`, oldest first. One that cost nothing (a few
-    // tokens at a low price) is paid once a payment grew after it: a buyer that
-    // never pays can't run past the limit on answers that cost nothing.
-    while (account.owed.length > 0) {
-      const { cost, paidBefore } = account.owed[0]!;
-      if (account.settledCost + cost > account.paid || (cost === 0n && account.paid <= paidBefore)) break;
-      account.settledCost += cost;
-      account.owed.shift();
+    // Answers paid for leave `owed`, oldest first. One whose cost rounds to
+    // nothing is owed nothing: the buyer's payment never grows for it.
+    while (account.owed.length > 0 && account.settledCost + account.owed[0]! <= account.paid) {
+      account.settledCost += account.owed.shift()!;
     }
     if (account.owed.length + account.running + 1 > MAX_UNPAID_ANSWERS) {
       throw new Error(`Payment for this worker's earlier answers on this channel has not arrived (${account.owed.length} unpaid); retry once it is signed`);
@@ -150,7 +146,7 @@ export class WorkerPaymentLedger {
     const account = this.accounts.get(channel.toLowerCase());
     if (!account) return;
     account.running = Math.max(0, account.running - 1);
-    account.owed.push({ cost, paidBefore: account.paid });
+    account.owed.push(cost);
   }
 
   /** The admitted request on `channel` ended without an answer to pay for. */

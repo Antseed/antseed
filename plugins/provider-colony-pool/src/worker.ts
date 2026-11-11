@@ -428,7 +428,7 @@ export class PoolWorker {
    * more than `maxConcurrency` at once, and it is cancellable throughout.
    */
   private async serve(frame: RequestFrame, ws: WebSocket | null): Promise<void> {
-    const send = (out: WorkerFrame): void => { this.sendOn(ws, out); };
+    const send = (out: WorkerFrame): boolean => this.sendOn(ws, out);
     const fail = (message: string): void => { send({ t: 'response-error', id: frame.id, message }); };
     if (this.active.has(frame.id)) {
       fail('Duplicate request id');
@@ -449,7 +449,7 @@ export class PoolWorker {
     }
   }
 
-  private async run(frame: RequestFrame, signal: AbortSignal, send: (out: WorkerFrame) => void): Promise<void> {
+  private async run(frame: RequestFrame, signal: AbortSignal, send: (out: WorkerFrame) => boolean): Promise<void> {
     if (frame.method !== 'POST' || !ALLOWED_PATHS.has(frame.path)) throw new Error(`Unsupported route ${frame.method} ${frame.path}`);
     const sealedBody = decodeBody(frame.body);
     if (!isSealedRequest(sealedBody)) throw new Error('Refusing an unencrypted request');
@@ -516,7 +516,7 @@ export class PoolWorker {
     inspected: InspectedRequest,
     bound: InspectedRequest['binding'],
     signal: AbortSignal,
-    send: (out: WorkerFrame) => void,
+    send: (out: WorkerFrame) => boolean,
   ): Promise<UsageLike | null> {
     let opened: OpenedRequest;
     let body: Record<string, unknown>;
@@ -547,8 +547,14 @@ export class PoolWorker {
     this.log(bound
       ? `serving ${opened.model} for buyer ${bound.buyer} on channel ${bound.channel.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
-    const status = await this.forwardUpstream(frame, body, opened.sealer, signal, send);
-    // An error answer with no usage (the model refused the request) owes nothing; an answer is owed even when its price rounds to nothing.
+    // Only an answer the pool took whole, on the connection the request came in on, can reach the buyer and be paid.
+    let delivered = true;
+    const status = await this.forwardUpstream(frame, body, opened.sealer, signal, (out) => (delivered = send(out) && delivered));
+    if (!delivered) {
+      this.log('the answer could not be sent to the pool; it is not owed');
+      return null;
+    }
+    // An error answer with no usage (the model refused the request) owes nothing.
     return opened.sealer.usage ?? (status < 400 ? {} : null);
   }
 
@@ -558,7 +564,7 @@ export class PoolWorker {
     body: Record<string, unknown>,
     sealer: OpenedRequest['sealer'],
     signal: AbortSignal,
-    send: (out: WorkerFrame) => void,
+    send: (out: WorkerFrame) => boolean,
   ): Promise<number> {
     // The local model gets its own deadlines: one to answer, then one per chunk.
     const upstreamAbort = new AbortController();

@@ -266,6 +266,17 @@ final class WorkerController: ObservableObject {
         socket.send(.string(text)) { _ in }
     }
 
+    /// Sends `frame` and waits for the socket to take it: false without a socket, or when the send failed.
+    private func sendConfirmed(_ frame: [String: Any]) async -> Bool {
+        guard let socket, let text = try? jsonString(frame) else { return false }
+        do {
+            try await socket.send(.string(text))
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func announceServices() {
         send(["t": "services", "services": sharing ? [config.service] : []])
         if case .serving = status, !sharing { status = .paused }
@@ -473,7 +484,7 @@ final class WorkerController: ObservableObject {
             generation = try EngineChat.generation(of: request)
         } catch {
             // The buyer's request, not this worker, is at fault: answered, never billed, never failed over.
-            return refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer)
+            return await refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer)
         }
         // Taken: the pool now gives it the full first-byte deadline instead of failing over.
         send(["t": "accepted", "id": id])
@@ -494,19 +505,25 @@ final class WorkerController: ObservableObject {
                 await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
             }
             let usage = EngineChat.Response.usage(result)
+            let sent: Bool
             if stream {
                 startStream(id)
                 var tail = try sealer.sealEvent("data: " + jsonString(response.finish(result)))
                 tail += try sealer.sealEvent("data: " + jsonString(EngineChat.Response.usageEvent(usage)), usage: usage)
                 tail += try sealer.sealEvent("data: [DONE]")
                 tail += try sealer.finish()
-                send(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
+                sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
             } else {
                 let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
-                sendBufferedBody(sealed, id: id, status: 200)
+                sent = await sendBufferedBody(sealed, id: id, status: 200)
             }
-            send(["t": "response-end", "id": id])
-            // Only an answer that reached the buyer whole is owed; a failed one is never paid.
+            let ended = await sendConfirmed(["t": "response-end", "id": id])
+            // Only an answer the pool took whole, on the connection the request came in on, can reach the
+            // buyer and be paid: one that failed to send is not owed, so it never holds the channel's credit.
+            guard sent, ended, socket === connection else {
+                log("the answer could not be sent to the pool; it is not owed")
+                return
+            }
             answered = (result.promptTokens, result.completionTokens)
             let calls = result.toolCalls.isEmpty ? "" : " · \(result.toolCalls.count) tool call(s)"
             log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out\(calls) · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
@@ -518,20 +535,22 @@ final class WorkerController: ObservableObject {
 
     /// Answers a request the worker can't serve as asked (a part or role the model
     /// can't read) with a sealed OpenAI error, before any inference.
-    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer) {
+    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer) async {
         let error: [String: Any] = ["error": ["message": message, "type": "invalid_request_error"]]
         guard let body = try? jsonString(error), let sealed = try? sealer.sealBody(Data(body.utf8), usage: nil) else {
             return fail(id, message)
         }
         log("refused a request: \(message)")
-        sendBufferedBody(sealed, id: id, status: status)
+        await sendBufferedBody(sealed, id: id, status: status)
         send(["t": "response-end", "id": id])
     }
 
     /// A whole (not streamed) sealed JSON answer: its response-start and its one chunk.
-    private func sendBufferedBody(_ sealed: Data, id: String, status: Int) {
-        send(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
-        send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+    /// Sends a whole answer; false when the socket didn't take all of it.
+    @discardableResult
+    private func sendBufferedBody(_ sealed: Data, id: String, status: Int) async -> Bool {
+        let started = await sendConfirmed(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
+        return await sendConfirmed(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()]) && started
     }
 
     /// Starts a streamed answer once, at its first generated output: the pool keeps its first-byte deadline

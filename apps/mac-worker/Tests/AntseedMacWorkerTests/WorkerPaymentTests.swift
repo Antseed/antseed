@@ -64,14 +64,19 @@ final class WorkerPaymentTests: XCTestCase {
     }
 
     @MainActor
-    func testAnswersThatCostNothingNeedAPaymentThatGrewAfterThem() {
+    func testAnswersWhosePriceRoundsToZeroAreOwedNothing() {
         let ledger = WorkerPaymentLedger()
-        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+        // Many such answers, and the buyer's payment never grows: none is owed.
+        for _ in 0..<(WorkerPayment.maxUnpaidAnswers * 3) {
             XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
             ledger.served(channel: channel, cost: 0)
         }
+        // Priced answers after them are owed as usual.
+        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+            ledger.served(channel: channel, cost: 9_000)
+        }
         XCTAssertNotNil(ledger.admit(channel: channel, attributed: 0))
-        XCTAssertNil(ledger.admit(channel: channel, attributed: 1))
     }
 
     /// An envelope addressed to `worker`, its binding to `channel` signed by `buyer`.

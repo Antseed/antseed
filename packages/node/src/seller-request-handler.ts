@@ -1,4 +1,5 @@
 import type { PeerAnnouncer } from './discovery/announcer.js';
+import { WORKER_E2E_CAPABILITY } from './colony-pool/worker-crypto.js';
 import type {
   Provider,
   ProviderRequestRefusal,
@@ -523,7 +524,11 @@ export class SellerRequestHandler {
       // covers for free; the rest are paid as usual, never refused. Videos are
       // paid through one-off channels and are not covered.
       let coveredByAllowance = false;
-      if (!isFreeService && !videoRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
+      // A colony pool's workers are paid only by the buyer's signed payments,
+      // which never pay for an answer an allowance covered: their answers are
+      // never covered, so each is paid as usual.
+      const colonyPoolRoute = provider.peerCapabilities?.includes(WORKER_E2E_CAPABILITY) === true;
+      if (!isFreeService && !videoRoute && !colonyPoolRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
         try {
           const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
           const decision = freeTierLimiter.consume({

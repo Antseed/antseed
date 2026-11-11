@@ -439,6 +439,21 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(0);
   });
 
+  it('keeps serving an honest buyer whose answers price at zero, which its payments never grow for', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start({ channelsDomain: { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' } });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    // A positive price at which an answer (5 in, 1 out) rounds to 0 base units.
+    const cheap = { inputUsdPerMillion: 0.001, outputUsdPerMillion: 0.001 };
+    fakePool.send({ t: 'welcome', workerId: worker!.address, accepted: [SERVICE], rejected: [], workerShareBps: 9000, prices: { [SERVICE]: cheap } });
+    await sleep(50);
+    for (const id of ['c1', 'c2', 'c3', 'c4']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    expect(upstream.bodies).toHaveLength(4);
+  });
+
   it('shares one read between requests that arrive while it runs', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let reads = 0;

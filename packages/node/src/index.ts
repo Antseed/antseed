@@ -235,6 +235,7 @@ export {
   type NetworkServiceCatalogPeer,
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
+export { runMigrations, addColumnIfMissing, type Migration } from './storage/migrate.js';
 export { MeteringStorage } from './metering/storage.js';
 export { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 export type { FreeTierConsumption } from './metering/storage.js';

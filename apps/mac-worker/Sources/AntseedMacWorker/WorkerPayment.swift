@@ -90,13 +90,17 @@ enum WorkerPayment {
         return tail.first { $0.worker == wanted }?.amount ?? 0
     }
 
+    private static let domainTypeHash = keccak256(Array("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)".utf8))
+    private static let domainNameHash = keccak256(Array("AntseedChannels".utf8))
+    private static let domainVersionHash = keccak256(Array("1".utf8))
+    private static let spendingAuthTypeHash = keccak256(Array("SpendingAuth(bytes32 channelId,uint256 cumulativeAmount,bytes32 metadataHash)".utf8))
+    private static let workerTailMagic = keccak256(Array("antseed:worker-attribution:v1".utf8))
+
     /// The EIP-712 digest AntseedChannels verifies a SpendingAuth against.
     static func spendingAuthDigest(channel: Data, cumulativeAmount: [UInt8], metadata: Data, chainId: UInt64, channels: Data) -> [UInt8] {
-        let domainType = keccak256(Array("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)".utf8))
-        let domain = keccak256(domainType + keccak256(Array("AntseedChannels".utf8)) + keccak256(Array("1".utf8))
+        let domain = keccak256(domainTypeHash + domainNameHash + domainVersionHash
             + word(chainId) + [UInt8](repeating: 0, count: 12) + Array(channels))
-        let authType = keccak256(Array("SpendingAuth(bytes32 channelId,uint256 cumulativeAmount,bytes32 metadataHash)".utf8))
-        let auth = keccak256(authType + Array(channel) + cumulativeAmount + keccak256(metadata))
+        let auth = keccak256(spendingAuthTypeHash + Array(channel) + cumulativeAmount + keccak256(metadata))
         return keccak256([0x19, 0x01] + domain + auth)
     }
 
@@ -107,7 +111,7 @@ enum WorkerPayment {
         let bytes = [UInt8](metadata)
         let headBytes = 256, trailerBytes = 33, entryBytes = 36
         guard bytes.count >= headBytes + trailerBytes,
-              Array(bytes.suffix(32)) == keccak256(Array("antseed:worker-attribution:v1".utf8)) else { return nil }
+              Array(bytes.suffix(32)) == workerTailMagic else { return nil }
         let count = Int(bytes[bytes.count - trailerBytes])
         guard (1...8).contains(count), bytes.count >= headBytes + trailerBytes + count * entryBytes else { return nil }
         let start = bytes.count - trailerBytes - count * entryBytes
@@ -174,8 +178,8 @@ final class WorkerPaymentLedger {
     private struct Account {
         /// The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it).
         var paid: UInt64 = 0
-        /// Answers served, oldest first, not yet covered by `paid`: each one's cost, and `paid` when it was served.
-        var owed: [(cost: UInt64, paidBefore: UInt64)] = []
+        /// The cost of each answer served and not yet covered by `paid`, oldest first.
+        var owed: [UInt64] = []
         /// Cost of every answer served before `owed`.
         var settledCost: UInt64 = 0
         /// Requests admitted and still running.
@@ -200,12 +204,11 @@ final class WorkerPaymentLedger {
         }
         var account = accounts[key]!
         account.paid = max(account.paid, attributed)
-        // Answers paid for leave `owed`, oldest first. One that cost nothing (a few
-        // tokens at a low price) is paid once a payment grew after it: a buyer that
-        // never pays can't run past the limit on answers that cost nothing.
+        // Answers paid for leave `owed`, oldest first. One whose cost rounds to
+        // nothing is owed nothing: the buyer's payment never grows for it.
         while let first = account.owed.first {
-            let (settled, overflow) = account.settledCost.addingReportingOverflow(first.cost)
-            guard !overflow, settled <= account.paid, first.cost > 0 || account.paid > first.paidBefore else { break }
+            let (settled, overflow) = account.settledCost.addingReportingOverflow(first)
+            guard !overflow, settled <= account.paid else { break }
             account.settledCost = settled
             account.owed.removeFirst()
         }
@@ -223,7 +226,7 @@ final class WorkerPaymentLedger {
         let key = channel.lowercased()
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
-        account.owed.append((cost, account.paid))
+        account.owed.append(cost)
         accounts[key] = account
     }
 

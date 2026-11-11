@@ -434,9 +434,14 @@ workers serve requests it never pays for.
   on the channel at the declared prices, with the buyer's formula. It serves
   a request only while the answers not covered by the payment, plus the
   requests still running there, number fewer than 2. An answer whose price
-  rounds to nothing counts as paid only once a payment grows after it. A buyer
+  rounds to nothing is owed nothing, so it is paid as soon as it is served. A buyer
   that never pays gets two answers per channel, and every channel is an
-  on-chain reserve. Answers that did not reach the buyer whole are not owed.
+  on-chain reserve. Answers that did not reach the buyer whole are not owed,
+  and neither are ones the worker could not send to the pool.
+- **No free allowance.** A seller's free allowance on a priced service never
+  covers a colony pool's requests: the buyer never signs a payment for an
+  answer an allowance covered, so its worker would wait for one forever. Each
+  such request is paid as usual.
 - **Eight workers per channel.** A channel's attribution names at most eight
   workers. The buyer encrypts a request only for workers the channel can
   credit: the ones it credits, the recipients of its requests still awaiting

@@ -75,15 +75,19 @@ describe('worker payments', () => {
     expect(isChargeablePrice({ inputUsdPerMillion: 0, outputUsdPerMillion: 0.6 })).toBe(true);
   });
 
-  it('never lets answers that cost nothing clear the limit without a payment that grew after them', () => {
+  it('owes nothing for answers whose price rounds to zero, so an honest buyer is never locked out', () => {
     const ledger = new WorkerPaymentLedger();
-    for (let i = 0; i < MAX_UNPAID_ANSWERS; i++) {
+    // Many such answers, and the buyer's payment never grows: none is owed.
+    for (let i = 0; i < MAX_UNPAID_ANSWERS * 3; i++) {
       ledger.admit(channel, 0n);
       ledger.served(channel, 0n);
     }
+    // A priced answer after them is owed as usual.
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
     expect(() => ledger.admit(channel, 0n)).toThrow(/unpaid/);
-    // Any payment made after them pays for them: an honest buyer's next payment.
-    ledger.admit(channel, 1n);
   });
 
   it('prices an answer exactly as the buyer does', () => {

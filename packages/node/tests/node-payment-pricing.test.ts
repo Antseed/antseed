@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WORKER_E2E_CAPABILITY } from '../src/colony-pool/worker-crypto.js';
 import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
@@ -1561,8 +1562,9 @@ describe('SellerRequestHandler payment pricing selection', () => {
   });
 
   describe('free allowance on a priced service', () => {
-    const send = async (covered: boolean) => {
+    const send = async (covered: boolean, colonyPool = false) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
+      if (colonyPool) provider.peerCapabilities = [WORKER_E2E_CAPABILITY];
       provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
       const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
@@ -1602,6 +1604,14 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['x-antseed-free-tier']).toBe('covered');
       expect(sendNeedAuth).not.toHaveBeenCalled();
+    });
+
+    it('never covers a colony pool\'s answer, which its worker is paid for only by the buyer', async () => {
+      const { provider, consume, response } = await send(true, true);
+      expect(consume).not.toHaveBeenCalled();
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+      expect(response.headers['x-antseed-free-tier']).toBeUndefined();
     });
 
     it('asks for payment, not a 429, once the allowance does not cover the buyer', async () => {
