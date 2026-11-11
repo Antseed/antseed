@@ -264,6 +264,14 @@ describe('translated streams read SSE as the standard defines it', () => {
       written += feed(textFrame.subarray(blankLine));
       expect(answerOf(to, written).text).toBe(ANSWER);
     });
+
+    it.each([['LF', '\n'], ['CRLF', '\r\n'], ['CR', '\r']] as const)('does not deliver a frame left unfinished when the stream ends, with %s line ends', (_name, eol) => {
+      const frames = SOURCE_STREAMS[from](ANSWER);
+      const textAt = frames.findIndex((frame) => JSON.stringify(frame.data).includes(ANSWER));
+      const textFrame = wire([frames[textAt]!], { space: '', eol });
+      const chunks = [...frames.slice(0, textAt).map((frame) => wire([frame], { space: '', eol })), textFrame.subarray(0, textFrame.length - eol.length)];
+      expect(answerOf(to, translate(from, to, chunks)).text).toBe('');
+    });
   });
 });
 

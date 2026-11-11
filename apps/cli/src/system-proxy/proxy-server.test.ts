@@ -590,6 +590,40 @@ test('ResponsesSseNormalizer: keeps a character split across chunks', () => {
   assert.equal(output, 'event: a\ndata: {"delta":"✓"}\n\n')
 })
 
+test('ConversationSseAdapter: delivers a complete frame before the stream ends', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  assert.deepEqual(adapter.feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"}}]}\n'), false), [])
+  const output = adapter.feed(Buffer.from('\n'), false).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+  assert.equal(output.includes('finished_successfully'), false, output)
+})
+
+test('ConversationSseAdapter: does not read a frame left unfinished when the stream ends', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  const output = adapter.feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"}}]}\n'), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output.includes('"parts":["hi"]'), false, output)
+})
+
+test('ResponsesSseNormalizer: delivers a complete frame before the stream ends', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+
+  assert.deepEqual(normalizer.feed(Buffer.from('event:a\ndata:{"type":"a","n":1}\n'), false), [])
+  const output = normalizer.feed(Buffer.from('\n'), false).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
+})
+
 test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
   const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
   const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'
