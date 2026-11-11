@@ -702,7 +702,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const message = event.message as Message | (AssistantMessage & { meta?: AiMessageMeta });
         if (message.role === 'user' && !userPersisted) {
           userPersisted = true;
-          sendToRenderer('chat:ai-user-persisted', {
+          emitRunEvent('chat:ai-user-persisted', {
             conversationId,
             message: convertUserMessageForUi(message),
           });
@@ -848,7 +848,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         if (finalAssistantCreatedAt && !completedAssistantMessage.createdAt) {
           completedAssistantMessage.createdAt = finalAssistantCreatedAt;
         }
-        sendToRenderer('chat:ai-done', {
+        emitRunEvent('chat:ai-done', {
           conversationId,
           message: completedAssistantMessage,
         });
@@ -856,7 +856,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
       if (!streamDone) {
         streamDone = true;
-        sendToRenderer('chat:ai-stream-done', { conversationId, ...sendTag });
+        emitRunEvent('chat:ai-stream-done', { conversationId });
       }
       // After done, which clears notes.
       if (replyCutOff) {
@@ -878,7 +878,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           });
           if (title) {
             session.setSessionName(title);
-            sendToRenderer('chat:conversation-title-updated', { conversationId, title });
+            emitRunEvent('chat:conversation-title-updated', { conversationId, title });
           }
         } catch (error) {
           appendSystemLog(`Conversation title generation failed: ${asErrorMessage(error)}`);

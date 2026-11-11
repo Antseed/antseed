@@ -1562,6 +1562,26 @@ export function initChatModule({
     }
   }
 
+  /**
+   * The chat's own history for an image request. While the chat is still
+   * opening, the screen shows the previous chat's messages, so they're never
+   * used for it: the history is read from the chat itself instead.
+   */
+  async function imageRequestHistory(convId: string): Promise<ChatMessage[]> {
+    const local = getLocalConversationMessages(convId);
+    if (local) return local;
+    if (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId) {
+      return uiState.chatMessages as ChatMessage[];
+    }
+    try {
+      const result = await bridge?.chatAiGetConversation?.(convId);
+      const messages = result?.ok ? (result.data as ChatConversation | undefined)?.messages : undefined;
+      return Array.isArray(messages) ? normalizeInlineThinkInMessages(messages) : [];
+    } catch {
+      return [];
+    }
+  }
+
   function generateImage(prompt: string, options: { privateAtSubmit?: boolean } = {}): void {
     const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
     const content = prompt.trim();
@@ -1622,8 +1642,7 @@ export function initChatModule({
       // This prompt supersedes one waiting on funds.
       fundsNoticeByConversation.delete(convId);
       imageRetryByConversation.delete(convId);
-      const existingBeforeRequest = getLocalConversationMessages(convId)
-        ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
+      const existingBeforeRequest = await imageRequestHistory(convId);
       // Edit the last generated image when the model takes image input;
       // otherwise regenerate from the accumulated prompts.
       let sourceImageAttachmentId = '';
@@ -1676,6 +1695,12 @@ export function initChatModule({
     });
 
     bridge.onChatAiDone?.((data) => {
+      // A stopped send's reply was already kept as it stood, and a newer send
+      // owns the chat's Sending state: its final message must touch neither.
+      if (isStaleReplyEvent(data)) {
+        scheduleChatConversationsRefresh();
+        return;
+      }
       const incomingMessage = data.message as ChatMessage;
       if (hasConversationStreamingMessage(data.conversationId)) {
         updateStreamingMessage(data.conversationId, (message) => {
@@ -1692,6 +1717,8 @@ export function initChatModule({
     });
 
     bridge.onChatAiUserPersisted?.((data) => {
+      // Its prompt's timestamp must not land on a newer send's prompt.
+      if (isStaleStreamEvent(data)) return;
       if (data.conversationId !== uiState.chatActiveConversation) return;
       const last = (uiState.chatMessages[uiState.chatMessages.length - 1] || null) as ChatMessage | null;
       if (last && last.role === 'user' && !last.createdAt) {
@@ -1702,6 +1729,8 @@ export function initChatModule({
     });
 
     bridge.onChatConversationTitleUpdated?.((data) => {
+      // Tagged like every run event, but always taken: the title names the
+      // conversation, not the reply, and stays right after Stop or a follow-up.
       const title = String(data.title || '').trim();
       if (!title) return;
       const conversations = getConversationSummaries();

@@ -286,9 +286,9 @@ export type DesktopBridge = {
   voiceGetStatus?: () => Promise<unknown>;
   voiceSetModel?: (modelId: string) => Promise<unknown>;
   voiceInstallModel?: (modelId: string) => Promise<unknown>;
-  onChatAiDone?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> } }) => void) => () => void;
-  onChatAiUserPersisted?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => void) => () => void;
-  onChatConversationTitleUpdated?: (handler: (data: { conversationId: string; title: string }) => void) => () => void;
+  onChatAiDone?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; sendId?: number }) => void) => () => void;
+  onChatAiUserPersisted?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number }; sendId?: number }) => void) => () => void;
+  onChatConversationTitleUpdated?: (handler: (data: { conversationId: string; title: string; sendId?: number }) => void) => () => void;
   onChatAiReplyMeta?: (handler: (data: { conversationId: string; sendId?: number; meta: Record<string, unknown> }) => void) => () => void;
   onChatAiStreamStart?: (handler: (data: { conversationId: string; sendId?: number; turn: number }) => void) => () => void;
   onChatAiStreamDelta?: (handler: (data: { conversationId: string; sendId?: number; index: number; blockType: string; text: string }) => void) => () => void;

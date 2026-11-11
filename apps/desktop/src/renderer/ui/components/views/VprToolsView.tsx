@@ -85,13 +85,24 @@ function maskKey(key: string): string {
   return key.length > 16 ? `${key.slice(0, 12)}…${key.slice(-4)}` : key;
 }
 
-function CopyRow({ label, value, display }: { label: string; value: string; display?: string }) {
+function CopyRow({ label, value, display, readValue }: {
+  label: string;
+  value: string;
+  display?: string;
+  /** Reads the value again when copying (a key that may have been replaced); nothing is copied when it fails. */
+  readValue?: () => Promise<string | null>;
+}) {
   const { copied, copy } = useCopyFeedback(value);
+  const onCopy = async () => {
+    if (!readValue) return copy();
+    const current = await readValue();
+    if (current) await copy(current);
+  };
   return (
     <button
       type="button"
       className={styles.endpointValue}
-      onClick={() => void copy()}
+      onClick={() => void onCopy()}
       title={`Copy ${label}`}
     >
       <code>{display ?? value}</code>
@@ -670,7 +681,7 @@ export function VprToolsView() {
                       the Antseed provider in Zed’s AI settings.
                     </p>
                     <div className={styles.endpointRows}>
-                      <CopyRow label="Copy key" value={zedKey.apiKey} display={maskKey(zedKey.apiKey)} />
+                      <CopyRow label="Copy key" value={zedKey.apiKey} display={maskKey(zedKey.apiKey)} readValue={zedKey.keyToCopy} />
                     </div>
                     {zedKey.pasted ? null : (
                       <button type="button" className={styles.settingTextLink} onClick={zedKey.markPasted}>

@@ -50,6 +50,8 @@ function setup(conversations: Conv[] = [conv('conv-a', 'model-a'), conv('conv-b'
     onChatAiStreamDelta: on('delta'),
     onChatAiStreamDone: on('done'),
     onChatAiStreamError: on('error'),
+    onChatAiDone: on('aiDone'),
+    onChatAiUserPersisted: on('userPersisted'),
     ...overrides,
   };
   const api = initChatModule({ bridge: bridge as never, uiState, appendSystemLog: () => undefined });
@@ -102,6 +104,37 @@ describe('chat controller', () => {
     api.retryAfterPayment();
     await waitFor(() => chatGenerateImage.mock.calls.length === 2);
     expect(chatGenerateImage.mock.calls[1]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'a cat' });
+  });
+
+  it('an image prompt sent while a chat opens edits that chat\'s image, never the previous chat\'s', async () => {
+    const generated = (attachmentId: string) => ({ role: 'assistant', content: [{ type: 'file', generated: true, attachmentId, mimeType: 'image/png', name: `${attachmentId}.png` }], createdAt: 2 });
+    const convA = { ...conv('conv-a', 'model-a'), messages: [generated('img-a')] };
+    const convB = { ...conv('conv-b', 'model-b'), messages: [generated('img-b')] };
+    const bOpened = deferred<void>();
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup([convA, convB], {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        if (id === 'conv-b') await bOpened.promise;
+        const found = id === 'conv-a' ? convA : id === 'conv-b' ? convB : null;
+        return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', supportsImages: true }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    uiState.chatImageModelId = 'image-model';
+    // Chat B is opening for the first time; A's image is still on screen.
+    const opening = api.openConversation('conv-b', { keepImageModel: true });
+    expect(uiState.chatActiveConversation).toBe('conv-b');
+    api.generateImage('make it blue');
+    await tick(10);
+    bOpened.resolve();
+    await opening;
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    const request = chatGenerateImage.mock.calls[0]![0] as { conversationId: string; sourceImageAttachmentId?: string };
+    expect(request.conversationId).toBe('conv-b');
+    expect(request.sourceImageAttachmentId).toBe('img-b');
   });
 
   it('clears the sending state of an aborted chat before the abort settles', async () => {
@@ -229,6 +262,54 @@ describe('chat controller', () => {
     expect(followUp).toBeDefined();
     expect(followUp).not.toContain('LATE');
     expect(replies.some((text) => text.includes('LATE'))).toBe(false);
+  });
+
+  it('a stopped run\'s final message neither replaces its kept reply nor ends a follow-up', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    const first = sendIds[0];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial', sendId: first });
+    await api.abortChat();
+    const finalOfFirst = { role: 'assistant', content: [{ type: 'text', text: 'First FULL reply' }], createdAt: 5, meta: { service: 'stale-model' } };
+    // Its completion was already on the way when Stop was pressed.
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    emit('userPersisted', { conversationId: 'conv-a', message: { role: 'user', content: 'first', createdAt: 4 }, sendId: first });
+
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    const second = sendIds[1];
+    // The same late final message arrives while the follow-up waits for its stream.
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    expect(uiState.chatSending).toBe(true);
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: second });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: second });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer', sendId: second });
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    expect(uiState.chatSending).toBe(true);
+    emit('done', { conversationId: 'conv-a', sendId: second });
+    answers[0]!({ ok: false });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const replies = (uiState.chatMessages as Array<{ role: string; content: unknown; meta?: { service?: string } }>)
+      .filter((message) => message.role === 'assistant');
+    const texts = replies.map((message) => JSON.stringify(message.content));
+    expect(texts.some((text) => text.includes('First partial'))).toBe(true);
+    expect(texts.some((text) => text.includes('First FULL reply'))).toBe(false);
+    const followUp = replies.find((message) => JSON.stringify(message.content).includes('Second answer'));
+    expect(followUp?.meta?.service).not.toBe('stale-model');
   });
 
   it('sends a queued message to the chat it was written in, on that chat\'s model', async () => {

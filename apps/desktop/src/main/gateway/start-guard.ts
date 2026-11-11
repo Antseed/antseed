@@ -23,15 +23,6 @@ export async function startUnlessCancelled(
 export const CLOSING_ERROR = 'Antseed Desktop is closing';
 export const START_CANCELLED_ERROR = 'The local gateway start was cancelled: the gateway was stopped or switched';
 
-/** Starts the gateway unless the app has begun quitting; see `startUnlessCancelled`. */
-export async function startUnlessClosing(
-  isClosing: () => boolean,
-  start: () => Promise<unknown>,
-  stop: () => Promise<unknown>,
-): Promise<void> {
-  await startUnlessCancelled(() => (isClosing() ? CLOSING_ERROR : null), start, stop);
-}
-
 /**
  * Local gateway lifecycles: a start belongs to the generation it began in,
  * and a stop ends that generation, so a start still preparing when the user

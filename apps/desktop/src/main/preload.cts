@@ -266,18 +266,18 @@ const api = {
   voiceInstallModel(modelId: string): Promise<unknown> {
     return ipcRenderer.invoke('voice:install-model', modelId) as Promise<unknown>;
   },
-  onChatAiDone(handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> } }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> } }) => handler(data);
+  onChatAiDone(handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; sendId?: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; sendId?: number }) => handler(data);
     ipcRenderer.on('chat:ai-done', listener);
     return () => ipcRenderer.off('chat:ai-done', listener);
   },
-  onChatAiUserPersisted(handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => handler(data);
+  onChatAiUserPersisted(handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number }; sendId?: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number }; sendId?: number }) => handler(data);
     ipcRenderer.on('chat:ai-user-persisted', listener);
     return () => ipcRenderer.off('chat:ai-user-persisted', listener);
   },
-  onChatConversationTitleUpdated(handler: (data: { conversationId: string; title: string }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; title: string }) => handler(data);
+  onChatConversationTitleUpdated(handler: (data: { conversationId: string; title: string; sendId?: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; title: string; sendId?: number }) => handler(data);
     ipcRenderer.on('chat:conversation-title-updated', listener);
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
   },
