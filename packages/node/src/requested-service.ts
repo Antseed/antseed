@@ -4,6 +4,13 @@ import { extractRequestBodyFields, isPlainJsonContentType, parseJsonObject, read
 /** A field some reader of a request may take its model from, however it is spelled. */
 const SERVICE_FIELD = /^\s*(?:service|model|modelid)\s*(?:\[.*\])?\s*$/i;
 
+/** Buyer-supplied upstream selectors can replace the singular billed model, even when that model is valid. */
+const UPSTREAM_SELECTION_FIELD = /^\s*(?:models|route|(?:default_|context_window_|content_policy_|mock_testing_)?fallbacks|model_list|model_group|deployment_id)\s*(?:\[.*\])?\s*$/i;
+
+function selectsService(name: string): boolean {
+  return SERVICE_FIELD.test(name) || UPSTREAM_SELECTION_FIELD.test(name);
+}
+
 /** The fields a buyer names its service in. A plugin may write `modelId` for its upstream, after this check. */
 const BUYER_SERVICE_FIELDS = new Set(['service', 'model']);
 
@@ -12,7 +19,7 @@ type NamedFields = Array<[name: string, value: unknown]>;
 /**
  * The service a JSON or multipart request body names (`service`, else `model`),
  * exactly as sellers read it to route, price and bill the request; null when it
- * names none, or unless its `service` and `model` fields are written plainly
+ * names none, carries an upstream model selector, or unless its `service` and `model` fields are written plainly
  * and say exactly the same. A provider and its upstream read the body again by
  * their own rules, and the seller pays for what they read.
  */
@@ -43,7 +50,7 @@ function serviceFields(request: Pick<SerializedHttpRequest, 'headers' | 'body'>)
   if (contentTypes.length > 1) return null;
   const contentType = (contentTypes[0]?.[1] ?? '').trim();
   if (/^multipart\/form-data/i.test(contentType)) {
-    const parts = readPlainMultipartParts(request.body, contentType)?.filter((part) => SERVICE_FIELD.test(part.name));
+    const parts = readPlainMultipartParts(request.body, contentType)?.filter((part) => selectsService(part.name));
     if (!parts || parts.some((part) => !part.billedText)) return null;
     // A BOM stays in the text, for the padding check to see.
     return parts.map((part) => [part.name, new TextDecoder('utf-8', { ignoreBOM: true }).decode(part.content)]);
@@ -52,7 +59,7 @@ function serviceFields(request: Pick<SerializedHttpRequest, 'headers' | 'body'>)
   if (contentType && !isPlainJsonContentType(contentType)) return null;
   const body = parseJsonObject(request.body);
   if (!body) return null;
-  return topLevelKeys(request.body).filter((name) => SERVICE_FIELD.test(name)).map((name) => [name, body[name]]);
+  return topLevelKeys(request.body).filter(selectsService).map((name) => [name, body[name]]);
 }
 
 const QUOTE = 0x22;
