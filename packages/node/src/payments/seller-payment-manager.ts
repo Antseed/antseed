@@ -72,6 +72,8 @@ const PENDING_TOP_UP_POLL_MS = 50;
 const RESTART_CATCH_UP_WINDOW_MS = 30_000;
 /** How often a restarted seller asks for an authorization up to the deposit, while the one it holds is too low for a top-up. */
 const RESTART_DEPOSIT_ASK_INTERVAL_MS = 5_000;
+/** How long after a restart a restored channel whose work fits its deposit, never asked so far, can still be asked. */
+const RESTART_ASK_EXPIRY_MS = 10 * 60_000;
 /** Minimum gap between on-chain reads of one channel's deposit. */
 const RESERVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 /** `retryAfterMs` hint returned with 'busy' / 'pending_auth' rejections. */
@@ -192,9 +194,14 @@ export class SellerPaymentManager {
    * the deposit (0: not yet). An accepted auth does not end this, unlike
    * hydration: the lost top-up is still lost. A top-up that lands and covers
    * what was served ends it, and so does the window passing with the work
-   * within the deposit; past the deposit, the channel is closed.
+   * within the deposit; past the deposit, the channel is closed. A channel
+   * never asked, whose work fits its deposit, loses the mark
+   * RESTART_ASK_EXPIRY_MS after the restart: spend that passes the deposit
+   * later is judged as on any channel.
    */
   private readonly _restartAsks = new Map<string, { since: number; depositAskedAt: number }>();
+  /** When this process restored its channels from disk. */
+  private readonly _restoredAt = Date.now();
   /** Per-buyer mutex to prevent concurrent handleSpendingAuth for the same buyer. */
   private readonly _buyerLocks = new Map<string, Promise<void>>();
 
@@ -1795,6 +1802,12 @@ export class SellerPaymentManager {
     return ask != null && ask.since > 0 && now - ask.since >= RESTART_CATCH_UP_WINDOW_MS;
   }
 
+  /** Whether a restored channel was never asked for so long that the restart no longer explains an overrun. */
+  private _restartAskExpired(channelId: string, now = Date.now()): boolean {
+    const ask = this._restartAsks.get(channelId);
+    return ask != null && ask.since === 0 && now - this._restoredAt >= RESTART_ASK_EXPIRY_MS;
+  }
+
   /** Whether topUp() settling `settleAmount` would pass the contract's settled threshold. */
   private async _topUpEligible(channelId: string, settleAmount: bigint): Promise<boolean> {
     const deposit = this._reserveMax.get(channelId) ?? 0n;
@@ -1843,9 +1856,10 @@ export class SellerPaymentManager {
       const failureKind = this._classifyTopUpFailure(retryErr);
       if (failureKind === 'already-on-chain') {
         // A top-up that landed while this process was down, sent again before
-        // a chain read showed it: the channel already has this ceiling.
-        this._recordTopUpLanded(channelId, pendingTopUp);
-        debugLog(`[SellerPayment] Deferred topUp already on-chain: channel=${channelId.slice(0, 18)}... ceiling=${pendingTopUp.newMaxAmount}`);
+        // a chain read showed it: the deposit is at least this ceiling. A
+        // higher one may have landed, so its deadline is not known from here.
+        this._recordTopUpLanded(channelId, { newMaxAmount: pendingTopUp.newMaxAmount });
+        debugLog(`[SellerPayment] Deferred topUp already on-chain: channel=${channelId.slice(0, 18)}... ceiling=${this.getReserveMax(channelId)}`);
         return 'succeeded';
       }
       if (failureKind === 'retryable-threshold' || failureKind === 'retryable-tx-backpressure') {
@@ -1873,12 +1887,16 @@ export class SellerPaymentManager {
   }
 
   /**
-   * A top-up's ceiling is on-chain. What a restart lost is made good once that
+   * A top-up's ceiling is on-chain. What a restart lost is made good once the
    * ceiling covers what was served; until then the buyer is still asked.
+   * Never lowers the ceiling: a chain read may have raised it past this top-up
+   * meanwhile. `deadline` is set only by the call that mined the top-up.
    */
-  private _recordTopUpLanded(channelId: string, topUp: { newMaxAmount: bigint; deadline: number }): void {
-    this._updateReserveCeiling(channelId, topUp.newMaxAmount, topUp.deadline);
-    if ((this._spent.get(channelId) ?? 0n) <= topUp.newMaxAmount) this._restartAsks.delete(channelId);
+  private _recordTopUpLanded(channelId: string, topUp: { newMaxAmount: bigint; deadline?: number }): void {
+    const current = this._reserveMax.get(channelId) ?? 0n;
+    const ceiling = topUp.newMaxAmount > current ? topUp.newMaxAmount : current;
+    this._updateReserveCeiling(channelId, ceiling, topUp.deadline);
+    if ((this._spent.get(channelId) ?? 0n) <= ceiling) this._restartAsks.delete(channelId);
   }
 
   private async _recoverOnChainSession(
@@ -2286,14 +2304,17 @@ export class SellerPaymentManager {
           continue;
         }
         // The buyer had its window to send again what a restart lost. Work that
-        // fits the deposit needs nothing more. Work past it: close as the next
-        // request would, rather than leave the channel open until one comes,
-        // and on each later pass until it is closed (a top-up still being
-        // submitted, or a close that did not go through).
-        if (onChainState.status === 'active' && this._restartWindowPassed(channel.sessionId)) {
+        // fits the deposit needs nothing more; neither does a channel never
+        // asked whose work still fits the deposit long after the restart. Work
+        // past it: close as the next request would, rather than leave the
+        // channel open until one comes, and on each later pass until it is
+        // closed (a top-up still being submitted, or a close that did not go
+        // through).
+        if (onChainState.status === 'active') {
+          const windowPassed = this._restartWindowPassed(channel.sessionId);
           if ((this._spent.get(channel.sessionId) ?? 0n) <= onChainState.channel.deposit) {
-            this._restartAsks.delete(channel.sessionId);
-          } else if (!this.isTopUpRunning(channel.sessionId)) {
+            if (windowPassed || this._restartAskExpired(channel.sessionId)) this._restartAsks.delete(channel.sessionId);
+          } else if (windowPassed && !this.isTopUpRunning(channel.sessionId)) {
             debugLog(`[SellerPayment] The buyer had its chance to send again what the restart lost: closing ${channel.sessionId.slice(0, 18)}...`);
             void this.closeSessionWhenIdle(channel.peerId).catch((err) => {
               debugWarn(`[SellerPayment] Failed to close ${channel.sessionId.slice(0, 18)}... after the restart window: ${this._formatError(err)}`);

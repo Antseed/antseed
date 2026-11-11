@@ -582,6 +582,27 @@ describe('a seller restarted around a top-up', () => {
       .toEqual({ status: CLOSED, settled: OPENING_RESERVE, quickly: true });
   }, TEST_TIMEOUT_MS);
 
+  it('closes a channel whose work first passes its deposit long after the restart, without asking the buyer anything', async () => {
+    const channelId = await openChannel();
+    // The buyer cannot fund a top-up while it is served, so there is none for the restart to lose.
+    chain.funds = OPENING_RESERVE;
+    for (let served = 0; served < 8; served += 1) await serve(channelId, 25_000n);
+    const signed = buyer.getCumulativeAmount(sellerPeer);
+    chain.funds = 100_000_000n;
+
+    await restartSeller();
+    await finish(new Promise((resolve) => setTimeout(resolve, 10 * 60_000)), 11 * 60_000);
+    await finish(seller.payments.checkTimeouts());
+    // Much later, a request costs more than its estimate and takes the spend past the deposit.
+    seller.payments.recordSpend(channelId, 70_922n);
+    const started = Date.now();
+    const statuses = await parallelRequests(1);
+
+    // As on a channel that was never restored: closed at what the buyer signed and replaced, with no window.
+    expect({ statuses, status: chain.read(channelId).status, settled: chain.read(channelId).settled, quickly: Date.now() - started < 10_000 })
+      .toEqual({ statuses: [200], status: CLOSED, settled: signed, quickly: true });
+  }, TEST_TIMEOUT_MS);
+
   it('asks again for an authorization up to the deposit when the buyer could not act on the first ask', async () => {
     const channelId = await openChannel();
     chain.topUpFate = 'mined-unseen';
