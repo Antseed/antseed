@@ -1418,11 +1418,8 @@ export class BuyerPaymentNegotiator {
       pendingClose.reject(new Error(`Peer ${peerId.slice(0, 12)}... disconnected before answering the channel close request`));
     }
 
-    this._lockedPeers.delete(peerId);
-    this._firstRequestSent.delete(peerId);
-    this._lastResponseCost.delete(peerId);
-    // A resend went over the dropped connection: its record would keep that connection.
-    this._resentForTarget.delete(peerId);
+    // The record of a resend too: it went over the dropped connection, and would keep it.
+    this._forgetSellerSession(peerId);
   }
 
   /**
