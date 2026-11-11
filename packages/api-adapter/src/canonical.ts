@@ -439,11 +439,8 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
     const msg = raw as Record<string, unknown>;
     const role = typeof msg.role === 'string' ? msg.role : '';
 
-    if (role === 'system') {
-      const text = textFromContent(msg.content);
-      if (text.length > 0) {
-        request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
-      }
+    if (isInstructionRole(role)) {
+      appendInstructions(request, textFromContent(msg.content));
       continue;
     }
 
@@ -565,6 +562,11 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // have no role, and turning them into empty messages would separate a
       // function_call from its output.
       if (type !== 'message' && typeof msg.role !== 'string') continue;
+
+      if (isInstructionRole(msg.role)) {
+        appendInstructions(request, textFromResponsesContent(msg.content));
+        continue;
+      }
 
       const role = msg.role === 'assistant' ? 'assistant' : 'user';
       const content = canonicalContentFromOpenAIResponses(msg.content);
@@ -881,6 +883,20 @@ function parseToolArguments(args: Record<string, unknown> | string): Record<stri
 
 function modelFromBody(body: Record<string, unknown>): string | null {
   return typeof body.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null;
+}
+
+function isInstructionRole(role: unknown): boolean {
+  return role === 'system' || role === 'developer';
+}
+
+/**
+ * Both OpenAI protocols can send instructions as messages, anywhere in the
+ * conversation. The hub keeps them as one string, in the order sent: Anthropic's
+ * single `system` can't hold a position among the turns.
+ */
+function appendInstructions(request: CanonicalLlmRequest, text: string): void {
+  if (text.length === 0) return;
+  request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
 }
 
 function normalizeResponseMessagePhase(value: unknown): CanonicalResponseMessagePhase | undefined {
