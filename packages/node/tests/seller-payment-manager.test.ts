@@ -2402,6 +2402,28 @@ describe('SellerPaymentManager', () => {
     expect(req2.requestId).toBe('req-bbb');
   });
 
+  describe('one-off channels that earn nothing', () => {
+    const UNPAID_LIMIT = 16;
+    const plan = { openingReserveAmount: '800000', requiredCumulativeAmount: '0', requestCost: '800000' };
+
+    /** Offer a channel and open it, as a buyer that then never sends its create. */
+    async function openUnusedChannel(buyer: Identity, n: number) {
+      const requestId = `video-${n}`;
+      manager.registerOneOffPlan(buyer.peerId, requestId, plan);
+      const channelId = makeChannelId(n);
+      const auth = await buildSpendingAuth(buyer, sellerIdentity, channelId, { isReserve: true, salt: channelId, reserveMaxAmount: plan.requestCost });
+      return manager.handleSpendingAuth(buyer.peerId, { ...auth, oneOffRequestId: requestId }, mux);
+    }
+
+    it('counts a channel the buyer opens and never uses', async () => {
+      const outcomes: string[] = [];
+      for (let n = 1; n <= UNPAID_LIMIT + 3; n += 1) outcomes.push(await openUnusedChannel(buyerIdentity, n));
+
+      expect(manager.channelsClient.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+      expect(outcomes.slice(UNPAID_LIMIT)).toEqual(['rejected', 'rejected', 'rejected']);
+    });
+  });
+
   describe('validateHydratedChannels', () => {
     function seedChannel(
       channelStore: ChannelStore,

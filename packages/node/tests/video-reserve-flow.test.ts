@@ -1075,6 +1075,163 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.seller.claimOneOffChannel(channelId)).toBe(false);
   });
 
+  // ── Channels that earn the seller nothing ──────────────────────────────
+
+  /** One-off channels a buyer may have earning nothing before the seller stops offering more. */
+  const UNPAID_LIMIT = 16;
+
+  /** A client looping on an answer: the same create, one at a time, each under a new request ID. */
+  async function sendVideos(h: Harness, count: number, label: string) {
+    const answers: Array<Awaited<ReturnType<Harness['send']>>> = [];
+    for (let index = 0; index < count; index += 1) answers.push(await h.send(h.videoRequest(`${label}-${index}`)));
+    await h.settle();
+    return answers;
+  }
+
+  const statusesOf = (answers: Array<{ statusCode: number }>) => answers.map((answer) => answer.statusCode);
+  const repeat = <T,>(value: T, count: number): T[] => Array.from({ length: count }, () => value);
+  const advanceClock = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+  it('stops reserving for a buyer whose creates the provider keeps refusing', async () => {
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+
+    const answers = await sendVideos(h, UNPAID_LIMIT + 4, 'refused');
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(h.close).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(h.providerCreates).toHaveLength(UNPAID_LIMIT);
+    expect(statusesOf(answers)).toEqual([...repeat(400, UNPAID_LIMIT), ...repeat(429, 4)]);
+    const heldBack = answers.at(-1)!;
+    expect(JSON.parse(Buffer.from(heldBack.body).toString()).error.code).toBe('one_off_channel_backoff');
+    expect(Number(heldBack.headers['retry-after'])).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('offers one more channel each time the wait has passed, doubling the wait up to an hour', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+    await sendVideos(h, UNPAID_LIMIT, 'refused');
+
+    const waits = [60, 120, 240, 480, 960, 1_920, 3_600, 3_600];
+    for (const [index, waitSeconds] of waits.entries()) {
+      const early = await h.send(h.videoRequest(`early-${index}`));
+      expect(early.statusCode).toBe(429);
+      expect(early.headers['retry-after']).toBe(String(waitSeconds));
+
+      advanceClock(waitSeconds * 1_000);
+      expect((await h.send(h.videoRequest(`probe-${index}`))).statusCode).toBe(400);
+      await h.settle();
+      expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + index + 1);
+    }
+  }, 30_000);
+
+  it('stops counting channels closed more than a day ago', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+    await sendVideos(h, UNPAID_LIMIT, 'refused');
+    expect((await h.send(h.videoRequest('held-back'))).statusCode).toBe(429);
+
+    advanceClock(24 * 60 * 60_000 + 1);
+
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT, 'next-day'))).toEqual(repeat(400, UNPAID_LIMIT));
+    expect((await h.send(h.videoRequest('held-back-again'))).statusCode).toBe(429);
+  }, 30_000);
+
+  it('bounds a burst of parallel creates, which all arrive before any is refused', async () => {
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 8 }, (_, index) => h.send(h.videoRequest(`burst-${index}`))));
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(statusesOf(answers).filter((status) => status === 429)).toHaveLength(8);
+  }, 30_000);
+
+  it('serves a whole parallel batch up to the limit, and charges each video', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
+    await h.settle();
+
+    expect(statusesOf(answers)).toEqual(repeat(200, UNPAID_LIMIT));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls[0]![2]).toBe(800_000n);
+  }, 30_000);
+
+  it('starts counting again once the buyer pays for a video, which is charged as usual', async () => {
+    const options: { videoPricing: 'cheap'; createResponse?: 'rejected' } = { videoPricing: 'cheap', createResponse: 'rejected' };
+    const h = setup(options);
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'before'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
+
+    delete options.createResponse;
+    expect((await h.send(h.videoRequest('accepted'))).statusCode).toBe(200);
+    await h.settle();
+    const closesBeforeDelivery = h.close.mock.calls.length;
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close).toHaveBeenCalledTimes(closesBeforeDelivery + 1);
+    expect(h.close.mock.calls.at(-1)![2]).toBe(800_000n);
+
+    options.createResponse = 'rejected';
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'after'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
+  }, 30_000);
+
+  it('never holds back a buyer for jobs still running, however many', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT + 4, 'running'))).toEqual(repeat(200, UNPAID_LIMIT + 4));
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    expect(h.close).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it('counts a video that was accepted and then failed: the buyer paid nothing for it', async () => {
+    const h = setup({ videoPricing: 'cheap', retrieveStatus: 'FAILED' });
+
+    for (let index = 1; index <= UNPAID_LIMIT; index += 1) {
+      expect((await h.send(h.videoRequest(`video-${index}`))).statusCode).toBe(200);
+      await h.send(h.retrieveRequest(`retrieve-${index}`, `job-${index}`));
+      await h.settle();
+    }
+
+    expect(h.close).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect((await h.send(h.videoRequest('next'))).statusCode).toBe(429);
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+  }, 30_000);
+
+  it('keeps opening channels for refused creates that pay the opening fee', async () => {
+    const h = setup({ createResponse: 'rejected' });
+
+    const answers = await sendVideos(h, UNPAID_LIMIT + 4, 'refused');
+
+    expect(statusesOf(answers)).toEqual(repeat(400, UNPAID_LIMIT + 4));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(SERIOUS_FEE, UNPAID_LIMIT + 4));
+  }, 30_000);
+
+  it('counts a channel whose top-up failed: the buyer paid nothing for it', async () => {
+    const h = setup({ topUpBehavior: 'revert' });
+
+    const answers = await Promise.allSettled(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`burst-${index}`))));
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(answers.filter((answer) => answer.status === 'rejected')).toHaveLength(UNPAID_LIMIT);
+    expect((await h.send(h.videoRequest('after'))).statusCode).toBe(429);
+  }, 60_000);
+
+  it('spends one reserve on a buyer retrying a refused chat, whose channel stays open for the retries', async () => {
+    const h = setup({ chatBody: () => ({ statusCode: 400, body: { error: 'refused' } }) });
+
+    for (let index = 0; index < 5; index += 1) expect((await h.send(h.chatRequest(`chat-${index}`))).statusCode).toBe(400);
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledOnce();
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
   // ── Review probes ──────────────────────────────────────────────────────
 
   const sse = (events: unknown[]): Uint8Array => Buffer.from(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
