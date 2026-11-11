@@ -1502,11 +1502,12 @@ test('a seller that stops answering mid-audit is cut off at the idle limit', asy
 
 test('an audit stops at its total time limit, and says it was the auditor\'s limit', async () => {
   const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
-  const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, auditMaxTimeoutMs: 170, batchConcurrency: 1 })
-  // Two of four batches answer before the 170 ms limit; the rest stop there.
+  // Two 150 ms batches answer by 300 ms, 100 ms before the 400 ms limit (the limit counts the auditor's own time
+  // too); the third would end at 450 ms at the earliest, so it and the fourth stop at the limit.
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 150, auditTimeoutMs: 300, auditMaxTimeoutMs: 400, batchConcurrency: 1 })
   assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), ['succeeded', 'succeeded', 'failed', 'failed'])
   for (const exchange of run.evidence.exchanges.slice(2)) {
-    assert.equal(exchange.failureReason, 'seller audit reached its time limit of 170ms')
+    assert.equal(exchange.failureReason, 'seller audit reached its time limit of 400ms')
   }
   assert.equal(run.result.parsedProbeCount, 20)
 })
