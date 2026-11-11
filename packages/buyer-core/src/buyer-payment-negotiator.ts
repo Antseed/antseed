@@ -1031,17 +1031,14 @@ export class BuyerPaymentNegotiator {
     } else if (hasActiveSession) {
       let recovered: boolean;
       try {
-        recovered = await this._recoverExistingSession(
-          peer,
-          conn,
-          session,
-          existingSessionBudgetRequest,
-          requiredCumulativeTarget,
-          requiredCumulativeTarget == null,
-          req.requestId,
+        recovered = await this._recoverExistingSession(peer, conn, session, {
+          minBudgetPerRequest: existingSessionBudgetRequest,
+          targetCumulative: requiredCumulativeTarget,
+          requireFreshAck: requiredCumulativeTarget == null,
+          requestId: req.requestId,
           inFlightRequests,
           receivedAt,
-        );
+        });
       } catch (err) {
         if (!(err instanceof SessionReplacedError)) throw err;
         // After a restart every parked request's 402 recovers the same
@@ -1771,12 +1768,21 @@ export class BuyerPaymentNegotiator {
     peer: BuyerPeerView,
     conn: BuyerConnection,
     session: StoredChannel | null,
-    minBudgetPerRequest: bigint | null = null,
-    targetCumulative: bigint | null = null,
-    requireFreshAck = false,
-    requestId?: string,
-    inFlightRequests = 1,
-    receivedAt = Date.now(),
+    {
+      minBudgetPerRequest = null,
+      targetCumulative = null,
+      requireFreshAck = false,
+      requestId,
+      inFlightRequests = 1,
+      receivedAt = Date.now(),
+    }: {
+      minBudgetPerRequest?: bigint | null;
+      targetCumulative?: bigint | null;
+      requireFreshAck?: boolean;
+      requestId?: string;
+      inFlightRequests?: number;
+      receivedAt?: number;
+    } = {},
   ): Promise<boolean> {
     if (!session) {
       return false;
