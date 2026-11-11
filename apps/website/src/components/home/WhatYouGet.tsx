@@ -1,6 +1,6 @@
-import type {ReactNode} from 'react';
+import {FeatureCards, type FeatureCardItem} from '../FeatureCards';
 import {RoutingArt} from './RoutingArt';
-import {LinkArrow, Reveal, SectionHeader} from '../ui';
+import {Reveal, SectionHeader} from '../ui';
 import {AGENTS} from '../AgentsLogoBar';
 import {VENDOR_GLYPHS} from '../PriceBoard';
 import styles from './WhatYouGet.module.css';
@@ -56,8 +56,7 @@ function PrivacyArt() {
   );
 }
 
-
-const CARDS: {tag: string; title: string; body: string; cta: string; to: string; art: ReactNode}[] = [
+const CARDS: FeatureCardItem[] = [
   {
     tag: 'Agents',
     title: 'Every model, lower prices',
@@ -99,19 +98,7 @@ export function WhatYouGet() {
         <Reveal className={styles.header}>
           <SectionHeader kicker="What you get" title="For the people ready to get the most out of AI" />
         </Reveal>
-        <div className={styles.grid}>
-          {CARDS.map((c, i) => (
-            <Reveal key={c.tag} className={styles.card} delay={i * 60}>
-              <div className={styles.art} aria-hidden="true">{c.art}</div>
-              <div className={styles.body}>
-                <p className={styles.tag}>{c.tag}</p>
-                <h3 className={styles.title}>{c.title}</h3>
-                <p className={styles.text}>{c.body}</p>
-                <LinkArrow to={c.to} className={styles.cta}>{c.cta}</LinkArrow>
-              </div>
-            </Reveal>
-          ))}
-        </div>
+        <FeatureCards items={CARDS} />
       </div>
     </section>
   );

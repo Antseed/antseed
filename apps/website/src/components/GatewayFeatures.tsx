@@ -1,4 +1,5 @@
-import {LinkArrow, Reveal, SectionHeader} from './ui';
+import {Reveal, SectionHeader} from './ui';
+import {FeatureCards, type FeatureCardItem} from './FeatureCards';
 import {VENDOR_GLYPHS} from './PriceBoard';
 import {RoutingArt} from './home/RoutingArt';
 import styles from './home/WhatYouGet.module.css';
@@ -35,7 +36,7 @@ function KeysArt() {
   );
 }
 
-const FEATURES = [
+const FEATURES: FeatureCardItem[] = [
   {
     tag: 'Models & providers',
     title: 'Choose what runs your app',
@@ -77,19 +78,7 @@ export function GatewayFeatures() {
         <Reveal className={styles.header}>
           <SectionHeader kicker="What you get" title="One gateway. Full control." />
         </Reveal>
-        <div className={`${styles.grid} ${own.grid}`}>
-          {FEATURES.map((feature, i) => (
-            <Reveal key={feature.tag} className={styles.card} delay={i * 60}>
-              <div className={styles.art} aria-hidden="true">{feature.art}</div>
-              <div className={styles.body}>
-                <p className={styles.tag}>{feature.tag}</p>
-                <h3 className={styles.title}>{feature.title}</h3>
-                <p className={styles.text}>{feature.body}</p>
-                <LinkArrow to={feature.to} className={styles.cta}>{feature.cta}</LinkArrow>
-              </div>
-            </Reveal>
-          ))}
-        </div>
+        <FeatureCards items={FEATURES} className={own.grid} />
       </div>
     </section>
   );
