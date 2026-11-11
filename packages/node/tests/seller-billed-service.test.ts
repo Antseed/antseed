@@ -122,6 +122,27 @@ describe('the seller serves the service it bills', () => {
     }
   });
 
+  // No relay here: this is what a plugin that forwards the bytes as they are hands its upstream.
+  it.each<[string, SerializedHttpRequest]>([
+    ['JSON with only model', jsonRequest({ model: 'billed-model' })],
+    ['JSON with both fields', jsonRequest({ service: 'billed-model', model: 'billed-model' })],
+    ['multipart with only model', multipartRequest([['model', 'billed-model'], ['prompt', 'x']])],
+    ['multipart with both fields', multipartRequest([['service', 'billed-model'], ['model', 'billed-model']])],
+    ['multipart with a buyer header', multipartRequest([['model', 'billed-model']], { 'x-antseed-service': 'other-model' })],
+  ])('hands a provider only the billed service, to a reader sharing none of the seller code: %s', async (_name, sent) => {
+    const target = provider();
+    expect((await serve(target, sent)).response.statusCode).toBe(200);
+    const received = target.received[0]!;
+    const contentType = received.headers['content-type']!;
+    const read: unknown[] = contentType.startsWith('multipart/')
+      ? [...(await new Response(received.body, { headers: { 'content-type': contentType } }).formData()).entries()]
+        .filter(([name]) => /^(service|model|modelid)$/i.test(name)).map(([, value]) => value)
+      : Object.entries(JSON.parse(new TextDecoder().decode(received.body)) as Record<string, unknown>)
+        .filter(([name]) => /^(service|model|modelid)$/i.test(name)).map(([, value]) => value);
+    expect(read.length).toBeGreaterThan(0);
+    expect(new Set(read)).toEqual(new Set(['billed-model']));
+  });
+
   it('serves a video by the model it bills and passes its body through unchanged', async () => {
     const video = provider(FREE, {
       name: 'venice',
@@ -135,7 +156,7 @@ describe('the seller serves the service it bills', () => {
     });
     const store = new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-billed-video-')), 'metering.db'));
     try {
-      const sent = { ...jsonRequest({ model: 'video', service: 'extension', prompt: 'x', duration: 5 }, { 'x-antseed-service': 'other' }), path: '/api/v1/video/queue' };
+      const sent = { ...jsonRequest({ model: 'video', service: 'video', prompt: 'x', duration: 5 }, { 'x-antseed-service': 'other' }), path: '/api/v1/video/queue' };
       const { response } = await serve(video, sent, { sellerPaymentManager: null, channelsClient: null, resourceOwnershipStore: store });
       expect(response.statusCode).toBe(200);
       expect(serviceHeaders(video.received[0]!)).toEqual([['x-antseed-service', 'video']]);
@@ -143,10 +164,19 @@ describe('the seller serves the service it bills', () => {
     } finally { store.close(); }
   });
 
+  it('refuses a video create whose service field names another service', () => {
+    const video = provider(FREE, { services: ['wan-2.5', 'other-video'], serviceApiProtocols: { 'wan-2.5': ['venice-video'], 'other-video': ['venice-video'] } });
+    const create = (fields: unknown) => ({ ...jsonRequest(fields), path: '/api/v1/video/queue' });
+    expect(handlerFor(video).matchProvider(create({ model: 'wan-2.5', service: 'other-video' }))).toBeUndefined();
+    expect(handlerFor(video).matchProvider(create({ service: 'wan-2.5' }))).toBeUndefined();
+    expect(handlerFor(video).matchProvider(create({ model: 'wan-2.5' }))).toBe(video);
+    expect(handlerFor(video).matchProvider(create({ model: 'wan-2.5', service: 'wan-2.5' }))).toBe(video);
+  });
+
   it('leaves services not read from the body to their own readers', () => {
     const video = provider(FREE, { services: ['wan-2.5'], serviceApiProtocols: { 'wan-2.5': ['venice-video'] } });
-    const create = { ...jsonRequest({ model: 'wan-2.5', service: 'extension' }), path: '/api/v1/video/queue' };
-    expect(handlerFor(video).matchProvider(create)).toBe(video);
+    const retrieve = { ...jsonRequest({ model: 'other', queue_id: 'job' }, { 'x-antseed-service': 'wan-2.5' }), path: '/api/v1/video/retrieve' };
+    expect(handlerFor(video).matchProvider(retrieve)).toBe(video);
 
     const router = provider(FREE, { services: ['router'], serviceApiProtocols: { router: ['irp-suggest'] } });
     const rank = { ...jsonRequest({ model: 'a', service: 'b', request: {}, routing: { candidates: [] } }), path: '/v1/routing/rank' };

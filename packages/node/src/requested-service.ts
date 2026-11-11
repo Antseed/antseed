@@ -7,14 +7,17 @@ const SERVICE_FIELD = /^\s*(?:service|model|modelid)\s*(?:\[.*\])?\s*$/i;
 /** The spellings of those fields that the seller reads. */
 const PLAIN_SERVICE_FIELDS = new Set(['service', 'model', 'modelId']);
 
+/** A body with this content type (or none) is JSON to every reader; a form reader would take other fields from the same bytes. */
+const JSON_CONTENT_TYPE = /^application\/(?:[\w.+-]+\+)?json\s*(?:;|$)/i;
+
 type NamedFields = Array<[name: string, value: unknown]>;
 
 /**
  * The service a JSON or multipart request body names (`service`, else `model`),
  * exactly as sellers read it to route, price and bill the request; null when it
- * names none, or unless its `service`, `model` and `modelId` fields agree and
- * are written plainly. A provider and its upstream read the body again by their
- * own rules, and the seller pays for what they read.
+ * names none, or unless its `service`, `model` and `modelId` fields are written
+ * plainly and say exactly the same. A provider and its upstream read the body
+ * again by their own rules, and the seller pays for what they read.
  */
 export function requestBodyService(request: Pick<SerializedHttpRequest, 'headers' | 'body'>): string | null {
   const named = serviceFields(request);
@@ -24,10 +27,8 @@ export function requestBodyService(request: Pick<SerializedHttpRequest, 'headers
   // A null `service` is a missing one, to the readers that follow too.
   if (fields.get('service') === null) fields.delete('service');
   const service = fields.get('service') ?? fields.get('model');
-  if (typeof service !== 'string' || service.trim().length === 0) return null;
-  const billed = service.trim();
-  const agree = [...fields].every(([name, value]) => PLAIN_SERVICE_FIELDS.has(name) && typeof value === 'string' && value.trim() === billed);
-  return agree ? billed : null;
+  if (typeof service !== 'string' || service.length === 0 || service !== service.trim()) return null;
+  return [...fields].every(([name, value]) => PLAIN_SERVICE_FIELDS.has(name) && value === service) ? service : null;
 }
 
 /**
@@ -39,19 +40,47 @@ export function requestBodyFields(request: Pick<SerializedHttpRequest, 'headers'
   return extractRequestBodyFields(request.headers, request.body);
 }
 
-/** Every field of the body that names a service, or null when the body cannot be read plainly. */
+/** Every field of the body that names a service, repeats included, or null when the body cannot be read plainly. */
 function serviceFields(request: Pick<SerializedHttpRequest, 'headers' | 'body'>): NamedFields | null {
   const contentTypes = Object.entries(request.headers).filter(([name]) => name.toLowerCase() === 'content-type');
   if (contentTypes.length > 1) return null;
-  const contentType = contentTypes[0]?.[1] ?? '';
-  if (/^multipart\/form-data/i.test(contentType.trim())) {
+  const contentType = (contentTypes[0]?.[1] ?? '').trim();
+  if (/^multipart\/form-data/i.test(contentType)) {
     const parts = readPlainMultipartParts(request.body, contentType)?.filter((part) => SERVICE_FIELD.test(part.name));
     if (!parts || parts.some((part) => !part.billedText)) return null;
     return parts.map((part) => [part.name, new TextDecoder().decode(part.content)]);
   }
+  if (contentType && !JSON_CONTENT_TYPE.test(contentType)) return null;
   const body = parseJsonObject(request.body);
   if (!body) return null;
+  const names = topLevelKeys(request.body).filter((name) => SERVICE_FIELD.test(name));
   // Only a multipart body may use `modelId`: the relay writes the model over it there, and not in JSON.
-  const named = Object.entries(body).filter(([name]) => SERVICE_FIELD.test(name));
-  return named.some(([name]) => name === 'modelId') ? null : named;
+  return names.includes('modelId') ? null : names.map((name) => [name, body[name]]);
+}
+
+const QUOTE = 0x22;
+const COLON = 0x3a;
+const BACKSLASH = 0x5c;
+
+/** The top-level keys of a valid JSON object, repeats included, which `JSON.parse` drops. */
+function topLevelKeys(body: Uint8Array): string[] {
+  const keys: string[] = [];
+  let depth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const byte = body[index]!;
+    if (byte === 0x7b || byte === 0x5b) depth += 1;
+    else if (byte === 0x7d || byte === 0x5d) depth -= 1;
+    else if (byte === QUOTE) {
+      const start = index;
+      for (index += 1; body[index] !== QUOTE; index += 1) {
+        if (body[index] === BACKSLASH) index += 1;
+      }
+      let next = index + 1;
+      while (body[next] === 0x20 || body[next] === 0x09 || body[next] === 0x0a || body[next] === 0x0d) next += 1;
+      if (depth === 1 && body[next] === COLON) {
+        keys.push(JSON.parse(new TextDecoder().decode(body.subarray(start, index + 1))) as string);
+      }
+    }
+  }
+  return keys;
 }

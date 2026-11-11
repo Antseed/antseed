@@ -50,6 +50,7 @@ describe('readPlainMultipartParts', () => {
     ['a quoted boundary', `${named('model', 'svc')}${closing}`, `multipart/form-data; boundary="${boundary}"`],
     ['headers in another case', `${part('content-disposition: form-data; name="model"\r\nCONTENT-TYPE: text/plain', 'svc')}${closing}`],
     ['the filename first', `${part('Content-Disposition: form-data; filename="a.png"; name="image"', 'PNG')}${closing}`],
+    ['a backslash in a filename', `${part('Content-Disposition: form-data; name="image"; filename="dir\\file.png"', 'PNG')}${closing}`],
   ])('reads %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).not.toBeNull();
   });
@@ -79,7 +80,7 @@ describe('readPlainMultipartParts', () => {
     ['an escaped name', `${part('Content-Disposition: form-data; name="a\\b"', 'svc')}${closing}`],
     ['a percent-encoded name', `${part('Content-Disposition: form-data; name="a%62"', 'svc')}${closing}`],
     ['an encoded-word name', `${part('Content-Disposition: form-data; name="=?utf-8?q?a?="', 'svc')}${closing}`],
-    ['an escaped filename', `${part('Content-Disposition: form-data; name="a"; filename="b\\"; name=\\"c"', 'svc')}${closing}`],
+    ['a filename ending in a backslash', `${part('Content-Disposition: form-data; name="a"; filename="b\\"; name="c"', 'svc')}${closing}`],
     ['an unknown parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
     ['a nested multipart', `${part('Content-Disposition: form-data; name="a"\r\nContent-Type: multipart/mixed; boundary=c', '--c--')}${closing}`],
     ['a field setting the charset of the others', `${named('_charset_', 'utf-16')}${closing}`],

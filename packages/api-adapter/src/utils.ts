@@ -297,9 +297,10 @@ function multipartTextFieldName({ headers, content }: MultipartPart): string | u
 /** A multipart content type with one simple boundary and at most a charset beside it. */
 const PLAIN_MULTIPART_TYPE = /^multipart\/form-data\s*;\s*(?:charset="?[\w-]+"?\s*;\s*)?boundary=(?:"[\w'()+,./:=?-]+"|[\w'+.-]+)\s*(?:;\s*charset="?[\w-]+"?\s*)?$/i;
 
-const FILENAME_PARAM = String.raw`\s*;\s*filename\*?=(?:"[^"\\]*"|[^\s;"]+)`;
+// A backslash before a quote is the one spelling readers end the value at differently.
+const FILENAME_PARAM = String.raw`\s*;\s*filename\*?=(?:"(?:[^"\\]|\\(?!"))*"|[^\s;"]+)`;
 
-/** `form-data` with exactly one simply written `name` and any filename. */
+/** `form-data` with exactly one simply written `name`, and filenames however a form encoder writes them. */
 const PLAIN_DISPOSITION = new RegExp(
   String.raw`^form-data(?:${FILENAME_PARAM})*\s*;\s*name=(?:"((?:(?!=\?)[^"\\%\x00-\x1f\x7f])*)"|([\w.[\]-]+))(?:${FILENAME_PARAM})*\s*$`,
 );

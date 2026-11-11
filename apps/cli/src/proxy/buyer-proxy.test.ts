@@ -1685,10 +1685,12 @@ for (const [label, fields] of [
     peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     let sent: SerializedHttpRequest | undefined
-    ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
       sent = request
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     }
+    ;(proxy as any)._node.sendRequest = capture
+    ;(proxy as any)._node.sendRequestStream = capture
     const response = await invokeProxy(proxy, makeProxyRequest({ body: { ...fields(peer.peerId), messages: [] } }))
     assert.equal(response.statusCode, 200, response.body)
     assert.equal(requestBodyService(sent!), 'glm-5')

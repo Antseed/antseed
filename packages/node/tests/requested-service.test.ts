@@ -5,10 +5,11 @@ const encoder = new TextEncoder();
 const boundary = 'form-boundary';
 const multipartHeaders = { 'content-type': `multipart/form-data; boundary=${boundary}` };
 
-const json = (fields: unknown) => ({
-  headers: { 'content-type': 'application/json' },
+const json = (fields: unknown, contentType = 'application/json') => ({
+  headers: { 'content-type': contentType },
   body: encoder.encode(JSON.stringify(fields)),
 });
+const rawJson = (text: string) => ({ headers: { 'content-type': 'application/json' }, body: encoder.encode(text) });
 
 type Part = [headers: string, content: string];
 const field = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
@@ -33,11 +34,33 @@ describe('requestBodyService', () => {
       ['only model', { model: 'svc', messages: [] }],
       ['only service', { service: 'svc', messages: [] }],
       ['service and model the same', { service: 'svc', model: 'svc' }],
-      ['padded names', { service: ' svc ', model: 'svc  ' }],
       ['a null service', { service: null, model: 'svc' }],
       ['other fields with similar names', { model: 'svc', service_tier: 'default', model_name: 'x', modelish: 'y' }],
+      ['fields of the same name in nested objects', { model: 'svc', tools: [{ model: 'x' }], metadata: { service: 'y', modelId: 'z' } }],
     ])('%s', (_name, body) => {
       expect(requestBodyService(json(body))).toBe('svc');
+    });
+
+    it.each<[string, string]>([
+      ['a charset', 'application/json; charset=utf-8'],
+      ['another case', 'Application/JSON'],
+      ['a structured suffix', 'application/vnd.api+json'],
+    ])('with a JSON content type: %s', (_name, contentType) => {
+      expect(requestBodyService(json({ model: 'svc' }, contentType))).toBe('svc');
+    });
+
+    it('with no content type', () => {
+      expect(requestBodyService({ headers: {}, body: encoder.encode('{"model":"svc"}') })).toBe('svc');
+    });
+
+    it.each<[string, string]>([
+      ['white space around the tokens', ' { "model" : "svc" , "n" : 1 } '],
+      ['escapes and text that looks like fields', '{"prompt":"he said \\"model\\": {\\"","model":"svc"}'],
+      ['a value ending in a backslash', '{"prompt":"a\\\\","model":"svc"}'],
+      ['non-ASCII text', '{"prompt":"caf\u00e9 \u{1f600}","model":"svc"}'],
+      ['a key written with an escape', '{"\\u006dodel":"svc"}'],
+    ])('with %s', (_name, text) => {
+      expect(requestBodyService(rawJson(text))).toBe('svc');
     });
   });
 
@@ -47,7 +70,6 @@ describe('requestBodyService', () => {
       ['a service field', multipart(field('service', 'svc'))],
       ['service and model the same', multipart(field('service', 'svc'), model)],
       ['service and Venice modelId', multipart(field('service', 'svc'), field('modelId', 'svc'))],
-      ['a padded value', multipart(field('model', '  svc  '))],
       ['a prompt over the 4 KiB field limit', multipart(model, field('prompt', 'x'.repeat(5000)))],
       ['a prompt quoting a part header', multipart(model, field('prompt', 'Content-Disposition: form-data; name="model"'))],
       ['a repeated text field', multipart(model, field('timestamp_granularities[]', 'word'), field('timestamp_granularities[]', 'segment'))],
@@ -79,6 +101,7 @@ describe('requestBodyService', () => {
       ['a charset after the boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; charset=UTF-8` })],
       ['an extended filename', multipart(model, ["Content-Disposition: form-data; name=\"image\"; filename*=UTF-8''%E2%82%AC.png", 'png'])],
       ['both filename forms', multipart(model, ["Content-Disposition: form-data; name=\"image\"; filename=\"a.png\"; filename*=UTF-8''a.png", 'png'])],
+      ['a backslash in a filename', multipart(model, ['Content-Disposition: form-data; name="image"; filename="dir\\file.png"', 'png'])],
       ['a field name containing a service field', multipart(model, field('model_version', '2'), field('service_tier', 'default'))],
     ])('%s', (_name, request) => {
       expect(requestBodyService(request)).toBe('svc');
@@ -90,6 +113,14 @@ describe('requestBodyService', () => {
         form.append('prompt', 'x');
         form.append('image', png(), 'model.png');
         form.append('image[]', png(), 'service.png');
+      });
+      expect(requestBodyService(request)).toBe('svc');
+    });
+
+    it.each(['dir\\file.png', 'quote"file.png', 'semi;colon.png', 'caf\u00e9.png', 'line\nbreak.png', 'name="model".png'])('reads a FormData with a file named %j', async (filename) => {
+      const request = await encoded((form) => {
+        form.append('model', 'svc');
+        form.append('image', png(), filename);
       });
       expect(requestBodyService(request)).toBe('svc');
     });
@@ -120,6 +151,9 @@ describe('requestBodyService', () => {
       ['modelId differs', { model: 'svc', modelId: 'other' }],
       ['modelId next to model', { model: 'svc', modelId: 'svc' }],
       ['modelId next to service', { service: 'svc', modelId: 'svc' }],
+      ['a padded model', { model: ' svc ' }],
+      ['a padded service', { service: 'svc ' }],
+      ['a padded model next to a service', { service: 'svc', model: ' svc' }],
       ['a null model next to a service', { service: 'svc', model: null }],
       ['model as an array name', { model: 'svc', 'model[]': 'other' }],
     ])('%s', (_name, body) => {
@@ -127,9 +161,30 @@ describe('requestBodyService', () => {
     });
   });
 
+  it.each<[string, string]>([
+    ['repeated', '{"model":"other","model":"svc"}'],
+    ['repeated with the same value', '{"model":"svc","model":"svc"}'],
+    ['repeated through an escape', '{"\\u006dodel":"other","model":"svc"}'],
+    ['repeated after nested objects', '{"model":"other","tools":[{"a":{"b":"c"}}],"model":"svc"}'],
+  ])('names no service when a JSON model key is %s', (_name, text) => {
+    expect(requestBodyService(rawJson(text))).toBeNull();
+  });
+
+  it.each<[string, string]>([
+    ['a form', 'application/x-www-form-urlencoded'],
+    ['a form with a charset', 'application/x-www-form-urlencoded; charset=utf-8'],
+    ['text', 'text/plain'],
+    ['another multipart', 'multipart/mixed; boundary=x'],
+    ['JSON followed by another type', 'application/json, application/x-www-form-urlencoded'],
+  ])('names no service when a JSON body is labelled %s', (_name, contentType) => {
+    expect(requestBodyService(json({ model: 'svc', prompt: '&model=other&' }, contentType))).toBeNull();
+  });
+
   describe('names no service when a multipart body could read as another', () => {
     it.each<[string, ReturnType<typeof raw>]>([
       ['service and model differ', multipart(field('service', 'svc'), field('model', 'other'))],
+      ['a padded model', multipart(field('model', '  svc  '))],
+      ['a filename ending in an escape before a second name', multipart(model, ['Content-Disposition: form-data; name="image"; filename="a\\"; name="model"', 'other'])],
       ['a service field over the 4 KiB limit', multipart(model, field('service', `${' '.repeat(5000)}other`))],
       ['a model field over the 4 KiB limit', multipart(model, field('model', `${' '.repeat(5000)}other`))],
       ['an upper-case name parameter on service', multipart(model, ['Content-Disposition: form-data; NAME="service"', 'other'])],
@@ -217,7 +272,7 @@ describe('requestBodyService', () => {
       if (!form) continue;
       read += 1;
       for (const name of ['service', 'model', 'modelId']) {
-        for (const value of form.getAll(name)) expect(String(value).trim()).toBe(service);
+        for (const value of form.getAll(name)) expect(value).toBe(service);
       }
     }
     expect(accepted).toBeGreaterThan(100);

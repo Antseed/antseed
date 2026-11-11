@@ -75,7 +75,7 @@ function stubUpstream(answer: () => Response = () => Response.json({ created: 1,
   return calls;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('the seller serves exactly the service it bills', () => {
   it.each<[string, Omit<SerializedHttpRequest, 'requestId'>, string]>([
@@ -117,6 +117,10 @@ describe('the seller serves exactly the service it bills', () => {
     }],
     ['a multipart name in continuations', multipart([['Content-Disposition: form-data; name*0="mod"; name*1="el"', 'other-model'], field('model', 'billed-model')])],
     ['JSON with a null model beside a service', json({ service: 'billed-model', model: null })],
+    ['a padded JSON model', json({ model: ' billed-model ' })],
+    ['a padded multipart model', multipart([field('model', ' billed-model ')])],
+    ['a JSON body sent as a form', json({ model: 'billed-model', prompt: '&model=other-model&' }, { 'content-type': 'application/x-www-form-urlencoded' })],
+    ['a repeated JSON model', { ...json({}), body: new TextEncoder().encode('{"model":"other-model","model":"billed-model"}') }],
   ])('%s never reaches the upstream', async (_name, sent) => {
     const calls = stubUpstream();
     const provider = await openaiPlugin.createProvider(CONFIG);
@@ -148,7 +152,7 @@ describe('the seller serves exactly the service it bills', () => {
     expect(response.statusCode).toBe(200);
     expect(calls[0]!.url).toBe('https://api.venice.ai/api/v1/image/multi-edit');
     const sent = await new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body }).formData();
-    expect(sent.get('modelId')).toBe('nano-banana-pro-edit');
+    expect(sent.getAll('modelId')).toEqual(['nano-banana-pro-edit']);
     expect(sent.has('model')).toBe(false);
   });
 });

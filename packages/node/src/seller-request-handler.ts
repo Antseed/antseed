@@ -243,6 +243,8 @@ export class SellerRequestHandler {
   private readonly _providerLoadCounts = new Map<string, number>();
   /** Provider name → its ID (see announcedProviderId). */
   private readonly _providerIds = new Map<string, string>();
+  /** The service each request in flight is priced and billed as: read once, since a body can be large. */
+  private readonly _requestedServices = new WeakMap<SerializedHttpRequest, string | null>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
@@ -1580,13 +1582,25 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    let service = this._requestedServices.get(request);
+    if (service === undefined) {
+      service = this._readRequestedService(request);
+      this._requestedServices.set(request, service);
+    }
+    return service;
+  }
+
+  private _readRequestedService(request: SerializedHttpRequest): string | null {
     // Routing protocols whose paths name no service address this seller's single service of that protocol.
     const routingProtocol = routingProtocolForPath(request.path);
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
       return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
     }
-    if (nativeVideoRoute(request)) return requestService(request) ?? null;
-    return requestBodyService(request);
+    const videoRoute = nativeVideoRoute(request);
+    if (videoRoute?.action === 'retrieve') return requestService(request) ?? null;
+    const service = requestBodyService(request);
+    // A video create is billed by its `model` alone, so a `service` beside it has to say the same.
+    return videoRoute && service !== requestService(request) ? null : service;
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {
