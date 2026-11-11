@@ -2893,6 +2893,31 @@ describe('SellerPaymentManager', () => {
       expect(mgr.getReserveMax(channelId)).toBe(2_000_000n);
     });
 
+    it('takes a stored top-up as landed when the chain rejects it as already applied', async () => {
+      const channelId = makeChannelId(166);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+        authMax: '1900000', tokensDelivered: '2100000', previousConsumption: '2000000',
+        reserveMaxAmount: '4000000', latestReserveAuthSig: '0xreserve', latestReserveDeadline: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+      const mgr = makeFreshManager();
+      // The top-up was sent just before the stop and mined since; the RPC still shows the deposit from before it.
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }));
+      vi.spyOn(mgr.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(6_500n);
+      const topUp = vi.spyOn(mgr.channelsClient, 'topUp').mockRejectedValue(new Error('execution reverted: TopUpAmountTooLow()'));
+      const close = vi.spyOn(mgr, 'closeSessionWhenIdle').mockResolvedValue();
+      await mgr.validateHydratedChannels();
+      await mgr.waitForTopUp(channelId, 1_000);
+
+      expect({
+        topUps: topUp.mock.calls.length,
+        blocked: mgr.isChannelBlocked(channelId),
+        closes: close.mock.calls.length,
+        ceiling: mgr.getReserveMax(channelId),
+        stored: store.getChannel(channelId)?.latestReserveAuthSig,
+      }).toEqual({ topUps: 1, blocked: false, closes: 0, ceiling: 4_000_000n, stored: null });
+    });
+
     it('clears stale auth when authMax <= on-chain settled', async () => {
       const channelId = makeChannelId(36);
       // authMax=600000 < on-chain settled=800000 → auth is stale

@@ -494,6 +494,26 @@ describe('a seller restarted around a top-up', () => {
     expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
   }, TEST_TIMEOUT_MS);
 
+  it('collects what the buyer signed when the top-up it stored expired while it was down', async () => {
+    const channelId = await openChannel();
+    chain.topUpFate = 'never-sent';
+    while (seller.payments.getCumulativeSpend(channelId) < 499_000n) await serve(channelId, 23_201n);
+    const signed = buyer.getCumulativeAmount(sellerPeer);
+    expect(seller.store.getChannel(channelId)?.latestReserveAuthSig).toBeTruthy();
+
+    // Down for longer than the buyer's top-up authorization lasts: only the buyer can sign it again.
+    seller.alive = false;
+    await vi.advanceTimersByTimeAsync(3_700_000);
+    await restartSeller();
+    expect(seller.store.getChannel(channelId)?.latestReserveAuthSig).toBeNull();
+    const statuses = await parallelRequests(16);
+
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
+    expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
+    expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
+  }, TEST_TIMEOUT_MS);
+
   it('serves the request that finds the channel past its ceiling, without a client retry', async () => {
     const channelId = await openChannel();
     chain.topUpFate = 'never-sent';
@@ -591,7 +611,7 @@ describe('a seller restarted around a top-up', () => {
     chain.funds = 100_000_000n;
 
     await restartSeller();
-    await finish(new Promise((resolve) => setTimeout(resolve, 10 * 60_000)), 11 * 60_000);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
     await finish(seller.payments.checkTimeouts());
     // Much later, a request costs more than its estimate and takes the spend past the deposit.
     seller.payments.recordSpend(channelId, 70_922n);
