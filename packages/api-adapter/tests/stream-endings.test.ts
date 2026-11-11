@@ -176,7 +176,23 @@ function failedResponse(events: SseEvent[]): Json {
   return (JSON.parse(failed!.data) as Json).response as Json;
 }
 
-/** Asserts the tool call that was cut never reads as finished: its block, item or choice is never closed. */
+const streamedText = (to: StreamProtocol, events: SseEvent[]): string => jsonFrames(events).map((body) => {
+  if (to === CHAT) return body.choices?.[0]?.delta?.content ?? '';
+  if (to === MESSAGES) return body.type === 'content_block_delta' ? body.delta.text ?? '' : '';
+  return body.type === 'response.output_text.delta' ? body.delta : '';
+}).join('');
+
+/** The tool call arguments the client was sent, joined in order. */
+const streamedArguments = (to: StreamProtocol, events: SseEvent[]): string => jsonFrames(events).map((body) => {
+  if (to === CHAT) return (body.choices?.[0]?.delta?.tool_calls ?? []).map((call: Json) => call.function?.arguments ?? '').join('');
+  if (to === MESSAGES) return body.type === 'content_block_delta' && body.delta.type === 'input_json_delta' ? body.delta.partial_json : '';
+  return body.type === 'response.function_call_arguments.delta' ? body.delta : '';
+}).join('');
+
+/**
+ * Asserts the tool call that was cut never reads as finished (its block, item or choice is never closed) and that
+ * the client got its arguments as far as they came.
+ */
 function expectToolCallLeftOpen(to: StreamProtocol, events: SseEvent[]): void {
   const frames = jsonFrames(events);
   if (to === MESSAGES) {
@@ -188,13 +204,8 @@ function expectToolCallLeftOpen(to: StreamProtocol, events: SseEvent[]): void {
   } else {
     expect(frames.some((body) => body.choices?.[0]?.delta?.tool_calls)).toBe(true);
   }
+  expect(streamedArguments(to, events)).toBe('{"path":');
 }
-
-const streamedText = (to: StreamProtocol, events: SseEvent[]): string => jsonFrames(events).map((body) => {
-  if (to === CHAT) return body.choices?.[0]?.delta?.content ?? '';
-  if (to === MESSAGES) return body.type === 'content_block_delta' ? body.delta.text ?? '' : '';
-  return body.type === 'response.output_text.delta' ? body.delta : '';
-}).join('');
 
 /**
  * Asserts the stream ended once, as finished, with the reason it reported: a Messages stop_reason or a Chat
@@ -289,7 +300,46 @@ describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
     EXPECT_FAILED[to](cut, 'coupé 🙂');
     expect(streamedText(to, cut)).toBe(text);
   });
+
+  it('passes on tool call arguments that arrive in pieces', () => {
+    const events = translate(from, to, SPLIT_TOOL_CALL[from]);
+    expect(streamedArguments(to, events)).toBe('{"path":"a"}');
+    expectFinished(to, events, { [MESSAGES]: 'tool_use', [CHAT]: 'tool_calls', [RESPONSES]: null }[to]);
+  });
+
+  it('passes text on as it arrives, before the stream ends', () => {
+    const adapter = createStreamingAdapter({ from, to, fallbackModel: 'm' })!;
+    const sent = source.text.flatMap((frame) => adapter.adaptChunk({ requestId: 'req', data: encoder.encode(frame), done: false }));
+    expect(streamedText(to, parseSse(sent.map((chunk) => decoder.decode(chunk.data)).join('')))).toBe('The answer is');
+  });
 });
+
+/** Each source protocol's finished answer with one tool call whose arguments arrive in two pieces, neither of them JSON. */
+const SPLIT_TOOL_CALL: Record<StreamProtocol, string[]> = {
+  [CHAT]: [
+    chatChunk({ role: 'assistant', content: '' }),
+    chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"pa' } }] }),
+    chatChunk({ tool_calls: [{ index: 0, function: { arguments: 'th":"a"}' } }] }),
+    chatChunk({}, 'tool_calls'),
+    frame('[DONE]'),
+  ],
+  [MESSAGES]: [
+    MESSAGE_START,
+    typed('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'read', input: {} } }),
+    typed('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"pa' } }),
+    typed('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: 'th":"a"}' } }),
+    typed('content_block_stop', { index: 0 }),
+    typed('message_delta', { delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 7 } }),
+    typed('message_stop', {}),
+  ],
+  [RESPONSES]: [
+    RESPONSE_CREATED,
+    typed('response.output_item.added', { output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'read', arguments: '', status: 'in_progress' } }),
+    typed('response.function_call_arguments.delta', { output_index: 0, item_id: 'fc_1', delta: '{"pa' }),
+    typed('response.function_call_arguments.delta', { output_index: 0, item_id: 'fc_1', delta: 'th":"a"}' }),
+    RESPONSE_COMPLETED,
+  ],
+};
 
 describe('the failure a client is told', () => {
   it.each([
@@ -768,13 +818,25 @@ describe('an answer that finished stays finished', () => {
 describe('nothing a source sends after its end reaches the client', () => {
   const AFTER_END = 'nothing after the end of a stream may reach the client';
   const TAIL = 'sent after the end';
-  /** More text, in the source's own protocol, after its stream ended. */
-  const TAIL_FRAME: Record<StreamProtocol, string> = {
-    [CHAT]: chatChunk({ content: TAIL }),
-    [MESSAGES]: typed('content_block_delta', { index: 0, delta: { type: 'text_delta', text: TAIL } }),
-    [RESPONSES]: typed('response.output_text.delta', { output_index: 0, item_id: 'msg_1', content_index: 0, delta: TAIL }),
+  const TAIL_TOOL = 'tool_after_the_end';
+  /** More text and a tool call, in the source's own protocol, after its stream ended. */
+  const TAIL_FRAMES: Record<StreamProtocol, string[]> = {
+    [CHAT]: [
+      chatChunk({ content: TAIL }),
+      chatChunk({ tool_calls: [{ index: 5, id: 'call_late', type: 'function', function: { name: TAIL_TOOL, arguments: `{"${TAIL}":` } }] }),
+    ],
+    [MESSAGES]: [
+      typed('content_block_delta', { index: 0, delta: { type: 'text_delta', text: TAIL } }),
+      typed('content_block_start', { index: 5, content_block: { type: 'tool_use', id: 'call_late', name: TAIL_TOOL, input: {} } }),
+      typed('content_block_delta', { index: 5, delta: { type: 'input_json_delta', partial_json: `{"${TAIL}":` } }),
+    ],
+    [RESPONSES]: [
+      typed('response.output_text.delta', { output_index: 0, item_id: 'msg_1', content_index: 0, delta: TAIL }),
+      typed('response.output_item.added', { output_index: 5, item: { type: 'function_call', id: 'fc_late', call_id: 'call_late', name: TAIL_TOOL, arguments: '', status: 'in_progress' } }),
+      typed('response.function_call_arguments.delta', { output_index: 5, item_id: 'fc_late', delta: `{"${TAIL}":` }),
+    ],
   };
-  const leaked = (events: SseEvent[]): boolean => events.some((event) => event.data.includes(TAIL));
+  const leaked = (events: SseEvent[]): boolean => events.some((event) => event.data.includes(TAIL) || event.data.includes(TAIL_TOOL));
   /** The stream frame by frame, then all of it in one read. */
   const bothWays = (from: StreamProtocol, to: StreamProtocol, frames: string[]): SseEvent[][] =>
     [translate(from, to, frames), translate(from, to, [frames.join('')])];
@@ -788,9 +850,20 @@ describe('nothing a source sends after its end reaches the client', () => {
 
   // The end is [DONE] for Chat, message_stop for Messages and response.completed for Responses.
   it.each(PAIRS)('after a finished %s stream, for a %s client', (from, to) => {
-    for (const events of bothWays(from, to, [...SOURCES[from].text, ...SOURCES[from].finish, TAIL_FRAME[from]])) {
+    for (const events of bothWays(from, to, [...SOURCES[from].text, ...SOURCES[from].finish, ...TAIL_FRAMES[from]])) {
       expect(leaked(events), AFTER_END).toBe(false);
       expectFinished(to, events);
+      expect(streamedText(to, events)).toBe('The answer is');
+    }
+  });
+
+  it.each([[MESSAGES, 'max_tokens'], [CHAT, 'length']] as const)('after response.incomplete, for a %s client', (to, reason) => {
+    const incomplete = typed('response.incomplete', {
+      response: { id: 'resp_1', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 100, output_tokens: 7, total_tokens: 107 }, output: [] },
+    });
+    for (const events of bothWays(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, incomplete, ...TAIL_FRAMES[RESPONSES]])) {
+      expect(leaked(events), AFTER_END).toBe(false);
+      expectFinished(to, events, reason);
       expect(streamedText(to, events)).toBe('The answer is');
     }
   });
@@ -803,7 +876,7 @@ describe('nothing a source sends after its end reaches the client', () => {
   });
 
   it.each(PAIRS)('after a %s stream failed, for a %s client', (from, to) => {
-    for (const events of bothWays(from, to, [...SOURCES[from].text, SOURCES[from].errorEvent, TAIL_FRAME[from]])) {
+    for (const events of bothWays(from, to, [...SOURCES[from].text, SOURCES[from].errorEvent, ...TAIL_FRAMES[from]])) {
       expect(leaked(events), AFTER_END).toBe(false);
       EXPECT_FAILED[to](events, 'upstream failed');
       expect(streamedText(to, events)).toBe('The answer is');
@@ -812,7 +885,7 @@ describe('nothing a source sends after its end reaches the client', () => {
 
   it.each([MESSAGES, CHAT] as const)('after response.failed, for a %s client', (to) => {
     const failed = typed('response.failed', { response: { id: 'resp_1', status: 'failed', error: { code: 'server_error', message: 'backend failed' } } });
-    for (const events of bothWays(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, failed, TAIL_FRAME[RESPONSES]])) {
+    for (const events of bothWays(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, failed, ...TAIL_FRAMES[RESPONSES]])) {
       expect(leaked(events), AFTER_END).toBe(false);
       EXPECT_FAILED[to](events, 'backend failed');
       expect(streamedText(to, events)).toBe('The answer is');
@@ -820,18 +893,18 @@ describe('nothing a source sends after its end reaches the client', () => {
   });
 
   it('keeps what comes after the last text but before the end: the stop reason and the usage', () => {
-    const fromChat = translate(CHAT, MESSAGES, [...SOURCES[CHAT].text, chatChunk({}, 'length'), CHAT_USAGE, frame('[DONE]'), TAIL_FRAME[CHAT]]);
+    const fromChat = translate(CHAT, MESSAGES, [...SOURCES[CHAT].text, chatChunk({}, 'length'), CHAT_USAGE, frame('[DONE]'), ...TAIL_FRAMES[CHAT]]);
     expect(jsonFrames(fromChat).find((body) => body.type === 'message_delta')).toMatchObject({
       delta: { stop_reason: 'max_tokens' },
       usage: { input_tokens: 100, output_tokens: 7 },
     });
-    const fromMessages = translate(MESSAGES, CHAT, [...SOURCES[MESSAGES].text, ...SOURCES[MESSAGES].finish, TAIL_FRAME[MESSAGES]]);
+    const fromMessages = translate(MESSAGES, CHAT, [...SOURCES[MESSAGES].text, ...SOURCES[MESSAGES].finish, ...TAIL_FRAMES[MESSAGES]]);
     expect(finishChunks(fromMessages)).toMatchObject([{ choices: [{ finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 7 } }]);
   });
 
   it("still passes the relay's empty final chunk after the end", () => {
     const adapter = createStreamingAdapter({ from: MESSAGES, to: CHAT, fallbackModel: 'm' })!;
-    for (const frame of [...SOURCES[MESSAGES].text, ...SOURCES[MESSAGES].finish, TAIL_FRAME[MESSAGES]]) {
+    for (const frame of [...SOURCES[MESSAGES].text, ...SOURCES[MESSAGES].finish, ...TAIL_FRAMES[MESSAGES]]) {
       adapter.adaptChunk({ requestId: 'req', data: encoder.encode(frame), done: false });
     }
     expect(adapter.adaptChunk({ requestId: 'req', data: new Uint8Array(0), done: true })).toEqual([{ requestId: 'req', data: new Uint8Array(0), done: true }]);
