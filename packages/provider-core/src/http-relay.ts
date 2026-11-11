@@ -152,7 +152,7 @@ function readMultipartTextFields(
     const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
     if (next === -1) break;
     const headers = text.slice(index, headerEnd);
-    const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
+    const params = /(?:^|\r\n)content-disposition:[ \t]*form-data[ \t]*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
     const name = /name="([^"]*)"/i.exec(params)?.[1] ?? '';
     if (wanted.has(name) && !fields.has(name) && !/filename\s*=/i.test(params)) {
       fields.set(name, new TextDecoder().decode(body.subarray(headerEnd + 4, next)).trim());
@@ -181,7 +181,7 @@ function setMultipartTextField(
     const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
     if (next === -1) break;
     const headers = text.slice(index, headerEnd);
-    const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
+    const params = /(?:^|\r\n)content-disposition:[ \t]*form-data[ \t]*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
     const name = /name="([^"]*)"/i.exec(params)?.[1] ?? '';
     if (name === fieldName && !/filename\s*=/i.test(params)) {
       const replacement = new TextEncoder().encode(value);

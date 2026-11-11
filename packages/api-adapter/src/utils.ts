@@ -288,7 +288,7 @@ function splitMultipart(body: Uint8Array, contentType: string | undefined) {
 
 /** The name billing reads a part's text under; undefined for a file, an unnamed part or one over the size limit. */
 function multipartTextFieldName({ headers, content }: MultipartPart): string | undefined {
-  const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1];
+  const dispositionParams = /(?:^|\r\n)content-disposition:[ \t]*form-data[ \t]*;([^\r\n]*)/i.exec(headers)?.[1];
   if (dispositionParams === undefined || /filename\s*=/i.test(dispositionParams)) return undefined;
   if (content.length > MAX_MULTIPART_TEXT_FIELD_BYTES) return undefined;
   return /name="([^"]*)"/.exec(dispositionParams)?.[1];
