@@ -67,3 +67,16 @@ export function compareRuntimeCode(rpcUrl, address, artifact) {
   if (!local.equals(deployed)) return 'runtime code differs from the local build (immutables masked)';
   return null;
 }
+
+/**
+ * Returns null when the on-chain code hash equals the one recorded at deployment, otherwise a
+ * human-readable reason. For contracts the local build no longer describes.
+ */
+export function compareRecordedCodeHash(rpcUrl, address, runtimeCodeHash) {
+  if (!runtimeCodeHash) return 'no recorded runtime code hash';
+  const onChain = cast(rpcUrl, ['codehash', address]);
+  if (onChain.toLowerCase() !== runtimeCodeHash.toLowerCase()) {
+    return `on-chain code hash ${onChain} != recorded ${runtimeCodeHash}`;
+  }
+  return null;
+}
