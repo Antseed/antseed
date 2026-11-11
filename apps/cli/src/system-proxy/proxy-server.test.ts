@@ -479,6 +479,56 @@ test('ResponsesSseNormalizer: removes duplicate terminal text payloads', () => {
   assert.ok(output.includes('"item":{"type":"message","id":"agent-node:llm:0","content":[]}'))
 })
 
+test('ConversationSseAdapter: reads SSE lines with no space after the colon', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = [
+    'data:{"id":"chatcmpl_1","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}',
+    '',
+    'data:{"id":"chatcmpl_1","choices":[{"delta":{},"finish_reason":"stop"}]}',
+    '',
+    'data:[DONE]',
+    '',
+    '',
+  ].join('\n')
+
+  const output = adapter.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+  assert.ok(output.includes('"status":"finished_successfully"'), output)
+})
+
+test('ResponsesSseNormalizer: rewrites events with no space after the colon', () => {
+  const normalizer = new ResponsesSseNormalizer({
+    kind: 'responses-sse',
+    stripDataType: true,
+    messageItemId: 'agent-node:llm:0',
+  })
+  const input = [
+    'event:response.output_item.added',
+    'data:{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","content":[]}}',
+    '',
+    '',
+  ].join('\n')
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(
+    output,
+    'event: response.output_item.added\ndata: {"output_index":0,"item":{"type":"message","id":"agent-node:llm:0","content":[]}}\n\n',
+  )
+})
+
+test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, input)
+})
+
 // ── Integration tests ─────────────────────────────────────────────────────────
 // Tests connect directly to the inner TLS server (innerTlsPort), bypassing the
 // CONNECT tunnel. This keeps tests reliable while covering the critical
