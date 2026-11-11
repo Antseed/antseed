@@ -106,6 +106,51 @@ describe('chat controller', () => {
     expect(chatGenerateImage.mock.calls[1]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'a cat' });
   });
 
+  it.each([
+    ['a reply', { ok: true, user: { role: 'user', content: 'first', createdAt: 1 }, assistant: { role: 'assistant', content: 'old image reply', createdAt: 2 } }],
+    ['a funds retry', { ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } }],
+  ])('a stopped image request whose result lands after a follow-up started adds no %s', async (_label, oldResult) => {
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    const chatGenerateImage = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const { api, uiState } = setup(undefined, { chatGenerateImage, chatAiAbort: async () => ({ ok: true }) });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-b');
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('first');
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    await api.abortChat();
+    api.generateImage('second');
+    await waitFor(() => chatGenerateImage.mock.calls.length === 2);
+    first.resolve(oldResult);
+    await tick(20);
+    expect(JSON.stringify(uiState.chatMessages)).not.toContain('old image reply');
+    expect(uiState.chatFundsNotice).toBeNull();
+    // The follow-up still owns the chat and finishes normally.
+    expect(uiState.chatSending).toBe(true);
+    second.resolve({ ok: true, user: { role: 'user', content: 'second', createdAt: 3 }, assistant: { role: 'assistant', content: 'new image reply', createdAt: 4 } });
+    await waitFor(() => JSON.stringify(uiState.chatMessages).includes('new image reply'));
+    expect(uiState.chatSending).toBe(false);
+  });
+
+  it('a stopped text message that comes back "already in progress" is never sent again', async () => {
+    const answer = deferred<{ ok: boolean; error?: string }>();
+    const chatAiSendStream = vi.fn().mockImplementationOnce(() => answer.promise).mockResolvedValue({ ok: true });
+    const chatAiAbort = vi.fn().mockResolvedValue({ ok: true });
+    const { api } = setup(undefined, { chatAiSendStream, chatAiAbort });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('hello');
+    await waitFor(() => chatAiSendStream.mock.calls.length === 1);
+    await api.abortChat();
+    answer.resolve({ ok: false, error: 'A request is already in progress' });
+    await tick(20);
+    expect(chatAiSendStream).toHaveBeenCalledTimes(1);
+  });
+
   it('an image prompt sent while a chat opens edits that chat\'s image, never the previous chat\'s', async () => {
     const generated = (attachmentId: string) => ({ role: 'assistant', content: [{ type: 'file', generated: true, attachmentId, mimeType: 'image/png', name: `${attachmentId}.png` }], createdAt: 2 });
     const convA = { ...conv('conv-a', 'model-a'), messages: [generated('img-a')] };

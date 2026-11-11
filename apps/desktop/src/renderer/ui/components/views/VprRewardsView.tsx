@@ -8,6 +8,22 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
+/** The pending amount, or a dash when it can't be shown, or an ellipsis while it's read. */
+export function rewardsValue(rewards: GatewayRewardsSummary | null, error: string | null): string {
+  if (rewards?.remoteChainUnverified) return '—';
+  if (rewards) return formatCredits(rewards.available ? rewards.pendingAnts : '0');
+  return error ? '—' : '…';
+}
+
+/** The line under the amount: what it is, or why there's none. */
+export function rewardsHint(rewards: GatewayRewardsSummary | null, error: string | null): string {
+  if (!rewards) return error ?? 'Reading your rewards…';
+  if (rewards.remoteChainUnverified) return 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.';
+  if (!rewards.available) return 'Rewards are not live on this network yet.';
+  const epoch = rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : '';
+  return `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${epoch}.`;
+}
+
 /**
  * A summary of the $ANTS the gateway's wallet earned from usage. Claiming
  * needs the wallet operator's signature, so it happens in the Gateway
@@ -45,8 +61,6 @@ export function VprRewardsView() {
     if (result && !result.ok) setConsoleError(result.error ?? 'Could not open your gateway');
   }
 
-  const pending = rewards?.available ? rewards.pendingAnts : '0';
-
   return (
     <section className={`view view-vpr-rewards view-pinned-header ${styles.view}`} role="tabpanel">
       <VprPage title="Rewards" root subtitle="$ANTS for the volume you move on the network.">
@@ -54,16 +68,8 @@ export function VprRewardsView() {
           <VprCard className={styles.heroCard}>
             <div className={styles.heroText}>
               <span className={styles.heroLabel}>Pending $ANTS</span>
-              <span className={styles.heroValue}>{rewards?.remoteChainUnverified ? '—' : rewards ? formatCredits(pending) : error ? '—' : '…'}</span>
-              <span className={styles.heroHint}>
-                {!rewards
-                  ? error ?? 'Reading your rewards…'
-                  : rewards.remoteChainUnverified
-                    ? 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.'
-                    : rewards.available
-                      ? `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : ''}.`
-                      : 'Rewards are not live on this network yet.'}
-              </span>
+              <span className={styles.heroValue}>{rewardsValue(rewards, error)}</span>
+              <span className={styles.heroHint}>{rewardsHint(rewards, error)}</span>
             </div>
             <div className={styles.heroActions}>
               {rewards?.available && (

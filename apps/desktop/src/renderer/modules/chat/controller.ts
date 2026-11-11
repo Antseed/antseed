@@ -1375,17 +1375,22 @@ export function initChatModule({
     const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, { ...privacy, sendId: token });
     try {
       let result = await send();
+      // Stopped or replaced meanwhile: its answer is no send's on screen, and
+      // a stopped message is never sent again.
+      if (!ownsSend(convId, token)) return;
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
         appendSystemLog('Detected stuck in-flight chat request. Aborting and retrying once...');
         await bridge.chatAiAbort(convId).catch(() => undefined);
+        if (!ownsSend(convId, token)) return;
         result = await send();
+        if (!ownsSend(convId, token)) return;
       }
       // The stream-error event already reported failures that reached the stream.
       const streamEnded = (streamCompletedAtByConversation.get(convId) ?? 0) >= requestStartedAt
         || (streamFailedAtByConversation.get(convId) ?? 0) >= requestStartedAt;
       if (!result.ok && !streamEnded) handleSendFailure(convId, result);
     } catch (err) {
-      reportChatError(err, 'Request failed');
+      if (ownsSend(convId, token)) reportChatError(err, 'Request failed');
     } finally {
       // A request still streaming ends with its done event; a follow-up that
       // started meanwhile owns the flag now.
@@ -1535,6 +1540,9 @@ export function initChatModule({
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
       const result = await bridge.chatGenerateImage({ conversationId: convId, ...request, ...privacy });
+      // Stopped or replaced while the image was made: its result (a reply or
+      // a funds retry) belongs to no send on screen now.
+      if (!ownsSend(convId, token)) return;
       const funds = fundsNoticeFromStopReason(result.stopReason);
       if (funds) {
         imageRetryByConversation.set(convId, request);
@@ -1552,6 +1560,7 @@ export function initChatModule({
       notifyUiStateChanged();
       queueScrollChatToBottom();
     } catch (error) {
+      if (!ownsSend(convId, token)) return;
       const message = asErrorMessage(error, 'Image generation failed');
       if (message !== 'Request aborted') {
         reportChatError(message, 'Image generation failed');
