@@ -2,6 +2,7 @@
 // request off through the proxy and the buyer process stops, the way a user reaches this. When the buyer comes back it
 // pays for that answer on the same channel before it is served again, and the oracle finds every delivered answer
 // paid exactly.
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomTag } from '../../lib/prng.mjs';
 import { channelRows, runAll, STRESS_MODEL, stressTopology } from '../../lib/stress.mjs';
@@ -21,6 +22,9 @@ export async function run(tb) {
   const sellerRows = () => channelRows(join(tb.manifest.dir, 'sellers', seller.id), 'seller');
   const buyerRows = () => channelRows(tb.manifest.buyerDir, 'buyer');
   const delivery = async (tag) => (await tb.deliveries(seller.id)).byTag[tag];
+  const sellerLog = join(tb.manifest.dir, 'logs', `seller-${seller.id}.log`);
+  const logStart = statSync(sellerLog).size;
+  const sellerLogText = () => readFileSync(sellerLog).subarray(logStart).toString('utf8');
   const random = tb.prng('disconnect-mid-answer');
   const cutTag = `cut-${randomTag(random, 8)}`;
   const nextTag = `next-${randomTag(random, 8)}`;
@@ -45,8 +49,9 @@ export async function run(tb) {
   let channelId;
   let cutCost;
   try {
-    const whenStopped = await delivery(cutTag);
-    tb.check('the upstream was still answering when the buyer stopped', whenStopped?.started === true && whenStopped.status === 'pending', whenStopped);
+    await tb.waitFor(() => sellerLogText().includes('preserved for reconnect'), 'the seller seeing the buyer leave', { timeoutMs: 15_000 });
+    const whenSeen = await delivery(cutTag);
+    tb.check('the upstream was still answering when the seller saw the buyer leave', whenSeen?.started === true && whenSeen.status === 'pending', whenSeen);
     const signedRows = buyerRows();
     tb.check('nothing was signed when the buyer stopped', signedRows.length === 1 && BigInt(signedRows[0].auth_max) === 0n, signedRows);
     channelId = signedRows[0].session_id;
@@ -63,9 +68,12 @@ export async function run(tb) {
 
   const nextAnswer = tb.chat({ model: STRESS_MODEL, prompt: `[req:${nextTag}] and one more` });
   nextAnswer.catch(() => {}); // Judged below; a check failing first must not leave it unhandled.
-  await tb.waitFor(async () => Boolean(await delivery(nextTag)), 'the upstream starting the next answer', { timeoutMs: 120_000 });
-  const whenServed = sellerRows();
-  tb.check('the buyer paid for the cut-off answer before the next one started', whenServed.length === 1 && BigInt(whenServed[0].auth_max) >= cutCost, { whenServed, owed: String(cutCost) });
+  await tb.waitFor(() => (sellerLogText().match(/Routing to provider/g) ?? []).length >= 2, 'the seller starting the next answer', { timeoutMs: 120_000 });
+  // The seller's own order of events: the catch-up accepted, then the next answer started.
+  const log = sellerLogText();
+  const paidAt = log.indexOf(`Budget updated: channel=${channelId.slice(0, 18)}... cumulative=${cutCost}`);
+  const startedAt = log.lastIndexOf('Routing to provider');
+  tb.check('the buyer paid for the cut-off answer before the next one started', paidAt >= 0 && paidAt < startedAt, { paidAt, startedAt, owed: String(cutCost) });
   const next = await nextAnswer;
   tb.check('the buyer is served again after it comes back', next.content.length > 0, next.content);
 

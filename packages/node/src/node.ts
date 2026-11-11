@@ -2183,7 +2183,7 @@ export class AntseedNode extends EventEmitter {
           void spm.settleSession(info.buyerPeerId, { settleOnly: true });
         } else if (info.reason === "idle-timeout") {
           debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
-          void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
+          void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true, onlyIfIdle: true });
         }
       };
       this.on("session:finalized", this._settleOnIdle);

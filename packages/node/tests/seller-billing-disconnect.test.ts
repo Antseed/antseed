@@ -40,6 +40,7 @@ import { VerificationMux } from '../src/verification/verification-mux.js';
 const CHAIN_ID = 31337;
 const CONTRACT = '0x' + 'dd'.repeat(20);
 const CHANNEL_A = '0x' + 'a1'.repeat(32);
+const CHANNEL_A_OTHER_CASE = '0x' + 'A1'.repeat(32);
 const CHANNEL_B = '0x' + 'b2'.repeat(32);
 const PAID_MODEL = 'paid-model';
 const FREE_MODEL = 'free-model';
@@ -161,7 +162,13 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     metering,
     new ReceiptGenerator({ peerId: seller.peerId, sign: (message: string) => signUtf8(seller.wallet, message) }),
     {},
-    { onSessionUpdated: () => {}, onSessionFinalized: () => {} },
+    {
+      onSessionUpdated: () => {},
+      // As node.ts wires the idle close.
+      onSessionFinalized: (info) => {
+        if (info.reason === 'idle-timeout') void manager.settleSession(info.buyerPeerId, { cleanupOnFailure: true, onlyIfIdle: true });
+      },
+    },
   );
   const makeHandler = (created: SellerPaymentManager, sessionTracker: SellerSessionTracker): SellerRequestHandler => new SellerRequestHandler({
     identity: seller,
@@ -185,11 +192,11 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
 
   const connect = () => {
     const frames: Uint8Array[] = [];
-    let open = true;
+    let state = ConnectionState.Open;
     const conn = {
-      get state() { return open ? ConnectionState.Open : ConnectionState.Closed; },
+      get state() { return state; },
       send(frame: Uint8Array) {
-        if (!open) throw new Error('connection closed');
+        if (state !== ConnectionState.Open) throw new Error('connection closed');
         frames.push(frame);
       },
       on() {},
@@ -200,7 +207,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     const paymentMux = new PaymentMux(conn);
     const needAuths = vi.spyOn(paymentMux, 'sendNeedAuth');
     const { mux } = handler.handleConnection(conn, buyer.peerId, paymentMux, new VerificationMux(conn));
-    return { frames, paymentMux, needAuths, mux, drop() { open = false; } };
+    return { frames, paymentMux, needAuths, mux, drop(to: ConnectionState) { state = to; } };
   };
   let connection = connect();
 
@@ -265,8 +272,8 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
       return responseTo(requestId);
     },
     /** The connection ends the way node.ts reports it: frames fail, then the manager is told. */
-    disconnect() {
-      connection.drop();
+    disconnect(to: ConnectionState = ConnectionState.Closed) {
+      connection.drop(to);
       manager.onBuyerDisconnect(buyer.peerId);
       void tracker.finalizeSession(buyer.peerId, 'disconnect');
     },
@@ -439,6 +446,57 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.upstream.calls).toBe(1);
   });
 
+  it('reads a channel id in another hex case as the same channel', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.disconnectDuringAnswer('cut-off');
+
+    await h.reconnect(CHANNEL_A_OTHER_CASE, 0n);
+    expect(h.manager.getChannelByPeer(h.buyerPeerId)?.sessionId).toBe(CHANNEL_A);
+    h.ignoreCatchUps();
+    const next = await h.serve('next');
+
+    expect(next.statusCode, 'the next request waits for the delivered answer to be paid').toBe(402);
+    expect(h.upstream.calls).toBe(1);
+  });
+
+  it('bills a running answer on its channel when an auth names it in another hex case', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+
+    h.upstream.hold();
+    const answered = h.send('running');
+    await h.upstream.started(1);
+    expect(await h.sign(CHANNEL_A_OTHER_CASE, 0n)).toBe('accepted');
+    h.upstream.release();
+    await answered;
+
+    expect(h.manager.getCumulativeSpend(CHANNEL_A), 'spend recorded on the admitting channel').toBe(COST);
+  });
+
+  it('does not let the idle timer close a channel under a running answer', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('paid');
+    await h.sign(CHANNEL_A, COST);
+
+    h.upstream.hold();
+    const answered = h.send('running');
+    await h.upstream.started(2);
+    await h.tracker.finalizeSession(h.buyerPeerId, 'idle-timeout');
+    expect(h.close(), 'no close under a running answer').not.toHaveBeenCalled();
+    expect(h.manager.hasSession(h.buyerPeerId), 'a connected buyer stays active').toBe(true);
+
+    h.upstream.release();
+    await answered;
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(2n * COST);
+    expect(h.tracker['_closeTimers'].has(h.buyerPeerId), 'finishing the answer re-arms the idle timers').toBe(true);
+
+    await h.tracker.finalizeSession(h.buyerPeerId, 'idle-timeout');
+    expect(h.close()).toHaveBeenCalledOnce();
+    expect(h.close().mock.calls[0]![2]).toBe(COST);
+  });
+
   it('closes at the latest signed amount only once the running answer is recorded', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
@@ -552,11 +610,28 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
   });
 
-  it('does not start a request whose connection ended, even if the buyer came back on a new one', async () => {
+  it('does not start a paid request whose buyer left during a later payment wait', async () => {
+    const h = await setup(kind, { settleOnDisconnect: false });
+    await h.openChannel(CHANNEL_A);
+    await h.serve('unsigned');
+    vi.spyOn(h.manager, 'awaitAcceptedAtLeast').mockImplementationOnce(async () => {
+      await h.sign(CHANNEL_A, COST);
+      h.manager.onBuyerDisconnect(h.buyerPeerId);
+      return true;
+    });
+
+    const response = await h.serve('left-during-the-catch-up');
+
+    expect(h.upstream.calls, 'upstream calls for a buyer that is gone').toBe(1);
+    expect(response.statusCode).toBe(402);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(COST);
+  });
+
+  it.each([ConnectionState.Closed, ConnectionState.Failed])('does not start a request whose connection is %s, even if the buyer came back on a new one', async (ended) => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
     vi.spyOn(h.manager, 'waitForPendingAuths').mockImplementationOnce(async () => {
-      h.disconnect();
+      h.disconnect(ended);
       await h.reconnect(CHANNEL_A, 0n);
     });
 

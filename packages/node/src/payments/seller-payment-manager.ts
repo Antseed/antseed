@@ -566,9 +566,12 @@ export class SellerPaymentManager {
    */
   async handleSpendingAuth(
     buyerPeerId: string,
-    payload: SpendingAuthPayload,
+    signedPayload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
+    // Hex in another case names the same on-chain channel: it must not read as
+    // an unknown channel, which would start over with nothing spent.
+    const payload = { ...signedPayload, channelId: signedPayload.channelId.toLowerCase() };
     const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer. A one-off
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
@@ -1921,8 +1924,11 @@ export class SellerPaymentManager {
    * - settleOnly=false (default): calls close() — charges buyer, credits seller, ends channel.
    * - settleOnly=true: calls settle() — charges buyer, credits seller, keeps channel open
    *   for future requests. No cleanup is performed so the session can resume.
+   * - onlyIfIdle: does nothing while a request is being served, which means the
+   *   channel is not idle. Finishing that request re-arms the idle timers.
    */
-  async settleSession(buyerPeerId: string, { cleanupOnFailure = false, settleOnly = false } = {}): Promise<void> {
+  async settleSession(buyerPeerId: string, { cleanupOnFailure = false, settleOnly = false, onlyIfIdle = false } = {}): Promise<void> {
+    if (onlyIfIdle && this.hasInFlightRequests(buyerPeerId)) return;
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) {
       debugWarn(`[SellerPayment] settleSession: no active session for buyer ${buyerPeerId.slice(0, 12)}...`);
