@@ -212,6 +212,31 @@ describe('seller billing of an answer without a usage report', () => {
     expect(needAuth?.outputTokens).toBe(String(estimateTokensFromText('Seeds grow.')));
   });
 
+  it('charges a stream that ends with no finish signal for the prompt and the text that arrived', async () => {
+    const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), textDelta(' a young plant.')]));
+    const outputTokens = estimateTokensFromText('Seeds store a young plant.');
+    expect(needAuth).toMatchObject({
+      inputTokens: String(REQUEST_TOKENS),
+      outputTokens: String(outputTokens),
+      lastRequestCost: String(REQUEST_TOKENS + outputTokens),
+    });
+    expect(spent).toBe(BigInt(REQUEST_TOKENS + outputTokens));
+  });
+
+  // Today's behaviour: usage is read one data line at a time, so this figure is not seen. Reading whole events belongs in the shared usage parser.
+  it('charges an estimate when the usage event spans several data lines', async () => {
+    const text = 'Seeds store a young plant.';
+    const usage = 'data: {"choices":[],\ndata: "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n';
+    const { spent, needAuth } = await serve(streamingProvider([textDelta(text), usage, DONE]));
+    const outputTokens = estimateTokensFromText(text);
+    expect(needAuth).toMatchObject({
+      inputTokens: String(REQUEST_TOKENS),
+      outputTokens: String(outputTokens),
+      lastRequestCost: String(REQUEST_TOKENS + outputTokens),
+    });
+    expect(spent).toBe(BigInt(REQUEST_TOKENS + outputTokens));
+  });
+
   it('charges nothing by estimate for a stream that failed', async () => {
     const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), 'event: error\ndata: upstream dropped\n\n']));
     expect(needAuth?.lastRequestCost).toBe('0');
