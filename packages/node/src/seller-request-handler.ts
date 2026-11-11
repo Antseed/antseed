@@ -835,7 +835,7 @@ export class SellerRequestHandler {
             // A restarted seller asks before it closes: work past the ceiling
             // can only be collected through a top-up the restart may have lost.
             const restartCatchUp = !isBlocked && reserveMax > 0n && spent > reserveMax
-              ? await spm.restartCatchUpTarget(session.sessionId)
+              ? await spm.askAfterRestart(session.sessionId)
               : null;
             const target = restartCatchUp ?? spent;
             const isAlreadyExhausted = reserveMax > 0n && (accepted >= reserveMax || target > reserveMax);

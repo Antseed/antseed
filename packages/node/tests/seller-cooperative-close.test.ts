@@ -575,4 +575,20 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
       closed: vi.mocked(manager.channelsClient.close).mock.calls.length,
     }).toEqual({ status: 'rejected', code: 'pending_auth', answeredAtOnce: true, settled: 10_000_000n, ceiling: 20_000_000n, closed: 0 });
   });
+
+  it('still waits for the catch-up, and starts no top-up, when a queued top-up is not needed for the spend', async () => {
+    vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
+    const topUp = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 1_000_000n), mux);
+    await manager.handleSpendingAuth(buyer.peerId, await buildReserveAuth(buyer, 20_000_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 3_000_000n);
+
+    const closing = manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    // The catch-up fits the deposit, so it can be accepted while the close waits for it.
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 3_000_000n), mux);
+    const result = await closing;
+
+    expect({ status: result.status, finalAmount: result.finalAmount, topUps: topUp.mock.calls.length })
+      .toEqual({ status: 'closed', finalAmount: '3000000', topUps: 0 });
+  });
 });

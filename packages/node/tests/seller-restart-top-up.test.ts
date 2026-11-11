@@ -81,6 +81,7 @@ class FakeChain {
   async reserve(signer: AbstractSigner, buyer: string, salt: string, maxAmount: bigint, deadline: bigint, sig: string): Promise<string> {
     const seller = await signer.getAddress();
     const channelId = computeChannelId(buyer, seller, salt);
+    if (this.channels.has(channelId)) throw new Error('execution reverted: ChannelExists');
     const reserveSigner = verifyTypedData(DOMAIN, RESERVE_AUTH_TYPES, { channelId, maxAmount, deadline }, sig);
     if (reserveSigner.toLowerCase() !== buyer.toLowerCase()) throw new Error('execution reverted: InvalidSignature');
     this.channels.set(channelId, {
@@ -100,7 +101,7 @@ class FakeChain {
       if (amount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
       this._settle(channel, channelId, amount, metadata, sig);
     }
-    if (channel.settled * 10_000n < channel.deposit * THRESHOLD_BPS) throw new Error('execution reverted: TopUpThresholdNotMet');
+    if (channel.settled < (channel.deposit * THRESHOLD_BPS) / 10_000n) throw new Error('execution reverted: TopUpThresholdNotMet');
     const reserveSigner = verifyTypedData(DOMAIN, RESERVE_AUTH_TYPES, { channelId, maxAmount: newMax, deadline }, reserveSig);
     if (reserveSigner.toLowerCase() !== channel.buyer.toLowerCase()) throw new Error('execution reverted: InvalidSignature');
     channel.deposit = newMax;
@@ -188,6 +189,9 @@ describe('a seller restarted around a top-up', () => {
   let funds: bigint;
   let seller: ReturnType<typeof startSeller>;
   let buyerConn: ReturnType<typeof connectBuyer>;
+  let buyerChannels: ChannelsClient;
+  /** Chain clients of killed seller processes. */
+  let killed: Set<ChannelsClient>;
   let requests = 0;
 
   function dir(name: string): string {
@@ -267,9 +271,10 @@ describe('a seller restarted around a top-up', () => {
     return conn;
   }
 
-  /** SIGKILL: nothing the process held in memory survives, only its store. Then start again. */
+  /** SIGKILL: nothing the process held in memory survives, only its store; its chain calls never finish. Then start again. */
   async function restartSeller(): Promise<void> {
     seller.alive = false;
+    killed.add(seller.payments.channelsClient);
     seller.store.close();
     chain.topUpFate = 'lands';
     seller = startSeller(seller.dataDir);
@@ -327,14 +332,29 @@ describe('a seller restarted around a top-up', () => {
     funds = 100_000_000n;
     const client = ChannelsClient.prototype;
     vi.spyOn(client, 'readAddress', 'get').mockImplementation(() => Promise.resolve(CHANNELS_ADDRESS));
+    killed = new Set();
+    /** A chain call from a live process; a killed one's never finishes. */
+    function call<T>(from: ChannelsClient, run: () => Promise<T>): Promise<T> {
+      return killed.has(from) ? new Promise(() => {}) : run();
+    }
     const rpc = <T>(read: () => T): Promise<T> => new Promise((resolve, reject) => {
       setTimeout(() => { try { resolve(read()); } catch (err) { reject(err); } }, READ_MS);
     });
-    vi.spyOn(client, 'getSession').mockImplementation((id: string) => rpc(() => ({ ...chain.read(id) })));
-    vi.spyOn(client, 'getTopUpSettledThresholdBps').mockImplementation(() => rpc(() => THRESHOLD_BPS));
-    vi.spyOn(client, 'reserve').mockImplementation((signer, buyerAddr, salt, max, deadline, sig) => chain.reserve(signer, buyerAddr, salt, max, deadline, sig));
-    vi.spyOn(client, 'topUp').mockImplementation((_signer, id, amount, metadata, sig, max, deadline, reserveSig) => chain.topUp(id, amount, metadata, sig, max, deadline, reserveSig));
-    vi.spyOn(client, 'close').mockImplementation(async (_signer, id, amount, metadata, sig) => chain.close(id, amount, metadata, sig));
+    vi.spyOn(client, 'getSession').mockImplementation(function (this: ChannelsClient, id: string) {
+      return call(this, () => rpc(() => ({ ...chain.read(id) })));
+    });
+    vi.spyOn(client, 'getTopUpSettledThresholdBps').mockImplementation(function (this: ChannelsClient) {
+      return call(this, () => rpc(() => THRESHOLD_BPS));
+    });
+    vi.spyOn(client, 'reserve').mockImplementation(function (this: ChannelsClient, signer, buyerAddr, salt, max, deadline, sig) {
+      return call(this, () => chain.reserve(signer, buyerAddr, salt, max, deadline, sig));
+    });
+    vi.spyOn(client, 'topUp').mockImplementation(function (this: ChannelsClient, _signer, id, amount, metadata, sig, max, deadline, reserveSig) {
+      return call(this, () => chain.topUp(id, amount, metadata, sig, max, deadline, reserveSig));
+    });
+    vi.spyOn(client, 'close').mockImplementation(function (this: ChannelsClient, _signer, id, amount, metadata, sig) {
+      return call(this, async () => chain.close(id, amount, metadata, sig));
+    });
 
     const buyerDir = dir('restart-buyer-');
     buyerStore = new ChannelStore(buyerDir);
@@ -353,9 +373,9 @@ describe('a seller restarted around a top-up', () => {
     buyer.setSigner(buyerIdentity.wallet);
     const balance = async () => ({ available: funds, reserved: chain.reserved(), lastActivityAt: 0n });
     vi.spyOn(buyer.depositsClient, 'getBuyerBalance').mockImplementation(balance);
-    const channels = new ChannelsClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: CHANNELS_ADDRESS, evmChainId: CHAIN_ID });
+    buyerChannels = new ChannelsClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: CHANNELS_ADDRESS, evmChainId: CHAIN_ID });
     const emitter: NegotiationEmitter = { emit: () => false } as never;
-    negotiator = new BuyerPaymentNegotiator(buyerIdentity, buyer, buyer.depositsClient, channels, buyerStore, {}, emitter);
+    negotiator = new BuyerPaymentNegotiator(buyerIdentity, buyer, buyer.depositsClient, buyerChannels, buyerStore, {}, emitter);
     requestHandler = new BuyerRequestHandler({}, {
       localPeerId: buyerPeer,
       negotiator,
@@ -510,6 +530,26 @@ describe('a seller restarted around a top-up', () => {
 
     expect({ status: chain.read(channelId).status, settled: chain.read(channelId).settled, quickly: Date.now() - started < 10_000 })
       .toEqual({ status: CLOSED, settled: OPENING_RESERVE, quickly: true });
+  });
+
+  it('asks again for an authorization up to the deposit when the buyer could not act on the first ask', async () => {
+    const channelId = await openChannel();
+    chain.topUpFate = 'mined-unseen';
+    while (seller.payments.getCumulativeSpend(channelId) < 1_250_000n) await serve(channelId, 23_201n);
+    const signed = buyer.getCumulativeAmount(sellerPeer);
+
+    await restartSeller();
+    // The buyer's chain read fails while it handles the first ask, so it neither replays its top-up nor closes.
+    vi.spyOn(buyerChannels, 'getSession').mockRejectedValueOnce(new Error('rpc timeout'));
+    // A client keeps retrying a retryable answer.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if ((await parallelRequests(1))[0] === 200) break;
+      await finish(new Promise((resolve) => setTimeout(resolve, 2_000)));
+    }
+
+    const goesOn = chain.read(channelId).status === ACTIVE;
+    expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
+    expect(goesOn, 'closed the channel it had just extended').toBe(true);
   });
 
   it('still closes a full channel when the buyer has no top-up to send again', async () => {
