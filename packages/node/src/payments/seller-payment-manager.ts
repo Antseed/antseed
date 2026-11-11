@@ -33,7 +33,7 @@ export interface SellerPaymentConfig {
   dataDir: string;
   /** Minimum USDC per request (base units). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
-  /** Whether to immediately settle when buyer disconnects. Default: true. */
+  /** Whether to settle as soon as the buyer disconnects and no request is still being served. Default: true. */
   settleOnDisconnect?: boolean;
   /**
    * Minimum unsettled delta (base units) required before idle settle will
@@ -2070,7 +2070,9 @@ export class SellerPaymentManager {
 
     const settleOnDisconnect = this._config.settleOnDisconnect ?? true;
 
-    if (settleOnDisconnect) {
+    // A request still being served has yet to record its spend on this channel:
+    // keep it, and let the timeout checker close it once that is done.
+    if (settleOnDisconnect && !this.hasInFlightRequests(buyerPeerId)) {
       const accepted = this._acceptedCumulative.get(session.sessionId) ?? 0n;
       if (accepted > 0n) {
         debugLog(`[SellerPayment] Buyer ${buyerPeerId.slice(0, 12)}... disconnected — closing channel immediately`);
@@ -2126,6 +2128,9 @@ export class SellerPaymentManager {
         const hydratedZeroAuthExpired = accepted === 0n
           && this._hydratedChannelIds.has(channel.sessionId)
           && nowSecs > channel.deadline;
+
+        // Requests still being served bill this channel: a later pass closes it.
+        if (this.hasInFlightRequests(channel.peerId)) continue;
 
         // If we have auths and the buyer is disconnected, try to close
         if (accepted > 0n && buyerDisconnected) {
