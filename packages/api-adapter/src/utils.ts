@@ -240,6 +240,64 @@ export function speechAudioDelivered(
 /** Text fields larger than this are dropped — billing fields are all short. */
 const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 
+/** One part of a multipart/form-data body. */
+export interface MultipartPart {
+  /** The part's header block, one character per byte. */
+  headers: string;
+  /** The part's content, not copied. */
+  content: Uint8Array;
+}
+
+/**
+ * The parts of a multipart/form-data body, or null when the content type is
+ * not multipart or the boundary is missing/malformed. `unambiguous` says every
+ * reader splits this body into these parts: one boundary parameter, nothing
+ * but an optional CRLF before the first delimiter, each delimiter alone on its
+ * line, and only white space after the closing one. Any client that follows
+ * the standard writes that.
+ */
+export function readMultipartParts(
+  body: Uint8Array,
+  contentType: string | undefined,
+): { parts: MultipartPart[]; unambiguous: boolean } | null {
+  if (!contentType) return null;
+  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
+  if (!boundary) return null;
+
+  // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
+  // even through binary file parts; text field values are re-decoded as UTF-8.
+  const text = new TextDecoder('latin1').decode(body);
+  const delimiter = `--${boundary}`;
+  const parts: MultipartPart[] = [];
+  let index = text.indexOf(delimiter);
+  let unambiguous = (index === 0 || (index === 2 && text.startsWith('\r\n')))
+    && contentType.match(/boundary=/gi)?.length === 1
+    && !boundary.includes('\\');
+  while (index !== -1) {
+    index += delimiter.length;
+    if (text.startsWith('--', index)) {
+      return { parts, unambiguous: unambiguous && text.slice(index + 2).trim() === '' };
+    }
+    unambiguous &&= text.startsWith('\r\n', index);
+    const headerEnd = text.indexOf('\r\n\r\n', index);
+    if (headerEnd === -1) break;
+    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
+    if (next === -1) break;
+    parts.push({ headers: text.slice(index, headerEnd), content: body.subarray(headerEnd + 4, next) });
+    index = next + 2;
+  }
+  return { parts, unambiguous: false };
+}
+
+/** The name billing reads a part's text under; undefined for a file, an unnamed part or one over the size limit. */
+export function multipartTextFieldName({ headers, content }: MultipartPart): string | undefined {
+  const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1];
+  if (dispositionParams === undefined || /filename\s*=/i.test(dispositionParams)) return undefined;
+  if (content.length > MAX_MULTIPART_TEXT_FIELD_BYTES) return undefined;
+  return /name="([^"]*)"/.exec(dispositionParams)?.[1];
+}
+
 /**
  * Extract the text (non-file) fields from a multipart/form-data body, e.g. the
  * model/prompt/n/size fields of an OpenAI `/v1/images/edits` request. File
@@ -251,34 +309,13 @@ export function parseMultipartFormFields(
   body: Uint8Array,
   contentType: string | undefined,
 ): Record<string, string> | null {
-  if (!contentType) return null;
-  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
-  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
-  if (!boundary) return null;
-
-  // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
-  // even through binary file parts; text field values are re-decoded as UTF-8.
-  const text = new TextDecoder('latin1').decode(body);
-  const delimiter = `--${boundary}`;
+  const multipart = readMultipartParts(body, contentType);
+  if (!multipart) return null;
   const fields: Record<string, string> = {};
-  let index = text.indexOf(delimiter);
-  while (index !== -1) {
-    index += delimiter.length;
-    if (text.startsWith('--', index)) break;
-    const headerEnd = text.indexOf('\r\n\r\n', index);
-    if (headerEnd === -1) break;
-    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
-    if (next === -1) break;
-    const headerBlock = text.slice(index, headerEnd);
-    const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
-    if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
-      const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
-      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
-      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
-        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
-      }
-    }
-    index = next + 2;
+  for (const part of multipart.parts) {
+    const name = multipartTextFieldName(part);
+    // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+    if (name && !(name in fields)) fields[name] = decoder.decode(part.content);
   }
   return fields;
 }

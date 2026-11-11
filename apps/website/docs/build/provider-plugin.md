@@ -123,7 +123,7 @@ interface ProviderStreamCallbacks {
 }
 ```
 
-Buyers send standard API requests: the request your plugin receives has the path, headers and JSON body the buyer's client sent (for example an OpenAI chat completion), with the service ID in the body's `model` field. The seller's categories from `config.json` are applied for you; you don't need to set `serviceCategories`.
+Buyers send standard API requests: the request your plugin receives has the path, headers and JSON body the buyer's client sent (for example an OpenAI chat completion), with the service ID in the body's `model` field. The seller refuses a body that names more than one service, and sets the `x-antseed-service` header to the service it bills, so a plugin can rely on either. The seller's categories from `config.json` are applied for you; you don't need to set `serviceCategories`.
 
 ### API protocols
 

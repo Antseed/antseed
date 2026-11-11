@@ -390,7 +390,7 @@ export class SellerRequestHandler {
         const requestedService = this._extractRequestedService(request);
         const allServices = this._deps.providers.flatMap((p) => p.services);
         const errorMessage = requestedService === null
-          ? 'Request must include a "service" or "model" field matching a published service.'
+          ? 'Request must name one service, in a "service" or "model" field, matching a published service.'
           : `Service "${requestedService}" is not served by this peer.`;
         debugWarn(`[SellerHandler] Rejecting: ${errorMessage} available=[${allServices.join(', ')}]`);
         mux.sendProxyResponse({
@@ -407,6 +407,9 @@ export class SellerRequestHandler {
         });
         return;
       }
+
+      // The service this request is priced and billed as, which the provider serves.
+      setTrustedHeader(request.headers, 'x-antseed-service', this._extractRequestedService(request)!);
 
       // A request the provider refuses anyway is answered before any payment step.
       let refusal: ProviderRequestRefusal | null;
