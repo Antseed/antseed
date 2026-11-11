@@ -958,7 +958,8 @@ export class BuyerPaymentManager {
       overStore = false;
     } else if (onChainAmount < deposit) {
       const where = `channel=${session.sessionId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}...`;
-      const seen = known?.lower?.amount === onChainAmount ? known.lower : undefined;
+      // Only reads of the same lower deposit against the same confirmed one add up.
+      const seen = known?.amount === deposit && known.lower?.amount === onChainAmount ? known.lower : undefined;
       // An open channel's deposit is never zero: such a read says nothing.
       if (seen && onChainAmount > 0n && Date.now() - seen.since >= DEPOSIT_LAG_WINDOW_MS) {
         debugWarn(

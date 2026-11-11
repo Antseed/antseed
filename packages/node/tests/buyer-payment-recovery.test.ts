@@ -495,6 +495,23 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
         });
       });
 
+      it('starts the lag window again when the buyer stores a higher deposit in between', async () => {
+        const seller = sellerConnection();
+        const { channelId, at } = await toppedUpChannel(seller);
+        const pmux = negotiator.getOrCreatePaymentMux(SELLER, seller.conn);
+        await manager.topUpReserve(SELLER, pmux);
+        await manager.topUpReserve(SELLER, pmux);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        // The first of the two top-ups lands, and the buyer sees it while it budgets a third.
+        deposit = 3n * RESERVE;
+        at(20_000);
+        await manager.topUpReserve(SELLER, pmux);
+        at(30_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+        expect(store.getChannel(channelId)?.confirmedReserveAmount).toBe((3n * RESERVE).toString());
+      });
+
       it('never takes a deposit of zero for the chain\'s', async () => {
         const { channelId, at } = await toppedUpChannel(sellerConnection());
         await manager.reconcileReserveAmount(SELLER, 0n);
