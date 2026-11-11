@@ -1,6 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { estimateTokensFromText } from '@antseed/node';
-import { MOCK_USAGE, NO_USAGE_MARKER } from '../../lib/mock.mjs';
+import { MOCK_USAGE, NO_USAGE_MARKER, usageCost } from '../../lib/mock.mjs';
 import { parseSse } from '../../lib/tb.mjs';
 
 export const meta = {
@@ -85,7 +85,7 @@ export async function run(tb) {
   const provider = Object.values(tb.manifest.topology.sellers.find((entry) => entry.id === seller.id).providers).find((entry) => entry.services?.[model]);
   const price = { ...(provider.defaults ?? {}), ...(provider.services[model].pricing ?? {}) };
   const [promptTokens, answerTokens] = [estimateTokensFromText(JSON.stringify(chatBody(silentPrompt))), estimateTokensFromText(silentAnswer.content)];
-  const expectedEstimate = BigInt(Math.round(promptTokens * price.inputUsdPerMillion + answerTokens * price.outputUsdPerMillion));
+  const expectedEstimate = usageCost(price, { prompt: promptTokens, completion: answerTokens });
   tb.check('the charge is the estimate of the prompt and the answer', estimate === expectedEstimate, { estimate: String(estimate), expected: String(expectedEstimate), promptTokens, answerTokens, price });
   tb.metric('estimateMicroUsdc', String(estimate));
 
