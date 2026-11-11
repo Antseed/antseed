@@ -108,6 +108,12 @@ describe('isPlainJsonContentType', () => {
 });
 
 describe('parseMultipartFormFields', () => {
+  it('reads disposition headers only at the start of their own line', () => {
+    const prompt = part('X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt');
+    expect(parseMultipartFormFields(body(`${prompt}${named('model', 'svc')}${closing}`), contentType))
+      .toEqual({ prompt: 'keep this prompt', model: 'svc' });
+  });
+
   it('keeps the first of each text field and skips files and oversized fields', () => {
     const text = `${named('model', 'first')}${named('model', 'second')}${named('prompt', 'x'.repeat(4097))}${part('Content-Disposition: form-data; name="image"; filename="a.png"', 'PNG')}${closing}`;
     expect(parseMultipartFormFields(body(text), contentType)).toEqual({ model: 'first' });

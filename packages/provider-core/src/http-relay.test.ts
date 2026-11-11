@@ -247,6 +247,36 @@ describe('HttpRelay', () => {
     expect(forwarded.get('image')).toBeInstanceOf(Blob);
   });
 
+  it.each(['model', 'modelId'])('rewrites only the named %s part when another header quotes a disposition', async (modelField) => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ allowedServices: ['alias'], serviceRewriteMap: { alias: 'upstream-model' } }),
+      { onResponse: () => undefined },
+    );
+    const boundary = 'relay-parts';
+    const prompt = 'keep this prompt';
+    const bytes = new TextEncoder().encode(
+      `--${boundary}\r\nX-Note: content-disposition: form-data; name="${modelField}"\r\n`
+      + `Content-Disposition: form-data; name="prompt"\r\n\r\n${prompt}\r\n`
+      + `--${boundary}\r\nContent-Disposition: form-data; name="${modelField}"\r\n\r\nalias\r\n`
+      + `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="model"\r\n`
+      + `Content-Type: image/png\r\n\r\nPNG\r\n--${boundary}--\r\n`,
+    );
+    await relay.handleRequest(makeRequest({
+      path: '/v1/images/edits',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'x-antseed-service': 'alias' },
+      body: bytes,
+    }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const forwarded = await new Response(options.body, { headers: options.headers }).formData();
+    expect(forwarded.get(modelField)).toBe('upstream-model');
+    expect(forwarded.get('prompt')).toBe(prompt);
+    expect(await (forwarded.get('image') as Blob).text()).toBe('PNG');
+    if (modelField === 'modelId') expect(forwarded.has('model')).toBe(false);
+  });
+
   it('enforces concurrency limit', async () => {
     // Create a fetch that blocks until we resolve it
     let resolveFirst!: (value: Response) => void;
