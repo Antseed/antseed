@@ -132,9 +132,9 @@ A failure (an `event: error` frame, an error event, `response.failed`) becomes
 the target's failure: an `error` event for Messages, `response.failed` for
 Responses, and a data line with an `error` object and no `[DONE]` for Chat
 Completions. Nothing the source sends after its ending reaches the client.
-Pass the stream's last chunk with `done: true`: a stream that reaches it
-without saying how it ended is reported as cut off, and a stream that never
-gets it gets no ending at all.
+Pass the stream's last chunk with `done: true`. That is where a stream that
+stopped without saying how it ended is reported as cut off, and where a Chat
+Completions source's finish is rendered, so without it neither gets an ending.
 
 ## API Reference
 
