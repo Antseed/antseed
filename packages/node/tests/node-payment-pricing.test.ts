@@ -471,8 +471,8 @@ describe('charges for requests whose fields every reader reads alike', () => {
   });
 
   it.each<[string, Part[], string]>([
-    ['a quality sent twice, the dearer one last', [text('quality', 'low'), text('quality', 'high')], 'repeated_field'],
-    ['a quality sent twice, the dearer one first', [text('quality', 'high'), text('quality', 'low')], 'repeated_field'],
+    ['a quality sent twice, the higher one last', [text('quality', 'low'), text('quality', 'high')], 'repeated_field'],
+    ['a quality sent twice, the higher one first', [text('quality', 'high'), text('quality', 'low')], 'repeated_field'],
     ['a count sent twice', [text('quality', 'low'), text('n', '1'), text('n', '2')], 'repeated_field'],
     ['a quality billing would not read, sent as a file', [['Content-Disposition: form-data; name="quality"; filename=""', 'high']], 'invalid_billing_field'],
     ['a quality billing would not read, over the field limit', [text('quality', `high${' '.repeat(4096)}`)], 'invalid_billing_field'],
