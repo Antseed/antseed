@@ -141,11 +141,31 @@ test('a batch that misses rows reads each open one alone, and the others a few a
   };
   const missed = [row('alone-open', 'active'), ...[0, 1, 2, 3, 4].map((index) => row(`alone-retired-${index}`, 'ghost'))];
   const ids = (picked: ReturnType<typeof rowsToReadAlone>) => picked.map((summary) => summary.channelId);
+  const lastReadAlone = new Map<string, number>();
 
-  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 1_000)), ['alone-open', 'alone-retired-0', 'alone-retired-1']);
-  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 2_000)), ['alone-open', 'alone-retired-2', 'alone-retired-3']);
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, lastReadAlone, 1_000)), ['alone-open', 'alone-retired-0', 'alone-retired-1']);
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, lastReadAlone, 2_000)), ['alone-open', 'alone-retired-2', 'alone-retired-3']);
   // The longest unread comes first, so every row is reached.
-  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 3_000)), ['alone-open', 'alone-retired-4', 'alone-retired-0']);
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, lastReadAlone, 3_000)), ['alone-open', 'alone-retired-4', 'alone-retired-0']);
+});
+
+test('each reader keeps its own turn order, so reading a row one way never keeps it from the other', () => {
+  const row = (sessionId: string) => {
+    const summary = normalizePaymentChannelSummary({ sessionId, status: 'ghost' });
+    assert.ok(summary);
+    return summary;
+  };
+  const group = ['turn-a', 'turn-b', 'turn-c'].map(row);
+  const canonical = new Map<string, number>();
+  const facade = new Map<string, number>();
+
+  for (let poll = 1; poll <= 3; poll++) {
+    // Every poll the canonical path reads row a alone first, then the facade path picks from the whole group.
+    rowsToReadAlone([group[0]!], 1, canonical, poll * 1_000);
+    rowsToReadAlone(group, 1, facade, poll * 1_000);
+  }
+
+  assert.deepEqual([...facade.keys()].sort(), ['turn-a', 'turn-b', 'turn-c']);
 });
 
 test('a retired row stays retired when the chain has no record of it', () => {

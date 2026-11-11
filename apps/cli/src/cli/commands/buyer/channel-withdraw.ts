@@ -226,7 +226,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         const onChain = await channelsClient.getSession(localChannel.sessionId);
         // Status first: a reserve that never landed reads as no channel at all, with no buyer.
         if (onChain.status === 0) {
-          throw new Error('No channel with this id exists on-chain, so it locks nothing.');
+          throw new Error('No channel with this id is recorded on-chain.');
         }
         if (onChain.status !== ON_CHAIN_STATUS_ACTIVE) {
           throw new Error(`On-chain channel is ${CHANNEL_STATUS_LABELS[onChain.status] ?? `status ${onChain.status}`}, not active.`);

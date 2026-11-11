@@ -80,25 +80,24 @@ export function channelEndedOnChain(channelId: string): boolean {
   return status === 2 || status === 3;
 }
 
-/** When a row that does not show open last got a read of its own. */
-const readAloneAt = new Map<string, number>();
-
 /**
  * Which rows a batched read missed get a read of their own: every row that
- * shows open, and up to `limit` others, least recently read alone first. The
- * others can be hundreds, so a batch that keeps failing reaches them in turn
- * instead of costing one read each on every poll.
+ * shows open, and up to `limit` others, least recently read alone first by
+ * this reader (`lastReadAlone`, which it records). The others can be
+ * hundreds, so a batch that keeps failing reaches them in turn instead of
+ * costing one read each on every poll.
  */
 export function rowsToReadAlone(
   missed: DesktopPaymentChannelSummary[],
   limit: number,
+  lastReadAlone: Map<string, number>,
   nowMs = Date.now(),
 ): DesktopPaymentChannelSummary[] {
   const others = missed
     .filter((row) => !isOpenChannelStatus(row.status))
-    .sort((left, right) => (readAloneAt.get(left.channelId) ?? 0) - (readAloneAt.get(right.channelId) ?? 0))
+    .sort((left, right) => (lastReadAlone.get(left.channelId) ?? 0) - (lastReadAlone.get(right.channelId) ?? 0))
     .slice(0, limit);
-  for (const row of others) readAloneAt.set(row.channelId, nowMs);
+  for (const row of others) lastReadAlone.set(row.channelId, nowMs);
   return [...missed.filter((row) => isOpenChannelStatus(row.status)), ...others];
 }
 

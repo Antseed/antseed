@@ -174,7 +174,7 @@ for (const [status, label] of [[2, 'settled'], [3, 'timed out']] as const) {
   });
 }
 
-test('channels request-close says when no channel with the id exists on-chain', async (context) => {
+test('channels request-close says when no channel with the id is recorded on-chain', async (context) => {
   const harness = await buyerCommandHarness(context);
   const id = '0x' + 'b3'.repeat(32);
   harness.seed(buyerChannel(id, harness.buyer, { status: 'ghost' }));
@@ -188,7 +188,7 @@ test('channels request-close says when no channel with the id exists on-chain', 
     /process\.exit\(1\)/,
   );
 
-  assert.match(written.join(''), /No channel with this id exists on-chain/);
+  assert.match(written.join(''), /No channel with this id is recorded on-chain/);
   assert.equal(requestClose.mock.callCount(), 0);
 });
 

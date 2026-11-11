@@ -181,6 +181,10 @@ export function formatAnts(value: bigint): string {
 
 // Bound concurrent on-chain reads without skipping older active-looking rows.
 const CHANNEL_ENRICH_CONCURRENCY = 12;
+// When each row last got a read of its own, per reader, so neither path's
+// turn order keeps a row from the other.
+const canonicalReadAloneAt = new Map<string, number>();
+const facadeReadAloneAt = new Map<string, number>();
 
 // Channels with a delegated seller live behind the seller's facade contract
 // (the row's `seller` is the contract, e.g. DiemStakingProxy) and have no
@@ -259,12 +263,12 @@ async function readChannelSessions(
   // rows it missed get reads of their own, a bounded number per poll.
   const batched = await readChannelsBatched(client.provider, client.contractAddress, rows.map((row) => row.channelId)).catch(() => null);
   const sessions = new Map<string, ChannelInfo>(batched ?? []);
-  const readAlone = (reader: ChannelsClient, missed: DesktopPaymentChannelSummary[]) => runInBatches(
-    rowsToReadAlone(missed, CHANNEL_ENRICH_CONCURRENCY),
+  const readAlone = (reader: ChannelsClient, missed: DesktopPaymentChannelSummary[], lastReadAlone: Map<string, number>) => runInBatches(
+    rowsToReadAlone(missed, CHANNEL_ENRICH_CONCURRENCY, lastReadAlone),
     CHANNEL_ENRICH_CONCURRENCY,
     async (row) => { sessions.set(row.channelId, await reader.getSession(row.channelId)); },
   );
-  await readAlone(client, rows.filter((row) => !sessions.has(row.channelId)));
+  await readAlone(client, rows.filter((row) => !sessions.has(row.channelId)), canonicalReadAloneAt);
   // Channels with no canonical record may live behind the seller's facade.
   // Group them per facade and read each group in one call; a seller that is
   // not a facade resolves to itself and has no channel record to read.
@@ -277,7 +281,7 @@ async function readChannelSessions(
     if (readAddress.toLowerCase() === facade.contractAddress.toLowerCase()) return;
     const viaFacade = await readChannelsBatched(facade.provider, readAddress, group.map((row) => row.channelId)).catch(() => null);
     for (const [channelId, info] of viaFacade ?? []) sessions.set(channelId, info);
-    await readAlone(facade, group.filter((row) => !viaFacade?.has(row.channelId)));
+    await readAlone(facade, group.filter((row) => !viaFacade?.has(row.channelId)), facadeReadAloneAt);
   });
   return sessions;
 }
@@ -313,14 +317,6 @@ export function notePendingSpend(channels: readonly DesktopPaymentChannelSummary
   return cachedPendingSpend;
 }
 
-/**
- * Make the next pending read go to the buyer and the chain: after a close the
- * cached amount still counts what was just settled, which the deposit read
- * already left out, and another identity's amount is not this one's.
- */
-export function expirePendingSpend(): void {
-  cachedPendingSpendAt = 0;
-}
 
 /**
  * Signed-but-unsettled spend across the buyer's open channels. Falls back to

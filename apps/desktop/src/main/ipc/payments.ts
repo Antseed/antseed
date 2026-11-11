@@ -24,7 +24,6 @@ import {
   type DesktopRewardsSummary,
   EMPTY_REWARDS_SUMMARY,
   MAX_SPENDING_AUTH_BASE_UNITS,
-  expirePendingSpend,
   fetchBuyerProxyJson,
   loadBuyerChannels,
   normalizeBuyerUsageTotals,
@@ -420,7 +419,6 @@ export function registerPaymentsIpc(): void {
     try {
       const result = await requestCooperativeChannelClose(peerId, channelId || undefined);
       invalidateChainReads();
-      expirePendingSpend();
       return { ok: true, result, error: null };
     } catch (err) {
       return {
