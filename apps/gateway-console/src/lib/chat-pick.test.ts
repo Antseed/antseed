@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatModel, ChatModelPeer, RoutePreview } from '../api/types'
-import { autoPick, pickModels, pickPeers, verdictsFrom } from './chat-pick'
+import { autoPick, isFreeOffer, pickModels, pickPeers, verdictsFrom } from './chat-pick'
 
 const peer = (peerId: string, input: number, output: number, reputation: number, extra: Partial<ChatModelPeer> = {}): ChatModelPeer => ({
   peerId, name: peerId, toolUse: true, reasoning: false, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, freeTier: null, ...extra,
@@ -33,5 +33,13 @@ describe('chat pickers', () => {
     expect(pickPeers(peers, new Set(), 'price', verdicts).map((p) => p.peerId)).toEqual(['bb', 'cc', 'aa'])
     expect(autoPick(preview)?.peerId).toBe('cc')
     expect(autoPick({ ...preview, modelAllowed: false })).toBeNull()
+  })
+})
+
+describe('isFreeOffer', () => {
+  it('is not free when only cached input is charged', () => {
+    expect(isFreeOffer(peer('a', 0, 0, 1, { cachedInputUsdPerMillion: 0.1 }))).toBe(false)
+    expect(isFreeOffer(peer('b', 0, 0, 1, { cachedInputUsdPerMillion: 0 }))).toBe(true)
+    expect(isFreeOffer(peer('c', 0, 0, 1))).toBe(true)
   })
 })

@@ -442,6 +442,61 @@ describe('chat controller', () => {
     expect(uiState.chatActiveConversation).toBeNull();
   });
 
+  it('an image chat finishing after the user opened another chat does not pull them back', async () => {
+    const conversations = [conv('conv-a', 'model-a')];
+    const creation = deferred<void>();
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiCreateConversation: async (service: string) => {
+        await creation.promise;
+        const next = conv('conv-img', service);
+        conversations.push(next);
+        return { ok: true, data: next };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    uiState.chatImageModelId = 'image-model';
+    await api.refreshChatConversations();
+    api.generateImage('a cat');
+    await tick();
+    await api.openConversation('conv-a');
+    creation.resolve();
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    await tick(20);
+    expect(uiState.chatActiveConversation).toBe('conv-a');
+  });
+
+  it('a background chat finishing keeps Sending and Stop on a new chat\'s first message still being prepared', async () => {
+    const streamEnded = deferred<{ ok: boolean }>();
+    const creation = deferred<void>();
+    const conversations = [conv('conv-a', 'model-a')];
+    const { api, uiState, emit } = setup(conversations, {
+      chatAiSendStream: () => streamEnded.promise,
+      chatAiCreateConversation: async (service: string) => {
+        await creation.promise;
+        const next = conv('conv-new', service);
+        conversations.push(next);
+        return { ok: true, data: next };
+      },
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('in a');
+    await waitFor(() => uiState.chatSendingConversationIds.includes('conv-a'));
+    api.startNewChat();
+    api.sendMessage('draft B');
+    await waitFor(() => uiState.chatSending);
+    emit('done', { conversationId: 'conv-a' });
+    streamEnded.resolve({ ok: true });
+    await waitFor(() => uiState.chatSendingConversationIds.length === 0);
+    expect(uiState.chatActiveConversation).toBeNull();
+    expect(uiState.chatSending).toBe(true);
+    expect(uiState.chatAbortVisible).toBe(true);
+    expect(uiState.chatSendingConversationId).toBeNull();
+    creation.resolve();
+  });
+
   it('ignores a slow answer for a chat the user has already left', async () => {
     const answers: Record<string, (value: unknown) => void> = {};
     const conversations = [{ ...conv('conv-a', 'model-a', '/project-a'), messages: [{ role: 'user', content: 'from a', createdAt: 1 }] }, { ...conv('conv-b', 'model-b'), messages: [{ role: 'user', content: 'from b', createdAt: 1 }] }];

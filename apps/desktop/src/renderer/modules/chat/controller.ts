@@ -588,16 +588,22 @@ export function initChatModule({
 
   function syncActiveConversationSendingState(): void {
     const activeConvId = uiState.chatActiveConversation;
-    const sending = isConversationSending(activeConvId);
+    const conversationSending = isConversationSending(activeConvId);
+    // A first message on the new-chat screen, still waiting for a model or
+    // its chat, keeps its Sending and Stop while other chats finish.
+    const draftSending = !activeConvId && shownDraft !== 0 && !stoppedDrafts.has(shownDraft);
+    const sending = conversationSending || draftSending;
     uiState.chatSendingConversationIds = sendingConversationIds.size === 0 ? [] : Array.from(sendingConversationIds);
     uiState.chatSending = sending;
-    uiState.chatSendingConversationId = sending ? activeConvId : null;
+    uiState.chatSendingConversationId = conversationSending ? activeConvId : null;
     uiState.chatInputDisabled = sending;
     uiState.chatSendDisabled = sending;
     uiState.chatAbortVisible = sending;
     uiState.chatWaitingForStream = sending;
-    uiState.chatThinkingPhase = null;
-    clearThinkingPhaseExpiry();
+    if (!draftSending) {
+      uiState.chatThinkingPhase = null;
+      clearThinkingPhaseExpiry();
+    }
     notifyUiStateChanged();
   }
 
@@ -867,6 +873,10 @@ export function initChatModule({
 
   async function openConversation(convId: string, options: { keepImageModel?: boolean } = {}): Promise<void> {
     if (!bridge?.chatAiGetConversation) return;
+    // Leaving the new-chat screen, like starting another chat: a first message
+    // still being prepared goes on in the background and doesn't pull the user back.
+    newChatDraftVersion += 1;
+    shownDraft = 0;
     const workspacePathAtOpen = uiState.chatWorkspacePath;
     const openToken = ++conversationOpenToken;
     // A slower answer for a chat the user has since left must not replace the current one.

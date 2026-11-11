@@ -9,6 +9,7 @@ import {
   filterChatModels,
   fundsNoticeAction,
   fundsNoticeFromStopReason,
+  isFreeOffer,
   offerPriceLabel,
   shouldWaitForFreeModel,
 } from './models';
@@ -127,4 +128,10 @@ test('a pin to a paid seller of a model with a free seller is not Free', () => {
   assert.equal(selectionIsFree(model, `${free}@model-a`), true);
   assert.equal(selectionIsFree(model, `${'b'.repeat(40)}@model-a`), false);
   assert.equal(selectionIsFree({ free: false, freeSellerId: null }, 'model-a'), false);
+});
+
+test('an offer charging for cached input is not free', () => {
+  assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.1 }), false);
+  assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 }), true);
+  assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }), true);
 });

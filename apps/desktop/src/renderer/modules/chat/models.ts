@@ -187,6 +187,7 @@ export function offerPriceLabel(
   return formatPriceRange(offer);
 }
 
-export function isFreeOffer(offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }): boolean {
-  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0;
+/** Every token price is $0, cached input included (absent counts as $0, as the buyer reads it). */
+export function isFreeOffer(offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion?: number | null }): boolean {
+  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && (offer.cachedInputUsdPerMillion ?? 0) === 0;
 }

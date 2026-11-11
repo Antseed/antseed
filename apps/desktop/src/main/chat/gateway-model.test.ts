@@ -146,6 +146,17 @@ test('an image model charging per image is not free, though its token prices are
   assert.equal(free?.free, true);
 });
 
+test('a seller charging only for cached input is not free, as the buyer decides it', () => {
+  const models = toChatModels([
+    { id: 'cached-paid', peers: [{ peerId: 'a', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.1 }] },
+    { id: 'all-zero', peers: [{ peerId: 'b', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 }] },
+  ]);
+  const paid = models.find((model) => model.id === 'cached-paid');
+  assert.equal(paid?.free, false);
+  assert.equal(paid?.freeSellerId, null);
+  assert.equal(models.find((model) => model.id === 'all-zero')?.free, true);
+});
+
 test('sellers that take images are listed, for a chat pinned to one when not all of them do', () => {
   const model = toChatModel({
     id: 'mixed',

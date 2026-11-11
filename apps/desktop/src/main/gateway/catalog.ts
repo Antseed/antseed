@@ -102,7 +102,10 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   // Coverage only counts sellers that reported at all, including those reporting false.
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
-  const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0;
+  // Free means every token price is $0, cached input included, as the buyer decides it.
+  const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0
+    && peer['outputUsdPerMillion'] === 0
+    && (finiteNumber(peer['cachedInputUsdPerMillion']) ?? 0) === 0;
   const isStakersOnlyFree = (peer: Record<string, unknown>): boolean => stakersOnly(peer) && zeroPriced(peer);
   const stakersOnlyFree = peers.filter(isStakersOnlyFree);
   // What anyone can pay: a stakers-only $0 offer would show a paid model as free.
