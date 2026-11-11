@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: pr-guard-${{ github.event.pull_request.number }}
@@ -24,14 +25,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # main only merges branches that are up to date with it, so a maintainer must be able to merge main into a
-      # PR's branch. Only the event's own fields are read here; nothing from the PR runs.
+      # PR's branch. Only the PR's metadata is read here, from the event and the API; nothing from the PR runs.
       - name: Require maintainer edits on a PR from a fork
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           FROM_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
-          MAINTAINER_CAN_MODIFY: ${{ github.event.pull_request.maintainer_can_modify }}
+        # The PR's current setting, not the event's: a re-run reuses the event from when the check first ran.
         run: |
-          if [ "$FROM_FORK" = "true" ] && [ "$MAINTAINER_CAN_MODIFY" != "true" ]; then
-            echo "::error::Tick \"Allow edits by maintainers\" on this pull request (in its sidebar), so a maintainer can update it with main, then push a commit or ask a maintainer to re-run this check. Ticking it alone does not re-run it."
+          [ "$FROM_FORK" = "true" ] || exit 0
+          if [ "$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .maintainer_can_modify)" != "true" ]; then
+            echo "::error::Tick \"Allow edits by maintainers\" on this pull request (in its sidebar), so a maintainer can update it with main. Then push a commit or ask a maintainer to re-run this check."
             exit 1
           fi
 
