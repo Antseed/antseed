@@ -18,6 +18,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Multipart request billing (`@antseed/node`): price-affecting inputs such as `quality`, `n`, `size` and `resolution` must each appear once as a plain text field. Repeated image files and collection fields remain supported.
+
 - Seller request admission (`@antseed/node`): buyer-supplied upstream model lists, routing selectors and fallback-model controls are refused before payment, rather than forwarded alongside the billed model. Seller-configured aliases and fallback upstreams are unchanged.
 
 - Sellers (`@antseed/node`, `@antseed/api-adapter`, CLI): a request is served only when it names one service, the one the seller prices and bills. `service` and `model` must say exactly the same, appear once and use exactly those names; `modelId` is not accepted from buyers; a JSON body must be sent as JSON (or with no content type); and a multipart body must be written the plain way form encoders write it. Anything else is answered `400 model_required` before any payment step, and that includes a native video create whose `service` differs from its `model`. The seller also sets `x-antseed-service` itself to the service it bills, replacing any value the buyer sent. Requests from the buyer proxy, the gateway, the desktop and standard API clients are unaffected, and the check runs in the seller, so it needs no plugin refresh.

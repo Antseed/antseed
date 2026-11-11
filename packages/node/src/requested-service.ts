@@ -1,3 +1,4 @@
+import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
 import type { SerializedHttpRequest } from './types/http.js';
 import { extractRequestBodyFields, isPlainJsonContentType, parseJsonObject, readPlainMultipartParts } from '@antseed/api-adapter';
 
@@ -13,6 +14,12 @@ function selectsService(name: string): boolean {
 
 /** The fields a buyer names its service in. A plugin may write `modelId` for its upstream, after this check. */
 const BUYER_SERVICE_FIELDS = new Set(['service', 'model']);
+
+/** Scalar billing inputs must have one plain value, independent of a form reader's duplicate policy. */
+const MULTIPART_BILLING_FIELDS = new Set<string>([
+  ...UNIT_BILLING_MATCH_KEYS_V1,
+  'n', 'duration', 'generate_audio', 'reference_video_urls', 'video_urls', 'prompt', 'input',
+]);
 
 type NamedFields = Array<[name: string, value: unknown]>;
 
@@ -50,10 +57,21 @@ function serviceFields(request: Pick<SerializedHttpRequest, 'headers' | 'body'>)
   if (contentTypes.length > 1) return null;
   const contentType = (contentTypes[0]?.[1] ?? '').trim();
   if (/^multipart\/form-data/i.test(contentType)) {
-    const parts = readPlainMultipartParts(request.body, contentType)?.filter((part) => selectsService(part.name));
-    if (!parts || parts.some((part) => !part.billedText)) return null;
+    const parts = readPlainMultipartParts(request.body, contentType);
+    if (!parts) return null;
+    const seenBillingFields = new Set<string>();
+    for (const part of parts) {
+      const name = part.name.trim().toLowerCase().replace(/\[.*$/, '').trim();
+      if (!MULTIPART_BILLING_FIELDS.has(name)) continue;
+      if (part.name !== name || seenBillingFields.has(name)) return null;
+      // Prompts and speech input may exceed billing's short-field limit; they must still appear only once.
+      if (name !== 'prompt' && name !== 'input' && !part.billedText) return null;
+      seenBillingFields.add(name);
+    }
+    const services = parts.filter((part) => selectsService(part.name));
+    if (services.some((part) => !part.billedText)) return null;
     // A BOM stays in the text, for the padding check to see.
-    return parts.map((part) => [part.name, new TextDecoder('utf-8', { ignoreBOM: true }).decode(part.content)]);
+    return services.map((part) => [part.name, new TextDecoder('utf-8', { ignoreBOM: true }).decode(part.content)]);
   }
   // A form reader would take other fields from the same bytes, so JSON has to say it is JSON, or say nothing.
   if (contentType && !isPlainJsonContentType(contentType)) return null;
