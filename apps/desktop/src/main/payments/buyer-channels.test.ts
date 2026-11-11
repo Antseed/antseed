@@ -8,6 +8,7 @@ import {
   channelEndedOnChain,
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
+  rowsToReadAlone,
   runInBatches,
 } from './buyer-channel-control.js';
 
@@ -119,6 +120,33 @@ for (const retired of ['ghost', 'settled', 'timeout']) {
     assert.equal(row.cooperativeCloseSupported, false);
   });
 }
+
+test('a retired row the chain holds open never offers the seller-assisted close, even from a buyer that predates live', () => {
+  // An older buyer omits `live` and closes whatever session it holds with the seller: never the retired channel.
+  const row = normalizePaymentChannelSummary({ sessionId: 'revived-older-buyer', status: 'ghost', cooperativeCloseSupported: true });
+  assert.ok(row);
+  assert.equal(row.cooperativeCloseSupported, true);
+
+  applyChannelOnChainSnapshot(row, { status: 1, deposit: '1000000', settled: '0', closeRequestedAt: 0 });
+
+  assert.equal(row.status, 'active');
+  assert.equal(row.cooperativeCloseSupported, false);
+});
+
+test('a batch that misses rows reads each open one alone, and the others a few at a time in turn', () => {
+  const row = (sessionId: string, status: string) => {
+    const summary = normalizePaymentChannelSummary({ sessionId, status });
+    assert.ok(summary);
+    return summary;
+  };
+  const missed = [row('alone-open', 'active'), ...[0, 1, 2, 3, 4].map((index) => row(`alone-retired-${index}`, 'ghost'))];
+  const ids = (picked: ReturnType<typeof rowsToReadAlone>) => picked.map((summary) => summary.channelId);
+
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 1_000)), ['alone-open', 'alone-retired-0', 'alone-retired-1']);
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 2_000)), ['alone-open', 'alone-retired-2', 'alone-retired-3']);
+  // The longest unread comes first, so every row is reached.
+  assert.deepEqual(ids(rowsToReadAlone(missed, 2, 3_000)), ['alone-open', 'alone-retired-4', 'alone-retired-0']);
+});
 
 test('a retired row stays retired when the chain has no record of it', () => {
   const row = normalizePaymentChannelSummary({ sessionId: 'retired-missing', status: 'ghost' });

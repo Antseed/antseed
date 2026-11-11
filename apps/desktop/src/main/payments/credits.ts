@@ -25,7 +25,7 @@ import { getSecureIdentity } from '../identity.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { asRecord, asString } from '../utils.js';
-import { getPendingSpendUsdc, resetSellerFacadeClients } from './buyer-channels.js';
+import { expirePendingSpend, getPendingSpendUsdc, resetSellerFacadeClients } from './buyer-channels.js';
 import { resetSharedChain, withSharedProvider } from './shared-chain.js';
 import { clearChainReads, invalidateChainReads } from './read-cache.js';
 
@@ -324,6 +324,7 @@ export function cachedBuyerBalanceIsZero(): boolean | undefined {
 /** Drop the cached balance — call when the signing identity changes. */
 export function invalidateCreditsCache(): void {
   cachedCreditsComponents = null;
+  expirePendingSpend();
   invalidateChainReads();
 }
 
@@ -335,6 +336,7 @@ export function invalidateCreditsCache(): void {
 export function invalidateChainClients(): void {
   resetSharedChain();
   resetSellerFacadeClients();
+  expirePendingSpend();
   clearChainReads();
   cachedCryptoConfig = null;
   cachedDepositsClient = null;

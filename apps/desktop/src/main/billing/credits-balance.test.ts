@@ -19,13 +19,20 @@ test('unsettledSpend is what the seller can still claim on a channel', () => {
   assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '50000', onChainSettled: '60000' }), 0n);
 });
 
-test('unsettledSpend counts no more than the deposit the chain holds', () => {
-  // Signed past the reserve (a top-up that never landed): the seller can settle the deposit at most.
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '2000000', onChainSettled: '250000', onChainStateKnown: true, onChainDeposit: '1000000' }), 750000n);
+test('unsettledSpend counts no more than the deposit once no top-up can raise it', () => {
+  const now = 2_000_000_000;
+  // Signed past the reserve (a top-up that never landed), on a channel the chain was read for.
+  const signedPast = { status: 'active', cumulativeSigned: '2000000', onChainSettled: '250000', onChainStateKnown: true, onChainDeposit: '1000000' };
+  // The top-up's ReserveAuth has expired: the seller can settle the deposit at most.
+  assert.equal(unsettledSpend({ ...signedPast, deadline: now - 2 * 3600 }, now), 750000n);
+  // A close was requested, which stops every top-up whatever its deadline.
+  assert.equal(unsettledSpend({ ...signedPast, status: 'closing', deadline: now + 3600 }, now), 750000n);
+  assert.equal(unsettledSpend({ ...signedPast, status: 'withdrawable', deadline: now + 3600 }, now), 750000n);
+  // The ReserveAuth can still land and lift the deposit, or its deadline is unknown: all of it counts.
+  assert.equal(unsettledSpend({ ...signedPast, deadline: now + 3600 }, now), 1750000n);
+  assert.equal(unsettledSpend({ ...signedPast, deadline: 0 }, now), 1750000n);
   // Before the chain is read the deposit is unknown, so all of it counts.
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '2000000', onChainSettled: '250000', onChainDeposit: '0' }), 1750000n);
-  // The live session's top-up can land before the next read: spend up to its ceiling still counts.
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '1500000', onChainSettled: '0', onChainStateKnown: true, onChainDeposit: '1000000', reserveCeiling: '2000000' }), 1500000n);
+  assert.equal(unsettledSpend({ ...signedPast, onChainStateKnown: false, deadline: now - 2 * 3600 }, now), 1750000n);
 });
 
 test('unsettledSpend treats missing and malformed amounts as zero', () => {

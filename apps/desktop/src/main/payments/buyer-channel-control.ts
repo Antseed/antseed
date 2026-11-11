@@ -2,6 +2,7 @@
 import type { ChannelInfo, CloseChannelResultPayload } from '@antseed/node';
 import { multicallRead } from '@antseed/node/payments';
 import { Interface, type AbstractProvider } from 'ethers';
+import { isOpenChannelStatus } from '../billing/credits-balance.js';
 import { LOCALHOST_URL } from '../constants.js';
 import type { DesktopPaymentChannelSummary } from './buyer-channels.js';
 
@@ -61,7 +62,9 @@ export function applyChannelOnChainSnapshot(
   else if (knownSnapshot.status === 3) row.status = 'timedout';
   else if (knownSnapshot.status === 1) {
     // Open, whatever the store calls it: a channel the buyer gave up on still
-    // locks its reserve until it closes on-chain.
+    // locks its reserve. It is not the live session, so its seller cannot close
+    // it, and a buyer that predates `live` would close the live one instead.
+    if (row.status !== 'active') row.cooperativeCloseSupported = false;
     if (knownSnapshot.closeRequestedAt === 0) row.status = 'active';
     else {
       row.status = nowSeconds < knownSnapshot.closeRequestedAt + CHANNEL_CLOSE_GRACE_SECS
@@ -75,6 +78,28 @@ export function applyChannelOnChainSnapshot(
 export function channelEndedOnChain(channelId: string): boolean {
   const status = channelOnChainSnapshots.get(channelId)?.status;
   return status === 2 || status === 3;
+}
+
+/** When a row that does not show open last got a read of its own. */
+const readAloneAt = new Map<string, number>();
+
+/**
+ * Which rows a batched read missed get a read of their own: every row that
+ * shows open, and up to `limit` others, least recently read alone first. The
+ * others can be hundreds, so a batch that keeps failing reaches them in turn
+ * instead of costing one read each on every poll.
+ */
+export function rowsToReadAlone(
+  missed: DesktopPaymentChannelSummary[],
+  limit: number,
+  nowMs = Date.now(),
+): DesktopPaymentChannelSummary[] {
+  const others = missed
+    .filter((row) => !isOpenChannelStatus(row.status))
+    .sort((left, right) => (readAloneAt.get(left.channelId) ?? 0) - (readAloneAt.get(right.channelId) ?? 0))
+    .slice(0, limit);
+  for (const row of others) readAloneAt.set(row.channelId, nowMs);
+  return [...missed.filter((row) => isOpenChannelStatus(row.status)), ...others];
 }
 
 /**
@@ -122,6 +147,7 @@ export function normalizePaymentChannelSummary(value: unknown): DesktopPaymentCh
     onChainSettled: readStringField(raw, 'onChainSettled') || readStringField(raw, 'settledAmount') || '0',
     reservedAt: readNumberField(raw, 'reservedAt'),
     updatedAt: readNumberField(raw, 'updatedAt'),
+    deadline: readNumberField(raw, 'deadline'),
     status: readStringField(raw, 'status') || 'unknown',
     requestCount: readNumberField(raw, 'requestCount'),
     inputTokens: readStringField(raw, 'tokensDelivered') || '0',

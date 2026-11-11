@@ -7,7 +7,7 @@ import { ChannelsClient, type ChannelInfo, type CloseChannelResultPayload } from
 import type { AbstractProvider } from 'ethers';
 import { createHash } from 'node:crypto';
 import { LOCALHOST_URL } from '../constants.js';
-import { isOpenChannelStatus, pendingSpendFromChannels } from '../billing/credits-balance.js';
+import { pendingSpendFromChannels } from '../billing/credits-balance.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getCachedChannelsClient, loadCachedCryptoConfig, setCachedChannelsClient } from './credits.js';
 import { sharedChainProvider } from './shared-chain.js';
@@ -18,6 +18,7 @@ import {
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
   readChannelsBatched,
+  rowsToReadAlone,
   runInBatches,
 } from './buyer-channel-control.js';
 
@@ -65,6 +66,8 @@ export type DesktopPaymentChannelSummary = {
   reservedAt: number;
   /** Last local cumulative usage/auth update for this channel. */
   updatedAt: number;
+  /** Deadline (unix seconds) of the latest ReserveAuth the buyer signed for it; 0 when unknown. */
+  deadline: number;
   status: string;
   requestCount: number;
   inputTokens: string;
@@ -212,11 +215,9 @@ function facadeClientFor(
   return client;
 }
 
-// The local ChannelStore can disagree with the chain both ways: a seller-side
-// settle or close is not always observed, and the buyer retires a row when it
-// gives up on the session (a seller that went away, an exhausted channel),
-// which leaves the channel open and its reserve locked. So the chain decides
-// every row's status (applyChainToChannels).
+// The buyer's store can disagree with the chain both ways: a seller's settle or
+// close is not always observed, and a row the buyer retired (it gave up on the
+// session) can still be open with its reserve locked. The chain decides.
 async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[], fresh = false): Promise<void> {
   const cc = await loadCachedCryptoConfig();
   if (!cc?.channelsAddress) return;
@@ -254,22 +255,20 @@ async function readChannelSessions(
   provider: AbstractProvider | null,
   rows: DesktopPaymentChannelSummary[],
 ): Promise<Map<string, ChannelInfo>> {
-  // One Multicall3 read for every candidate instead of an eth_call per row.
-  // A row the batch misses gets a read of its own while it shows open; any
-  // other row, and there can be hundreds, waits for the next batch.
+  // One Multicall3 read for every candidate instead of an eth_call per row;
+  // rows it missed get reads of their own, a bounded number per poll.
   const batched = await readChannelsBatched(client.provider, client.contractAddress, rows.map((row) => row.channelId)).catch(() => null);
-  const sessions = new Map<string, ChannelInfo>();
-  const unknown: DesktopPaymentChannelSummary[] = [];
-  await runInBatches(rows, CHANNEL_ENRICH_CONCURRENCY, async (row) => {
-    const info = batched?.get(row.channelId)
-      ?? (isOpenChannelStatus(row.status) ? await client.getSession(row.channelId) : undefined);
-    if (!info) return;
-    sessions.set(row.channelId, info);
-    if (info.status === 0 && /^0x[0-9a-fA-F]{40}$/.test(row.seller)) unknown.push(row);
-  });
+  const sessions = new Map<string, ChannelInfo>(batched ?? []);
+  const readAlone = (reader: ChannelsClient, missed: DesktopPaymentChannelSummary[]) => runInBatches(
+    rowsToReadAlone(missed, CHANNEL_ENRICH_CONCURRENCY),
+    CHANNEL_ENRICH_CONCURRENCY,
+    async (row) => { sessions.set(row.channelId, await reader.getSession(row.channelId)); },
+  );
+  await readAlone(client, rows.filter((row) => !sessions.has(row.channelId)));
   // Channels with no canonical record may live behind the seller's facade.
   // Group them per facade and read each group in one call; a seller that is
   // not a facade resolves to itself and has no channel record to read.
+  const unknown = rows.filter((row) => sessions.get(row.channelId)?.status === 0 && /^0x[0-9a-fA-F]{40}$/.test(row.seller));
   const bySeller = new Map<string, DesktopPaymentChannelSummary[]>();
   for (const row of unknown) bySeller.set(row.seller.toLowerCase(), [...(bySeller.get(row.seller.toLowerCase()) ?? []), row]);
   await runInBatches([...bySeller.values()], CHANNEL_ENRICH_CONCURRENCY, async (group) => {
@@ -277,10 +276,8 @@ async function readChannelSessions(
     const readAddress = await facade.readAddress.catch(() => facade.contractAddress);
     if (readAddress.toLowerCase() === facade.contractAddress.toLowerCase()) return;
     const viaFacade = await readChannelsBatched(facade.provider, readAddress, group.map((row) => row.channelId)).catch(() => null);
-    await Promise.allSettled(group.map(async (row) => {
-      const info = viaFacade?.get(row.channelId) ?? await facade.getSession(row.channelId);
-      sessions.set(row.channelId, info);
-    }));
+    for (const [channelId, info] of viaFacade ?? []) sessions.set(channelId, info);
+    await readAlone(facade, group.filter((row) => !viaFacade?.has(row.channelId)));
   });
   return sessions;
 }
@@ -314,6 +311,15 @@ export function notePendingSpend(channels: readonly DesktopPaymentChannelSummary
   cachedPendingSpend = pendingSpendFromChannels(channels);
   cachedPendingSpendAt = Date.now();
   return cachedPendingSpend;
+}
+
+/**
+ * Make the next pending read go to the buyer and the chain: after a close the
+ * cached amount still counts what was just settled, which the deposit read
+ * already left out, and another identity's amount is not this one's.
+ */
+export function expirePendingSpend(): void {
+  cachedPendingSpendAt = 0;
 }
 
 /**

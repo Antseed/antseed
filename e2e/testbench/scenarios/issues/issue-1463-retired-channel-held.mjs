@@ -7,13 +7,13 @@
 // Two sellers crash with their channels open. The store is then edited while the buyer is stopped, the one step no
 // public path reaches on demand: one row is retired an hour ago, as `retireSession(peer, GHOST)` retires it, and the
 // other reads as signed up to its reserve. Activity must list both, the retired one with the on-chain close (it is not
-// the live session, so its seller cannot close it), the CLI must start the exit for both, and the reserves must come
-// back after the grace period.
+// the live session, so its seller cannot close it), and that close must hand its channel to the wallet page. The page
+// needs a wallet, so the exit itself runs through the CLI, and the reserves must come back after the grace period.
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 export const meta = {
-  description: '#1463: a channel the buyer retired locally, or signed in full, but the chain still holds open stays reachable: Activity lists it with a close action, `buyer channels request-close` accepts it, and the reserve comes back after the grace.',
+  description: '#1463: a channel the buyer retired locally, or signed in full, but the chain still holds open stays reachable: Activity lists it with a close action that hands it to the wallet page, the balance counts its signed spend, `buyer channels request-close` accepts it, and the reserve comes back after the grace.',
   targets: ['local'],
   requires: ['desktop', 'mockControl', 'sellerControl', 'buyerControl', 'warpTime'],
 };
@@ -37,12 +37,10 @@ const micros = (usdc) => {
   const [whole, fraction = ''] = String(usdc).split('.');
   return BigInt(whole || '0') * 1_000_000n + BigInt((fraction + '000000').slice(0, 6));
 };
-/** What a seller can still settle on a channel: what was signed, up to the deposit, less what it settled. */
-const claimable = (signed, state) => {
-  const deposit = BigInt(state.deposit);
-  const capped = BigInt(signed) < deposit ? BigInt(signed) : deposit;
-  return capped > BigInt(state.settled) ? capped - BigInt(state.settled) : 0n;
-};
+/** What a seller can still settle on a channel: what was signed less what it settled (both stay within the deposit here). */
+const claimable = (signed, state) => (BigInt(signed) > BigInt(state.settled) ? BigInt(signed) - BigInt(state.settled) : 0n);
+/** The desktop's pending-spend cache lives this long; a read after it comes from its own reader. */
+const PENDING_SPEND_TTL_MS = 20_000;
 
 function editStore(buyerDir, edit) {
   const Database = createRequire(new URL('../../../../packages/node/package.json', import.meta.url))('better-sqlite3');
@@ -96,18 +94,35 @@ export async function run(tb) {
   }
 }
 
-/** A failed check must not leave a reserve locked: the sellers are gone, so teardown could not close their channels. */
+/**
+ * A failed check must not leave a reserve locked: the sellers are gone, so teardown could not close their channels.
+ * Each channel is tried on its own, and the reserve is checked at the end.
+ */
 async function releaseReserves(tb, channels) {
+  const problems = [];
+  const attempt = async (channelId, step) => {
+    try {
+      await step();
+    } catch (error) {
+      problems.push(`${channelId.slice(0, 18)}: ${error.message}`);
+    }
+  };
   const open = [];
   for (const { channelId } of channels) {
-    const state = await tb.channelState(channelId);
-    if (state.status !== 1) continue;
-    if (state.closeRequestedAt === 0) await tb.buyerRequestClose(channelId);
-    open.push(channelId);
+    await attempt(channelId, async () => {
+      const state = await tb.channelState(channelId);
+      if (state.status !== 1) return;
+      if (state.closeRequestedAt === 0) await tb.buyerRequestClose(channelId);
+      open.push(channelId);
+    });
   }
-  if (open.length === 0) return;
-  await tb.warp(GRACE_SECONDS + 60);
-  for (const channelId of open) await tb.buyerWithdraw(channelId);
+  if (open.length > 0) {
+    await tb.warp(GRACE_SECONDS + 60);
+    for (const channelId of open) await attempt(channelId, () => tb.buyerWithdraw(channelId));
+  }
+  const { reserved } = await tb.buyerBalance();
+  if (reserved !== 0n) problems.push(`the buyer still has ${reserved} reserved`);
+  if (problems.length > 0) throw new Error(problems.join('; '));
 }
 
 async function strandAndRecover(tb, retired, spent) {
@@ -155,7 +170,31 @@ async function strandAndRecover(tb, retired, spent) {
 
   const credits = (await page.evaluate(() => window.antseedDesktop.creditsGetInfo({ fresh: true }))).data;
   const pending = claimable(retired.cumulativeSigned, stranded.retired) + claimable(stranded.spent.deposit, stranded.spent);
-  tb.check('signatures the sellers can still settle count as authorized on both channels', micros(credits.pendingUsdc) === pending, { pendingUsdc: credits.pendingUsdc, expectedMicros: String(pending) });
+  tb.check("Activity's read counts the signed spend on both channels as authorized", micros(credits.pendingUsdc) === pending, { pendingUsdc: credits.pendingUsdc, expectedMicros: String(pending) });
+
+  // The desktop's own exit: the retired row's on-chain close hands its channel to the wallet page. That page opens in
+  // the system browser, so the browser call is stubbed first; nothing is clicked unless the stub took.
+  const stubbed = await ui.app.evaluate(({ shell }) => {
+    globalThis.__issue1463Opened = [];
+    shell.openExternal = async (url) => { globalThis.__issue1463Opened.push(url); };
+    return String(shell.openExternal).includes('__issue1463Opened');
+  });
+  tb.check('the system browser is stubbed before the close is clicked', stubbed === true, { stubbed });
+  await page.getByRole('button', { name: 'Request on-chain close' }).click();
+  const opened = await tb.waitFor(async () => (await ui.app.evaluate(() => globalThis.__issue1463Opened))[0] ?? null, 'the on-chain close to open the wallet page', { timeoutMs: 15_000, intervalMs: 250 }).catch(() => null);
+  const handoff = opened ? new URL(opened) : null;
+  tb.check("the retired row's on-chain close hands that channel to the wallet page", handoff?.searchParams.get('action') === 'close-channel' && handoff?.searchParams.get('channel') === retired.channelId, { opened, channelId: retired.channelId });
+  const served = opened ? await fetch(opened, { signal: AbortSignal.timeout(15_000) }).then((response) => response.status, (error) => error.message) : null;
+  tb.check('the wallet page for that channel is served', served === 200, { served });
+
+  // Pending spend from the balance's own reader, not the one Activity's refresh left in the cache: away from the views
+  // that refresh channels, past the cache's lifetime, the first fresh read starts it and the next returns its answer.
+  await ui.openChat();
+  await page.waitForTimeout(PENDING_SPEND_TTL_MS + 5_000);
+  await page.evaluate(() => window.antseedDesktop.creditsGetInfo({ fresh: true }));
+  await page.waitForTimeout(3_000);
+  const cold = (await page.evaluate(() => window.antseedDesktop.creditsGetInfo({ fresh: true }))).data;
+  tb.check("the balance's own read counts the signed spend on both channels as authorized", micros(cold.pendingUsdc) === pending, { pendingUsdc: cold.pendingUsdc, expectedMicros: String(pending) });
 
   // Profile counts the same channels, once its summary has loaded.
   await openProfile();
@@ -166,7 +205,7 @@ async function strandAndRecover(tb, retired, spent) {
   tb.check('Profile counts every channel the chain holds open as active', profileCount.includes(counted), { expected: counted, shown: profileCount.match(/Payment channels \d+ active/)?.[0] ?? 'no channel count' });
   await page.getByRole('button', { name: 'Activity' }).first().click();
 
-  // The exit, through the CLI: the desktop's own button opens a wallet page in the system browser.
+  // The exit itself runs through the CLI: the wallet page needs a browser wallet.
   for (const channel of [retired, spent]) {
     const requested = await tb.cli(['buyer', 'channels', 'request-close', channel.channelId, '--json']);
     tb.check(`buyer channels request-close accepts ${channel === retired ? 'the retired' : 'the fully signed'} channel`, requested.code === 0 && requested.json?.channelId === channel.channelId, { code: requested.code, stderr: requested.stderr.slice(-300), stdout: requested.stdout.slice(-300) });

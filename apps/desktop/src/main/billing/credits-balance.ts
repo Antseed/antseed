@@ -25,9 +25,15 @@ export type ChannelSpendRow = {
   onChainStateKnown?: boolean;
   /** Amount the channel locks on-chain (base units): the most a seller can settle on it now. */
   onChainDeposit?: string;
-  /** The live session's reserve ceiling (base units), which a top-up can lock before the next read. */
-  reserveCeiling?: string | null;
+  /** Deadline (unix seconds) of the latest ReserveAuth the buyer signed for it; 0 when unknown. */
+  deadline?: number;
 };
+
+/**
+ * A top-up can land until its ReserveAuth's deadline; this much later, a local
+ * clock running ahead of the chain's cannot have cut it short.
+ */
+const TOP_UP_DEADLINE_GRACE_SECS = 60 * 60;
 
 export type CreditsBalanceComponents = {
   available: bigint;
@@ -49,20 +55,20 @@ export function isOpenChannelStatus(status: string): boolean {
 }
 
 /**
- * Signed but not yet settled on one channel, in USDC base units. Once the
- * chain was read, only up to what the channel can lock: settle() refuses
- * more than its deposit, and only the live session's ceiling can raise that.
+ * Signed but not yet settled on one channel, in USDC base units. settle()
+ * refuses more than the deposit, so once no top-up the buyer signed can raise
+ * it (a close was requested, or its deadline passed) only that much counts.
  */
-export function unsettledSpend(row: ChannelSpendRow): bigint {
+export function unsettledSpend(row: ChannelSpendRow, nowSeconds = Math.floor(Date.now() / 1000)): bigint {
   try {
     const signed = BigInt(row.cumulativeSigned || '0');
     const settled = BigInt(row.onChainSettled || '0');
+    const closing = row.status === 'closing' || row.status === 'withdrawable';
+    const toppedUpBefore = row.deadline ? row.deadline + TOP_UP_DEADLINE_GRACE_SECS : Infinity;
     let claimable = signed;
-    if (row.onChainStateKnown) {
+    if (row.onChainStateKnown && (closing || nowSeconds > toppedUpBefore)) {
       const deposit = BigInt(row.onChainDeposit || '0');
-      const ceiling = BigInt(row.reserveCeiling || '0');
-      const lockable = deposit > ceiling ? deposit : ceiling;
-      if (lockable < signed) claimable = lockable;
+      if (deposit < signed) claimable = deposit;
     }
     return claimable > settled ? claimable - settled : 0n;
   } catch {

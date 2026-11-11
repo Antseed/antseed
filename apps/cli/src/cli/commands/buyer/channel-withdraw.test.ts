@@ -149,23 +149,30 @@ for (const status of ['ghost', 'settled', 'timeout'] as const) {
 
     assert.deepEqual(JSON.parse(stdout), { channelId: id, transaction: 'close-tx', withdrawAfterSeconds: CHANNEL_CLOSE_GRACE_PERIOD_SECONDS });
     assert.equal(requestClose.mock.callCount(), 1);
+    assert.equal(requestClose.mock.calls[0]!.arguments[1], id);
   });
 }
 
-test('channels request-close refuses a row the chain shows ended', async (context) => {
-  const harness = await buyerCommandHarness(context);
-  const id = '0x' + 'b2'.repeat(32);
-  harness.seed(buyerChannel(id, harness.buyer, { status: 'ghost' }));
-  const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
-  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+for (const [status, label] of [[2, 'settled'], [3, 'timed out']] as const) {
+  test(`channels request-close refuses a retired row the chain shows ${label}`, async (context) => {
+    const harness = await buyerCommandHarness(context);
+    const id = '0x' + 'b2'.repeat(32);
+    harness.seed(buyerChannel(id, harness.buyer, { status: 'ghost' }));
+    const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+    const written: string[] = [];
+    context.mock.method(process.stderr, 'write', (chunk: string | Uint8Array) => { written.push(String(chunk)); return true; });
+    context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
 
-  await assert.rejects(
-    harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id, '--json'], { [id]: onChain(harness.buyer, 2) }),
-    /process\.exit\(1\)/,
-  );
+    await assert.rejects(
+      harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id], { [id]: onChain(harness.buyer, status) }),
+      /process\.exit\(1\)/,
+    );
 
-  assert.equal(requestClose.mock.callCount(), 0);
-});
+    // Refused by the chain read, not by the local status.
+    assert.match(written.join(''), new RegExp(`On-chain channel is ${label}, not active`));
+    assert.equal(requestClose.mock.callCount(), 0);
+  });
+}
 
 test('channels request-close says when no channel with the id exists on-chain', async (context) => {
   const harness = await buyerCommandHarness(context);

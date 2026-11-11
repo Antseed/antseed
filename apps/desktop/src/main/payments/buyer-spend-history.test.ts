@@ -21,6 +21,7 @@ function channel(overrides: Partial<DesktopPaymentChannelSummary>): DesktopPayme
     onChainSettled: '0',
     reservedAt: NOW_MS,
     updatedAt: NOW_MS,
+    deadline: 0,
     status: 'active',
     requestCount: 0,
     inputTokens: '0',
