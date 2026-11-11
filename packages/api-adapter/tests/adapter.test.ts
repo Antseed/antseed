@@ -2403,24 +2403,36 @@ describe('createStreamingAdapter responses to anthropic', () => {
         done: true,
       });
       const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
-      const messageDelta = events.find((event) => event.event === 'message_delta');
-      return (JSON.parse(messageDelta!.data) as { usage: unknown }).usage;
+      const start = JSON.parse(events.find((event) => event.event === 'message_start')!.data) as { message: { usage: Record<string, number> } };
+      const delta = (JSON.parse(events.find((event) => event.event === 'message_delta')!.data) as { usage: Record<string, number> }).usage;
+      // A client folds message_delta over message_start, overwriting the fields it carries (as the official SDK does).
+      return { delta, final: { ...start.message.usage, ...delta } };
     };
 
     // A cache split that changes between the two events never mixes old and new counts.
     expect(render(
       '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":0}',
       '{"input_tokens":42,"input_tokens_details":{"cached_tokens":42},"output_tokens":7}',
-    )).toEqual({ input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 });
+    )).toEqual({
+      delta: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 },
+      final: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 },
+    });
+    // A cache count message_start showed is overwritten, not left to add to the final input.
     expect(render(
       '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
       '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":7}',
-    )).toEqual({ input_tokens: 42, output_tokens: 7 });
+    )).toEqual({
+      delta: { input_tokens: 42, output_tokens: 7, cache_read_input_tokens: 0 },
+      final: { input_tokens: 42, output_tokens: 7, cache_read_input_tokens: 0 },
+    });
     // A completed event without input counts keeps the ones response.created reported.
     expect(render(
       '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
       '{"input_tokens":0,"output_tokens":7}',
-    )).toEqual({ input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 });
+    )).toEqual({
+      delta: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 },
+      final: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 },
+    });
   });
 
   it('uses contiguous anthropic block indices for mixed text and tool streams', () => {

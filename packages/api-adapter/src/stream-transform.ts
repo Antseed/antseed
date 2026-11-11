@@ -610,8 +610,10 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
               // Cumulative usage, as Anthropic's message_delta allows. Input
               // counts are left out when the upstream reported none, so a
               // client keeps the message_start value instead of a made-up zero.
+              // When they are reported, cache reads are written even at 0, so
+              // a cache count message_start showed can't outlive the final split.
               usage: event.usage.inputTokens > 0
-                ? anthropicUsage(event.usage)
+                ? { ...anthropicUsage(event.usage), cache_read_input_tokens: event.usage.cachedInputTokens }
                 : { output_tokens: event.usage.outputTokens },
             },
           });
