@@ -403,6 +403,112 @@ it('charges a multipart request the price of its own service, and nothing for a 
   expect(vi.mocked(provider.handleRequest).mock.calls.map(([request]) => request.headers['x-antseed-service'])).toEqual(['priced', 'at-default', 'free']);
 });
 
+describe('charges for requests whose fields every reader reads alike', () => {
+  const boundary = 'form-boundary';
+  type Part = [headers: string, content: string];
+  const text = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
+  const form = (parts: Part[]) => ({
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    body: new TextEncoder().encode(`${parts.map(([headers, content]) => `--${boundary}\r\n${headers}\r\n\r\n${content}\r\n`).join('')}--${boundary}--\r\n`),
+  });
+
+  /** An image seller priced per image by quality, on top of token prices, with every charge and provider call recorded. */
+  function imageSeller() {
+    const provider = makeProvider(0, 0, {
+      name: 'images',
+      services: ['image-model', 'chat-model'],
+      servicePricing: { 'chat-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } },
+      serviceApiProtocols: { 'image-model': ['openai-images'], 'chat-model': ['openai-chat-completions'] },
+      serviceUnitBillingModels: { 'image-model': { 'openai-images': { version: 1, components: [
+        { unit: 'output_images', priceUsd: 0.01, match: { quality: 'low' } },
+        { unit: 'output_images', priceUsd: 0.04, match: { quality: 'high' } },
+        { unit: 'output_images', priceUsd: 0.02, match: { quality: 'auto' } },
+      ] } } },
+    });
+    const received: Array<{ headers: Record<string, string>; body: Uint8Array }> = [];
+    provider.handleRequest = vi.fn(async request => {
+      received.push({ headers: { ...request.headers }, body: request.body });
+      const answer = request.headers['x-antseed-service'] === 'image-model'
+        ? { data: [{ b64_json: 'a' }, { b64_json: 'b' }] }
+        : { choices: [], usage: { prompt_tokens: 1000, completion_tokens: 1000 } };
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(answer)) };
+    });
+    const recordSpend = vi.fn();
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend, getReserveMax: () => 1_000_000n }), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    let sent = 0;
+    const serve = async (path: string, request: { headers: Record<string, string>; body: Uint8Array }) => {
+      const requestId = `request-${sent += 1}`;
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: sent, payload: encodeHttpRequest({ requestId, method: 'POST', path, ...request }) });
+      const response = frames.map(frame => decodeFrame(frame)!.message)
+        .filter(message => message.type === MessageType.HttpResponse)
+        .map(message => decodeHttpResponse(message.payload))
+        .find(answer => answer.requestId === requestId)!;
+      return { status: response.statusCode, code: response.statusCode === 200 ? undefined : JSON.parse(new TextDecoder().decode(response.body)).error.code as string };
+    };
+    return { serve, received, charges: () => recordSpend.mock.calls.map(([, amount]) => amount as bigint) };
+  }
+
+  it('charges a multipart image request by its one quality and count, the values its provider receives', async () => {
+    const { serve, received, charges } = imageSeller();
+    const upload: Part = ['Content-Disposition: form-data; name="audio"; filename="voice.wav"\r\nContent-Type: audio/wav', 'RIFF'];
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), upload]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([80_000n]);
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'low'), text('n', '2')]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([80_000n, 20_000n]);
+
+    // What the provider was handed, read by a parser the seller does not share: the values that were charged.
+    const read = await Promise.all(received.map(async ({ headers, body }) => {
+      const fields = await new Response(body, { headers: { 'content-type': headers['content-type']! } }).formData();
+      return Object.fromEntries(['model', 'quality', 'n'].map(name => [name, fields.getAll(name)]));
+    }));
+    expect(read).toEqual([
+      { model: ['image-model'], quality: ['high'], n: ['2'] },
+      { model: ['image-model'], quality: ['low'], n: ['2'] },
+    ]);
+  });
+
+  it.each<[string, Part[], string]>([
+    ['a quality sent twice, the dearer one last', [text('quality', 'low'), text('quality', 'high')], 'repeated_field'],
+    ['a quality sent twice, the dearer one first', [text('quality', 'high'), text('quality', 'low')], 'repeated_field'],
+    ['a count sent twice', [text('quality', 'low'), text('n', '1'), text('n', '2')], 'repeated_field'],
+    ['a quality billing would not read, sent as a file', [['Content-Disposition: form-data; name="quality"; filename=""', 'high']], 'invalid_billing_field'],
+    ['a quality billing would not read, over the field limit', [text('quality', `high${' '.repeat(4096)}`)], 'invalid_billing_field'],
+    ['a quality under another spelling', [text('Quality', 'high')], 'invalid_billing_field'],
+    ['a quality under two spellings', [text('quality', 'low'), text('Quality', 'high')], 'repeated_field'],
+    ['a part whose other header quotes a disposition line', [text('quality', 'low'), ['X-Note: content-disposition: form-data; name="quality"\r\nContent-Disposition: form-data; name="prompt"', 'high']], 'unsupported_multipart_body'],
+  ])('charges nothing and calls no provider for a multipart image request with %s', async (_name, parts, code) => {
+    const { serve, received, charges } = imageSeller();
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), ...parts]))).toEqual({ status: 400, code });
+    expect(charges()).toEqual([]);
+    expect(received).toEqual([]);
+  });
+
+  it('charges nothing and calls no provider for a JSON image request with a count sent twice', async () => {
+    const { serve, received, charges } = imageSeller();
+    const json = (body: string) => ({ headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(body) });
+    expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":1,"n":2}'))).toEqual({ status: 400, code: 'repeated_field' });
+    expect(charges()).toEqual([]);
+    expect(received).toEqual([]);
+    expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":2}'))).toEqual({ status: 200 });
+    expect(charges()).toEqual([20_000n]);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['text, as a browser fetch sends', { 'content-type': 'text/plain;charset=UTF-8' }],
+    ['a form, as curl -d sends', { 'content-type': 'application/x-www-form-urlencoded' }],
+    ['JSON', { 'content-type': 'application/json' }],
+  ])('charges a JSON request labelled %s the price of its service, and hands it to the provider as JSON', async (_name, headers) => {
+    const { serve, received, charges } = imageSeller();
+    const body = new TextEncoder().encode(JSON.stringify({ model: 'chat-model', messages: [{ role: 'user', content: '&model=image-model&' }] }));
+    expect(await serve('/v1/chat/completions', { headers, body })).toEqual({ status: 200 });
+    expect(charges()).toEqual([3000n]);
+    expect(received.map(request => [request.headers['content-type'], request.headers['x-antseed-service'], request.body])).toEqual([['application/json', 'chat-model', body]]);
+  });
+});
+
 describe('native video job ownership', () => {
   it('authorizes Venice downloads against the queue owner without charging for bytes', async () => {
     const provider = makeProvider(0, 0, {

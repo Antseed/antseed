@@ -1697,6 +1697,27 @@ for (const [label, fields] of [
   })
 }
 
+// The proxy reads a model only from a body labelled JSON or multipart, so such a request needs a pinned peer.
+// The seller reads a body as JSON under any content type but multipart/form-data, as it did before it checked for one service.
+for (const contentType of ['text/plain;charset=UTF-8', 'application/x-www-form-urlencoded']) {
+  test(`a JSON request sent as ${contentType} to a pinned peer reaches the seller naming the routed service`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+      sent = request
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    ;(proxy as any)._node.sendRequest = capture
+    ;(proxy as any)._node.sendRequestStream = capture
+    const response = await invokeProxy(proxy, makeProxyRequest({ headers: { 'content-type': contentType, 'x-antseed-pin-peer': peer.peerId }, body: { model: 'glm-5', messages: [] } }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(sent!.headers['content-type'], contentType)
+    assert.equal(requestBodyService(sent!), 'glm-5')
+  })
+}
+
 test('a multipart request reaches the seller naming the routed service', async () => {
   const boundary = 'form-boundary'
   const peer = makePeer('a', ['openai'])

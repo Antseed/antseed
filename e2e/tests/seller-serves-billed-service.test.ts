@@ -118,19 +118,83 @@ describe('the seller serves exactly the service it bills', () => {
     }],
     ['a multipart name in continuations', multipart([['Content-Disposition: form-data; name*0="mod"; name*1="el"', 'other-model'], field('model', 'billed-model')])],
     ['JSON with a null model beside a service', json({ service: 'billed-model', model: null })],
-    ['JSON in another charset', json({ model: 'billed-model' }, { 'content-type': 'application/json; charset=utf-7' })],
     ['multipart service with modelId', multipart([field('service', 'billed-model'), field('modelId', 'billed-model')])],
     ['a BOM before a multipart model', multipart([field('model', '\uFEFFbilled-model')])],
     ['a padded JSON model', json({ model: ' billed-model ' })],
     ['a padded multipart model', multipart([field('model', ' billed-model ')])],
-    ['a JSON body sent as a form', json({ model: 'billed-model', prompt: '&model=other-model&' }, { 'content-type': 'application/x-www-form-urlencoded' })],
     ['a repeated JSON model', { ...json({}), body: new TextEncoder().encode('{"model":"other-model","model":"billed-model"}') }],
+    ['a repeated JSON n', { ...json({}), body: new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}') }],
+    ['a JSON model list', json({ model: 'billed-model', models: ['other-model'], route: 'fallback' })],
+    ['a JSON fallback list', json({ model: 'billed-model', fallbacks: ['other-model'] })],
+    ['a multipart fallback list', multipart([field('model', 'billed-model'), field('fallbacks', 'other-model')])],
+    ['a repeated multipart quality', multipart([field('model', 'billed-model'), field('quality', 'low'), field('quality', 'high')])],
+    ['a repeated multipart n', multipart([field('model', 'billed-model'), field('n', '1'), field('n', '10')])],
+    ['a multipart size sent as a file', multipart([field('model', 'billed-model'), ['Content-Disposition: form-data; name="size"; filename=""', '1024x1024']])],
+    ['a multipart body with text before its first part', {
+      ...multipart([]),
+      body: new TextEncoder().encode(`--other\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n--other--\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--${boundary}--\r\n`),
+    }],
+    ['a multipart file part whose other header quotes a disposition line', multipart([
+      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'],
+      field('model', 'aliased-model'),
+    ])],
+    ['a multipart prompt part whose other header quotes a disposition line', multipart([
+      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt'],
+      field('model', 'aliased-model'),
+    ])],
+    ['a form sent as a form, not JSON', { ...json({}, { 'content-type': 'application/x-www-form-urlencoded' }), body: new TextEncoder().encode('model=billed-model&prompt=x') }],
   ])('%s never reaches the upstream', async (_name, sent) => {
     const calls = stubUpstream();
     const provider = await openaiPlugin.createProvider(CONFIG);
     const response = await serve(provider, sent);
     expect(await Promise.all(calls.map(modelFieldsSent)), 'the upstream serves only the billed service').toEqual([]);
     expect(response.statusCode).toBe(400);
+  });
+
+  it.each<[string, Record<string, string>, string]>([
+    ['a form, as curl -d sends', { 'content-type': 'application/x-www-form-urlencoded' }, 'billed-model'],
+    ['text, as a browser fetch sends', { 'content-type': 'text/plain;charset=UTF-8' }, 'billed-model'],
+    ['text under a capitalized header', { 'Content-Type': 'text/plain' }, 'billed-model'],
+    ['JSON in another charset', { 'content-type': 'application/json; charset=utf-7' }, 'billed-model'],
+    ['JSON followed by a form', { 'content-type': 'application/json, application/x-www-form-urlencoded' }, 'billed-model'],
+    ['a form, through an alias', { 'content-type': 'application/x-www-form-urlencoded' }, 'aliased-model'],
+    ['no content type', {}, 'billed-model'],
+  ])('a JSON body labelled %s reaches the upstream labelled JSON, as the one billed model', async (_name, headers, model) => {
+    const calls = stubUpstream();
+    const provider = await openaiPlugin.createProvider(CONFIG);
+    // Read as a form, the same bytes would name another model.
+    const sent = { ...json({ model, prompt: '&model=other-model&' }), headers };
+    const response = await serve(provider, sent);
+    expect(response.statusCode).toBe(200);
+    expect(calls).toHaveLength(1);
+    const upstream = new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body });
+    expect(upstream.headers.get('content-type')).toBe('application/json');
+    expect(await upstream.json()).toEqual({ model: model === 'aliased-model' ? 'upstream-alias' : model, prompt: '&model=other-model&' });
+  });
+
+  it('sends the upstream the one value of each priced multipart field, and a file part named like a billing input', async () => {
+    const calls = stubUpstream();
+    const provider = await openaiPlugin.createProvider(CONFIG);
+    const form = new FormData();
+    form.append('model', 'aliased-model');
+    form.append('quality', 'high');
+    form.append('size', '1024x1024');
+    form.append('n', '2');
+    form.append('audio', new Blob([new Uint8Array([4, 5, 6])], { type: 'audio/wav' }), 'voice.wav');
+    const encoded = new Response(form);
+    const response = await serve(provider, {
+      method: 'POST',
+      path: '/v1/images/edits',
+      headers: { 'content-type': encoded.headers.get('content-type')! },
+      body: new Uint8Array(await encoded.arrayBuffer()),
+    });
+    expect(response.statusCode).toBe(200);
+    const sent = await new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body }).formData();
+    expect(Object.fromEntries(['model', 'quality', 'size', 'n'].map((name) => [name, sent.getAll(name)])))
+      .toEqual({ model: ['upstream-alias'], quality: ['high'], size: ['1024x1024'], n: ['2'] });
+    const audio = sent.get('audio') as File;
+    expect(audio.name).toBe('voice.wav');
+    expect([...new Uint8Array(await audio.arrayBuffer())]).toEqual([4, 5, 6]);
   });
 
   it('forwards the rest of a multipart request unchanged', async () => {
