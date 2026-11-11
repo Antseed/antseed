@@ -2,6 +2,7 @@ import { isHexString } from 'ethers';
 import type { BuyerIdentity } from './interfaces.js';
 import type { BuyerConnection } from './interfaces.js';
 import { PaymentMux } from './payment-mux.js';
+import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { PeerId } from '@antseed/protocol/peer-id';
 import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { BuyerPeerView } from './interfaces.js';
@@ -36,7 +37,7 @@ import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import { SellerAuthorizationError } from './seller-address-resolver.js';
 import { parseResponseUsage } from './response-usage.js';
-import { computeCostUsdc, type ServicePricing } from './pricing.js';
+import { computeCostUsdc, estimateTokensFromBytesSampled, type ServicePricing } from './pricing.js';
 import { formatUsdc } from './usdc-utils.js';
 import { parseJsonObject, tryParseJsonObject } from '@antseed/protocol/json-codec';
 import { nativeVideoAcceptance, nativeVideoRoute } from '@antseed/api-adapter';
@@ -131,6 +132,16 @@ export interface SelectedBillingRoute {
   tokenPricing?: ServicePricing;
   /** The service's announced video options, for pricing an omitted aspect ratio or audio setting. */
   videoOptions?: VideoOptions;
+}
+
+/** The output limit a chat, messages or responses request sets for itself, or 0. */
+function requestedMaxOutputTokens(body: Uint8Array): number {
+  const parsed = tryParseJsonObject(body);
+  for (const field of ['max_completion_tokens', 'max_tokens', 'max_output_tokens']) {
+    const value = parsed?.[field];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  }
+  return 0;
 }
 
 function parsePaymentRequiredBody(body: Uint8Array): Record<string, unknown> | null {
@@ -266,7 +277,13 @@ export class BuyerPaymentNegotiator {
 
   getOrCreatePaymentMux(peerId: PeerId, conn: BuyerConnection): PaymentMux {
     const existing = this._muxes.get(peerId);
-    if (existing) return existing;
+    // Payment work still finishing on a connection that has since closed can
+    // set the mux up on it again: every frame it sends would go into the dead
+    // connection. A live connection to the peer replaces it.
+    const connDead = conn.state === ConnectionState.Closing || conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+    if (existing && (existing.sendsOver(conn) || connDead)) {
+      return existing;
+    }
 
     const pmux = new PaymentMux(conn);
     this._muxes.set(peerId, pmux);
@@ -1102,6 +1119,33 @@ export class BuyerPaymentNegotiator {
     }
   }
 
+  /**
+   * The caller aborted a paid attempt after it was sent. The seller is not
+   * told, so it may finish the generation and bill it. Record the most it can
+   * honestly bill: the prompt plus the output the request allows or, without
+   * an output limit, what had arrived. Unit-billed and video requests are
+   * priced only on delivery.
+   */
+  estimateCostFromPartialResponse(
+    peer: BuyerPeerView,
+    request: { requestId: string; body: Uint8Array },
+    partial: SerializedHttpResponse,
+    service?: string,
+  ): void {
+    const billingEntry = this._bpm.getRequestBilling(request.requestId);
+    const pricing = billingEntry?.tokenPricing
+      ?? this._bpm.getSessionPricing(peer.peerId, service)
+        ?? this._peerDefaultPricing(peer);
+    if (partial.statusCode >= 400 || !pricing || billingEntry?.unitModel || billingEntry?.requestFacts?.kind === 'video') return;
+    const outputTokens = Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body));
+    const costUsdc = computeCostUsdc(estimateTokensFromBytesSampled(request.body), outputTokens, pricing);
+    debugLog(
+      `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... may bill up to ${costUsdc} for ${request.requestId.slice(0, 8)}, ` +
+      `cut off after ${partial.body.length}b`,
+    );
+    this._bpm.recordDeliveredResponse(peer.peerId, request.requestId, { costUsdc, cutOff: true });
+  }
+
   estimateCostFromResponse(
     peer: BuyerPeerView,
     response: SerializedHttpResponse,
@@ -1166,7 +1210,20 @@ export class BuyerPaymentNegotiator {
     const costUsdc = tokenCostUsdc + unitCostUsdc;
     if (costUsdc <= 0n && !pricing && !unitBilling) return;
 
-    this._lastResponseCost.set(peer.peerId, {
+    // What the seller may charge for this response, with its NeedAuth or
+    // through the buyer's own signing before a close. An error answer is not a
+    // delivered response: nothing is owed for it, either way.
+    if (requestId && response.statusCode < 400) this._bpm.recordDeliveredResponse(peer.peerId, requestId, {
+      costUsdc,
+      service,
+      usage: {
+        inputTokens: BigInt(usage.inputTokens),
+        cachedInputTokens: BigInt(usage.cachedInputTokens),
+        outputTokens: BigInt(usage.outputTokens),
+        ...(unitBilling ? { unitUsage: unitBilling.usage } : {}),
+      },
+    });
+    if (response.statusCode < 400) this._lastResponseCost.set(peer.peerId, {
       costUsdc,
       inputTokens: BigInt(usage.inputTokens),
       outputTokens: BigInt(usage.outputTokens),
@@ -1815,14 +1872,20 @@ export class BuyerPaymentNegotiator {
       }
       this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now() });
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
-    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+    } else if (
+      !requireFreshAck && targetCumulative != null && targetCumulative > 0n
+      && minBudgetPerRequest != null && minBudgetPerRequest > 0n
+    ) {
+      // Catch up only to spend the seller says it delivered. Without one (a
+      // target of 0) the current authorization is resent below unchanged:
+      // signing past it would pay for work the seller does not claim.
       this._resentForTarget.delete(peer.peerId);
       const cumulativeBefore = signedCumulative;
       const extend = (): Promise<string> => this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
         pmux,
-        targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
+        targetCumulative,
         requestId,
         inFlightRequests,
       );

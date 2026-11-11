@@ -5,9 +5,11 @@ Relays video generation requests to fal.ai model endpoints through fal's [queue 
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-fal-video
 export FAL_VIDEO_API_KEY=<seller-fal-key>
+antseed config seller add-provider video --plugin fal-video
 ```
+
+`add-provider` installs the plugin.
 
 - `FAL_VIDEO_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_VIDEO_BASE_URL`: optional, defaults to `https://queue.fal.run`

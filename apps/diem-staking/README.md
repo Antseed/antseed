@@ -11,7 +11,7 @@ variable, not guaranteed, and may be zero.
 
 ## Stack
 
-- Vite + React 18 + TypeScript (strict)
+- Vite + React 19 + TypeScript (strict)
 - `wagmi` + `viem` for all chain I/O
 - RainbowKit for wallet connection
 - `@tanstack/react-query` for caching + polling
