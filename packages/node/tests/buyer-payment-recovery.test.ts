@@ -545,6 +545,26 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
     expect({ outcome: await sibling, closeRequests: seller.closeRequests() }).toEqual({ outcome: 'retry', closeRequests: [] });
   });
 
+  it('resends again after a resend that failed on a live connection, instead of closing the channel', async () => {
+    const seller = sellerConnection();
+    const channelId = await openChannel(seller, 500_000n);
+    const sentBefore = seller.spendingAuths().length;
+    // The resend fails before anything is sent, as when the store refuses the write.
+    vi.spyOn(manager, 'resendCurrentSpendingAuth').mockRejectedValueOnce(new Error('could not store the authorization'));
+    expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST)))
+      .toBe('error could not store the authorization');
+
+    // The seller asks again, after the time a resend would have had to land.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+    const outcome = await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST));
+
+    expect({ outcome, closeRequests: seller.closeRequests(), resent: seller.spendingAuths().slice(sentBefore) }).toEqual({
+      outcome: 'retry',
+      closeRequests: [],
+      resent: ['500000'],
+    });
+  });
+
   describe('after the connection to the seller drops', () => {
     it('resends on the new connection what it resent on the dropped one, instead of closing the channel', async () => {
       const before = sellerConnection();

@@ -1903,8 +1903,17 @@ export class BuyerPaymentNegotiator {
         }
         return false;
       }
-      this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now(), pmux });
-      await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
+      // Recorded before the resend so that parallel 402s for this target wait
+      // for it instead of each resending.
+      const resend = { target: targetCumulative, at: Date.now(), pmux };
+      this._resentForTarget.set(peer.peerId, resend);
+      try {
+        await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
+      } catch (err) {
+        // Nothing was resent: the seller asking again is not a refusal.
+        if (this._resentForTarget.get(peer.peerId) === resend) this._resentForTarget.delete(peer.peerId);
+        throw err;
+      }
     } else if (
       !requireFreshAck && targetCumulative != null && targetCumulative > 0n
       && minBudgetPerRequest != null && minBudgetPerRequest > 0n
