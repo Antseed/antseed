@@ -720,8 +720,8 @@ importers:
         specifier: ^6.13.0
         version: 6.16.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       openai:
-        specifier: ^6.27.0
-        version: 6.27.0(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.3.6)
+        specifier: ^7.45.1
+        version: 7.45.1(@aws-sdk/credential-provider-node@3.972.11)(google-auth-library@10.5.0)(undici@7.29.0)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.3.6)
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -11790,13 +11790,28 @@ packages:
       zod:
         optional: true
 
-  openai@6.27.0:
-    resolution: {integrity: sha512-osTKySlrdYrLYTt0zjhY8yp0JUBmWDCN+Q+QxsV4xMQnnoVFpylgKGgxwN8sSdTNw0G4y+WUXs4eCMWpyDNWZQ==}
-    hasBin: true
+  openai@7.45.1:
+    resolution: {integrity: sha512-mutrJXwhJIMZ24Lab2COFtNp44OcpZSnV4O2O7q38wAHUa2m2fQqUO5pj1XS3PqLfOTeODBUS9YoadqDnnGk5A==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
-      ws: ^8.18.0
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      google-auth-library: '>=9.15.1 <12'
+      undici: '>=5 <9'
+      ws: ^8.21.0
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      google-auth-library:
+        optional: true
+      undici:
+        optional: true
       ws:
         optional: true
       zod:
@@ -30155,8 +30170,11 @@ snapshots:
       ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       zod: 4.3.6
 
-  openai@6.27.0(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.3.6):
+  openai@7.45.1(@aws-sdk/credential-provider-node@3.972.11)(google-auth-library@10.5.0)(undici@7.29.0)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@4.3.6):
     optionalDependencies:
+      '@aws-sdk/credential-provider-node': 3.972.11
+      google-auth-library: 10.5.0
+      undici: 7.29.0
       ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       zod: 4.3.6
 
