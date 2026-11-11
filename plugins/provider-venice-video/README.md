@@ -5,9 +5,11 @@ Relays native Venice video requests to the Venice API.
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-venice-video
 export VENICE_VIDEO_API_KEY=<seller-api-key>
+antseed config seller add-provider video --plugin venice-video
 ```
+
+`add-provider` installs the plugin.
 
 - `VENICE_VIDEO_API_KEY`: Venice API key, sent as a bearer token
 - `VENICE_VIDEO_BASE_URL`: optional, defaults to `https://api.venice.ai`
