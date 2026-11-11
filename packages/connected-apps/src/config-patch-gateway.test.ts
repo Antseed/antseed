@@ -1093,6 +1093,32 @@ exit ${rejecting ? 1 : 0}
   });
 });
 
+test('codex: a catalog rejected after an unrelated config edit is still dropped, and the edit stays', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    const configPath = path.join(dir, 'config.toml');
+    // Validation edits an unrelated setting while it runs, then rejects the catalog.
+    await writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+{ echo 'approval_policy = "never"'; cat '${configPath}'; } > '${configPath}.tmp' && mv '${configPath}.tmp' '${configPath}'
+exit 1
+`, { mode: 0o755 });
+    const previousPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${previousPath ?? ''}`;
+    try {
+      const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
+      await patchAndFinish(patch, LOCAL);
+      const after = await readFile(configPath, 'utf8');
+      assert.equal(after.includes('approval_policy = "never"'), true, 'the edit made meanwhile stays');
+      assert.equal(after.includes('model_catalog_json'), false, 'no reference to the rejected catalog');
+      assert.equal(existsSync(path.join(dir, 'antseed-models.json')), false);
+    } finally {
+      process.env['PATH'] = previousPath;
+    }
+  });
+});
+
 test('a refresh with no models keeps the way back to the user\'s own default', async () => {
   await withDir(async (dir) => {
     const droid = path.join(dir, 'droid.json');

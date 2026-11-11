@@ -14,6 +14,7 @@ import { ANTSEED_MODEL_CONTEXT_WINDOW } from '@antseed/protocol/service-api';
 import type { CodexConfigPatchDef, ResolvedTarget } from '../config-patch.js';
 import {
   buildCodexModelCatalog,
+  codexModelCatalogIs,
   codexModelCatalogOwner,
   CODEX_MODEL_CATALOG_FILE,
   removeCodexModelCatalog,
@@ -202,9 +203,23 @@ export async function finishCodexConfigPatch(
   try {
     await validateCodexModelCatalog(filePath);
   } catch {
-    // Even when superseded: a config still naming the rejected catalog would stop Codex starting.
-    if (!fileIs(withCatalog)) return;
-    writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, lines).join('\n')}\n`);
+    // A newer refresh wrote its own catalog since: that one is left to its own check.
+    if (!codexModelCatalogIs(filePath, catalog)) return;
+    // Even when superseded or edited meanwhile: a config still naming the
+    // rejected catalog would stop Codex starting. Only our reference goes;
+    // whatever else changed in the config stays.
+    let current: string | null = null;
+    try {
+      current = readFileSync(filePath, 'utf8');
+    } catch {
+      // No config left to point at the catalog.
+    }
+    if (current !== null) {
+      const currentLines = current.endsWith('\n') ? current.slice(0, -1).split('\n') : current.split('\n');
+      if (isManagedCodexCatalogRef(filePath, readTomlTopLevelString(currentLines, 'model_catalog_json'))) {
+        writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, currentLines).join('\n')}\n`);
+      }
+    }
     removeCodexModelCatalog(filePath);
   }
 }

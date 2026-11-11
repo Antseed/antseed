@@ -1022,16 +1022,9 @@ export function initChatModule({
     if (!convId || !bridge?.chatAiDeleteConversation) return 'Could not delete the chat';
     const previousConversations = [...getConversationSummaries()];
     uiState.chatConversations = previousConversations.filter((conv) => conv.id !== convId);
-    localConversationMessages.delete(convId);
     streamingMessagesByConversation.delete(convId);
     sendingConversationIds.delete(convId);
     streamStartedAtByConversation.delete(convId);
-    fundsNoticeByConversation.delete(convId);
-    imageRetryByConversation.delete(convId);
-    if (uiState.chatPrivateConversationIds.includes(convId)) {
-      uiState.chatPrivateConversationIds = uiState.chatPrivateConversationIds.filter((id) => id !== convId);
-      savePrivateChats(uiState.chatPrivateConversationIds);
-    }
     syncActiveConversationSendingState();
     if (convId === uiState.chatActiveConversation) startNewChat();
     else notifyUiStateChanged();
@@ -1039,6 +1032,15 @@ export function initChatModule({
     try {
       const result = await bridge.chatAiDeleteConversation(convId) as { ok?: boolean; error?: string } | undefined;
       if (result && result.ok === false) throw new Error(result.error ?? 'Could not delete the chat');
+      // Only now: a chat whose delete fails comes back with its unsaved
+      // messages, its funds notice and the request Try again would resend.
+      localConversationMessages.delete(convId);
+      fundsNoticeByConversation.delete(convId);
+      imageRetryByConversation.delete(convId);
+      if (uiState.chatPrivateConversationIds.includes(convId)) {
+        uiState.chatPrivateConversationIds = uiState.chatPrivateConversationIds.filter((id) => id !== convId);
+        savePrivateChats(uiState.chatPrivateConversationIds);
+      }
       await refreshChatConversations();
       return null;
     } catch (err) {

@@ -79,6 +79,9 @@ export function createKeyWalletReader(options: KeyWalletReaderOptions) {
     return Boolean(await token.getFunction('transfersEnabled')())
   })
   const cache = new ChainReadCache({ now, errorRetryMs: 30_000 })
+  // The last pending spend read per buyer identity, served (as stale) when a
+  // channel read fails: zero would count signed spend as still owned.
+  const lastPending = new Map<string, bigint>()
   let prices: { at: number; value: RetailPriceMap | null } | null = null
 
   async function buyerJson(path: string, identity: string): Promise<unknown | null> {
@@ -108,7 +111,18 @@ export function createKeyWalletReader(options: KeyWalletReaderOptions) {
       if (!body) return null
       const balances = mapBalances(body)
       const channels = await buyerJson('/_antseed/channels', identity).catch(() => null)
-      const pending = channels ? pendingSpend(channels, await channelStates(channels)) : 0n
+      let pending: bigint
+      let pendingStale = false
+      if (channels) {
+        pending = pendingSpend(channels, await channelStates(channels))
+        lastPending.set(identity, pending)
+      } else {
+        const last = lastPending.get(identity)
+        // Never read: what this wallet has signed away is unknown, so its balance is too.
+        if (last === undefined) return null
+        pending = last
+        pendingStale = true
+      }
       const raw = record(body)
       return {
         available: balances.available,
@@ -118,7 +132,7 @@ export function createKeyWalletReader(options: KeyWalletReaderOptions) {
         wallet: raw['walletUsdc'] === null || raw['walletUsdc'] === undefined ? null : balances.walletUsdc,
         creditLimit: balances.creditLimit,
         operator: balances.operator,
-        stale: raw['stale'] === true,
+        stale: raw['stale'] === true || pendingStale,
       }
     },
 

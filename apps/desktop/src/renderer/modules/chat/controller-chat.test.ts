@@ -86,6 +86,24 @@ describe('chat controller', () => {
     expect((uiState.chatConversations as Conv[]).map((c) => c.id)).toContain('conv-b');
   });
 
+  it('a chat whose delete fails keeps its image prompt and Try again', async () => {
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup(undefined, { chatGenerateImage, chatAiDeleteConversation: async () => ({ ok: false, error: 'locked' }) });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-b');
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('a cat');
+    await waitFor(() => uiState.chatFundsNotice !== null);
+    expect(await api.deleteConversation('conv-b')).toBe('locked');
+    await api.openConversation('conv-b');
+    expect(uiState.chatFundsNotice).not.toBeNull();
+    expect(JSON.stringify(uiState.chatMessages)).toContain('a cat');
+    api.retryAfterPayment();
+    await waitFor(() => chatGenerateImage.mock.calls.length === 2);
+    expect(chatGenerateImage.mock.calls[1]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'a cat' });
+  });
+
   it('clears the sending state of an aborted chat before the abort settles', async () => {
     const abort = deferred<void>();
     const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });
