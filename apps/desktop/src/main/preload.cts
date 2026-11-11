@@ -307,13 +307,13 @@ const api = {
     ipcRenderer.on('chat:ai-stream-block-stop', listener);
     return () => ipcRenderer.off('chat:ai-stream-block-stop', listener);
   },
-  onChatAiStreamDone(handler: (data: { conversationId: string }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string }) => handler(data);
+  onChatAiStreamDone(handler: (data: { conversationId: string; sendId?: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number }) => handler(data);
     ipcRenderer.on('chat:ai-stream-done', listener);
     return () => ipcRenderer.off('chat:ai-stream-done', listener);
   },
-  onChatAiStreamError(handler: (data: { conversationId: string; error: string; stopReason?: ChatAiStreamStopReason }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; error: string; stopReason?: ChatAiStreamStopReason }) => handler(data);
+  onChatAiStreamError(handler: (data: { conversationId: string; error: string; stopReason?: ChatAiStreamStopReason; sendId?: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; error: string; stopReason?: ChatAiStreamStopReason; sendId?: number }) => handler(data);
     ipcRenderer.on('chat:ai-stream-error', listener);
     return () => ipcRenderer.off('chat:ai-stream-error', listener);
   },

@@ -83,4 +83,10 @@ export type ConversationFlags = {
 export type OutgoingPrivacy = {
   requirePrivate?: boolean;
   allowPrivateHistory?: boolean;
+  /**
+   * The renderer's id for this send. The run's terminal stream events (done,
+   * error) carry it back, so a late event from a stopped send can't end a
+   * newer one in the same chat.
+   */
+  sendId?: number;
 };

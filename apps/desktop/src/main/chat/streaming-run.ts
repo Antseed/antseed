@@ -172,6 +172,11 @@ type StreamingRunArgs = [
   permissionModeInput?: unknown,
   options?: OutgoingPrivacy,
 ];
+/** The send id a run's terminal events carry back, when the renderer gave one. */
+function sendTagOf(options: OutgoingPrivacy): { sendId?: number } {
+  return typeof options.sendId === 'number' ? { sendId: options.sendId } : {};
+}
+
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,
@@ -182,7 +187,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     getEndpoint,
     resolveModel,
     requestToolApproval,
-    emitChatStreamError,
+    emitChatStreamError: emitStreamError,
     clearActiveRun,
     abortAndClearActiveRun,
     recordFirstChatStarted,
@@ -210,6 +215,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     permissionModeInput?: unknown,
     options: OutgoingPrivacy = {},
   ): Promise<StreamingRunResult> => {
+    // Terminal events name the send they end, so a late one can't end a newer send.
+    const sendTag = sendTagOf(options);
+    const emitChatStreamError = (payload: ChatStreamErrorPayload): void => emitStreamError({ ...payload, ...sendTag });
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
       permissionModeInput === 'manual' || permissionModeInput === 'full'
@@ -234,7 +242,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // in Private doesn't go out once Private is off.
     const mustBePrivate = requiresPrivate(options, (await store.get(conversationId))?.messages ?? []);
     const refused = await passPrivacyGate(ctx.privacy, mustBePrivate);
-    if (signal.aborted) return stoppedBeforeSend(conversationId);
+    if (signal.aborted) return stoppedBeforeSend(conversationId, options);
     if (refused) return { ok: false, error: refused };
 
     // Starts the local gateway on demand; a remote gateway without a URL or
@@ -249,13 +257,13 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     try {
       endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };
     } catch (error) {
-      if (signal.aborted) return stoppedBeforeSend(conversationId);
+      if (signal.aborted) return stoppedBeforeSend(conversationId, options);
       const message = asErrorMessage(error);
       appendSystemLog(`Chat could not reach the gateway: ${message}`);
       return { ok: false, error: message };
     }
 
-    if (signal.aborted) return stoppedBeforeSend(conversationId);
+    if (signal.aborted) return stoppedBeforeSend(conversationId, options);
 
     let revokeShellGateway = (): void => undefined;
     const sessionManager = await store.openSessionManager(conversationId);
@@ -777,7 +785,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         // Ignore disposal races.
       }
       revokeShellGateway();
-      return stoppedBeforeSend(conversationId);
+      return stoppedBeforeSend(conversationId, options);
     }
 
     if (recordChatRequestStarted) {
@@ -848,7 +856,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
       if (!streamDone) {
         streamDone = true;
-        sendToRenderer('chat:ai-stream-done', { conversationId });
+        sendToRenderer('chat:ai-stream-done', { conversationId, ...sendTag });
       }
       // After done, which clears notes.
       if (replyCutOff) {
@@ -901,9 +909,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
   };
 
   /** A run stopped while still in preflight: nothing was sent. */
-  const stoppedBeforeSend = (conversationId: string): StreamingRunResult => {
+  const stoppedBeforeSend = (conversationId: string, options: OutgoingPrivacy): StreamingRunResult => {
     const reason = classifyChatStreamFailure({ error: null, message: 'Request aborted', stopReason: 'aborted' });
-    emitChatStreamError({ conversationId, error: 'Request aborted', stopReason: reason });
+    emitStreamError({ conversationId, error: 'Request aborted', stopReason: reason, ...sendTagOf(options) });
     return { ok: false, error: 'Aborted', stopReason: reason };
   };
 

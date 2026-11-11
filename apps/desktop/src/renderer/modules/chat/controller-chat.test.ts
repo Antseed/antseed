@@ -119,6 +119,37 @@ describe('chat controller', () => {
     await aborting;
   });
 
+  it('a stopped send\'s late abort event leaves a follow-up in the same chat sending', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    expect(uiState.chatSending).toBe(true);
+    // The first send, stopped while still in preflight, reports its abort only now.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[0] });
+    answers[0]!({ ok: false });
+    await tick(20);
+    expect(uiState.chatSending).toBe(true);
+    expect(uiState.chatSendingConversationIds).toContain('conv-a');
+    expect(uiState.chatAbortVisible).toBe(true);
+    // The follow-up's own end still clears it.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[1] });
+    answers[1]!({ ok: false });
+    await waitFor(() => !uiState.chatSending);
+  });
+
   it('sends a queued message to the chat it was written in, on that chat\'s model', async () => {
     // The send only answers once its stream has ended.
     const streamEnded = deferred<{ ok: boolean }>();

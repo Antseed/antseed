@@ -36,6 +36,7 @@ import {
   saveLastChatModel,
   shouldWaitForFreeModel,
 } from './models';
+import { staleStreamEvent } from './send-events';
 
 type ChatConversationSummary = {
   id: string;
@@ -274,6 +275,9 @@ export function initChatModule({
     return token;
   }
   const ownsSend = (convId: string, token: number): boolean => sendOwners.get(convId) === token;
+  /** A done or error event from a send that a newer one has replaced: it must not touch the chat. */
+  const isStaleStreamEvent = (data: { conversationId: string; sendId?: number }): boolean =>
+    staleStreamEvent(sendOwners.get(data.conversationId), data.sendId);
   function endSend(convId: string, token: number): void {
     if (!ownsSend(convId, token)) return;
     sendOwners.delete(convId);
@@ -1343,7 +1347,8 @@ export function initChatModule({
     streamFailedAtByConversation.delete(convId);
     // A newer text message supersedes an image request waiting on funds.
     imageRetryByConversation.delete(convId);
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, privacy);
+    // `sendId` comes back on the run's done and error events (see `isStaleStreamEvent`).
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, { ...privacy, sendId: token });
     try {
       let result = await send();
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
@@ -1926,6 +1931,7 @@ export function initChatModule({
     }
 
     bridge.onChatAiStreamDone?.((data) => {
+      if (isStaleStreamEvent(data)) return;
       const shouldClearSending = isConversationSending(data.conversationId);
       const startedAt = streamStartedAtByConversation.get(data.conversationId) ?? 0;
       const elapsedMs = startedAt > 0 && shouldClearSending ? Date.now() - startedAt : 0;
@@ -1960,6 +1966,9 @@ export function initChatModule({
     });
 
     bridge.onChatAiStreamError?.((data) => {
+      // Stop frees the chat at once, so a stopped send's abort can arrive
+      // after a follow-up started: it is that send's, not the follow-up's.
+      if (isStaleStreamEvent(data)) return;
       const shouldClearSending = isConversationSending(data.conversationId);
       const stopReason = data.stopReason;
       const isAbort = data.error === 'Request aborted' || stopReason?.kind === 'aborted';
