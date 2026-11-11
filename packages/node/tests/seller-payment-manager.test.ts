@@ -3225,6 +3225,119 @@ describe('SellerPaymentManager', () => {
         .toEqual({ topUps: 1, ceiling: 2_000_000n, ask: null });
     });
 
+    it('keeps asking while the top-up that lands leaves work past the new ceiling', async () => {
+      const channelId = makeChannelId(157);
+      // 1.3 USDC served against a 1 USDC ceiling.
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+      );
+      vi.spyOn(restarted.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+      expect(await restarted.askAfterRestart(channelId)).toBe(900_000n);
+
+      // A top-up to 1.2 USDC lands, short of what was served.
+      await restarted.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '1200000', salt: '0x' + '44'.repeat(32),
+      }), mux);
+      await restarted.waitForTopUp(channelId, 5_000);
+
+      // 75% settled cannot pass the threshold for the next top-up: the ask is now for the new deposit.
+      expect({ ceiling: restarted.getReserveMax(channelId), ask: await restarted.askAfterRestart(channelId) })
+        .toEqual({ ceiling: 1_200_000n, ask: 1_200_000n });
+    });
+
+    it('takes a top-up the chain already holds as landed, not as a reason to close the channel', async () => {
+      const channelId = makeChannelId(158);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      // The RPC still shows the deposit from before a top-up to 2 USDC that landed while the seller was down.
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 900_000n }) as never,
+      );
+      const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockRejectedValue(new Error('execution reverted: TopUpAmountTooLow()'));
+      const close = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose');
+
+      // The buyer sends that top-up again, then its authorization for what was served.
+      await restarted.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '44'.repeat(32),
+      }), mux);
+      await restarted.waitForTopUp(channelId, 5_000);
+      await restarted.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        cumulativeAmount: 1_300_000n, reserveMaxAmount: '2000000',
+      }), mux);
+
+      expect({
+        topUps: topUp.mock.calls.length,
+        blocked: restarted.isChannelBlocked(channelId),
+        ceiling: restarted.getReserveMax(channelId),
+        accepted: restarted.getAcceptedCumulative(channelId),
+        closed: close.mock.calls.length,
+      }).toEqual({ topUps: 1, blocked: false, ceiling: 2_000_000n, accepted: 1_300_000n, closed: 0 });
+    });
+
+    it('closes the channel once its window passes with the work still past the deposit, as its next request would', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const channelId = makeChannelId(159);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+      );
+      const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
+      expect(await restarted.askAfterRestart(channelId)).toBe(900_000n);
+
+      // The buyer stays connected and sends nothing more.
+      await restarted.checkTimeouts();
+      const withinWindow = closeWhenIdle.mock.calls.length;
+      vi.setSystemTime(Date.now() + 30_000);
+      await restarted.checkTimeouts();
+
+      expect({ withinWindow, after: closeWhenIdle.mock.calls, ask: await restarted.askAfterRestart(channelId) })
+        .toEqual({ withinWindow: 0, after: [[buyerIdentity.peerId]], ask: null });
+    });
+
+    it('leaves the channel open once its window passes if the chain holds enough for the work', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const channelId = makeChannelId(160);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      // A top-up to 2 USDC landed while the seller was down: the stored ceiling lags it.
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }) as never,
+      );
+      const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
+      await restarted.askAfterRestart(channelId);
+
+      vi.setSystemTime(Date.now() + 30_000);
+      await restarted.checkTimeouts();
+
+      expect({ closes: closeWhenIdle.mock.calls.length, ask: await restarted.askAfterRestart(channelId) }).toEqual({ closes: 0, ask: null });
+    });
+
+    it('leaves the channel open once its window passes while a top-up is being submitted', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const channelId = makeChannelId(161);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
+      );
+      const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockReturnValue(new Promise<string>(() => {}));
+      const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
+      await restarted.askAfterRestart(channelId);
+      // The buyer's top-up arrives just before the window ends and is still mining.
+      await restarted.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '44'.repeat(32),
+      }), mux);
+      await vi.waitFor(() => expect(topUp).toHaveBeenCalled());
+
+      vi.setSystemTime(Date.now() + 30_000);
+      await restarted.checkTimeouts();
+
+      expect({ running: restarted.isTopUpRunning(channelId), closes: closeWhenIdle.mock.calls.length }).toEqual({ running: true, closes: 0 });
+    });
+
     it('forgets a restored channel once it is closed or gone on-chain', async () => {
       const closedId = makeChannelId(155);
       const goneId = makeChannelId(156);
