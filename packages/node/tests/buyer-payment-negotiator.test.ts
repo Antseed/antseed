@@ -46,7 +46,6 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     canReplayReserveAuth: vi.fn().mockReturnValue(false),
     hasPendingReserveAuth: vi.fn().mockReturnValue(false),
     hasPaymentInFlight: vi.fn().mockReturnValue(false),
-    reconcileReserveAmount: vi.fn().mockResolvedValue(undefined),
     setChannelDepositReader: vi.fn(),
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
@@ -65,6 +64,12 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
+  // Like the manager: the reserve ceiling is the deposit it last reconciled with the chain.
+  let reserveCeiling: bigint | undefined;
+  bpm.reconcileReserveAmount = vi.fn(async (_peerId: string, onChainAmount: bigint) => {
+    reserveCeiling = onChainAmount;
+  });
+  bpm.getReserveCeiling = vi.fn(() => reserveCeiling ?? bpm.maxReserveAmountUsdc);
   // Like the manager: the higher of the in-memory and the stored cumulative.
   bpm.getHighestSignedAmount = vi.fn((channel: StoredChannel) => {
     const inMemory = bpm.getCumulativeAmount(channel.peerId);
@@ -1475,6 +1480,20 @@ describe('BuyerPaymentNegotiator', () => {
       await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
       negotiator.onPeerDisconnect(SELLER_PEER_ID);
       await expect(promise).rejects.toThrow(/disconnected/);
+    });
+
+    it('sends one close request when parallel callers ask for it at once', async () => {
+      const closes = Promise.allSettled([1, 2, 3].map(() => negotiator.requestChannelClose(SELLER_PEER_ID, conn, { timeoutMs: 300 })));
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+
+      const outcomes = (await closes).map((outcome) => outcome.status === 'fulfilled'
+        ? outcome.value.status
+        : (outcome.reason as Error).message.replace(/ for [0-9a-f]+\.\.\.$/, ''));
+      expect({ sent: (conn.send as ReturnType<typeof vi.fn>).mock.calls.length, outcomes }).toEqual({
+        sent: 1,
+        outcomes: ['rejected', 'A channel close request is already in flight', 'A channel close request is already in flight'],
+      });
     });
 
     it('refuses to start a second close while one is in flight', async () => {
