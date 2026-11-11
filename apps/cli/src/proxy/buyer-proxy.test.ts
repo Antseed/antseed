@@ -1697,6 +1697,29 @@ for (const [label, fields] of [
   })
 }
 
+test('a multipart request reaches the seller naming the routed service', async () => {
+  const boundary = 'form-boundary'
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'image-model': ['openai-images'] } } }
+  for (const model of ['image-model', `${peer.peerId}@image-model`]) {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+      sent = request
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    ;(proxy as any)._node.sendRequest = capture
+    ;(proxy as any)._node.sendRequestStream = capture
+    const response = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/images/edits',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      rawBody: `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\nPNG\r\n--${boundary}--\r\n`,
+    }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(requestBodyService(sent!), 'image-model')
+  }
+})
+
 function failingVideoProxy(persist: () => Promise<void>, answer: (call: number) => Promise<object>) {
   const peer = makePeer('a', ['venice'])
   peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }

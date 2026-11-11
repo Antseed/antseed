@@ -1,34 +1,31 @@
 import type { SerializedHttpRequest } from './types/http.js';
-import { extractRequestBodyFields, parseJsonObject, readPlainMultipartParts } from '@antseed/api-adapter';
+import { extractRequestBodyFields, isPlainJsonContentType, parseJsonObject, readPlainMultipartParts } from '@antseed/api-adapter';
 
 /** A field some reader of a request may take its model from, however it is spelled. */
 const SERVICE_FIELD = /^\s*(?:service|model|modelid)\s*(?:\[.*\])?\s*$/i;
 
-/** The spellings of those fields that the seller reads. */
-const PLAIN_SERVICE_FIELDS = new Set(['service', 'model', 'modelId']);
-
-/** A body with this content type (or none) is JSON to every reader; a form reader would take other fields from the same bytes. */
-const JSON_CONTENT_TYPE = /^application\/(?:[\w.+-]+\+)?json\s*(?:;|$)/i;
+/** The fields a buyer names its service in. A plugin may write `modelId` for its upstream, after this check. */
+const BUYER_SERVICE_FIELDS = new Set(['service', 'model']);
 
 type NamedFields = Array<[name: string, value: unknown]>;
 
 /**
  * The service a JSON or multipart request body names (`service`, else `model`),
  * exactly as sellers read it to route, price and bill the request; null when it
- * names none, or unless its `service`, `model` and `modelId` fields are written
- * plainly and say exactly the same. A provider and its upstream read the body
- * again by their own rules, and the seller pays for what they read.
+ * names none, or unless its `service` and `model` fields are written plainly
+ * and say exactly the same. A provider and its upstream read the body again by
+ * their own rules, and the seller pays for what they read.
  */
 export function requestBodyService(request: Pick<SerializedHttpRequest, 'headers' | 'body'>): string | null {
   const named = serviceFields(request);
   if (!named) return null;
   const fields = new Map(named);
-  if (fields.size !== named.length || (fields.has('model') && fields.has('modelId'))) return null;
+  if (fields.size !== named.length) return null;
   // A null `service` is a missing one, to the readers that follow too.
   if (fields.get('service') === null) fields.delete('service');
   const service = fields.get('service') ?? fields.get('model');
   if (typeof service !== 'string' || service.length === 0 || service !== service.trim()) return null;
-  return [...fields].every(([name, value]) => PLAIN_SERVICE_FIELDS.has(name) && value === service) ? service : null;
+  return [...fields].every(([name, value]) => BUYER_SERVICE_FIELDS.has(name) && value === service) ? service : null;
 }
 
 /**
@@ -48,14 +45,14 @@ function serviceFields(request: Pick<SerializedHttpRequest, 'headers' | 'body'>)
   if (/^multipart\/form-data/i.test(contentType)) {
     const parts = readPlainMultipartParts(request.body, contentType)?.filter((part) => SERVICE_FIELD.test(part.name));
     if (!parts || parts.some((part) => !part.billedText)) return null;
-    return parts.map((part) => [part.name, new TextDecoder().decode(part.content)]);
+    // A BOM stays in the text, for the padding check to see.
+    return parts.map((part) => [part.name, new TextDecoder('utf-8', { ignoreBOM: true }).decode(part.content)]);
   }
-  if (contentType && !JSON_CONTENT_TYPE.test(contentType)) return null;
+  // A form reader would take other fields from the same bytes, so JSON has to say it is JSON, or say nothing.
+  if (contentType && !isPlainJsonContentType(contentType)) return null;
   const body = parseJsonObject(request.body);
   if (!body) return null;
-  const names = topLevelKeys(request.body).filter((name) => SERVICE_FIELD.test(name));
-  // Only a multipart body may use `modelId`: the relay writes the model over it there, and not in JSON.
-  return names.includes('modelId') ? null : names.map((name) => [name, body[name]]);
+  return topLevelKeys(request.body).filter((name) => SERVICE_FIELD.test(name)).map((name) => [name, body[name]]);
 }
 
 const QUOTE = 0x22;

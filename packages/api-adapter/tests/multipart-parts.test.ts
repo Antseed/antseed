@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMultipartFormFields, readPlainMultipartParts } from '../src/utils.js';
+import { isPlainJsonContentType, parseMultipartFormFields, readPlainMultipartParts } from '../src/utils.js';
 
 const boundary = 'b0undary';
 const contentType = `multipart/form-data; boundary=${boundary}`;
@@ -35,6 +35,8 @@ describe('readPlainMultipartParts', () => {
     ['another type', 'Content-Type: application/json', false],
     ['a transfer encoding', 'Content-Transfer-Encoding: base64', false],
     ['another header', 'X-Other: 1', false],
+    ['a length that matches', 'Content-Length: 3', true],
+    ['a length that does not', 'Content-Length: 2', false],
   ])('calls a text part with %s billed text: %s', (_name, extra, billedText) => {
     const headers = `Content-Disposition: form-data; name="model"${extra ? `\r\n${extra}` : ''}`;
     expect(readPlainMultipartParts(body(`${part(headers, 'svc')}${closing}`), contentType)?.[0]?.billedText).toBe(billedText);
@@ -51,6 +53,9 @@ describe('readPlainMultipartParts', () => {
     ['headers in another case', `${part('content-disposition: form-data; name="model"\r\nCONTENT-TYPE: text/plain', 'svc')}${closing}`],
     ['the filename first', `${part('Content-Disposition: form-data; filename="a.png"; name="image"', 'PNG')}${closing}`],
     ['a backslash in a filename', `${part('Content-Disposition: form-data; name="image"; filename="dir\\file.png"', 'PNG')}${closing}`],
+    ['an escaped quote in a filename', `${part('Content-Disposition: form-data; name="image"; filename="a\\"b.png"', 'PNG')}${closing}`],
+    ['another disposition parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
+    ['a preamble', `Preamble.\r\n${named('model', 'svc')}${closing}`],
   ])('reads %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).not.toBeNull();
   });
@@ -58,7 +63,6 @@ describe('readPlainMultipartParts', () => {
   it.each<[string, string, string?]>([
     ['not multipart', named('model', 'svc'), 'application/json'],
     ['no boundary', named('model', 'svc'), 'multipart/form-data'],
-    ['text before the first delimiter', `preamble\r\n${named('model', 'svc')}${closing}`],
     ['a first delimiter inside a line', `x${named('model', 'svc')}${closing}`],
     ['a bare LF after a delimiter', `--${boundary}\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n${closing}`],
     ['text after a delimiter', `--${boundary}x\r\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n${closing}`],
@@ -81,11 +85,25 @@ describe('readPlainMultipartParts', () => {
     ['a percent-encoded name', `${part('Content-Disposition: form-data; name="a%62"', 'svc')}${closing}`],
     ['an encoded-word name', `${part('Content-Disposition: form-data; name="=?utf-8?q?a?="', 'svc')}${closing}`],
     ['a filename ending in a backslash', `${part('Content-Disposition: form-data; name="a"; filename="b\\"; name="c"', 'svc')}${closing}`],
-    ['an unknown parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
+    ['a parameter ending in name', `${part('Content-Disposition: form-data; xname="b"; name="a"', 'svc')}${closing}`],
+    ['a non-ASCII name', `${part('Content-Disposition: form-data; name="a\u00e9"', 'svc')}${closing}`],
+    ['an escaped quote hiding a parameter', `${part('Content-Disposition: form-data; name="a"; filename="b\\"; x=y; c="', 'svc')}${closing}`],
+    ['a UTF-7 body', `${named('model', 'svc')}${closing}`, `multipart/form-data; charset=utf-7; boundary=${boundary}`],
+    ['an unknown content type parameter', `${named('model', 'svc')}${closing}`, `${contentType}; x=y`],
     ['a nested multipart', `${part('Content-Disposition: form-data; name="a"\r\nContent-Type: multipart/mixed; boundary=c', '--c--')}${closing}`],
     ['a field setting the charset of the others', `${named('_charset_', 'utf-16')}${closing}`],
   ])('refuses %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).toBeNull();
+  });
+});
+
+describe('isPlainJsonContentType', () => {
+  it.each(['application/json', 'application/json; charset=utf-8', 'Application/JSON;charset=UTF-8', 'application/vnd.api+json', ' application/json '])('accepts %s', (type) => {
+    expect(isPlainJsonContentType(type)).toBe(true);
+  });
+
+  it.each(['application/x-www-form-urlencoded', 'text/plain', 'application/json; charset=utf-7', 'application/json; x=y', 'application/json, text/plain', 'application/jsonx'])('refuses %s', (type) => {
+    expect(isPlainJsonContentType(type)).toBe(false);
   });
 });
 
@@ -96,7 +114,7 @@ describe('parseMultipartFormFields', () => {
   });
 
   it('still reads the fields of a body written another way', () => {
-    expect(parseMultipartFormFields(body(`preamble\r\n${named('model', 'svc')}${closing}`), contentType)).toEqual({ model: 'svc' });
+    expect(parseMultipartFormFields(body(`x${named('model', 'svc')}${closing}`), contentType)).toEqual({ model: 'svc' });
     expect(parseMultipartFormFields(body(`${named('model', 'svc')}${closing}`), `${contentType}; boundary=other`)).toEqual({ model: 'svc' });
   });
 });

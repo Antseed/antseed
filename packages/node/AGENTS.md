@@ -6,6 +6,6 @@ The runtime around buyer-core and the plugins: P2P transport and identity, disco
 | --- | --- |
 | A schema change is a new numbered migration in `src/storage/migrations/<domain>/`. A shipped one is never edited. | review only; `add-migration` skill |
 | Settle-on-disconnect closes at the latest amount the buyer signed. | `tests/payment-flow-integration.test.ts` (that it settles, not the amount) |
-| A provider only sees a request that names one service, the one billed, and `x-antseed-service` set to it by the seller. | `tests/requested-service.test.ts`, `tests/seller-billed-service.test.ts`, `e2e/tests/seller-serves-billed-service.test.ts` |
+| A request the seller bills reaches its provider only if it names one service, the one billed, and the seller sets `x-antseed-service` to it. | `tests/requested-service.test.ts`, `tests/seller-billed-service.test.ts`, `e2e/tests/seller-serves-billed-service.test.ts` |
 
 **Ask first:** `src/p2p/identity.ts`, `identity-envelope.ts`, `secure-channel.ts`; a new migration; the plugin interfaces (every plugin implements them).

@@ -269,7 +269,7 @@ function splitMultipart(body: Uint8Array, contentType: string | undefined) {
   const delimiter = `--${boundary}`;
   const parts: MultipartPart[] = [];
   let index = text.indexOf(delimiter);
-  let framed = index === 0 || (index === 2 && text.startsWith('\r\n'));
+  let framed = index === 0 || text.startsWith('\r\n', index - 2);
   while (index !== -1) {
     index += delimiter.length;
     if (text.startsWith('--', index)) {
@@ -294,19 +294,56 @@ function multipartTextFieldName({ headers, content }: MultipartPart): string | u
   return /name="([^"]*)"/.exec(dispositionParams)?.[1];
 }
 
-/** A multipart content type with one simple boundary and at most a charset beside it. */
-const PLAIN_MULTIPART_TYPE = /^multipart\/form-data\s*;\s*(?:charset="?[\w-]+"?\s*;\s*)?boundary=(?:"[\w'()+,./:=?-]+"|[\w'+.-]+)\s*(?:;\s*charset="?[\w-]+"?\s*)?$/i;
+/** A charset parameter under which ASCII text reads the same. */
+const ASCII_CHARSET = String.raw`charset="?(?:utf-?8|us-ascii|iso-8859-1)"?`;
 
-// A backslash before a quote is the one spelling readers end the value at differently.
-const FILENAME_PARAM = String.raw`\s*;\s*filename\*?=(?:"(?:[^"\\]|\\(?!"))*"|[^\s;"]+)`;
-
-/** `form-data` with exactly one simply written `name`, and filenames however a form encoder writes them. */
-const PLAIN_DISPOSITION = new RegExp(
-  String.raw`^form-data(?:${FILENAME_PARAM})*\s*;\s*name=(?:"((?:(?!=\?)[^"\\%\x00-\x1f\x7f])*)"|([\w.[\]-]+))(?:${FILENAME_PARAM})*\s*$`,
+/** A multipart content type with one simple boundary, and at most a charset from the list beside it. */
+const PLAIN_MULTIPART_TYPE = new RegExp(
+  String.raw`^multipart\/form-data\s*;\s*(?:${ASCII_CHARSET}\s*;\s*)?boundary=(?:"[\w'()+,./:=?-]+"|[\w'+.-]+)\s*(?:;\s*${ASCII_CHARSET}\s*)?$`,
+  'i',
 );
 
+/** A JSON content type, with at most a charset from the list. */
+const PLAIN_JSON_TYPE = new RegExp(String.raw`^application\/(?:[\w.+-]+\+)?json\s*(?:;\s*${ASCII_CHARSET}\s*)?$`, 'i');
+
+/** Whether a content type labels a body as JSON the same way to every reader. */
+export function isPlainJsonContentType(contentType: string): boolean {
+  return PLAIN_JSON_TYPE.test(contentType.trim());
+}
+
 /** Headers beside the disposition that leave a text part's bytes reading the same to every reader. */
-const PLAIN_TEXT_HEADER = /^(?:content-type:\s*text\/plain(?:\s*;\s*charset="?(?:utf-?8|us-ascii|iso-8859-1)"?)?|content-transfer-encoding:\s*(?:7bit|8bit|binary)|content-length:\s*\d+)\s*$/i;
+const PLAIN_TEXT_HEADER = new RegExp(
+  String.raw`^(?:content-type:\s*text\/plain(?:\s*;\s*${ASCII_CHARSET})?|content-transfer-encoding:\s*(?:7bit|8bit|binary))\s*$`,
+  'i',
+);
+
+/**
+ * One `; key=value` parameter of a Content-Disposition value. A value holds an
+ * escaped quote only when a reader that ended it at that quote would find no
+ * further parameter in the rest.
+ */
+const DISPOSITION_PARAM = /\s*;\s*([^\s;="]+)=("(?:[^"\\]|\\(?!"))*"|"(?:[^"\\;=]|\\.)*"|[^\s;"]+)\s*/y;
+
+/** A field name every reader reads alike: ASCII, with nothing a reader might decode. */
+const PLAIN_NAME = /^(?:"((?:(?!=\?)[^"\\%\x00-\x1f\x7f-\xff])*)"|([\w.[\]-]+))$/;
+
+/** The field name in a `form-data` disposition, when one parameter names it, plainly. */
+function plainDispositionName(value: string): string | undefined {
+  if (!value.startsWith('form-data')) return undefined;
+  DISPOSITION_PARAM.lastIndex = 'form-data'.length;
+  let end = DISPOSITION_PARAM.lastIndex;
+  let name: string | undefined;
+  for (let param = DISPOSITION_PARAM.exec(value); param; param = DISPOSITION_PARAM.exec(value)) {
+    end = DISPOSITION_PARAM.lastIndex;
+    // `name*`, `name*0`, `NAME` and the like read as the name to some reader; `filename` never does.
+    if (/name(?:\*|$)/i.test(param[1]!) && !/^filename/i.test(param[1]!)) {
+      const plain = param[1] === 'name' ? PLAIN_NAME.exec(param[2]!) : null;
+      if (!plain || name !== undefined) return undefined;
+      name = plain[1] ?? plain[2];
+    }
+  }
+  return end === value.length ? name : undefined;
+}
 
 /** The field name in a part's headers, when they are one to a line and name it plainly. */
 function plainPartName(headers: string): string | undefined {
@@ -316,9 +353,9 @@ function plainPartName(headers: string): string | undefined {
     if (!header) return undefined;
     const field = header[1]!.toLowerCase();
     if (field === 'content-disposition') {
-      const disposition = PLAIN_DISPOSITION.exec(header[2]!);
-      if (name !== undefined || !disposition) return undefined;
-      name = disposition[1] ?? disposition[2];
+      const disposition = plainDispositionName(header[2]!);
+      if (name !== undefined || disposition === undefined) return undefined;
+      name = disposition;
     } else if (field === 'content-type' && /^\s*(?:multipart|message)\//i.test(header[2]!)) {
       return undefined;
     }
@@ -326,13 +363,22 @@ function plainPartName(headers: string): string | undefined {
   return name;
 }
 
+/** Whether a part is text every reader reads the same: no filename, and no header that changes its bytes. */
+function isPlainText({ headers, content }: MultipartPart): boolean {
+  return headers.split('\r\n').slice(1).every((line) => {
+    if (/^content-disposition:/i.test(line)) return !/filename/i.test(line);
+    const length = /^content-length:\s*(\d+)\s*$/i.exec(line);
+    return length ? Number(length[1]) === content.length : PLAIN_TEXT_HEADER.test(line);
+  });
+}
+
 /**
  * The parts of a multipart/form-data body written the plain way every form
  * encoder writes it; null for any other. Plain means a simple boundary, found
- * only where it frames a part, with nothing but an optional CRLF before the
- * first delimiter and only white space after the last, and part headers one to
- * a line, each with a simply written name. Readers agree on such a body, where
- * they can disagree on one written any other way.
+ * only where it frames a part, with each delimiter starting its line and only
+ * white space after the last, and part headers one to a line, each with a
+ * simply written name. Readers agree on such a body, where they can disagree
+ * on one written any other way.
  */
 export function readPlainMultipartParts(body: Uint8Array, contentType: string | undefined): PlainMultipartPart[] | null {
   if (!contentType || !PLAIN_MULTIPART_TYPE.test(contentType.trim())) return null;
@@ -343,11 +389,7 @@ export function readPlainMultipartParts(body: Uint8Array, contentType: string | 
     const name = plainPartName(part.headers);
     // `_charset_` sets the charset of every other field, for the readers that honor it.
     if (name === undefined || name.toLowerCase() === '_charset_') return null;
-    const otherHeaders = part.headers.split('\r\n').slice(1).filter((line) => !/^content-disposition:/i.test(line));
-    const billedText = multipartTextFieldName(part) === name
-      && !/filename/i.test(part.headers)
-      && otherHeaders.every((line) => PLAIN_TEXT_HEADER.test(line));
-    parts.push({ ...part, name, billedText });
+    parts.push({ ...part, name, billedText: multipartTextFieldName(part) === name && isPlainText(part) });
   }
   return parts;
 }

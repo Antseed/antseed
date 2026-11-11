@@ -41,6 +41,7 @@ export {
   parseJsonObject,
   parseMultipartFormFields,
   readPlainMultipartParts,
+  isPlainJsonContentType,
   type PlainMultipartPart,
   extractSpeechRequestFacts,
   speechAudioDelivered,

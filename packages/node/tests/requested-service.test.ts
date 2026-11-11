@@ -69,7 +69,6 @@ describe('requestBodyService', () => {
       ['a model field', multipart(model, field('prompt', 'x'))],
       ['a service field', multipart(field('service', 'svc'))],
       ['service and model the same', multipart(field('service', 'svc'), model)],
-      ['service and Venice modelId', multipart(field('service', 'svc'), field('modelId', 'svc'))],
       ['a prompt over the 4 KiB field limit', multipart(model, field('prompt', 'x'.repeat(5000)))],
       ['a prompt quoting a part header', multipart(model, field('prompt', 'Content-Disposition: form-data; name="model"'))],
       ['a repeated text field', multipart(model, field('timestamp_granularities[]', 'word'), field('timestamp_granularities[]', 'segment'))],
@@ -92,6 +91,9 @@ describe('requestBodyService', () => {
       ['an unquoted name on another field', multipart(model, ['Content-Disposition: form-data; name=prompt', 'x'])],
       ['an empty part', multipart(model, field('prompt', ''))],
       ['a CRLF before the first delimiter', raw(`\r\n${frame([model])}${closing}`)],
+      ['a MIME preamble', raw(`This is a multipart message.\r\n${frame([model])}${closing}`)],
+      ['another disposition parameter on a file', multipart(model, ['Content-Disposition: form-data; name="image"; filename="a.png"; size=3\r\nContent-Type: image/png', 'PNG'])],
+      ['an escaped quote in a filename', multipart(model, ['Content-Disposition: form-data; name="image"; filename="a\\"b.png"', 'png'])],
       ['no CRLF after the closing delimiter', raw(`${frame([model])}--${boundary}--`)],
       ['a blank line after the closing delimiter', raw(`${frame([model])}${closing}\r\n`)],
       ['a quoted boundary', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary="${boundary}"` })],
@@ -176,6 +178,9 @@ describe('requestBodyService', () => {
     ['text', 'text/plain'],
     ['another multipart', 'multipart/mixed; boundary=x'],
     ['JSON followed by another type', 'application/json, application/x-www-form-urlencoded'],
+    ['JSON in UTF-7', 'application/json; charset=utf-7'],
+    ['JSON in another charset', 'application/json; charset=cp037'],
+    ['JSON with an unknown parameter', 'application/json; x=y'],
   ])('names no service when a JSON body is labelled %s', (_name, contentType) => {
     expect(requestBodyService(json({ model: 'svc', prompt: '&model=other&' }, contentType))).toBeNull();
   });
@@ -184,6 +189,14 @@ describe('requestBodyService', () => {
     it.each<[string, ReturnType<typeof raw>]>([
       ['service and model differ', multipart(field('service', 'svc'), field('model', 'other'))],
       ['a padded model', multipart(field('model', '  svc  '))],
+      ['a BOM before the model', multipart(field('model', '\uFEFFsvc'))],
+      ['a BOM before the service beside a model', multipart(field('service', 'svc'), field('model', '\uFEFFsvc'))],
+      ['service and Venice modelId', multipart(field('service', 'svc'), field('modelId', 'svc'))],
+      ['a service part whose length is wrong', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Length: 2', 'svc'])],
+      ['a non-ASCII byte in a field name', multipart(model, field('model\u00A0', 'other'))],
+      ['a body charset that is not ASCII-compatible', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; charset=utf-7; boundary=${boundary}` })],
+      ['an EBCDIC body charset', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; charset=cp037` })],
+      ['an escaped quote hiding a parameter', multipart(model, ['Content-Disposition: form-data; name="image"; filename="a\\"; size=1; b="', 'png'])],
       ['a filename ending in an escape before a second name', multipart(model, ['Content-Disposition: form-data; name="image"; filename="a\\"; name="model"', 'other'])],
       ['a service field over the 4 KiB limit', multipart(model, field('service', `${' '.repeat(5000)}other`))],
       ['a model field over the 4 KiB limit', multipart(model, field('model', `${' '.repeat(5000)}other`))],
@@ -205,7 +218,6 @@ describe('requestBodyService', () => {
       ['a bare LF in a service part', multipart(model, ['Content-Disposition: form-data; name="service"\n\nother', 'svc'])],
       ['a part named like a field but sent as a file', multipart(model, ['Content-Disposition: form-data; name="service"; filename=""', 'other'])],
       ['a service part with an extended filename', multipart(['Content-Disposition: form-data; name="model"; filename*=UTF-8\'\'a', 'svc'])],
-      ['text before the first delimiter', raw(`preamble\r\n${frame([model])}${closing}`)],
       ['a first delimiter inside a line', raw(`x${frame([model])}${closing}`)],
       ['a bare LF after the first delimiter', raw(`--${boundary}\n${frame([model])}${closing}`)],
       ['more after the closing delimiter', raw(`${frame([model])}--${boundary}--\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`)],
@@ -223,7 +235,6 @@ describe('requestBodyService', () => {
       ['a name in array form', multipart(model, field('model[]', 'other'))],
       ['a name with a control character', multipart(model, field('model\u0000x', 'other'))],
       ['a parameter ending in name', multipart(model, ['Content-Disposition: form-data; xname="model"; name="prompt"', 'other'])],
-      ['an unknown disposition parameter', multipart(model, ['Content-Disposition: form-data; name="prompt"; size=1', 'other'])],
       ['a part with no disposition', multipart(model, ['Content-Type: text/plain', 'other'])],
       ['a service part in an unknown charset', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Type: text/plain; charset=x', 'svc'])],
       ['a service part in another charset', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Type: text/plain; charset=utf-16', 'svc'])],
@@ -249,10 +260,14 @@ describe('requestBodyService', () => {
     };
     const pieces = [
       '\r\n', '\n', '\r', ' ', '"', ';', '\\', '%', `--${boundary}`, `--${boundary}--`, 'name="model"', 'NAME="model"', 'name=model', 'name*=x', 'name*0="model"',
-      'filename=""', 'Content-Disposition: form-data; name="model"', 'Content-Disposition: form-data; name="service"', 'other', 'model', 'service',
+      'filename=""', 'Content-Disposition: form-data; name="model"', 'Content-Disposition: form-data; name="service"', 'other', 'model', 'service', '\uFEFF', '\u00A0',
       `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`,
     ];
     const seeds = [frame([model, field('prompt', 'x')]) + closing, frame([field('service', 'svc'), model]) + closing];
+    const contentTypes = [
+      `multipart/form-data; boundary=${boundary}`, `multipart/form-data; boundary="${boundary}"`, `multipart/form-data; charset=utf-8; boundary=${boundary}`,
+      `multipart/form-data; charset=utf-7; boundary=${boundary}`, `multipart/form-data; boundary=" ${boundary}"`, `multipart/form-data; xboundary=${boundary}; boundary=other`,
+    ];
     let accepted = 0;
     let read = 0;
     for (let round = 0; round < 4000; round += 1) {
@@ -263,7 +278,7 @@ describe('requestBodyService', () => {
           ? text.slice(0, at) + text.slice(Math.min(text.length, at + 1 + random(6)))
           : text.slice(0, at) + pieces[random(pieces.length)]! + text.slice(at);
       }
-      const request = raw(text);
+      const request = raw(text, { 'content-type': contentTypes[random(contentTypes.length)]! });
       const service = requestBodyService(request);
       if (service === null) continue;
       accepted += 1;
@@ -275,9 +290,9 @@ describe('requestBodyService', () => {
         for (const value of form.getAll(name)) expect(value).toBe(service);
       }
     }
-    expect(accepted).toBeGreaterThan(100);
-    expect(accepted).toBeLessThan(3000);
-    expect(read).toBeGreaterThan(100);
+    expect(accepted).toBeGreaterThan(50);
+    expect(accepted).toBeLessThan(2500);
+    expect(read).toBeGreaterThan(50);
   });
 
   it('names no service for a body with no usable name', () => {

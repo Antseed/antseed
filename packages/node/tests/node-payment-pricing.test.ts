@@ -360,6 +360,48 @@ it('does not charge a native video on acceptance or JSON status, preserves buyer
   expect(provider.handleRequest).toHaveBeenCalledTimes(3);
 });
 
+it('charges a multipart request the price of its own service, and nothing for a free one on a paid provider', async () => {
+  const boundary = 'form-boundary';
+  const provider = makeProvider(10, 20, {
+    name: 'images',
+    services: ['priced', 'at-default', 'free'],
+    servicePricing: { priced: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, free: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+  });
+  provider.handleRequest = vi.fn(async request => ({
+    requestId: request.requestId,
+    statusCode: 200,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ choices: [], usage: { prompt_tokens: 1000, completion_tokens: 1000 } })),
+  }));
+  const recordSpend = vi.fn();
+  const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend, getReserveMax: () => 1_000_000n }), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  const serve = async (model: string) => {
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: frames.length + 1,
+      payload: encodeHttpRequest({
+        requestId: model,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: new TextEncoder().encode(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}--\r\n`),
+      }),
+    });
+    return decodeHttpResponse(decodeFrame(frames.find(frame => decodeFrame(frame)!.message.type === MessageType.HttpResponse && decodeHttpResponse(decodeFrame(frame)!.message.payload).requestId === model)!)!.message.payload).statusCode;
+  };
+
+  expect(await serve('priced')).toBe(200);
+  expect(recordSpend).toHaveBeenLastCalledWith('session-1', 3000n);
+  expect(await serve('at-default')).toBe(200);
+  expect(recordSpend).toHaveBeenLastCalledWith('session-1', 30000n);
+  recordSpend.mockClear();
+  expect(await serve('free')).toBe(200);
+  expect(recordSpend).not.toHaveBeenCalled();
+  expect(vi.mocked(provider.handleRequest).mock.calls.map(([request]) => request.headers['x-antseed-service'])).toEqual(['priced', 'at-default', 'free']);
+});
+
 describe('native video job ownership', () => {
   it('authorizes Venice downloads against the queue owner without charging for bytes', async () => {
     const provider = makeProvider(0, 0, {

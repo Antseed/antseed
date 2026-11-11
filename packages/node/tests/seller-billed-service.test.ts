@@ -123,24 +123,28 @@ describe('the seller serves the service it bills', () => {
   });
 
   // No relay here: this is what a plugin that forwards the bytes as they are hands its upstream.
-  it.each<[string, SerializedHttpRequest]>([
-    ['JSON with only model', jsonRequest({ model: 'billed-model' })],
-    ['JSON with both fields', jsonRequest({ service: 'billed-model', model: 'billed-model' })],
-    ['multipart with only model', multipartRequest([['model', 'billed-model'], ['prompt', 'x']])],
-    ['multipart with both fields', multipartRequest([['service', 'billed-model'], ['model', 'billed-model']])],
-    ['multipart with a buyer header', multipartRequest([['model', 'billed-model']], { 'x-antseed-service': 'other-model' })],
-  ])('hands a provider only the billed service, to a reader sharing none of the seller code: %s', async (_name, sent) => {
+  it.each<[string, SerializedHttpRequest, Record<string, string[]>]>([
+    ['JSON with only model', jsonRequest({ model: 'billed-model' }), { model: ['billed-model'] }],
+    ['JSON with only service', jsonRequest({ service: 'billed-model' }), { service: ['billed-model'] }],
+    ['JSON with both fields', jsonRequest({ service: 'billed-model', model: 'billed-model' }), { service: ['billed-model'], model: ['billed-model'] }],
+    ['multipart with only model', multipartRequest([['model', 'billed-model'], ['prompt', 'x']]), { model: ['billed-model'] }],
+    ['multipart with only service', multipartRequest([['service', 'billed-model'], ['prompt', 'x']]), { service: ['billed-model'] }],
+    ['multipart with both fields', multipartRequest([['service', 'billed-model'], ['model', 'billed-model']]), { service: ['billed-model'], model: ['billed-model'] }],
+    ['multipart with a buyer header', multipartRequest([['model', 'billed-model']], { 'x-antseed-service': 'other-model' }), { model: ['billed-model'] }],
+  ])('hands a provider only the billed service, to a reader sharing none of the seller code: %s', async (_name, sent, expected) => {
     const target = provider();
     expect((await serve(target, sent)).response.statusCode).toBe(200);
     const received = target.received[0]!;
     const contentType = received.headers['content-type']!;
-    const read: unknown[] = contentType.startsWith('multipart/')
+    const entries: Array<[string, unknown]> = contentType.startsWith('multipart/')
       ? [...(await new Response(received.body, { headers: { 'content-type': contentType } }).formData()).entries()]
-        .filter(([name]) => /^(service|model|modelid)$/i.test(name)).map(([, value]) => value)
-      : Object.entries(JSON.parse(new TextDecoder().decode(received.body)) as Record<string, unknown>)
-        .filter(([name]) => /^(service|model|modelid)$/i.test(name)).map(([, value]) => value);
-    expect(read.length).toBeGreaterThan(0);
-    expect(new Set(read)).toEqual(new Set(['billed-model']));
+      : Object.entries(JSON.parse(new TextDecoder().decode(received.body)) as Record<string, unknown>);
+    const read: Record<string, unknown[]> = {};
+    for (const [name, value] of entries) {
+      if (/^(service|model|modelid)$/i.test(name)) (read[name] ??= []).push(value);
+    }
+    expect(read).toEqual(expected);
+    expect(serviceHeaders(received)).toEqual([['x-antseed-service', 'billed-model']]);
   });
 
   it('serves a video by the model it bills and passes its body through unchanged', async () => {
