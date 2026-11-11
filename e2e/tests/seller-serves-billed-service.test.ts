@@ -1,3 +1,4 @@
+/// <reference path="../../packages/node/src/types/bittorrent-dht.d.ts" />
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import openaiPlugin from '../../plugins/provider-openai/src/index.js';
 import { identityFromPrivateKeyHex } from '../../packages/node/src/p2p/identity.js';
