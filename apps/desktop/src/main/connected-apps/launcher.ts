@@ -16,6 +16,7 @@ import { promisify } from 'node:util';
 import type { AppLaunchTarget } from './launch-settings.js';
 import { launchAppTarget, listInstalledApplications } from './installed.js';
 import { APPS_FOLDER_PREFIX, isAppsFolderTarget } from './windows-start-menu.js';
+import { runningAppNeedsRestart } from './patching/config-changes.js';
 export type AppProcessInfo = { running: boolean; pid?: number; startedAt?: number };
 
 type ManagedAppProcess = { launchedAt: number; pid?: number; startedAt?: number };
@@ -170,15 +171,9 @@ export async function captureManagedAppTarget(target: AppLaunchTarget): Promise<
   });
 }
 
-export async function appTargetNeedsRestart(target: AppLaunchTarget, connectedAt: number | null): Promise<boolean> {
+export async function appTargetNeedsRestart(target: AppLaunchTarget, configChangedAt: number | null): Promise<boolean> {
   const processInfo = await appTargetProcessInfo(target, { maxAgeMs: PROCESS_INFO_TTL_MS });
-  if (!processInfo.running) return false;
-  const managed = managedAppProcesses.get(appTargetKey(target));
-  if (!managed) return true;
-  if (managed.pid && processInfo.pid && managed.pid !== processInfo.pid) return true;
-  if (managed.startedAt && processInfo.startedAt && Math.abs(managed.startedAt - processInfo.startedAt) > 2_000) return true;
-  if (!managed.pid && processInfo.startedAt && processInfo.startedAt > managed.launchedAt + 2_000) return true;
-  return connectedAt !== null && managed.launchedAt < connectedAt;
+  return runningAppNeedsRestart(processInfo, managedAppProcesses.get(appTargetKey(target)), configChangedAt);
 }
 
 /** Name-only targets (`open -a Claude`) carry no bundle path, so the window

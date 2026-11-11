@@ -194,7 +194,7 @@ export function initChatModule({
   function showChatError(message: unknown): void {
     uiState.chatError = describeChatError(
       asErrorMessage(message, 'Unexpected chat error'),
-      (id) => uiState.chatModels.find((model) => model.id === id)?.label,
+      (id) => findChatModel(uiState.chatModels, id)?.label,
     );
     notifyUiStateChanged();
   }

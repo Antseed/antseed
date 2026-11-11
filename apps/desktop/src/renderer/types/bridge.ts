@@ -64,7 +64,8 @@ export type ConnectedAppProfile = {
 export type ConnectedAppsState = {
   connected: string[];
   errors: Record<string, string>;
-  connectedAt: number | null;
+  /** App name → when Antseed last changed its config. */
+  configChangedAt: Record<string, number>;
 };
 
 export type {

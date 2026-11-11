@@ -3,7 +3,7 @@
  */
 import type { ChatModel } from '../../types/bridge';
 import { compareDefaultModels, listedModels } from '../../../shared/chat-model-ranking.js';
-import { normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { findListedModel, normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
 
@@ -24,11 +24,12 @@ export function saveLastChatModel(modelId: string): void {
   }
 }
 
-/** The listed model for an id; a pinned `peer@model` finds its model. */
+/**
+ * The listed model for an id; a pinned `peer@model` finds its model. An id the
+ * listing now names differently (the same model by the canonical rule) still finds it.
+ */
 export function findChatModel(models: ChatModel[], modelId: string | null | undefined): ChatModel | null {
-  if (!modelId) return null;
-  const { modelId: listedId } = splitPinnedModel(modelId);
-  return models.find((model) => model.id === listedId) ?? null;
+  return findListedModel(models, modelId);
 }
 
 /**
@@ -38,9 +39,9 @@ export function findChatModel(models: ChatModel[], modelId: string | null | unde
  * a chat or saved default on another model still shows it.
  */
 export function pickerChatModels(models: ChatModel[], inUse: Array<string | null | undefined>): ChatModel[] {
-  const kept = new Set(inUse.flatMap((id) => (id ? [splitPinnedModel(id).modelId] : [])));
+  const kept = new Set(inUse.flatMap((id) => findChatModel(models, id) ?? []));
   const listed = new Set(listedModels(models));
-  return models.filter((model) => listed.has(model) || kept.has(model.id));
+  return models.filter((model) => listed.has(model) || kept.has(model));
 }
 
 /**
@@ -105,7 +106,7 @@ export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | '
 export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: string, hasFunds: boolean): string | null {
   const { modelId: listedId, peerId } = splitPinnedModel(selectedId);
   const text = privateModels.filter((model) => model.type === 'text');
-  const selected = text.find((model) => model.id === listedId);
+  const selected = findChatModel(text, listedId) ?? undefined;
   if (selected && (hasFunds || selected.free)) return peerId ? selected.id : null;
   // A stand-in shouldn't cost much: the user didn't choose it.
   const price = (model: ChatModel) => (model.inputUsdPerMillion ?? Infinity) + (model.outputUsdPerMillion ?? Infinity);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recommendAppModels, toTrustedChatModels } from './catalog.js';
+import { findGatewayEntry, recommendAppModels, toTrustedChatModels } from './catalog.js';
 import type { GatewayModelEntry } from './models.js';
 
 const seller = (n: string, fields: Record<string, unknown>) => ({ peerId: n.repeat(40), ...fields });
@@ -46,4 +46,27 @@ test('nothing is marked when no seller is trusted, or for a plain OpenAI-compati
   const untrusted = [{ id: 'x', type: 'text', peers: [seller('a', { effectiveReputationScore: 3 })] }];
   assert.equal(toTrustedChatModels(untrusted).some((model) => model.lowTrust), false);
   assert.equal(toTrustedChatModels([{ id: 'plain-a' }, { id: 'plain-b' }]).some((model) => model.lowTrust), false);
+});
+
+test('a chat on a model finds its entry after the listing names it by another of its ids', () => {
+  const entries: GatewayModelEntry[] = [
+    { id: 'qwen', type: 'text' },
+    { id: 'z-ai/glm-5.3-flash', type: 'text', peers: [seller('a', { serviceId: 'z-ai/glm-5.3-flash' })] },
+  ];
+  assert.equal(findGatewayEntry(entries, 'glm-5.3-flash')?.id, 'z-ai/glm-5.3-flash');
+  assert.equal(findGatewayEntry(entries, 'GLM-5.3-Flash')?.id, 'z-ai/glm-5.3-flash');
+  assert.equal(findGatewayEntry(entries, `${'a'.repeat(40)}@GLM-5.3-FLASH`)?.id, 'z-ai/glm-5.3-flash');
+  assert.equal(findGatewayEntry(entries, 'qwen')?.id, 'qwen');
+  assert.equal(findGatewayEntry(entries, 'gone'), null);
+});
+
+test('an exact entry id beats a canonical match, and a dated variant is another model', () => {
+  const entries: GatewayModelEntry[] = [
+    { id: 'z-ai/glm-5.3-flash', type: 'text' },
+    { id: 'glm-5.3-flash', type: 'text' },
+    { id: 'deepseek-v4.1-flash', type: 'text' },
+  ];
+  assert.equal(findGatewayEntry(entries, 'glm-5.3-flash')?.id, 'glm-5.3-flash');
+  assert.equal(findGatewayEntry(entries, 'z-ai/glm-5.3-flash')?.id, 'z-ai/glm-5.3-flash');
+  assert.equal(findGatewayEntry(entries, 'deepseek-v4-1-flash-1017'), null);
 });

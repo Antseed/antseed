@@ -47,7 +47,7 @@ import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
 import type { PiChatEngine } from './engine-types.js';
-import { recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
@@ -205,9 +205,9 @@ export function registerPiChatHandlers({
     try {
       const entries = await fetchGatewayModelEntries(endpoint);
       lastEntries = entries;
-      // A pinned `peer@model` is described by its model's entry.
-      const { modelId: listedId } = splitPinnedModel(modelId);
-      const entry = entries.find((candidate) => candidate.id === listedId);
+      // A pinned `peer@model` is described by its model's entry, found by
+      // any of its ids since the listed one can change between reads.
+      const entry = findGatewayEntry(entries, modelId) ?? undefined;
       return { model: entry ? toChatModel(entry) : null, offers: entryOffers(entry) };
     } catch (error) {
       appendSystemLog(`Gateway model list unavailable; sending "${modelId}" as a plain chat model: ${asErrorMessage(error)}`);
@@ -217,7 +217,7 @@ export function registerPiChatHandlers({
 
   const modelTelemetryContext = (requested: string): TelemetryEventProperties['model_selected'] => {
     const { modelId, peerId } = splitPinnedModel(requested);
-    const entry = lastEntries.find((candidate) => candidate.id === modelId);
+    const entry = findGatewayEntry(lastEntries, modelId) ?? undefined;
     const pricing = modelPricingSnapshot(entryOffers(entry));
     return {
       public_model_id: publicModelId(modelId, entry !== undefined),

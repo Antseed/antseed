@@ -7,6 +7,7 @@ import {
   chooseDefaultChatModel,
   chooseModelForPrivate,
   filterChatModels,
+  findChatModel,
   fundsNoticeAction,
   fundsNoticeFromStopReason,
   isFreeOffer,
@@ -186,4 +187,37 @@ test('a first message does not wait while any free text model is listed, low-tru
   const fresh = { chosen: false, funded: false };
   assert.equal(shouldWaitForFreeModel([trustedPaid, lowTrustFree], 'trusted-paid', fresh), false);
   assert.equal(shouldWaitForFreeModel([trustedPaid], 'trusted-paid', fresh), true);
+});
+
+test('a saved id finds its model after the listing names it by another of its ids', () => {
+  // One read lists `glm-5.3-flash`, the next `z-ai/glm-5.3-flash`: the same model by the canonical rule.
+  const glm = { ...model('z-ai/glm-5.3-flash'), free: true, toolUse: true, sellers: 1 } as ChatModel;
+  const other = { ...model('qwen'), free: true, toolUse: true, sellers: 5 } as ChatModel;
+  const listed = [other, glm];
+  assert.equal(findChatModel(listed, 'glm-5.3-flash'), glm);
+  assert.equal(findChatModel(listed, 'GLM-5.3-Flash'), glm, 'ignoring case');
+  assert.equal(findChatModel(listed, `${'a'.repeat(40)}@glm-5.3-flash`), glm, 'a pinned seller');
+  assert.equal(findChatModel(listed, 'gone'), null);
+  // The saved default stays on it instead of falling back.
+  assert.equal(chooseDefaultChatModel(listed, 'glm-5.3-flash'), 'z-ai/glm-5.3-flash');
+  // A chat on it keeps it in the picker even when its sellers are low-trust.
+  const lowTrustGlm = { ...glm, free: false, lowTrust: true } as ChatModel;
+  assert.deepEqual(pickerChatModels([other, lowTrustGlm], ['glm-5.3-flash', null]).map((m) => m.id), ['qwen', 'z-ai/glm-5.3-flash']);
+  // Private keeps a listed model rather than moving off it.
+  assert.equal(chooseModelForPrivate([other, glm], 'glm-5.3-flash', false), null);
+});
+
+test('an exact id wins over another id for the same model', () => {
+  const exact = model('glm-5.3-flash');
+  const canonical = model('z-ai/glm-5.3-flash');
+  assert.equal(findChatModel([canonical, exact], 'glm-5.3-flash'), exact);
+  assert.equal(findChatModel([canonical, exact], 'z-ai/glm-5.3-flash'), canonical);
+  // Case alone beats a canonical match too.
+  assert.equal(findChatModel([canonical, exact], 'GLM-5.3-FLASH'), exact);
+});
+
+test('a dated variant is another model', () => {
+  const listed = [model('deepseek-v4.1-flash')];
+  assert.equal(findChatModel(listed, 'deepseek-v4-1-flash-1017'), null);
+  assert.equal(findChatModel(listed, 'deepseek-v4-1-flash')?.id, 'deepseek-v4.1-flash');
 });

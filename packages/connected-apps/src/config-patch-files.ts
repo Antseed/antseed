@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { sameCanonicalModel } from '@antseed/node/model-identity';
 import type { ResolvedTarget } from './config-patch.js';
 
 /**
@@ -31,15 +32,58 @@ export type ConfigPatchModel = {
 export const CONNECTED_APP_REASONING_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
 export const CONNECTED_APP_DEFAULT_REASONING = 'medium';
 
+/** What one tool config lists, and the model it selects. */
+export type ModelPick = {
+  /** The target's models, plus the tool's selection when the gateway serves it without listing it. */
+  readonly models: ReadonlyArray<ConfigPatchModel>;
+  readonly modelIds: readonly string[];
+  /** Undefined when the target serves no models: the selection is left alone. */
+  readonly selected: string | undefined;
+};
+
 /**
- * The model a (re)patch should select: the tool's current selection when it
- * is still one of the target's models (the user picked it in the tool),
- * otherwise the target default. Undefined when the target serves no models,
- * in which case the selection is left alone.
+ * The model in `models` that `id` names: its own id, else (ignoring case) its
+ * id, else the same model by the buyer's canonical rule (the `/v1/models`
+ * entry can name it `glm-5` one read and `z-ai/glm-5` the next).
  */
-export function pickModel(target: ResolvedTarget, current: unknown): string | undefined {
-  if (typeof current === 'string' && target.modelIds.includes(current)) return current;
-  return target.defaultModel ?? target.models[0]?.id;
+function findModel(models: ReadonlyArray<ConfigPatchModel>, id: string): ConfigPatchModel | undefined {
+  const exact = models.find((model) => model.id === id);
+  if (exact) return exact;
+  const key = id.toLowerCase();
+  return models.find((model) => model.id.toLowerCase() === key)
+    ?? models.find((model) => sameCanonicalModel(id, model.id));
+}
+
+/**
+ * The models a (re)patch writes into one tool config, and the model each of
+ * the tool's selections (`currents`) should be. A selection the user made in
+ * the tool is kept while the gateway still serves that model: under the id
+ * the target lists it by (a selection of an alias moves to it), or, for a
+ * model the target leaves out (`unlistedModels`), listed beside the target's
+ * so the tool still offers it. Any other selection becomes the target
+ * default; undefined when the target serves no models, in which case the
+ * selection is left alone.
+ */
+export function pickModels(target: ResolvedTarget, currents: readonly unknown[]): { models: ReadonlyArray<ConfigPatchModel>; modelIds: readonly string[]; selected: Array<string | undefined> } {
+  const kept: ConfigPatchModel[] = [];
+  const fallback = target.defaultModel ?? target.models[0]?.id;
+  const selected = currents.map((current) => {
+    if (typeof current !== 'string' || current.length === 0) return fallback;
+    const listed = findModel(target.models, current) ?? findModel(kept, current);
+    if (listed) return listed.id;
+    const unlisted = findModel(target.unlistedModels, current);
+    if (!unlisted) return fallback;
+    kept.push(unlisted);
+    return unlisted.id;
+  });
+  const models = kept.length > 0 ? [...target.models, ...kept] : target.models;
+  return { models, modelIds: models.map((model) => model.id), selected };
+}
+
+/** `pickModels` for a tool with one selection. */
+export function pickModel(target: ResolvedTarget, current: unknown): ModelPick {
+  const { models, modelIds, selected } = pickModels(target, [current]);
+  return { models, modelIds, selected: selected[0] };
 }
 
 export function sha256Hex(value: string): string {

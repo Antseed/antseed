@@ -212,10 +212,12 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
   const existingProvider = readGooseCustomProvider(filePath);
   const userProvider = existingProvider.exists && !existingProvider.ours;
   const owned = (provider === GOOSE_CUSTOM_PROVIDER && !userProvider) || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
-  // Model discovery failed for now: the pick and the list stay until it's back.
-  const selected = pickModel(t, owned ? previousModel : undefined) ?? (owned && !legacyPatch ? previousModel : undefined);
-  const models = t.models.length > 0
-    ? t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
+  // Model discovery failed for now (or the gateway serves no text models):
+  // the pick stays until it's back, and so does the list if it wasn't read.
+  const pick = pickModel(t, owned ? previousModel : undefined);
+  const selected = pick.selected ?? (owned && !legacyPatch ? previousModel : undefined);
+  const models = t.modelsLoaded
+    ? pick.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
     : existingProvider.models;
   if (!owned) rememberGooseSelection(filePath, previous);
   // Everything from here to the config write comes undone together on a
@@ -251,8 +253,9 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       models,
       // Goose otherwise lists the gateway's whole /v1/models (image, video and
       // speech models included) instead of `models`. It refuses `false` with
-      // no models, so the key is left out when there is no list at all; a
-      // kept earlier list (models didn't load this time) still turns it off.
+      // no models, so the key is left out when there is no list at all (none
+      // read and none kept, or a gateway serving no text models); a kept
+      // earlier list (models didn't load this time) still turns it off.
       ...(Array.isArray(models) && models.length > 0 ? { dynamic_models: false } : {}),
       headers: { Authorization: `Bearer ${t.apiKey}` },
       supports_streaming: true,
@@ -302,7 +305,7 @@ export function applyGooseProviderToFile(filePath: string, patch: GooseConfigPat
   const ownedSelection = provider === patch.providerKey || fromOurGateway
     ? readYamlTopLevelString(lines, 'GOOSE_MODEL')
     : undefined;
-  const selected = pickModel(t, ownedSelection);
+  const { selected } = pickModel(t, ownedSelection);
   if (provider !== patch.providerKey && !fromOurGateway) rememberGooseSelection(filePath, lines);
   lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', patch.providerKey);
   if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);

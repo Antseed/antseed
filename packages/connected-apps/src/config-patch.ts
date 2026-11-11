@@ -22,6 +22,7 @@ import {
   forgetSelection,
   parseJsoncObject,
   pickModel,
+  pickModels,
   readJsoncFile,
   readSelection,
   rememberSelection,
@@ -398,6 +399,19 @@ export type ConfigPatchTarget = {
    * the models marked `reasoning`.
    */
   models: ReadonlyArray<ConfigPatchModel>;
+  /**
+   * Text models the gateway also serves but `models` leaves out (only
+   * low-trust sellers serve them, say). A tool already on one of them keeps
+   * it, listed beside `models`; the rest stay out of the tool.
+   */
+  unlistedModels?: ReadonlyArray<ConfigPatchModel>;
+  /**
+   * Whether `models` is the gateway's list. False when it could not be read:
+   * tools keep the list written last time. Without it, an empty `models`
+   * counts as unread; a gateway that serves no text models passes true, and
+   * tools get an empty list.
+   */
+  modelsLoaded?: boolean;
   /** Model to select when the tool has none (or still has a stale managed one). Defaults to models[0]. */
   defaultModel?: string;
 };
@@ -409,6 +423,10 @@ export type ResolvedTarget = {
   readonly apiKey: string;
   readonly models: ReadonlyArray<ConfigPatchModel>;
   readonly modelIds: readonly string[];
+  /** Served but not listed; see ConfigPatchTarget. `pickModels` adds the one a tool is on. */
+  readonly unlistedModels: ReadonlyArray<ConfigPatchModel>;
+  /** False when the model list could not be read: writers keep the one they wrote last. */
+  readonly modelsLoaded: boolean;
   readonly defaultModel?: string;
   /** Whether WSL configs get the distro-reachable host substituted in. */
   readonly loopback: boolean;
@@ -432,6 +450,8 @@ function resolveTarget(target: ConfigPatchTarget | number): ResolvedTarget {
       apiKey: 'antseed',
       models: [{ id: ROUTED_MODEL_ALIAS, label: ROUTED_MODEL_ALIAS_LABEL }],
       modelIds: [ROUTED_MODEL_ALIAS],
+      unlistedModels: [],
+      modelsLoaded: true,
       defaultModel: ROUTED_MODEL_ALIAS,
       loopback: true,
       baseUrl: (template) => template.replace('{buyerPort}', String(target)),
@@ -443,6 +463,8 @@ function resolveTarget(target: ConfigPatchTarget | number): ResolvedTarget {
     apiKey: target.apiKey,
     models: target.models,
     modelIds: target.models.map((model) => model.id),
+    unlistedModels: target.unlistedModels ?? [],
+    modelsLoaded: target.modelsLoaded ?? target.models.length > 0,
     ...(target.defaultModel ? { defaultModel: target.defaultModel } : {}),
     loopback: isLoopbackOrigin(origin),
     // Profile templates are `<scheme>://<host>:{buyerPort}` plus an optional
@@ -751,6 +773,11 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
   const providers = (config['provider'] && typeof config['provider'] === 'object' && !Array.isArray(config['provider']))
     ? config['provider'] as JsonObject
     : {};
+  const prefix = `${patch.providerKey}/`;
+  const current = typeof config['model'] === 'string' && config['model'].startsWith(prefix)
+    ? config['model'].slice(prefix.length)
+    : undefined;
+  const pick = pickModel(t, current);
   providers[patch.providerKey] = {
     name: patch.providerName,
     npm: patch.npm,
@@ -758,8 +785,8 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
       baseURL,
       apiKey: t.apiKey,
     },
-    models: t.models.length > 0
-      ? Object.fromEntries(t.models.map((model) => [model.id, {
+    models: t.modelsLoaded
+      ? Object.fromEntries(pick.models.map((model) => [model.id, {
         name: modelLabel(model),
         attachment: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
@@ -769,11 +796,7 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
       : asObject(asObject(providers[patch.providerKey])['models']),
   };
   config['provider'] = providers;
-  const prefix = `${patch.providerKey}/`;
-  const current = typeof config['model'] === 'string' && config['model'].startsWith(prefix)
-    ? config['model'].slice(prefix.length)
-    : undefined;
-  const selected = pickModel(t, current);
+  const selected = pick.selected;
   if (selected) {
     if (current === undefined) rememberSelection(filePath, pickKeys(config, ['model']));
     config['model'] = `${prefix}${selected}`;
@@ -1008,6 +1031,25 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
     ...headerFields,
   };
+  // With the restore state gone (deleted, say), entries an earlier connect
+  // left are taken over instead of refusing to connect, and dropped like
+  // entries the state recorded. Others under our id prefix are the user's.
+  const leftovers = new Set(state ? [] : customModels.filter((model) => isDroidLeftover(model, patch, baseURL)));
+  const managedIds = state?.managedModelIds ?? [...leftovers].map(droidEntryId).filter(hasDroidManagedId);
+  const managedIdSet = new Set(managedIds);
+  // Matched per entry without the state: a user's model may share an id with
+  // a leftover.
+  const ours = (model: unknown): boolean => (state ? isManagedDroidModel(model, patch, managedIdSet) : leftovers.has(model));
+
+  // The selection is an entry id; map it back to the model it named so a
+  // model the user picked in Droid survives the rewrite.
+  const currentId = existingSessionDefaultSettings?.['model'];
+  const recognizedIdSet = new Set([...managedIds, ...t.models.map(droidGatewayModelId)]);
+  const previousEntry = customModels.find((model) => droidEntryId(model) === currentId
+    && (state ? isManagedDroidModel(model, patch, recognizedIdSet) : ours(model)));
+  const previousModel = previousEntry ? (previousEntry as JsonObject)['model'] : undefined;
+  const pick = pickModel(t, previousModel);
+
   const entries: DroidModelEntry[] = t.legacy
     ? [{
       model: patch.providerKey,
@@ -1015,7 +1057,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       displayName: patch.providerName,
       ...commonFields,
     }]
-    : t.models.map((model, index) => ({
+    : pick.models.map((model, index) => ({
       model: model.id,
       id: droidGatewayModelId(model, index),
       displayName: modelLabel(model),
@@ -1029,15 +1071,6 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // Membership is checked per model; a gateway can list hundreds.
   const newIdSet = new Set(newIds);
 
-  // With the restore state gone (deleted, say), entries an earlier connect
-  // left are taken over instead of refusing to connect, and dropped like
-  // entries the state recorded. Others under our id prefix are the user's.
-  const leftovers = new Set(state ? [] : customModels.filter((model) => isDroidLeftover(model, patch, baseURL)));
-  const managedIds = state?.managedModelIds ?? [...leftovers].map(droidEntryId).filter(hasDroidManagedId);
-  const managedIdSet = new Set(managedIds);
-  // Matched per entry without the state: a user's model may share an id with
-  // a leftover.
-  const ours = (model: unknown): boolean => (state ? isManagedDroidModel(model, patch, managedIdSet) : leftovers.has(model));
   // Never replace a model the user defined: on a first connect that includes
   // one named like Antseed's alias without our marks; on any connect, an entry
   // we didn't write whose id a new gateway model would take. Disconnect
@@ -1055,7 +1088,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // Model discovery failed for now: the selection still names our entries, so
   // keep them rather than lose the way back to the user's own default. They
   // still move to the current gateway and key.
-  if (state && !t.legacy && newIds.length === 0) {
+  if (state && !t.legacy && !t.modelsLoaded) {
     config['customModels'] = customModels.map((model) => (isManagedDroidModel(model, patch, managedIdSet)
       ? { ...(model as JsonObject), baseUrl: baseURL, apiKey: t.apiKey, ...headerFields }
       : model));
@@ -1063,12 +1096,16 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     return;
   }
   const managedModelIds = t.legacy ? [] : newIds;
+  // Old and new ids together until the config is written: a failed write
+  // leaves the old entries in place (leftovers too, on a first connect
+  // without the state), and disconnect has to recognize them.
+  const pendingModelIds = [...new Set([...managedIds, ...managedModelIds])];
   // Whether the customModels list was the user's before Antseed wrote to it:
   // a list holding only leftovers was ours, an empty one is the user's.
   const userCustomModelsPresent = state
     ? state.customModelsPresent
     : customModelsPresent && (customModels.length === 0 || customModels.some((model) => !ours(model)));
-  let narrowStateAfterWrite = false;
+  let recorded: DroidPatchState;
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
     // A selection of a leftover entry is not the user's to restore, and a
@@ -1081,7 +1118,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     const sessionDefaultModelPresent = existingSessionDefaultSettings !== undefined
       && Object.prototype.hasOwnProperty.call(existingSessionDefaultSettings, 'model')
       && !leftoverSessionDefault;
-    writeDroidPatchState(filePath, {
+    recorded = {
       version: 2,
       configExisted,
       customModelsPresent: userCustomModelsPresent,
@@ -1092,28 +1129,21 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       ...(sessionDefaultModelPresent
         ? { sessionDefaultModelValue: existingSessionDefaultSettings['model'] }
         : {}),
-      managedModelIds,
-    });
-  } else if (managedIds.join('\n') !== managedModelIds.join('\n')) {
-    // Both sets until the config is written: a failed write leaves the old
-    // entries in place, and disconnect has to recognize them.
-    writeDroidPatchState(filePath, { ...state, managedModelIds: [...new Set([...managedIds, ...managedModelIds])] });
-    narrowStateAfterWrite = true;
+      managedModelIds: pendingModelIds,
+    };
+    writeDroidPatchState(filePath, recorded);
+  } else if (managedIds.join('\n') !== pendingModelIds.join('\n')) {
+    recorded = { ...state, managedModelIds: pendingModelIds };
+    writeDroidPatchState(filePath, recorded);
+  } else {
+    recorded = state;
   }
 
-  // The selection is an entry id; map it back to the model it named so a
-  // model the user picked in Droid survives the rewrite.
-  const currentId = existingSessionDefaultSettings?.['model'];
-  const recognizedIdSet = new Set([...managedIds, ...newIds]);
-  const previousEntry = customModels.find((model) => droidEntryId(model) === currentId
-    && (state ? isManagedDroidModel(model, patch, recognizedIdSet) : ours(model)));
-  const previousModel = previousEntry ? (previousEntry as JsonObject)['model'] : undefined;
   let selectedId: string | undefined;
   if (t.legacy) {
     selectedId = DROID_ROUTED_MODEL_ID;
   } else {
-    const selectedModel = pickModel(t, previousModel);
-    selectedId = (entries.find((entry) => entry.model === selectedModel) ?? entries[0])?.id;
+    selectedId = (entries.find((entry) => entry.model === pick.selected) ?? entries[0])?.id;
   }
 
   const nextCustomModels = [...customModels.filter((model) => !ours(model)), ...entries];
@@ -1124,14 +1154,19 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     sessionDefaultSettings['model'] = selectedId;
     config['sessionDefaultSettings'] = sessionDefaultSettings;
   } else if (previousEntry && existingSessionDefaultSettings) {
-    // No entry replaces the one selected (the state was lost and no models
-    // loaded): a selection of a removed entry would leave Droid on nothing.
-    // A settings object holding nothing else was ours.
-    delete existingSessionDefaultSettings['model'];
-    if (Object.keys(existingSessionDefaultSettings).length === 0) delete config['sessionDefaultSettings'];
+    // No entry replaces the one selected (the gateway serves no text models,
+    // or the state was lost and none loaded): a selection of a removed entry
+    // would leave Droid on nothing, so it goes back to the user's own.
+    if (recorded.sessionDefaultModelPresent) existingSessionDefaultSettings['model'] = recorded.sessionDefaultModelValue;
+    else delete existingSessionDefaultSettings['model'];
+    if (!recorded.sessionDefaultSettingsPresent && Object.keys(existingSessionDefaultSettings).length === 0) {
+      delete config['sessionDefaultSettings'];
+    }
   }
   writeJsonFile(filePath, config);
-  if (narrowStateAfterWrite && state) writeDroidPatchState(filePath, { ...state, managedModelIds });
+  if (recorded.managedModelIds.join('\n') !== managedModelIds.join('\n')) {
+    writeDroidPatchState(filePath, { ...recorded, managedModelIds });
+  }
 }
 
 function removeDroidConfigPatch(patch: DroidConfigPatchDef, wslTargetsFile?: string): boolean {
@@ -1264,6 +1299,9 @@ function applyPiConfigPatch(patch: PiConfigPatchDef, t: ResolvedTarget, wslTarge
 function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch: PiConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
   backupConfigFile(modelsPath);
   const config = readConfigPatchFile(modelsPath);
+  backupConfigFile(settingsPath);
+  const settings = readConfigPatchFile(settingsPath);
+  const pick = pickModel(t, settings['defaultProvider'] === patch.providerKey ? settings['defaultModel'] : undefined);
   const providers = (config['providers'] && typeof config['providers'] === 'object' && !Array.isArray(config['providers']))
     ? config['providers'] as JsonObject
     : {};
@@ -1272,8 +1310,8 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
     api: patch.api,
     apiKey: t.apiKey,
     ...(patch.originator ? { headers: { originator: patch.originator } } : {}),
-    models: t.models.length > 0
-      ? t.models.map((model) => ({
+    models: t.modelsLoaded
+      ? pick.models.map((model) => ({
         id: model.id,
         name: modelLabel(model),
         ...(model.reasoning ? { reasoning: true } : {}),
@@ -1285,9 +1323,7 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
   config['providers'] = providers;
   writeJsonFile(modelsPath, config);
 
-  backupConfigFile(settingsPath);
-  const settings = readConfigPatchFile(settingsPath);
-  const selected = pickModel(t, settings['defaultProvider'] === patch.providerKey ? settings['defaultModel'] : undefined);
+  const selected = pick.selected;
   if (selected) {
     if (settings['defaultProvider'] !== patch.providerKey && !isAntseedPiProvider(settings['defaultProvider'])) {
       // Nothing selected means the other Antseed app just disconnected and left
@@ -1379,13 +1415,17 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providers = asObject(config['providers']);
+  const models = asObject(config['models']);
+  const sizes = ['large', 'small'] as const;
+  const ownedSizes = sizes.map((size) => asObject(models[size])['provider'] === patch.providerKey);
+  const pick = pickModels(t, sizes.map((size, index) => (ownedSizes[index] ? asObject(models[size])['model'] : undefined)));
   providers[patch.providerKey] = {
     type: 'openai-compat',
     name: patch.providerName,
     base_url: baseURL,
     api_key: t.apiKey,
-    models: t.models.length > 0
-      ? t.models.map((model) => ({
+    models: t.modelsLoaded
+      ? pick.models.map((model) => ({
         id: model.id,
         name: modelLabel(model),
         context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
@@ -1397,16 +1437,13 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
       : savedList(asObject(providers[patch.providerKey])['models']),
   };
   config['providers'] = providers;
-  const models = asObject(config['models']);
   const replaced: JsonObject = {};
-  for (const size of ['large', 'small']) {
-    const current = asObject(models[size]);
-    const ours = current['provider'] === patch.providerKey;
-    const selected = pickModel(t, ours ? current['model'] : undefined);
-    if (!selected) continue;
-    if (!ours && models[size] !== undefined) replaced[size] = models[size];
+  sizes.forEach((size, index) => {
+    const selected = pick.selected[index];
+    if (!selected) return;
+    if (!ownedSizes[index] && models[size] !== undefined) replaced[size] = models[size];
     models[size] = { provider: patch.providerKey, model: selected };
-  }
+  });
   if (Object.keys(replaced).length > 0) rememberSelection(filePath, { ...readSelection(filePath), ...replaced });
   if (Object.keys(models).length > 0) config['models'] = models;
   writeJsonFile(filePath, config);
@@ -1500,9 +1537,16 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
   const document = readHermesConfigDocument(filePath);
   backupConfigFile(filePath);
   const saved = asObject(asObject(asObject(document.toJS())['providers'])[patch.providerKey]);
-  const providerDefault = t.defaultModel ?? t.models[0]?.id ?? saved['default_model'];
-  const models = t.models.length > 0
-    ? Object.fromEntries(t.models.map((model) => [model.id, {
+  const pick = pickModel(
+    t,
+    document.getIn(['model', 'provider']) === patch.providerKey ? document.getIn(['model', 'default']) : undefined,
+  );
+  const selected = pick.selected;
+  // The provider's default is the model Hermes is on; a list that could not
+  // be read keeps the one written with it.
+  const providerDefault = selected ?? (t.modelsLoaded ? undefined : saved['default_model']);
+  const models = t.modelsLoaded
+    ? Object.fromEntries(pick.models.map((model) => [model.id, {
       context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
     }]))
     : asObject(saved['models']);
@@ -1515,18 +1559,16 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
       originator: 'hermes',
     },
     // A provider with an api_key otherwise replaces this list with the
-    // gateway's whole /v1/models, image, video and speech models included.
-    // With no list at all discovery stays on so Hermes still finds models; a
-    // kept earlier list (models didn't load this time) still turns it off.
-    // Legacy entries list only the alias, so they keep it on too.
-    ...(!t.legacy && Object.keys(models).length > 0 ? { discover_models: false } : {}),
+    // gateway's whole /v1/models, image, video and speech models included,
+    // so a gateway serving no text models gets an empty list with discovery
+    // off. With no list read and none kept, discovery stays on so Hermes
+    // still finds models; a kept earlier list (models didn't load this time)
+    // still turns it off. Legacy entries list only the alias, so they keep it
+    // on too.
+    ...(!t.legacy && (t.modelsLoaded || Object.keys(models).length > 0) ? { discover_models: false } : {}),
     ...(providerDefault ? { default_model: providerDefault } : {}),
     models,
   });
-  const selected = pickModel(
-    t,
-    document.getIn(['model', 'provider']) === patch.providerKey ? document.getIn(['model', 'default']) : undefined,
-  );
   if (selected) {
     const currentModel = document.toJS()?.['model'] as unknown;
     if (typeof currentModel === 'string') {
@@ -1603,19 +1645,20 @@ function applyZedConfigPatch(patch: ZedConfigPatchDef, t: ResolvedTarget): void 
   const config = readConfigPatchFile(filePath);
   const languageModels = asObject(config['language_models']);
   const compatible = asObject(languageModels['openai_compatible']);
+  const agent = asObject(config['agent']);
+  const current = asObject(agent['default_model']);
+  const pick = pickModel(t, current['provider'] === patch.providerName ? current['model'] : undefined);
   compatible[patch.providerName] = {
     api_url: t.baseUrl(patch.baseURL),
-    available_models: t.models.length > 0
-      ? t.models.map((model) => (
+    available_models: t.modelsLoaded
+      ? pick.models.map((model) => (
         { name: model.id, display_name: modelLabel(model), max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW }
       ))
       : savedList(asObject(compatible[patch.providerName])['available_models']),
   };
   languageModels['openai_compatible'] = compatible;
   config['language_models'] = languageModels;
-  const agent = asObject(config['agent']);
-  const current = asObject(agent['default_model']);
-  const selected = pickModel(t, current['provider'] === patch.providerName ? current['model'] : undefined);
+  const selected = pick.selected;
   if (selected) {
     if (current['provider'] !== patch.providerName) rememberSelection(filePath, pickKeys(agent, ['default_model']));
     agent['default_model'] = {
@@ -1822,8 +1865,8 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   env['ANTHROPIC_API_KEY'] = '';
   env['ANTHROPIC_CUSTOM_HEADERS'] = CLAUDE_CODE_SOURCE_HEADER;
   config['env'] = env;
-  const selected = pickModel(t, config['model']);
-  if (selected) config['model'] = selected;
+  const pick = pickModel(t, config['model']);
+  if (pick.selected) config['model'] = pick.selected;
   if (t.legacy) {
     writeJsonFile(filePath, config);
     return;
@@ -1833,7 +1876,7 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
     baseUrl: baseURL,
     authTokenSha256: sha256Hex(authToken),
     // A refresh with no models left the selection alone, so it stays ours.
-    models: t.modelIds.length > 0 ? [...t.modelIds] : [...(state.written?.models ?? [])],
+    models: pick.modelIds.length > 0 ? [...pick.modelIds] : [...(state.written?.models ?? [])],
   };
   // Recorded before the config changes, old and new together, so disconnect
   // recognizes whichever is on disk if the write (or this record) fails.
@@ -1919,17 +1962,21 @@ function removeClaudeCodeSettingsFromFile(
 
 const T3CODE_SOURCE_HEADER = 'x-antseed-system-proxy-source: t3code';
 
-/** Our provider instance: its base URL is loopback (legacy proxy) or it
-    carries the Antseed source header every patch writes (gateway, possibly
-    remote). */
+/**
+ * Our provider instance: it carries the Antseed source header every patch
+ * writes (gateway, possibly remote, and legacy proxy). Patches from before
+ * the header pointed at the loopback proxy with its dummy key, and nothing
+ * else; a loopback URL alone is the user's own local server.
+ */
 function ownsT3CodeInstance(instance: JsonObject): boolean {
-  const environment = instance['environment'];
-  return Array.isArray(environment) && environment.some((variable) => {
+  const environment = Array.isArray(instance['environment']) ? instance['environment'] : [];
+  const values = new Map<unknown, unknown>(environment.map((variable) => {
     const entry = asObject(variable);
-    const value = typeof entry['value'] === 'string' ? entry['value'] : undefined;
-    return (entry['name'] === 'ANTHROPIC_BASE_URL' && isLoopbackHost(value))
-      || (entry['name'] === 'ANTHROPIC_CUSTOM_HEADERS' && value === T3CODE_SOURCE_HEADER);
-  });
+    return [entry['name'], entry['value']];
+  }));
+  const baseUrl = values.get('ANTHROPIC_BASE_URL');
+  return values.get('ANTHROPIC_CUSTOM_HEADERS') === T3CODE_SOURCE_HEADER
+    || (isLoopbackHost(typeof baseUrl === 'string' ? baseUrl : undefined) && values.get('ANTHROPIC_API_KEY') === 'antseed');
 }
 
 /**
@@ -1984,7 +2031,7 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, t: ResolvedTarget):
     writeT3CodeState(filePath, { hadInstance: false });
   }
   // With no models yet, keep the list we wrote last; a user's own list isn't ours.
-  const customModels = t.modelIds.length > 0
+  const customModels = t.modelsLoaded
     ? [...t.modelIds]
     : ownsExisting ? savedList(asObject(asObject(existing)['config'])['customModels']) : [];
   // Gateways take the key as a bearer token; the empty ANTHROPIC_API_KEY
@@ -2021,21 +2068,21 @@ function removeT3CodeConfigPatch(patch: T3CodeConfigPatchDef): boolean {
   const filePath = expandTilde(patch.configPath);
   const state = readT3CodeState(filePath);
   const config = tryReadConfigPatchFile(filePath);
-  const providerInstances = config?.['providerInstances'];
-  const instance = providerInstances && typeof providerInstances === 'object' && !Array.isArray(providerInstances)
-    ? (providerInstances as JsonObject)[patch.providerKey]
-    : undefined;
+  const providerInstances = asObject(config?.['providerInstances']);
+  const instance = providerInstances[patch.providerKey];
+  // The user took ours out while connected: their own entry still comes back.
+  const removedByUser = instance === undefined && state?.hadInstance === true;
   // An entry the user put there while connected stays.
-  if (!config || !instance || typeof instance !== 'object' || Array.isArray(instance)
-    || !ownsT3CodeInstance(instance as JsonObject)) {
+  if (!config || (!removedByUser && !ownsT3CodeInstance(asObject(instance)))) {
     deleteT3CodeState(filePath);
     return false;
   }
   if (state?.hadInstance) {
-    (providerInstances as JsonObject)[patch.providerKey] = state.instance;
+    providerInstances[patch.providerKey] = state.instance;
+    config['providerInstances'] = providerInstances;
   } else {
-    delete (providerInstances as JsonObject)[patch.providerKey];
-    if (Object.keys(providerInstances as JsonObject).length === 0) delete config['providerInstances'];
+    delete providerInstances[patch.providerKey];
+    if (Object.keys(providerInstances).length === 0) delete config['providerInstances'];
   }
   backupConfigFile(filePath);
   writeJsonFile(filePath, config);

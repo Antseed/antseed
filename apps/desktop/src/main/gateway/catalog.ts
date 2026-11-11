@@ -8,7 +8,7 @@ import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
 import { entryReasons, trustedAppEntries, type GatewayModelEntry } from './models.js';
 import { finiteNumber, record } from './response-fields.js';
-import { normalizeSellerId } from '../../shared/pinned-model.js';
+import { findListedModel, normalizeSellerId } from '../../shared/pinned-model.js';
 
 export type { ChatModel };
 
@@ -23,6 +23,11 @@ function records(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
     ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
     : [];
+}
+
+/** The entry for a model id or a pinned `peer@model`: by its id, else the same model by the canonical rule (`findListedModel`). */
+export function findGatewayEntry(entries: readonly GatewayModelEntry[], modelId: string | null | undefined): GatewayModelEntry | null {
+  return findListedModel(entries, modelId);
 }
 
 function normalizeProtocol(value: string): string {

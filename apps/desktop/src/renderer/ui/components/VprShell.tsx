@@ -180,17 +180,12 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           </button>
         </div>
         {homeNavEntry ? (
-          <button
-            type="button"
-            className={`${styles.navButton}${activeView === 'home' ? ` ${styles.navButtonActive}` : ''}`}
-            aria-current={activeView === 'home' ? 'page' : undefined}
-            aria-label={collapsed ? homeNavEntry.nav.label : undefined}
-            title={collapsed ? homeNavEntry.nav.label : undefined}
-            onClick={goHome}
-          >
-            <HugeiconsIcon icon={homeNavEntry.nav.icon} size={18} strokeWidth={1.7} />
-            <span className={styles.navLabel}>{homeNavEntry.nav.label}</span>
-          </button>
+          <SidebarNavItem
+            entry={homeNavEntry}
+            active={activeView === 'home'}
+            collapsed={collapsed}
+            onSelectView={onSelectView}
+          />
         ) : null}
         <div className={styles.navRow}>
           <button
@@ -216,29 +211,22 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           </button>
         </div>
         <div className={styles.navGroup}>
-          {otherNavEntries.map(({ view, nav }) => {
-            const active = activeView === view;
-            return (
-              <button
-                key={view}
-                type="button"
-                className={`${styles.navButton}${active ? ` ${styles.navButtonActive}` : ''}`}
-                aria-current={active ? 'page' : undefined}
-                aria-label={collapsed ? nav.label : undefined}
-                title={collapsed ? nav.label : undefined}
-                onClick={() => onSelectView(view)}
-              >
-                <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
-                <span className={styles.navLabel}>{nav.label}</span>
-                {/* One-shot onboarding nudge: the user hasn't opened Apps
-                    yet — opening it plays the connect-your-tools walkthrough
-                    and clears the dot for good. */}
-                {view === 'tools' && activeView !== 'tools' && shouldNotifyAppsOnboarding() && (
-                  <span className={styles.navDot} aria-label="Connect your apps" />
-                )}
-              </button>
-            );
-          })}
+          {otherNavEntries.map((entry) => (
+            <SidebarNavItem
+              key={entry.view}
+              entry={entry}
+              active={activeView === entry.view}
+              collapsed={collapsed}
+              onSelectView={onSelectView}
+            >
+              {/* One-shot onboarding nudge: the user hasn't opened Apps
+                  yet — opening it plays the connect-your-tools walkthrough
+                  and clears the dot for good. */}
+              {entry.view === 'tools' && activeView !== 'tools' && shouldNotifyAppsOnboarding() && (
+                <span className={styles.navDot} aria-label="Connect your apps" />
+              )}
+            </SidebarNavItem>
+          ))}
         </div>
         {collapsed ? (
           <div className={styles.railSpacer} />
@@ -292,12 +280,17 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   );
 }
 
-/** A nav item pinned to the rail's bottom. It opens its view in the app. */
-export function SidebarNavItem({ entry, active, collapsed, onSelectView }: {
+/**
+ * A standard sidebar nav item (Home, the main entries, Gateway and Settings).
+ * It opens its view in the app; `children` render after the label, for a
+ * status dot. Chat has its own row with the new-chat action.
+ */
+export function SidebarNavItem({ entry, active, collapsed, onSelectView, children }: {
   entry: NavView;
   active: boolean;
   collapsed: boolean;
   onSelectView: (view: ViewName) => void;
+  children?: React.ReactNode;
 }) {
   const { view, nav } = entry;
   return (
@@ -311,6 +304,7 @@ export function SidebarNavItem({ entry, active, collapsed, onSelectView }: {
     >
       <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
       <span className={styles.navLabel}>{nav.label}</span>
+      {children}
     </button>
   );
 }

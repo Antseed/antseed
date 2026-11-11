@@ -1,4 +1,4 @@
-import { parsePinnedModel } from '@antseed/node/model-identity';
+import { parsePinnedModel, sameCanonicalModel } from '@antseed/node/model-identity';
 
 /**
  * A chat can pin one seller for its model with `<peerId>@<model>`, the form
@@ -8,6 +8,25 @@ import { parsePinnedModel } from '@antseed/node/model-identity';
 export function splitPinnedModel(value: string | null | undefined): { modelId: string; peerId: string | null } {
   const text = value ?? '';
   return parsePinnedModel(text) ?? { modelId: text, peerId: null };
+}
+
+/**
+ * The listed model for a model id or a pinned `peer@model`: the one with that
+ * id, else (ignoring case) the one with that id, else the one that is the same
+ * model by the buyer's canonical rule (`sameCanonicalModel`). The buyer's
+ * listing can name a model by any of its equivalent ids (`glm-5.3-flash` one
+ * read, `z-ai/glm-5.3-flash` the next), so a saved id still finds its model
+ * after the listed id changes.
+ */
+export function findListedModel<T extends { id: string }>(items: readonly T[], modelId: string | null | undefined): T | null {
+  const { modelId: listedId } = splitPinnedModel(modelId);
+  if (!listedId) return null;
+  const exact = items.find((item) => item.id === listedId);
+  if (exact) return exact;
+  const wanted = listedId.toLowerCase();
+  return items.find((item) => item.id.toLowerCase() === wanted)
+    ?? items.find((item) => sameCanonicalModel(listedId, item.id))
+    ?? null;
 }
 
 /** A seller id as pins carry it: lowercase, without `0x`. Compare ids in this form. */

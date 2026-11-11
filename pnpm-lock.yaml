@@ -818,6 +818,9 @@ importers:
 
   packages/connected-apps:
     dependencies:
+      '@antseed/node':
+        specifier: workspace:*
+        version: link:../node
       '@antseed/protocol':
         specifier: workspace:*
         version: link:../protocol

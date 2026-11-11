@@ -5,7 +5,7 @@ import { ArrowLeft01Icon, ArrowUpRight01Icon, Building03Icon, RoboticIcon, UserM
 import { Button, CodeBlock } from '@antseed/ui';
 import type { ChatModel, GatewayStatus } from '../../../types/bridge';
 import type { ViewName } from '../../types';
-import { splitPinnedModel } from '../../../../shared/pinned-model.js';
+import { findChatModel } from '../../../modules/chat/models';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { gatewayResource, privacyResource } from '../../../modules/app/vpr-resources';
@@ -38,10 +38,9 @@ function hostOf(origin: string | null): string | null {
 /** A chat model from the gateway's list for the example: the one chat uses, else a free one, else any. */
 export function exampleModelId(models: readonly ChatModel[], selectedModelId: string | null): string {
   const chatModels = models.filter((model) => model.protocol !== null);
-  const selected = splitPinnedModel(selectedModelId).modelId;
   // A model only low-trust sellers serve is never the example, unless it is the chat's own pick.
   const trusted = chatModels.filter((model) => !model.lowTrust);
-  const pick = chatModels.find((model) => model.id === selected)
+  const pick = findChatModel(chatModels, selectedModelId)
     ?? trusted.find((model) => model.free)
     ?? trusted[0]
     ?? chatModels[0];

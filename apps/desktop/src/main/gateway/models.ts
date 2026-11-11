@@ -22,11 +22,14 @@ export type GatewayModel = {
 
 const CACHE_TTL_MS = 60_000;
 let cache: { key: string; at: number; entries: GatewayModelEntry[] } | null = null;
+/** Bumped by `clearGatewayModelCache`, so a read that began before a clear can't refill the cache. */
+let cacheGeneration = 0;
 
 /** Raw `/v1/models` entries, cached for a minute per endpoint+key. */
 export async function fetchGatewayModelEntries(endpoint: GatewayEndpoint, options: { force?: boolean } = {}): Promise<GatewayModelEntry[]> {
   const cacheKey = `${endpoint.origin}\u0000${endpoint.apiKey}`;
   if (!options.force && cache && cache.key === cacheKey && Date.now() - cache.at < CACHE_TTL_MS) return cache.entries;
+  const generation = cacheGeneration;
   const response = await fetch(`${endpoint.origin}/v1/models`, {
     headers: { authorization: `Bearer ${endpoint.apiKey}`, accept: 'application/json' },
     signal: AbortSignal.timeout(15_000),
@@ -42,7 +45,9 @@ export async function fetchGatewayModelEntries(endpoint: GatewayEndpoint, option
     ))
     // `_`-prefixed ids are services a seller marks as off (`_disabled_<model>`); never offer them.
     .filter((entry) => !entry.id.startsWith('_'));
-  cache = { key: cacheKey, at: Date.now(), entries };
+  // Cleared meanwhile (a privacy switch changed the key's policy): this list
+  // may be the old policy's, so the caller gets it but the cache doesn't.
+  if (generation === cacheGeneration) cache = { key: cacheKey, at: Date.now(), entries };
   return entries;
 }
 
@@ -105,4 +110,5 @@ export function toGatewayModel(entry: GatewayModelEntry): GatewayModel {
 }
 export function clearGatewayModelCache(): void {
   cache = null;
+  cacheGeneration += 1;
 }

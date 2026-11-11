@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import {
   CLAUDE_GATEWAY_DEFAULT_PORT,
   applyConfigPatch,
   claudeDesktopPatchTargets,
+  isConfigPatchConnected,
   parseJsoncObject,
   readConfigPatch,
   removeConfigPatch,
@@ -332,6 +333,29 @@ test('removeConfigPatch (droid) drops leftover gateway entries and their selecti
     writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] });
     const patched = JSON.parse(await readFile(configPath, 'utf8'));
     assert.deepEqual(patched.customModels.map((m: { model: string }) => m.model), ['kimi-k2']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = await readFile(configPath, 'utf8');
+    assert.deepEqual(JSON.parse(restored), original);
+    assert.equal(restored.includes(GATEWAY_KEY), false);
+  });
+});
+
+test('writeConfigPatch (droid) taking over leftovers keeps them recognizable when the config write fails', { skip: process.platform === 'win32' }, async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex' };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    // The restore state is written, then the config can't be: the leftovers
+    // (and their selection, and the gateway key) stay on disk.
+    await chmod(configPath, 0o444);
+    assert.throws(() => writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] }), /EACCES|permission/i);
+    await chmod(configPath, 0o600);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), true);
 
     assert.equal(removeConfigPatch(patch), true);
     const restored = await readFile(configPath, 'utf8');
@@ -984,6 +1008,75 @@ test('T3 Code disconnect from a remote gateway restores the user entry and keeps
 
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
     assert.equal(existsSync(statePath), false);
+  });
+});
+
+test('T3 Code treats a user entry pointing at their own local server as theirs', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const local = {
+      driver: 'claudeAgent',
+      displayName: 'My local proxy',
+      environment: [
+        { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:4000', sensitive: false },
+        { name: 'ANTHROPIC_API_KEY', value: 'my-key', sensitive: true },
+      ],
+      enabled: true,
+      config: { customModels: ['my-model'] },
+    };
+    const original = { providerInstances: { antseed: local } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    assert.equal(isConfigPatchConnected(patch), false);
+    assert.equal(removeConfigPatch(patch), false);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code still removes an entry from before the source header', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const old = {
+      driver: 'claudeAgent',
+      displayName: 'Antseed',
+      environment: [
+        { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:8377', sensitive: false },
+        { name: 'ANTHROPIC_API_KEY', value: 'antseed', sensitive: false },
+      ],
+      enabled: true,
+      config: { customModels: ['antseed'] },
+    };
+    await writeFile(configPath, JSON.stringify({ theme: 'dark', providerInstances: { antseed: old } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    assert.equal(isConfigPatchConnected(patch), true);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { theme: 'dark' });
+  });
+});
+
+test('T3 Code disconnect gives the user their own entry back after they took ours out', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    delete config.providerInstances;
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+    // A refresh meanwhile keeps the saved original too.
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const again = JSON.parse(await readFile(configPath, 'utf8'));
+    delete again.providerInstances.antseed;
+    await writeFile(configPath, JSON.stringify(again), 'utf8');
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
   });
 });
 
