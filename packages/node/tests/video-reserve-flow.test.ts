@@ -945,6 +945,10 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.chain.get(videoChannel!)).toMatchObject({ status: 1 });
     // The seller still knows the channel, so it is not orphaned on-chain.
     expect(h.seller.isOneOffChannel(videoChannel!)).toBe(true);
+    // It cost the seller gas and is still open, so it keeps counting against the buyer.
+    const offer = { openingReserveAmount: '800000', requiredCumulativeAmount: '0', requestCost: '800000' };
+    for (let index = 1; index < 16; index += 1) expect(h.seller.registerOneOffPlan(h.buyerIdentity.peerId, `offer-${index}`, offer)).toBeNull();
+    expect(h.seller.registerOneOffPlan(h.buyerIdentity.peerId, 'one-too-many', offer)).toBe(5);
 
     h.close.mockImplementation(landOnChain);
     await h.seller.checkTimeouts();
@@ -1154,10 +1158,24 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
 
     expect(statusesOf(answers)).toEqual(repeat(200, UNPAID_LIMIT));
     expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
-    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    for (let job = 1; job <= UNPAID_LIMIT; job += 1) expect((await h.send(h.retrieveRequest(`retrieve-${job}`, `job-${job}`))).statusCode).toBe(200);
     await h.settle();
-    expect(h.close).toHaveBeenCalledOnce();
-    expect(h.close.mock.calls[0]![2]).toBe(800_000n);
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(800_000n, UNPAID_LIMIT));
+  }, 30_000);
+
+  it('asks the rest of a batch above the limit to retry shortly, and serves it then', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
+    await h.settle();
+
+    const heldBack = answers.flatMap((answer, index) => (answer.statusCode === 429 ? [{ answer, index }] : []));
+    expect(heldBack).toHaveLength(4);
+    for (const { answer } of heldBack) expect(answer.headers['retry-after']).toBe('5');
+
+    const retried = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
+    expect(statusesOf(retried)).toEqual(repeat(200, 4));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
   }, 30_000);
 
   it('starts counting again once the buyer pays for a video, which is charged as usual', async () => {

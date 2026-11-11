@@ -101,6 +101,23 @@ export const ONE_OFF_CHANNEL_TTL_MS = 24 * 60 * 60_000;
 export const RESERVE_VISIBILITY_GRACE_MS = 5 * 60_000;
 /** A one-off channel whose request never started is closed after this long. */
 export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
+/**
+ * Most one-off channels a buyer may have earning the seller nothing: ended
+ * unpaid since it last paid for a video, or still without an accepted create.
+ * Each costs the seller a reserve and a close, so at this many the buyer waits
+ * for another. Plans it has not answered count too, so parallel creates cannot
+ * overshoot. Above the video plugins' default concurrency of 10.
+ */
+const ONE_OFF_UNPAID_LIMIT = 16;
+/** Earnings below this (USDC base units, $0.01: a fixed floor above the usual gas of a reserve and a close on Base) leave a channel unpaid. */
+const ONE_OFF_MIN_EARNED_USDC = 10_000;
+/** Wait for another channel once a buyer is at the limit. Doubles with each further unpaid channel. */
+const ONE_OFF_BACKOFF_BASE_MS = 60_000;
+const ONE_OFF_BACKOFF_MAX_MS = 60 * 60_000;
+/** Channels that ended longer ago than this stop counting against the buyer. */
+const ONE_OFF_UNPAID_WINDOW_MS = 24 * 60 * 60_000;
+/** Retry-after while a buyer is held back only by creates still being decided, which end in seconds. */
+const ONE_OFF_UNDECIDED_RETRY_SECONDS = 5;
 /** How often channels whose close was given up on are retried. */
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 /** Most timed-out channels retried in one pass. */
@@ -254,6 +271,9 @@ export class SellerPaymentManager {
    */
   private readonly _oneOffChannelIds = new Set<string>();
 
+  /** One-off channel -> buyer, from the reserve until its create is accepted or the channel ends. */
+  private readonly _unacceptedOneOffs = new Map<string, string>();
+
   private readonly _minSettleDelta: bigint;
 
   private readonly _serveWhileClosePending: boolean;
@@ -320,6 +340,8 @@ export class SellerPaymentManager {
 
     for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
       this._oneOffChannelIds.add(channel.sessionId);
+      // A channel whose create has started may be a running job, which must not count: nothing here tells them apart.
+      if (channel.requestCount === 0) this._unacceptedOneOffs.set(channel.sessionId, channel.peerId);
       this._acceptedCumulative.set(channel.sessionId, BigInt(channel.authMax || '0'));
       this._spent.set(channel.sessionId, BigInt(channel.tokensDelivered || '0'));
       this._reserveMax.set(channel.sessionId, BigInt(channel.previousConsumption || '0'));
@@ -423,6 +445,7 @@ export class SellerPaymentManager {
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
+    this._unacceptedOneOffs.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
@@ -973,18 +996,55 @@ export class SellerPaymentManager {
    * Offer a one-off channel for a single request (a video create). The plan is
    * what the buyer must sign; the opening SpendingAuth is only accepted when it
    * matches a plan this seller offered for the same buyer and requestId.
+   * Returns null once offered, or, offering nothing, the seconds the buyer must
+   * wait (see oneOffRetryAfterSeconds).
    */
-  registerOneOffPlan(buyerPeerId: string, requestId: string, plan: OneOffChannelPlan): void {
-    const now = Date.now();
-    for (const [key, pending] of this._pendingOneOffPlans) {
-      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
-    }
+  registerOneOffPlan(buyerPeerId: string, requestId: string, plan: OneOffChannelPlan): number | null {
+    const retryAfterSeconds = this.oneOffRetryAfterSeconds(buyerPeerId, requestId);
+    if (retryAfterSeconds !== null) return retryAfterSeconds;
     this._pendingOneOffPlans.set(oneOffPlanKey(buyerPeerId, requestId), {
       openingReserveAmount: BigInt(plan.openingReserveAmount),
       requiredCumulativeAmount: BigInt(plan.requiredCumulativeAmount),
       requestCost: BigInt(plan.requestCost),
-      expiresAt: now + ONE_OFF_PLAN_TTL_MS,
+      expiresAt: Date.now() + ONE_OFF_PLAN_TTL_MS,
     });
+    return null;
+  }
+
+  /**
+   * Seconds this buyer must wait for another one-off channel, or null when it
+   * may have one now. The seller pays for every channel before its provider
+   * sees the create, so a buyer whose creates keep ending without a job would
+   * otherwise spend the seller's gas for nothing. Offering a request its own
+   * plan again adds nothing, so `requestId` is left out of the count.
+   */
+  oneOffRetryAfterSeconds(buyerPeerId: string, requestId: string): number | null {
+    const now = Date.now();
+    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
+    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
+    let undecided = 0;
+    for (const [key, pending] of this._pendingOneOffPlans) {
+      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
+      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
+    }
+    for (const buyer of this._unacceptedOneOffs.values()) {
+      if (buyer === buyerPeerId) undecided += 1;
+    }
+    const { count, lastEndedAt } = this._channelStore.getUnpaidOneOffChannels(
+      buyerPeerId, CHANNEL_ROLE.SELLER, now - ONE_OFF_UNPAID_WINDOW_MS, ONE_OFF_MIN_EARNED_USDC,
+    );
+    if (count + undecided < ONE_OFF_UNPAID_LIMIT) return null;
+    // At the limit a buyer gets one channel at a time, each after a longer wait.
+    const waitMs = count < ONE_OFF_UNPAID_LIMIT
+      ? 0
+      : lastEndedAt + Math.min(ONE_OFF_BACKOFF_BASE_MS * 2 ** (count + undecided - ONE_OFF_UNPAID_LIMIT), ONE_OFF_BACKOFF_MAX_MS) - now;
+    if (waitMs > 0) return Math.ceil(waitMs / 1_000);
+    return undecided > 0 ? ONE_OFF_UNDECIDED_RETRY_SECONDS : null;
+  }
+
+  /** This channel's create was accepted: the channel is in use, so it stops counting against the buyer. */
+  markOneOffCreateAccepted(channelId: string): void {
+    this._unacceptedOneOffs.delete(channelId);
   }
 
   /** The active one-off channel opened for this buyer's request, or null. */
@@ -1069,6 +1129,8 @@ export class SellerPaymentManager {
       return await this._openOneOffChannel(buyerPeerId, payload, paymentMux, channelsDomain);
     } catch (err) {
       debugWarn(`[SellerPayment] Failed to process one-off SpendingAuth: ${this._formatError(err)}`);
+      // A channel that never opened costs nothing. One that did stays counted until it ends.
+      if (!this._oneOffChannelIds.has(payload.channelId)) this._unacceptedOneOffs.delete(payload.channelId);
       return 'rejected';
     }
   }
@@ -1145,6 +1207,8 @@ export class SellerPaymentManager {
     }
     this._pendingOneOffPlans.delete(planKey);
 
+    // Counted before the reserve goes out, so a parallel create sees it.
+    this._unacceptedOneOffs.set(channelId, buyerPeerId);
     await this._reserveWithBackpressureRetry(channelId, () => this._channelsClient.reserve(
       this._signer,
       buyerEvmAddr,
@@ -1305,6 +1369,8 @@ export class SellerPaymentManager {
         const state = classifyOnChainChannel(await this._channelsClient.getSession(channel.sessionId));
         if (!state.exists && this._mayNotBeVisibleYet(channel)) continue;
         if (!state.exists || (state.status !== 'active' && state.status !== 'unknown')) {
+          // What the chain settled is what the channel earned, even if its close was never recorded here.
+          if (state.exists) this._channelStore.updateChannelStatus(channel.sessionId, CHANNEL_STATUS.SETTLED, state.channel.settled.toString());
           this._evictStaleChannel(channel.sessionId, channel.peerId, `one-off on-chain status=${state.exists ? state.status : 'missing'}`);
           continue;
         }
@@ -2011,6 +2077,7 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
+    this._unacceptedOneOffs.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
   }
 
