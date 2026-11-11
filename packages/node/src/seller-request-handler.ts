@@ -597,8 +597,10 @@ export class SellerRequestHandler {
       if (videoRoute?.action === 'create' && !isFreeService && spm && this._deps.channelsClient) {
         const oneOff = spm.getOneOffChannelForRequest(buyerPeerId, request.requestId);
         if (!oneOff) {
+          // Before the chain reads, and again with the plan: parallel creates can all pass the first check.
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.oneOffRetryAfterSeconds(buyerPeerId, request.requestId))) return;
           const plan = await this._buildOneOffPlan(estimatedRequestCost);
-          spm.registerOneOffPlan(buyerPeerId, request.requestId, plan);
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.registerOneOffPlan(buyerPeerId, request.requestId, plan))) return;
           debugLog(`[SellerHandler] Video create ${request.requestId} needs a one-off channel (price=${estimatedRequestCost})`);
           const requirements = spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing);
           mux.sendProxyResponse({
@@ -1367,7 +1369,8 @@ export class SellerRequestHandler {
       : undefined;
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
-      if (!charge) this._closeOneOffBestEffort(channelId, 'free video');
+      if (charge) this._deps.sellerPaymentManager?.markOneOffCreateAccepted(charge.channelId);
+      else this._closeOneOffBestEffort(channelId, 'free video');
       return response;
     } catch (err) {
       debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
@@ -1404,6 +1407,14 @@ export class SellerRequestHandler {
     void spm.closeOneOffChannel(channelId, reason).catch((err) => {
       debugWarn(`[SellerHandler] Failed to close one-off channel ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /** Answers a video create whose buyer must wait for another one-off channel. Returns whether it did. */
+  private _sendOneOffBackoff(mux: ProxyMux, requestId: string, buyerPeerId: string, retryAfterSeconds: number | null): boolean {
+    if (retryAfterSeconds === null) return false;
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video channel, retry in ${retryAfterSeconds}s`);
+    this._sendJsonError(mux, requestId, 429, 'one_off_channel_backoff', `This seller is not opening another video payment channel for this buyer yet; retry in ${retryAfterSeconds} seconds`, { 'retry-after': String(retryAfterSeconds) });
+    return true;
   }
 
   private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
