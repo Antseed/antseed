@@ -4491,6 +4491,87 @@ test('non-stream transformed responses requests force upstream stream without st
   assert.equal(body.content?.[0]?.text, 'hi')
 })
 
+/** Forwards one request to a seller of `service` that speaks only `protocol`, and returns the body the seller got. */
+async function forwardedBodyFor(
+  protocol: 'anthropic-messages' | 'openai-chat-completions',
+  service: string,
+  upstreamBody: Record<string, unknown>,
+  clientRequest: { path: string; body: Record<string, unknown> },
+): Promise<Record<string, unknown>> {
+  const peer = makePeer('a', ['seller'])
+  peer.providerServiceApiProtocols = { seller: { services: { [service]: [protocol] } } }
+  const forwarded: Array<Record<string, unknown>> = []
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+    forwarded.push(parseJsonBody(request.body))
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(upstreamBody)),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    ...clientRequest,
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(forwarded.length, 1)
+  return forwarded[0]!
+}
+
+test('a Chat Completions developer message reaches a Messages-only seller as the system prompt', async () => {
+  const forwarded = await forwardedBodyFor('anthropic-messages', 'test-model', {
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'test-model',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  }, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'test-model',
+      messages: [
+        { role: 'developer', content: 'Answer in French.' },
+        { role: 'user', content: 'hi' },
+      ],
+    },
+  })
+
+  assert.equal(forwarded['system'], 'Answer in French.')
+  assert.deepEqual(forwarded['messages'], [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])
+})
+
+test('Responses developer and system input items reach a Chat-only seller as one system message', async () => {
+  const forwarded = await forwardedBodyFor('openai-chat-completions', 'test-model', {
+    id: 'chatcmpl-1',
+    object: 'chat.completion',
+    model: 'test-model',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'hi' } }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }, {
+    path: '/v1/responses',
+    body: {
+      model: 'test-model',
+      instructions: 'Base.',
+      input: [
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Stay in the sandbox.' }] },
+        { role: 'system', content: 'Read only.' },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      ],
+    },
+  })
+
+  assert.deepEqual(forwarded['messages'], [
+    { role: 'system', content: 'Base.\n\nStay in the sandbox.\n\nRead only.' },
+    { role: 'user', content: 'hi' },
+  ])
+})
+
 test('accept-sse transformed responses requests stream adapted client events without body stream flag', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = {
