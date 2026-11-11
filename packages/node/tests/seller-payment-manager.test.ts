@@ -2805,6 +2805,35 @@ describe('SellerPaymentManager', () => {
       expect(mgr.getReserveMax(channelId)).toBe(4_000_000n);
     });
 
+    it('resubmits a stored top-up on the next periodic check when the startup read failed', async () => {
+      const channelId = makeChannelId(36);
+      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+        authMax: '1900000', tokensDelivered: '2100000', previousConsumption: '2000000',
+        reserveMaxAmount: '4000000', latestReserveAuthSig: '0xreserve', latestReserveDeadline: deadline,
+      });
+
+      const mgr = makeFreshManager();
+      const getSession = vi.spyOn(mgr.channelsClient, 'getSession')
+        .mockRejectedValueOnce(new Error('rpc unavailable'))
+        .mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }));
+      vi.spyOn(mgr.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(6_500n);
+      const topUp = vi.spyOn(mgr.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+      await mgr.validateHydratedChannels();
+      expect(topUp).not.toHaveBeenCalled();
+
+      // The RPC is back: the periodic check restores it, without a restart or the buyer sending it again.
+      await mgr.checkTimeouts();
+      await mgr.waitForTopUp(channelId, 1_000);
+      expect(getSession).toHaveBeenCalledTimes(2);
+      expect(topUp).toHaveBeenCalledTimes(1);
+      expect(mgr.getReserveMax(channelId)).toBe(4_000_000n);
+
+      // Only once: a later check does not submit it again.
+      await mgr.checkTimeouts();
+      expect(topUp).toHaveBeenCalledTimes(1);
+    });
+
     it('does not resubmit a stored top-up the chain already applied', async () => {
       const channelId = makeChannelId(38);
       seedChannel(store, channelId, buyerIdentity, sellerIdentity, {

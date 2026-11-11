@@ -133,6 +133,13 @@ interface PendingOneOffPlan {
 }
 
 /** handleSpendingAuth's internal result: 'awaiting-top-up' asks it to wait for a mining top-up and retry. */
+/** A buyer's signed top-up the seller has verified and will submit with topUp(). */
+interface PendingTopUp {
+  newMaxAmount: bigint
+  deadline: number
+  reserveAuthSig: string
+}
+
 type SpendingAuthOutcome = 'accepted' | 'reserved' | 'rejected' | 'awaiting-top-up';
 type TopUpFailureKind = 'retryable-threshold' | 'retryable-tx-backpressure' | 'insufficient-balance' | 'non-retryable';
 /** `amount`/`txHash` describe the close actually submitted on-chain, which may
@@ -226,7 +233,9 @@ export class SellerPaymentManager {
    *  Latest / largest top-up intent wins: if multiple deferred ReserveAuths arrive
    *  before a retry succeeds, we keep the most recent higher ceiling because it
    *  subsumes the older request. */
-  private readonly _pendingTopUp = new Map<string, { newMaxAmount: bigint; deadline: number; reserveAuthSig: string }>();
+  private readonly _pendingTopUp = new Map<string, PendingTopUp>();
+  /** Channels whose stored top-up could not be checked at startup (RPC failed): the periodic check restores it. */
+  private readonly _topUpRestoreDeferred = new Set<string>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
   /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
@@ -419,6 +428,7 @@ export class SellerPaymentManager {
       } catch (err) {
         debugWarn(`[SellerPayment] Failed to validate channel ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : err}`);
         // Keep channel hydrated on RPC failure — periodic check will retry
+        if (channel.latestReserveAuthSig) this._topUpRestoreDeferred.add(channel.sessionId);
       }
     }
 
@@ -1517,7 +1527,7 @@ export class SellerPaymentManager {
 
   private _storePendingTopUp(
     channelId: string,
-    pending: { newMaxAmount: bigint; deadline: number; reserveAuthSig: string },
+    pending: PendingTopUp,
   ): void {
     const existing = this._pendingTopUp.get(channelId);
     if (!existing || pending.newMaxAmount >= existing.newMaxAmount) {
@@ -1534,7 +1544,7 @@ export class SellerPaymentManager {
    */
   private _persistPendingTopUp(
     channelId: string,
-    pending: { newMaxAmount: bigint; deadline: number; reserveAuthSig: string },
+    pending: PendingTopUp,
   ): void {
     const session = this._channelStore.getChannel(channelId);
     if (!session || BigInt(session.reserveMaxAmount ?? '0') >= pending.newMaxAmount) return;
@@ -1579,6 +1589,8 @@ export class SellerPaymentManager {
       this._clearPersistedTopUp(channelId, newMaxAmount);
       return;
     }
+    // The buyer may have sent it again meanwhile: one queued or being submitted is not queued twice.
+    if (this._topUpsRunning.has(channelId) || (this._pendingTopUp.get(channelId)?.newMaxAmount ?? 0n) >= newMaxAmount) return;
     this._pendingTopUp.set(channelId, { newMaxAmount, deadline, reserveAuthSig: channel.latestReserveAuthSig });
     debugLog(`[SellerPayment] Restored pending topUp: channel=${channelId.slice(0, 18)}... deposit=${onChainDeposit} newMax=${newMaxAmount}`);
     this._scheduleTopUp(channel.peerId, channelId);
@@ -1830,7 +1842,7 @@ export class SellerPaymentManager {
   private async _retryPendingTopUp(
     buyerPeerId: string,
     channelId: string,
-    pendingTopUp: { newMaxAmount: bigint; deadline: number; reserveAuthSig: string },
+    pendingTopUp: PendingTopUp,
     settleAmount: bigint,
     settleMetadata: string,
     settleSig: string,
@@ -2287,6 +2299,9 @@ export class SellerPaymentManager {
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `periodic check: on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           continue;
+        }
+        if (this._topUpRestoreDeferred.delete(channel.sessionId)) {
+          this._restorePendingTopUp(channel, onChainState.channel.deposit);
         }
 
         const buyerDisconnected = !this._activeBuyers.has(channel.peerId);
