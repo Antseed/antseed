@@ -511,13 +511,15 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   // Not a valid port, so the portal could never take a real one or hold this process open.
   process.env['ANTSEED_PAYMENTS_PORT'] = '70000';
 
-  const [{ registerAppIpc }, { registerFreeTierIpc }, { registerPaymentsIpc }, { registerRuntimeIpc }, { ProcessManager }, { stakingSessions }] = await Promise.all([
+  const [{ registerAppIpc }, { registerFreeTierIpc }, { registerPaymentsIpc }, { registerRuntimeIpc }, { ProcessManager }, { stakingSessions }, { startBuyerForChat }, { createStreamingRunner }] = await Promise.all([
     import('./ipc/app.js'),
     import('./ipc/free-tier.js'),
     import('./ipc/payments.js'),
     import('./ipc/runtime.js'),
     import('./runtime/process-manager.js'),
     import('./staking/portal.js'),
+    import('./runtime/runtime-start.js'),
+    import('./chat/streaming-run.js'),
   ]);
 
   const spawned: StartOptions[] = [];
@@ -558,6 +560,33 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   assertClearToUser(buyer?.lastError, UNREADABLE);
   assert.equal(runtimeLog.filter((line) => UNREADABLE.test(line)).length, 1, 'the reason stays in the runtime log');
 
+  // A chat that finds no buyer starts one through the function main.ts hands the
+  // chat engine. Its own process manager, so the status can only come from this start.
+  const chatLog: string[] = [];
+  const chatProcessManager = new RecordingProcessManager((_mode, _stream, line) => { chatLog.push(line); });
+  const startForChat = (): Promise<boolean> => startBuyerForChat({
+    processManager: chatProcessManager,
+    getCombinedProcessState: () => chatProcessManager.getState(),
+    appendLog: (_mode, _stream, line) => { chatLog.push(line); },
+  });
+  const chat = createStreamingRunner({
+    activeRunsByConversation: new Map(),
+    configPath: path.join(home, 'no-config.json'),
+    appendSystemLog: (line: string) => { chatLog.push(line); },
+    isBuyerRuntimeRunning: () => false,
+    isProxyAvailable: async () => false,
+    ensureBuyerRuntimeStarted: startForChat,
+  } as unknown as StreamingRunContext);
+
+  const reply = await chat('conversation', 'hello');
+  assert.equal(reply.ok, false);
+  assertClearToUser(reply.error, UNREADABLE);
+  assert.equal(reply.stopReason?.retryable, false, 'a retry or another peer can\'t help with a key that can\'t be read');
+  assert.equal(spawned.length, 0, 'a chat may not start a buyer without the signer either');
+  const chatBuyer = chatProcessManager.getState().find((state) => state.mode === 'connect');
+  assertClearToUser(chatBuyer?.lastError, UNREADABLE);
+  assert.equal(chatLog.filter((line) => UNREADABLE.test(line)).length, 1, 'the reason stays in the runtime log');
+
   const payPage = await invoke('payments:open-pay-page', { kind: 'deposit' });
   assert.equal(payPage.ok, false);
   assertClearToUser(payPage.error, UNREADABLE);
@@ -583,4 +612,9 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   faults.clear();
   await invoke('runtime:start', startBuyer);
   assert.equal(spawned[0]?.env?.['ANTSEED_IDENTITY_HEX'], KEY, 'once the file reads again the buyer starts with the real signer');
+
+  assert.equal(await startForChat(), true);
+  assert.equal(spawned.length, 2);
+  assert.equal(spawned[1]?.mode, 'connect');
+  assert.equal(spawned[1]?.env?.['ANTSEED_IDENTITY_HEX'], KEY, 'and so does a buyer started for a chat');
 });

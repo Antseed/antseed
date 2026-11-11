@@ -14,14 +14,14 @@ import {
   resolveConnectDataDir,
   type RuntimeMode,
   type RuntimeProcessState,
-  type StartOptions,
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
 import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desktop-gateway.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
-import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
+import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
 import { isAttachOnly } from './runtime/attach-only.js';
+import { startBuyerForChat } from './runtime/runtime-start.js';
 import type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
 import { parseRuntimeActivityFromLog } from './runtime/log-parser.js';
 import {
@@ -50,7 +50,6 @@ import {
   errorMessage,
   getAppSetupStatus,
   getMacUpdateInstallHint,
-  isDesktopDebugEnabled,
   isDev,
   rendererUrl,
   setAppSetupStatus,
@@ -351,36 +350,7 @@ const piChatEngine = registerPiChatHandlers({
   },
   configPath: ACTIVE_CONFIG_PATH,
   isBuyerRuntimeRunning: () => getCombinedProcessState().some((state) => state.mode === "connect" && state.running),
-  ensureBuyerRuntimeStarted: async () => {
-    const connectState = getCombinedProcessState().find((state) => state.mode === 'connect');
-    if (connectState?.running) {
-      return true;
-    }
-
-    await ensureSecureIdentity();
-
-    const startOptions: StartOptions = {
-      mode: 'connect',
-      router: 'local',
-      ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
-      env: {
-        ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...secureIdentityEnv(),
-      },
-    };
-
-    try {
-      await processManager.start(startOptions);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.toLowerCase().includes('already running')) {
-        return true;
-      }
-      appendLog('connect', 'system', `Chat-triggered buyer runtime start failed: ${message}`);
-      return false;
-    }
-  },
+  ensureBuyerRuntimeStarted: () => startBuyerForChat({ processManager, getCombinedProcessState, appendLog }),
   appendSystemLog: (line) => {
     appendLog("connect", "system", line);
   },

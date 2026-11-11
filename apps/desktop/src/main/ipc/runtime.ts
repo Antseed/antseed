@@ -61,10 +61,6 @@ import {
   invalidateOnChainEnrichmentCache,
 } from '../chat/service-discovery.js';
 import {
-  ensureSecureIdentity,
-  secureIdentityEnv,
-} from '../identity.js';
-import {
   invalidateChainClients,
 } from '../payments/credits.js';
 import {
@@ -99,6 +95,9 @@ import {
   type RuntimeMode,
   type StartOptions,
 } from '../runtime/process-manager.js';
+import {
+  identityEnvForStart,
+} from '../runtime/runtime-start.js';
 
 export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   const {
@@ -159,15 +158,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       }
     }
 
-    await ensureSecureIdentity();
-
-    let identityEnv: Record<string, string>;
-    try {
-      identityEnv = secureIdentityEnv();
-    } catch (err) {
-      processManager.recordStartFailure(options.mode, err instanceof Error ? err.message : String(err));
-      throw err;
-    }
+    const identityEnv = await identityEnvForStart(processManager, options.mode);
 
     const startOptions: StartOptions = {
       ...options,
