@@ -102,7 +102,7 @@ test('a channel with no record is read until no reserve the buyer signed can sti
   assert.deepEqual(h.reads.at(-1), [id(1)])
 })
 
-test('reads are shared for 20 s, and fresh re-reads at most every 5 s', async () => {
+test('reads are shared for 20 s, and fresh always reads again', async () => {
   const h = harness({ reserved: 1_000_000n, channels: { [id(1)]: open(1_000_000n) } })
   const rows = [row(1)]
   await h.view.describe(BUYER, rows)
@@ -112,12 +112,12 @@ test('reads are shared for 20 s, and fresh re-reads at most every 5 s', async ()
   h.advance(2_000)
   await h.view.describe(BUYER, rows)
   assert.equal(h.reads.length, 2)
-  h.advance(2_000)
-  await h.view.describe(BUYER, rows, { fresh: true })
-  assert.equal(h.reads.length, 2)
-  h.advance(4_000)
-  await h.view.describe(BUYER, rows, { fresh: true })
+  // The caller just requested a close: the read from a second ago does not show it.
+  h.advance(1_000)
+  h.chain.channels[id(1)] = open(1_000_000n, 0n, 1_800_000_000n)
+  const closing = await h.view.describe(BUYER, rows, { fresh: true })
   assert.equal(h.reads.length, 3)
+  assert.equal(closing.channels.get(id(1))?.closeRequestedAt, 1_800_000_000)
   // A new channel is a new question, whatever the cache holds.
   h.chain.channels[id(2)] = open(500_000n)
   const { channels } = await h.view.describe(BUYER, [...rows, row(2)])
@@ -209,6 +209,33 @@ test('the unaccounted reserve is not judged when the reserve or a channel is unr
   const down = harness({ reserved: 2_000_000n, channels: {} })
   down.failing(true)
   assert.deepEqual((await down.view.describe(BUYER, [row(1)])).summary, { readAt: null, reserved: null, heldByChannels: '0', unaccountedReserved: null })
+})
+
+test('a fresh read never joins one that began earlier, and the earlier one cannot overwrite it', async () => {
+  const releases: Array<() => void> = []
+  const clock = { now: T0 }
+  let state = open(1_000_000n)
+  const view = new BuyerChannelChainView({
+    now: () => clock.now,
+    read: async (_buyer, rows) => {
+      const seen = state
+      await new Promise<void>((resolve) => { releases.push(resolve) })
+      return { reserved: 1_000_000n, channels: new Map(rows.map((entry) => [entry.channelId, seen])) }
+    },
+  })
+  // A poll starts a read; the close lands; the explicit refresh starts its own.
+  const poll = view.describe(BUYER, [row(1)])
+  clock.now += 1_000
+  state = open(1_000_000n, 0n, 1_800_000_000n)
+  const refresh = view.describe(BUYER, [row(1)], { fresh: true })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(releases.length, 2)
+  // The refresh answers first, the earlier poll after it.
+  releases[1]!()
+  assert.equal((await refresh).channels.get(id(1))?.closeRequestedAt, 1_800_000_000)
+  releases[0]!()
+  await poll
+  assert.equal((await view.describe(BUYER, [row(1)])).channels.get(id(1))?.closeRequestedAt, 1_800_000_000)
 })
 
 test('a slow chain does not hold the answer: earlier records come back and the read finishes behind it', async () => {

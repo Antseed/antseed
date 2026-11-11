@@ -153,8 +153,6 @@ export function createChannelChainReader(options: { provider: AbstractProvider; 
 }
 
 const VIEW_TTL_MS = 20_000
-/** `fresh` re-reads the chain at most this often per buyer. */
-const VIEW_FRESH_FLOOR_MS = 5_000
 /**
  * The store retires a row both when its channel closed and when the buyer gave
  * up on the session, which leaves the channel open. Only a read started this
@@ -202,19 +200,21 @@ export class BuyerChannelChainView {
 
   /**
    * The chain's record of each of `rows`, and the buyer's reserve against
-   * them. Read at most every 20 s (`fresh`: every 5 s); a failed read serves
-   * the last records. A channel the chain showed settled or timed out is
-   * final and never read again, like one with no record once no reserve the
-   * buyer signed can still land.
+   * them. One read is shared for 20 s; `fresh` (the caller knows something
+   * changed, e.g. it just requested a close) always starts a new one and
+   * never joins a read that began earlier. A failed read serves the last
+   * records. A channel the chain showed settled or timed out is final and
+   * never read again, like one with no record once no reserve the buyer
+   * signed can still land.
    */
   async describe(buyer: string, rows: readonly ChannelChainRow[], options: { fresh?: boolean; /** Answer from earlier reads when this one takes longer; it finishes in the background. */ maxWaitMs?: number } = {}): Promise<ChannelsOnChainView> {
     const address = buyer.toLowerCase()
     const candidates = rows.filter((row) => !this.isFinal(row)).sort((a, b) => a.channelId.localeCompare(b.channelId))
     const ids = candidates.map((row) => row.channelId).join(',')
     const key = `channels:${address}`
-    const cached = this.cache.peek<Pass>(key)
-    const force = !cached || cached.value.ids !== ids
-      || (options.fresh === true && this.now() - cached.fetchedAt >= VIEW_FRESH_FLOOR_MS)
+    if (options.fresh) this.cache.invalidate(key)
+    // A changed set of channels is a new question: a read of the old set does not answer it.
+    const force = this.cache.peek<Pass>(key)?.value.ids !== ids
     // Unreadable or slow chain: report what earlier reads showed.
     const reading = this.cache.read<Pass>(key, { ttlMs: VIEW_TTL_MS, force }, () => this.pass(address, rows, candidates, ids))
       .then((result) => result.value, () => null)
@@ -282,9 +282,12 @@ export class BuyerChannelChainView {
   }
 
   private remember(channelId: string, state: ChannelChainState, readAt: number): void {
+    const earlier = this.known.get(channelId)
+    // A read that started before the one already recorded finished after it: the later read stands.
+    if (earlier && earlier.readAt > readAt) return
     // No record is ambiguous next to an earlier one: a lagging endpoint answers
     // that way for a channel that exists. The earlier record stands.
-    if (state.status === 0 && (this.known.get(channelId)?.state.status ?? 0) !== 0) return
+    if (state.status === 0 && (earlier?.state.status ?? 0) !== 0) return
     this.known.set(channelId, { state, readAt })
   }
 
