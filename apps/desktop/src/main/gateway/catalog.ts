@@ -186,9 +186,10 @@ export function toChatModels(entries: GatewayModelEntry[], options: CatalogOptio
 }
 
 /**
- * The chat's rows: every model, with `lowTrust` on those the connected apps
- * leave out (`trustedAppEntries`), so the chat lists the apps' set. The rest
- * stay in the list for a chat or saved default already on one.
+ * The chat's rows: every model, with `lowTrust` on those no trusted seller
+ * serves (`trustedAppEntries`, judged per type), so the chat lists the apps'
+ * set (`listedModels`). The rest stay in the list for a chat or saved default
+ * already on one.
  */
 export function toTrustedChatModels(entries: GatewayModelEntry[], options: CatalogOptions = {}): ChatModel[] {
   const trusted = new Set(trustedAppEntries(entries).map((entry) => entry.id));
@@ -196,9 +197,9 @@ export function toTrustedChatModels(entries: GatewayModelEntry[], options: Catal
 }
 
 /**
- * Models worth defaulting connected apps to, best first: served by a trusted
- * seller, then free for everyone (an app's background calls must not need
- * funds), then able to use tools, then the most sellers.
+ * Models worth defaulting connected apps to, best first: free for everyone (an
+ * app's background calls must not need funds), served by a trusted seller
+ * before a low-trust one, then able to use tools, then the most sellers.
  */
 export function recommendAppModels(models: ChatModel[]): ChatModel[] {
   return models

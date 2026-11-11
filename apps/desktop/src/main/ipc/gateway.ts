@@ -140,7 +140,6 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   const privacyDeps: PrivacySwitchDeps = {
     setPrivacy: setGatewayPrivacy,
     getPrivacy: getGatewayPrivacy,
-    savedPrivacy: () => getGatewaySettings().privacy,
     gatewayMode: () => getGatewaySettings().mode,
     // Previews and the model list cached under the old policy would show the
     // wrong sellers and prices.

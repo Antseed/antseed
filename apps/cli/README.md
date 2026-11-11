@@ -47,7 +47,7 @@ Command-line interface and web dashboard for the Antseed Network — a P2P netwo
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 | `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Prime Agent, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
-| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
+| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (`POST /_antseed/route`); connect warns when none is set |
 | `antseed apps disconnect <app>` | Remove only what Antseed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
 | `antseed buyer connection get` | Show current session state (pinned service, peer) |

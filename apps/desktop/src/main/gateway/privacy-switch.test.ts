@@ -1,28 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { GatewayPrivacy, GatewayPrivacyMode } from '../../shared/gateway-types.js';
-import { readPrivacy, switchPrivacy, type PrivacySwitchDeps } from './privacy-switch.js';
+import { readPrivacy, readPrivacyInTurn, switchPrivacy, type PrivacySwitchDeps } from './privacy-switch.js';
+import { createSerialQueue } from '../serial-queue.js';
 
-function harness(options: { gateway?: 'local' | 'remote'; saved?: GatewayPrivacyMode } = {}) {
+/**
+ * Like the gateway service: `keyMode` is the desktop key's policy, which the
+ * console can change; a read brings the saved mode in line with it, and reads
+ * and switches take turns on one queue.
+ */
+function harness(options: { gateway?: 'local' | 'remote' } = {}) {
   const calls: string[] = [];
-  let saved: GatewayPrivacyMode = options.saved ?? 'anonymous';
+  const queue = createSerialQueue();
+  let saved: GatewayPrivacyMode = 'anonymous';
+  let keyMode: GatewayPrivacyMode = 'anonymous';
   const privacy = (mode: GatewayPrivacyMode): GatewayPrivacy => ({ mode, editable: true, requiredAbove: false });
+  let held: Promise<void> = Promise.resolve();
   const deps: PrivacySwitchDeps = {
-    setPrivacy: async (mode) => {
+    setPrivacy: (mode) => queue.run(async () => {
+      await held;
       calls.push(`set:${mode}`);
+      keyMode = mode;
       saved = mode;
       return privacy(mode);
-    },
-    getPrivacy: async () => {
+    }),
+    getPrivacy: () => readPrivacyInTurn(queue, async () => {
       calls.push('get');
-      return privacy(saved);
-    },
-    savedPrivacy: () => saved,
+      saved = keyMode;
+      return privacy(keyMode);
+    }, () => saved),
     gatewayMode: () => options.gateway ?? 'local',
     clearCaches: () => { calls.push('clear-caches'); },
     refreshApps: () => { calls.push('refresh-apps'); },
   };
-  return { deps, calls, setSaved: (mode: GatewayPrivacyMode) => { saved = mode; } };
+  return {
+    deps,
+    calls,
+    setInConsole: (mode: GatewayPrivacyMode) => { keyMode = mode; },
+    /** Holds the next switch until the returned function runs. */
+    holdSwitch: () => {
+      let release = () => {};
+      held = new Promise<void>((resolve) => { release = resolve; });
+      return release;
+    },
+  };
 }
 
 test('a privacy switch drops the cached model list, then rewrites every connected app', async () => {
@@ -52,11 +73,20 @@ test('a read that moved every key to a mode set in the console rewrites the apps
   assert.deepEqual(plain.calls, ['get']);
 
   const changed = harness();
-  changed.deps.getPrivacy = async () => {
-    changed.calls.push('get');
-    changed.setSaved('private');
-    return { mode: 'private', editable: true, requiredAbove: false };
-  };
+  changed.setInConsole('private');
   assert.equal((await readPrivacy(changed.deps)).mode, 'private');
   assert.deepEqual(changed.calls, ['get', 'clear-caches', 'refresh-apps']);
+});
+
+test('a read queued behind a switch does not rewrite the apps a second time', async () => {
+  const { deps, calls, holdSwitch } = harness();
+  const release = holdSwitch();
+  const switching = switchPrivacy('private', deps);
+  const reading = readPrivacy(deps);
+  release();
+  assert.equal((await reading).mode, 'private');
+  await switching;
+  // The read ran after the switch, which already rewrote the apps.
+  assert.equal(calls.indexOf('get') > calls.indexOf('set:private'), true);
+  assert.deepEqual(calls.filter((call) => call === 'refresh-apps'), ['refresh-apps']);
 });

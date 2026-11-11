@@ -4,6 +4,7 @@ import { defaultStorage } from '../app/local-storage-flag';
 import { describeChatError } from './chat-errors';
 import { hasPrivateHistory } from './private-history';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { listedModels } from '../../../shared/chat-model-ranking.js';
 import { selectHasFunds } from '../../core/balance';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
@@ -325,8 +326,10 @@ export function initChatModule({
     }
     // The saved choice counts only while it is the model selected: a fallback
     // picked because it went unlisted is still provisional.
-    // A free one nobody chose moves too once the apps leave it out (no trusted seller).
-    const keep = listed?.type === 'text' && (current === lastModel || (listed.free && !listed.lowTrust) || splitPinnedModel(current).peerId);
+    // A free one nobody chose moves too once the apps leave it out (a trusted
+    // seller now serves another model free).
+    const keep = listed?.type === 'text'
+      && (current === lastModel || (listed.free && listedModels(uiState.chatModels).includes(listed)) || splitPinnedModel(current).peerId);
     if (keep) return;
     const next = chooseDefaultChatModel(uiState.chatModels, lastModel);
     if (next && next !== current) {

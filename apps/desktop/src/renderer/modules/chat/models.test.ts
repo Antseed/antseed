@@ -145,7 +145,7 @@ test('an offer charging for cached input is not free', () => {
 });
 
 test('the picker leaves out models no trusted seller serves, but keeps the ones in use', () => {
-  const trusted = { ...model('trusted'), free: false } as ChatModel;
+  const trusted = { ...model('trusted'), free: true } as ChatModel;
   const lowTrust = { ...model('low-trust'), free: true, lowTrust: true } as ChatModel;
   const lowTrustImage = { ...model('low-trust-image', 'image'), lowTrust: true } as ChatModel;
   const all = [trusted, lowTrust, lowTrustImage];
@@ -156,12 +156,34 @@ test('the picker leaves out models no trusted seller serves, but keeps the ones 
   assert.deepEqual(pickerChatModels(all, ['trusted', 'low-trust-image']).map((m) => m.id), ['trusted', 'low-trust-image']);
 });
 
-test('defaults and stand-ins come from the trusted models, while a saved choice stays', () => {
-  const trusted = { ...model('trusted'), free: false, toolUse: false, sellers: 1 } as ChatModel;
-  const lowTrust = { ...model('low-trust'), free: true, toolUse: true, sellers: 9, lowTrust: true } as ChatModel;
-  assert.equal(chooseDefaultChatModel([lowTrust, trusted], null), 'trusted');
-  assert.equal(chooseDefaultChatModel([lowTrust, trusted], 'low-trust'), 'low-trust', 'the user chose it');
-  assert.equal(chooseModelForPrivate([lowTrust, trusted], 'gone', true), 'trusted');
-  // A free low-trust model isn't one a default would move to, so a first message still waits.
-  assert.equal(shouldWaitForFreeModel([trusted, lowTrust], 'trusted', { chosen: false, funded: false }), true);
+test('while no trusted seller serves a free text model, the picker keeps the low-trust free ones', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, lowTrust: true } as ChatModel;
+  const lowTrustPaid = { ...model('low-trust-paid'), free: false, lowTrust: true } as ChatModel;
+  const lowTrustFreeImage = { ...model('low-trust-free-image', 'image'), free: true, lowTrust: true } as ChatModel;
+  const all = [trustedPaid, lowTrustFree, lowTrustPaid, lowTrustFreeImage];
+  assert.deepEqual(pickerChatModels(all, [null, null]).map((m) => m.id), ['trusted-paid', 'low-trust-free']);
+});
+
+test('defaults rank free and trusted, then free, then paid and trusted, while a saved choice stays', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false, toolUse: true, sellers: 9 } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, toolUse: false, sellers: 1, lowTrust: true } as ChatModel;
+  const trustedFree = { ...model('trusted-free'), free: true, toolUse: false, sellers: 1 } as ChatModel;
+  const lowTrustFreeTools = { ...model('low-trust-free-tools'), free: true, toolUse: true, sellers: 9, lowTrust: true } as ChatModel;
+  // An unfunded user's default answers without funds, even when only low-trust sellers serve it free.
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFree], null), 'low-trust-free');
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFreeTools, lowTrustFree, trustedFree], null), 'trusted-free');
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFree], 'trusted-paid'), 'trusted-paid', 'the user chose it');
+  // A stand-in without funds is free first, trusted next; with funds, a trusted paid one.
+  assert.equal(chooseModelForPrivate([trustedPaid, lowTrustFree], 'gone', false), 'low-trust-free');
+  assert.equal(chooseModelForPrivate([lowTrustFreeTools, trustedFree, trustedPaid], 'gone', false), 'trusted-free');
+  assert.equal(chooseModelForPrivate([lowTrustFree, trustedPaid], 'gone', true), 'trusted-paid');
+});
+
+test('a first message does not wait while any free text model is listed, low-trust or not', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, lowTrust: true } as ChatModel;
+  const fresh = { chosen: false, funded: false };
+  assert.equal(shouldWaitForFreeModel([trustedPaid, lowTrustFree], 'trusted-paid', fresh), false);
+  assert.equal(shouldWaitForFreeModel([trustedPaid], 'trusted-paid', fresh), true);
 });

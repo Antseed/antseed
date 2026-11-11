@@ -10,9 +10,10 @@ import path from 'node:path';
 import type { ResolvedTarget } from './config-patch.js';
 
 /**
- * Model alias resolved by the buyer proxy at request time to the route
- * currently selected in Antseed Desktop. Must match
- * ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
+ * Model alias resolved by the buyer proxy at request time to the buyer's
+ * default route (set through its `/_antseed/route` API). Legacy buyer-port
+ * patches select it; gateway patches list the gateway's models instead. Must
+ * match ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed';
 

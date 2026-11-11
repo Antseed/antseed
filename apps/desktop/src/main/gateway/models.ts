@@ -4,7 +4,8 @@
  * the buyer's extended entries (`name`, `type`, `peers[]`); any other
  * OpenAI-compatible endpoint returns plain `{ id }` entries, which work too.
  */
-import { DEFAULT_MODEL_ROUTING_PREFERENCES, modelRouteReputationScore } from '@antseed/node/model-routing';
+import { isServiceHealthFailing } from '@antseed/node';
+import { DEFAULT_MODEL_ROUTING_PREFERENCES, isModelRouteEligible } from '@antseed/node/model-routing';
 import { record } from './response-fields.js';
 import type { GatewayEndpoint } from './service.js';
 
@@ -63,29 +64,38 @@ export function entryReasons(entry: GatewayModelEntry): boolean {
 export const APP_MODEL_MIN_TRUST = DEFAULT_MODEL_ROUTING_PREFERENCES.minTrustScore;
 
 /**
- * Whether one of the entry's sellers is trusted and not reported unhealthy,
- * scored as routing scores them. A plain OpenAI-compatible entry has no
- * `peers` to judge and is kept.
+ * Whether one of the entry's sellers is trusted and its last health check is
+ * not failing, judged as automatic routing judges it (the routing defaults,
+ * whose peer lists are empty, so only trust counts). A plain
+ * OpenAI-compatible entry has no `peers` to judge and is kept.
  */
 export function entryHasTrustedSeller(entry: GatewayModelEntry, minTrust: number = APP_MODEL_MIN_TRUST): boolean {
   if (!Array.isArray(entry['peers'])) return true;
+  const preferences = { ...DEFAULT_MODEL_ROUTING_PREFERENCES, minTrustScore: minTrust };
   return entry['peers'].some((value) => {
     const peer = record(value);
     if (typeof peer['peerId'] !== 'string') return false;
-    if (record(peer['health'])['status'] === 'unhealthy') return false;
-    const trust = modelRouteReputationScore({ ...peer, peerId: peer['peerId'] });
-    return trust !== null && trust >= minTrust;
+    if (isServiceHealthFailing(peer['health'] as Parameters<typeof isServiceHealthFailing>[0])) return false;
+    return isModelRouteEligible({ ...peer, peerId: peer['peerId'] }, preferences);
   });
 }
 
+/** The type the apps group an entry under: as the gateway reports it, `text` when it does not say. */
+function entryTypeKey(entry: GatewayModelEntry): string {
+  const type = typeof entry['type'] === 'string' ? entry['type'].trim().toLowerCase() : '';
+  return type || 'text';
+}
+
 /**
- * The entries the connected apps list: models with a trusted seller. When
- * none has one (a fresh network, a testbench), every entry is kept, so an
- * app still gets models rather than an empty list.
+ * The entries the connected apps list: models with a trusted seller. Each
+ * type (text, image, …) is judged on its own: when none of a type's models
+ * has one (a fresh network, a testbench), every model of that type is kept,
+ * so a trusted image model alone can't leave an app without text models.
  */
 export function trustedAppEntries(entries: GatewayModelEntry[], minTrust: number = APP_MODEL_MIN_TRUST): GatewayModelEntry[] {
-  const trusted = entries.filter((entry) => entryHasTrustedSeller(entry, minTrust));
-  return trusted.length > 0 ? trusted : entries;
+  const trusted = new Set(entries.filter((entry) => entryHasTrustedSeller(entry, minTrust)));
+  const typesWithTrusted = new Set([...trusted].map(entryTypeKey));
+  return entries.filter((entry) => trusted.has(entry) || !typesWithTrusted.has(entryTypeKey(entry)));
 }
 
 export function toGatewayModel(entry: GatewayModelEntry): GatewayModel {

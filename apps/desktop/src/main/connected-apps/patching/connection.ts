@@ -22,9 +22,8 @@ import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
 import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
 import { createSerialQueue } from '../../serial-queue.js';
-import { oncePerGatewayKey } from './once-per-key.js';
-import { APP_MODEL_MIN_TRUST, fetchGatewayModelEntries, toGatewayModel, trustedAppEntries, type GatewayModel } from '../../gateway/models.js';
-import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';
+import { fetchGatewayModelEntries } from '../../gateway/models.js';
+import { appModelsReader, type AppModels } from './app-models.js';
 import { getGatewaySettings } from '../../gateway/settings.js';
 import {
   claudeGatewaySlotsPath,
@@ -157,13 +156,6 @@ export function getConnectedAppsState(): ConnectedAppsState {
   return { connected: [...connected], errors: { ...errors }, connectedAt };
 }
 
-/** Text models for the apps, plus the ones worth defaulting to. */
-type AppModels = {
-  models: GatewayModel[];
-  /** Best first: free for everyone, then able to use tools, then the most sellers. */
-  recommended: ChatModel[];
-};
-
 function patchTarget(endpoint: GatewayEndpoint, { models, recommended }: AppModels): ConfigPatchTarget {
   return {
     origin: endpoint.origin,
@@ -234,27 +226,13 @@ async function syncRelays(): Promise<void> {
   await syncWslRelays(hosts, target.port, log, target.upstreamHost);
 }
 
-async function textModels(endpoint: GatewayEndpoint, fresh: boolean): Promise<AppModels> {
-  try {
-    // Only models a trusted seller serves, so apps don't list ones from low-trust sellers alone.
-    const all = await fetchGatewayModelEntries(endpoint, { force: fresh });
-    const entries = trustedAppEntries(all);
-    if (entries.length < all.length) log(`Apps list ${entries.length} of ${all.length} models: the rest have no seller at trust ${APP_MODEL_MIN_TRUST} or more`);
-    const models = entries.map(toGatewayModel).filter((model) => model.type === null || model.type === 'text');
-    return { models, recommended: recommendAppModels(toChatModels(entries)) };
-  } catch (err) {
-    log(`Could not load the gateway's models; apps get the address and key only: ${err instanceof Error ? err.message : String(err)}`);
-    return { models: [], recommended: [] };
-  }
-}
-
 /**
  * Applies `names`. Failures are recorded per app; if `requiredApp` (the one the
  * caller is adding) fails, it is rethrown after the rest are wired, so the
  * click that asked for it sees the error.
  */
 async function applyPatches(names: string[], requiredApp?: string, options: { freshModels?: boolean } = {}): Promise<void> {
-  const modelsFor = oncePerGatewayKey((endpoint: GatewayEndpoint) => textModels(endpoint, options.freshModels === true));
+  const modelsFor = appModelsReader(options, { fetchEntries: fetchGatewayModelEntries, log });
   let addError: Error | null = null;
   for (const name of names) {
     try {

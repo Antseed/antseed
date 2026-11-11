@@ -6,13 +6,30 @@
  */
 import type { GatewayPrivacy, GatewayPrivacyMode } from '../../shared/gateway-types.js';
 
+export type PrivacyRead = { privacy: GatewayPrivacy; changed: boolean };
+
+/**
+ * A read of the mode in turn with switches (`queue`), `changed` when the read
+ * itself moved the saved mode. The saved mode is taken inside the turn, so a
+ * read queued behind a switch doesn't count the switch's change as its own.
+ */
+export function readPrivacyInTurn(
+  queue: { run: <T>(task: () => Promise<T>) => Promise<T> },
+  read: () => Promise<GatewayPrivacy>,
+  savedPrivacy: () => GatewayPrivacyMode,
+): Promise<PrivacyRead> {
+  return queue.run(async () => {
+    const before = savedPrivacy();
+    const privacy = await read();
+    return { privacy, changed: savedPrivacy() !== before };
+  });
+}
+
 export type PrivacySwitchDeps = {
   /** Applies the mode to every key; throws for a remote gateway, whose console sets it. */
   setPrivacy: (mode: GatewayPrivacyMode) => Promise<GatewayPrivacy>;
-  /** Reads the mode, bringing every key in line with one the console changed. */
-  getPrivacy: () => Promise<GatewayPrivacy>;
-  /** The mode as last saved by the desktop. */
-  savedPrivacy: () => GatewayPrivacyMode;
+  /** Reads the mode (`readPrivacyInTurn`), bringing every key in line with one the console changed. */
+  getPrivacy: () => Promise<PrivacyRead>;
   gatewayMode: () => 'local' | 'remote';
   /** Drops the model list and route previews read under the old policy. */
   clearCaches: () => void;
@@ -46,8 +63,7 @@ export async function switchPrivacy(mode: GatewayPrivacyMode, deps: PrivacySwitc
 
 /** A read that found the mode changed in the console has moved every key to it. */
 export async function readPrivacy(deps: PrivacySwitchDeps): Promise<GatewayPrivacy> {
-  const before = deps.savedPrivacy();
-  const privacy = await deps.getPrivacy();
-  if (deps.savedPrivacy() !== before) policyChanged(deps);
+  const { privacy, changed } = await deps.getPrivacy();
+  if (changed) policyChanged(deps);
   return privacy;
 }

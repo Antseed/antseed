@@ -942,10 +942,22 @@ function isManagedDroidModel(value: unknown, patch: DroidConfigPatchDef, managed
 /** Every customModels entry Antseed writes has an id under this prefix. */
 const DROID_MANAGED_ID_PREFIX = 'custom:Antseed-';
 
-/** Without the restore state, the id prefix is all that marks an entry (or a
-    selection) left behind by an earlier connect as Antseed's. */
 function hasDroidManagedId(id: unknown): id is string {
   return typeof id === 'string' && id.startsWith(DROID_MANAGED_ID_PREFIX);
+}
+
+/**
+ * Without the restore state, an entry an earlier connect left behind. The id
+ * prefix alone is not enough: Droid derives ids from the display name, so a
+ * user's own "Antseed …" model gets the same prefix. Every entry Antseed
+ * writes also carries the patch's originator header, which a hand-made entry
+ * doesn't; a patch without one falls back to the base URL being written.
+ */
+function isDroidLeftover(value: unknown, patch: DroidConfigPatchDef, baseURL: string): boolean {
+  if (!hasDroidManagedId(droidEntryId(value))) return false;
+  const entry = value as JsonObject;
+  if (patch.originator) return asObject(entry['extraHeaders'])['originator'] === patch.originator;
+  return entry['baseUrl'] === baseURL;
 }
 
 /** Droid's `custom:` namespace resolves ids through customModels; the index
@@ -1017,18 +1029,21 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // Membership is checked per model; a gateway can list hundreds.
   const newIdSet = new Set(newIds);
 
-  // With the restore state gone (deleted, say), entries under our id prefix
-  // are what an earlier connect left: take them over instead of refusing to
-  // connect, and drop them like entries the state recorded.
-  const leftoverIds = state ? [] : customModels.map(droidEntryId).filter(hasDroidManagedId);
-  const managedIds = state?.managedModelIds ?? leftoverIds;
+  // With the restore state gone (deleted, say), entries an earlier connect
+  // left are taken over instead of refusing to connect, and dropped like
+  // entries the state recorded. Others under our id prefix are the user's.
+  const leftovers = new Set(state ? [] : customModels.filter((model) => isDroidLeftover(model, patch, baseURL)));
+  const managedIds = state?.managedModelIds ?? [...leftovers].map(droidEntryId).filter(hasDroidManagedId);
   const managedIdSet = new Set(managedIds);
+  // Matched per entry without the state: a user's model may share an id with
+  // a leftover.
+  const ours = (model: unknown): boolean => (state ? isManagedDroidModel(model, patch, managedIdSet) : leftovers.has(model));
   // Never replace a model the user defined: on a first connect that includes
-  // one named like Antseed's alias without our id; on a refresh, any entry the
-  // last patch didn't write whose id a new gateway model would take.
-  // Disconnect couldn't give such an entry back.
+  // one named like Antseed's alias without our marks; on any connect, an entry
+  // we didn't write whose id a new gateway model would take. Disconnect
+  // couldn't give such an entry back.
   const conflict = customModels.find((model) => {
-    if (state ? isManagedDroidModel(model, patch, managedIdSet) : hasDroidManagedId(droidEntryId(model))) return false;
+    if (ours(model)) return false;
     const id = droidEntryId(model);
     return (!state && isDroidModel(model, patch.providerKey)) || (typeof id === 'string' && newIdSet.has(id));
   });
@@ -1048,14 +1063,19 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     return;
   }
   const managedModelIds = t.legacy ? [] : newIds;
+  // Whether the customModels list was the user's before Antseed wrote to it:
+  // a list holding only leftovers was ours, an empty one is the user's.
+  const userCustomModelsPresent = state
+    ? state.customModelsPresent
+    : customModelsPresent && (customModels.length === 0 || customModels.some((model) => !ours(model)));
   let narrowStateAfterWrite = false;
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
     // A selection of a leftover entry is not the user's to restore, and a
-    // settings object or list holding nothing else was ours. An empty list is
-    // the user's.
+    // settings object holding nothing else was ours.
     const leftoverSessionDefault = existingSessionDefaultSettings !== undefined
-      && hasDroidManagedId(existingSessionDefaultSettings['model']);
+      && typeof existingSessionDefaultSettings['model'] === 'string'
+      && managedIdSet.has(existingSessionDefaultSettings['model']);
     const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined
       && !(leftoverSessionDefault && Object.keys(existingSessionDefaultSettings).length === 1);
     const sessionDefaultModelPresent = existingSessionDefaultSettings !== undefined
@@ -1064,8 +1084,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     writeDroidPatchState(filePath, {
       version: 2,
       configExisted,
-      customModelsPresent: customModelsPresent
-        && (customModels.length === 0 || customModels.some((model) => !hasDroidManagedId(droidEntryId(model)))),
+      customModelsPresent: userCustomModelsPresent,
       modelPresent,
       ...(modelPresent ? { modelValue: config['model'] } : {}),
       sessionDefaultSettingsPresent,
@@ -1087,7 +1106,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   const currentId = existingSessionDefaultSettings?.['model'];
   const recognizedIdSet = new Set([...managedIds, ...newIds]);
   const previousEntry = customModels.find((model) => droidEntryId(model) === currentId
-    && isManagedDroidModel(model, patch, recognizedIdSet));
+    && (state ? isManagedDroidModel(model, patch, recognizedIdSet) : ours(model)));
   const previousModel = previousEntry ? (previousEntry as JsonObject)['model'] : undefined;
   let selectedId: string | undefined;
   if (t.legacy) {
@@ -1097,14 +1116,19 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     selectedId = (entries.find((entry) => entry.model === selectedModel) ?? entries[0])?.id;
   }
 
-  config['customModels'] = [
-    ...customModels.filter((model) => !isManagedDroidModel(model, patch, managedIdSet)),
-    ...entries,
-  ];
+  const nextCustomModels = [...customModels.filter((model) => !ours(model)), ...entries];
+  if (nextCustomModels.length > 0 || userCustomModelsPresent) config['customModels'] = nextCustomModels;
+  else delete config['customModels'];
   if (selectedId) {
     const sessionDefaultSettings = existingSessionDefaultSettings ?? {};
     sessionDefaultSettings['model'] = selectedId;
     config['sessionDefaultSettings'] = sessionDefaultSettings;
+  } else if (previousEntry && existingSessionDefaultSettings) {
+    // No entry replaces the one selected (the state was lost and no models
+    // loaded): a selection of a removed entry would leave Droid on nothing.
+    // A settings object holding nothing else was ours.
+    delete existingSessionDefaultSettings['model'];
+    if (Object.keys(existingSessionDefaultSettings).length === 0) delete config['sessionDefaultSettings'];
   }
   writeJsonFile(filePath, config);
   if (narrowStateAfterWrite && state) writeDroidPatchState(filePath, { ...state, managedModelIds });
@@ -1912,8 +1936,9 @@ function ownsT3CodeInstance(instance: JsonObject): boolean {
  * Antseed owns only its `<providerKey>` entry in `providerInstances`, which a
  * user may already have defined. The first connect saves that entry (or that
  * there was none) beside the config, so disconnect can put it back; reconnects
- * and model refreshes keep the saved original. The copy can hold the user's
- * own environment values, so only the owner may read it.
+ * and model refreshes keep the saved original, unless the user put an entry of
+ * their own in place of ours meanwhile, which is saved instead. The copy can
+ * hold the user's own environment values, so only the owner may read it.
  */
 type T3CodeState = { readonly hadInstance: boolean; readonly instance?: unknown };
 
@@ -1949,12 +1974,14 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, t: ResolvedTarget):
   const providerInstances = asObject(config['providerInstances']);
   const existing = providerInstances[patch.providerKey];
   const ownsExisting = ownsT3CodeInstance(asObject(existing));
-  if (!readT3CodeState(filePath)) {
+  if (existing !== undefined && !ownsExisting) {
+    // The user's entry, on a first connect or put in place of ours while
+    // connected: save it before writing ours so disconnect gives it back.
+    writeT3CodeState(filePath, { hadInstance: true, instance: existing });
+  } else if (!readT3CodeState(filePath)) {
     // An entry of ours without a state (from a connect before the state
     // existed, or one whose state was deleted) is not the user's to restore.
-    writeT3CodeState(filePath, existing === undefined || ownsExisting
-      ? { hadInstance: false }
-      : { hadInstance: true, instance: existing });
+    writeT3CodeState(filePath, { hadInstance: false });
   }
   // With no models yet, keep the list we wrote last; a user's own list isn't ours.
   const customModels = t.modelIds.length > 0

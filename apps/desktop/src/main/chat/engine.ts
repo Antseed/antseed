@@ -245,8 +245,8 @@ export function registerPiChatHandlers({
       const endpoint = await getGatewayEndpoint();
       const entries = await fetchGatewayModelEntries(endpoint, { force: payload?.force === true });
       lastEntries = entries;
-      // Every model, the ones the apps leave out marked: the picker lists the
-      // apps' set and still finds a chat's model among the rest.
+      // Every model, those no trusted seller serves marked: the picker lists
+      // the apps' set and still finds a chat's model among the rest.
       const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
       return { ok: true, data: models };
     } catch (error) {
@@ -549,7 +549,7 @@ export function registerPiChatHandlers({
       await whenPrivacySettled();
       const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
       lastEntries = entries;
-      // Trusted sellers' models first, so a default lands on one; the rest still resolve a saved pick.
+      // Free models first, a trusted seller's before a low-trust one; the rest still resolve a saved pick.
       return recommendAppModels(toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
     },
   };

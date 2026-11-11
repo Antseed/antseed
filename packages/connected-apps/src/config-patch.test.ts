@@ -358,6 +358,59 @@ test('applyConfigPatch (droid) takes over its own routed entry when the restore 
   });
 });
 
+test('writeConfigPatch (droid) without a restore state leaves a user model named like ours alone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    // Droid derives these ids from the display name; neither carries the
+    // originator header Antseed writes, even the one at the gateway's URL.
+    const remote = { model: 'my-kimi', id: 'custom:Antseed-Kimi-0', displayName: 'Antseed Kimi', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api', apiKey: 'user-key' };
+    const local = { model: 'my-qwen', id: 'custom:Antseed-Local-1', displayName: 'Antseed Local', baseUrl: 'http://localhost:8379/v1', provider: 'generic-chat-completion-api' };
+    const original = { customModels: [remote, local], sessionDefaultSettings: { model: remote.id } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.slice(0, 2), [remote, local]);
+    assert.deepEqual(patched.customModels.slice(2).map((m: { model: string }) => m.model), ['deepseek-v3.2', 'qwen3-coder']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('writeConfigPatch (droid) without a restore state refuses to replace a user model under a new entry id', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const mine = { model: 'my-deepseek', id: 'custom:Antseed-DeepSeek-V3.2-0', displayName: 'Antseed DeepSeek V3.2', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api' };
+    const original = `${JSON.stringify({ customModels: [mine] })}\n`;
+    await writeFile(configPath, original, 'utf8');
+
+    assert.throws(() => writeConfigPatch(makeDroidPatch(configPath), LOCAL_GATEWAY), /refusing to overwrite/);
+    assert.equal(await readFile(configPath, 'utf8'), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('writeConfigPatch (droid) clears a leftover selection when the restore state is gone and no models load', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex', sessionDefaultSettings: { reasoningEffort: 'high' } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [] });
+    // The leftover entries are gone, so nothing may still select one.
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+
+    removeConfigPatch(patch);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
 test('removeConfigPatch (droid) keeps an empty customModels list the user had', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
@@ -898,6 +951,23 @@ test('T3 Code reconnect keeps the original user entry instead of saving our own'
     assert.equal(removeConfigPatch(patch), true);
 
     assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code reconnect saves a user entry that replaced ours while connected, and disconnect restores it', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    await writeFile(configPath, JSON.stringify({ theme: 'dark' }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const replaced = { theme: 'dark', providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(replaced), 'utf8');
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    assert.equal(JSON.parse(await readFile(configPath, 'utf8')).providerInstances.antseed.displayName, 'Antseed');
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), replaced);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
   });
 });
 
