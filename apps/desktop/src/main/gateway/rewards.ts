@@ -16,6 +16,15 @@ export type { GatewayRewardsSummary };
 const TTL_MS = 5 * 60_000;
 let cached: { address: string; at: number; summary: GatewayRewardsSummary } | null = null;
 
+/**
+ * A remote gateway's wallet is on whatever chain that gateway uses, which
+ * this app's config doesn't say: reading it on the local chain could show
+ * another chain's amount, so no amount is read for it.
+ */
+export function remoteRewardsSummary(address: string): GatewayRewardsSummary {
+  return { available: false, address, pendingAnts: '0', currentEpoch: null, transfersEnabled: false, remoteChainUnverified: true };
+}
+
 export async function readGatewayRewards(address: string, options: { force?: boolean } = {}): Promise<GatewayRewardsSummary> {
   const key = address.toLowerCase();
   if (!options.force && cached?.address === key && Date.now() - cached.at < TTL_MS) return cached.summary;

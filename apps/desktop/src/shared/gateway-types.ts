@@ -60,6 +60,12 @@ export type GatewayRewardsSummary = {
   pendingAnts: string;
   currentEpoch: number | null;
   transfersEnabled: boolean;
+  /**
+   * A remote gateway's wallet, whose chain this app can't confirm: no amount
+   * is read (it could come from the wrong chain), so `available` is false and
+   * the gateway's own Rewards page has the figures.
+   */
+  remoteChainUnverified?: true;
 };
 
 /** Retail vs paid over the models with a retail price to compare against. */

@@ -598,7 +598,7 @@ With `--self`, the CLI makes the buyer hot wallet its own authorized wallet. The
 
 **The authorized wallet gains control of withdrawals and future authorization transfers.** Choose a wallet you control. Initial authorization is only possible when no authorized wallet is set. Self-authorization sends no transaction when the buyer wallet is already authorized and rejects replacement of a different existing wallet. Changing it later requires an operator-transfer transaction from the current authorized wallet, not the buyer identity.
 
-`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet through Antseed Desktop's payments UI (for the same buyer identity) or the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
+`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet on the gateway console's **Wallet & Funding** page (for the workspace that uses this buyer identity) or through the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
 
 
 ### Configuration

@@ -74,6 +74,11 @@ export function registerGatewayCommands(program: Command): void {
       // ANTSEED_PASSPHRASE_FILE stops the start before anything runs; the buyer it starts inherits it.
       const passphraseSet = await walletPassphraseForStart(globalOptions.dataDir) !== null
       const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
+      // Before anything starts: a parent (Antseed Desktop) that goes away while
+      // the buyer is still starting (that can take a minute) stops what has
+      // started, and its closed pipes can't end the gateway first.
+      stopWhenStdinCloses(process.stdin, requestShutdown)
+      stopWhenParentExits(requestShutdown)
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
       const updates = createGatewayUpdates({ dataDir: globalOptions.dataDir, current: pkg.version, log })
       let runtime: GatewayRuntime
@@ -117,8 +122,6 @@ export function registerGatewayCommands(program: Command): void {
       const walletWarning = await unencryptedWalletWarning(globalOptions.dataDir, passphraseSet)
       if (walletWarning) console.log(chalk.yellow(walletWarning))
       updates.watch()
-      stopWhenStdinCloses(process.stdin, requestShutdown)
-      stopWhenParentExits(requestShutdown)
       setupShutdownHandler(async () => {
         updates.stop()
         await runtime.stop()

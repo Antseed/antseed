@@ -111,6 +111,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Decision models (SystemOne): JSON with a `model`, answered like any model request.
+  { method: 'POST', prefix: '/v1/systemone', paid: true },
   // Text to speech: JSON in, the audio file streamed back as it is.
   { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).

@@ -14,7 +14,7 @@ const conv = (id: string, service: string) => ({ id, title: id, service, message
 const lowFunds = { ok: false, error: 'Too low.', stopReason: { kind: 'payment_required', message: 'Too low.' } };
 const privacy = (mode: 'anonymous' | 'private') => ({ mode, editable: true, requiredAbove: false });
 
-function setup(options: { lastModel?: string; stored?: Record<string, string>; send?: () => Promise<unknown>; image?: () => Promise<unknown>; models?: unknown[]; conversations?: Array<ReturnType<typeof conv>> } = {}) {
+function setup(options: { lastModel?: string; listModels?: () => Promise<unknown>; stored?: Record<string, string>; send?: () => Promise<unknown>; image?: () => Promise<unknown>; models?: unknown[]; conversations?: Array<ReturnType<typeof conv>> } = {}) {
   vi.stubGlobal('window', {
     localStorage: {
       getItem: (key: string) => options.stored?.[key] ?? (key === 'antseed:chat:lastModel' ? options.lastModel ?? null : null),
@@ -46,7 +46,9 @@ function setup(options: { lastModel?: string; stored?: Record<string, string>; s
     chatPrepareAttachments: async () => ({ ok: true, data: [] }),
     chatAiSendStream,
     chatGenerateImage,
+    ...(options.listModels ? { chatListModels: options.listModels } : {}),
   };
+  (globalThis as unknown as { __lastBridge?: unknown }).__lastBridge = bridge;
   const api = initChatModule({ bridge: bridge as never, uiState, appendSystemLog: () => undefined });
   return { api, uiState, chatAiSendStream, chatGenerateImage, chatAiCreateConversation, chatAiSetModel: bridge.chatAiSetModel };
 }
@@ -128,6 +130,41 @@ describe('privacy at the moment a request leaves', () => {
     expect(uiState.chatError).toMatch(/sent in Private/);
   });
 
+  it('a message sent while switching to Private, when the switch fails, is not sent Anonymous', async () => {
+    const { api, uiState, chatAiSendStream } = setup();
+    await api.openConversation('conv-1');
+    privacyResource.setData(privacy('anonymous'));
+    const write = deferred<unknown>();
+    (window as unknown as { antseedDesktop: unknown }).antseedDesktop = {
+      gatewaySetPrivacy: () => write.promise,
+      gatewayGetPrivacy: async () => ({ ok: true, privacy: privacy('anonymous') }),
+    };
+    void requestPrivacyMode('private');
+    api.sendMessage('hello');
+    await tick();
+    write.resolve({ ok: false, error: 'policy write failed' });
+    await tick(20);
+    expect(chatAiSendStream).not.toHaveBeenCalled();
+    expect(uiState.chatError).toMatch(/Private couldn.t be turned on/);
+  });
+
+  it('stopping a new chat while its chat is being made sends nothing, and leaves other chats running', async () => {
+    const created = deferred<unknown>();
+    const abort = vi.fn(async () => undefined);
+    const { api, chatAiSendStream } = setup({ conversations: [] });
+    // Swap in a slow create and an abort spy on the same bridge.
+    const bridge = (globalThis as unknown as { __lastBridge?: Record<string, unknown> }).__lastBridge;
+    if (bridge) { bridge.chatAiCreateConversation = () => created.promise; bridge.chatAiAbort = abort; }
+    privacyResource.setData(privacy('anonymous'));
+    api.sendMessage('hello');
+    await tick();
+    await api.abortChat();
+    expect(abort).not.toHaveBeenCalled();
+    created.resolve({ ok: true, data: conv('conv-new', 'model-a') });
+    await tick(20);
+    expect(chatAiSendStream).not.toHaveBeenCalled();
+  });
+
   it('Try again does not send a chat sent in Private once Private was turned off elsewhere', async () => {
     const { api, uiState, chatAiSendStream } = setup({ send: async () => lowFunds });
     privacyResource.setData(privacy('private'));
@@ -198,23 +235,32 @@ describe('a model Private chose', () => {
     vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
   });
 
-  it('goes back only in the chat it was chosen for', async () => {
+  it('moves only once the switch lands, and goes back in each chat it moved, open or not', async () => {
     const { api, uiState, chatAiSetModel } = setup({
       models: [model('model-x', 'text', false), model('model-y')],
       conversations: [conv('conv-a', 'model-x'), conv('conv-b', 'model-y')],
     });
     privacyResource.setData(privacy('anonymous'));
     await api.openConversation('conv-a');
+    // The toggle alone changes nothing: a switch that fails must leave the chat as it was.
     api.privacyModeChosen('private');
-    expect(uiState.chatSelectedModelId).toBe('model-y');
-    await tick();
+    expect(uiState.chatSelectedModelId).toBe('model-x');
+    expect(chatAiSetModel).not.toHaveBeenCalled();
 
+    privacyResource.setData(privacy('private'));
+    uiState.chatModels = [model('model-y')] as never;
+    await api.privacySwitchLanded('private');
+    expect(uiState.chatSelectedModelId).toBe('model-y');
+    expect(chatAiSetModel).toHaveBeenLastCalledWith('conv-a', 'model-y');
+
+    // Private ends while another chat is open: that one keeps its model, the moved one goes back.
     await api.openConversation('conv-b');
     chatAiSetModel.mockClear();
-    api.privacyModeChosen('anonymous');
-    await tick();
+    uiState.chatModels = [model('model-x', 'text', false), model('model-y')] as never;
+    privacyResource.setData(privacy('anonymous'));
+    await api.privacySwitchLanded('anonymous');
     expect(uiState.chatSelectedModelId).toBe('model-y');
-    expect(chatAiSetModel).not.toHaveBeenCalled();
+    expect(chatAiSetModel.mock.calls).toEqual([['conv-a', 'model-x']]);
   });
 
   it('goes back in a chat started on it while Private was on', async () => {
@@ -222,15 +268,18 @@ describe('a model Private chose', () => {
       models: [model('model-x', 'text', false), model('model-y')],
       conversations: [],
     });
-    privacyResource.setData(privacy('anonymous'));
-    uiState.chatSelectedModelId = 'model-x';
-    api.privacyModeChosen('private');
     privacyResource.setData(privacy('private'));
+    uiState.chatSelectedModelId = 'model-x';
+    uiState.chatModels = [model('model-y')] as never;
+    await api.privacySwitchLanded('private');
+    expect(uiState.chatSelectedModelId).toBe('model-y');
     api.sendMessage('hello');
     await tick(20);
     expect(uiState.chatActiveConversation).toBe('conv-1');
+    uiState.chatModels = [model('model-x', 'text', false), model('model-y')] as never;
+    privacyResource.setData(privacy('anonymous'));
     api.privacyModeChosen('anonymous', { keepPrivateHistory: true });
-    await tick();
+    await api.privacySwitchLanded('anonymous');
     expect(uiState.chatSelectedModelId).toBe('model-x');
     expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
   });
@@ -240,24 +289,36 @@ describe('a model Private chose', () => {
       models: [model('model-x', 'text', false), model('model-y')],
       conversations: [],
     });
-    privacyResource.setData(privacy('anonymous'));
-    uiState.chatSelectedModelId = 'model-x';
-    // No free model to move to without funds, so the toggle leaves it; the
-    // list read once Private lands no longer has it.
-    uiState.creditsTotalOwnedUsdc = '0';
-    api.privacyModeChosen('private');
     privacyResource.setData(privacy('private'));
+    uiState.chatSelectedModelId = 'model-x';
     uiState.chatModels = [model('model-y')] as never;
     api.startNewChat();
     expect(uiState.chatSelectedModelId).toBe('model-y');
-    uiState.creditsTotalOwnedUsdc = '5';
     api.sendMessage('hello');
     await tick(20);
     uiState.chatModels = [model('model-x', 'text', false), model('model-y')] as never;
+    privacyResource.setData(privacy('anonymous'));
     api.privacyModeChosen('anonymous', { keepPrivateHistory: true });
-    await tick();
+    await api.privacySwitchLanded('anonymous');
     expect(uiState.chatSelectedModelId).toBe('model-x');
     expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
+  });
+
+  it('a list read that lands after the user opened another chat leaves that chat\'s model alone', async () => {
+    const listed = deferred<{ ok: boolean; data: unknown[] }>();
+    const { api, uiState, chatAiSetModel } = setup({
+      models: [model('model-x', 'text', false), model('model-y')],
+      conversations: [conv('conv-a', 'model-x'), conv('conv-b', 'model-x')],
+      listModels: () => listed.promise,
+    });
+    privacyResource.setData(privacy('private'));
+    await api.openConversation('conv-a');
+    const landing = api.privacySwitchLanded('private');
+    await api.openConversation('conv-b');
+    listed.resolve({ ok: true, data: [model('model-y')] });
+    await landing;
+    expect(uiState.chatActiveConversation).toBe('conv-b');
+    expect(chatAiSetModel).not.toHaveBeenCalled();
   });
 
   it('a fallback for a saved model that is no longer listed moves to a free model once one appears', async () => {

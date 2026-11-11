@@ -10,11 +10,11 @@ export type AppActions = {
   startNewChat: () => void;
   startNewChatOnModel: (modelId: string) => void;
   openConversation: (id: string) => Promise<void>;
-  sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
-  sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;
-  generateImage: (prompt: string) => void;
+  sendMessage: (text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
+  sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
+  generateImage: (prompt: string, options?: { privateAtSubmit?: boolean }) => void;
   abortChat: () => Promise<void>;
-  deleteConversation: (convId?: string) => Promise<void>;
+  deleteConversation: (convId?: string) => Promise<boolean>;
   renameConversation: (convId: string, newTitle: string) => void;
   /** Pin or archive a chat; pinning unarchives it and archiving unpins it. */
   setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;

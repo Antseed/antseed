@@ -226,17 +226,17 @@ registerActions({
   startNewChat: () => { recordUserAction('chat_new', 'chat'); chatApi.startNewChat(); },
   startNewChatOnModel: (modelId) => { recordUserAction('chat_new', 'chat'); chatApi.startNewChatOnModel(modelId); },
   openConversation: (id) => { recordUserAction('chat_open', 'chats'); return chatApi.openConversation(id); },
-  sendMessage: (text, attachments) => {
+  sendMessage: (text, attachments, options) => {
     recordUserAction('chat_send', 'chat');
     if ((attachments?.length ?? 0) > 0) recordUserAction('attachment_add', 'chat');
-    chatApi.sendMessage(text, attachments);
+    chatApi.sendMessage(text, attachments, options);
   },
-  sendMessageToConversation: (id, text, attachments) => {
+  sendMessageToConversation: (id, text, attachments, options) => {
     recordUserAction('chat_send', 'chat');
     if ((attachments?.length ?? 0) > 0) recordUserAction('attachment_add', 'chat');
-    chatApi.sendMessageToConversation(id, text, attachments);
+    chatApi.sendMessageToConversation(id, text, attachments, options);
   },
-  generateImage: (prompt) => { recordUserAction('image_generate', 'chat'); chatApi.generateImage(prompt); },
+  generateImage: (prompt, options) => { recordUserAction('image_generate', 'chat'); chatApi.generateImage(prompt, options); },
   abortChat: () => { recordUserAction('chat_stop', 'chat'); return chatApi.abortChat(); },
   deleteConversation: (id) => { recordUserAction('conversation_delete', 'chats'); return chatApi.deleteConversation(id); },
   renameConversation: (id, title) => { recordUserAction('conversation_rename', 'chats'); chatApi.renameConversation(id, title); },

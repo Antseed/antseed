@@ -32,7 +32,7 @@ This stage has two approvals, because frames cost money.
 
 **2a. Prompts.**
 
-1. Fetch the chosen model's offers (`/v1/models/<id>`) to see its frame inputs, durations, resolutions, aspect ratios, and the request fields each seller lists (`fields`). Show the user the fields.
+1. Read the chosen model's offers (its entry in `/v1/models?type=videos`; [references/requests.md](references/requests.md#catalog)) to see its frame inputs, durations, resolutions, aspect ratios, and the request fields each seller lists (`fields`). Show the user the fields.
 2. Write the video prompt in the style the chosen model responds to best ([references/prompting.md](references/prompting.md)).
 3. Write the first-frame prompt, and a last-frame prompt when the model takes `last_frame`. Both share one style phrase so the look stays consistent.
 4. Propose the aspect ratio. The frames decide the video's shape, so it is fixed here. `aspect_ratio` is sent only to a seller that lists the ratio ([references/requests.md](references/requests.md#aspect-ratio)).

@@ -10,6 +10,7 @@ import { safeStorage } from 'electron';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
+import { attachedGateway } from '../runtime/attach-only.js';
 import { normalizeGatewayUrl } from './remote-url.js';
 import { readStoredKey } from './rotate-keys.js';
 import type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings, GatewaySettingsPatch } from '../../shared/gateway-types.js';
@@ -93,11 +94,13 @@ function save(next: StoredFile): void {
 
 export function getGatewaySettings(): GatewaySettings {
   const { mode, remoteUrl, keyMode, privacy } = load();
+  const attached = attachedGateway();
+  if (attached) return { mode: 'remote', remoteUrl: attached.url, keyMode, privacy };
   return { mode, remoteUrl, keyMode, privacy };
 }
 
 export function hasRemoteKey(): boolean {
-  return load().remoteKeyEnc !== null;
+  return attachedGateway() !== null || load().remoteKeyEnc !== null;
 }
 
 type StoredSettingsPatch = GatewaySettingsPatch & {
@@ -139,6 +142,8 @@ export function updateGatewaySettings(patch: StoredSettingsPatch): GatewaySettin
 }
 
 export function getRemoteKey(): string | null {
+  const attached = attachedGateway();
+  if (attached) return attached.key;
   const enc = load().remoteKeyEnc;
   return enc ? decrypt(enc) : null;
 }

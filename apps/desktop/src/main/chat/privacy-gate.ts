@@ -13,12 +13,21 @@ export type PrivacyGate = {
 };
 
 export const PRIVATE_REQUIRED_ERROR = 'Private turned off before this was sent, and this chat went out in Private. Switch back to Private, or start a new chat.';
+export const REMOTE_PRIVATE_ERROR = 'This chat went out in Private, and a remote gateway can\'t be confirmed to keep it on TEE sellers. Start a new chat.';
 
-/** Null when the request may go out; otherwise why it may not. */
+/**
+ * Null when the request may go out; otherwise why it may not. A request that
+ * needs Private fails closed on a remote gateway (mode null): the app can't
+ * confirm that gateway honors the request's TEE requirement, and an older one
+ * ignores it.
+ */
 export async function passPrivacyGate(gate: PrivacyGate | undefined, requirePrivate: boolean): Promise<string | null> {
   if (!gate) return null;
   await gate.whenSettled();
-  return requirePrivate && gate.mode() === 'anonymous' ? PRIVATE_REQUIRED_ERROR : null;
+  if (!requirePrivate) return null;
+  const mode = gate.mode();
+  if (mode === 'anonymous') return PRIVATE_REQUIRED_ERROR;
+  return mode === null ? REMOTE_PRIVATE_ERROR : null;
 }
 
 /**

@@ -263,6 +263,7 @@ export function agentSetupPrompt(endpoint: AgentSkillsEndpoint): string {
     '',
     `- Base URL: ${endpoint.origin}/v1 (OpenAI-compatible; Anthropic /v1/messages works too)`,
     `- API key: ${endpoint.apiKey} (send it as "Authorization: Bearer <key>")`,
+    '- The key is a secret that spends my balance: store it as a secret or environment variable, never print it, and keep it out of logs, files you share and replies.',
     '- Models: GET /v1/models?type=text, ?type=images or ?type=videos. Send the bare model id; the gateway picks the seller.',
     '- Text: POST /v1/chat/completions. Images: POST /v1/images/generations (response_format "b64_json"; save data[0].b64_json as a file).',
     '- Videos: follow https://github.com/Antseed/antseed/tree/main/skills/antseed-videos',

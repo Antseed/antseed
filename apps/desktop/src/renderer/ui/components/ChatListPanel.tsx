@@ -567,8 +567,10 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
 
   const handleDeleteConv = useCallback((id: string) => {
     const wasOnScreen = highlightActive && id === chatActiveConversation;
-    void actions.deleteConversation(id);
-    if (wasOnScreen) onOpenConversationDeleted();
+    // Leave only once it's gone: a failure is shown in the chat, which must stay on screen.
+    void actions.deleteConversation(id).then((deleted) => {
+      if (deleted && wasOnScreen) onOpenConversationDeleted();
+    });
   }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
 
   return (

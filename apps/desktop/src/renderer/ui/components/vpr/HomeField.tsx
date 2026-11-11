@@ -65,14 +65,15 @@ function FieldLayers({ night }: { night: boolean }) {
     if (previous === target) return;
     previousTarget.current = target;
 
+    // A newer transition (or reduced motion) makes every pending one obsolete.
+    run.current += 1;
+    const thisRun = run.current;
     if (reducedMotion) {
       setCrossfade(true);
       setLoopMode(target);
       return;
     }
 
-    run.current += 1;
-    const thisRun = run.current;
     timers.current.forEach((timer) => window.clearTimeout(timer));
     timers.current = [];
     const later = (fn: () => void, ms: number) => {
@@ -87,7 +88,9 @@ function FieldLayers({ night }: { night: boolean }) {
     let finished = false;
 
     const abort = () => {
-      if (started) return;
+      // A late play() rejection from a run that a reverse switch replaced must
+      // not reset the field to that run's target.
+      if (started || run.current !== thisRun) return;
       aborted = true;
       if (clip) {
         clip.pause();

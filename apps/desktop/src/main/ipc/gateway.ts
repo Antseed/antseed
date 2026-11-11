@@ -28,7 +28,7 @@ import { reconnectAllApps } from '../connected-apps/patching/connection.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
 import { openAgent } from '../agent-open.js';
 import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
-import { readGatewayRewards } from '../gateway/rewards.js';
+import { readGatewayRewards, remoteRewardsSummary } from '../gateway/rewards.js';
 import { createSavingsReader } from '../gateway/savings.js';
 import { fetchBuyerProxyJson } from '../payments/buyer-channels.js';
 import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
@@ -185,6 +185,7 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
         address = getSecureIdentity()?.wallet.address ?? null;
       }
       if (!address) throw new Error('Your gateway did not report its wallet');
+      if (getGatewaySettings().mode === 'remote') return { ok: true, data: remoteRewardsSummary(address) };
       return { ok: true, data: await readGatewayRewards(address, { force: opts?.force === true }) };
     } catch (err) {
       return errorResult(err);

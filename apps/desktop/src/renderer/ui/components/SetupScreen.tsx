@@ -92,6 +92,7 @@ export function SetupScreen({ startingGateway = false }: { startingGateway?: boo
       modelCount: models.size,
       freeModelCount: freeModels.size,
       routeModelLabel: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.label ?? null,
+      routeModelFree: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.free === true,
     };
   }, shallowEqual);
 
@@ -168,9 +169,8 @@ export function SetupScreen({ startingGateway = false }: { startingGateway?: boo
           {freeReady && !startingGateway ? (
             <div className={styles.ready}>
               <span className={styles.readyDot} />
-              {snap.routeModelLabel
-                ? `Free model ready - ${snap.routeModelLabel}`
-                : 'Free model ready'}
+              {/* Only a model that is free is announced as one: paid sellers can be found first. */}
+              {`${snap.routeModelFree ? 'Free model' : 'Model'} ready${snap.routeModelLabel ? ` - ${snap.routeModelLabel}` : ''}`}
             </div>
           ) : (
             // key swaps replay the entrance animation, so phase changes read

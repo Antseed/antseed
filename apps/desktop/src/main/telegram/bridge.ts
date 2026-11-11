@@ -29,6 +29,7 @@ import {
   type TelegramSettings,
 } from './store.js';
 import { asErrorMessage } from '../utils.js';
+import { TurnSlot } from './turn-slot.js';
 
 function telegramModelPickerText(hasModels: boolean): string {
   return hasModels
@@ -94,7 +95,10 @@ const BOT_COMMANDS = [
 ];
 
 type ActiveTurn = {
+  /** Empty until the chat is looked up: the turn holds the slot from the moment its message arrives. */
   conversationId: string;
+  /** Set by /stop or /new, or when the bridge stops: the turn must not send. */
+  cancelled: boolean;
   chatId: number;
   draftId: number;
   buffer: string;
@@ -156,7 +160,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   let pollAbort: AbortController | null = null;
   let pollGeneration = 0;
   let lastError: string | null = null;
-  let activeTurn: ActiveTurn | null = null;
+  const turnSlot = new TurnSlot<ActiveTurn>();
   let unsubscribeBus: (() => void) | null = null;
   let draftCounter = 0;
   /** Disabled for the session after the first hard sendMessageDraft failure. */
@@ -254,7 +258,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       clearInterval(turn.keepAliveTimer);
       turn.keepAliveTimer = null;
     }
-    if (activeTurn === turn) activeTurn = null;
+    turnSlot.release(turn);
   };
 
   // ── Outbound messages ───────────────────────────────────────────────
@@ -330,8 +334,8 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     }
 
     const conversationId = (payload as { conversationId?: unknown } | null)?.conversationId;
-    const turn = activeTurn;
-    if (!turn || conversationId !== turn.conversationId) return;
+    const turn = turnSlot.current;
+    if (!turn || !turn.conversationId || conversationId !== turn.conversationId) return;
 
     if (channel === 'chat:ai-stream-delta') {
       const delta = payload as { blockType?: unknown; text?: unknown };
@@ -469,20 +473,10 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   };
 
   const runUserText = async (chatId: number, text: string): Promise<void> => {
-    if (activeTurn) {
-      void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
-      return;
-    }
-    let conversationId: string;
-    try {
-      conversationId = await ensureConversation();
-    } catch (err) {
-      void sendToOwner(`Couldn't start a conversation: ${asErrorMessage(err)}`);
-      return;
-    }
     draftCounter += 1;
     const turn: ActiveTurn = {
-      conversationId,
+      conversationId: '',
+      cancelled: false,
       chatId,
       draftId: draftCounter,
       buffer: '',
@@ -493,7 +487,25 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       statusText: 'Thinking…',
       keepAliveTimer: null,
     };
-    activeTurn = turn;
+    // Taken before the chat and its model are looked up, so a second message
+    // can't start a competing turn meanwhile and /stop can cancel this one.
+    if (!turnSlot.reserve(turn)) {
+      void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
+      return;
+    }
+    let conversationId: string;
+    try {
+      conversationId = await ensureConversation();
+    } catch (err) {
+      if (turnSlot.owns(turn)) void sendToOwner(`Couldn't start a conversation: ${asErrorMessage(err)}`);
+      clearTurn(turn);
+      return;
+    }
+    if (!turnSlot.owns(turn)) {
+      clearTurn(turn);
+      return;
+    }
+    turn.conversationId = conversationId;
     // Show "Thinking…" right away, and keep the ephemeral draft alive while
     // the agent works without producing text (long tool calls, retries).
     pushDraft(turn);
@@ -551,7 +563,11 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     if (text === '/new') {
-      if (activeTurn) await engine.abort(activeTurn.conversationId).catch(() => {});
+      const turn = turnSlot.cancel();
+      if (turn) {
+        clearTurn(turn);
+        if (turn.conversationId) await engine.abort(turn.conversationId).catch(() => {});
+      }
       if (settings) {
         settings.activeConversationId = null;
         await persistSettings();
@@ -564,9 +580,16 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     if (text === '/stop') {
-      const turn = activeTurn;
+      const turn = turnSlot.current;
       if (!turn) {
         void sendToOwner('Nothing is running.');
+        return;
+      }
+      // Still being set up: nothing was sent, so it just doesn't go.
+      if (!turn.conversationId) {
+        turnSlot.cancel();
+        clearTurn(turn);
+        void sendToOwner('Stopped.');
         return;
       }
       await engine.abort(turn.conversationId).catch(() => {});
@@ -696,7 +719,8 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     pollGeneration += 1;
     pollAbort?.abort();
     pollAbort = null;
-    if (activeTurn) clearTurn(activeTurn);
+    const turn = turnSlot.cancel();
+    if (turn) clearTurn(turn);
   };
 
   // ── Public API ──────────────────────────────────────────────────────

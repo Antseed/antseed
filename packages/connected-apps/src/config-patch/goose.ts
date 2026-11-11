@@ -189,41 +189,53 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
     ? t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
     : existingProvider.models;
   if (!owned) rememberGooseSelection(filePath, previous);
-  if (userProvider) saveGooseUserProvider(filePath);
-  // Only an earlier patch of ours has anything to clean up: a local endpoint the
-  // user set up for goose's own openai provider isn't ours, and stays.
-  if (owned || readGoosePatchState(filePath) !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed') {
-    removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
-  }
-  let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
-  if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
-  // The provider first: if it can't be written, goose still selects what it
-  // had, rather than a provider that doesn't exist. If the config then can't
-  // be written, the provider goes back too, so goose keeps a matching pair.
+  // Everything from here to the config write comes undone together on a
+  // failure, so goose keeps a provider and selection that match: the user's own
+  // custom_antseed back where it was, or the provider as it was before.
   const providerPath = gooseCustomProviderPath(filePath);
-  const previousProvider = existsSync(providerPath) ? readFileSync(providerPath, 'utf8') : null;
-  writeJsonFile(providerPath, {
-    name: GOOSE_CUSTOM_PROVIDER,
-    engine: 'openai',
-    display_name: 'Antseed',
-    description: GOOSE_CUSTOM_PROVIDER_DESCRIPTION,
-    api_key_env: '',
-    base_url: `${baseURL}/v1/chat/completions`,
-    models,
-    headers: { Authorization: `Bearer ${t.apiKey}` },
-    supports_streaming: true,
-    requires_auth: false,
-  });
+  const providerBefore = existsSync(providerPath) ? readFileSync(providerPath, 'utf8') : null;
+  let movedUserProvider = false;
   try {
+    if (userProvider) {
+      saveGooseUserProvider(filePath);
+      movedUserProvider = true;
+    }
+    // Only an earlier patch of ours has anything to clean up: a local endpoint the
+    // user set up for goose's own openai provider isn't ours, and stays.
+    if (owned || readGoosePatchState(filePath) !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed') {
+      removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
+    }
+    let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
+    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+    lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
+    if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
+    // The provider first: if it can't be written, goose still selects what it
+    // had, rather than a provider that doesn't exist.
+    writeJsonFile(providerPath, {
+      name: GOOSE_CUSTOM_PROVIDER,
+      engine: 'openai',
+      display_name: 'Antseed',
+      description: GOOSE_CUSTOM_PROVIDER_DESCRIPTION,
+      api_key_env: '',
+      base_url: `${baseURL}/v1/chat/completions`,
+      models,
+      headers: { Authorization: `Bearer ${t.apiKey}` },
+      supports_streaming: true,
+      requires_auth: false,
+    });
     writeTextFile(filePath, `${lines.join('\n')}\n`);
   } catch (err) {
     try {
-      if (previousProvider === null) rmSync(providerPath, { force: true });
-      else writeTextFile(providerPath, previousProvider);
+      if (movedUserProvider) {
+        rmSync(providerPath, { force: true });
+        renameSync(savedGooseUserProviderPath(filePath), providerPath);
+      } else if (providerBefore === null) {
+        rmSync(providerPath, { force: true });
+      } else {
+        writeTextFile(providerPath, providerBefore);
+      }
     } catch {
-      // The config write's failure is the one to report.
+      // The write's own failure is the one to report.
     }
     throw err;
   }

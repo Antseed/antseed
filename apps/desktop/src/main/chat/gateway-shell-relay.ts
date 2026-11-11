@@ -64,6 +64,11 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
   const upstream = send(target, { method: req.method, headers }, (answer) => {
     res.writeHead(answer.statusCode ?? 502, answer.headers);
     answer.pipe(res);
+    // The gateway dropping mid-answer (a restart) never ends the pipe: cut the
+    // shell's response too, so its command fails instead of waiting forever.
+    answer.on('aborted', () => res.destroy());
+    answer.on('error', () => res.destroy());
+    answer.on('close', () => { if (!answer.complete) res.destroy(); });
   });
   upstream.on('error', () => {
     if (res.headersSent) res.destroy();

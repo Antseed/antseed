@@ -346,6 +346,28 @@ exit ${exitCode}
   });
 });
 
+test('goose: a first connect that fails over the user\'s own custom_antseed leaves both their files usable', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await mkdir(path.dirname(providerPath), { recursive: true });
+    const mine = '{"name":"custom_antseed","description":"mine","base_url":"https://mine.example"}\n';
+    const config = 'GOOSE_PROVIDER: custom_antseed\nGOOSE_MODEL: my-model\n';
+    await writeFile(providerPath, mine, 'utf8');
+    await writeFile(configPath, config, 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    await chmod(configPath, 0o444);
+    try {
+      assert.throws(() => writeConfigPatch(patch, REMOTE), /EACCES|permission/i);
+    } finally {
+      await chmod(configPath, 0o600);
+    }
+    assert.equal(await readFile(configPath, 'utf8'), config);
+    assert.equal(await readFile(providerPath, 'utf8'), mine);
+    assert.equal(isConfigPatchConnected(patch), false);
+  });
+});
+
 test('goose: a custom_antseed provider the user already had comes back on disconnect', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');

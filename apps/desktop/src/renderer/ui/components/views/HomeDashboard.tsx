@@ -214,7 +214,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
                 label="Rewards"
                 value={pendingAnts !== null ? formatCredits(pendingAnts) : '—'}
                 unit={pendingAnts !== null ? ' ANTS' : undefined}
-                action={{ label: rewards && !rewards.available ? 'Not live yet' : 'See rewards', onClick: () => onSelectView?.('rewards') }}
+                action={{ label: rewards && !rewards.available && !rewards.remoteChainUnverified ? 'Not live yet' : 'See rewards', onClick: () => onSelectView?.('rewards') }}
               />
             </div>
           </section>

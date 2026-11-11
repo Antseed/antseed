@@ -30,22 +30,30 @@ curl --fail-with-body \
   "$proxy_url/v1/models?type=text" | jq '[.data[] | {id, name, aliases}]'
 ```
 
-Match a requested model case-insensitively against each entry's `id` and `aliases` and use the bare `id`. If the user named none, pick one that fits the question and say which. Use `GET /v1/models/<id>` for its offers and prices when cost matters.
+Match a requested model case-insensitively against each entry's `id` and `aliases` and use the bare `id`. If the user named none, pick one that fits the question and say which. When cost matters, read its offers and prices from its entry in that list (`peers`); the gateway serves only the list, not `/v1/models/<id>`.
 
 Send the bare model id. Do not construct `<peer_id>@<model>`: the gateway routes by the user's routing policy and fails over between sellers.
 
 ## Ask
 
-Build the body with `jq` so the prompt is escaped:
+Build the body with `jq` so the prompt is escaped. Check the status before reading the answer: an error body has no answer, and piping it straight into `jq` would print `null` and look like success.
 
 ```bash
-curl --fail-with-body "$proxy_url/v1/chat/completions" \
+body_file="$(mktemp)"
+status="$(curl -sS -o "$body_file" -w '%{http_code}' "$proxy_url/v1/chat/completions" \
   -H 'content-type: application/json' \
   -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   --data-binary "$(jq -n --arg model "$model" --arg prompt "$prompt" --arg system "${system:-}" \
-    '{model: $model, messages: ((if $system == "" then [] else [{role: "system", content: $system}] end) + [{role: "user", content: $prompt}])}')" \
-  | jq -r '.choices[0].message.content'
+    '{model: $model, messages: ((if $system == "" then [] else [{role: "system", content: $system}] end) + [{role: "user", content: $prompt}])}')")"
+if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+  echo "HTTP $status: $(jq -r '.error.message // .' "$body_file" 2>/dev/null || cat "$body_file")" >&2
+else
+  jq -er '.choices[0].message.content' "$body_file"
+fi
+rm -f "$body_file"
 ```
+
+A non-2xx status, or `jq -e` failing on an empty answer, is an error: handle it as below.
 
 Show the answer to the user, attributed to the model that wrote it. To compare models, ask each one the same prompt and show the answers side by side.
 

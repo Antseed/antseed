@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUpRight01Icon, Moon02Icon, Sun02Icon } from '@hugeicons/core-free-icons';
-import { Button, Modal, Segmented, TextField } from '@antseed/ui';
+import { Button, ConfirmDialog, Segmented, TextField } from '@antseed/ui';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
 import type { GatewayKeyMode, GatewayMode, GatewaySettings, GatewaySettingsPatch } from '../../../types/bridge';
@@ -194,20 +194,15 @@ function GatewaySection() {
         ) : null}
         {message ? <p className={styles.formNote} role="status">{message}</p> : null}
       </VprCard>
-      <Modal
+      <ConfirmDialog
         isOpen={confirmingRotate}
         onClose={() => setConfirmingRotate(false)}
-        size="sm"
         title="Replace the desktop’s API keys?"
-        footer={(
-          <>
-            <Button variant="ghost" onClick={() => setConfirmingRotate(false)}>Cancel</Button>
-            <Button onClick={() => { void rotate(); }}>Replace keys</Button>
-          </>
-        )}
-      >
-        <p className={styles.formNote}>The old keys stop working, and connected apps get the new ones (running apps restart).</p>
-      </Modal>
+        body="The old keys stop working, and connected apps get the new ones (running apps restart)."
+        tone="primary"
+        confirmLabel="Replace keys"
+        onConfirm={() => { void rotate(); }}
+      />
     </div>
   );
 }

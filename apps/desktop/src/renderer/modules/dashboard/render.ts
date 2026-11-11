@@ -299,13 +299,16 @@ export function initDashboardRenderModule({
       `Proxy port: ${proxyPort > 0 ? proxyPort : 'not available'}`,
       `Active channels: ${formatInt(activeChannels)}`,
       `DHT health: ${dhtNote}`,
-      `DHT nodes: ${formatInt(stats.dhtNodeCount)}`,
-      `Lookup success: ${formatPercent(safeNumber(stats.lookupSuccessRate, 0) * 100)}`,
-      `Avg lookup latency: ${formatLatency(stats.averageLookupLatencyMs)}`,
-      `Last scan: ${formatRelativeTime(stats.lastScanAt)}`,
+      // This machine's network view says nothing about a remote gateway's.
+      ...(connection.localNetwork ? [
+        `DHT nodes: ${formatInt(stats.dhtNodeCount)}`,
+        `Lookup success: ${formatPercent(safeNumber(stats.lookupSuccessRate, 0) * 100)}`,
+        `Avg lookup latency: ${formatLatency(stats.averageLookupLatencyMs)}`,
+        `Last scan: ${formatRelativeTime(stats.lastScanAt)}`,
+      ] : []),
     ];
 
-    if (safeString(stats.healthReason, '').length > 0) {
+    if (connection.localNetwork && safeString(stats.healthReason, '').length > 0) {
       notes.push(`DHT reason: ${stats.healthReason}`);
     }
     if (degradedReasons.length > 0) {
@@ -313,7 +316,9 @@ export function initDashboardRenderModule({
     }
 
     uiState.connectionNotes = notes.join('\n');
-    uiState.connectionMeta = { tone: dht.tone, label: `DHT ${dht.label}` };
+    uiState.connectionMeta = connection.localNetwork
+      ? { tone: dht.tone, label: `DHT ${dht.label}` }
+      : { tone: connection.runtime === 'remote' ? 'active' : 'bad', label: connection.health };
 
     // Config
     if (results.config.ok) {

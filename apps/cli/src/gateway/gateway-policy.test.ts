@@ -208,6 +208,24 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
   }
 })
 
+test('decision models (SystemOne) go through the gateway as paid model requests, under the key\'s policy and accounting', async () => {
+  const ctx = await setup({ costUsdc: 1_000 })
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const answered = await ctx.send(secret, '/v1/systemone', { model: 'good-model', state: 'a', questions: {} })
+    assert.equal(answered.status, 200)
+    assert.equal(ctx.buyer.captured[0]!.url, '/v1/systemone')
+    const refused = await ctx.send(secret, '/v1/systemone', { model: 'other-model', state: 'a', questions: {} })
+    assert.equal(refused.status, 403)
+    assert.equal(refused.body.error.code, 'model_not_allowed')
+    assert.equal(ctx.buyer.captured.length, 1)
+    const [row] = ctx.store.listRequests({ keyId: key.id })
+    assert.equal(row!.model, 'good-model')
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a routing service pinned as the model passes the allow list like any model, with its routing options', async () => {
   const ctx = await setup()
   try {

@@ -108,14 +108,14 @@ export type ChatModuleApi = {
   chooseWorkspace: () => Promise<void>;
   startNewChat: () => void;
   startNewChatOnModel: (modelId: string) => void;
-  deleteConversation: (convId?: string) => Promise<void>;
+  deleteConversation: (convId?: string) => Promise<boolean>;
   renameConversation: (convId: string, newTitle: string) => void;
   /** Pin, unpin, archive or unarchive a chat in the sidebar. */
   setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;
   openConversation: (convId: string) => Promise<void>;
-  sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
-  sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;
-  generateImage: (prompt: string) => void;
+  sendMessage: (text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
+  sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
+  generateImage: (prompt: string, options?: { privateAtSubmit?: boolean }) => void;
   /** Pick a model in the composer dropdown: a text model rebinds the chat, an image model switches Send to image generation. */
   selectChatModel: (modelId: string) => void;
   /** Resend the last user message if it stopped for lack of funds (e.g. after a deposit). */
@@ -134,6 +134,9 @@ const MODEL_LIST_MAX_AUTO_RETRIES = 4;
 const FREE_MODEL_WAIT_MS = 45_000;
 const FREE_MODEL_POLL_MS = 2_000;
 const FINDING_FREE_MODEL = 'Finding a free model';
+/** The new chat's key among chats Private moved. */
+const DRAFT = '';
+const PRIVATE_NOT_CONFIRMED = 'Private couldn\'t be turned on, so this message wasn\'t sent. Switch to Private again, or send it in Anonymous.';
 const PRIVATE_HISTORY_REFUSAL = 'This chat was sent in Private. Carrying on here in Anonymous would send its history to providers that don\'t run in a TEE. Start a new chat, or switch back to Private.';
 
 type ImageRequest = { prompt: string; model: string; sourceImageAttachmentId?: string };
@@ -154,8 +157,12 @@ export function initChatModule({
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   let newChatDraftVersion = 0;
-  /** Stops of a first message before its chat exists. */
-  let draftAborts = 0;
+  /**
+   * The first message of a new chat, before its chat exists: only the draft
+   * that owns this may send or clear the sending state, and Stop takes it away.
+   */
+  let draftOwner = 0;
+  let draftSeq = 0;
   let firstModelShownRecorded = false;
   const sendingConversationIds = new Set<string>();
   const streamStartedAtByConversation = new Map<string, number>();
@@ -236,10 +243,14 @@ export function initChatModule({
   let modelRetryCount = 0;
 
   /** The new-chat default: the last model used (if the gateway still lists it), else the first text model. */
-  /** The model Private moved away from, for going back. Survives leaving Home. */
-  let modelMovedForPrivate: { from: string; to: string } | null = null;
-  /** Chats on the model Private chose: moved to it, or started on it. Only these go back. */
-  const chatsOnPrivateModel = new Set<string>();
+  /**
+   * Models Private put chats on, by chat (DRAFT for the new chat), with the
+   * model each had before: when Private ends, each one still on the model
+   * Private chose goes back, open or not. `privateChoice` is the latest, which
+   * new chats start on while Private is on.
+   */
+  const privateMoves = new Map<string, { from: string; to: string }>();
+  let privateChoice: { from: string; to: string } | null = null;
   /** Chats the user chose to carry from Private into Anonymous. */
   const privateHistoryAllowed = new Set<string>();
   /** Stop presses per conversation: a request checks its count is unchanged after every wait. */
@@ -286,7 +297,7 @@ export function initChatModule({
     // A list that dropped the chosen model (Private lists fewer) moved us off it;
     // once it is listed again, go back to what the user chose.
     // Private moved it for a reason; going back waits until Private ends.
-    if (modelMovedForPrivate && current === modelMovedForPrivate.to && listed) return;
+    if (privateMoves.get(DRAFT)?.to === current && listed) return;
     if (draftModel && current === draftModel && listed?.type === 'text') return;
     if (lastModel && current !== lastModel && findChatModel(uiState.chatModels, lastModel)?.type === 'text') {
       uiState.chatSelectedModelId = lastModel;
@@ -302,7 +313,8 @@ export function initChatModule({
       // Private's shorter list left the model out: like a move Private makes
       // itself, it is undone when Private ends.
       if (current && privacyResource.getSnapshot().data?.mode === 'private') {
-        modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
+        privateChoice = { from: privateMoves.get(DRAFT)?.from ?? current, to: next };
+        privateMoves.set(DRAFT, privateChoice);
       }
       uiState.chatSelectedModelId = next;
       void refreshPermissionModeForModel(next);
@@ -358,50 +370,77 @@ export function initChatModule({
 
   /** Not saved as the last model: nobody chose it, and it shouldn't outlive Private. */
   function moveModelForPrivate(next: string): void {
+    const convId = uiState.chatActiveConversation;
+    const key = convId ?? DRAFT;
     const current = uiState.chatSelectedModelId;
-    modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
-    if (activeConversation) chatsOnPrivateModel.add(activeConversation.id);
+    privateChoice = { from: privateMoves.get(key)?.from ?? current, to: next };
+    privateMoves.set(key, privateChoice);
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = next;
     // The open chat carries on with the model Private can use.
-    if (activeConversation) saveOpenChatModel(next);
+    if (convId) saveChatModel(convId, next);
     clearChatNotices();
     void refreshPermissionModeForModel(next);
     notifyUiStateChanged();
   }
 
   /**
+   * Private has ended: each chat still on the model Private chose for it goes
+   * back to its own, whether it is open or not. One the user moved since keeps
+   * the user's choice.
+   */
+  function restorePrivateMoves(): void {
+    const moves = [...privateMoves];
+    privateMoves.clear();
+    privateChoice = null;
+    const active = uiState.chatActiveConversation;
+    for (const [key, move] of moves) {
+      if (key === DRAFT) {
+        if (active || uiState.chatSelectedModelId !== move.to) continue;
+        uiState.chatSelectedModelId = move.from;
+        void refreshPermissionModeForModel(move.from);
+        continue;
+      }
+      const saved = pendingModelUpdates.get(key)?.modelId ?? modelChoices.get(key)?.modelId ?? findConversationSummary(key)?.service;
+      if (saved !== move.to) continue;
+      if (key === active) {
+        uiState.chatSelectedModelId = move.from;
+        void refreshPermissionModeForModel(move.from);
+      }
+      saveChatModel(key, move.from);
+    }
+    notifyUiStateChanged();
+  }
+
+
+  /**
    * On the toggle, before the gateway has switched, so the model changes at once
    * when it plainly must. The open chat stays open unless `newChat`; carrying a
    * chat with private history into Anonymous needs `keepPrivateHistory`.
    */
-  function privacyModeChosen(mode: 'anonymous' | 'private', choice: PrivacySwitchChoice = {}): void {
+  function privacyModeChosen(_mode: 'anonymous' | 'private', choice: PrivacySwitchChoice = {}): void {
     if (choice.newChat && activeConversation) startNewChat();
     else if (choice.keepPrivateHistory && activeConversation) privateHistoryAllowed.add(activeConversation.id);
-    if (mode === 'private') {
-      const next = chooseModelForPrivate(uiState.chatModels.filter((model) => model.tee), uiState.chatSelectedModelId, selectHasFunds(uiState));
-      if (next) moveModelForPrivate(next);
-      return;
-    }
-    const previous = modelMovedForPrivate;
-    const movedChats = new Set(chatsOnPrivateModel);
-    modelMovedForPrivate = null;
-    chatsOnPrivateModel.clear();
-    if (!previous || uiState.chatSelectedModelId !== previous.to) return;
-    // Only a chat Private put on this model goes back; another one chose it.
-    // A new chat isn't saved yet, so it can always go back.
-    if (activeConversation && !movedChats.has(activeConversation.id)) return;
-    uiState.chatSelectedModelId = previous.from;
-    if (activeConversation) saveOpenChatModel(previous.from);
-    void refreshPermissionModeForModel(previous.from);
-    notifyUiStateChanged();
+    // Models move only once the gateway has switched (privacySwitchLanded): a
+    // switch that fails changes nothing about the chat.
   }
+
 
   /** Once the gateway has switched: its list now says what each model costs under this mode. */
   async function privacySwitchLanded(mode: 'anonymous' | 'private'): Promise<void> {
+    if (mode !== 'private') {
+      restorePrivateMoves();
+      await refreshChatModels({ force: true });
+      return;
+    }
+    // The chat and its model as the switch landed: a list read that comes back
+    // after the user moved on must not change another chat's model.
+    const chatAtStart = uiState.chatActiveConversation;
     const before = uiState.chatSelectedModelId;
+    const revisionAtStart = chatAtStart ? modelChoices.get(chatAtStart)?.revision : undefined;
     await refreshChatModels({ force: true });
-    if (mode !== 'private') return;
+    if (uiState.chatActiveConversation !== chatAtStart) return;
+    if (chatAtStart && modelChoices.get(chatAtStart)?.revision !== revisionAtStart) return;
     // Judged from `before`: the refresh's own default for a model no longer listed prefers free.
     const next = chooseModelForPrivate(uiState.chatModels, before, selectHasFunds(uiState));
     if (next && next !== uiState.chatSelectedModelId) {
@@ -409,6 +448,7 @@ export function initChatModule({
       moveModelForPrivate(next);
     }
   }
+
 
   function scheduleModelRetry(options: { force?: boolean } = {}): void {
     if (modelRetryTimer || modelRetryCount >= MODEL_LIST_MAX_AUTO_RETRIES) return;
@@ -438,9 +478,9 @@ export function initChatModule({
     }
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = id;
-    // The user's own pick replaces whatever Private chose.
-    modelMovedForPrivate = null;
-    chatsOnPrivateModel.clear();
+    // The user's own pick replaces whatever Private chose, for this chat and new ones.
+    privateMoves.delete(uiState.chatActiveConversation ?? DRAFT);
+    privateChoice = null;
     draftModel = null;
     clearChatNotices();
     saveLastChatModel(id);
@@ -452,7 +492,11 @@ export function initChatModule({
   /** The open chat continues on `id` (the model it is saved with, for its next send). */
   function saveOpenChatModel(id: string): void {
     // The chat on screen, which may still be loading: not the last one loaded.
-    const convId = uiState.chatActiveConversation;
+    saveChatModel(uiState.chatActiveConversation, id);
+  }
+
+  /** Saves `id` as the chat's model (a draft has no chat yet: nothing to save but the selection). */
+  function saveChatModel(convId: string | null, id: string): void {
     if (convId) forgetFundsNotice(convId);
     if (convId) modelChoices.set(convId, { revision: (modelChoices.get(convId)?.revision ?? 0) + 1, modelId: id });
     if (convId) {
@@ -893,8 +937,10 @@ export function initChatModule({
       uiState.chatSelectedModelId = lastModel;
     }
     // A model Private chose stays for new chats while Private is on.
-    if (modelMovedForPrivate && findChatModel(uiState.chatModels, modelMovedForPrivate.to)) {
-      uiState.chatSelectedModelId = modelMovedForPrivate.to;
+    privateMoves.delete(DRAFT);
+    if (privateChoice && findChatModel(uiState.chatModels, privateChoice.to)) {
+      uiState.chatSelectedModelId = privateChoice.to;
+      privateMoves.set(DRAFT, privateChoice);
     }
     applyDefaultModel();
     void refreshPermissionModeForModel(uiState.chatSelectedModelId);
@@ -917,7 +963,8 @@ export function initChatModule({
       if (result.ok && result.data) {
         const conversationId = getConversationId(result.data);
         if (!conversationId) throw new Error('Conversation created but ID is missing');
-        if (modelMovedForPrivate && modelId === modelMovedForPrivate.to) chatsOnPrivateModel.add(conversationId);
+        const draftMove = privateMoves.get(DRAFT);
+        if (draftMove && modelId === draftMove.to) privateMoves.set(conversationId, draftMove);
         await refreshChatConversations();
         if (options.activate) await openConversation(conversationId, { keepImageModel: options.keepImageModel ?? false });
         uiState.chatError = null;
@@ -931,9 +978,10 @@ export function initChatModule({
     return null;
   }
 
-  async function deleteConversation(targetId?: string): Promise<void> {
+  /** True once the chat is gone; false when it couldn't be deleted (the error is shown in the chat). */
+  async function deleteConversation(targetId?: string): Promise<boolean> {
     const convId = targetId || uiState.chatActiveConversation;
-    if (!convId || !bridge?.chatAiDeleteConversation) return;
+    if (!convId || !bridge?.chatAiDeleteConversation) return false;
     const previousConversations = [...getConversationSummaries()];
     uiState.chatConversations = previousConversations.filter((conv) => conv.id !== convId);
     localConversationMessages.delete(convId);
@@ -951,13 +999,16 @@ export function initChatModule({
     else notifyUiStateChanged();
 
     try {
-      await bridge.chatAiDeleteConversation(convId);
+      const result = await bridge.chatAiDeleteConversation(convId) as { ok?: boolean; error?: string } | undefined;
+      if (result && result.ok === false) throw new Error(result.error ?? 'Could not delete the chat');
       await refreshChatConversations();
+      return true;
     } catch (err) {
       uiState.chatConversations = previousConversations;
       notifyUiStateChanged();
       void refreshChatConversations();
       reportChatError(err, 'Failed to delete conversation');
+      return false;
     }
   }
 
@@ -1036,13 +1087,18 @@ export function initChatModule({
     return result.data ?? [];
   }
 
-  function sendMessage(text: string, rawAttachments?: RawChatAttachment[]): void {
+  function sendMessage(text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean } = {}): void {
     if (!bridge) return;
     if (text.trim().length === 0 && !rawAttachments?.length) return;
 
+    // What the screen showed when Send was pressed: a message sent in Private
+    // never goes out Anonymous because the switch to Private failed.
+    const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
     if (!uiState.chatActiveConversation) {
       const draftVersion = newChatDraftVersion;
-      const aborts = draftAborts;
+      const draftToken = ++draftSeq;
+      draftOwner = draftToken;
+      const stillDraft = () => draftOwner === draftToken;
       // A default nobody chose can predate the free sellers or the list's final
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
@@ -1051,7 +1107,7 @@ export function initChatModule({
       void (async () => {
         // A new chat keeps its model, and the mode being switched to can move it.
         if (await holdForPrivacySwitch()) {
-          if (aborts !== draftAborts) return;
+          if (!stillDraft()) return;
           const mode = privacyResource.getSnapshot().data?.mode;
           if (mode) await privacySwitchLanded(mode);
           if (draftVersion === newChatDraftVersion) {
@@ -1059,8 +1115,8 @@ export function initChatModule({
             writtenWith = uiState.chatSelectedModelId;
           }
         }
-        const waited = await waitForFreeModel(() => aborts === draftAborts);
-        if (aborts !== draftAborts) return;
+        const waited = await waitForFreeModel(stillDraft);
+        if (!stillDraft()) return;
         // The draft's model is captured here: the user may switch before the
         // conversation finishes creating. A wait that found a free model moves to it.
         let modelId = writtenWith;
@@ -1073,14 +1129,17 @@ export function initChatModule({
           }
         }
         const convId = await createConversationForModel(modelId, { activate: false });
+        // Stopped while the chat was being made: it stays, empty, and nothing is sent.
+        if (!stillDraft()) return;
+        draftOwner = 0;
         setDraftSending(false);
         if (!convId) return;
         if (draftVersion === newChatDraftVersion) await openConversation(convId);
-        sendMessageToConversation(convId, text, rawAttachments);
+        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit });
       })();
       return;
     }
-    sendMessageToConversation(uiState.chatActiveConversation, text, rawAttachments);
+    sendMessageToConversation(uiState.chatActiveConversation, text, rawAttachments, { privateAtSubmit });
   }
 
   /** Whether a first message should hold until a free model is listed (see `shouldWaitForFreeModel`). */
@@ -1111,7 +1170,9 @@ export function initChatModule({
     return true;
   }
 
-  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[]): void {
+  /** `privateAtSubmit`: Private was on screen when Send was pressed (read now when not given). */
+  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean } = {}): void {
+    const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
     if (isConversationSending(convId)) {
       showChatError('This conversation already has a request in progress.');
       return;
@@ -1161,7 +1222,7 @@ export function initChatModule({
         activeConversation.updatedAt = Date.now();
       }
       notifyUiStateChanged();
-      void dispatchChatRequest(convId, token, content, preparedAttachments);
+      void dispatchChatRequest(convId, token, content, preparedAttachments, privateAtSubmit);
     })();
   }
 
@@ -1180,7 +1241,7 @@ export function initChatModule({
   }
 
   /** `token`: the request's ownership of the conversation (see `beginSend`); losing it cancels the request. */
-  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[]): Promise<void> {
+  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[], privateAtSubmit = false): Promise<void> {
     if (!bridge?.chatAiSendStream) {
       endSend(convId, token);
       return;
@@ -1189,7 +1250,7 @@ export function initChatModule({
     const modelUpdate = pendingModelUpdates.get(convId);
     if (modelUpdate) await modelUpdate.done;
     if (!ownsSend(convId, token)) return;
-    const privacy = await clearForPrivacy(convId, token);
+    const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
     if (!privacy) {
       endSend(convId, token);
       return;
@@ -1239,10 +1300,15 @@ export function initChatModule({
    * or stopped while held); otherwise whether the gateway must still be in
    * Private when it sends, which the main process checks after its own wait.
    */
-  async function clearForPrivacy(convId: string, token: number): Promise<{ requirePrivate: boolean; allowPrivateHistory: boolean } | null> {
+  async function clearForPrivacy(convId: string, token: number, privateAtSubmit = false): Promise<{ requirePrivate: boolean; allowPrivateHistory: boolean } | null> {
     await holdForPrivacySwitch();
     if (!ownsSend(convId, token)) return null;
     const mode = privacyResource.getSnapshot().data?.mode;
+    // Sent while the screen showed Private, but the switch didn't take: it waits for the user.
+    if (privateAtSubmit && mode !== 'private') {
+      showChatError(PRIVATE_NOT_CONFIRMED);
+      return null;
+    }
     const held = heldPrivate(convId);
     if (mode === 'anonymous' && held) {
       showChatError(PRIVATE_HISTORY_REFUSAL);
@@ -1325,10 +1391,13 @@ export function initChatModule({
       setConversationSending(convId, false);
     }
     else {
-      draftAborts += 1;
+      // A draft has no run in the main process yet: stopping it must not abort
+      // every chat's run, which is what an abort without a chat id does.
+      draftOwner = 0;
       setDraftSending(false);
+      return;
     }
-    if (bridge?.chatAiAbort) await bridge.chatAiAbort(convId ?? undefined);
+    if (bridge?.chatAiAbort) await bridge.chatAiAbort(convId);
   }
 
   // ---------------------------------------------------------------------------
@@ -1339,12 +1408,12 @@ export function initChatModule({
   const imageRetryByConversation = new Map<string, ImageRequest>();
 
   /** The prompt is already in the conversation, from the first attempt. */
-  async function runImageRequest(convId: string, request: ImageRequest): Promise<void> {
+  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
     const token = beginSend(convId);
     queueScrollChatToBottom();
     try {
-      const privacy = await clearForPrivacy(convId, token);
+      const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
       if (!privacy) return;
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
@@ -1381,7 +1450,8 @@ export function initChatModule({
     }
   }
 
-  function generateImage(prompt: string): void {
+  function generateImage(prompt: string, options: { privateAtSubmit?: boolean } = {}): void {
+    const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
     const content = prompt.trim();
     if (!content || !bridge?.chatGenerateImage) return;
     const imageModelId = uiState.chatImageModelId;
@@ -1459,7 +1529,7 @@ export function initChatModule({
         prompt: requestPrompt,
         model: imageModelId,
         ...(editing ? { sourceImageAttachmentId } : {}),
-      });
+      }, privateAtSubmit);
     })();
   }
 

@@ -59,11 +59,14 @@ export function VprHomeView({ onSelectView }: Props) {
     input.style.height = `${Math.min(input.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [draft]);
 
+  // A send during a privacy switch is held until it lands. The model may still
+  // move once Private's list is in. An image chat needs a text model too.
+  const waitingForPrivateModels = privateMode && snap.chatModelsLoading;
+  const canSend = draft.trim().length > 0 && Boolean(snap.chatSelectedModelId) && !waitingForPrivateModels;
+
   function submitDraft(): void {
     const text = draft.trim();
-    // A send during a privacy switch is held until it lands. The model may still
-    // move once Private's list is in. An image chat needs a text model too.
-    if (!text || !snap.chatSelectedModelId || (privateMode && snap.chatModelsLoading)) return;
+    if (!canSend) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChatOnModel(snap.chatSelectedModelId);
     if (snap.chatImageModelId) {
@@ -146,8 +149,8 @@ export function VprHomeView({ onSelectView }: Props) {
                     type="submit"
                     className={styles.askSend}
                     aria-label="Send message"
-                    title="Send message"
-                    disabled={draft.trim().length === 0 || !snap.chatSelectedModelId}
+                    title={waitingForPrivateModels ? 'Loading Private\u2019s models…' : 'Send message'}
+                    disabled={!canSend}
                   >
                     <HugeiconsIcon icon={ArrowUp02Icon} size={20} strokeWidth={2} />
                   </button>

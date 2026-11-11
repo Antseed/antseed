@@ -143,4 +143,6 @@ test('the copy prompt carries the base URL and key', () => {
   const prompt = agentSetupPrompt(endpoint);
   assert.ok(prompt.includes('http://127.0.0.1:8379/v1'));
   assert.ok(prompt.includes('sk-antseed-test'));
+  // It tells the agent the key is a secret to store, not print.
+  assert.match(prompt, /secret/);
 });

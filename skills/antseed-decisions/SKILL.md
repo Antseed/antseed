@@ -53,7 +53,7 @@ curl --fail-with-body \
   "$proxy_url/v1/models?type=decisions"
 ```
 
-The endpoint is answered locally and returns network-wide decision models. Each entry has `type: "decision"` and `supported_protocols` containing `typesafe-systemone`. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided and exactly one decision model is listed, use it; otherwise ask the user. Use `GET /v1/models/<id>` for the model's ranked offers, pricing, and `context_length`.
+The endpoint is answered locally and returns network-wide decision models. Each entry has `type: "decision"` and `supported_protocols` containing `typesafe-systemone`. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided and exactly one decision model is listed, use it; otherwise ask the user. The matched entry in that list carries the model's offers (`peers`), pricing, and `context_length`; the gateway serves only the list, not `/v1/models/<id>`.
 
 Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. A bare model id lets the buyer proxy apply its Price + Trust preferences and fail over when another eligible serving peer is needed.
 

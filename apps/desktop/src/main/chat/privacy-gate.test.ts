@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { passPrivacyGate, PRIVATE_REQUIRED_ERROR, requiresPrivate } from './privacy-gate.js';
+import { passPrivacyGate, PRIVATE_REQUIRED_ERROR, REMOTE_PRIVATE_ERROR, requiresPrivate } from './privacy-gate.js';
 
 test('a request waits for a privacy switch before reading the mode it goes out under', async () => {
   let mode: 'anonymous' | 'private' = 'anonymous';
@@ -16,7 +16,9 @@ test('a request that needs Private is refused once Private is off, and others go
   const anonymous = { whenSettled: async () => undefined, mode: () => 'anonymous' as const };
   assert.equal(await passPrivacyGate(anonymous, true), PRIVATE_REQUIRED_ERROR);
   assert.equal(await passPrivacyGate(anonymous, false), null);
-  assert.equal(await passPrivacyGate({ whenSettled: async () => undefined, mode: () => null }, true), null);
+  // A remote gateway can't be confirmed to honor the request's TEE requirement: protected requests fail closed.
+  assert.equal(await passPrivacyGate({ whenSettled: async () => undefined, mode: () => null }, true), REMOTE_PRIVATE_ERROR);
+  assert.equal(await passPrivacyGate({ whenSettled: async () => undefined, mode: () => null }, false), null);
   assert.equal(await passPrivacyGate(undefined, true), null);
 });
 
@@ -30,4 +32,11 @@ test('a chat with replies sent in Private needs Private, whoever sends, unless t
   // So a Telegram turn on that chat is refused once Private is off.
   const anonymous = { whenSettled: async () => undefined, mode: () => 'anonymous' as const };
   assert.equal(await passPrivacyGate(anonymous, requiresPrivate({}, sentPrivately)), PRIVATE_REQUIRED_ERROR);
+});
+
+test('a Telegram turn on a chat sent in Private is refused on a remote gateway, even one that would accept it', async () => {
+  const remote = { whenSettled: async () => undefined, mode: () => null };
+  const sentPrivately = [{ meta: { privacy: 'private' } }];
+  assert.equal(await passPrivacyGate(remote, requiresPrivate({}, sentPrivately)), REMOTE_PRIVATE_ERROR);
+  assert.equal(await passPrivacyGate(remote, requiresPrivate({}, [{ meta: { privacy: 'anonymous' } }])), null);
 });

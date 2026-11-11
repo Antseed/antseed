@@ -123,3 +123,27 @@ test('a Private run\'s requests always ask for TEE sellers, whatever the shell s
     open.revoke();
   });
 });
+
+test('a gateway that drops mid-answer ends the shell\'s request instead of leaving it waiting', async () => {
+  const gateway = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: partial\n\n');
+    setTimeout(() => res.socket?.destroy(), 50);
+  });
+  await new Promise<void>((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  try {
+    const origin = `http://127.0.0.1:${(gateway.address() as AddressInfo).port}`;
+    const grant = await grantShellGateway({ origin, apiKey: 'real-key' });
+    const outcome = await Promise.race([
+      fetch(`${grant.url}/v1/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${grant.token}` }, body: '{}' })
+        .then((answer) => answer.text())
+        .then(() => 'completed', () => 'failed'),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 2_000)),
+    ]);
+    assert.equal(outcome, 'failed');
+    grant.revoke();
+  } finally {
+    gateway.closeAllConnections();
+    gateway.close();
+  }
+});

@@ -54,13 +54,15 @@ export function VprRewardsView() {
           <VprCard className={styles.heroCard}>
             <div className={styles.heroText}>
               <span className={styles.heroLabel}>Pending $ANTS</span>
-              <span className={styles.heroValue}>{rewards ? formatCredits(pending) : error ? '—' : '…'}</span>
+              <span className={styles.heroValue}>{rewards?.remoteChainUnverified ? '—' : rewards ? formatCredits(pending) : error ? '—' : '…'}</span>
               <span className={styles.heroHint}>
                 {!rewards
                   ? error ?? 'Reading your rewards…'
-                  : rewards.available
-                    ? `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : ''}.`
-                    : 'Rewards are not live on this network yet.'}
+                  : rewards.remoteChainUnverified
+                    ? 'Your remote gateway\'s rewards are on its own network: see them in your gateway.'
+                    : rewards.available
+                      ? `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : ''}.`
+                      : 'Rewards are not live on this network yet.'}
               </span>
             </div>
             <div className={styles.heroActions}>

@@ -15,6 +15,8 @@ import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
 import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
+import { ConsoleLaunchNotice } from './ConsoleLaunchNotice';
+import { openGatewayConsole } from '../../modules/app/console-launch';
 import { SidebarBalance } from './vpr/SidebarBalance';
 import { VprNavContext } from './vpr/VprNavContext';
 import { VprHeaderActions } from './vpr/VprHeaderActions';
@@ -137,7 +139,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
   const openDashboard = useCallback(() => {
-    void window.antseedDesktop?.gatewayOpenConsole?.('/');
+    void openGatewayConsole('/');
   }, []);
   const chatActive = activeView === 'chat';
   const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
@@ -291,6 +293,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         )}
         <NetworkAlertBanner />
         <UpdateBanner />
+        <ConsoleLaunchNotice onOpenSettings={() => onSelectView('preferences')} />
         <DepositProgressBanner onAddFunds={() => onSelectView('deposit')} onDepositView={activeView === 'deposit'} />
       </main>
     </div>

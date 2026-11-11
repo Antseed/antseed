@@ -666,6 +666,17 @@ export function VprToolsView() {
                     )}
                   </section>
                 ) : null}
+                {settingsProfile.name === ZED_APP && settingsProfile.connected && !zedKey.apiKey && zedKey.error ? (
+                  <section className={styles.settingSection}>
+                    <div className={styles.settingHead}>
+                      <span className={styles.settingTitle}>API key</span>
+                    </div>
+                    <p className={styles.settingHint} role="alert">{zedKey.error}</p>
+                    <button type="button" className={styles.settingTextLink} onClick={zedKey.retry}>
+                      Try again
+                    </button>
+                  </section>
+                ) : null}
 
                 <section className={styles.settingSection}>
                   <div className={styles.settingHead}>

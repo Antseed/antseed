@@ -166,6 +166,8 @@ type PendingDraft = {
   text: string;
   attachments: RawChatAttachment[];
   mode: 'text' | 'image';
+  /** Private was on screen when it was queued. */
+  privateAtSubmit: boolean;
 };
 
 type ChatViewCache = {
@@ -541,12 +543,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     const head = activePendingQueue[0];
     if (!head) return;
     setPendingQueue((prev) => prev.filter((item) => item.id !== head.id));
+    const options = { privateAtSubmit: head.privateAtSubmit };
     if (head.mode === 'image') {
-      actions.generateImage(head.text);
+      actions.generateImage(head.text, options);
     } else if (head.conversationId) {
-      actions.sendMessageToConversation(head.conversationId, head.text, head.attachments);
+      actions.sendMessageToConversation(head.conversationId, head.text, head.attachments, options);
     } else {
-      actions.sendMessage(head.text, head.attachments);
+      actions.sendMessage(head.text, head.attachments, options);
     }
   }, [snap.chatInputDisabled, activePendingQueue, actions]);
 
@@ -630,7 +633,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           : `pending-${String(Date.now())}-${String(Math.random())}`;
       setPendingQueue((prev) => [
         ...prev,
-        { id, conversationId: snap.chatActiveConversation, text, attachments: attachedFiles, mode: imageMode ? 'image' : 'text' },
+        { id, conversationId: snap.chatActiveConversation, text, attachments: attachedFiles, mode: imageMode ? 'image' : 'text', privateAtSubmit: privateMode },
       ]);
       resetComposer();
       return;
@@ -1109,6 +1112,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               <ThinkingDots label={snap.chatThinkingPhase} />
             ) : null}
             {snap.chatError && <ChatNote>{snap.chatError}</ChatNote>}
+            {/* The welcome screen's privacy note shows a failed switch; an open chat shows it here. */}
+            {!showWelcome && privacyControl.error && privacyControl.error !== snap.chatError && <ChatNote>{privacyControl.error}</ChatNote>}
             {snap.chatFundsNotice && (
               <ChatNote
                 actions={[
