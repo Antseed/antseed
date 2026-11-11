@@ -256,7 +256,7 @@ export interface PlainMultipartPart extends MultipartPart {
   billedText: boolean;
 }
 
-/** Splits a body at its delimiters. `framed` says each delimiter has a line to itself and only white space follows the last. */
+/** Splits a body at its delimiters. `framed` says each delimiter has a line to itself, with only whitespace before the first and after the last. */
 function splitMultipart(body: Uint8Array, contentType: string | undefined) {
   if (!contentType) return null;
   const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
@@ -269,7 +269,7 @@ function splitMultipart(body: Uint8Array, contentType: string | undefined) {
   const delimiter = `--${boundary}`;
   const parts: MultipartPart[] = [];
   let index = text.indexOf(delimiter);
-  let framed = index === 0 || text.startsWith('\r\n', index - 2);
+  let framed = (index === 0 || text.startsWith('\r\n', index - 2)) && text.slice(0, index).trim() === '';
   while (index !== -1) {
     index += delimiter.length;
     if (text.startsWith('--', index)) {
@@ -376,7 +376,7 @@ function isPlainText({ headers, content }: MultipartPart): boolean {
  * The parts of a multipart/form-data body written the plain way every form
  * encoder writes it; null for any other. Plain means a simple boundary, found
  * only where it frames a part, with each delimiter starting its line and only
- * white space after the last, and part headers one to a line, each with a
+ * whitespace before the first and after the last, and part headers one to a line, each with a
  * simply written name. Readers agree on such a body, where they can disagree
  * on one written any other way.
  */

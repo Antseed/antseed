@@ -18,6 +18,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Multipart request framing (`@antseed/api-adapter`, `@antseed/node`): seller admission requires a whitespace-only preamble as well as a whitespace-only epilogue. Forms containing another payload before the first delimiter are refused before payment.
+
 - Multipart model aliases (`@antseed/provider-core`, `@antseed/api-adapter`): billing and relay readers recognize `Content-Disposition` only on its own header line, so a quoted header value cannot redirect an alias rewrite into a different part.
 
 - Multipart request billing (`@antseed/node`): price-affecting inputs such as `quality`, `n`, `size` and `resolution` must each appear once as a plain text field. Repeated image files and collection fields remain supported.
