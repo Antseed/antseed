@@ -340,21 +340,41 @@ test('spend signed without a request id goes to the latest tag on that seller', 
   assert.deepEqual(feed.page(0).events.map((event) => [event.tag, event.amountUsdc]), [['gw_a', '10'], ['gw_a', '7']])
 })
 
-test('spend without a request id is not guessed when several tags share the identity and seller', (context) => {
+test('spend without a request id is shared among the tags that used the seller lately, by their spend', (context) => {
   let now = 0
   const feed = new SpendAttributionFeed(() => now)
   context.after(() => feed.close())
   feed.track('req-a', 'gw_a')
   feed.track('req-b', 'gw_b')
   const spend = { sellerPeerId: 's', amountUsdc: '10', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+  feed.record({ ...spend, requestId: 'req-a', amountUsdc: '300' })
+  now = 1
+  feed.record({ ...spend, requestId: 'req-b', amountUsdc: '100' })
+  // A seller's catch-up prompt while both requests run: nothing may be lost, and each pays its part.
+  feed.record({ ...spend, requestId: null, amountUsdc: '101', outputTokens: '9' })
+  const shared = feed.page(0).events.slice(2)
+  assert.deepEqual(shared.map((event) => [event.tag, event.amountUsdc, event.outputTokens]), [['gw_b', '26', '9'], ['gw_a', '75', '0']])
+  // After the window it goes to the last tag that had spend on the seller.
+  now = 6 * 60 * 1000
+  feed.record({ ...spend, requestId: null, amountUsdc: '3' })
+  feed.record({ ...spend, requestId: null, amountUsdc: '4', sellerPeerId: 'never-used' })
+  assert.deepEqual(feed.page(0).events.slice(4).map((event) => [event.tag, event.amountUsdc]), [['gw_b', '3']])
+})
+
+test('untagged spend is shared evenly when the recent tags had no spend of their own, and per buyer identity', (context) => {
+  const feed = new SpendAttributionFeed()
+  context.after(() => feed.close())
+  feed.track('req-a', 'gw_a')
+  feed.track('req-b', 'gw_b')
+  feed.track('req-c', 'gw_c')
+  const spend = { sellerPeerId: 's', amountUsdc: '0', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
   feed.record({ ...spend, requestId: 'req-a' })
   feed.record({ ...spend, requestId: 'req-b' })
-  feed.record({ ...spend, requestId: null, amountUsdc: '7' })
-  assert.deepEqual(feed.page(0).events.map((event) => event.tag), ['gw_a', 'gw_b'])
-  now = 6 * 60 * 1000
-  feed.record({ ...spend, requestId: 'req-b' })
-  feed.record({ ...spend, requestId: null, amountUsdc: '3' })
-  assert.deepEqual(feed.page(0).events.map((event) => [event.tag, event.amountUsdc]).slice(2), [['gw_b', '10'], ['gw_b', '3']])
+  feed.record({ ...spend, requestId: 'req-c', buyerIdentity: 'other-workspace' })
+  feed.record({ ...spend, requestId: null, amountUsdc: '5' })
+  const shares = feed.page(0).events.filter((event) => event.requestId === null)
+  assert.deepEqual(shares.map((event) => event.tag).sort(), ['gw_a', 'gw_b'])
+  assert.equal(shares.reduce((sum, event) => sum + Number(event.amountUsdc), 0), 5)
 })
 
 test('late spend keeps its tag after more than 2048 newer requests', (context) => {

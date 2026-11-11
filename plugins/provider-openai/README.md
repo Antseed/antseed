@@ -6,9 +6,7 @@ Provide OpenAI-compatible API capacity on the Antseed P2P network (OpenAI, Toget
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-openai
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 
