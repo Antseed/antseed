@@ -29,11 +29,13 @@ const BUYER_SERVICE_FIELDS = new Set(['service', 'model']);
 const PRICED_FORM_FIELDS = new Set<string>(MULTIPART_PRICED_FIELDS);
 
 /**
- * Other billing inputs. Billing reads them from JSON bodies only, so in a form they need no
- * text value (a file part named `audio` is fine); they still appear once, under their plain name.
+ * Every billing input, by its plain name. Each appears once and under exactly that name, in a
+ * form and in JSON. Beside the priced form fields above, none is priced from a form: video and
+ * speech billing read JSON only, `prompt` only sizes an estimate and `model` is checked as the
+ * service. So in a form the others may be files or long text (a file part named `audio` is fine).
  */
-const SINGLE_FORM_FIELDS = new Set<string>([
-  ...UNIT_BILLING_MATCH_KEYS_V1,
+const BILLING_FIELDS = new Set<string>([
+  ...UNIT_BILLING_MATCH_KEYS_V1, ...MULTIPART_PRICED_FIELDS,
   'duration', 'generate_audio', 'reference_video_urls', 'video_urls', 'prompt', 'input',
 ]);
 
@@ -48,11 +50,11 @@ export interface ServiceRefusal {
     | 'ambiguous_service'
     /** A top-level field selects an upstream model beside the billed one. */
     | 'unsupported_model_selector'
-    /** A top-level JSON key, a service field or a multipart billing field appears more than once. */
+    /** A top-level JSON key (in any letter case), a service field or a multipart billing field appears more than once. */
     | 'repeated_field'
-    /** A multipart field billing prices by is not one short plain text value under its plain name. */
+    /** A billing input is spelled another way (case, padding, array form), or a priced form field is not one short plain text value. */
     | 'invalid_billing_field'
-    /** A multipart body is not written the plain way form encoders write it. */
+    /** A multipart request is not written the plain way form encoders write it. */
     | 'unsupported_multipart_body'
     /** The request has more than one Content-Type header. */
     | 'ambiguous_content_type';
@@ -97,18 +99,26 @@ export function readRequestBodyService(request: Pick<SerializedHttpRequest, 'hea
   if (contentTypes.length > 1) return refuse('ambiguous_content_type', 'Request must have one Content-Type header.');
   const contentType = (contentTypes[0]?.[1] ?? '').trim();
   if (!/^multipart\/form-data/i.test(contentType)) {
-    const named = jsonServiceFields(request.body);
-    return Array.isArray(named) ? oneService(named, 'json') : named;
+    const body = parseJsonObject(request.body);
+    if (!body) return NO_SERVICE;
+    const keys = topLevelKeys(request.body);
+    // `JSON.parse` keeps the last of a repeated key and other parsers the first, for any field,
+    // and a parser that ignores letter case finds a repeat where this one finds two keys.
+    const repeated = firstRepeat(keys.map(foldKey));
+    if (repeated !== undefined) return refuse('repeated_field', `Field ${quote(keys[repeated]!)} must appear once.`);
+    const read = oneService(keys.filter(selectsService).map((name) => [name, body[name]]), 'json');
+    return read.service === null ? read : billingFieldRefusal(keys.map((name) => ({ name, billedText: true }))) ?? read;
   }
   const parts = readPlainMultipartParts(request.body, contentType);
   if (!parts) {
     return refuse(
       'unsupported_multipart_body',
-      'Multipart body must be written the standard way form encoders write it: one boundary, each part with one plainly named Content-Disposition header, and nothing but white space before the first part or after the last.',
+      'Multipart request must be written the standard way form encoders write it: a content type with one plain boundary, each part with one plainly named Content-Disposition header, and nothing but white space before the first part or after the last.',
     );
   }
   const services = parts.filter((part) => selectsService(part.name));
-  const unreadable = services.find((part) => !part.billedText);
+  // A selector is refused as one however it is sent; a service field has to be text every reader reads alike.
+  const unreadable = services.find((part) => !part.billedText && !UPSTREAM_SELECTION_FIELD.test(part.name));
   if (unreadable) return refuse('ambiguous_service', `Field ${quote(unreadable.name)} must be sent as one short plain text field.`);
   // A BOM stays in the text, for the padding check to see.
   const read = oneService(services.map((part) => [part.name, new TextDecoder('utf-8', { ignoreBOM: true }).decode(part.content)]), 'multipart');
@@ -117,38 +127,51 @@ export function readRequestBodyService(request: Pick<SerializedHttpRequest, 'hea
 
 /** The one service a body's service and selector fields name, or why they name none. */
 function oneService(named: NamedFields, format: 'json' | 'multipart'): RequestBodyService {
-  const selector = named.find(([name]) => UPSTREAM_SELECTION_FIELD.test(name));
+  const selector = named.find(([name]) => UPSTREAM_SELECTION_FIELD.test(foldKey(name)));
   if (selector) {
     return refuse('unsupported_model_selector', `Field ${quote(selector[0])} selects an upstream model, which this seller does not accept: it serves the one service named in "model".`);
   }
-  const fields = new Map(named);
-  if (fields.size !== named.length) {
-    const repeated = named.find(([name], index) => named.findIndex(([other]) => other === name) !== index)!;
-    return refuse('repeated_field', `Field ${quote(repeated[0])} must appear once.`);
-  }
+  const repeated = firstRepeat(named.map(([name]) => name));
+  if (repeated !== undefined) return refuse('repeated_field', `Field ${quote(named[repeated]![0])} must appear once.`);
   const other = named.find(([name]) => !BUYER_SERVICE_FIELDS.has(name));
   if (other) {
     return refuse('ambiguous_service', `Field ${quote(other[0])} is not accepted: name the service in "model" or "service", spelled exactly so.`);
   }
+  const fields = new Map(named);
   // A null `service` is a missing one, to the readers that follow too.
   if (fields.get('service') === null) fields.delete('service');
   const service = fields.get('service') ?? fields.get('model');
-  const differ = refuse('ambiguous_service', '"service" and "model" must say exactly the same.');
-  if (typeof service !== 'string' || service.length === 0) return fields.size > 1 ? differ : NO_SERVICE;
+  const agree = [...fields.values()].every((value) => value === service);
+  if (!agree) return refuse('ambiguous_service', '"service" and "model" must say exactly the same.');
+  if (typeof service !== 'string' || service.length === 0) return NO_SERVICE;
   if (service !== service.trim()) return refuse('ambiguous_service', 'The service name must be written without surrounding white space.');
-  return [...fields.values()].every((value) => value === service) ? { service, format } : differ;
+  return { service, format };
 }
 
-/** Why a form's billing inputs cannot be read one way, if they cannot. */
-function billingFieldRefusal(parts: PlainMultipartPart[]): { service: null; refusal: ServiceRefusal } | undefined {
+/** The index of the first name that an earlier one already used, if any. */
+function firstRepeat(names: string[]): number | undefined {
   const seen = new Set<string>();
-  for (const part of parts) {
-    const name = part.name.trim().toLowerCase().replace(/\[.*$/, '').trim();
-    const priced = PRICED_FORM_FIELDS.has(name);
-    if (!priced && !SINGLE_FORM_FIELDS.has(name)) continue;
+  for (const [index, name] of names.entries()) {
+    if (seen.has(name)) return index;
+    seen.add(name);
+  }
+  return undefined;
+}
+
+/**
+ * Why a body's billing inputs cannot be read one way, if they cannot. A field
+ * that reads as a billing input to a reader ignoring letter case, padding or an
+ * array suffix has to be spelled plainly and appear once; `billedText` says a
+ * priced form field is one short plain text value (a JSON field always is).
+ */
+function billingFieldRefusal(fields: Array<Pick<PlainMultipartPart, 'name' | 'billedText'>>): { service: null; refusal: ServiceRefusal } | undefined {
+  const seen = new Set<string>();
+  for (const field of fields) {
+    const name = foldKey(field.name).trim().replace(/\[.*$/, '').trim();
+    if (!BILLING_FIELDS.has(name)) continue;
     if (seen.has(name)) return refuse('repeated_field', `Field ${quote(name)} must appear once.`);
-    if (part.name !== name) return refuse('invalid_billing_field', `Field ${quote(part.name)} must be named exactly ${quote(name)}.`);
-    if (priced && !part.billedText) return refuse('invalid_billing_field', `Field ${quote(name)} must be sent as one short plain text field.`);
+    if (field.name !== name) return refuse('invalid_billing_field', `Field ${quote(field.name)} must be named exactly ${quote(name)}.`);
+    if (PRICED_FORM_FIELDS.has(name) && !field.billedText) return refuse('invalid_billing_field', `Field ${quote(name)} must be sent as one short plain text field.`);
     seen.add(name);
   }
   return undefined;
@@ -163,21 +186,17 @@ export function requestBodyFields(request: Pick<SerializedHttpRequest, 'headers'
   return extractRequestBodyFields(request.headers, request.body);
 }
 
-/** Every top-level field of a JSON body that names a service or selects a model, or why the body is refused. */
-function jsonServiceFields(bytes: Uint8Array): NamedFields | { service: null; refusal: ServiceRefusal } {
-  const body = parseJsonObject(bytes);
-  if (!body) return NO_SERVICE;
-  // `JSON.parse` keeps the last of a repeated key and other parsers the first, for any field.
-  const seen = new Set<string>();
-  for (const key of topLevelKeys(bytes)) {
-    if (seen.has(key)) return refuse('repeated_field', `Field ${quote(key)} must appear once.`);
-    seen.add(key);
-  }
-  return [...seen].filter(selectsService).map((name) => [name, body[name]]);
+/**
+ * A JSON key as a parser that ignores letter case reads it. Some match keys that way,
+ * and also read the long s (U+017F) as `s` and the Kelvin sign (U+212A) as `k`.
+ */
+function foldKey(key: string): string {
+  return key.toUpperCase().toLowerCase();
 }
 
 function selectsService(name: string): boolean {
-  return SERVICE_FIELD.test(name) || UPSTREAM_SELECTION_FIELD.test(name);
+  const folded = foldKey(name);
+  return SERVICE_FIELD.test(folded) || UPSTREAM_SELECTION_FIELD.test(folded);
 }
 
 const QUOTE = 0x22;

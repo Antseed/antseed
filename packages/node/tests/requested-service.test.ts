@@ -298,6 +298,11 @@ describe('requestBodyService', () => {
       ['a key through an escape', '{"model":"svc","\\u006e":1,"n":10}'],
       ['a key no reader here prices by', '{"model":"svc","messages":[],"messages":[{"role":"user","content":"x"}]}'],
       ['a key after nested objects', '{"n":1,"tools":[{"n":{"n":2}}],"model":"svc","n":10}'],
+      ['n in another letter case', '{"model":"svc","n":1,"N":10}'],
+      ['quality in another letter case', '{"model":"svc","Quality":"high","quality":"low"}'],
+      ['size written with a long s', '{"model":"svc","size":"256x256","\u017fize":"1024x1024"}'],
+      ['model in another letter case, same value', '{"model":"svc","Model":"svc"}'],
+      ['a key no reader here prices by, in another letter case', '{"model":"svc","user":"a","User":"b"}'],
     ])('%s', (_name, text) => {
       expect(readRequestBodyService(rawJson(text))).toMatchObject({ service: null, refusal: { code: 'repeated_field' } });
     });
@@ -306,6 +311,7 @@ describe('requestBodyService', () => {
       ['the same key at another depth', '{"model":"svc","n":1,"tools":[{"n":2}],"metadata":{"n":3}}'],
       ['a repeated key inside a nested object', '{"model":"svc","metadata":{"a":1,"a":2}}'],
       ['text that looks like a repeated key', '{"model":"svc","n":1,"prompt":"\\"n\\":10,\\"n\\":11"}'],
+      ['keys that differ by more than their letter case', '{"model":"svc","n":1,"n_":2,"size":"a","sizes":"b"}'],
     ])('reads %s', (_name, text) => {
       expect(requestBodyService(rawJson(text))).toBe('svc');
     });
@@ -321,7 +327,9 @@ describe('requestBodyService', () => {
       ['an empty model', json({ model: '' }), 'model_required'],
       ['a form with no service field', multipart(field('prompt', 'x')), 'model_required'],
       ['JSON service and model that differ', json({ service: 'svc', model: 'other' }), 'ambiguous_service'],
-      ['a JSON model in another case', json({ model: 'svc', MODEL: 'svc' }), 'ambiguous_service', '"MODEL"'],
+      ['a JSON model only in another case', json({ MODEL: 'svc' }), 'ambiguous_service', '"MODEL"'],
+      ['a JSON model in two cases', json({ model: 'svc', MODEL: 'svc' }), 'repeated_field', '"MODEL"'],
+      ['a JSON service written with a long s', json({ model: 'svc', '\u017fervice': 'other' }), 'ambiguous_service'],
       ['a JSON modelId', json({ model: 'svc', modelId: 'svc' }), 'ambiguous_service', '"modelId"'],
       ['a padded JSON model', json({ model: ' svc' }), 'ambiguous_service'],
       ['an empty service beside a model', json({ service: '', model: 'svc' }), 'ambiguous_service'],
@@ -335,7 +343,22 @@ describe('requestBodyService', () => {
       ['a repeated multipart prompt', multipart(model, field('prompt', 'x'), field('prompt', 'y')), 'repeated_field', '"prompt"'],
       ['a JSON model list', json({ model: 'svc', models: ['other'] }), 'unsupported_model_selector', '"models"'],
       ['a JSON route', json({ model: 'svc', route: 'fallback' }), 'unsupported_model_selector', '"route"'],
+      ['a JSON model list written with a long s', json({ model: 'svc', 'model\u017f': ['other'] }), 'unsupported_model_selector'],
+      ['a JSON fallback list written with a Kelvin sign', json({ model: 'svc', 'fallbac\u212as': ['other'] }), 'unsupported_model_selector'],
       ['a multipart fallback list', multipart(model, field('fallbacks', 'other')), 'unsupported_model_selector', '"fallbacks"'],
+      ['a multipart fallback list sent as a file', multipart(model, file('fallbacks')), 'unsupported_model_selector', '"fallbacks"'],
+      ['a multipart model list over the field limit', multipart(model, field('models', 'x'.repeat(4097))), 'unsupported_model_selector', '"models"'],
+      ['an empty service and model', json({ service: '', model: '' }), 'model_required'],
+      ['a service and model that are not text', json({ service: 5, model: 5 }), 'model_required'],
+      ['a JSON size in another letter case', json({ model: 'svc', Size: '1792x1024' }), 'invalid_billing_field', '"Size"'],
+      ['a JSON n in another letter case', json({ model: 'svc', N: 8 }), 'invalid_billing_field', '"N"'],
+      ['a padded JSON size', json({ model: 'svc', ' size': '1792x1024' }), 'invalid_billing_field'],
+      ['a JSON size in array form', json({ model: 'svc', 'size[]': '1792x1024' }), 'invalid_billing_field', '"size[]"'],
+      ['a JSON duration in another letter case', json({ model: 'svc', Duration: 10 }), 'invalid_billing_field', '"Duration"'],
+      ['a JSON resolution written with a long s', json({ model: 'svc', 're\u017folution': '4K' }), 'invalid_billing_field'],
+      ['a multipart prompt in array form', multipart(model, field('prompt[]', 'x')), 'invalid_billing_field', '"prompt[]"'],
+      ['a multipart part that billing would read under another name', multipart(model, ['Content-Disposition: form-data; filenamename="size"; name="user"', '1024x1024'], field('size', '1792x1024')), 'unsupported_multipart_body'],
+      ['a multipart content type with two boundaries', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}; boundary=other` }), 'unsupported_multipart_body'],
       ['a multipart quality in upper case', multipart(model, field('QUALITY', 'high')), 'invalid_billing_field', '"QUALITY"'],
       ['a multipart quality sent as a file', multipart(model, file('quality')), 'invalid_billing_field', '"quality"'],
       ['a multipart size over the field limit', multipart(model, field('size', 'x'.repeat(4097))), 'invalid_billing_field', '"size"'],
@@ -482,6 +505,7 @@ describe('requestBodyService', () => {
       'X-Note: CONTENT-DISPOSITION:\tFORM-DATA;NAME="n"\r\n', 'Content-Type: image/png; content-disposition: form-data; name="modelId"\r\n',
       '\r\nX-Note: content-disposition: form-data; name="model"', '; content-disposition: form-data; name="size"', 'content-disposition:', 'form-data; name="model"',
       '\r\nContent-Type: text/plain', '\r\nContent-Length: 4', '; filename=""', '; filename="b"', 'name="quality"', 'name="n"', 'name="image"', '\r\n', ' ', '"', ';',
+      ' filenamename="size";', ' filenamename="model";', '; filename-x-name="quality"', ' x="name="; y="n";', 'file', 'x',
       `--${boundary}\r\nContent-Disposition: form-data; name="quality"\r\n\r\nlow\r\n`, `--${boundary}\r\nContent-Disposition: form-data; name="n"\r\n\r\n9\r\n`,
       `--${boundary}\r\nContent-Disposition: form-data; name="size"; filename=""\r\n\r\n512x512\r\n`, `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`,
     ];
@@ -525,6 +549,22 @@ describe('requestBodyService', () => {
     }
     expect(accepted).toBeGreaterThan(200);
     expect(compared).toBeGreaterThan(200);
+  });
+
+  it('reads JSON billing inputs spelled plainly, and other fields in any case', () => {
+    expect(requestBodyService(json({
+      model: 'svc', n: 2, size: '1024x1024', quality: 'high', resolution: '2K', duration: 5, aspect_ratio: '16:9',
+      audio: { voice: 'a', format: 'wav' }, input: 'x', prompt: 'x', aspectRatio: '16:9', User: 'a', Temperature: 1, 'stop[]': 'x',
+    }))).toBe('svc');
+  });
+
+  it('finds a repeated field among many in one pass', () => {
+    const many = Array.from({ length: 40000 }, (_, index) => field(`model[${index}]`, 'svc'));
+    const request = multipart(model, ...many, field('model[0]', 'svc'));
+    const started = performance.now();
+    expect(readRequestBodyService(request)).toMatchObject({ service: null, refusal: { code: 'repeated_field' } });
+    // A search per field took several seconds here; one pass takes a fraction of one.
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('names no service for a body with no usable name', () => {

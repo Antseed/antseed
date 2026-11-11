@@ -124,6 +124,17 @@ describe('the seller serves exactly the service it bills', () => {
     ['a padded multipart model', multipart([field('model', ' billed-model ')])],
     ['a repeated JSON model', { ...json({}), body: new TextEncoder().encode('{"model":"other-model","model":"billed-model"}') }],
     ['a repeated JSON n', { ...json({}), body: new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}') }],
+    ['a JSON n in two letter cases', json({ model: 'billed-model', n: 1, N: 10 })],
+    ['a JSON size only in another letter case', json({ model: 'billed-model', Size: '1792x1024' })],
+    ['a multipart part that billing would read under another name', multipart([
+      field('model', 'billed-model'),
+      ['Content-Disposition: form-data; filenamename="size"; name="user"', '1024x1024'],
+      field('size', '1792x1024'),
+    ])],
+    ['a multipart part that a relay would read as the model', multipart([
+      ['Content-Disposition: form-data; filenamename="model"; name="user"', 'other-model'],
+      field('model', 'aliased-model'),
+    ])],
     ['a JSON model list', json({ model: 'billed-model', models: ['other-model'], route: 'fallback' })],
     ['a JSON fallback list', json({ model: 'billed-model', fallbacks: ['other-model'] })],
     ['a multipart fallback list', multipart([field('model', 'billed-model'), field('fallbacks', 'other-model')])],

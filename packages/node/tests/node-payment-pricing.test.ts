@@ -478,6 +478,7 @@ describe('charges for requests whose fields every reader reads alike', () => {
     ['a quality billing would not read, over the field limit', [text('quality', `high${' '.repeat(4096)}`)], 'invalid_billing_field'],
     ['a quality under another spelling', [text('Quality', 'high')], 'invalid_billing_field'],
     ['a quality under two spellings', [text('quality', 'low'), text('Quality', 'high')], 'repeated_field'],
+    ['a quality in a part billing would read under another name', [['Content-Disposition: form-data; filenamename="quality"; name="user"', 'low'], text('quality', 'high')], 'unsupported_multipart_body'],
     ['a part whose other header quotes a disposition line', [text('quality', 'low'), ['X-Note: content-disposition: form-data; name="quality"\r\nContent-Disposition: form-data; name="prompt"', 'high']], 'unsupported_multipart_body'],
   ])('charges nothing and calls no provider for a multipart image request with %s', async (_name, parts, code) => {
     const { serve, received, charges } = imageSeller();
@@ -486,10 +487,16 @@ describe('charges for requests whose fields every reader reads alike', () => {
     expect(received).toEqual([]);
   });
 
-  it('charges nothing and calls no provider for a JSON image request with a count sent twice', async () => {
+  it.each<[string, string]>([
+    ['a count sent twice', '{"model":"image-model","quality":"low","n":1,"n":2}'],
+    ['a count sent in two letter cases', '{"model":"image-model","quality":"low","n":1,"N":2}'],
+    ['a quality sent in two letter cases', '{"model":"image-model","Quality":"high","quality":"low","n":2}'],
+    ['a quality only in another letter case', '{"model":"image-model","Quality":"high","n":2}'],
+    ['a count only in another letter case', '{"model":"image-model","quality":"low","N":8}'],
+  ])('charges nothing and calls no provider for a JSON image request with %s', async (name, body) => {
     const { serve, received, charges } = imageSeller();
-    const json = (body: string) => ({ headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(body) });
-    expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":1,"n":2}'))).toEqual({ status: 400, code: 'repeated_field' });
+    const json = (text: string) => ({ headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(text) });
+    expect(await serve('/v1/images/generations', json(body))).toEqual({ status: 400, code: name.includes(' only ') ? 'invalid_billing_field' : 'repeated_field' });
     expect(charges()).toEqual([]);
     expect(received).toEqual([]);
     expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":2}'))).toEqual({ status: 200 });
