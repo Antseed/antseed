@@ -73,7 +73,7 @@ test('a daemon that predates the on-chain records reports none, so the command r
 })
 
 test('the reserve no listed channel accounts for comes from the daemon', () => {
-  assert.equal(daemonUnaccountedReserve({ onChain: { unaccountedReserved: '2940000' } }), 2_940_000n)
+  assert.equal(daemonUnaccountedReserve({ onChain: { unaccountedReserved: '2250000' } }), 2_250_000n)
   assert.equal(daemonUnaccountedReserve({ onChain: { unaccountedReserved: '0' } }), 0n)
   // Not judged (the reserve or a channel was unread).
   assert.equal(daemonUnaccountedReserve({ onChain: { unaccountedReserved: null } }), null)

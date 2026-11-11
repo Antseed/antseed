@@ -248,7 +248,7 @@ test('a buyer that reports the chain\'s record with each row decides its status,
   const record = (status: number, deposit: string, settled: string, closeRequestedAt = 0) => ({ status, deposit, settled, closeRequestedAt, readAt: now });
   const view = buyerChannelsView({
     ok: true,
-    onChain: { readAt: now, reserved: '4690000', heldByChannels: '1750000', unaccountedReserved: '2940000' },
+    onChain: { readAt: now, reserved: '4000000', heldByChannels: '1750000', unaccountedReserved: '2250000' },
     channels: [
       { channelId: 'reported-active', status: 'active', cumulativeSigned: '100000', updatedAt: anHourAgo, live: true, cooperativeCloseSupported: true, onChain: record(1, '1000000', '250000') },
       // Retired by the buyer (it gave up on the session), still open with its reserve locked.
@@ -262,7 +262,7 @@ test('a buyer that reports the chain\'s record with each row decides its status,
   });
 
   assert.equal(view.chainReported, true);
-  assert.equal(view.unaccountedReserved, '2940000');
+  assert.equal(view.unaccountedReserved, '2250000');
   assert.deepEqual(
     view.channels.map((row) => [row.channelId, row.status, row.onChainStateKnown, row.onChainDeposit, row.onChainSettled, row.cooperativeCloseSupported]),
     [

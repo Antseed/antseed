@@ -145,10 +145,10 @@ test('a failed read keeps the last records, and a lagging no-record answer does 
 })
 
 test('the reserve no stored channel accounts for is reported', async () => {
-  // Two open channels explain 1.75 of a 4.69 reserve: 2.94 is held by a channel with no row.
-  const h = harness({ reserved: 4_690_000n, channels: { [id(1)]: open(1_000_000n, 250_000n), [id(2)]: open(1_000_000n) } })
+  // Two open channels explain 1.75 of a 4.00 reserve: 2.25 is held by a channel with no row.
+  const h = harness({ reserved: 4_000_000n, channels: { [id(1)]: open(1_000_000n, 250_000n), [id(2)]: open(1_000_000n) } })
   const { summary } = await h.view.describe(BUYER, [row(1), row(2, 'ghost', { updatedAt: T0 - 60_000 })])
-  assert.deepEqual(summary, { readAt: T0, reserved: '4690000', heldByChannels: '1750000', unaccountedReserved: '2940000' })
+  assert.deepEqual(summary, { readAt: T0, reserved: '4000000', heldByChannels: '1750000', unaccountedReserved: '2250000' })
   // Found by reading twice: a single difference can be a top-up landing between the reads.
   assert.equal(h.reads.length, 2)
 })

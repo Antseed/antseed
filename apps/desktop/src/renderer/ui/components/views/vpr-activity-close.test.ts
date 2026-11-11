@@ -165,7 +165,7 @@ test('requestSellerAssistedClose reports transport failures without refreshing',
 });
 
 test('unaccountedReserveLine names an on-chain reserve no listed channel accounts for', () => {
-  assert.equal(unaccountedReserveLine('2940000'), '$2.94 is held by a session this app has no record of.');
+  assert.equal(unaccountedReserveLine('2250000'), '$2.25 is held by a session this app has no record of.');
   assert.equal(unaccountedReserveLine('5000'), '<$0.01 is held by a session this app has no record of.');
   // Nothing unaccounted, not judged by the buyer, or a buyer that predates the figure: no line.
   assert.equal(unaccountedReserveLine('0'), null);
