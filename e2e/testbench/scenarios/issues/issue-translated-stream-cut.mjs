@@ -24,6 +24,11 @@ const parseFrames = (sse) => sse.split('\n\n').filter(Boolean).map((block) => {
 });
 const eventNames = (frames) => frames.map((frame) => frame.event);
 const tail = (frames) => eventNames(frames).slice(-4);
+/** The events that end the stream, in order: a stream has exactly one. */
+const endings = (frames, names) => eventNames(frames).filter((name) => names.includes(name));
+const MESSAGES_ENDINGS = ['message_stop', 'error'];
+const RESPONSES_ENDINGS = ['response.completed', 'response.incomplete', 'response.failed'];
+const only = (list, name) => list.length === 1 && list[0] === name;
 
 export async function run(tb) {
   const [seller] = tb.sellers;
@@ -60,10 +65,10 @@ export async function run(tb) {
   }
 
   const whole = { messages: parseFrames(wholeMessages.text), responses: parseFrames(wholeResponses.text) };
-  tb.check('a whole answer ends with message_stop', whole.messages.at(-1)?.event === 'message_stop', tail(whole.messages));
+  tb.check('a whole answer ends with message_stop', whole.messages.at(-1)?.event === 'message_stop' && only(endings(whole.messages, MESSAGES_ENDINGS), 'message_stop'), tail(whole.messages));
   const stop = whole.messages.find((frame) => frame.event === 'message_delta');
   tb.check('a whole answer reports its stop reason', stop?.json?.delta?.stop_reason === 'end_turn', stop?.data);
-  tb.check('a whole answer ends with response.completed', eventNames(whole.responses).includes('response.completed') && whole.responses.at(-1)?.data === '[DONE]', tail(whole.responses));
+  tb.check('a whole answer ends with response.completed', only(endings(whole.responses, RESPONSES_ENDINGS), 'response.completed') && whole.responses.at(-1)?.data === '[DONE]', tail(whole.responses));
 
   const cut = { messages: parseFrames(cutMessages.text), responses: parseFrames(cutResponses.text) };
   // Every verdict runs even after one fails, so a failing run records both clients and still judges the settlement.
@@ -71,12 +76,12 @@ export async function run(tb) {
     () => {
       tb.check('the cut answer reached the Messages client before the cut', eventNames(cut.messages).includes('content_block_delta'), tail(cut.messages));
       tb.check('a cut answer reaches a Messages client as an error event', cut.messages.at(-1)?.event === 'error' && cut.messages.at(-1)?.json?.type === 'error', tail(cut.messages));
-      tb.check('a cut answer never reaches a Messages client as finished', !eventNames(cut.messages).includes('message_stop'), tail(cut.messages));
+      tb.check('a cut answer never reaches a Messages client as finished', only(endings(cut.messages, MESSAGES_ENDINGS), 'error'), tail(cut.messages));
     },
     () => {
       tb.check('the cut answer reached the Responses client before the cut', eventNames(cut.responses).includes('response.output_text.delta'), tail(cut.responses));
       tb.check('a cut answer reaches a Responses client as response.failed', cut.responses.at(-1)?.event === 'response.failed' && cut.responses.at(-1)?.json?.response?.status === 'failed', tail(cut.responses));
-      tb.check('a cut answer never reaches a Responses client as finished', !eventNames(cut.responses).includes('response.completed') && !cut.responses.some((frame) => frame.data === '[DONE]'), tail(cut.responses));
+      tb.check('a cut answer never reaches a Responses client as finished', only(endings(cut.responses, RESPONSES_ENDINGS), 'response.failed') && !cut.responses.some((frame) => frame.data === '[DONE]'), tail(cut.responses));
     },
     // Payment reads the seller's raw stream, so translating the failure changes nothing it settles. The mock's ledger
     // is the judge, not what the buyer signed: the two whole answers were received in full and the cut ones were not,
