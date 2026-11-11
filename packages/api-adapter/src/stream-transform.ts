@@ -32,6 +32,8 @@ interface CanonicalStreamToolCall {
 
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: TokenUsage }
+  // The source opened a text item, which may stay empty.
+  | { type: 'text_start' }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
@@ -271,6 +273,10 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const block = data.content_block && typeof data.content_block === 'object'
             ? data.content_block as Record<string, unknown>
             : {};
+          if (block.type === 'text') {
+            emitStart(emitted);
+            emitted.push({ type: 'text_start' });
+          }
           if (block.type === 'tool_use') {
             emitStart(emitted);
             const blockIndex = typeof data.index === 'number' ? data.index : 0;
@@ -390,6 +396,10 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
 
         if (type === 'response.output_item.added') {
           const item = objectValue(data.item);
+          if (item.type === 'message') {
+            emitStart(emitted);
+            emitted.push({ type: 'text_start' });
+          }
           if (item.type === 'function_call') {
             emitStart(emitted);
             const outputIndex = typeof data.output_index === 'number' ? data.output_index : 0;
@@ -686,7 +696,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
-  // The item the answer wrote to last, its text or a tool call's index: where a cut at a limit fell.
+  // The item the answer opened or wrote to last, its text or a tool call's index: where a cut at a limit fell.
   let lastWritten: 'text' | number | null = null;
 
   const pushEvent = (
@@ -755,6 +765,11 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       for (const event of events) {
         if (event.type === 'response_start') {
           ensureResponseCreated(emitted, event);
+          continue;
+        }
+
+        if (event.type === 'text_start') {
+          lastWritten = 'text';
           continue;
         }
 

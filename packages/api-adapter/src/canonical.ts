@@ -719,8 +719,8 @@ export function normalizeAnthropicMessagesResponseBody(
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
     if (block.type === 'text') {
-      const text = typeof block.text === 'string' ? block.text : '';
-      if (text.length > 0) output.push({ type: 'text', text });
+      // Kept even when empty: an answer cut at a limit can be cut in an empty block. Renderers leave out empty text.
+      output.push({ type: 'text', text: typeof block.text === 'string' ? block.text : '' });
       continue;
     }
     if (block.type === 'tool_use') {

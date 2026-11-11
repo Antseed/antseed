@@ -557,6 +557,30 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(statuses(jsonFrames(events).filter((frame) => frame.type === 'response.output_item.done').map((frame) => frame.item))).toEqual(cutInText);
   });
 
+  it('leaves a finished tool call completed when the cut fell in an empty text block after it', () => {
+    const statuses = (output: Json[]) => output.map((item) => [item.type, item.status]);
+    const body = messagesBody('max_tokens');
+    body.content = [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: 'a' } }, { type: 'text', text: '' }];
+    const answer = JSON.parse(decoder.decode(transformResponse(response(body), { from: MESSAGES, to: RESPONSES, fallbackModel: 'm' })!.body)) as Json;
+    expect(answer.status).toBe('incomplete');
+    expect(statuses(answer.output)).toEqual([['function_call', 'completed']]);
+
+    const events = translate(MESSAGES, RESPONSES, [
+      MESSAGE_START,
+      typed('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'read', input: {} } }),
+      typed('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' } }),
+      typed('content_block_stop', { index: 0 }),
+      typed('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      typed('content_block_stop', { index: 1 }),
+      typed('message_delta', { delta: { stop_reason: 'max_tokens', stop_sequence: null }, usage: { output_tokens: 7 } }),
+      typed('message_stop', {}),
+    ]);
+    const final = JSON.parse(events.at(-2)!.data) as Json;
+    expect(final.type).toBe('response.incomplete');
+    expect(statuses(final.response.output)).toEqual([['function_call', 'completed']]);
+    expect(statuses(jsonFrames(events).filter((frame) => frame.type === 'response.output_item.done').map((frame) => frame.item))).toEqual([['function_call', 'completed']]);
+  });
+
   it('marks only the cut item incomplete in a not-streamed answer', () => {
     const body = chatBody('length');
     body.choices[0].message.tool_calls = [{ id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":' } }];
