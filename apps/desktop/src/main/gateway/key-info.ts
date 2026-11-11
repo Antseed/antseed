@@ -1,4 +1,4 @@
-import type { GatewayKeyInfo } from '../../shared/gateway-types.js';
+import type { GatewayKeyInfo, GatewayRewardsSummary, GatewaySavings } from '../../shared/gateway-types.js';
 
 export type { GatewayKeyInfo };
 
@@ -25,10 +25,52 @@ export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {
 function parseBalance(raw: unknown): GatewayKeyInfo['balance'] {
   if (!raw || typeof raw !== 'object') return null;
   const balance = raw as Record<string, unknown>;
-  const available = balance['available_usd'];
-  const reserved = balance['reserved_usd'];
-  if (typeof available !== 'string' || typeof reserved !== 'string') return null;
-  return { availableUsd: available, reservedUsd: reserved, stale: balance['stale'] === true };
+  const str = (value: unknown) => (typeof value === 'string' ? value : null);
+  const available = str(balance['available_usd']);
+  const reserved = str(balance['reserved_usd']);
+  if (available === null || reserved === null) return null;
+  return {
+    availableUsd: available,
+    reservedUsd: reserved,
+    pendingUsd: str(balance['pending_usd']) ?? '0',
+    walletUsd: str(balance['wallet_usd']),
+    creditLimitUsd: str(balance['credit_limit_usd']),
+    operator: str(balance['operator']),
+    stale: balance['stale'] === true,
+  };
+}
+
+/** `GET /v1/key/rewards`; null when the gateway couldn't read them. */
+export function parseKeyRewards(payload: unknown): GatewayRewardsSummary | null {
+  const body = (payload as { data?: Record<string, unknown> | null } | null)?.data;
+  if (!body || typeof body !== 'object' || typeof body['address'] !== 'string') return null;
+  return {
+    available: body['available'] === true,
+    address: body['address'],
+    pendingAnts: typeof body['pending_ants'] === 'string' ? body['pending_ants'] : '0',
+    currentEpoch: typeof body['current_epoch'] === 'number' ? body['current_epoch'] : null,
+    transfersEnabled: body['transfers_enabled'] === true,
+  };
+}
+
+/** `GET /v1/key/savings`; null when the gateway has none (no retail prices, or nothing matched). */
+export function parseKeySavings(payload: unknown): GatewaySavings | null {
+  const body = (payload as { data?: Record<string, unknown> | null } | null)?.data;
+  if (!body || typeof body !== 'object') return null;
+  const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null);
+  const retailUsd = num(body['retail_usd']);
+  const paidUsd = num(body['paid_usd']);
+  if (retailUsd === null || paidUsd === null) return null;
+  return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: num(body['matched_requests']) ?? 0 };
+}
+
+/** Savings over several keys (every key the desktop made), or null when none had any. */
+export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewaySavings | null {
+  const present = list.filter((entry): entry is GatewaySavings => entry !== null);
+  if (present.length === 0) return null;
+  const retailUsd = present.reduce((sum, entry) => sum + entry.retailUsd, 0);
+  const paidUsd = present.reduce((sum, entry) => sum + entry.paidUsd, 0);
+  return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: present.reduce((sum, entry) => sum + entry.matchedRequests, 0) };
 }
 
 /**

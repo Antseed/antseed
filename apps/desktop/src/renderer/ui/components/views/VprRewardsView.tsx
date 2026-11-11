@@ -59,7 +59,7 @@ export function VprRewardsView() {
                 {!rewards
                   ? error ?? 'Reading your rewards…'
                   : rewards.remoteChainUnverified
-                    ? 'Your remote gateway\'s rewards are on its own network: see them in your gateway.'
+                    ? 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.'
                     : rewards.available
                       ? `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : ''}.`
                       : 'Rewards are not live on this network yet.'}

@@ -203,7 +203,8 @@ function comparablePricesUrl(): string | null {
   return BAKED_COMPARABLE_PRICES_URL
 }
 
-async function fetchComparableRetailPrices(): Promise<RetailPriceMap | null> {
+/** Retail reference prices for the savings comparison; null when off or unreadable. */
+export async function fetchComparableRetailPrices(): Promise<RetailPriceMap | null> {
   const url = comparablePricesUrl()
   if (!url) return null
   try {

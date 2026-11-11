@@ -5,9 +5,9 @@
  * keys, limits and funding are managed.
  */
 import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process';
-import { parseGatewayKeyInfo, withUsageOf } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, sumSavings, withUsageOf } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
-import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
+import type { GatewayKeyInfo, GatewayPrivacy, GatewayRewardsSummary, GatewaySavings, GatewayStatus } from '../../shared/gateway-types.js';
 import { applyPrivacyToKeys, publishUnderCurrentPrivacy } from './privacy-keys.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
@@ -283,6 +283,12 @@ export async function restartLocalGatewayForNewIdentity(): Promise<string | null
   });
 }
 
+/** After a quit that didn't happen (an update that failed to install): the gateway may start again. */
+export async function reopenLocalGateway(): Promise<void> {
+  closing = false;
+  await ensureLocalGateway();
+}
+
 /** For quitting: no gateway starts after this, and one that was starting is waited for and stopped. */
 export async function closeLocalGateway(): Promise<void> {
   closing = true;
@@ -468,12 +474,65 @@ export async function gatewayConsoleUrl(pathname = ''): Promise<string> {
   return `${base}${suffix}`;
 }
 
-async function readKeyInfo(origin: string, apiKey: string): Promise<GatewayKeyInfo | null> {
-  const response = await fetch(`${origin}/v1/key`, {
+/** A key's own gateway route (`/v1/key…`); `missing` when the gateway predates it. */
+async function readKeyRoute(origin: string, apiKey: string, path: string): Promise<{ missing: true } | { missing: false; body: unknown }> {
+  const response = await fetch(`${origin}${path}`, {
     headers: { authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(5_000),
+    signal: AbortSignal.timeout(path.startsWith('/v1/key/rewards') ? 15_000 : 5_000),
   });
-  return response.ok ? parseGatewayKeyInfo(await response.json()) : null;
+  if (response.status === 404) return { missing: true };
+  if (!response.ok) throw new Error(`The gateway answered ${response.status} for ${path}`);
+  return { missing: false, body: await response.json() };
+}
+
+async function readKeyInfo(origin: string, apiKey: string, fresh = false): Promise<GatewayKeyInfo | null> {
+  const read = await readKeyRoute(origin, apiKey, `/v1/key${fresh ? '?fresh=1' : ''}`);
+  return read.missing ? null : parseGatewayKeyInfo(read.body);
+}
+
+/** Secrets of every key this desktop made on its local gateway, besides the desktop key. */
+function otherLocalKeySecrets(): string[] {
+  return listLocalKeys()
+    .filter((entry) => entry.scope !== DESKTOP_KEY_SCOPE)
+    .flatMap((entry) => {
+      const secret = getLocalKey(entry.scope)?.secret;
+      return secret ? [secret] : [];
+    });
+}
+
+/**
+ * The desktop key's info from its gateway, local or remote, without summing
+ * other keys: the balance the app spends from. `fresh` asks the gateway to
+ * re-read the chain (after a deposit or before a payment decision).
+ */
+export async function getGatewayBalanceInfo(options: { fresh?: boolean } = {}): Promise<GatewayKeyInfo | null> {
+  const { origin, apiKey } = await getGatewayEndpoint();
+  return readKeyInfo(origin, apiKey, options.fresh === true);
+}
+
+/**
+ * The paying wallet's rewards, as the gateway (local or remote) reads them on
+ * its own chain. `unsupported` when the gateway predates `/v1/key/rewards`;
+ * null when it couldn't read them.
+ */
+export async function getGatewayKeyRewards(): Promise<GatewayRewardsSummary | null | 'unsupported'> {
+  const { origin, apiKey } = await getGatewayEndpoint();
+  const read = await readKeyRoute(origin, apiKey, '/v1/key/rewards');
+  return read.missing ? 'unsupported' : parseKeyRewards(read.body);
+}
+
+/**
+ * Retail vs paid from the gateway. On the local gateway it covers every key
+ * the desktop made (the chat and apps with keys of their own), like Home's
+ * request and spend tiles; on a remote one, the desktop's key. Null when the
+ * gateway has none or predates `/v1/key/savings`.
+ */
+export async function getGatewayKeySavings(): Promise<{ origin: string; savings: GatewaySavings | null }> {
+  const { mode, origin, apiKey } = await getGatewayEndpoint();
+  const secrets = mode === 'local' ? [apiKey, ...otherLocalKeySecrets()] : [apiKey];
+  const answers = await Promise.all(secrets.map((secret) => readKeyRoute(origin, secret, '/v1/key/savings')
+    .then((read) => (read.missing ? null : parseKeySavings(read.body)), () => null)));
+  return { origin, savings: sumSavings(answers) };
 }
 
 /**
@@ -486,13 +545,7 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
     const { mode, origin, apiKey } = await getGatewayEndpoint();
     const desktop = await readKeyInfo(origin, apiKey);
     if (!desktop || mode !== 'local') return desktop;
-    const others = listLocalKeys()
-      .filter((entry) => entry.scope !== DESKTOP_KEY_SCOPE)
-      .flatMap((entry) => {
-        const secret = getLocalKey(entry.scope)?.secret;
-        return secret ? [secret] : [];
-      });
-    const infos = await Promise.all(others.map((secret) => readKeyInfo(origin, secret).catch(() => null)));
+    const infos = await Promise.all(otherLocalKeySecrets().map((secret) => readKeyInfo(origin, secret).catch(() => null)));
     return withUsageOf(desktop, infos.filter((info): info is GatewayKeyInfo => info !== null));
   } catch {
     return null;

@@ -30,10 +30,8 @@ import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from 
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import { getTelemetryService } from '../telemetry/runtime.js';
-import { getGatewayKeyInfo, localFundingBlock } from '../gateway/service.js';
+import { localFundingBlock } from '../gateway/service.js';
 import { getGatewaySettings } from '../gateway/settings.js';
-import { attachedGateway } from '../runtime/attach-only.js';
-import { remoteCreditsInfo } from '../payments/remote-credits.js';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
@@ -166,19 +164,15 @@ export function registerPaymentsIpc(): void {
 
   ipcMain.handle('credits:get-info', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {
     try {
-      // A remote gateway pays from the wallet behind its key, so the app
-      // shows that balance, read from the gateway.
-      if (getGatewaySettings().mode === 'remote' && !attachedGateway()) {
-        return { ok: true, data: remoteCreditsInfo(await getGatewayKeyInfo()), error: null };
-      }
-      await ensureSecureIdentity();
-      const address = getSecureIdentity()?.wallet.address ?? '';
-      // Display polls (balance timer, focus handlers) share one read. A caller
-      // deciding whether a payment can proceed passes `fresh` and always reads
-      // the chain, as before.
+      // The balance comes from the gateway the app uses (local or remote):
+      // the wallet paying for its key. Display polls share one read; a caller
+      // deciding whether a payment can proceed passes `fresh`, and the
+      // gateway re-reads the chain.
+      const settings = getGatewaySettings();
+      const key = readKeys.credits(`${settings.mode}:${settings.mode === 'remote' ? settings.remoteUrl ?? '' : 'local'}`);
       const info = opts?.fresh === true
-        ? await refreshFresh(readKeys.credits(address), refreshCreditsInfo)
-        : await cachedRead(readKeys.credits(address), CREDITS_FRESH_MS, refreshCreditsInfo);
+        ? await refreshFresh(key, () => refreshCreditsInfo({ fresh: true }))
+        : await cachedRead(key, CREDITS_FRESH_MS, () => refreshCreditsInfo());
       return { ok: true, data: info, error: null };
     } catch (err) {
       return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };

@@ -18,6 +18,7 @@ import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalS
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
 import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
+import { keySavings, roundUsd } from './key-savings.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -37,6 +38,7 @@ import {
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
+import type { RetailPriceMap } from '@antseed/node/retail-prices'
 
 /** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
 const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
@@ -96,6 +98,8 @@ const SPEECH_PATH = '/v1/audio/speech'
 /** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
 const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
+const KEY_REWARDS_PATH = '/v1/key/rewards'
+const KEY_SAVINGS_PATH = '/v1/key/savings'
 
 /**
  * `paid` routes reach a seller; the others are answered by the buyer for
@@ -104,6 +108,8 @@ const TOPUP_PATH = '/v1/key/topup'
 const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean; local?: boolean }> = [
   { method: 'GET', prefix: KEY_INFO_PATH, paid: false, local: true },
   { method: 'POST', prefix: TOPUP_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_REWARDS_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_SAVINGS_PATH, paid: false, local: true },
   { method: 'GET', prefix: '/v1/models', paid: false },
   { method: 'POST', prefix: '/v1/messages', paid: true },
   { method: 'POST', prefix: '/v1/messages/count_tokens', paid: false },
@@ -162,8 +168,32 @@ interface ForwardedRequest {
 export interface KeyWalletBalance {
   available: string
   reserved: string
+  /** Signed to sellers but not settled on-chain yet: still in `reserved`, no longer the buyer's to spend. */
+  pending: string
+  /** USDC in the wallet itself, not yet swept into deposits; null when unread. */
+  wallet: string | null
+  /** The most the wallet may hold in deposits; null when unread. */
+  creditLimit: string | null
+  /** The wallet's AntseedDeposits operator (withdrawals and rewards go there); null when none. */
+  operator: string | null
   /** The buyer couldn't reach the chain; these are its last known values. */
   stale: boolean
+}
+
+/** Buyer ANTS rewards for a key's paying wallet, on the gateway's chain. */
+export interface KeyRewards {
+  /** False when the chain has no rewards contracts. */
+  available: boolean
+  pendingAnts: string
+  currentEpoch: number | null
+  transfersEnabled: boolean
+}
+
+/** Retail vs paid for a key's requests with a retail price match, in USD. */
+export interface KeySavings {
+  retailUsd: number
+  paidUsd: number
+  matchedRequests: number
 }
 
 export interface GatewayServerOptions {
@@ -173,7 +203,11 @@ export interface GatewayServerOptions {
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   /** What the wallet paying for a key holds in deposits; `GET /v1/key` reports it. */
-  identityBalance?: (buyerIdentity: string) => Promise<KeyWalletBalance | null>
+  identityBalance?: (buyerIdentity: string, options?: { fresh?: boolean }) => Promise<KeyWalletBalance | null>
+  /** Rewards for a wallet address on the gateway's chain; `GET /v1/key/rewards` reports them. */
+  walletRewards?: (address: string) => Promise<KeyRewards | null>
+  /** Retail prices by canonical model key; `GET /v1/key/savings` compares them with what a key paid. Null when unreadable. */
+  retailPrices?: () => Promise<RetailPriceMap | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   /**
@@ -325,8 +359,11 @@ export class GatewayServer {
     const { key, context } = authenticated
 
     if (route.local) {
+      const fresh = new URLSearchParams(path.split('?')[1] ?? '').get('fresh') === '1'
       if (route.prefix === TOPUP_PATH) await this._topup(req, res, key)
-      else sendJson(res, 200, { data: await this._keyInfo(key) })
+      else if (route.prefix === KEY_REWARDS_PATH) sendJson(res, 200, { data: await this._keyRewards(key) })
+      else if (route.prefix === KEY_SAVINGS_PATH) sendJson(res, 200, { data: await this._keySavings(key) })
+      else sendJson(res, 200, { data: await this._keyInfo(key, fresh) })
       return
     }
 
@@ -1047,12 +1084,45 @@ export class GatewayServer {
     }
   }
 
-  private async _keyInfo(key: ApiKeyRecord) {
+  /** `GET /v1/key/rewards`: the paying wallet's buyer rewards; null when they can't be read. */
+  private async _keyRewards(key: ApiKeyRecord) {
+    const address = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    if (!address || !this._options.walletRewards) return null
+    const rewards = await this._options.walletRewards(address).catch(() => null)
+    if (!rewards) return null
+    return {
+      available: rewards.available,
+      address,
+      pending_ants: rewards.pendingAnts,
+      current_epoch: rewards.currentEpoch,
+      transfers_enabled: rewards.transfersEnabled,
+    }
+  }
+
+  /**
+   * `GET /v1/key/savings`: this key's requests at retail prices vs what it
+   * paid, over the models with a retail price. Null when prices can't be read
+   * or nothing matched.
+   */
+  private async _keySavings(key: ApiKeyRecord) {
+    const prices = this._options.retailPrices ? await this._options.retailPrices().catch(() => null) : null
+    if (!prices) return null
+    const savings = keySavings(this._options.store.usageByModel(key.id), prices)
+    if (!savings) return null
+    return {
+      retail_usd: roundUsd(savings.retailUsd),
+      paid_usd: roundUsd(savings.paidUsd),
+      saved_usd: roundUsd(Math.max(0, savings.retailUsd - savings.paidUsd)),
+      matched_requests: savings.matchedRequests,
+    }
+  }
+
+  private async _keyInfo(key: ApiKeyRecord, fresh = false) {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
     const [buyerAddress, balance] = await Promise.all([
       this._options.identityAddress(key.buyerIdentity).catch(() => null),
-      this._options.identityBalance?.(key.buyerIdentity).catch(() => null) ?? Promise.resolve(null),
+      this._options.identityBalance?.(key.buyerIdentity, { fresh }).catch(() => null) ?? Promise.resolve(null),
     ])
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
@@ -1075,7 +1145,17 @@ export class GatewayServer {
       buyer_address: buyerAddress,
       // Its deposits (public on-chain for that address), so an app on this key
       // can show the balance it spends from. Null when the buyer can't say.
-      balance: balance ? { available_usd: balance.available, reserved_usd: balance.reserved, stale: balance.stale } : null,
+      balance: balance
+        ? {
+            available_usd: balance.available,
+            reserved_usd: balance.reserved,
+            pending_usd: balance.pending,
+            wallet_usd: balance.wallet,
+            credit_limit_usd: balance.creditLimit,
+            operator: balance.operator,
+            stale: balance.stale,
+          }
+        : null,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),

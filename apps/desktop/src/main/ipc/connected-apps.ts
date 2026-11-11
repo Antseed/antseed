@@ -27,10 +27,8 @@ import { connectedAppsWslTargetsPath } from '../connected-apps/patching/paths.js
 import { appDownloadUrl } from '../connected-apps/download-links.js';
 import { isConfigPatchInstalled } from '@antseed/connected-apps/config-patch';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
+import { errorResult } from './results.js';
 
-function errorResult(err: unknown): { ok: false; error: string } {
-  return { ok: false, error: err instanceof Error ? err.message : String(err) };
-}
 
 export function registerConnectedAppsIpc(): void {
   ipcMain.handle('apps:list-profiles', async () => {

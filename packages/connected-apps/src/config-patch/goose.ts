@@ -25,8 +25,9 @@ import {
 // goose config is flat env-style YAML keys (GOOSE_PROVIDER, GOOSE_MODEL,
 // OPENAI_HOST, ...), edited line-based so user keys and comments survive.
 // OPENAI_HOST is the host root — goose appends the /v1 chat path itself.
-// The api key normally lives in the OS keyring; the config-file value covers
-// keyring-less setups, and the buyer proxy ignores the credential anyway.
+// Legacy buyer-proxy patches use OPENAI_HOST and a dummy credential. Gateway
+// patches use a custom provider whose Authorization header carries the
+// gateway API key; Goose normally reads standard-provider keys from its keyring.
 
 // Characters a YAML parser would fold, drop or reject inside a double-quoted
 // scalar: C0 and C1 controls, DEL, the Unicode line and paragraph separators
@@ -223,6 +224,7 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
   const providerPath = gooseCustomProviderPath(filePath);
   const providerBefore = existsSync(providerPath) ? readFileSync(providerPath, 'utf8') : null;
   let movedUserProvider = false;
+  const earlierState = readGoosePatchState(filePath);
   try {
     if (userProvider) {
       saveGooseUserProvider(filePath);
@@ -232,7 +234,6 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
     // user set up for goose's own openai provider isn't ours, and stays. The
     // cleanup is planned in memory and lands with the one config write below,
     // so a failure before it leaves the old config (and its state) working.
-    const earlierState = readGoosePatchState(filePath);
     const cleansEarlierPatch = owned || earlierState !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed';
     let lines = cleansEarlierPatch ? planGooseCleanup(filePath, previous, patch, [], true).lines : [...previous];
     while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
@@ -253,8 +254,6 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       requires_auth: false,
     });
     writeTextFile(filePath, `${lines.join('\n')}\n`);
-    // The earlier patch's ownership record goes only once the new config is in.
-    if (earlierState) deleteGoosePatchState(filePath);
   } catch (err) {
     try {
       if (movedUserProvider) {
@@ -269,6 +268,16 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       // The write's own failure is the one to report.
     }
     throw err;
+  }
+  // The config write commits the migration: the provider and config agree
+  // from here, so a failed cleanup of the earlier patch's ownership record
+  // can't roll them apart, and the next refresh deletes it again.
+  if (earlierState) {
+    try {
+      deleteGoosePatchState(filePath);
+    } catch {
+      // Left for the next refresh.
+    }
   }
 }
 

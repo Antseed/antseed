@@ -72,25 +72,25 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const appKey = endpoint?.ok ? endpoint.apiKey ?? '' : '';
   const { copied, copy } = useCopyFeedback(appKey, homeProgress.markKey);
 
+  const status = gateway.data?.status;
+  const remote = status?.mode === 'remote';
+  // Read again once the gateway answers (the buyer may still have been
+  // starting) and after switching gateways: these figures are the gateway's.
+  const reachable = status?.reachable === true;
+  const origin = status?.origin ?? null;
   useEffect(() => {
     let cancelled = false;
     const bridge = window.antseedDesktop;
+    setRewards(null);
     bridge?.gatewayGetEndpoint?.().then((info) => { if (!cancelled) setEndpoint(info); }).catch(() => {});
     bridge?.gatewayGetRewards?.().then((result) => { if (!cancelled && result.ok && result.data) setRewards(result.data); }).catch(() => {});
+    if (reachable) void savingsResource.refresh();
     return () => { cancelled = true; };
-  }, []);
+  }, [reachable, origin]);
 
   // A failure reaches the shell's notice (with Try again), whether or not
   // the setup card is open.
   const openConsole = useCallback((path: string) => openGatewayConsole(path), []);
-
-  const status = gateway.data?.status;
-  const remote = status?.mode === 'remote';
-  // Read again once the gateway answers: the buyer may still have been starting.
-  const reachable = status?.reachable === true;
-  useEffect(() => {
-    if (reachable) void savingsResource.refresh();
-  }, [reachable]);
   const keyInfo = gateway.data?.keyInfo ?? null;
   const balanceUsd = Number(balance);
   // On a remote gateway the balance is the wallet behind the app's key, read
@@ -120,9 +120,9 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const setupState = setupOnly || !progress.setupHidden
     ? progress.setupClosed ? 'closed' : progress.setupMinimized ? 'minimized' : 'open'
     : 'gone';
-  // Savings are read from this computer's buyer: once Home shows a remote
-  // gateway, figures cached from the local one say nothing about it.
-  const shownSavings = status?.mode === 'local' && savings && savings.savedUsd > 0 ? savings : null;
+  // Savings come from the gateway the app uses; after switching gateways, a
+  // figure from the previous one is not shown.
+  const shownSavings = savings && savings.savedUsd > 0 && savings.gatewayOrigin === status?.origin ? savings : null;
   const freeSavings = shownSavings && shownSavings.paidUsd <= 0 ? shownSavings : null;
   const pendingAnts = rewards?.available ? rewards.pendingAnts : null;
   const day = daysSince(progress.firstPromptAt);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1242,6 +1243,32 @@ test('goose: a legacy migration whose provider file cannot be written keeps the 
     writeConfigPatch(patch, REMOTE);
     assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_PROVIDER'], 'custom_antseed');
     assert.equal(existsSync(statePath), false);
+  });
+});
+
+// macOS can lock one file against deletion (`chflags uchg`) while its directory stays writable.
+test('goose: a migration whose old record can\'t be deleted keeps the new config and provider together', { skip: process.platform !== 'darwin' }, async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const statePath = `${configPath}.antseed.state.json`;
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await writeFile(configPath, 'GOOSE_PROVIDER: "openai"\nGOOSE_MODEL: "qwen3-coder"\nOPENAI_HOST: "https://gw.example.com"\nOPENAI_API_KEY: "old"\n', 'utf8');
+    await writeFile(statePath, JSON.stringify({ version: 1, host: 'https://gw.example.com', apiKeySha256: 'x' }), 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    execFileSync('chflags', ['uchg', statePath]);
+    try {
+      writeConfigPatch(patch, REMOTE);
+      // The config selects the custom provider, and the provider is there.
+      assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_PROVIDER'], 'custom_antseed');
+      assert.equal(existsSync(providerPath), true);
+      assert.equal(existsSync(statePath), true);
+    } finally {
+      execFileSync('chflags', ['nouchg', statePath]);
+    }
+    // The next refresh finishes the cleanup.
+    writeConfigPatch(patch, REMOTE);
+    assert.equal(existsSync(statePath), false);
+    assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_MODEL'], 'qwen3-coder');
   });
 });
 

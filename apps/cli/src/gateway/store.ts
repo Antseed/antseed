@@ -21,6 +21,7 @@ import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
 import { parseServedSelection, type ServedSelection } from '../proxy/route-selection.js'
 import { requestVideoJob } from './video-jobs.js'
+import type { ModelUsage } from './key-savings.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
 export type ApiKeyStatus = 'active' | 'revoked'
@@ -1631,6 +1632,47 @@ export class GatewayStore {
       dated.forEach((period, index) => { spend[period] = row[`p${index}`] ?? 0 })
     }
     return spend
+  }
+
+  /**
+   * A key's usage per model (the one that served it, else the one asked
+   * for), for comparing with retail prices: metered spend
+   * and tokens from the ledger, plus the tokens responses reported where no
+   * spend was metered (free requests). Rows without a model are left out.
+   * The reported tokens come from the request log, so requests pruned from it
+   * no longer count theirs.
+   */
+  usageByModel(keyId: string): ModelUsage[] {
+    const ledger = this._stmt(`
+      SELECT COALESCE(served_model, model) AS model, COALESCE(-SUM(amount_usdc), 0) AS amount, COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COUNT(*) AS requests
+      FROM ledger_entries WHERE key_id = ? AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+      GROUP BY COALESCE(served_model, model)
+    `).all(keyId) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number; requests: number }>
+    const reported = this._stmt(`
+      SELECT COALESCE(r.served_model, r.model) AS model, COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens, COUNT(*) AS requests
+      FROM gateway_requests r
+      WHERE r.key_id = ? AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      GROUP BY COALESCE(r.served_model, r.model)
+    `).all(keyId) as Array<{ model: string; input_tokens: number; cached_input_tokens: number; output_tokens: number; requests: number }>
+    const byModel = new Map<string, ModelUsage>()
+    const add = (model: string, row: Omit<ModelUsage, 'model'>) => {
+      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+      byModel.set(model, {
+        model,
+        amountUsdc: current.amountUsdc + row.amountUsdc,
+        inputTokens: current.inputTokens + row.inputTokens,
+        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
+        outputTokens: current.outputTokens + row.outputTokens,
+        requests: current.requests + row.requests,
+      })
+    }
+    for (const row of ledger) add(row.model, { amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens, requests: row.requests })
+    for (const row of reported) add(row.model, { amountUsdc: 0, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens, requests: row.requests })
+    return [...byModel.values()]
   }
 
   usageStats(keyId: string, since = 0): KeyUsageStats {

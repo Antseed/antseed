@@ -346,6 +346,11 @@ export function reconnectAllApps(options: { restart?: boolean } = {}): Promise<C
   });
 }
 
+/** After a quit that didn't happen (an update that failed to install): patches may be written again. */
+export function resumeConnectedAppsAfterAbortedQuit(): void {
+  shuttingDown = false;
+}
+
 /** Quit path. A local gateway stops with the desktop, so its patches come out; a remote one keeps them. */
 export async function releaseConnectedAppsOnQuit(): Promise<void> {
   shuttingDown = true;

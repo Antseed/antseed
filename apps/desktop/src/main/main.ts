@@ -59,9 +59,10 @@ import {
 import {
   initConnectedApps,
   reconnectAllApps,
+  resumeConnectedAppsAfterAbortedQuit,
   releaseConnectedAppsOnQuit,
 } from './connected-apps/patching/connection.js';
-import { closeLocalGateway, ensureLocalGateway, holdLocalGatewayUntil, initGatewayService } from './gateway/service.js';
+import { closeLocalGateway, ensureLocalGateway, holdLocalGatewayUntil, initGatewayService, reopenLocalGateway } from './gateway/service.js';
 import { gatewaySettingsPath, getGatewaySettings } from './gateway/settings.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { isMultiInstanceDevelopment } from './dev-instance.js';
@@ -237,6 +238,27 @@ async function stopDesktopServices(): Promise<void> {
     }).then(() => closeLocalGateway()),
     stopPaymentsPortal(),
   ]);
+}
+
+/**
+ * Undoes `stopDesktopServices` when the app didn't quit after all (an update
+ * that failed to install): the gateway starts again, apps are re-pointed at
+ * it and the Telegram bridge resumes.
+ */
+async function resumeDesktopServices(): Promise<void> {
+  resumeConnectedAppsAfterAbortedQuit();
+  try {
+    await reopenLocalGateway();
+    await reconnectAllApps();
+    await syncInstalledAgentSkills();
+  } catch (err) {
+    appendLog('gateway', 'system', `Restarting services after a failed update failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 }
 
 function getCombinedProcessState(): RuntimeProcessState[] {
@@ -504,6 +526,8 @@ app.whenReady().then(async () => {
     clearStallWatchdog();
     if (isInstallingUpdate) {
       isQuitting = false;
+      // Services were stopped for the install; the app keeps running, so they come back.
+      void resumeDesktopServices();
     }
     isInstallingUpdate = false;
     sendUpdateStatus({ status: 'error', version: updateVersion, message, details, hint });

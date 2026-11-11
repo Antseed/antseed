@@ -77,6 +77,8 @@ export type GatewaySavings = {
   savedUsd: number;
   /** Requests on models with a retail match. */
   matchedRequests: number;
+  /** The gateway these figures came from, so a figure from another gateway isn't shown. */
+  gatewayOrigin?: string;
 };
 
 export type AgentSkillStatus = {
@@ -87,6 +89,19 @@ export type AgentSkillStatus = {
   skillsDir: string;
 };
 
+/** `GET /v1/key`'s `balance`: the paying wallet's deposits, as decimal USDC strings. */
+export type GatewayKeyBalance = {
+  availableUsd: string;
+  reservedUsd: string;
+  /** Signed to sellers but not settled yet (part of reserved). */
+  pendingUsd: string;
+  /** USDC in the wallet, not yet swept into deposits; null when unread. */
+  walletUsd: string | null;
+  creditLimitUsd: string | null;
+  operator: string | null;
+  stale: boolean;
+};
+
 export type GatewayKeyInfo = {
   label: string | null;
   buyerAddress: string | null;
@@ -94,8 +109,8 @@ export type GatewayKeyInfo = {
   spentUsd: string | null;
   /** Today's and this month's spend against the key's caps, as the gateway enforces them. */
   limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
-  /** What the paying wallet holds in deposits; null when the gateway doesn't say (older gateways). */
-  balance: { availableUsd: string; reservedUsd: string; stale: boolean } | null;
+  /** What the paying wallet holds; null when the gateway doesn't say (older gateways). */
+  balance: GatewayKeyBalance | null;
 };
 
 export type GatewayEndpointInfo =

@@ -7,6 +7,8 @@ import {
   checkRemoteGateway,
   getGatewayEndpoint,
   getGatewayKeyInfo,
+  getGatewayKeyRewards,
+  getGatewayKeySavings,
   getGatewayPrivacy,
   setGatewayPrivacy,
   getGatewayStatus,
@@ -28,12 +30,7 @@ import { reconnectAllApps } from '../connected-apps/patching/connection.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
 import { openAgent } from '../agent-open.js';
 import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
-import { readGatewayRewards, remoteRewardsSummary } from '../gateway/rewards.js';
-import { createSavingsReader } from '../gateway/savings.js';
-import { fetchBuyerProxyJson } from '../payments/buyer-channels.js';
-import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
-import { BAKED_COMPARABLE_PRICES_URL } from '../generated/baked-defaults.js';
-import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
+import { unreadRewardsSummary } from '../gateway/rewards.js';
 import {
   agentSetupPrompt,
   installAgentSkills,
@@ -41,32 +38,11 @@ import {
   removeAgentSkills,
   syncAgentSkills,
 } from '../agent-skills.js';
-
-const COMPARABLE_PRICES_TIMEOUT_MS = 8_000;
-
-/** Retail prices come from ANTSEED_COMPARABLE_PRICES_URL (empty turns them off) or the release build's baked default. */
-function comparablePricesUrl(): string | null {
-  const env = process.env.ANTSEED_COMPARABLE_PRICES_URL;
-  return env !== undefined ? env.trim() || null : BAKED_COMPARABLE_PRICES_URL;
-}
-
-const readGatewaySavings = createSavingsReader({
-  pricesUrl: comparablePricesUrl,
-  fetchJson: async (url) => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(COMPARABLE_PRICES_TIMEOUT_MS) });
-    if (!response.ok) throw new Error(`Retail prices answered ${response.status}`);
-    return response.json();
-  },
-  readUsage: () => fetchBuyerProxyJson('/_antseed/buyer-usage'),
-  resolveNames: resolveServiceIdHashes,
-});
+import { errorResult } from './results.js';
 
 /** Agent skills get their own key in per-app key mode. */
 const AGENT_SKILLS_APP = { name: 'agent-skills', label: 'Agent skills' };
 
-function errorResult(err: unknown): { ok: false; error: string } {
-  return { ok: false, error: err instanceof Error ? err.message : String(err) };
-}
 
 export type GatewayIpcDeps = {
   /** The gateway or its key changed: the chat's model list must reload. */
@@ -178,28 +154,34 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     }
   });
 
-  ipcMain.handle('gateway:get-rewards', async (_event, opts?: { force?: boolean }) => {
+  // Rewards of the wallet paying for the app's key, read by its gateway
+  // (local or remote) on the gateway's own chain.
+  ipcMain.handle('gateway:get-rewards', async () => {
     try {
-      // A remote gateway names its paying wallet; the local one pays from this app's wallet.
-      let address = (await getGatewayKeyInfo())?.buyerAddress ?? null;
-      if (!address && getGatewaySettings().mode === 'local') {
-        await ensureSecureIdentity();
-        address = getSecureIdentity()?.wallet.address ?? null;
+      const rewards = await getGatewayKeyRewards();
+      if (rewards === 'unsupported') {
+        // An older gateway has no rewards route: its own Rewards page has the figures.
+        const address = (await getGatewayKeyInfo())?.buyerAddress ?? null;
+        if (!address) throw new Error('Your gateway did not report its wallet');
+        return { ok: true, data: unreadRewardsSummary(address) };
       }
-      if (!address) throw new Error('Your gateway did not report its wallet');
-      if (getGatewaySettings().mode === 'remote') return { ok: true, data: remoteRewardsSummary(address) };
-      return { ok: true, data: await readGatewayRewards(address, { force: opts?.force === true }) };
+      if (!rewards) throw new Error('Your gateway could not read rewards');
+      return { ok: true, data: rewards };
     } catch (err) {
       return errorResult(err);
     }
   });
 
-  // Usage is read from this app's buyer, so a remote gateway (paying from its
-  // own wallet) has nothing here to compare. That answer is "none", not a
-  // failed read (null), so a cached local figure doesn't stay on screen.
+  // What the app's requests saved against retail prices, from its gateway.
+  // "None" rather than a failed read (null) when the gateway has none, so an
+  // earlier figure doesn't stay on screen.
   ipcMain.handle('gateway:get-savings', async () => {
-    if (getGatewaySettings().mode !== 'local') return NO_SAVINGS;
-    return readGatewaySavings().catch(() => null);
+    try {
+      const { origin, savings } = await getGatewayKeySavings();
+      return { ...(savings ?? NO_SAVINGS), gatewayOrigin: origin };
+    } catch {
+      return null;
+    }
   });
 
   ipcMain.handle('agent-skills:list', () => listAgentSkillTargets());

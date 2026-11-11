@@ -6,6 +6,8 @@ import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
+import { retailTokenCostUsd } from '@antseed/node/retail-prices'
+import { canonicalModelKey } from '@antseed/node'
 import { GatewayServer, workspaceOutOfCreditsBody, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
@@ -306,13 +308,71 @@ test('GET /v1/key reports the balance of the wallet that pays for the key', asyn
   const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
     identityBalance: async (name) => {
       asked.push(name)
-      return { available: '12.500000', reserved: '0.250000', stale: false }
+      return { available: '12.500000', reserved: '0.250000', pending: '0.100000', wallet: '2.000000', creditLimit: '100.000000', operator: null, stale: false }
     },
   })
   try {
     const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
-    assert.deepEqual(info.balance, { available_usd: '12.500000', reserved_usd: '0.250000', stale: false })
+    assert.deepEqual(info.balance, {
+      available_usd: '12.500000', reserved_usd: '0.250000', pending_usd: '0.100000',
+      wallet_usd: '2.000000', credit_limit_usd: '100.000000', operator: null, stale: false,
+    })
     assert.deepEqual(asked, ['team-a'])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/rewards reports the paying wallet\'s rewards, and null when they can\'t be read', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: 'team-b', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    walletRewards: async (address) => {
+      asked.push(address)
+      return { available: true, pendingAnts: '3.5', currentEpoch: 12, transfersEnabled: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: team.secret })).body).data
+    assert.deepEqual(info, { available: true, address: '0x00000000000000000000000000000000000000aa', pending_ants: '3.5', current_epoch: 12, transfers_enabled: false })
+    assert.deepEqual(asked, ['0x00000000000000000000000000000000000000aa'])
+    // A wallet with no known address has no rewards to read.
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: other.secret })).body).data, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/savings compares the key\'s own requests with retail prices', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 100_000 })
+  const team = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const price = { input: 10, output: 30, cachedInput: null }
+  let prices: Map<string, typeof price> | null = new Map([[canonicalModelKey('example-model'), price]])
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, { retailPrices: async () => prices })
+  try {
+    const body = JSON.stringify({ model: 'example-model', messages: [] })
+    for (let i = 0; i < 2; i++) assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: team.secret, body })).status, 200)
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: other.secret, body })).status, 200)
+    await gateway.feed.pollOnce()
+
+    const savings = JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data
+    const retail = 2 * retailTokenCostUsd(100, 0, 20, price)
+    assert.equal(savings.matched_requests, 2)
+    assert.equal(savings.paid_usd, 0.2)
+    assert.equal(savings.retail_usd, Math.round(retail * 10_000) / 10_000)
+    assert.equal(savings.saved_usd, Math.round(Math.max(0, retail - 0.2) * 10_000) / 10_000)
+
+    prices = null
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data, null)
   } finally {
     await gateway.stop()
     await buyer.close()

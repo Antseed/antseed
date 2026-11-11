@@ -4,11 +4,12 @@ import { resolveBaseRpcUrlOverride } from '../cli/payment-utils.js'
 import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
-import { buyerFetch, loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
-import { mapBalances } from './console-api/handlers/wallet-mapping.js'
+import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
+import { createKeyWalletReader } from './key-wallet.js'
+import { fetchComparableRetailPrices } from '../cli/commands/buyer/activity.js'
 import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
-import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions, type KeyWalletBalance } from './server.js'
+import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
@@ -126,19 +127,6 @@ export async function liveBuyerIdentityAddress(buyerPort: number, name: string):
   return body.identities?.find((identity) => identity.name === name)?.address ?? null
 }
 
-/**
- * What a buyer identity's wallet holds in `AntseedDeposits`, from the buyer's
- * cached `GET /_antseed/balances`. Null when the buyer can't say.
- */
-export async function liveBuyerIdentityBalance(buyerPort: number, secret: string, name: string): Promise<KeyWalletBalance | null> {
-  const response = await buyerFetch({ buyerPort, secret, timeoutMs: 3_000 }, '/_antseed/balances', { identity: name })
-  if (!response.ok) return null
-  const body: unknown = await response.json()
-  const balances = mapBalances(body)
-  const stale = typeof body === 'object' && body !== null && (body as { stale?: unknown }).stale === true
-  return { available: balances.available, reserved: balances.reserved, stale }
-}
-
 /** Gateway server + spend feed, shared by `antseed gateway start` and `antseed tunnel start`. */
 export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promise<GatewayRuntime> {
   const config = await loadConfig(options.configPath)
@@ -165,7 +153,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   // an older buyer would ignore the header and route unrestricted.
   const policyProbe = new BuyerPolicyProbe({ buyerPort, secret: controlSecret, onLog: options.onLog })
   const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
-  const identityBalance = (name: string): Promise<KeyWalletBalance | null> => liveBuyerIdentityBalance(buyerPort, controlSecret, name)
+  const keyWallet = createKeyWalletReader({ buyerPort, secret: controlSecret, configPath: options.configPath, fetchRetailPrices: fetchComparableRetailPrices })
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
@@ -215,7 +203,9 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     accounting,
     buyerPort,
     identityAddress,
-    identityBalance,
+    identityBalance: (name, balanceOptions) => keyWallet.balance(name, balanceOptions),
+    walletRewards: (address) => keyWallet.rewards(address),
+    retailPrices: () => keyWallet.retailPrices(),
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),
     videoBudgetEnforced: () => spendFeed.videoBudgetEnforced,
