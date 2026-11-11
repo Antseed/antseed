@@ -1,7 +1,8 @@
 /**
  * What a seller bills, and on which channel, when the buyer's connection ends
- * before the answer does. Real SellerPaymentManager, ChannelStore and
- * SellerRequestHandler; only the chain calls and the upstream are stand-ins.
+ * before the answer does. Real SellerPaymentManager, ChannelStore,
+ * SellerRequestHandler and session tracker; only the chain calls and the
+ * upstream are stand-ins.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -20,16 +21,19 @@ import {
   ZERO_METADATA,
   ZERO_METADATA_HASH,
 } from '../src/payments/evm/signatures.js';
+import { ReceiptGenerator } from '../src/metering/receipt-generator.js';
+import { SellerSessionTracker } from '../src/metering/seller-session-tracker.js';
+import { MeteringStorage } from '../src/metering/storage.js';
+import { signUtf8, type Identity } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { PaymentMux } from '../src/p2p/payment-mux.js';
-import type { Identity } from '../src/p2p/identity.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { ConnectionState } from '../src/types/connection.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types/http.js';
 import { toPeerId } from '../src/types/peer.js';
-import { MessageType, type SpendingAuthPayload } from '../src/types/protocol.js';
+import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED, type SpendingAuthPayload } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/verification-mux.js';
 
@@ -112,10 +116,10 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!();
 });
 
-async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}) {
+async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}, reserve = RESERVE) {
   const dir = mkdtempSync(join(tmpdir(), 'seller-billing-disconnect-'));
   const store = new ChannelStore(dir);
-  cleanups.push(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const metering = new MeteringStorage(join(dir, 'metering.db'));
   const seller = identity();
   const buyer = identity();
   const upstream = makeUpstream(kind);
@@ -123,7 +127,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
   const onChain = {
     buyer: buyer.wallet.address,
     seller: seller.wallet.address,
-    deposit: RESERVE,
+    deposit: reserve,
     settled: 0n,
     metadataHash: ZERO_METADATA_HASH,
     deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
@@ -145,18 +149,32 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     });
     return created;
   };
-  const makeHandler = (created: SellerPaymentManager): SellerRequestHandler => new SellerRequestHandler({
+  const makeTracker = (): SellerSessionTracker => new SellerSessionTracker(
+    seller,
+    metering,
+    new ReceiptGenerator({ peerId: seller.peerId, sign: (message: string) => signUtf8(seller.wallet, message) }),
+    {},
+    { onSessionUpdated: () => {}, onSessionFinalized: () => {} },
+  );
+  const makeHandler = (created: SellerPaymentManager, sessionTracker: SellerSessionTracker): SellerRequestHandler => new SellerRequestHandler({
     identity: seller,
     providers: [upstream.provider],
     sellerPaymentManager: created,
-    sessionTracker: null,
+    sessionTracker,
     channelsClient: created.channelsClient,
     announcer: null,
     emit: () => false,
   });
 
   let manager = makeManager();
-  let handler = makeHandler(manager);
+  let tracker = makeTracker();
+  let handler = makeHandler(manager, tracker);
+  cleanups.push(() => {
+    tracker.clearTimers();
+    metering.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   const connect = () => {
     const frames: Uint8Array[] = [];
@@ -191,9 +209,9 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
   };
   const reserveAuth = async (channelId: string, deadline: number): Promise<SpendingAuthPayload> => ({
     ...await spendingAuth(channelId, 0n),
-    spendingAuthSig: await signReserveAuth(buyer.wallet, domain, { channelId, maxAmount: RESERVE, deadline: BigInt(deadline) }),
+    spendingAuthSig: await signReserveAuth(buyer.wallet, domain, { channelId, maxAmount: reserve, deadline: BigInt(deadline) }),
     reserveSalt: '0x' + '01'.repeat(32),
-    reserveMaxAmount: RESERVE.toString(),
+    reserveMaxAmount: reserve.toString(),
     reserveDeadline: deadline,
   });
 
@@ -242,6 +260,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     disconnect() {
       connection.drop();
       manager.onBuyerDisconnect(buyer.peerId);
+      void tracker.finalizeSession(buyer.peerId, 'disconnect');
     },
     /** A new connection that proves itself by replaying its latest authorization. */
     async reconnect(channelId: string, signed: bigint) {
@@ -278,8 +297,10 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     },
     /** The seller process restarts on the same store. */
     restart() {
+      tracker.clearTimers();
       manager = makeManager();
-      handler = makeHandler(manager);
+      tracker = makeTracker();
+      handler = makeHandler(manager, tracker);
       connection = connect();
     },
   };
@@ -370,6 +391,46 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.upstream.calls).toBe(1);
   });
 
+  it('keeps the answer owed when a channel with nothing signed reaches its ceiling', async () => {
+    const h = await setup(kind, {}, COST - 1n);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('over-the-ceiling');
+    h.ignoreCatchUps();
+
+    const exhausted = await h.serve('exhausted');
+    expect(exhausted.statusCode).toBe(402);
+    expect(paymentBody(exhausted).code).toBe(PAYMENT_CODE_CHANNEL_EXHAUSTED);
+    await vi.waitFor(() => expect(h.manager.hasSession(h.buyerPeerId)).toBe(false));
+    expect(h.close()).not.toHaveBeenCalled();
+    expect(h.manager.getCumulativeSpend(CHANNEL_A), 'spend kept while the channel stays open').toBe(COST);
+
+    await h.reconnect(CHANNEL_A, 0n);
+    expect(h.store.getChannel(CHANNEL_A)?.tokensDelivered).toBe(COST.toString());
+    const next = await h.serve('next');
+
+    expect(next.statusCode, 'the next request waits for the delivered answer to be paid').toBe(402);
+    expect(h.upstream.calls).toBe(1);
+    await vi.waitFor(() => expect(h.manager.hasSession(h.buyerPeerId)).toBe(false));
+  });
+
+  it('keeps the answer owed when an idle close finds nothing signed', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('unsigned');
+
+    await h.manager.settleSession(h.buyerPeerId, { cleanupOnFailure: true });
+    expect(h.close()).not.toHaveBeenCalled();
+    expect(h.manager.hasSession(h.buyerPeerId)).toBe(false);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A), 'spend kept while the channel stays open').toBe(COST);
+
+    await h.reconnect(CHANNEL_A, 0n);
+    h.ignoreCatchUps();
+    const next = await h.serve('next');
+
+    expect(next.statusCode, 'the next request waits for the delivered answer to be paid').toBe(402);
+    expect(h.upstream.calls).toBe(1);
+  });
+
   it('closes at the latest signed amount only once the running answer is recorded', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
@@ -452,6 +513,7 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.needAuths).not.toHaveBeenCalled();
   });
 
+  // The buyer's on-chain exit ended the channel: no signature can collect this answer any more.
   it('records nothing and asks for nothing when the admitting channel ended during the answer', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);

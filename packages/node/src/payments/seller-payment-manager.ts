@@ -1983,7 +1983,14 @@ export class SellerPaymentManager {
       }
     }
 
-    // Clean up maps after successful close, zero-cumulative deferral, or exhausted retries
+    // A channel with nothing signed stays open for the timeout checker: it keeps
+    // its spend, so a buyer that comes back still owes what it was served.
+    if (accepted === 0n) {
+      this._deactivateBuyerForChannel(buyerPeerId, channelId);
+      return;
+    }
+
+    // Clean up maps after successful close or exhausted retries
     this._forgetChannel(channelId, buyerPeerId);
   }
 
