@@ -2234,10 +2234,8 @@ export class BuyerProxy {
    * `onChain` fields, as before they existed.
    */
   private async _channelsOnChain(identity: string | null, channels: readonly BuyerChannelSummary[], fresh: boolean): Promise<ChannelsOnChainView | null> {
-    if (!this._channelChain) return null
-    const name = identity ?? DEFAULT_BUYER_IDENTITY
-    const address = this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
-    if (!address) return null
+    const address = this._identityAddress(identity)
+    if (!this._channelChain || !address) return null
     const view = await this._channelChain.describe(address, channels, { fresh, maxWaitMs: CHANNEL_CHAIN_MAX_WAIT_MS })
     const unaccounted = view.summary.unaccountedReserved
     const key = address.toLowerCase()
@@ -2255,9 +2253,14 @@ export class BuyerProxy {
 
   /** A channel of this identity just closed: the next channel view reads the chain again. */
   private _invalidateChannelChain(identity: string | null): void {
-    const name = identity ?? DEFAULT_BUYER_IDENTITY
-    const address = this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
+    const address = this._identityAddress(identity)
     if (address) this._channelChain?.invalidate(address)
+  }
+
+  /** The wallet address of a resolved buyer identity (null: the default one); undefined when the node has none. */
+  private _identityAddress(identity: string | null): string | undefined {
+    const name = identity ?? DEFAULT_BUYER_IDENTITY
+    return this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
   }
 
   /** Forget cached balances of an address, e.g. once a deposit sweep is credited. */
@@ -2364,8 +2367,7 @@ export class BuyerProxy {
       sendJson(res, 503, { ok: false, error: 'payments_disabled' })
       return
     }
-    const name = identity ?? DEFAULT_BUYER_IDENTITY
-    const address = this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
+    const address = this._identityAddress(identity)
     if (!address) {
       sendUnknownBuyerIdentity(res)
       return
