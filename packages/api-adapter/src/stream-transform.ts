@@ -690,12 +690,12 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
 // The Responses error codes (a fixed set) that a failure in another standard's stream can mean; anything else is a
 // server_error.
-const RESPONSES_ERROR_CODES: Partial<Record<string, string>> = {
-  server_error: 'server_error',
-  rate_limit_exceeded: 'rate_limit_exceeded',
-  rate_limit_error: 'rate_limit_exceeded',
-  invalid_prompt: 'invalid_prompt',
-};
+const RESPONSES_ERROR_CODES = new Map([
+  ['server_error', 'server_error'],
+  ['rate_limit_exceeded', 'rate_limit_exceeded'],
+  ['rate_limit_error', 'rate_limit_exceeded'],
+  ['invalid_prompt', 'invalid_prompt'],
+]);
 
 function createResponsesStreamRenderer(options: StreamTransformInternals): ProtocolStreamRenderer {
   let sequenceNumber = 0;
@@ -946,7 +946,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               model: responseModel,
               status: 'failed',
               created_at: createdAt,
-              error: { code: RESPONSES_ERROR_CODES[event.code ?? ''] ?? 'server_error', message: event.message },
+              error: { code: RESPONSES_ERROR_CODES.get(event.code ?? '') ?? 'server_error', message: event.message },
               output: [],
               output_text: '',
               usage: null,

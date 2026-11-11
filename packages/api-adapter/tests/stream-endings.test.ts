@@ -307,6 +307,8 @@ describe('the failure a client is told', () => {
     ['a Messages rate_limit_error', MESSAGES, frame({ type: 'error', error: { type: 'rate_limit_error', message: 'upstream failed' } }, 'error'), 'rate_limit_exceeded'],
     ['a Chat rate_limit_exceeded', CHAT, frame({ error: { message: 'upstream failed', type: 'requests', code: 'rate_limit_exceeded' } }), 'rate_limit_exceeded'],
     ['a Chat context_length_exceeded', CHAT, frame({ error: { message: 'upstream failed', type: 'invalid_request_error', code: 'context_length_exceeded' } }), 'server_error'],
+    ['a code named like an object property', CHAT, frame({ error: { message: 'upstream failed', code: '__proto__' } }), 'server_error'],
+    ['a code named like a method', MESSAGES, frame({ type: 'error', error: { type: 'constructor', message: 'upstream failed' } }, 'error'), 'server_error'],
   ] as const)('gives a Responses client a Responses error code for %s', (_label, from, errorEvent, code) => {
     expect(failedResponse(translate(from, RESPONSES, [errorEvent])).error).toEqual({ code, message: 'upstream failed' });
   });
