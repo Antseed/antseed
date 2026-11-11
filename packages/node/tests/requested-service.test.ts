@@ -64,6 +64,37 @@ describe('requestBodyService', () => {
     });
   });
 
+  describe('refuses buyer-supplied upstream model selection', () => {
+    const selectors = [
+      'models', 'route', 'fallbacks', 'default_fallbacks', 'context_window_fallbacks',
+      'content_policy_fallbacks', 'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id',
+    ];
+
+    it.each(selectors)('refuses the JSON selector %s regardless of its value', (name) => {
+      for (const value of [['other'], { model: 'other' }, 'fallback', false, null, []]) {
+        expect(requestBodyService(json({ model: 'svc', [name]: value }))).toBeNull();
+      }
+    });
+
+    it.each(selectors)('refuses the multipart selector %s', (name) => {
+      expect(requestBodyService(multipart(model, field(name, 'other')))).toBeNull();
+    });
+
+    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]'])('refuses a selector spelled %j', (name) => {
+      expect(requestBodyService(json({ model: 'svc', [name]: ['other'] }))).toBeNull();
+      expect(requestBodyService(multipart(model, field(name, 'other')))).toBeNull();
+    });
+
+    it('leaves nested application data and same-model provider preferences alone', () => {
+      expect(requestBodyService(json({
+        model: 'svc',
+        metadata: { models: ['other'], route: 'note', fallbacks: ['other'] },
+        tools: [{ type: 'function', function: { name: 'route', parameters: { models: ['other'] } } }],
+        provider: { order: ['example'], allow_fallbacks: false },
+      }))).toBe('svc');
+    });
+  });
+
   describe('reads the one service a multipart body names', () => {
     it.each<[string, ReturnType<typeof raw>]>([
       ['a model field', multipart(model, field('prompt', 'x'))],

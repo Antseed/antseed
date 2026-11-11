@@ -104,6 +104,26 @@ describe('the seller serves the service it bills', () => {
     expect(target.received).toEqual([]);
   });
 
+  it.each<[string, SerializedHttpRequest]>([
+    ['JSON model list and route', jsonRequest({ model: 'billed-model', models: ['other-model'], route: 'fallback' })],
+    ['JSON fallback list', jsonRequest({ model: 'billed-model', fallbacks: ['other-model'], mock_testing_fallbacks: true })],
+    ['multipart fallback list', multipartRequest([['model', 'billed-model'], ['fallbacks', 'other-model']])],
+  ])('refuses upstream model selection before payment: %s', async (_name, sent) => {
+    const target = provider(PAID);
+    const result = await serve(target, sent, {
+      channelsClient: {},
+      sellerPaymentManager: {
+        hasSession: () => false,
+        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
+      },
+    });
+    expect(result.response.statusCode).toBe(400);
+    expect(result.error.code).toBe('model_required');
+    expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+    expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    expect(target.received).toEqual([]);
+  });
+
   it.each<[string, Record<string, string>]>([
     ['lower case', { 'x-antseed-service': 'other-model' }],
     ['another case', { 'X-Antseed-Service': 'other-model' }],
