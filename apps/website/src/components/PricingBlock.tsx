@@ -18,6 +18,7 @@ export function PricingBlock({
   accent,
   lead,
   dropTrail = true,
+  deferPrices = false,
 }: {
   /** first line of the title (ink) */
   title: ReactNode;
@@ -26,6 +27,8 @@ export function PricingBlock({
   lead: string;
   /** the dotted line dropping in from the section above (homepage only) */
   dropTrail?: boolean;
+  /** Fetch live prices only when the board approaches the viewport. */
+  deferPrices?: boolean;
 }) {
   return (
     <section className={styles.pricingSection}>
@@ -46,9 +49,9 @@ export function PricingBlock({
         <Reveal className={styles.buttonRow} delay={60}>
           <Button href={LIVE_PRICES_URL} variant="ghost" arrow>Live prices</Button>
         </Reveal>
-        <PriceBoard />
+        <PriceBoard deferFetch={deferPrices} />
         <Reveal className={styles.payNote} delay={160}>
-          <img src="/img/home/icon-shield-sm.svg" alt="" width="24" height="24" />
+          <img src="/img/home/icon-shield-sm.svg" alt="" width="24" height="24" loading="lazy" decoding="async" />
           You only pay for what you use. Settlement goes straight to the provider, in USDC on Base.
         </Reveal>
       </div>
