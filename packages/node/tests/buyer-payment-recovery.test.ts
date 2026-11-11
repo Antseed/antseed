@@ -519,6 +519,27 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
         expect(reserve(channelId)).toEqual(OPENING);
       });
 
+      it('keeps a deposit it saw while budgeting a top-up after it took a lower one for the chain\'s', async () => {
+        const seller = sellerConnection();
+        const { channelId, at } = await toppedUpChannel(seller);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        at(30_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        expect(reserve(channelId)).toEqual(OPENING);
+        // The buyer tops up again, twice, and sees the first one landed while it budgets a third.
+        const pmux = negotiator.getOrCreatePaymentMux(SELLER, seller.conn);
+        deposit = RESERVE;
+        await manager.topUpReserve(SELLER, pmux);
+        await manager.topUpReserve(SELLER, pmux);
+        deposit = 2n * RESERVE;
+        await manager.topUpReserve(SELLER, pmux);
+
+        // A node a block behind still reports the deposit from before it.
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+        expect(store.getChannel(channelId)?.confirmedReserveAmount).toBe((2n * RESERVE).toString());
+      });
+
       it('replays a top-up stacked on a rolled-back one against the deposit the chain has', async () => {
         const seller = sellerConnection();
         const channelId = await openChannel(seller, 0n);

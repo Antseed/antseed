@@ -308,9 +308,9 @@ export class BuyerPaymentManager {
   /**
    * sellerPeerId -> the deposit confirmed for the active channel, by a chain
    * read or the store. `lower` is a deposit below it that reads keep showing,
-   * and when the first of them came. `overStore` is set once such a read was
-   * accepted: the store can still hold the value it replaced, or get it back
-   * from a write that began before.
+   * and when the first of them came. `overStore` is set while such a read
+   * that was accepted is being written: the store still holds the value it
+   * replaced.
    */
   private readonly _confirmedDeposit = new Map<string, {
     channelId: string;
@@ -1001,6 +1001,13 @@ export class BuyerPaymentManager {
       confirmedReserveAmount: deposit.toString(),
       updatedAt: Date.now(),
     }, metadata);
+    if (lowered) {
+      // The store has the lower deposit now: a higher one it gets later is news.
+      const written = this._confirmedDeposit.get(sellerPeerId);
+      if (written?.channelId === session.sessionId && written.overStore) {
+        this._confirmedDeposit.set(sellerPeerId, { ...written, overStore: false });
+      }
+    }
     return deposit;
   }
 
