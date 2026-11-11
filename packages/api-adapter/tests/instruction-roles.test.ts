@@ -353,6 +353,13 @@ describe('instructions sent as Responses input items', () => {
     expect(body.messages).toEqual([{ role: 'user', content: 'hi' }]);
   });
 
+  it('add no turn when the ones that end the request carry no text', () => {
+    const turns = [userItem('one'), { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] }];
+    const body = translate(RESPONSES, MESSAGES, { model: 'm', input: [...turns, developerItem(' \n')] });
+
+    expect(body.messages).toEqual(translate(RESPONSES, MESSAGES, { model: 'm', input: turns }).messages);
+  });
+
   it('reach a router as the system prompt of the request being ranked', () => {
     const body = renderRequestBodyAsOpenAIChat(RESPONSES, instructed);
 

@@ -433,6 +433,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
     input: [],
   };
 
+  const instructionMessages: InstructionMessage[] = [];
   const messages = Array.isArray(body.messages) ? body.messages : [];
   for (const raw of messages) {
     if (!raw || typeof raw !== 'object') continue;
@@ -440,7 +441,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
     const role = typeof msg.role === 'string' ? msg.role : '';
 
     if (isInstructionRole(role)) {
-      appendInstructions(request, textFromContent(msg.content));
+      instructionMessages.push({ itemsBefore: request.input.length, content: canonicalContentFromOpenAIChat(msg.content) });
       continue;
     }
 
@@ -477,6 +478,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
       request.input.push({ type: 'message', role, content: canonicalContentFromOpenAIChat(msg.content) });
     }
   }
+  placeInstructionMessages(request, instructionMessages);
 
   if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
   if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.length > 0) {
@@ -506,6 +508,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   };
   if (typeof body.instructions === 'string') appendInstructions(request, body.instructions);
 
+  const instructionMessages: InstructionMessage[] = [];
   const input = body.input;
   const normalizedInput = Array.isArray(input)
     ? input.map((item) => {
@@ -562,7 +565,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       if (type !== 'message' && typeof msg.role !== 'string') continue;
 
       if (isInstructionRole(msg.role)) {
-        appendInstructions(request, textFromResponsesContent(msg.content));
+        instructionMessages.push({ itemsBefore: request.input.length, content: canonicalContentFromOpenAIResponses(msg.content) });
         continue;
       }
 
@@ -575,6 +578,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}) });
     }
   }
+  placeInstructionMessages(request, instructionMessages);
 
   if (typeof body.max_output_tokens === 'number') request.maxOutputTokens = body.max_output_tokens;
   if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
@@ -887,6 +891,12 @@ function isInstructionRole(role: unknown): boolean {
   return role === 'system' || role === 'developer';
 }
 
+/** An instruction sent as a message, with the number of conversation items sent before it. */
+interface InstructionMessage {
+  itemsBefore: number;
+  content: CanonicalContentPart[];
+}
+
 /**
  * Both OpenAI protocols can send instructions as messages, anywhere in the
  * conversation. For every target the hub keeps them in one string, in the order
@@ -894,7 +904,23 @@ function isInstructionRole(role: unknown): boolean {
  * them, since Anthropic's `system` has no position among the turns. An
  * instruction added mid-session changes that head, which costs one
  * prompt-cache miss.
+ *
+ * Instructions that end the request after an assistant turn, or make up all of
+ * it, are what the model has to answer. Moved to the head, they would leave no
+ * turn to answer, so they stay at the end as user turns.
  */
+function placeInstructionMessages(request: CanonicalLlmRequest, messages: InstructionMessage[]): void {
+  const end = request.input.length;
+  const last = request.input[end - 1];
+  const answerable = last?.type === 'function_call_output' || (last?.type === 'message' && last.role === 'user');
+  for (const { itemsBefore, content } of messages) {
+    const text = textFromCanonicalContent(content);
+    if (text.trim().length === 0) continue;
+    if (itemsBefore === end && !answerable) request.input.push({ type: 'message', role: 'user', content });
+    else appendInstructions(request, text);
+  }
+}
+
 function appendInstructions(request: CanonicalLlmRequest, text: string): void {
   if (text.trim().length === 0) return;
   request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
