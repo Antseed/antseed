@@ -553,7 +553,7 @@ interface ConfigField {
 }
 ```
 
-The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. Plugins are installed with `antseed plugin add <package-name>`.
+The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. The CLI installs a provider plugin when a seller adds a provider that uses it: `antseed config seller add-provider <name> --plugin <package-name>`.
 
 ## Links
 
