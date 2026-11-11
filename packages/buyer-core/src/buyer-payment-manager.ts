@@ -908,16 +908,23 @@ export class BuyerPaymentManager {
     return session.sessionId;
   }
 
-  /** Reconcile the locally usable ceiling with an authoritative on-chain read. */
+  /**
+   * Reconcile the locally usable ceiling with an on-chain read. A channel's
+   * deposit only grows while it is open, so a read below what the chain has
+   * already confirmed comes from a node that is behind and lowers nothing.
+   */
   async reconcileReserveAmount(sellerPeerId: string, onChainAmount: bigint): Promise<void> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) return;
 
     const pending = this._pendingReserveAuth.get(sellerPeerId);
-    const applied = pending != null && onChainAmount >= pending.maxAmount;
+    // Confirmed so far: what a waiting top-up started from, else the ceiling.
+    const confirmed = pending ? pending.confirmedAmount : this._currentReserveCeiling.get(sellerPeerId) ?? 0n;
+    const deposit = onChainAmount > confirmed ? onChainAmount : confirmed;
+    const applied = pending != null && deposit >= pending.maxAmount;
     // The chain is authoritative even when it is ahead of our latest locally
     // persisted authorization (for example after recovery on another device).
-    this._currentReserveCeiling.set(sellerPeerId, onChainAmount);
+    this._currentReserveCeiling.set(sellerPeerId, deposit);
     if (applied) {
       this._pendingReserveAuth.delete(sellerPeerId);
       // An initial ReserveAuth can land on-chain immediately before the browser
@@ -931,7 +938,7 @@ export class BuyerPaymentManager {
     await this._commitAuthorization({
       ...session,
       reserveAuthPending: pending != null && !applied,
-      confirmedReserveAmount: onChainAmount.toString(),
+      confirmedReserveAmount: deposit.toString(),
       updatedAt: Date.now(),
     }, metadata);
   }
