@@ -550,4 +550,29 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(retried.status).toBe('closed');
     expect(retried.finalAmount).toBe('900000');
   });
+
+  it('starts a queued top-up its close authorization makes eligible, and stays open for the spend above the deposit', async () => {
+    vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
+    const topUp = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 1_000_000n), mux);
+    // A top-up to 20 USDC is queued, but 10% settled cannot pass the threshold.
+    await manager.handleSpendingAuth(buyer.peerId, await buildReserveAuth(buyer, 20_000_000n), mux);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(topUp).not.toHaveBeenCalled();
+    manager.recordSpend(CHANNEL_ID, 12_000_000n);
+    const started = Date.now();
+
+    // The buyer signed past the deposit and closes capped at it.
+    const result = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 10_000_000n), mux);
+    await vi.waitFor(() => expect(topUp).toHaveBeenCalledOnce());
+
+    expect({
+      status: result.status,
+      code: result.code,
+      answeredAtOnce: Date.now() - started < 2_000,
+      settled: topUp.mock.calls[0]?.[2],
+      ceiling: topUp.mock.calls[0]?.[5],
+      closed: vi.mocked(manager.channelsClient.close).mock.calls.length,
+    }).toEqual({ status: 'rejected', code: 'pending_auth', answeredAtOnce: true, settled: 10_000_000n, ceiling: 20_000_000n, closed: 0 });
+  });
 });

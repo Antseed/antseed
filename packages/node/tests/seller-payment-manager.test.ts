@@ -2898,4 +2898,84 @@ describe('SellerPaymentManager', () => {
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
     });
   });
+
+  describe('restartCatchUpTarget', () => {
+    /** A channel this seller stored before it stopped: accepted `accepted`, its reserve ceiling `ceiling`. */
+    async function storeChannel(channelId: string, accepted: bigint, ceiling: bigint): Promise<void> {
+      const now = Date.now();
+      const latestSpendingAuthSig = await signSpendingAuth(buyerIdentity.wallet, makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR), {
+        channelId, cumulativeAmount: accepted, metadataHash: ZERO_METADATA_HASH,
+      });
+      store.upsertChannel({
+        sessionId: channelId, peerId: buyerIdentity.peerId, role: CHANNEL_ROLE.SELLER,
+        sellerEvmAddr: sellerIdentity.wallet.address, buyerEvmAddr: buyerIdentity.wallet.address,
+        nonce: 0, authMax: accepted.toString(), previousConsumption: ceiling.toString(), tokensDelivered: (ceiling + 300_000n).toString(),
+        deadline: Math.floor(now / 1000) + 3600, previousSessionId: '', requestCount: 0, reservedAt: now,
+        settledAt: null, settledAmount: null, status: CHANNEL_STATUS.ACTIVE,
+        latestBuyerSig: latestSpendingAuthSig, latestSpendingAuthSig, latestMetadata: encodeMetadata(ZERO_METADATA),
+        createdAt: now, updatedAt: now,
+      });
+    }
+
+    function restart(): SellerPaymentManager {
+      const restarted = new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
+      }, store);
+      vi.spyOn(restarted.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
+      return restarted;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('judges a channel this process opened as it stands', async () => {
+      const channelId = makeChannelId(150);
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '1000000',
+      }), mux);
+
+      expect(await manager.restartCatchUpTarget(channelId)).toBeNull();
+    });
+
+    it('asks for what is already accepted for a while after a restart, then judges the channel as it stands', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const channelId = makeChannelId(151);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+
+      const answers = [await restarted.restartCatchUpTarget(channelId)];
+      vi.setSystemTime(Date.now() + 29_000);
+      answers.push(await restarted.restartCatchUpTarget(channelId));
+      vi.setSystemTime(Date.now() + 1_000);
+      answers.push(await restarted.restartCatchUpTarget(channelId), await restarted.restartCatchUpTarget(channelId));
+
+      expect(answers).toEqual([900_000n, 900_000n, null, null]);
+    });
+
+    it('asks once for an authorization up to the deposit when the accepted one cannot pass the top-up threshold', async () => {
+      const channelId = makeChannelId(152);
+      // 50% settled: a topUp() with it would revert TopUpThresholdNotMet.
+      await storeChannel(channelId, 500_000n, 1_000_000n);
+      const restarted = restart();
+
+      // Parallel requests reach the ceiling at once: only one may ask for the deposit.
+      const answers = await Promise.all([1, 2, 3].map(() => restarted.restartCatchUpTarget(channelId)));
+
+      expect([...answers, await restarted.restartCatchUpTarget(channelId)]).toEqual([1_000_000n, 500_000n, 500_000n, 500_000n]);
+    });
+
+    it('forgets a restored channel that is gone on-chain', async () => {
+      const channelId = makeChannelId(153);
+      await storeChannel(channelId, 900_000n, 1_000_000n);
+      const restarted = restart();
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }) as never,
+      );
+
+      await restarted.validateHydratedChannels();
+
+      expect(await restarted.restartCatchUpTarget(channelId)).toBeNull();
+    });
+  });
 });

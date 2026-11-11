@@ -713,8 +713,10 @@ export class SellerRequestHandler {
             // Ask for the catch-up now instead of only after the wait: after a
             // restart (or a lost NeedAuth) nothing else would prompt the buyer,
             // and every parked request would end in a 402. Once per spend level,
-            // and only for spend the reserve can cover (beyond it the channel is closed below).
-            const signable = reserveMax <= 0n || spent <= reserveMax;
+            // and only for spend the reserve can cover, now or once a top-up on
+            // its way lands (beyond it the channel is closed below).
+            const signable = reserveMax <= 0n || spent <= reserveMax
+              || spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent);
             if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
               this._catchUpPrompted.delete(session.sessionId);
               this._catchUpPrompted.set(session.sessionId, spent);
@@ -830,9 +832,14 @@ export class SellerRequestHandler {
             // for work the seller has not delivered. The preflight reserve
             // check also returns target=spent: it is a hard stop before routing
             // work that cannot fit inside the currently locked reserve.
-            const target = spent;
+            // A restarted seller asks before it closes: work past the ceiling
+            // can only be collected through a top-up the restart may have lost.
+            const restartCatchUp = !isBlocked && reserveMax > 0n && spent > reserveMax
+              ? await spm.restartCatchUpTarget(session.sessionId)
+              : null;
+            const target = restartCatchUp ?? spent;
             const isAlreadyExhausted = reserveMax > 0n && (accepted >= reserveMax || target > reserveMax);
-            const isFullyExhausted = isBlocked || estimatedCostExceedsLockedReserve || isAlreadyExhausted;
+            const isFullyExhausted = restartCatchUp == null && (isBlocked || estimatedCostExceedsLockedReserve || isAlreadyExhausted);
             const requirements = {
               ...baseRequirements,
               requiredCumulativeAmount: target.toString(),

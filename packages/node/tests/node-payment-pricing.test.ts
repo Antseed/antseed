@@ -241,6 +241,8 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     isTopUpRunning: () => false,
     isTopUpPendingFor: () => false,
     waitForTopUp: async () => true,
+    // The real one answers null for a channel this process opened.
+    restartCatchUpTarget: async () => null,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
       return this.settleSession(buyerPeerId);
@@ -2384,6 +2386,62 @@ describe('a channel at its ceiling while top-ups follow each other', () => {
     });
 
     expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 402, answer: PAYMENT_CODE_CHANNEL_EXHAUSTED, closed: 1, waits: 1 });
+  });
+
+  it('asks instead of closing when a restarted seller may have lost the top-up the spend needs', async () => {
+    const sendNeedAuth = vi.fn();
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        settleSession,
+        getCumulativeSpend: () => 1_500_000n,
+        getAcceptedCumulative: () => 900_000n,
+        getReserveMax: () => 1_000_000n,
+        restartCatchUpTarget: async () => 900_000n,
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'restarted-past-ceiling', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    const body = JSON.parse(new TextDecoder().decode(response.body));
+    // An ordinary catch-up 402 for what is held: the buyer sends again what it signed, nothing new.
+    expect({ status: response.statusCode, code: body.code, required: body.requiredCumulativeAmount, reserveMax: body.reserveMaxAmount, closed: settleSession.mock.calls.length })
+      .toEqual({ status: 402, code: undefined, required: '900000', reserveMax: '1000000', closed: 0 });
+    // Its NeedAuth tells the buyer what the seller holds, so a buyer that signed more resends it.
+    expect(sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'restarted-past-ceiling', requiredCumulativeAmount: '900000', currentAcceptedCumulative: '900000',
+    }));
+  });
+
+  it('prompts the catch-up before parking for spend a top-up on its way will cover', async () => {
+    const sendNeedAuth = vi.fn();
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 1_500_000n,
+        getAcceptedCumulative: () => 1_000_000n,
+        getReserveMax: () => 1_000_000n,
+        isTopUpRunning: () => true,
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'parked-behind-top-up', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    expect(sendNeedAuth.mock.calls[0]?.[0]).toEqual({
+      channelId: 'session-1', requiredCumulativeAmount: '1500000', currentAcceptedCumulative: '1000000', deposit: '1000000',
+    });
   });
 
   it('waits once, not for the whole budget, for a queued top-up that never starts', async () => {

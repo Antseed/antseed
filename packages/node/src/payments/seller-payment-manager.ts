@@ -68,6 +68,8 @@ const OVER_CEILING_AUTH_WAIT_MS = 30_000;
 /** How long an auth or request above the ceiling waits for a covering pending top-up to start. */
 const PENDING_TOP_UP_START_MS = 2_000;
 const PENDING_TOP_UP_POLL_MS = 50;
+/** How long a buyer has to send again what a restart lost, from the first time it is asked. */
+const RESTART_CATCH_UP_WINDOW_MS = 30_000;
 /** Minimum gap between on-chain reads of one channel's deposit. */
 const RESERVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 /** `retryAfterMs` hint returned with 'busy' / 'pending_auth' rejections. */
@@ -164,6 +166,12 @@ export class SellerPaymentManager {
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
+  /**
+   * Channels restored from disk -> when the buyer was first asked to send
+   * again what the restart lost (0: not asked yet). Unlike hydration, an
+   * accepted auth does not end this: the lost top-up is still lost.
+   */
+  private readonly _restartCatchUps = new Map<string, number>();
   /** Per-buyer mutex to prevent concurrent handleSpendingAuth for the same buyer. */
   private readonly _buyerLocks = new Map<string, Promise<void>>();
 
@@ -300,6 +308,7 @@ export class SellerPaymentManager {
     for (const channel of activeChannels) {
       this._activeBuyers.add(channel.peerId);
       this._hydratedChannelIds.add(channel.sessionId);
+      this._restartCatchUps.set(channel.sessionId, 0);
       this._acceptedCumulative.set(channel.sessionId, BigInt(channel.authMax));
       this._spent.set(channel.sessionId, BigInt(channel.tokensDelivered));
       // Hydrate reserveMax from previousConsumption (repurposed field)
@@ -419,6 +428,7 @@ export class SellerPaymentManager {
     this._latestAuth.delete(channelId);
     this._closeRetryCount.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
+    this._restartCatchUps.delete(channelId);
     this._reserveMax.delete(channelId);
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
@@ -1661,6 +1671,41 @@ export class SellerPaymentManager {
     return this._topUpsRunning.has(channelId);
   }
 
+  /**
+   * What a 402 should require for a channel past its ceiling that this process
+   * restored from disk, or null to judge the channel as it stands.
+   *
+   * A restart loses what the seller held only in memory: top-ups it verified
+   * and the authorizations waiting for them. The buyer still has both and sends
+   * them again from an ordinary 402, but gives the channel up on an exhausted
+   * one, and the channel then closes below what it signed. So for a while the
+   * buyer is asked instead.
+   *
+   * The answer requires what is already accepted, so the buyer signs nothing
+   * new. One exception: when that is too low for a topUp() to pass the settled
+   * threshold, the first answer requires the deposit, and a buyer that signed
+   * past it answers with a close capped there, the one authorization that can
+   * settle. Only one asks: a buyer runs one close at a time and fails the rest.
+   */
+  async restartCatchUpTarget(channelId: string): Promise<bigint | null> {
+    const askedAt = this._restartCatchUps.get(channelId);
+    if (askedAt === undefined) return null;
+    const now = Date.now();
+    if (askedAt > 0 && now - askedAt >= RESTART_CATCH_UP_WINDOW_MS) {
+      this._restartCatchUps.delete(channelId);
+      return null;
+    }
+    if (askedAt === 0) {
+      // Before any await: parallel requests must see that this one is asking.
+      this._restartCatchUps.set(channelId, now);
+      if (!await this._topUpEligible(channelId, this._getSettleParams(channelId).amount)) {
+        debugLog(`[SellerPayment] Asking the buyer for an authorization up to the deposit after a restart: channel=${channelId.slice(0, 18)}...`);
+        return this.getReserveMax(channelId);
+      }
+    }
+    return this.getAcceptedCumulative(channelId);
+  }
+
   /** Whether topUp() settling `settleAmount` would pass the contract's settled threshold. */
   private async _topUpEligible(channelId: string, settleAmount: bigint): Promise<boolean> {
     const deposit = this._reserveMax.get(channelId) ?? 0n;
@@ -2011,6 +2056,7 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
+    this._restartCatchUps.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
   }
 
@@ -2639,7 +2685,11 @@ export class SellerPaymentManager {
     let spent = this._spent.get(channelId) ?? 0n;
     let best = this._getSettleParams(channelId);
     if (spent > best.amount) {
-      await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
+      // A queued top-up extends the channel: start it (the auth just adopted
+      // may be what it was waiting for) and stay open. The catch-up for the
+      // spend cannot be accepted before it lands.
+      if (this._pendingTopUp.has(channelId)) this._scheduleTopUp(buyerPeerId, channelId);
+      else await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
       spent = this._spent.get(channelId) ?? 0n;
       best = this._getSettleParams(channelId);
     }
