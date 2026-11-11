@@ -393,6 +393,30 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    it('resends the current authorization unchanged when the seller says it delivered nothing', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(100_000n);
+
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '0',
+        currentSpent: '0',
+        currentAcceptedCumulative: '100000',
+      }), peer, conn, makeRequest());
+
+      // Advancing by minBudgetPerRequest would sign spend the seller says it never delivered.
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+      expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledWith(peer.peerId, expect.anything());
+      expect(bpm.getCumulativeAmount(peer.peerId)).toBe(100_000n);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+      expect(result.action).toBe('retry');
+    });
+
     describe('when the buyer already signed at least what the seller asks for', () => {
       const catchUp = {
         error: 'payment_required',
