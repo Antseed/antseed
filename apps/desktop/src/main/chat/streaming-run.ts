@@ -225,7 +225,6 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     process.env['ANTSEED_PROXY_URL'] = `http://127.0.0.1:${String(proxyPort)}`;
     const runtimeRunning = isBuyerRuntimeRunning();
     let proxyAvailable = await isProxyAvailable(proxyPort);
-    let startFailure: string | null = null;
     if (!proxyAvailable && ensureBuyerRuntimeStarted) {
       if (runtimeRunning) {
         appendSystemLog(`Buyer runtime is running. Waiting for proxy :${proxyPort}...`);
@@ -241,17 +240,17 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           proxyAvailable = await waitForBuyerProxy(proxyPort);
         }
       } catch (error) {
-        startFailure = asErrorMessage(error);
-        appendSystemLog(`Buyer runtime auto-start failed: ${startFailure}`);
+        const message = asErrorMessage(error);
+        appendSystemLog(`Buyer runtime auto-start failed: ${message}`);
+        if (message) {
+          // A local problem: another peer or an automatic retry can't help, so show it at once.
+          return {
+            ok: false,
+            error: message,
+            stopReason: { kind: 'unknown', source: 'unknown', retryable: false, message },
+          };
+        }
       }
-    }
-    if (startFailure) {
-      // A local problem: another peer or an automatic retry can't help, so show it at once.
-      return {
-        ok: false,
-        error: startFailure,
-        stopReason: { kind: 'unknown', source: 'unknown', retryable: false, message: startFailure },
-      };
     }
     if (!proxyAvailable) {
       return {
