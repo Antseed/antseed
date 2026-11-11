@@ -176,12 +176,13 @@ export async function readLocalDepositRules(): Promise<DepositRulesUsdc> {
  * gateway to re-read the chain. The last answer is kept for cheap reads.
  */
 export async function refreshCreditsInfo(options: { fresh?: boolean } = {}): Promise<CreditsInfo> {
-  const [info, rules] = await Promise.all([
+  const [read, rules] = await Promise.all([
     getGatewayBalanceInfo(options).catch(() => null),
     readLocalDepositRules(),
   ]);
-  // A failed read keeps the last known balance rather than showing zero.
-  return lastCredits.settle(gatewayCreditsInfo(info, rules));
+  // A failed read keeps the last known balance rather than showing zero, but
+  // only that same gateway and key's: no gateway answering has no scope.
+  return lastCredits.settle(gatewayCreditsInfo(read?.info ?? null, rules), read?.scope ?? null);
 }
 
 const lastCredits = new LastCredits();

@@ -20,6 +20,7 @@ import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, isStore
 import { attachedGateway } from '../runtime/attach-only.js';
 import { buyerSignerMismatchMessage, compareBuyerSigner, liveBuyerAddress } from './buyer-signer.js';
 import { isDesktopDebugEnabled } from '../app-context.js';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -505,9 +506,17 @@ function otherLocalKeySecrets(): string[] {
  * other keys: the balance the app spends from. `fresh` asks the gateway to
  * re-read the chain (after a deposit or before a payment decision).
  */
-export async function getGatewayBalanceInfo(options: { fresh?: boolean } = {}): Promise<GatewayKeyInfo | null> {
-  const { origin, apiKey } = await getGatewayEndpoint();
-  return readKeyInfo(origin, apiKey, options.fresh === true);
+export async function getGatewayBalanceInfo(options: { fresh?: boolean } = {}): Promise<{ scope: string; info: GatewayKeyInfo | null }> {
+  const { mode, origin, apiKey } = await getGatewayEndpoint();
+  return { scope: gatewayKeyScope(mode, origin, apiKey), info: await readKeyInfo(origin, apiKey, options.fresh === true).catch(() => null) };
+}
+
+/**
+ * Which gateway and key a balance belongs to, so a balance cached for one is
+ * never shown for another. The key enters only as a digest.
+ */
+export function gatewayKeyScope(mode: string, origin: string, apiKey: string): string {
+  return `${mode} ${origin} ${createHash('sha256').update(apiKey).digest('hex').slice(0, 16)}`;
 }
 
 /**

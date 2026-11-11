@@ -59,16 +59,13 @@ import type {
   RegisterPiChatHandlersOptions,
 } from './engine-types.js';
 import type { FirstModelShownSignal } from '../../shared/telemetry.js';
+import { finiteNumber } from '../gateway/response-fields.js';
 
 augmentChatToolPath();
 
 export type { PiChatEngine } from './engine-types.js';
 
 type OfferPricing = ResolvedChatModel['offers'][number];
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
 
 /** Seller offers listed under a gateway entry, reduced to the prices telemetry buckets. */
 function entryOffers(entry: GatewayModelEntry | undefined): OfferPricing[] {
@@ -79,7 +76,7 @@ function entryOffers(entry: GatewayModelEntry | undefined): OfferPricing[] {
       const offer: OfferPricing = {};
       for (const key of ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion', 'minImageUsdPerImage', 'maxImageUsdPerImage'] as const) {
         const value = finiteNumber(peer[key]);
-        if (value !== undefined) offer[key] = value;
+        if (value !== null) offer[key] = value;
       }
       return offer;
     });
