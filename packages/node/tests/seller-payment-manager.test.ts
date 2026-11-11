@@ -2893,6 +2893,44 @@ describe('SellerPaymentManager', () => {
       expect(mgr.getReserveMax(channelId)).toBe(2_000_000n);
     });
 
+    it('submits a stored top-up once when the buyer also sends it again', async () => {
+      const channelId = makeChannelId(167);
+      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      const replay = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '4000000', salt: '0x' + '44'.repeat(32), deadline,
+      });
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+        authMax: '1900000', tokensDelivered: '2100000', previousConsumption: '2000000',
+        reserveMaxAmount: '4000000', latestReserveAuthSig: replay.spendingAuthSig, latestReserveDeadline: deadline,
+      });
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 2_000_000n, settled: 0n }));
+      let readThreshold!: (bps: bigint) => void;
+      vi.spyOn(mgr.channelsClient, 'getTopUpSettledThresholdBps').mockReturnValue(new Promise<bigint>((resolve) => { readThreshold = resolve; }));
+      let mine!: (txHash: string) => void;
+      const topUp = vi.spyOn(mgr.channelsClient, 'topUp').mockReturnValue(new Promise<string>((resolve) => { mine = resolve; }));
+      await mgr.validateHydratedChannels();
+
+      // The buyer sends the same top-up again before the stored one is submitted, while it is mined and after it landed.
+      await mgr.handleSpendingAuth(buyerIdentity.peerId, replay, mux);
+      readThreshold(6_500n);
+      await vi.waitFor(() => expect(topUp).toHaveBeenCalledTimes(1));
+      await mgr.handleSpendingAuth(buyerIdentity.peerId, replay, mux);
+      mine('0xtopup');
+      await mgr.waitForTopUp(channelId, 1_000);
+      await mgr.handleSpendingAuth(buyerIdentity.peerId, replay, mux);
+      await mgr.waitForTopUp(channelId, 1_000);
+
+      expect({
+        topUps: topUp.mock.calls.map((call) => call[5]),
+        ceiling: mgr.getReserveMax(channelId),
+        pending: mgr.hasPendingTopUp(channelId),
+        blocked: mgr.isChannelBlocked(channelId),
+        stored: store.getChannel(channelId)?.latestReserveAuthSig,
+      }).toEqual({ topUps: [4_000_000n], ceiling: 4_000_000n, pending: false, blocked: false, stored: null });
+    });
+
     it('takes a stored top-up as landed when the chain rejects it as already applied', async () => {
       const channelId = makeChannelId(166);
       seedChannel(store, channelId, buyerIdentity, sellerIdentity, {

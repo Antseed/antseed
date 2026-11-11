@@ -57,6 +57,8 @@ type TopUpFate = 'lands' | 'mined-unseen' | 'never-sent';
 class FakeChain {
   readonly channels = new Map<string, ChannelInfo>();
   topUpFate: TopUpFate = 'lands';
+  /** The ceiling of every topUp() a seller called, in order. */
+  readonly topUpCalls: bigint[] = [];
   /** The buyer's deposits, locked and not. */
   funds = 100_000_000n;
 
@@ -121,6 +123,7 @@ class FakeChain {
 
   async topUp(channelId: string, amount: bigint, metadata: string, sig: string, newMax: bigint, deadline: bigint, reserveSig: string): Promise<string> {
     const fate = this.topUpFate;
+    this.topUpCalls.push(newMax);
     if (fate === 'never-sent') return new Promise(() => {});
     if (fate === 'lands') await new Promise((resolve) => setTimeout(resolve, MINING_MS));
     const channel = this._active(channelId);
@@ -488,6 +491,31 @@ describe('a seller restarted around a top-up', () => {
     await restartSeller();
     const statuses = await parallelRequests(16);
 
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
+    expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
+    expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
+  }, TEST_TIMEOUT_MS);
+
+  it('submits the top-up it stored once when the buyer also sends it again', async () => {
+    const channelId = await openChannel();
+    chain.topUpFate = 'never-sent';
+    while (seller.payments.getCumulativeSpend(channelId) < 499_000n) await serve(channelId, 23_201n);
+    const signed = buyer.getCumulativeAmount(sellerPeer);
+    const stored = BigInt(seller.store.getChannel(channelId)?.reserveMaxAmount ?? '0');
+    expect(stored).toBeGreaterThan(OPENING_RESERVE);
+    const before = chain.topUpCalls.length;
+
+    // The restarted seller submits the stored top-up; the buyer sends the same one again while it is mined, then goes on.
+    await restartSeller();
+    expect(chain.topUpCalls.slice(before)).toEqual([stored]);
+    await finish(buyer.resendPendingReserveAuth(sellerPeer, negotiator.getOrCreatePaymentMux(sellerPeer, buyerConn)));
+    await flush();
+    const statuses = await parallelRequests(16);
+
+    const since = chain.topUpCalls.slice(before);
+    expect(since.filter((ceiling) => ceiling === stored), 'submitted the stored top-up twice').toEqual([stored]);
+    expect(new Set(since).size, 'submitted a top-up twice').toBe(since.length);
     const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
     expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
