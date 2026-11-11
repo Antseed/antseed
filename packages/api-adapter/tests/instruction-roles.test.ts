@@ -303,6 +303,22 @@ describe('instructions sent as Responses input items', () => {
   });
 
   it.each([
+    ['after an assistant turn', [userItem('one'), assistantItem('two'), userItem(''), developerItem('Summarize.')], [
+      { role: 'user', content: [{ type: 'text', text: 'one' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+      { role: 'user', content: [{ type: 'text', text: 'Summarize.' }] },
+    ]],
+    ['in a request with nothing else', [developerItem('Write a greeting.'), userItem('')], [
+      { role: 'user', content: [{ type: 'text', text: 'Write a greeting.' }] },
+    ]],
+  ])('count an empty message as no turn (%s)', (_, input, messages) => {
+    const body = translate(RESPONSES, MESSAGES, { model: 'm', input });
+
+    expect(body.system).toBeUndefined();
+    expect(body.messages).toEqual(messages);
+  });
+
+  it.each([
     ['a user turn', [userItem('hi')]],
     ['a tool result', [
       userItem('run it'),
