@@ -19,6 +19,15 @@ test('unsettledSpend is what the seller can still claim on a channel', () => {
   assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '50000', onChainSettled: '60000' }), 0n);
 });
 
+test('unsettledSpend counts no more than the deposit the chain holds', () => {
+  // Signed past the reserve (a top-up that never landed): the seller can settle the deposit at most.
+  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '2000000', onChainSettled: '250000', onChainStateKnown: true, onChainDeposit: '1000000' }), 750000n);
+  // Before the chain is read the deposit is unknown, so all of it counts.
+  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '2000000', onChainSettled: '250000', onChainDeposit: '0' }), 1750000n);
+  // The live session's top-up can land before the next read: spend up to its ceiling still counts.
+  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '1500000', onChainSettled: '0', onChainStateKnown: true, onChainDeposit: '1000000', reserveCeiling: '2000000' }), 1500000n);
+});
+
 test('unsettledSpend treats missing and malformed amounts as zero', () => {
   assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '', onChainSettled: '' }), 0n);
   assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: 'nope', onChainSettled: '0' }), 0n);

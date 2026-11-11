@@ -23,10 +23,22 @@ type ChannelOnChainSnapshot = {
   deposit: string;
   settled: string;
   closeRequestedAt: number;
+  /** When the read started, in ms; a snapshot passed without it was read now. */
+  readAtMs?: number;
 };
 
+/** Every channel's on-chain record by id, from one read, and when that read started. */
+export type ChannelChainRead = { readAtMs: number; sessions: Map<string, ChannelInfo> };
+
 const CHANNEL_CLOSE_GRACE_SECS = 900;
-const channelOnChainSnapshots = new Map<string, ChannelOnChainSnapshot>();
+/**
+ * The store retires a row both when its channel closed and when the buyer gave
+ * up on the session, which leaves the channel open. Only a read started this
+ * long after the retirement shows such a row open: an earlier one may predate
+ * the close, or lag it.
+ */
+const RETIRED_ROW_READ_DELAY_MS = 30_000;
+const channelOnChainSnapshots = new Map<string, Required<ChannelOnChainSnapshot>>();
 
 export function applyChannelOnChainSnapshot(
   row: DesktopPaymentChannelSummary,
@@ -34,21 +46,62 @@ export function applyChannelOnChainSnapshot(
   nowSeconds = Math.floor(Date.now() / 1000),
 ): void {
   if (snapshot && snapshot.status !== 0) {
-    channelOnChainSnapshots.set(row.channelId, snapshot);
+    channelOnChainSnapshots.set(row.channelId, { ...snapshot, readAtMs: snapshot.readAtMs ?? nowSeconds * 1000 });
   }
 
   const knownSnapshot = channelOnChainSnapshots.get(row.channelId);
   if (!knownSnapshot) return;
+  if (knownSnapshot.status === 1 && row.status !== 'active'
+    && knownSnapshot.readAtMs < row.updatedAt + RETIRED_ROW_READ_DELAY_MS) return;
 
   row.onChainStateKnown = true;
   row.onChainDeposit = knownSnapshot.deposit;
   row.onChainSettled = knownSnapshot.settled;
   if (knownSnapshot.status === 2) row.status = 'settled';
   else if (knownSnapshot.status === 3) row.status = 'timedout';
-  else if (knownSnapshot.status === 1 && knownSnapshot.closeRequestedAt > 0) {
-    row.status = nowSeconds < knownSnapshot.closeRequestedAt + CHANNEL_CLOSE_GRACE_SECS
-      ? 'closing'
-      : 'withdrawable';
+  else if (knownSnapshot.status === 1) {
+    // Open, whatever the store calls it: a channel the buyer gave up on still
+    // locks its reserve until it closes on-chain.
+    if (knownSnapshot.closeRequestedAt === 0) row.status = 'active';
+    else {
+      row.status = nowSeconds < knownSnapshot.closeRequestedAt + CHANNEL_CLOSE_GRACE_SECS
+        ? 'closing'
+        : 'withdrawable';
+    }
+  }
+}
+
+/** Whether the chain showed this channel Settled or TimedOut: final states, so it needs no further read. */
+export function channelEndedOnChain(channelId: string): boolean {
+  const status = channelOnChainSnapshots.get(channelId)?.status;
+  return status === 2 || status === 3;
+}
+
+/**
+ * Let the chain decide each row's status: apply what is known, then read every
+ * channel the chain has not shown ended, whatever the store calls it. A row the
+ * read leaves out keeps its last verified state.
+ */
+export async function applyChainToChannels(
+  channels: DesktopPaymentChannelSummary[],
+  read: (rows: DesktopPaymentChannelSummary[]) => Promise<ChannelChainRead>,
+): Promise<void> {
+  for (const row of channels) applyChannelOnChainSnapshot(row);
+  const candidates = channels.filter((row) => !channelEndedOnChain(row.channelId));
+  if (candidates.length === 0) return;
+  const { readAtMs, sessions } = await read(candidates);
+  for (const row of candidates) {
+    const info = sessions.get(row.channelId);
+    if (!info) continue;
+    // Status 0 (no on-chain record) is ambiguous: a reserve may still land.
+    // applyChannelOnChainSnapshot keeps the last verified state for it.
+    applyChannelOnChainSnapshot(row, {
+      status: info.status,
+      deposit: info.deposit.toString(),
+      settled: info.settled.toString(),
+      closeRequestedAt: Number(info.closeRequestedAt),
+      readAtMs,
+    });
   }
 }
 

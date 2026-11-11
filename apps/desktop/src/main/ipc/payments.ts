@@ -394,7 +394,7 @@ export function registerPaymentsIpc(): void {
   });
 
   ipcMain.handle('payments:get-buyer-spend-history', async (): Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }> => {
-    const channels = await loadBuyerChannels(true, false);
+    const channels = await loadBuyerChannels({ enrichOnChain: false });
     if (!channels) {
       return { ok: false, data: unavailableLocalBuyerSpendHistory(), error: 'buyer proxy unreachable' };
     }
@@ -402,7 +402,7 @@ export function registerPaymentsIpc(): void {
   });
 
   ipcMain.handle('payments:get-channels', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[] | null; error: string | null }> => {
-    const channels = await loadBuyerChannels(true, true, opts?.fresh === true);
+    const channels = await loadBuyerChannels({ fresh: opts?.fresh === true });
     if (!channels) {
       return { ok: false, data: null, error: 'buyer proxy unreachable' };
     }

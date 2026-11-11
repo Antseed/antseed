@@ -105,9 +105,10 @@ export function VprActivityView({ onSelectView }: Props) {
     [allRows],
   );
   const totalSpent = sumBaseUnits(allRows.map((row) => row.cumulativeSigned));
-  // Header total = what the displayed rows can actually recover, so it always
-  // matches their sum. The Deposits contract's raw `reserved` overstates this:
-  // it still counts spend that is signed but not yet settled by the seller.
+  // Header total = what closing the displayed rows recovers for certain: each
+  // reserve less the spend signed away. The Deposits contract's raw `reserved`
+  // overstates this: it still counts spend that is signed but not yet settled
+  // by the seller, which a row with nothing else left shows as unsettled.
   const totalRowsLocked = useMemo(
     () => rows.reduce((acc, row) => acc + channelRecoverableBaseUnits(row), 0n),
     [rows],

@@ -154,6 +154,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
         console.error(chalk.red(`Error: Local channel ${shortId(localChannel.sessionId, 18)} is ${localChannel.status}, not active.`));
         console.error(chalk.dim('Only active channels can be closed.'));
+        console.error(chalk.dim(`If the chain still holds it open: antseed buyer channels request-close ${localChannel.sessionId}`));
         process.exit(1);
       }
 
@@ -197,7 +198,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
 
   channelsCmd
     .command('request-close <channelId>')
-    .description('Request timeout close for an active buyer payment channel so reserved funds can be withdrawn after the grace period')
+    .description('Request timeout close for a buyer payment channel the chain holds open, so reserved funds can be withdrawn after the grace period')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options) => {
       const json = channelsJsonRequested(options, channelsCmd);
@@ -217,20 +218,21 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         store.close();
       }
 
-      if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
-        console.error(chalk.red(`Error: Local channel ${shortId(localChannel.sessionId, 18)} is ${localChannel.status}, not active.`));
-        console.error(chalk.dim('Only active channels can be timeout closed.'));
-        process.exit(1);
-      }
-
+      // No check of the local status: the buyer retires a row when it gives up
+      // on the session, which leaves the channel open with its reserve locked.
+      // The chain read below decides.
       const spinner = ora(`Requesting timeout close for channel ${shortId(localChannel.sessionId, 18)}...`).start();
       try {
         const onChain = await channelsClient.getSession(localChannel.sessionId);
-        if (onChain.buyer.toLowerCase() !== address.toLowerCase()) {
-          throw new Error(`Configured wallet ${address} is not the on-chain buyer for this channel.`);
+        // Status first: a reserve that never landed reads as no channel at all, with no buyer.
+        if (onChain.status === 0) {
+          throw new Error('No channel with this id exists on-chain, so it locks nothing.');
         }
         if (onChain.status !== ON_CHAIN_STATUS_ACTIVE) {
           throw new Error(`On-chain channel is ${CHANNEL_STATUS_LABELS[onChain.status] ?? `status ${onChain.status}`}, not active.`);
+        }
+        if (onChain.buyer.toLowerCase() !== address.toLowerCase()) {
+          throw new Error(`Configured wallet ${address} is not the on-chain buyer for this channel.`);
         }
         if (onChain.closeRequestedAt > 0n) {
           const waitSeconds = secondsUntilChannelWithdrawReady(

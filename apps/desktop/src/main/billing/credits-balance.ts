@@ -21,6 +21,12 @@ export type ChannelSpendRow = {
   cumulativeSigned: string;
   /** Amount already settled on-chain for this channel (base units). */
   onChainSettled: string;
+  /** True once the chain was read for this channel; then onChainDeposit is its reserve. */
+  onChainStateKnown?: boolean;
+  /** Amount the channel locks on-chain (base units): the most a seller can settle on it now. */
+  onChainDeposit?: string;
+  /** The live session's reserve ceiling (base units), which a top-up can lock before the next read. */
+  reserveCeiling?: string | null;
 };
 
 export type CreditsBalanceComponents = {
@@ -42,12 +48,23 @@ export function isOpenChannelStatus(status: string): boolean {
     || status === 'closing' || status === 'close_requested' || status === 'withdrawable';
 }
 
-/** Signed but not yet settled on one channel, in USDC base units. */
+/**
+ * Signed but not yet settled on one channel, in USDC base units. Once the
+ * chain was read, only up to what the channel can lock: settle() refuses
+ * more than its deposit, and only the live session's ceiling can raise that.
+ */
 export function unsettledSpend(row: ChannelSpendRow): bigint {
   try {
     const signed = BigInt(row.cumulativeSigned || '0');
     const settled = BigInt(row.onChainSettled || '0');
-    return signed > settled ? signed - settled : 0n;
+    let claimable = signed;
+    if (row.onChainStateKnown) {
+      const deposit = BigInt(row.onChainDeposit || '0');
+      const ceiling = BigInt(row.reserveCeiling || '0');
+      const lockable = deposit > ceiling ? deposit : ceiling;
+      if (lockable < signed) claimable = lockable;
+    }
+    return claimable > settled ? claimable - settled : 0n;
   } catch {
     // Malformed row — skip it rather than poison the total.
     return 0n;

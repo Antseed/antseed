@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ChannelInfo } from '@antseed/node';
+import { pendingSpendFromChannels } from '../billing/credits-balance.js';
 import {
+  applyChainToChannels,
   applyChannelOnChainSnapshot,
+  channelEndedOnChain,
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
   runInBatches,
@@ -136,6 +140,90 @@ test('a retired row keeps the ended status the chain shows', () => {
 
   assert.equal(settled.status, 'settled');
   assert.equal(timedOut.status, 'timedout');
+});
+
+function chainRecord(status: number, deposit: bigint, settled: bigint, closeRequestedAt = 0n): ChannelInfo {
+  return {
+    buyer: '0x' + '22'.repeat(20),
+    seller: '0x' + '44'.repeat(20),
+    deposit,
+    settled,
+    metadataHash: '0x' + '00'.repeat(32),
+    deadline: 0n,
+    settledAt: 0n,
+    closeRequestedAt,
+    status,
+  };
+}
+
+test('the chain decides the status of every row it has not shown ended, whatever the store calls it', async () => {
+  const anHourAgo = Date.now() - 3_600_000;
+  const row = (sessionId: string, status: string, cumulativeSigned = '0') => {
+    const summary = normalizePaymentChannelSummary({ sessionId, status, cumulativeSigned, updatedAt: anHourAgo });
+    assert.ok(summary);
+    return summary;
+  };
+  const rows = [
+    row('decide-active', 'active', '100000'),
+    row('decide-retired-open', 'ghost', '300000'),
+    row('decide-retired-never-opened', 'ghost'),
+    row('decide-retired-closed', 'settled', '500000'),
+    row('decide-ended-earlier', 'settled', '900000'),
+  ];
+  applyChannelOnChainSnapshot(rows[4]!, { status: 2, deposit: '1000000', settled: '900000', closeRequestedAt: 0 });
+  const asked: string[] = [];
+
+  await applyChainToChannels(rows, async (candidates) => {
+    asked.push(...candidates.map((candidate) => candidate.channelId));
+    return {
+      readAtMs: Date.now(),
+      sessions: new Map([
+        ['decide-active', chainRecord(1, 1_000_000n, 0n)],
+        ['decide-retired-open', chainRecord(1, 1_000_000n, 100_000n)],
+        ['decide-retired-never-opened', chainRecord(0, 0n, 0n)],
+        ['decide-retired-closed', chainRecord(2, 1_000_000n, 500_000n)],
+      ]),
+    };
+  });
+
+  // A channel that ended is not read again; every other row is, retired or not.
+  assert.deepEqual(asked, ['decide-active', 'decide-retired-open', 'decide-retired-never-opened', 'decide-retired-closed']);
+  assert.deepEqual(rows.map((summary) => summary.status), ['active', 'active', 'ghost', 'settled', 'settled']);
+  // The seller can still settle what was signed on the retired channel it holds open.
+  assert.equal(pendingSpendFromChannels(rows), 100_000n + 200_000n);
+});
+
+test('a read from before the buyer retired a row, or just after, does not show it open', () => {
+  const retiredAt = Date.now();
+  const row = normalizePaymentChannelSummary({ sessionId: 'just-retired', status: 'settled', settledAmount: '400000', updatedAt: retiredAt });
+  assert.ok(row);
+  const open = { status: 1, deposit: '1000000', settled: '0', closeRequestedAt: 0 };
+
+  // The read from before a seller-assisted close, and one right after it that lags the chain.
+  applyChannelOnChainSnapshot(row, { ...open, readAtMs: retiredAt - 5_000 });
+  assert.equal(row.status, 'settled');
+  applyChannelOnChainSnapshot(row, { ...open, readAtMs: retiredAt + 2_000 });
+  assert.equal(row.status, 'settled');
+  assert.equal(row.onChainStateKnown, false);
+
+  applyChannelOnChainSnapshot(row, { ...open, readAtMs: retiredAt + 60_000 });
+  assert.equal(row.status, 'active');
+});
+
+test('channelEndedOnChain holds only for a channel the chain showed Settled or TimedOut', () => {
+  const open = normalizePaymentChannelSummary({ sessionId: 'read-again-open', status: 'ghost' });
+  const settled = normalizePaymentChannelSummary({ sessionId: 'read-again-settled', status: 'active' });
+  const timedOut = normalizePaymentChannelSummary({ sessionId: 'read-again-timed-out', status: 'ghost' });
+  assert.ok(open && settled && timedOut);
+
+  applyChannelOnChainSnapshot(open, { status: 1, deposit: '1000000', settled: '0', closeRequestedAt: 0 });
+  applyChannelOnChainSnapshot(settled, { status: 2, deposit: '1000000', settled: '400000', closeRequestedAt: 0 });
+  applyChannelOnChainSnapshot(timedOut, { status: 3, deposit: '1000000', settled: '0', closeRequestedAt: 900 });
+
+  assert.equal(channelEndedOnChain('read-again-open'), false);
+  assert.equal(channelEndedOnChain('read-again-settled'), true);
+  assert.equal(channelEndedOnChain('read-again-timed-out'), true);
+  assert.equal(channelEndedOnChain('read-again-never-read'), false);
 });
 
 test('runInBatches processes active-looking channels beyond the first batch', async () => {

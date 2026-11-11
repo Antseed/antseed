@@ -7,7 +7,7 @@ import { Command } from 'commander';
 import { ChannelsClient, loadOrCreateIdentity, type StoredChannel } from '@antseed/node';
 import { openChannelStore } from '../../payment-utils.js';
 import { registerBuyerChannelsCommand } from './channels.js';
-import { buyerChannel, buyerCommandHarness, onChain } from './test-helpers.js';
+import { buyerChannel, buyerCommandHarness, MISSING_ON_CHAIN, onChain } from './test-helpers.js';
 import {
   CHANNEL_CLOSE_GRACE_PERIOD_SECONDS,
   resolveBuyerChannelById,
@@ -164,6 +164,24 @@ test('channels request-close refuses a row the chain shows ended', async (contex
     /process\.exit\(1\)/,
   );
 
+  assert.equal(requestClose.mock.callCount(), 0);
+});
+
+test('channels request-close says when no channel with the id exists on-chain', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'b3'.repeat(32);
+  harness.seed(buyerChannel(id, harness.buyer, { status: 'ghost' }));
+  const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+  const written: string[] = [];
+  context.mock.method(process.stderr, 'write', (chunk: string | Uint8Array) => { written.push(String(chunk)); return true; });
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+
+  await assert.rejects(
+    harness.run(registerBuyerChannelsCommand, ['channels', 'request-close', id], { [id]: MISSING_ON_CHAIN }),
+    /process\.exit\(1\)/,
+  );
+
+  assert.match(written.join(''), /No channel with this id exists on-chain/);
   assert.equal(requestClose.mock.callCount(), 0);
 });
 
