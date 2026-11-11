@@ -28,3 +28,19 @@ export class PendingRuns {
     for (const controller of controllers) controller.abort();
   }
 }
+
+/**
+ * Makes a run the conversation's active run unless it was stopped during
+ * setup. A stopped run that registered anyway could take the place of a newer
+ * run on the same chat, and its cleanup would then drop that run's entry and
+ * cancel its tool approvals.
+ */
+export function registerActiveRun<Run extends { conversationId: string }>(
+  runs: Map<string, Run>,
+  run: Run,
+  signal: AbortSignal,
+): boolean {
+  if (signal.aborted) return false;
+  runs.set(run.conversationId, run);
+  return true;
+}

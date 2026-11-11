@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PendingRuns } from './pending-runs.js';
+import { PendingRuns, registerActiveRun } from './pending-runs.js';
 
 /** A privacy gate the test opens by hand. */
 function heldGate() {
@@ -53,4 +53,16 @@ test('a new run in the same conversation cancels the one it replaces, and only i
   const third = pending.begin('chat');
   pending.abort('other');
   assert.equal(third.signal.aborted, false);
+});
+
+test('a run stopped during setup never takes the place of the newer run on its chat', () => {
+  const pending = new PendingRuns();
+  const runs = new Map<string, { conversationId: string; name: string }>();
+  const older = pending.begin('c1');
+  // A resend starts the newer run, which cancels the older one still in setup.
+  const newer = pending.begin('c1');
+  assert.equal(registerActiveRun(runs, { conversationId: 'c1', name: 'newer' }, newer.signal), true);
+  // The older run finishes its setup afterwards.
+  assert.equal(registerActiveRun(runs, { conversationId: 'c1', name: 'older' }, older.signal), false);
+  assert.equal(runs.get('c1')?.name, 'newer');
 });

@@ -1505,6 +1505,9 @@ export function initChatModule({
     }
     const imageModel = findChatModel(uiState.chatModels, imageModelId);
 
+    // A first prompt on the new-chat screen already being prepared owns the
+    // composer: a second submit would make a second chat and a second paid image.
+    if (!uiState.chatActiveConversation && shownDraft) return;
     void (async () => {
       let convId = uiState.chatActiveConversation;
       if (!convId) {
@@ -1513,8 +1516,22 @@ export function initChatModule({
           showChatError('Choose a text model before starting an image conversation.');
           return;
         }
+        // The same draft ownership as a first text message: Stop cancels it,
+        // and a user who moved on isn't pulled back to this chat.
+        const draftVersion = newChatDraftVersion;
+        const draftToken = ++draftSeq;
+        shownDraft = draftToken;
+        const stillDraft = () => !stoppedDrafts.has(draftToken);
+        setDraftSending(true);
+        convId = await createConversationForModel(textModelId, { activate: false });
+        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        if (shownDraft === draftToken) {
+          shownDraft = 0;
+          if (uiState.chatActiveConversation === null) setDraftSending(false);
+        }
+        if (!convId) return;
         // Follow-ups in this chat are image requests too.
-        convId = await createConversationForModel(textModelId, { activate: true, keepImageModel: true });
+        if (draftVersion === newChatDraftVersion) await openConversation(convId, { keepImageModel: true });
       }
       if (!convId) return;
       if (isConversationSending(convId)) {

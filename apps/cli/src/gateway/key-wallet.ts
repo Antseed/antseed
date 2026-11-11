@@ -13,7 +13,7 @@ import type { RetailPriceMap } from '@antseed/node/retail-prices'
 import { ChainReadCache } from '../proxy/chain-read-cache.js'
 import { buyerFetch } from './buyer-control.js'
 import { createRewardsReader, gatewayChainProvider, readChannelStates, REWARDS_TTL_MS } from './console-api/handlers/wallet-chain.js'
-import { mapBalances, type ChannelChainState } from './console-api/handlers/wallet-mapping.js'
+import { baseUnitsToUsdc, mapBalances, record, type ChannelChainState } from './console-api/handlers/wallet-mapping.js'
 import type { KeyRewards, KeyWalletBalance } from './server.js'
 
 const CHANNELS_TTL_MS = 30_000
@@ -21,8 +21,6 @@ const PRICES_TTL_MS = 10 * 60_000
 const PRICES_RETRY_MS = 60_000
 const OPEN_STATUSES = new Set(['active', 'open', 'pending', 'closing', 'close_requested', 'withdrawable'])
 
-type Json = Record<string, unknown>
-const record = (value: unknown): Json => (value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {})
 const text = (value: unknown): string => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '')
 
 function baseUnits(value: unknown): bigint {
@@ -31,10 +29,6 @@ function baseUnits(value: unknown): bigint {
   } catch {
     return 0n
   }
-}
-
-function usdc(units: bigint): string {
-  return `${units / 1_000_000n}.${(units % 1_000_000n).toString().padStart(6, '0')}`
 }
 
 /**
@@ -119,7 +113,7 @@ export function createKeyWalletReader(options: KeyWalletReaderOptions) {
       return {
         available: balances.available,
         reserved: balances.reserved,
-        pending: usdc(pending),
+        pending: baseUnitsToUsdc(pending),
         // The buyer sends null for a read that failed; mapBalances would make it zero.
         wallet: raw['walletUsdc'] === null || raw['walletUsdc'] === undefined ? null : balances.walletUsdc,
         creditLimit: balances.creditLimit,

@@ -19,6 +19,7 @@ import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { asRecord, asString } from '../utils.js';
 import { gatewayCreditsInfo, type DepositRulesUsdc } from './gateway-credits.js';
+import { LastCredits } from './last-credits.js';
 import { resetSharedChain, withSharedProvider } from './shared-chain.js';
 import { clearChainReads, invalidateChainReads } from './read-cache.js';
 
@@ -179,14 +180,11 @@ export async function refreshCreditsInfo(options: { fresh?: boolean } = {}): Pro
     getGatewayBalanceInfo(options).catch(() => null),
     readLocalDepositRules(),
   ]);
-  const credits = gatewayCreditsInfo(info, rules);
   // A failed read keeps the last known balance rather than showing zero.
-  if (!credits.balanceKnown && lastCredits?.balanceKnown) return lastCredits;
-  lastCredits = credits;
-  return credits;
+  return lastCredits.settle(gatewayCreditsInfo(info, rules));
 }
 
-let lastCredits: CreditsInfo | null = null;
+const lastCredits = new LastCredits();
 
 /**
  * Whether the last balance read found nothing the buyer owns (deposits net of
@@ -194,13 +192,13 @@ let lastCredits: CreditsInfo | null = null;
  * been read for the current identity. Cache-only: never touches the chain.
  */
 export function cachedBuyerBalanceIsZero(): boolean | undefined {
-  if (!lastCredits?.balanceKnown) return undefined;
-  return Number(lastCredits.totalOwnedUsdc) <= 0;
+  return lastCredits.isZero();
 }
 
 /** Drop the cached balance — call when the signing identity changes. */
 export function invalidateCreditsCache(): void {
   invalidateChainReads();
+  lastCredits.clear();
 }
 
 /**
@@ -215,7 +213,7 @@ export function invalidateChainClients(): void {
   cachedDepositsClient = null;
   cachedChannelsClient = null;
   cachedDepositRules = null;
-  lastCredits = null;
+  lastCredits.clear();
 }
 
 /** The cached deposits client for `cc`, reading through the shared chain provider. */

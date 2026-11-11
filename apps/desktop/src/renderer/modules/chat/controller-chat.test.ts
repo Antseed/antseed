@@ -390,6 +390,58 @@ describe('chat controller', () => {
     expect(JSON.stringify(chatGenerateImage.mock.calls[0])).toContain('img-1');
   });
 
+  it('a second image submit while the first image chat is being made sends one image, in one chat', async () => {
+    const conversations = [conv('conv-a', 'model-a')];
+    const creation = deferred<void>();
+    const created: string[] = [];
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiCreateConversation: async (service: string) => {
+        await creation.promise;
+        const next = conv(`conv-img-${created.length + 1}`, service);
+        created.push(next.id);
+        conversations.push(next);
+        return { ok: true, data: next };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    uiState.chatImageModelId = 'image-model';
+    await api.refreshChatConversations();
+    api.generateImage('a cat');
+    api.generateImage('a cat');
+    creation.resolve();
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    await tick(20);
+    expect(created).toHaveLength(1);
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+    expect(uiState.chatActiveConversation).toBe(created[0]);
+  });
+
+  it('an image chat finishing after the user started another chat does not pull them back', async () => {
+    const conversations = [conv('conv-a', 'model-a')];
+    const creation = deferred<void>();
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiCreateConversation: async (service: string) => {
+        await creation.promise;
+        const next = conv('conv-img', service);
+        conversations.push(next);
+        return { ok: true, data: next };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    uiState.chatImageModelId = 'image-model';
+    await api.refreshChatConversations();
+    api.generateImage('a cat');
+    await tick();
+    api.startNewChat();
+    creation.resolve();
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    expect(uiState.chatActiveConversation).toBeNull();
+  });
+
   it('ignores a slow answer for a chat the user has already left', async () => {
     const answers: Record<string, (value: unknown) => void> = {};
     const conversations = [{ ...conv('conv-a', 'model-a', '/project-a'), messages: [{ role: 'user', content: 'from a', createdAt: 1 }] }, { ...conv('conv-b', 'model-b'), messages: [{ role: 'user', content: 'from b', createdAt: 1 }] }];

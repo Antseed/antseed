@@ -9,7 +9,7 @@
  */
 import { isReplyCutOff, REPLY_CUT_OFF_MESSAGE } from './stream-stop.js';
 import { trackChatRun } from './served-peer.js';
-import { PendingRuns } from './pending-runs.js';
+import { PendingRuns, registerActiveRun } from './pending-runs.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
@@ -763,7 +763,22 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     });
 
     const run: ActiveRun = { conversationId, session, unsubscribe };
-    activeRunsByConversation.set(conversationId, run);
+    if (!registerActiveRun(activeRunsByConversation, run, signal)) {
+      // Stopped during session setup: a newer run may own this chat now, so
+      // this one tears down only what it made and sends nothing.
+      try {
+        unsubscribe();
+      } catch {
+        // Ignore listener cleanup failures.
+      }
+      try {
+        session.dispose();
+      } catch {
+        // Ignore disposal races.
+      }
+      revokeShellGateway();
+      return stoppedBeforeSend(conversationId);
+    }
 
     if (recordChatRequestStarted) {
       try {
