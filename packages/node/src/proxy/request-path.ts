@@ -10,8 +10,5 @@ const PATH_SEGMENT = /^[A-Za-z0-9\-._~!$&'()*+,=:@]+$/;
 export function isCanonicalRequestPath(path: string): boolean {
   const pathname = path.split('?', 1)[0]!;
   if (!pathname.startsWith('/')) return false;
-  const segments = pathname.slice(1).split('/');
-  // A trailing slash reads the same to all of them.
-  if (segments.at(-1) === '') segments.pop();
-  return segments.every((segment) => PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..');
+  return pathname.slice(1).split('/').every((segment) => PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..');
 }

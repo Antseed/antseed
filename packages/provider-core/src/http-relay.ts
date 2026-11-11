@@ -9,7 +9,7 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 /** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
-const COMPLETIONS_PATH = /\/(?:chat\/)?completions\/?$/i;
+const COMPLETIONS_PATH = /\/(?:chat\/)?completions\/?(?:\?|$)/i;
 
 export interface RelayConfig {
   /**
@@ -370,6 +370,8 @@ export class HttpRelay {
   private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
     // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
     const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
+    const requestPath = `${pathname}${search}`;
+    const upstreamPath = upstream.pathRewrite?.[requestPath] ?? requestPath;
 
     // Resolve dynamic auth token if provider uses OAuth / keychain
     let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
@@ -456,7 +458,7 @@ export class HttpRelay {
           // `include_usage:false` does not count: the figure is what the
           // answer is billed by. Operators can still disable it via
           // `injectJsonFields` below if they really need to.
-          if (COMPLETIONS_PATH.test(pathname) && transformed.stream) {
+          if ((COMPLETIONS_PATH.test(requestPath) || COMPLETIONS_PATH.test(upstreamPath)) && transformed.stream) {
             const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
               ? transformed.stream_options as Record<string, unknown>
               : {};
@@ -465,7 +467,7 @@ export class HttpRelay {
 
           // Body injection targets chat-style APIs. Image and speech APIs
           // reject unknown fields (Venice validates them strictly).
-          const lowerPath = pathname.toLowerCase();
+          const lowerPath = requestPath.toLowerCase();
           const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
           const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
@@ -480,7 +482,7 @@ export class HttpRelay {
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
-    const url = `${base}${upstream.pathRewrite?.[pathname] ?? pathname}${search}`;
+    const url = `${base}${upstreamPath}`;
 
     // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
     const stripPrefixes = this._config.stripHeaderPrefixes ?? [];

@@ -1055,7 +1055,7 @@ export class SellerRequestHandler {
           } else {
             responseUsage = parseResponseUsage(response.body);
             // An answer delivered without a usage figure is still paid for: it is billed by estimate.
-            if (!isServedFree && statusCode < 400 && !streamOutcome.failed && responseUsage.inputTokens + responseUsage.outputTokens === 0) {
+            if (!isServedFree && statusCode < 400 && responseUsage.inputTokens + responseUsage.outputTokens === 0) {
               const estimated = estimateChatAnswerUsage(request.body, response.body);
               if (estimated) {
                 debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${estimated.inputTokens} out=${estimated.outputTokens})`);

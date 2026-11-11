@@ -1,4 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter';
+import { StreamOutcome } from '../health/stream-outcome.js';
 import { estimateTokensFromBytesSampled } from '../payments/pricing.js';
 import type { ResponseUsage } from '../utils/response-usage.js';
 
@@ -34,13 +35,12 @@ function chatAnswerText(body: Uint8Array): string | null {
   const whole = parseJsonObject(body);
   if (whole) return choicesText(whole);
   let answer: string | null = null;
-  for (const line of decoder.decode(body).split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) continue;
+  for (const event of decoder.decode(body).split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5)).join('\n');
     try {
-      const text = choicesText(JSON.parse(trimmed.slice(5)) as Record<string, unknown>);
+      const text = choicesText(JSON.parse(data) as Record<string, unknown>);
       if (text !== null) answer = (answer ?? '') + text;
-    } catch { /* skip non-JSON lines, such as [DONE] */ }
+    } catch { /* skip events that are not JSON, such as [DONE] */ }
   }
   return answer;
 }
@@ -62,9 +62,12 @@ function estimatePromptTokens(requestBody: Uint8Array): number {
  * What a chat answer that arrived with no usage figure is billed as: the
  * prompt's estimated tokens plus the tokens of the text the model wrote,
  * without the JSON or SSE framing around it. Null for a body that is not a
- * chat answer, which has nothing to estimate.
+ * chat answer, and for a stream that reports it failed: neither is billed.
  */
 export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: Uint8Array): ResponseUsage | null {
+  const outcome = new StreamOutcome();
+  outcome.observe(responseBody);
+  if (outcome.failed) return null;
   const text = chatAnswerText(responseBody);
   if (text === null) return null;
   const inputTokens = estimatePromptTokens(requestBody);

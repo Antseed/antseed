@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { NO_USAGE_MARKER } from '../../lib/mock.mjs';
+import { parseSse } from '../../lib/tb.mjs';
 
 export const meta = {
   description: 'A streamed chat is billed for what it delivered, whatever the request says about usage: asking for no usage still pays the exact cost, a path that does not mean what it says is refused, and an upstream that never reports usage is paid by estimate. Settlement equals what was signed.',
@@ -77,9 +78,10 @@ export async function run(tb) {
   tb.check('the request that asks for no usage was answered', optedOut.status === 200, optedOut.status);
   tb.check('the upstream was asked for usage anyway', askedUpstream?.includeUsage === true, askedUpstream);
   tb.check('the path with a dot segment was refused', dotPath.status === 400 && JSON.parse(dotPath.text).error?.code === 'invalid_request_path', { status: dotPath.status, body: dotPath.text.slice(0, 300) });
-  tb.check('the answer without usage was delivered', silent.status === 200 && silent.text.includes('Hello from'), { status: silent.status });
-  // The estimate is the prompt's and the answer's size: more than nothing, far less than a full reserve.
-  tb.check('the estimate is in proportion to the answer', estimate > 0n && estimate < cost * 50n, { estimate: String(estimate), costPerChat: String(cost) });
+  const silentAnswer = parseSse(silent.text);
+  tb.check('the answer without usage was delivered in full, with no usage in it', silent.status === 200 && silentAnswer.done && silentAnswer.content.includes('Hello from') && silentAnswer.usage === null, { status: silent.status, ...silentAnswer });
+  // A chat with a usage figure costs exactly `cost`; the estimate is the prompt's and the answer's size, framing included.
+  tb.check('the estimate is not a reported figure and is in proportion to the answer', estimate > cost && estimate < cost * 50n, { estimate: String(estimate), costPerChat: String(cost) });
   tb.metric('estimateMicroUsdc', String(estimate));
 
   await tb.closeAll();

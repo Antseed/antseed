@@ -55,11 +55,11 @@ function plainProvider(statusCode: number, body: unknown, pricing = PRICE): Prov
   };
 }
 
-/** A buyer with an open channel, and what the seller records and asks for on it. */
-function paymentManager() {
+/** A buyer with an open channel, or none, and what the seller records and asks for on it. */
+function paymentManager(session: boolean) {
   let spent = 0n;
   const manager = {
-    hasSession: () => true,
+    hasSession: () => session,
     hasClosingChannel: () => false,
     getChannelByPeer: () => ({ sessionId: CHANNEL, authMax: '0' }),
     waitForPendingAuths: async () => {},
@@ -75,27 +75,28 @@ function paymentManager() {
 }
 
 /** Serves one request on a paid channel and returns the answer, the spend recorded and the NeedAuth sent. */
-async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY, contentType = 'application/json' }: { path?: string; body?: Uint8Array; contentType?: string } = {}) {
-  const { manager, spent } = paymentManager();
+async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY, contentType = 'application/json', session = true }: { path?: string; body?: Uint8Array; contentType?: string; session?: boolean } = {}) {
+  const { manager, spent } = paymentManager(session);
   const handler = new SellerRequestHandler({
     identity: identityFromPrivateKeyHex('11'.repeat(32)),
     providers: [provider],
     sellerPaymentManager: manager as any,
     sessionTracker: null,
-    channelsClient: null,
+    channelsClient: {} as any,
     announcer: null,
     emit: () => false,
   });
   const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
   const sendNeedAuth = vi.fn();
-  const { mux } = handler.handleConnection(conn as any, BUYER, { sendNeedAuth, sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
+  const sendPaymentRequired = vi.fn();
+  const { mux } = handler.handleConnection(conn as any, BUYER, { sendNeedAuth, sendPaymentRequired } as any, new VerificationMux(conn as any));
   await mux.handleFrame({
     type: MessageType.HttpRequest,
     messageId: 1,
     payload: encodeHttpRequest({ requestId: 'req-1', method: 'POST', path, headers: { 'content-type': contentType }, body }),
   });
   const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
-  return { response: decodeHttpResponse(frame.payload), spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined };
+  return { response: decodeHttpResponse(frame.payload), spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined, paymentRequired: sendPaymentRequired.mock.calls.length };
 }
 
 describe('seller billing of an answer without a usage report', () => {
@@ -141,14 +142,28 @@ describe('seller billing of an answer without a usage report', () => {
     expect(needAuth).toMatchObject({ inputTokens: String(REQUEST_TOKENS), outputTokens: String(estimateTokensFromText(text)) });
   });
 
-  it('counts an attachment as a flat allowance, not by its encoded size or its link', async () => {
+  describe('attachments in the prompt', () => {
     const answer = { choices: [{ index: 0, message: { role: 'assistant', content: 'A seed.' } }] };
-    const withImage = (url: string) => encoder.encode(JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url } }] }] }));
-    const inline = await serve(plainProvider(200, answer), { body: withImage(`data:image/png;base64,${'A'.repeat(1_000_000)}`) });
-    const linked = await serve(plainProvider(200, answer), { body: withImage('https://example.com/seed.png') });
-    const text = estimateTokensFromBytesSampled(encoder.encode(JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url' }] }] })));
-    expect(inline.needAuth?.inputTokens).toBe(String(text + 1290));
-    expect(linked.needAuth?.inputTokens).toBe(String(text + 1290));
+    const requestWith = (parts: Array<Record<string, unknown>>) => encoder.encode(JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, ...parts] }] }));
+    const large = 'A'.repeat(1_000_000);
+
+    it.each([
+      ['an inline image', { type: 'image_url', image_url: { url: `data:image/png;base64,${large}` } }],
+      ['a linked image', { type: 'image_url', image_url: { url: 'https://example.com/seed.png' } }],
+      ['inline audio', { type: 'input_audio', input_audio: { data: large, format: 'wav' } }],
+      ['a file', { type: 'file', file: { file_data: `data:application/pdf;base64,${large}`, filename: 'seed.pdf' } }],
+    ])('counts %s as a flat allowance, not by its size', async (_shape, part) => {
+      const { needAuth } = await serve(plainProvider(200, answer), { body: requestWith([part]) });
+      const text = estimateTokensFromBytesSampled(requestWith([{ type: part.type }]));
+      expect(needAuth?.inputTokens).toBe(String(text + 1290));
+    });
+
+    it('counts each attachment', async () => {
+      const image = { type: 'image_url', image_url: { url: 'https://example.com/seed.png' } };
+      const { needAuth } = await serve(plainProvider(200, answer), { body: requestWith([image, image, image]) });
+      const text = estimateTokensFromBytesSampled(requestWith([{ type: 'image_url' }, { type: 'image_url' }, { type: 'image_url' }]));
+      expect(needAuth?.inputTokens).toBe(String(text + 3 * 1290));
+    });
   });
 
   it('counts a tool schema property named like an attachment as text', async () => {
@@ -187,8 +202,26 @@ describe('seller billing of an answer without a usage report', () => {
     expect(spent).toBe(5n);
   });
 
+  it('reads an event whose JSON spans several data lines, and data lines without a space', async () => {
+    const multiline = `data: {"choices":[{"index":0,\ndata: "delta":{"content":"Seeds "}}]}\n\n`;
+    const unspaced = `data:{"choices":[{"index":0,"delta":{"content":"grow."}}]}\n\n`;
+    const { needAuth } = await serve(streamingProvider([multiline, unspaced, DONE]));
+    expect(needAuth?.outputTokens).toBe(String(estimateTokensFromText('Seeds grow.')));
+  });
+
   it('charges nothing by estimate for a stream that failed', async () => {
     const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), 'event: error\ndata: upstream dropped\n\n']));
+    expect(needAuth?.lastRequestCost).toBe('0');
+    expect(spent).toBe(0n);
+  });
+
+  it('charges nothing by estimate for a failed stream a provider buffered into one answer', async () => {
+    const body = [textDelta('Seeds store'), 'event: error\ndata: upstream dropped\n\n'].join('');
+    const provider = plainProvider(200, null);
+    provider.handleRequest = vi.fn(async (request: SerializedHttpRequest) => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: encoder.encode(body),
+    }));
+    const { spent, needAuth } = await serve(provider);
     expect(needAuth?.lastRequestCost).toBe('0');
     expect(spent).toBe(0n);
   });
@@ -230,6 +263,18 @@ describe('seller request paths', () => {
   });
 
   it.each([
+    ['a path not in normal form', '/v1/./chat/completions', ['openai-chat-completions'], 'invalid_request_path'],
+    ['an API the service does not offer', '/v1/chat/completions', ['openai-images'], 'invalid_billing_request'],
+  ] as const)('refuses %s before asking a buyer with no channel to pay', async (_shape, path, protocols, code) => {
+    const provider = { ...plainProvider(200, chatAnswer), serviceApiProtocols: { 'test-model': [...protocols] } };
+    const { response, paymentRequired } = await serve(provider, { path, session: false });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error.code).toBe(code);
+    expect(paymentRequired).toBe(0);
+    expect(provider.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ['its own protocol', '/v1/chat/completions', ['openai-chat-completions']],
     ['a protocol the buyer can translate to it', '/v1/messages', ['openai-chat-completions']],
     ['a path no protocol claims', '/v1/embeddings', ['openai-chat-completions']],
@@ -255,6 +300,7 @@ describe('seller request paths', () => {
     ['a control character', '/v1/\tchat/completions'],
     ['a fragment', '/v1/responses#/../chat/completions'],
     ['a path parameter', '/v1;x=1/chat/completions'],
+    ['a trailing slash', '/v1/audio/speech/'],
   ])('refuses a path with %s before billing or reaching the provider', async (_shape, path) => {
     const provider = plainProvider(200, chatAnswer);
     const { response, spent, needAuth } = await serve(provider, { path });
@@ -268,7 +314,6 @@ describe('seller request paths', () => {
   it.each([
     ['the plain path', '/v1/chat/completions'],
     ['a query string, whatever it holds', '/v1/messages?beta=true&next=/a/../b%2F'],
-    ['a trailing slash', '/v1/chat/completions/'],
     ['a colon in a segment', '/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse'],
     ['a dot inside a segment', '/v1/models.v2/chat.completions'],
     ['a resource id', '/v1/responses/resp_1-a~b/cancel'],

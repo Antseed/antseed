@@ -114,6 +114,9 @@ describe('mock delivery ledger', () => {
       assert.deepEqual((await stream({ stream_options: { include_usage: true } })).usage, MOCK_USAGE);
       assert.equal((await stream({ stream_options: { include_usage: true } }, `${NO_USAGE_MARKER} hi`)).usage, null);
       assert.deepEqual(mock.state.requests.map((entry) => entry.includeUsage), [null, false, true, true]);
+      const whole = await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: `${NO_USAGE_MARKER} hi` }] })).json();
+      assert.match(whole.choices[0].message.content, /Hello from/);
+      assert.equal('usage' in whole, false);
     } finally {
       await mock.stop();
     }

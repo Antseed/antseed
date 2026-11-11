@@ -158,17 +158,48 @@ describe('HttpRelay', () => {
     expect(url).toBe('https://api.example.com/v4/chat/completions');
   });
 
-  it('applies a path rewrite to a path with a query string, and keeps the query', async () => {
-    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+  it('matches a path rewrite key exactly, query string included', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
     const relay = new HttpRelay(
-      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v4/chat/completions' } }),
+      makeConfig({ pathRewrite: { '/v1/chat/completions?api-version=1': '/v4/chat/completions?api-version=2' } }),
       { onResponse: () => undefined },
     );
 
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?api-version=1' }));
     await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?client_version=1' }));
 
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://api.example.com/v4/chat/completions?client_version=1');
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.com/v4/chat/completions?api-version=2',
+      'https://api.example.com/v1/chat/completions?client_version=1',
+    ]);
+  });
+
+  it('asks for usage when a path rewrite points at a completions path', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/generate': '/v1/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/generate', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/chat/completions');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
+  });
+
+  it('asks for usage on a completions path rewritten to one that does not look like it', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v1/text/chatcompletion_v2' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/text/chatcompletion_v2');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
   });
 
   it('does not inject chat-only fields into speech requests', async () => {
