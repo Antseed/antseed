@@ -124,10 +124,14 @@ describe('instructions sent as Chat Completions messages', () => {
     ]);
   });
 
-  it.each(['', ' \n'])('add nothing when they carry no text (%j)', (text) => {
+  it.each([
+    ['developer', ''],
+    ['developer', ' \n'],
+    ['system', ' \n'],
+  ])('add nothing when they carry no text (%s %j)', (role, text) => {
     const body = translate(CHAT, MESSAGES, {
       model: 'm',
-      messages: [{ role: 'developer', content: text }, { role: 'user', content: 'hi' }],
+      messages: [{ role, content: text }, { role: 'user', content: 'hi' }],
     });
 
     expect(body.system).toBeUndefined();
@@ -178,7 +182,7 @@ describe('instructions sent as Responses input items', () => {
         developerItem('First rule.'),
         userItem('one'),
         { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
-        developerItem('Second rule.'),
+        { role: 'system', content: 'Second rule.' },
         userItem('three'),
       ],
     });
@@ -252,6 +256,7 @@ describe('instructions sent as Responses input items', () => {
   it.each(['', ' \n'])('add nothing when they carry no text (%j)', (text) => {
     const body = translate(RESPONSES, CHAT, {
       model: 'm',
+      instructions: text,
       input: [developerItem(text), userItem('hi')],
     });
 

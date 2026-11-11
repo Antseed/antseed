@@ -504,9 +504,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
     stream: body.stream === true,
     input: [],
   };
-  if (typeof body.instructions === 'string' && body.instructions.length > 0) {
-    request.instructions = body.instructions;
-  }
+  if (typeof body.instructions === 'string') appendInstructions(request, body.instructions);
 
   const input = body.input;
   const normalizedInput = Array.isArray(input)
@@ -893,7 +891,9 @@ function isInstructionRole(role: unknown): boolean {
  * Both OpenAI protocols can send instructions as messages, anywhere in the
  * conversation. For every target the hub keeps them in one string, in the order
  * sent, at the head of the request: the only place all three protocols can hold
- * them, since Anthropic's `system` has no position among the turns.
+ * them, since Anthropic's `system` has no position among the turns. An
+ * instruction added mid-session changes that head, which costs one
+ * prompt-cache miss.
  */
 function appendInstructions(request: CanonicalLlmRequest, text: string): void {
   if (text.trim().length === 0) return;
