@@ -848,12 +848,30 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           const ending = openAIResponsesEnding(event.finishReason);
           // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments
           // stop mid-value; the other items are whole.
-          const itemStatus = (cut: boolean): 'completed' | 'incomplete' => (cut ? ending.status : 'completed');
-          const messageStatus = itemStatus(lastWritten === 'text');
-          const toolCallStatus = (toolCall: CanonicalStreamToolCall) =>
-            itemStatus(toolCall.index === lastWritten || !toolArgumentsWhole(toolCall.arguments));
+          const cutAtLimit = ending.status === 'incomplete';
+          const status = (cut: boolean): 'completed' | 'incomplete' => (cutAtLimit && cut ? 'incomplete' : 'completed');
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           const msgId = getMessageId();
+          // Each finished item, as both its `.done` event and the final response list it.
+          const message = {
+            type: 'message' as const,
+            id: msgId,
+            role: 'assistant' as const,
+            status: status(lastWritten === 'text'),
+            content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
+            ...(messagePhase ? { phase: messagePhase } : {}),
+          };
+          const functionCalls = sortedToolCalls(toolCalls).map((toolCall) => ({
+            outputIndex: getToolOutputIndex(toolCall.index),
+            item: {
+              type: 'function_call' as const,
+              id: openAIResponsesFunctionCallId(toolCall.id),
+              call_id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+              status: status(toolCall.index === lastWritten || (cutAtLimit && !toolArgumentsWhole(toolCall.arguments))),
+            },
+          }));
           if (outputStarted) {
             pushEvent(emitted, 'response.output_text.done', {
               output_index: 0,
@@ -868,40 +886,18 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               content_index: 0,
               part: { type: 'output_text', text: textBuffer, annotations: [] },
             });
-            pushEvent(emitted, 'response.output_item.done', {
-              output_index: 0,
-              item: {
-                type: 'message',
-                id: msgId,
-                role: 'assistant',
-                status: messageStatus,
-                content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
-                ...(messagePhase ? { phase: messagePhase } : {}),
-              },
-            });
+            pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: message });
           }
 
-          for (const toolCall of sortedToolCalls(toolCalls)) {
-            const outputIndex = getToolOutputIndex(toolCall.index);
-            const itemId = openAIResponsesFunctionCallId(toolCall.id);
+          for (const { outputIndex, item } of functionCalls) {
             pushEvent(emitted, 'response.function_call_arguments.done', {
               output_index: outputIndex,
-              item_id: itemId,
-              call_id: toolCall.id,
-              name: toolCall.name,
-              arguments: toolCall.arguments,
+              item_id: item.id,
+              call_id: item.call_id,
+              name: item.name,
+              arguments: item.arguments,
             });
-            pushEvent(emitted, 'response.output_item.done', {
-              output_index: outputIndex,
-              item: {
-                type: 'function_call',
-                id: itemId,
-                call_id: toolCall.id,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-                status: toolCallStatus(toolCall),
-              },
-            });
+            pushEvent(emitted, 'response.output_item.done', { output_index: outputIndex, item });
           }
 
           pushEvent(emitted, `response.${ending.status}`, {
@@ -911,24 +907,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               model: responseModel,
               ...ending,
               created_at: createdAt,
-              output: [
-                ...(outputStarted ? [{
-                  type: 'message' as const,
-                  id: msgId,
-                  role: 'assistant' as const,
-                  status: messageStatus,
-                  content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                }] : []),
-                ...sortedToolCalls(toolCalls).map((toolCall) => ({
-                  type: 'function_call' as const,
-                  id: openAIResponsesFunctionCallId(toolCall.id),
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: toolCallStatus(toolCall),
-                })),
-              ],
+              output: [...(outputStarted ? [message] : []), ...functionCalls.map(({ item }) => item)],
               output_text: textBuffer,
               ...(event.endTurn !== undefined ? { end_turn: event.endTurn } : {}),
               usage: openAIResponsesUsage(event.usage),

@@ -781,8 +781,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const ending = openAIResponsesEnding(response.stopReason);
   // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments stop
   // mid-value; the other items are whole.
+  const cutAtLimit = ending.status === 'incomplete';
   const cut = response.output.at(-1);
-  const status = (cutHere: boolean): 'completed' | 'incomplete' => (cutHere ? ending.status : 'completed');
+  const status = (cutHere: boolean): 'completed' | 'incomplete' => (cutAtLimit && cutHere ? 'incomplete' : 'completed');
 
   if (text.length > 0) {
     output.push({
@@ -803,7 +804,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: status(item === cut || !toolArgumentsWhole(item.arguments)),
+      status: status(item === cut || (cutAtLimit && !toolArgumentsWhole(item.arguments))),
     });
   }
 
