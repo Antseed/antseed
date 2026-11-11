@@ -811,7 +811,9 @@ export class BuyerPaymentNegotiator {
     req: SerializedHttpRequest,
     inFlightRequests = 1,
   ): Promise<Handle402Result> {
-    return this._withPaymentWork(peer.peerId, () => this._handle402(response, peer, conn, req, inFlightRequests));
+    // When the 402 arrived: waiting for its terms and reading the chain can take seconds.
+    const receivedAt = Date.now();
+    return this._withPaymentWork(peer.peerId, () => this._handle402(response, peer, conn, req, inFlightRequests, receivedAt));
   }
 
   private async _handle402(
@@ -820,6 +822,7 @@ export class BuyerPaymentNegotiator {
     conn: BuyerConnection,
     req: SerializedHttpRequest,
     inFlightRequests = 1,
+    receivedAt = Date.now(),
   ): Promise<Handle402Result> {
     const hadLockedSession = this._lockedPeers.has(peer.peerId);
     const directPaymentBody = parsePaymentRequiredBody(response.body);
@@ -1037,6 +1040,7 @@ export class BuyerPaymentNegotiator {
           requiredCumulativeTarget == null,
           req.requestId,
           inFlightRequests,
+          receivedAt,
         );
       } catch (err) {
         if (!(err instanceof SessionReplacedError)) throw err;
@@ -1759,7 +1763,10 @@ export class BuyerPaymentNegotiator {
     });
   }
 
-  /** Recover `session`, the seller's live channel when this is called. */
+  /**
+   * Recover `session`, the seller's live channel when this is called.
+   * `receivedAt` is when the 402 that asks for it arrived.
+   */
   private async _recoverExistingSession(
     peer: BuyerPeerView,
     conn: BuyerConnection,
@@ -1769,6 +1776,7 @@ export class BuyerPaymentNegotiator {
     requireFreshAck = false,
     requestId?: string,
     inFlightRequests = 1,
+    receivedAt = Date.now(),
   ): Promise<boolean> {
     if (!session) {
       return false;
@@ -1779,8 +1787,6 @@ export class BuyerPaymentNegotiator {
       return false;
     }
 
-    // When the 402 arrived: the chain read below can take seconds.
-    const receivedAt = Date.now();
     const onChain = await this._getOnChainSessionState(session.sessionId);
     if (onChain === null) {
       return false;

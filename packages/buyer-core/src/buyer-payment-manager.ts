@@ -294,7 +294,7 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
   private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
 
-  /** sellerPeerId -> the highest deposit a chain read has shown for the active channel */
+  /** sellerPeerId -> the highest deposit a chain read has shown for the active channel, starting from the stored confirmed reserve */
   private readonly _depositRead = new Map<string, { channelId: string; amount: bigint }>();
 
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
@@ -471,6 +471,8 @@ export class BuyerPaymentManager {
       let confirmedReserve = 0n;
       if (channel.confirmedReserveAmount != null) {
         confirmedReserve = BigInt(channel.confirmedReserveAmount);
+        // The deposit confirmed before a restart still stands against a read that lags it.
+        this._depositRead.set(peerId, { channelId: channel.sessionId, amount: confirmedReserve });
       } else if (channel.reserveMaxAmount != null && channel.reserveAuthPending !== true) {
         confirmedReserve = BigInt(channel.reserveMaxAmount);
       }
@@ -937,6 +939,10 @@ export class BuyerPaymentManager {
       // equivalent confirmation and must reopen signing before the first
       // post-reload request is allowed through.
       if (pending.confirmedAmount === 0n) this._confirmedPeers.add(sellerPeerId);
+    } else if (pending && deposit > pending.confirmedAmount) {
+      // A top-up stacked on one that has since landed: replaying it must not
+      // store the deposit from before that one as confirmed.
+      this._pendingReserveAuth.set(sellerPeerId, { ...pending, confirmedAmount: deposit });
     }
 
     const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));

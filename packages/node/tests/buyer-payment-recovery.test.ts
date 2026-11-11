@@ -87,6 +87,16 @@ function catchUp402(channelId: string, spent: bigint, accepted: bigint): Seriali
   };
 }
 
+/** A 402 whose payment terms follow in a PaymentRequired frame of their own. */
+function termsToFollow402(): SerializedHttpResponse {
+  return {
+    requestId: REQUEST.requestId,
+    statusCode: 402,
+    headers: { 'content-type': 'application/json' },
+    body: enc.encode(JSON.stringify({ error: 'payment_required' })),
+  };
+}
+
 /** What a 402 ended in: a retry, the reason of the answer the buyer returned instead, or the error it failed with. */
 function outcomeOf(handled: Promise<Handle402Result>): Promise<string> {
   return handled.then(
@@ -116,6 +126,19 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       wallet,
     } as unknown as Identity;
     store = new ChannelStore(tempDir);
+    deposit = 0n;
+    channels = { getSession: vi.fn(async () => chainInfo(deposit)) };
+    startBuyer();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** Start the buyer on the store, as the node does each time it starts. */
+  function startBuyer(): void {
     manager = new BuyerPaymentManager(identity, {
       rpcUrl: 'http://127.0.0.1:8545',
       depositsContractAddress: '0x' + 'dd'.repeat(20),
@@ -129,8 +152,6 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       dataDir: tempDir,
     }, store);
     vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 10n ** 12n, reserved: 0n });
-    deposit = 0n;
-    channels = { getSession: vi.fn(async () => chainInfo(deposit)) };
     const deposits = {
       // The channel's reserve is still locked.
       getBuyerBalance: vi.fn(async () => ({ available: 10n ** 12n, reserved: deposit, lastActivityAt: 0n })),
@@ -144,13 +165,7 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       {},
       { emit: vi.fn() },
     );
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    store.close();
-    rmSync(tempDir, { recursive: true, force: true });
-  });
+  }
 
   function sellerConnection(): SellerConnection {
     const decoder = new FrameDecoder();
@@ -222,6 +237,23 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
     await manager.reconcileReserveAmount(SELLER, deposit);
   }
 
+  /** The seller sends the terms of a budget-exhausted 402 in a PaymentRequired frame. */
+  function sendTerms(channelId: string, spent: bigint, accepted: bigint): void {
+    negotiator.getPaymentMux(SELLER)!.handleFrame({
+      type: MessageType.PaymentRequired,
+      messageId: 0,
+      payload: codec.encodePaymentRequired({
+        minBudgetPerRequest: '10000',
+        suggestedAmount: RESERVE.toString(),
+        requestId: REQUEST.requestId,
+        requiredCumulativeAmount: spent.toString(),
+        currentSpent: spent.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        channelId,
+      }),
+    });
+  }
+
   /** One chain read of the channel answered by a node a block behind, from before the top-up landed. */
   function nextReadLags(staleDeposit: bigint): void {
     channels.getSession.mockImplementationOnce(async () => chainInfo(staleDeposit));
@@ -266,11 +298,33 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       await manager.reconcileReserveAmount(SELLER, deposit);
 
       await manager.reconcileReserveAmount(SELLER, RESERVE);
+      const afterRead = { ceiling: manager.getReserveCeiling(SELLER), stored: store.getChannel(channelId)?.confirmedReserveAmount };
+      // A 402 recovery then replays the second top-up.
+      await manager.resendPendingReserveAuth(SELLER, negotiator.getOrCreatePaymentMux(SELLER, seller.conn));
 
-      expect({
-        ceiling: manager.getReserveCeiling(SELLER),
-        stored: store.getChannel(channelId)?.confirmedReserveAmount,
-      }).toEqual({ ceiling: 2n * RESERVE, stored: (2n * RESERVE).toString() });
+      expect({ afterRead, storedAfterReplay: store.getChannel(channelId)?.confirmedReserveAmount }).toEqual({
+        afterRead: { ceiling: 2n * RESERVE, stored: (2n * RESERVE).toString() },
+        storedAfterReplay: (2n * RESERVE).toString(),
+      });
+    });
+
+    it('keeps the reserve the chain confirmed when the buyer restarts', async () => {
+      const before = sellerConnection();
+      const channelId = await openChannel(before, 0n);
+      await topUp(before, true);
+      await sign(1_500_000n, before);
+
+      // The buyer restarts, and its first read comes from a node a block behind.
+      startBuyer();
+      const after = sellerConnection();
+      nextReadLags(RESERVE);
+      const outcome = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, after.conn, REQUEST));
+
+      expect({ outcome, closeRequests: after.closeRequests(), resent: after.spendingAuths() }).toEqual({
+        outcome: 'retry',
+        closeRequests: [],
+        resent: ['1500000'],
+      });
     });
 
     it('caps a close at the deposit the chain has shown, not at a read that lags it', async () => {
@@ -352,6 +406,21 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
     await read.started;
     vi.spyOn(Date, 'now').mockReturnValue(arrived + 10_000);
     read.release();
+
+    expect({ outcome: await sibling, closeRequests: seller.closeRequests() }).toEqual({ outcome: 'retry', closeRequests: [] });
+  });
+
+  it('retries a 402 from the same burst whose terms came after the settle window, instead of closing the channel', async () => {
+    const seller = sellerConnection();
+    const channelId = await openChannel(seller, 500_000n);
+    expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST))).toBe('retry');
+    const resentAt = Date.now();
+    // Another 402 of the burst arrives inside the settle window; its terms
+    // come in a frame of their own after the window ends.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(resentAt + 6_000);
+    const sibling = outcomeOf(negotiator.handle402(termsToFollow402(), PEER, seller.conn, REQUEST));
+    clock.mockReturnValue(resentAt + 7_500);
+    sendTerms(channelId, 500_000n, 400_000n);
 
     expect({ outcome: await sibling, closeRequests: seller.closeRequests() }).toEqual({ outcome: 'retry', closeRequests: [] });
   });
