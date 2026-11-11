@@ -47,6 +47,8 @@ interface SellerConnection {
   conn: PeerConnection & { state: ConnectionState };
   /** Cumulative amounts of the SpendingAuths sent on this connection (not the reserve authorizations). */
   spendingAuths(): string[];
+  /** Ceilings of the reserve authorizations sent on this connection. */
+  reserveAuths(): string[];
   /** Cumulative amounts of the close requests sent on this connection. */
   closeRequests(): string[];
   /** Answer close requests (default) or leave them waiting, as a seller that went down would. */
@@ -196,12 +198,11 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       off(): void {},
     };
     const ofType = (type: number) => frames.filter((frame) => frame.type === type);
+    const auths = () => ofType(MessageType.SpendingAuth).map((frame) => codec.decodeSpendingAuth(frame.payload));
     const seller: SellerConnection = {
       conn: conn as unknown as SellerConnection['conn'],
-      spendingAuths: () => ofType(MessageType.SpendingAuth)
-        .map((frame) => codec.decodeSpendingAuth(frame.payload))
-        .filter((auth) => auth.reserveMaxAmount == null)
-        .map((auth) => auth.cumulativeAmount),
+      spendingAuths: () => auths().filter((auth) => auth.reserveMaxAmount == null).map((auth) => auth.cumulativeAmount),
+      reserveAuths: () => auths().flatMap((auth) => auth.reserveMaxAmount != null ? [auth.reserveMaxAmount] : []),
       closeRequests: () => ofType(MessageType.CloseChannelRequest).map((frame) => codec.decodeCloseChannelRequest(frame.payload).cumulativeAmount ?? '0'),
       answerCloses: true,
       drop(): void {
@@ -259,6 +260,21 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
     channels.getSession.mockImplementationOnce(async () => chainInfo(staleDeposit));
   }
 
+  /** Hold the next write of an authorization until `release`, as a store that writes asynchronously does. */
+  function holdNextCommit(): { started: Promise<void>; release(): void } {
+    const commit = store.commitAuthorization.bind(store);
+    let begin!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { begin = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(store, 'commitAuthorization').mockImplementationOnce(async (channel, services) => {
+      begin();
+      await held;
+      commit(channel, services);
+    });
+    return { started, release };
+  }
+
   /** Hold the next chain read of the channel until `release`; `started` resolves once the read began. */
   function holdNextRead(): { started: Promise<void>; release(): void } {
     let begin!: () => void;
@@ -281,6 +297,26 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
 
       // A node a block behind still reports the deposit from before the top-up.
       await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+      expect({
+        ceiling: manager.getReserveCeiling(SELLER),
+        stored: store.getChannel(channelId)?.confirmedReserveAmount,
+      }).toEqual({ ceiling: 2n * RESERVE, stored: (2n * RESERVE).toString() });
+    });
+
+    it('keeps a deposit a read showed while the store is still writing it', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, false);
+      deposit = 2n * RESERVE;
+      // The read that shows the top-up landed is still being stored when a
+      // read from a node a block behind comes in.
+      const write = holdNextCommit();
+      const landed = manager.reconcileReserveAmount(SELLER, deposit);
+      await write.started;
+      await manager.reconcileReserveAmount(SELLER, RESERVE);
+      write.release();
+      await landed;
 
       expect({
         ceiling: manager.getReserveCeiling(SELLER),
@@ -360,15 +396,16 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
     });
 
     it.each([
-      { state: 'the top-up landed and the read lags it', landed: true, topUpPending: false, confirmed: '2000000' },
-      { state: 'the top-up is still mining', landed: false, topUpPending: true, confirmed: '1000000' },
-    ])('resends an authorization the reserve covers instead of closing the channel: $state', async ({ landed, topUpPending, confirmed }) => {
+      { state: 'the top-up landed and the read lags it', landed: true, replayed: [], topUpPending: false, confirmed: '2000000' },
+      { state: 'the top-up is still mining', landed: false, replayed: ['2000000'], topUpPending: true, confirmed: '1000000' },
+    ])('resends an authorization the reserve covers instead of closing the channel: $state', async ({ landed, replayed, topUpPending, confirmed }) => {
       const seller = sellerConnection();
       const channelId = await openChannel(seller, 0n);
       await topUp(seller, landed);
       // Signed past the opening reserve, against the top-up.
       await sign(1_500_000n, seller);
       const sentBefore = seller.spendingAuths().length;
+      const reservesBefore = seller.reserveAuths().length;
       if (landed) nextReadLags(RESERVE);
 
       const outcome = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
@@ -376,6 +413,8 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       expect({
         outcome,
         closeRequests: seller.closeRequests(),
+        // The seller needs a top-up still on its way to accept what is resent.
+        replayed: seller.reserveAuths().slice(reservesBefore),
         resent: seller.spendingAuths().slice(sentBefore),
         status: store.getChannel(channelId)?.status,
         topUpPending: manager.hasPendingReserveAuth(SELLER),
@@ -383,6 +422,7 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       }).toEqual({
         outcome: 'retry',
         closeRequests: [],
+        replayed,
         resent: ['1500000'],
         status: CHANNEL_STATUS.ACTIVE,
         topUpPending,
@@ -414,13 +454,20 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
           await first;
           return replay(peerId, pmux);
         });
+      const reservesBefore = seller.reserveAuths().length;
       const second = outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
       await secondRead.started;
       first = outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
 
-      expect({ first: await first, second: await second, closeRequests: seller.closeRequests() }).toEqual({
+      expect({
+        first: await first,
+        second: await second,
+        replayed: seller.reserveAuths().slice(reservesBefore),
+        closeRequests: seller.closeRequests(),
+      }).toEqual({
         first: 'retry',
         second: 'retry',
+        replayed: ['2000000', '2000000'],
         closeRequests: [],
       });
     });

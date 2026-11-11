@@ -1481,6 +1481,12 @@ describe('BuyerPaymentNegotiator', () => {
       await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
       negotiator.onPeerDisconnect(SELLER_PEER_ID);
       await expect(promise).rejects.toThrow(/disconnected/);
+
+      // The failed close no longer holds the seller: it can be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalledTimes(2));
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+      expect((await again).status).toBe('rejected');
     });
 
     it('sends one close request when parallel callers ask for it at once', async () => {
