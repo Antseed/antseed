@@ -6,9 +6,7 @@ Provide Anthropic API capacity on the Antseed P2P network using a commercial API
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-anthropic
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 
