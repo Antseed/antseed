@@ -14,23 +14,41 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
     return extractUsage(parsed);
   }
   const text = new TextDecoder().decode(body);
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let freshInputTokens = 0;
-  let cachedInputTokens = 0;
+  const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  /** Adds one payload's usage to the total; false when the payload is not JSON. */
+  const read = (payload: string): boolean => {
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const usage = extractUsage(event);
+    if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
+    if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
+    if (usage.freshInputTokens > 0) total.freshInputTokens = Math.max(total.freshInputTokens, usage.freshInputTokens);
+    if (usage.cachedInputTokens > 0) total.cachedInputTokens = Math.max(total.cachedInputTokens, usage.cachedInputTokens);
+    return true;
+  };
+  /** The data lines of the event being read; a blank line ends an event. */
+  let dataLines: string[] = [];
+  const endEvent = (): void => {
+    // The SSE spec joins the data lines of one event with "\n" into one payload.
+    // Lines that do not join into JSON are read one by one: a stream written with no blank lines between its events.
+    const joined = dataLines.length > 1 && read(dataLines.join('\n'));
+    if (!joined) dataLines.forEach((payload) => read(payload));
+    dataLines = [];
+  };
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
+    if (trimmed === '') {
+      endEvent();
+      continue;
+    }
     if (!trimmed.startsWith('data:')) continue;
     const payload = trimmed.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try {
-      const event = JSON.parse(payload) as Record<string, unknown>;
-      const usage = extractUsage(event);
-      if (usage.inputTokens > 0) inputTokens = Math.max(inputTokens, usage.inputTokens);
-      if (usage.outputTokens > 0) outputTokens = Math.max(outputTokens, usage.outputTokens);
-      if (usage.freshInputTokens > 0) freshInputTokens = Math.max(freshInputTokens, usage.freshInputTokens);
-      if (usage.cachedInputTokens > 0) cachedInputTokens = Math.max(cachedInputTokens, usage.cachedInputTokens);
-    } catch { /* skip non-JSON lines */ }
+    if (payload && payload !== '[DONE]') dataLines.push(payload);
   }
-  return { inputTokens, outputTokens, freshInputTokens, cachedInputTokens };
+  endEvent();
+  return total;
 }
