@@ -53,8 +53,13 @@ interface SellerConnection {
   closeRequests(): string[];
   /** Answer close requests (default) or leave them waiting, as a seller that went down would. */
   answerCloses: boolean;
-  /** The connection drops, and the node tells the negotiator, as it does on a failed connection. */
-  drop(): void;
+  /**
+   * The connection drops, and the node tells the negotiator, as it does on a
+   * failed connection. With `teardown` false it does not: the node skips the
+   * teardown when a new connection to the seller was wired before this one's
+   * close event.
+   */
+  drop(teardown?: boolean): void;
 }
 
 function chainInfo(deposit: bigint): ChannelInfo {
@@ -134,6 +139,7 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     store.close();
@@ -206,9 +212,9 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       reserveAuths: () => auths().flatMap((auth) => auth.reserveMaxAmount != null ? [auth.reserveMaxAmount] : []),
       closeRequests: () => ofType(MessageType.CloseChannelRequest).map((frame) => codec.decodeCloseChannelRequest(frame.payload).cumulativeAmount ?? '0'),
       answerCloses: true,
-      drop(): void {
+      drop(teardown = true): void {
         conn.state = ConnectionState.Failed;
-        negotiator.onPeerDisconnect(SELLER);
+        if (teardown) negotiator.onPeerDisconnect(SELLER);
       },
     };
     return seller;
@@ -416,6 +422,40 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       });
     });
 
+    it('keeps a top-up a read showed in the confirmed deposit when the chain rolls it back (a known limit)', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, true);
+      await sign(1_500_000n, seller);
+      const sentBefore = seller.spendingAuths().length;
+      // The block with the top-up is dropped: from now on every read shows the opening reserve.
+      deposit = RESERVE;
+
+      const first = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
+      // The seller cannot accept the resend, and asks again once it had time to land.
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+      const second = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
+
+      expect({
+        first,
+        second,
+        resent: seller.spendingAuths().slice(sentBefore),
+        // Above the chain's deposit: the seller declines it, and the contract refuses a close above the deposit.
+        closeRequests: seller.closeRequests(),
+        ceiling: manager.getReserveCeiling(SELLER),
+        confirmed: store.getChannel(channelId)?.confirmedReserveAmount,
+        status: store.getChannel(channelId)?.status,
+      }).toEqual({
+        first: 'retry',
+        second: 'return existing_channel_still_active',
+        resent: ['1500000'],
+        closeRequests: ['1500000'],
+        ceiling: 2n * RESERVE,
+        confirmed: (2n * RESERVE).toString(),
+        status: CHANNEL_STATUS.ACTIVE,
+      });
+    });
+
     it.each([
       { state: 'the top-up landed and the read lags it', landed: true, replayed: [], topUpPending: false, confirmed: '2000000' },
       { state: 'the top-up is still mining', landed: false, replayed: ['2000000'], topUpPending: true, confirmed: '1000000' },
@@ -617,6 +657,72 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
 
       expect(await closing).toBe(`error Connection to ${SELLER} failed during request ${REQUEST.requestId}`);
       expect(store.getChannel(channelId)?.status).toBe(CHANNEL_STATUS.ACTIVE);
+    });
+
+    it.each([
+      { when: 'the connection drops', end: (seller: SellerConnection) => seller.drop() },
+      { when: 'the buyer stops', end: () => negotiator.cleanup() },
+    ])('forgets a resend, and the connection it went over, when $when', async ({ end }) => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 500_000n);
+      expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST))).toBe('retry');
+      const resends = (negotiator as unknown as { _resentForTarget: Map<string, unknown> })._resentForTarget;
+      const before = resends.size;
+
+      end(seller);
+
+      expect({ before, after: resends.size }).toEqual({ before: 1, after: 0 });
+    });
+
+    describe('and a new one opens before the teardown of the old one', () => {
+      it('resends on the new connection what it resent on the old one, instead of closing the channel', async () => {
+        const before = sellerConnection();
+        const channelId = await openChannel(before, 500_000n);
+        expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, before.conn, REQUEST))).toBe('retry');
+
+        before.drop(false);
+        const after = sellerConnection();
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+        const outcome = await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, after.conn, REQUEST));
+
+        expect({ outcome, closeRequests: after.closeRequests(), resent: after.spendingAuths() }).toEqual({
+          outcome: 'retry',
+          closeRequests: [],
+          resent: ['500000'],
+        });
+      });
+
+      it('holds a close the old connection never answered until it times out (a known limit)', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        const before = sellerConnection();
+        const channelId = await openChannel(before, 500_000n);
+        expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, before.conn, REQUEST))).toBe('retry');
+        // The seller asks again after the resend had time to land: the buyer
+        // asks it to close, and the connection fails before the answer.
+        before.answerCloses = false;
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+        const closing = outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, before.conn, REQUEST));
+        await vi.waitFor(() => expect(before.closeRequests()).toHaveLength(1));
+        before.drop(false);
+        const after = sellerConnection();
+
+        // Nothing ends the close early, so no other close can start, while a
+        // catch-up on the new connection still resends.
+        const second = await negotiator.requestChannelClose(SELLER, after.conn).then(() => 'sent', (err: Error) => err.message);
+        const catchUp = await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, after.conn, REQUEST));
+        await vi.advanceTimersByTimeAsync(59_000);
+        const stillHeld = await negotiator.requestChannelClose(SELLER, after.conn).then(() => 'sent', (err: Error) => err.message);
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        expect({ second, catchUp, resent: after.spendingAuths(), stillHeld, closing: await closing, closeRequests: after.closeRequests() }).toEqual({
+          second: `A channel close request is already in flight for ${SELLER.slice(0, 12)}...`,
+          catchUp: 'retry',
+          resent: ['500000'],
+          stillHeld: `A channel close request is already in flight for ${SELLER.slice(0, 12)}...`,
+          closing: `error Connection to ${SELLER} failed during request ${REQUEST.requestId}`,
+          closeRequests: [],
+        });
+      });
     });
   });
 });
