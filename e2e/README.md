@@ -1,9 +1,11 @@
-# antseed-e2e
+# @antseed/e2e
 
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-24.x-brightgreen.svg)](https://nodejs.org/)
 [![Vitest](https://img.shields.io/badge/vitest-1.2+-yellow.svg)](https://vitest.dev/)
 
 End-to-end tests for the Antseed Network. These tests exercise the full P2P inference flow: DHT discovery, peer connection, request proxying, and SSE streaming -- all running against a local bootstrap node with mock providers.
+
+[docs/testing.md](../docs/testing.md) maps every kind of test in this repo: what each one proves and when it runs.
 
 ## Running Tests
 
@@ -29,7 +31,7 @@ npm run flow:local-chain
 
 Prerequisites:
 - Foundry installed and on `PATH` (`anvil`, `forge`, `cast`)
-- Node.js >= 20
+- Node.js 24
 
 Optional environment overrides:
 - `RPC_URL` (default: `http://127.0.0.1:8545`)
@@ -110,8 +112,9 @@ import { AntseedNode } from '@antseed/node';
 
 ## Dependencies
 
-This package depends on all three core Antseed packages:
+This package depends on these workspace packages:
 
-- [`@antseed/node`](../@antseed/node) -- core protocol SDK
-- [`antseed-provider-anthropic`](../antseed-provider-anthropic) -- Anthropic provider plugin
-- [`antseed-router-claude-code`](../antseed-router-claude-code) -- Claude Code router plugin
+- [`@antseed/node`](../packages/node) -- core protocol SDK
+- [`@antseed/provider-core`](../packages/provider-core) -- shared provider infrastructure
+- [`@antseed/provider-anthropic`](../plugins/provider-anthropic) -- Anthropic provider plugin
+- [`@antseed/router-local`](../plugins/router-local) -- local router plugin

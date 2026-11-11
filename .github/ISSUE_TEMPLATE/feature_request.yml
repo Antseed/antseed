@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a new feature or a change in how something works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first. You may open a pull request without waiting for a reply, but a feature nobody agreed to may be closed with a short no, so asking here first saves you work. See the [contributing guide](https://github.com/Antseed/antseed/blob/main/CONTRIBUTING.md#approval).
+
+        If this could be a provider or router plugin, you can build it as your own package without asking. See [Plugins](https://github.com/Antseed/antseed/blob/main/CONTRIBUTING.md#plugins).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: What can you not do today, and who is affected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should change, and how it should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Optional. Other ways to solve it, including doing nothing.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the closest one.
+      options:
+        - CLI
+        - Desktop app
+        - Seller node
+        - Buyer proxy and routing
+        - Gateway
+        - Payments and channels
+        - ANTS and DIEM staking apps
+        - Agent services (ant-agent)
+        - Plugins and providers
+        - Website or docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: plan
+    attributes:
+      label: Do you plan to open a pull request for this?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the [existing issues](https://github.com/Antseed/antseed/issues?q=is%3Aissue) and did not find this request.
+          required: true

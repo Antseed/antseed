@@ -1,4 +1,12 @@
+import { ATTACH_ONLY_RUNTIME_DISABLED } from './attach-only.js';
 import type { ProcessManager } from './process-manager.js';
+
+export function assertAttachOnlyRuntime(mode: string, compatible: boolean, attachOnly: boolean): void {
+  if (!attachOnly) return;
+  if (mode !== 'connect' || !compatible) {
+    throw new Error(ATTACH_ONLY_RUNTIME_DISABLED);
+  }
+}
 
 export async function isCompatibleSharedBuyer(port: number, timeoutMs = 1_200): Promise<boolean> {
   const controller = new AbortController();
