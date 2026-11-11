@@ -201,9 +201,15 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     return channelId;
   }
 
+  let paidRequests = 0;
+
+  /** The seller's cost frame for a paid request the buyer sent it: a new request each call, unless `extra` names one. */
   function needAuth(channelId: string, cost: bigint, extra: Partial<NeedAuthPayload> = {}): NeedAuthPayload {
+    const requestId = extra.requestId ?? `paid-request-${paidRequests += 1}`;
+    manager.recordDeliveredResponse(SELLER, requestId, { costUsdc: cost });
     return {
       channelId,
+      requestId,
       requiredCumulativeAmount: (manager.getCumulativeAmount(SELLER) + cost).toString(),
       currentAcceptedCumulative: '0',
       deposit: reserve.toString(),
@@ -292,6 +298,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     const sentToOldChannel = race.sentAfterRetire.filter((p) => p.channelId === race.oldChannelId).length;
     let nextSignature: string;
     try {
+      manager.recordDeliveredResponse(SELLER, PROBE.requestId, { costUsdc: PROBE.sellerClaimedCost });
       const { payload } = await manager.signPerRequestAuth(SELLER, PROBE);
       const on = payload.channelId === race.newChannelId ? 'new' : payload.channelId === race.oldChannelId ? 'old' : 'other';
       nextSignature = `${on} channel at ${payload.cumulativeAmount}`;
