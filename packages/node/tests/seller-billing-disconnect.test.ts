@@ -206,8 +206,9 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     } as unknown as PeerConnection;
     const paymentMux = new PaymentMux(conn);
     const needAuths = vi.spyOn(paymentMux, 'sendNeedAuth');
+    const authAcks = vi.spyOn(paymentMux, 'sendAuthAck');
     const { mux } = handler.handleConnection(conn, buyer.peerId, paymentMux, new VerificationMux(conn));
-    return { frames, paymentMux, needAuths, mux, drop(to: ConnectionState) { state = to; } };
+    return { frames, paymentMux, needAuths, authAcks, mux, drop(to: ConnectionState) { state = to; } };
   };
   let connection = connect();
 
@@ -255,6 +256,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     get tracker() { return tracker; },
     get needAuths() { return connection.needAuths; },
     get paymentMux() { return connection.paymentMux; },
+    paymentMuxAcks: () => connection.authAcks.mock.calls.map(([payload]) => payload),
     buyerPeerId: buyer.peerId,
     send,
     responseTo,
@@ -446,13 +448,16 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.upstream.calls).toBe(1);
   });
 
-  it('reads a channel id in another hex case as the same channel', async () => {
+  it('refuses an auth that names a known channel in another hex case', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
     await h.disconnectDuringAnswer('cut-off');
 
-    await h.reconnect(CHANNEL_A_OTHER_CASE, 0n);
-    expect(h.manager.getChannelByPeer(h.buyerPeerId)?.sessionId).toBe(CHANNEL_A);
+    expect(await h.sign(CHANNEL_A_OTHER_CASE, 0n), 'an auth for the same channel in another case').toBe('rejected');
+    expect(h.manager.hasSession(h.buyerPeerId)).toBe(false);
+    expect(h.store.getChannel(CHANNEL_A_OTHER_CASE)).toBeNull();
+
+    await h.reconnect(CHANNEL_A, 0n);
     h.ignoreCatchUps();
     const next = await h.serve('next');
 
@@ -467,11 +472,29 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     h.upstream.hold();
     const answered = h.send('running');
     await h.upstream.started(1);
-    expect(await h.sign(CHANNEL_A_OTHER_CASE, 0n)).toBe('accepted');
+    expect(await h.sign(CHANNEL_A_OTHER_CASE, 0n)).toBe('rejected');
     h.upstream.release();
     await answered;
 
     expect(h.manager.getCumulativeSpend(CHANNEL_A), 'spend recorded on the admitting channel').toBe(COST);
+  });
+
+  it('keeps a channel stored with uppercase hex working under its own spelling', async () => {
+    const h = await setup(kind);
+    expect(await h.openChannel(CHANNEL_A_OTHER_CASE)).toBe('reserved');
+    expect(h.paymentMuxAcks()).toEqual([{ channelId: CHANNEL_A_OTHER_CASE }]);
+    await h.disconnectDuringAnswer('cut-off');
+
+    h.restart();
+    expect(h.manager.getCumulativeSpend(CHANNEL_A_OTHER_CASE), 'spend survives the restart').toBe(COST);
+    expect(await h.sign(CHANNEL_A, 0n), 'the same channel in another case').toBe('rejected');
+    await h.reconnect(CHANNEL_A_OTHER_CASE, 0n);
+    h.ignoreCatchUps();
+    const next = await h.serve('next');
+
+    expect(next.statusCode).toBe(402);
+    expect(paymentBody(next).channelId).toBe(CHANNEL_A_OTHER_CASE);
+    expect(h.upstream.calls).toBe(1);
   });
 
   it('does not let the idle timer close a channel under a running answer', async () => {

@@ -566,12 +566,9 @@ export class SellerPaymentManager {
    */
   async handleSpendingAuth(
     buyerPeerId: string,
-    signedPayload: SpendingAuthPayload,
+    payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
-    // Hex in another case names the same on-chain channel: it must not read as
-    // an unknown channel, which would start over with nothing spent.
-    const payload = { ...signedPayload, channelId: signedPayload.channelId.toLowerCase() };
     const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer. A one-off
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
@@ -659,6 +656,13 @@ export class SellerPaymentManager {
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
       if (existingCumulative === undefined) {
+        // Hex in another case names the same on-chain channel: it must not read
+        // as an unknown channel, which would start over with nothing spent.
+        const sameChannel = this._channelStore.getChannelIgnoringCase(channelId);
+        if (sameChannel && sameChannel.sessionId !== channelId) {
+          debugWarn(`[SellerPayment] Rejecting SpendingAuth naming channel ${sameChannel.sessionId.slice(0, 18)}... in another case`);
+          return 'rejected';
+        }
         // A channel this seller already closed stays closed: a lagging RPC
         // node can still report it active, and recovering it would block the
         // buyer's replacement channel. No chain read is needed to say so.
