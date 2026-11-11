@@ -10,8 +10,6 @@ name: PR guard
 on:
   pull_request_target:
     branches: [main]
-    # `edited` re-runs the guard when the author changes the PR, e.g. ticks "Allow edits by maintainers".
-    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -33,7 +31,7 @@ jobs:
           MAINTAINER_CAN_MODIFY: ${{ github.event.pull_request.maintainer_can_modify }}
         run: |
           if [ "$FROM_FORK" = "true" ] && [ "$MAINTAINER_CAN_MODIFY" != "true" ]; then
-            echo "::error::Tick \"Allow edits by maintainers\" on this pull request (in its sidebar), so a maintainer can update it with main. The check runs again when you do."
+            echo "::error::Tick \"Allow edits by maintainers\" on this pull request (in its sidebar), so a maintainer can update it with main, then push a commit or ask a maintainer to re-run this check. Ticking it alone does not re-run it."
             exit 1
           fi
 
