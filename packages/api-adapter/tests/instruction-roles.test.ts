@@ -135,6 +135,7 @@ describe('instructions sent as Chat Completions messages', () => {
     });
 
     expect(body.system).toBeUndefined();
+    expect(body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]);
   });
 });
 
@@ -175,6 +176,20 @@ describe('instructions sent as Responses input items', () => {
     expect(body.system).toBe('Stay in the sandbox.');
   });
 
+  it('read text from a string or from content parts', () => {
+    const body = translate(RESPONSES, MESSAGES, {
+      model: 'm',
+      input: [
+        { role: 'developer', content: 'Stay in the sandbox.' },
+        { type: 'message', role: 'system', content: [inputText('Read only.'), inputText('No network.')] },
+        userItem('hi'),
+      ],
+    });
+
+    expect(body.system).toBe('Stay in the sandbox.\n\nRead only.\nNo network.');
+    expect(body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]);
+  });
+
   it('stay instructions when they arrive between turns, in the order they were sent', () => {
     const body = translate(RESPONSES, CHAT, {
       model: 'm',
@@ -208,9 +223,17 @@ describe('instructions sent as Responses input items', () => {
 
     it('leave the result right after the call in a Chat request', () => {
       const body = translate(RESPONSES, CHAT, toolTurn);
-      const roles = (body.messages as Array<{ role: string }>).map((message) => message.role);
 
-      expect(roles).toEqual(['system', 'user', 'assistant', 'tool']);
+      expect(body.messages).toEqual([
+        { role: 'system', content: 'Permissions changed.' },
+        { role: 'user', content: 'run it' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'shell', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'done' },
+      ]);
     });
 
     it('leave the result right after the call in a Messages request', () => {
@@ -278,8 +301,8 @@ describe('instructions sent as messages to a seller that speaks the protocol', (
     [CHAT, { model: 'm', messages: [{ role: 'developer', content: 'Rule.' }, { role: 'user', content: 'hi' }] }],
     [RESPONSES, { model: 'm', input: [developerItem('Rule.'), userItem('hi')] }],
   ] as const)('pass through %s untouched', (protocol, body) => {
-    const request = serialize(protocol, body);
+    const result = transformRequest(serialize(protocol, body), { from: protocol, to: protocol });
 
-    expect(transformRequest(request, { from: protocol, to: protocol })!.request).toBe(request);
+    expect(result!.request).toEqual(serialize(protocol, body));
   });
 });
