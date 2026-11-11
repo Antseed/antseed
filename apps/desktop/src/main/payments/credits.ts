@@ -273,7 +273,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
     depositsClient.getBuyerBalance(evmAddress),
     depositsClient.getBuyerCreditLimit(evmAddress),
     depositsClient.getOperator(evmAddress),
-    getPendingSpendUsdc(PENDING_SPEND_MAX_WAIT_MS),
+    getPendingSpendUsdc(evmAddress, PENDING_SPEND_MAX_WAIT_MS),
     depositsClient.getUSDCBalance(evmAddress),
   ]);
 

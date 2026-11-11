@@ -7,11 +7,11 @@ import { ChannelsClient, type ChannelInfo, type CloseChannelResultPayload } from
 import type { AbstractProvider } from 'ethers';
 import { createHash } from 'node:crypto';
 import { LOCALHOST_URL } from '../constants.js';
-import { pendingSpendFromChannels } from '../billing/credits-balance.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getCachedChannelsClient, loadCachedCryptoConfig, setCachedChannelsClient } from './credits.js';
 import { sharedChainProvider } from './shared-chain.js';
 import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-cache.js';
+import { readPendingSpend } from './pending-spend.js';
 import {
   applyChainToChannels,
   type ChannelChainRead,
@@ -304,43 +304,10 @@ export async function loadBuyerChannels({ enrichOnChain = true, fresh = false }:
   return channels;
 }
 
-// Pending spend rides on the credits poll, which runs every 60s normally and
-// every 5s while the payment card is up. Cache it so the fast poll reuses one
-// buyer-proxy round trip plus its channel reads instead of repeating them.
-const PENDING_SPEND_TTL_MS = 20_000;
-let cachedPendingSpend = 0n;
-let cachedPendingSpendAt = 0;
-
-export function notePendingSpend(channels: readonly DesktopPaymentChannelSummary[]): bigint {
-  cachedPendingSpend = pendingSpendFromChannels(channels);
-  cachedPendingSpendAt = Date.now();
-  return cachedPendingSpend;
-}
-
-
 /**
- * Signed-but-unsettled spend across the buyer's open channels. Falls back to
- * the last known value when the buyer proxy is unreachable — dropping to 0
- * there would silently inflate the displayed balance.
- *
- * `maxWaitMs` bounds how long a caller waits: the buyer proxy may still be
- * starting (app launch, upgrade) and every open channel is read on-chain, so
- * past the bound the last known value is returned and the read finishes in
- * the background for the next poll.
+ * Signed-but-unsettled spend across the channels of `address` a seller can
+ * still settle against (see `readPendingSpend`).
  */
-export async function getPendingSpendUsdc(maxWaitMs?: number): Promise<bigint> {
-  if (Date.now() - cachedPendingSpendAt < PENDING_SPEND_TTL_MS) return cachedPendingSpend;
-  const read = loadBuyerChannels()
-    .catch(() => null)
-    .then((channels) => (channels ? notePendingSpend(channels) : cachedPendingSpend));
-  if (maxWaitMs === undefined) return read;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<bigint>((resolve) => {
-    timer = setTimeout(() => resolve(cachedPendingSpend), maxWaitMs);
-  });
-  try {
-    return await Promise.race([read, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+export function getPendingSpendUsdc(address: string, maxWaitMs?: number): Promise<bigint> {
+  return readPendingSpend(address, () => loadBuyerChannels(), maxWaitMs);
 }

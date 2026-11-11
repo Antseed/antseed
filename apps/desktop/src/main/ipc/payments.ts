@@ -27,7 +27,6 @@ import {
   fetchBuyerProxyJson,
   loadBuyerChannels,
   normalizeBuyerUsageTotals,
-  notePendingSpend,
   requestCooperativeChannelClose,
 } from '../payments/buyer-channels.js';
 import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
@@ -402,11 +401,13 @@ export function registerPaymentsIpc(): void {
   });
 
   ipcMain.handle('payments:get-channels', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[] | null; error: string | null }> => {
-    const channels = await loadBuyerChannels({ fresh: opts?.fresh === true });
+    const fresh = opts?.fresh === true;
+    const channels = await loadBuyerChannels({ fresh });
     if (!channels) {
       return { ok: false, data: null, error: 'buyer proxy unreachable' };
     }
-    notePendingSpend(channels);
+    // An explicit refresh follows an on-chain action in the browser: the balance re-reads pending spend too.
+    if (fresh) invalidateChainReads(['pending-spend']);
     return { ok: true, data: channels, error: null };
   });
 
