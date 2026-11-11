@@ -2779,9 +2779,13 @@ export class AntseedNode extends EventEmitter {
         debugLog(`[Node] DepositRelayer initialized (relay=${payments.depositRelayAddress.slice(0, 10)}...)`);
       }
 
-      // Startup recovery: validate hydrated channels against on-chain state, then check timeouts
+      // Startup recovery: validate hydrated channels against on-chain state, then check timeouts.
+      // The timeout check is not awaited: it settles or closes each stale channel with its own
+      // transaction, and startup must not wait for a backlog of them.
       await this._sellerPaymentManager.validateHydratedChannels();
-      await this._sellerPaymentManager.checkTimeouts();
+      void this._sellerPaymentManager.checkTimeouts().catch((err: unknown) => {
+        debugWarn(`[Node] Startup channel timeout check failed: ${err instanceof Error ? err.message : err}`);
+      });
 
       // Initialize CloseRequested polling cursor to current block
       try {

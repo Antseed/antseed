@@ -704,7 +704,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const defaultDepositAmountUSDCBaseUnits = toUSDCBaseUnits(defaultDepositAmountUSDC, '1000000')
       const settlementIdleMsRaw = process.env['ANTSEED_SETTLEMENT_IDLE_MS']
       const settlementIdleMs = settlementIdleMsRaw ? parseInt(settlementIdleMsRaw, 10) : 600_000
-      const closeIdleMs = parseInt(process.env['ANTSEED_CLOSE_IDLE_MS'] ?? '', 10)
+      const closeIdleMsRaw = process.env['ANTSEED_CLOSE_IDLE_MS']
+      const closeIdleMs = closeIdleMsRaw !== undefined && /^[1-9]\d*$/.test(closeIdleMsRaw.trim()) ? Number(closeIdleMsRaw.trim()) : undefined
+      if (closeIdleMsRaw !== undefined && closeIdleMs === undefined) {
+        console.warn(chalk.yellow(`Ignoring ANTSEED_CLOSE_IDLE_MS="${closeIdleMsRaw}": it must be a whole number of milliseconds above zero. Using the default (12 hours).`))
+      }
       const sellerWalletAddress = process.env['ANTSEED_SELLER_WALLET_ADDRESS']
 
       let paymentConfig: PaymentConfig | null = null
@@ -989,7 +993,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,
           settlementIdleMs: Number.isFinite(settlementIdleMs) ? settlementIdleMs : 30_000,
-          ...(closeIdleMs > 0 ? { closeIdleMs } : {}),
+          ...(closeIdleMs !== undefined ? { closeIdleMs } : {}),
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,
           paymentConfig,

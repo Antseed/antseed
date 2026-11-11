@@ -2781,7 +2781,9 @@ describe('SellerPaymentManager', () => {
         expect(settle).not.toHaveBeenCalled();
         expect(close).toHaveBeenCalledOnce();
         expect(close.mock.calls[0]![2]).toBe(SIGNED);
-        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+        const stored = store.getChannel(channelId)!;
+        expect(stored.status).toBe(CHANNEL_STATUS.SETTLED);
+        expect(stored.settledAmount).toBe(SIGNED.toString());
       });
 
       it('leaves a reloaded channel alone while it is within the settle timeout', async () => {
@@ -2829,6 +2831,40 @@ describe('SellerPaymentManager', () => {
         mgr.endBillableRequest(buyerIdentity.peerId);
         await mgr.checkTimeouts();
         expect(close).toHaveBeenCalledOnce();
+      });
+
+      it('leaves a channel alone when its buyer came back while the check was running', async () => {
+        const channelId = makeChannelId(57);
+        const { mgr, settle, close } = await restartWithIdleChannel(channelId, 13 * HOUR);
+        // The check lists the channels once, then waits on the chain; the buyer's next request lands meanwhile.
+        vi.spyOn(mgr.channelsClient, 'getSession').mockImplementation(async () => {
+          store.updateTokensDelivered(channelId, '1', 1);
+          return makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 0n });
+        });
+
+        await mgr.checkTimeouts();
+
+        expect(settle).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+      });
+
+      it('retries a failing idle settle once per settle timeout, not on every check', async () => {
+        const channelId = makeChannelId(58);
+        const { mgr, settle } = await restartWithIdleChannel(channelId, 11 * MINUTE);
+        settle.mockRejectedValue(new Error('execution reverted'));
+
+        await mgr.checkTimeouts();
+        await mgr.checkTimeouts();
+        expect(settle).toHaveBeenCalledOnce();
+
+        vi.useFakeTimers({ now: Date.now() + 10 * MINUTE, toFake: ['Date'] });
+        try {
+          await mgr.checkTimeouts();
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(settle).toHaveBeenCalledTimes(2);
       });
 
       it('does not restart the idle clock when a restart fills in missing auth metadata', async () => {
