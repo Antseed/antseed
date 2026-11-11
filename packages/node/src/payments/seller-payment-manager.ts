@@ -199,10 +199,10 @@ export class SellerPaymentManager {
    * Channels restored from disk -> when the buyer was first asked to send
    * again what the restart lost, and last asked for an authorization up to
    * the deposit (0: not yet). An accepted auth does not end this, unlike
-   * hydration: the lost top-up is still lost. A top-up that lands and covers
-   * what was served ends it, and so does the window passing with the work
-   * within the deposit; past the deposit, the channel is closed. A channel
-   * never asked, whose work fits its deposit, loses the mark
+   * hydration: what the restart lost is still lost. A top-up that lands and
+   * covers what was served ends it, and so does the window passing with the
+   * work within the deposit; past the deposit, the channel is closed. A
+   * channel never asked, whose work fits its deposit, loses the mark
    * RESTART_ASK_EXPIRY_MS after the restart: spend that passes the deposit
    * later is judged as on any channel.
    */
@@ -1853,10 +1853,12 @@ export class SellerPaymentManager {
    * require, or null once the buyer has had its chance: judge the channel as
    * it stands.
    *
-   * A restart loses what the seller held only in memory: top-ups it verified
-   * and the authorizations waiting for them. The buyer still has both and sends
-   * them again from an ordinary 402, but gives the channel up on an exhausted
-   * one, and the channel then closes below what it signed.
+   * A restart loses what the seller does not store: the authorizations
+   * waiting for a top-up, and a top-up still on its way to it. A stored top-up
+   * can also be past use: expired while the seller was down, or mined just
+   * before it stopped. The buyer still has its top-up and its authorizations
+   * and sends them again from an ordinary 402, but gives the channel up on an
+   * exhausted one, and the channel then closes below what it signed.
    *
    * The 402 requires what is already accepted, so the buyer only sends again
    * what it signed. When that is too low for a topUp() to pass the settled
