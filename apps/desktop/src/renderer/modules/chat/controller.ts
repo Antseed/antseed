@@ -1158,7 +1158,8 @@ export function initChatModule({
     const current = uiState.chatSelectedModelId;
     return shouldWaitForFreeModel(uiState.chatModels, current, {
       chosen: (current !== null && current === loadLastChatModel()) || draftModel !== null || Boolean(current && splitPinnedModel(current).peerId),
-      funded: uiState.gatewayStatus?.mode === 'remote'
+      // A remote gateway that doesn't report its balance counts as funded.
+      funded: (uiState.gatewayStatus?.mode === 'remote' && !uiState.creditsBalanceKnown)
         || (uiState.creditsBalanceKnown && Number(uiState.creditsTotalOwnedUsdc) > 0),
     });
   }

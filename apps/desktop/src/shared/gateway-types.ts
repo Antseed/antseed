@@ -94,6 +94,8 @@ export type GatewayKeyInfo = {
   spentUsd: string | null;
   /** Today's and this month's spend against the key's caps, as the gateway enforces them. */
   limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
+  /** What the paying wallet holds in deposits; null when the gateway doesn't say (older gateways). */
+  balance: { availableUsd: string; reservedUsd: string; stale: boolean } | null;
 };
 
 export type GatewayEndpointInfo =

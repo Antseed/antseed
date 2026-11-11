@@ -158,12 +158,22 @@ interface ForwardedRequest {
   remainingUsdc: number | null
 }
 
+/** A buyer wallet's deposits, as decimal USDC strings. */
+export interface KeyWalletBalance {
+  available: string
+  reserved: string
+  /** The buyer couldn't reach the chain; these are its last known values. */
+  stale: boolean
+}
+
 export interface GatewayServerOptions {
   store: GatewayStore
   accounting: GatewayAccounting
   buyerPort: number
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
+  /** What the wallet paying for a key holds in deposits; `GET /v1/key` reports it. */
+  identityBalance?: (buyerIdentity: string) => Promise<KeyWalletBalance | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   /**
@@ -1040,7 +1050,10 @@ export class GatewayServer {
   private async _keyInfo(key: ApiKeyRecord) {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
-    const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    const [buyerAddress, balance] = await Promise.all([
+      this._options.identityAddress(key.buyerIdentity).catch(() => null),
+      this._options.identityBalance?.(key.buyerIdentity).catch(() => null) ?? Promise.resolve(null),
+    ])
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
@@ -1060,6 +1073,9 @@ export class GatewayServer {
       topup_enabled: key.topupEnabled && key.buyerIdentity !== DEFAULT_BUYER_IDENTITY && Boolean(this._options.topup),
       // The wallet that pays sellers for this key's requests.
       buyer_address: buyerAddress,
+      // Its deposits (public on-chain for that address), so an app on this key
+      // can show the balance it spends from. Null when the buyer can't say.
+      balance: balance ? { available_usd: balance.available, reserved_usd: balance.reserved, stale: balance.stale } : null,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),

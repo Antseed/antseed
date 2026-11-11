@@ -59,7 +59,10 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const progress = useHomeProgress();
   const gateway = useCachedResource(gatewayResource);
   const apps = useCachedResource(appsResource);
-  const { balance } = useUiSelector((state) => ({ balance: selectHeadlineBalanceUsdc(state) }), shallowEqual);
+  const { balance, balanceKnown } = useUiSelector((state) => ({
+    balance: selectHeadlineBalanceUsdc(state),
+    balanceKnown: state.creditsBalanceKnown,
+  }), shallowEqual);
   const privateMode = usePrivateMode();
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
   const [rewards, setRewards] = useState<GatewayRewardsSummary | null>(null);
@@ -90,8 +93,9 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   }, [reachable]);
   const keyInfo = gateway.data?.keyInfo ?? null;
   const balanceUsd = Number(balance);
-  // A remote gateway pays from its own wallet, so this device's balance says nothing about it.
-  const funded = remote || (Number.isFinite(balanceUsd) && balanceUsd > 0);
+  // On a remote gateway the balance is the wallet behind the app's key, read
+  // from the gateway; one that doesn't report it counts as funded.
+  const funded = (remote && !balanceKnown) || (Number.isFinite(balanceUsd) && balanceUsd > 0);
   const connectedApp = (apps.data ?? []).find((app) => app.connected) ?? null;
   const skillAgent = skills.find((skill) => skill.installed) ?? null;
   const agent = progress.agent ?? skillAgent?.label ?? null;
@@ -212,9 +216,11 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
             <div className={styles.tiles}>
               <Tile label="Requests" value={keyInfo ? keyInfo.requests.toLocaleString() : '—'} />
               <Tile label="Spent, all time" value={keyInfo ? usd(keyInfo.spentUsd ?? 0) : '—'} />
-              {remote ? null : (
-                <Tile label="Balance" value={usd(balance)} action={{ label: 'Add funds', onClick: () => onSelectView?.('deposit') }} />
-              )}
+              <Tile
+                label="Balance"
+                value={remote && !balanceKnown ? '—' : usd(balance)}
+                action={{ label: 'Add funds', onClick: () => onSelectView?.('deposit') }}
+              />
               <Tile
                 label="Rewards"
                 value={pendingAnts !== null ? formatCredits(pendingAnts) : '—'}
@@ -316,7 +322,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
               caption={freeSavings
                 ? `Free models have saved you ${savedUsd(freeSavings.savedUsd)} so far. Add funds to use paid models in chat, your agents and your apps, and earn ANTS on what you spend.`
                 : 'Free models get you started. Add funds to use paid models in chat, your agents and your apps, and earn ANTS on what you spend.'}
-              doneLine={remote
+              doneLine={remote && !balanceKnown
                 ? 'Your gateway pays from its own balance.'
                 : `Your balance is ${usd(balance)}. Chat, agents and apps all draw from it, and what you spend earns ANTS.`}
             >

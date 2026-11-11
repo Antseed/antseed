@@ -6,7 +6,7 @@ import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
-import { GatewayServer, workspaceOutOfCreditsBody, type GatewayTopupOptions } from './server.js'
+import { GatewayServer, workspaceOutOfCreditsBody, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
@@ -152,6 +152,7 @@ async function startGateway(
   topup: GatewayTopupOptions | null = null,
   settleGraceMs = 50,
   identityAddress: (name: string) => Promise<string | null> = TEST_IDENTITY_ADDRESS,
+  extra: Partial<GatewayServerOptions> = {},
 ) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs })
   const feed = new SpendFeedPoller({
@@ -170,6 +171,7 @@ async function startGateway(
     refreshSpendFeed: () => feed.pollOnce(),
     videoBudgetEnforced: () => feed.videoBudgetEnforced,
     onLog: (message) => logs.push(message),
+    ...extra,
   })
   const port = await server.start()
   return {
@@ -287,6 +289,30 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
 
     const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
     assert.equal(info.buyer_address, '0x00000000000000000000000000000000000000aa')
+    // No balance reader wired: the field is there, and says it doesn't know.
+    assert.equal(info.balance, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key reports the balance of the wallet that pays for the key', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    identityBalance: async (name) => {
+      asked.push(name)
+      return { available: '12.500000', reserved: '0.250000', stale: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
+    assert.deepEqual(info.balance, { available_usd: '12.500000', reserved_usd: '0.250000', stale: false })
+    assert.deepEqual(asked, ['team-a'])
   } finally {
     await gateway.stop()
     await buyer.close()

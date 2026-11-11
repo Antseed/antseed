@@ -220,6 +220,7 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
     "expires_at": null,
     "topup_enabled": false,
     "buyer_address": "0x…",
+    "balance": { "available_usd": "24.500000", "reserved_usd": "1.000000", "stale": false },
     "usage": { "requests": 42, "spent_usd": "1.204310", "topped_up_usd": "0.000000", "input_tokens": 180233, "cached_input_tokens": 90112, "output_tokens": 20118 },
     "limits": {
       "daily": { "limit_usd": "2.000000", "spent_usd": "0.410000", "remaining_usd": "1.590000" },
@@ -230,6 +231,8 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
   }
 }
 ```
+
+`balance` is what the wallet paying for the key (`buyer_address`) holds in deposits: `available_usd` is free to spend, `reserved_usd` is held for open seller channels, and `stale` means the gateway couldn't reach the chain and these are its last known values. It is `null` when the gateway can't read it. Antseed Desktop shows it as the balance when it uses a remote gateway.
 
 `limits` are the key's own limits (the lower of the admins' and the owner's). Member and workspace budgets can stop a request first; see [Budgets and spend limits](/docs/gateway/budgets).
 

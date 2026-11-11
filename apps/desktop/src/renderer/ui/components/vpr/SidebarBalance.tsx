@@ -4,8 +4,6 @@ import { Wallet01Icon } from '@hugeicons/core-free-icons';
 import { formatCredits } from '../../../core/format';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { useUiSelector } from '../../hooks/useUiSelector';
-import { gatewayResource } from '../../../modules/app/vpr-resources';
-import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './SidebarBalance.module.scss';
 
 /** Balance and Add funds; an amber dot (reason in the tooltip) when something blocks paid use. */
@@ -13,10 +11,7 @@ export function SidebarBalance({ credits, onAddFunds, compact = false }: { credi
   const balance = formatCredits(credits);
   const balanceKnown = useUiSelector((state) => state.creditsBalanceKnown);
   const funding = useFundingStatus();
-  // A remote gateway pays from its own wallet; this app's balance says nothing about it.
-  const remote = useCachedResource(gatewayResource).data?.status.mode === 'remote';
   const blocked = balanceKnown && funding.tone === 'warning';
-  if (remote) return null;
   if (compact) {
     // Rail form: wallet icon over the amount; the whole tile adds funds.
     const label = balanceKnown ? `Balance $${balance} · Add funds` : 'Add funds';

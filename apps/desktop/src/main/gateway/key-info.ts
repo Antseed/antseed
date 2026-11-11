@@ -18,7 +18,17 @@ export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {
     requests: Number(usage['requests']) || 0,
     spentUsd: str(usage['spent_usd']),
     limits,
+    balance: parseBalance(body['balance']),
   };
+}
+
+function parseBalance(raw: unknown): GatewayKeyInfo['balance'] {
+  if (!raw || typeof raw !== 'object') return null;
+  const balance = raw as Record<string, unknown>;
+  const available = balance['available_usd'];
+  const reserved = balance['reserved_usd'];
+  if (typeof available !== 'string' || typeof reserved !== 'string') return null;
+  return { availableUsd: available, reservedUsd: reserved, stale: balance['stale'] === true };
 }
 
 /**

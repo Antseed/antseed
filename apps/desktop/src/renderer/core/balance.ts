@@ -16,7 +16,7 @@ export function selectHasFunds(state: {
   creditsTotalOwnedUsdc: string;
   gatewayStatus?: { mode: string } | null;
 }): boolean {
-  // A remote gateway pays from its own wallet; this device's balance says nothing about it.
-  if (state.gatewayStatus?.mode === 'remote') return true;
+  // On a remote gateway these are the gateway's figures for the wallet behind
+  // the app's key; one that doesn't report them stays unknown, so counts as yes.
   return !state.creditsBalanceKnown || Number(state.creditsTotalOwnedUsdc) > 0;
 }
