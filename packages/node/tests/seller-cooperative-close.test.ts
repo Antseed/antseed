@@ -560,7 +560,7 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(topUp).not.toHaveBeenCalled();
     manager.recordSpend(CHANNEL_ID, 12_000_000n);
-    const started = Date.now();
+    const catchUpWait = vi.spyOn(manager, 'awaitAcceptedAtLeast');
 
     // The buyer signed past the deposit and closes capped at it.
     const result = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 10_000_000n), mux);
@@ -569,13 +569,24 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect({
       status: result.status,
       code: result.code,
-      answeredAtOnce: Date.now() - started < 2_000,
+      waitedForCatchUp: catchUpWait.mock.calls.length,
       settled: topUp.mock.calls[0]?.[2],
       ceiling: topUp.mock.calls[0]?.[5],
       closed: vi.mocked(manager.channelsClient.close).mock.calls.length,
-    }).toEqual({ status: 'rejected', code: 'pending_auth', answeredAtOnce: true, settled: 10_000_000n, ceiling: 20_000_000n, closed: 0 });
-    // Long enough that waiting the old 5 s for a catch-up shows as the answer above, not as a timeout.
+    }).toEqual({ status: 'rejected', code: 'pending_auth', waitedForCatchUp: 0, settled: 10_000_000n, ceiling: 20_000_000n, closed: 0 });
+    // Long enough that a 5 s wait for a catch-up shows as the answer above, not as a timeout.
   }, 15_000);
+
+  /** Resolves once a close starts waiting for the buyer's catch-up, so the test sends it only then. */
+  function catchUpWaitStarted(): Promise<void> {
+    const wait = manager.awaitAcceptedAtLeast.bind(manager);
+    return new Promise((resolve) => {
+      vi.spyOn(manager, 'awaitAcceptedAtLeast').mockImplementation((channelId, target, timeoutMs) => {
+        resolve();
+        return wait(channelId, target, timeoutMs);
+      });
+    });
+  }
 
   it('still waits for the catch-up when the spend fits the deposit, though a top-up is queued', async () => {
     vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
@@ -583,13 +594,15 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 1_000_000n), mux);
     await manager.handleSpendingAuth(buyer.peerId, await buildReserveAuth(buyer, 20_000_000n), mux);
     manager.recordSpend(CHANNEL_ID, 3_000_000n);
+    const waiting = catchUpWaitStarted();
 
     const closing = manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
-    // The catch-up fits the deposit, so it can be accepted while the close waits for it.
+    const waited = await Promise.race([waiting.then(() => true), closing.then(() => false)]);
+    // The catch-up fits the deposit, so it is accepted while the close waits for it.
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 3_000_000n), mux);
     const result = await closing;
 
-    expect({ status: result.status, finalAmount: result.finalAmount }).toEqual({ status: 'closed', finalAmount: '3000000' });
+    expect({ waited, status: result.status, finalAmount: result.finalAmount }).toEqual({ waited: true, status: 'closed', finalAmount: '3000000' });
   });
 
   it('judges a bare close against the on-chain deposit, not a stored ceiling that lags it', async () => {
@@ -600,13 +613,14 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     // A top-up to 20 USDC landed that this seller never recorded (it restarted).
     vi.mocked(manager.channelsClient.getSession).mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 20_000_000n });
     manager.recordSpend(CHANNEL_ID, 15_000_000n);
+    const waiting = catchUpWaitStarted();
 
     const closing = manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    const waited = await Promise.race([waiting.then(() => true), closing.then(() => false)]);
     // The spend fits the real deposit, so its catch-up is accepted while the close waits for it.
-    await new Promise<void>((resolve) => setImmediate(resolve));
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 15_000_000n), mux);
     const result = await closing;
 
-    expect({ status: result.status, finalAmount: result.finalAmount }).toEqual({ status: 'closed', finalAmount: '15000000' });
+    expect({ waited, status: result.status, finalAmount: result.finalAmount }).toEqual({ waited: true, status: 'closed', finalAmount: '15000000' });
   });
 });

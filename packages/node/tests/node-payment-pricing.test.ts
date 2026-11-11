@@ -2556,6 +2556,49 @@ describe('a channel at its ceiling while top-ups follow each other', () => {
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   });
 
+  it('prompts the catch-up once the top-up is being submitted, not while it waits to become eligible', async () => {
+    const sendNeedAuth = vi.fn();
+    let reserveMax = 1_000_000n;
+    let accepted = 1_000_000n;
+    let running = false;
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 1_500_000n,
+        getAcceptedCumulative: () => accepted,
+        getReserveMax: () => reserveMax,
+        // Queued for the spend, but it cannot pass the settled threshold yet.
+        isTopUpPendingFor: () => !running && reserveMax < 1_500_000n,
+        isTopUpRunning: () => running,
+        awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+          if (!running) return false;
+          // The top-up lands and the auth the prompt asked for is accepted.
+          running = false;
+          reserveMax = 2_000_000n;
+          accepted = target;
+          return true;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+    const send = (requestId: string) => mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+    // A channel-level prompt has no requestId.
+    const prompts = () => sendNeedAuth.mock.calls.filter(([needAuth]) => needAuth.requestId == null && needAuth.requiredCumulativeAmount === '1500000').length;
+
+    await send('while-queued');
+    const whileQueued = prompts();
+    // A close capped at the deposit made the top-up eligible: it is being submitted now.
+    running = true;
+    await send('once-submitted');
+
+    expect({ whileQueued, onceSubmitted: prompts() - whileQueued }).toEqual({ whileQueued: 0, onceSubmitted: 1 });
+  });
+
   it('waits once, not for the whole budget, for a queued top-up that never starts', async () => {
     const waitForTopUp = vi.fn(async () => true);
     const result = await requestAtCeiling('queued-top-up-never-starts', {

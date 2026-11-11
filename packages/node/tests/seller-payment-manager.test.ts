@@ -3155,11 +3155,13 @@ describe('SellerPaymentManager', () => {
       expect(await manager.askAfterRestart(channelId)).toBeNull();
     });
 
-    it('asks for what is already accepted for a while after a restart, then judges the channel as it stands', async () => {
+    it('asks for what is already accepted for a while from its first ask after a restart, then judges the channel as it stands', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       const channelId = makeChannelId(151);
       await storeChannel(channelId, 900_000n, 1_000_000n);
       const restarted = restart();
+      // Nothing reaches the ceiling for a minute: the window starts with the first ask, not the restart.
+      vi.setSystemTime(Date.now() + 60_000);
 
       const answers = [await restarted.askAfterRestart(channelId)];
       vi.setSystemTime(Date.now() + 29_000);

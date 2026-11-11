@@ -27,7 +27,7 @@ import { ProxyMux } from '../src/proxy/proxy-mux.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { ConnectionState } from '../src/types/connection.js';
-import type { SerializedHttpRequest } from '../src/types/http.js';
+import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types/http.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 
@@ -47,6 +47,8 @@ const READ_MS = 50;
 /** Real time a test may take: its fake clock runs fast, but a loaded machine runs it slowly. */
 const TEST_TIMEOUT_MS = 60_000;
 const DOMAIN = makeChannelsDomain(CHAIN_ID, CHANNELS_ADDRESS);
+/** The buyer's answer to the one request whose recovery runs a close the seller declines. */
+const RECOVERY_RETRY = '503 retryable payment_negotiation_failed: An existing payment channel could not be recovered automatically. Close or recover the channel and retry.';
 
 /** What a topUp() does while the seller is about to be killed. */
 type TopUpFate = 'lands' | 'mined-unseen' | 'never-sent';
@@ -341,14 +343,25 @@ describe('a seller restarted around a top-up', () => {
   }
 
   /** Parallel client requests through the buyer's real request handling. Returns what each client got, without a client retry. */
-  async function parallelRequests(count: number): Promise<number[]> {
+  async function parallelResponses(count: number): Promise<SerializedHttpResponse[]> {
     const request = (requestId: string): SerializedHttpRequest => ({
       requestId, method: 'POST', path: '/v1/chat/completions',
       headers: { 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify({ model: 'test-model', messages: [] })),
     });
-    const responses = await finish(Promise.all(Array.from({ length: count }, () => requestHandler.sendRequest(peer, request(`after-restart-${requests += 1}`)))));
-    return responses.map((response) => response.statusCode);
+    return finish(Promise.all(Array.from({ length: count }, () => requestHandler.sendRequest(peer, request(`after-restart-${requests += 1}`)))));
+  }
+
+  /** The status each client got. */
+  async function parallelRequests(count: number): Promise<number[]> {
+    return (await parallelResponses(count)).map((response) => response.statusCode);
+  }
+
+  /** What the client got: 'ok', or the status, whether it may retry, and why. */
+  function describeAnswer(response: SerializedHttpResponse): string {
+    if (response.statusCode === 200) return 'ok';
+    const { error } = JSON.parse(new TextDecoder().decode(response.body)) as { error?: { type?: string; peer_message?: string } };
+    return `${response.statusCode}${response.headers['retry-after'] ? ' retryable' : ''} ${error?.type}: ${error?.peer_message}`;
   }
 
   /** The channel's final settlement once the seller closes it. */
@@ -449,14 +462,15 @@ describe('a seller restarted around a top-up', () => {
     expect(accepted * 10_000n).toBeLessThan(deposit * THRESHOLD_BPS);
 
     await restartSeller();
-    const statuses = await parallelRequests(16);
+    const answers = (await parallelResponses(16)).map(describeAnswer);
 
     const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
     expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
     // One answer asks for an authorization up to the deposit; the buyer runs a close capped there to give it,
-    // which the seller declines, so that one request gets a retryable 503.
-    expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(15);
+    // which the seller declines, so that one request can get a retryable 503.
+    expect(answers.filter((answer) => answer !== 'ok' && answer !== RECOVERY_RETRY)).toEqual([]);
+    expect(answers.filter((answer) => answer === 'ok').length).toBeGreaterThanOrEqual(15);
   }, TEST_TIMEOUT_MS);
 
   it('collects what the buyer signed when killed after verifying a top-up but before sending it', async () => {
