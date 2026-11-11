@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { AntseedNode } from '@antseed/node';
 import type { PeerInfo } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
-import { MockOpenAIChatProvider } from './helpers/mock-openai-provider.js';
+import { MockOpenAIChatProvider, MockOpenAIChatStreamProvider } from './helpers/mock-openai-provider.js';
 
 async function waitForPeers(
   node: AntseedNode,
@@ -64,7 +64,7 @@ describe('OpenAI SDK integration: Responses API over buyer proxy', () => {
     try { if (buyerDataDir) { await rm(buyerDataDir, { recursive: true, force: true }); buyerDataDir = null; } } catch {}
   });
 
-  async function setupProxyNetwork(): Promise<{
+  async function setupProxyNetwork(provider = new MockOpenAIChatProvider()): Promise<{
     provider: MockOpenAIChatProvider;
     port: number;
     discoveredSeller: PeerInfo;
@@ -72,7 +72,6 @@ describe('OpenAI SDK integration: Responses API over buyer proxy', () => {
     bootstrap = await createLocalBootstrap();
 
     sellerDataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-'));
-    const provider = new MockOpenAIChatProvider();
     sellerNode = new AntseedNode({
       role: 'seller',
       dataDir: sellerDataDir,
@@ -176,5 +175,24 @@ describe('OpenAI SDK integration: Responses API over buyer proxy', () => {
     const upstreamBody = JSON.parse(new TextDecoder().decode(provider.lastRequest!.body)) as Record<string, unknown>;
     expect(upstreamBody.stream).toBe(true);
     expect(upstreamBody.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('rebuilds text and a tool call from a seller that streams chat completions', async () => {
+    const { provider, port, discoveredSeller } = await setupProxyNetwork(new MockOpenAIChatStreamProvider());
+    const client = new OpenAI({
+      apiKey: 'sk-test',
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      defaultHeaders: { 'x-antseed-pin-peer': discoveredSeller.peerId },
+    });
+
+    const finalResponse = await client.responses.stream({ model: 'gpt-4.1', input: 'Say hello' }).finalResponse();
+
+    expect(finalResponse.output_text).toBe('Hello world');
+    expect(finalResponse.output).toMatchObject([
+      { type: 'message', content: [{ type: 'output_text', text: 'Hello world' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'write', arguments: '{"path":"a.txt"}' },
+    ]);
+    expect(provider.requestCount).toBe(1);
+    expect(provider.lastRequest?.path).toBe('/v1/chat/completions');
   });
 });
