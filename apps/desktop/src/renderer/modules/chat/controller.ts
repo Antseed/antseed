@@ -1627,9 +1627,14 @@ export function initChatModule({
         if (reserved !== undefined && !ownsSend(convId, reserved)) return;
       }
       if (!convId) return;
-      if (reserved === undefined && isConversationSending(convId)) {
-        showChatError('This conversation already has a request in progress.');
-        return;
+      if (reserved === undefined) {
+        if (isConversationSending(convId)) {
+          showChatError('This conversation already has a request in progress.');
+          return;
+        }
+        // Owned from here, before any wait: a second submit while the
+        // history below loads is refused instead of replacing this one.
+        reserved = beginSend(convId);
       }
       // An earlier image of a chat sent in Private would go out as the one to edit.
       if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
@@ -1643,6 +1648,8 @@ export function initChatModule({
       fundsNoticeByConversation.delete(convId);
       imageRetryByConversation.delete(convId);
       const existingBeforeRequest = await imageRequestHistory(convId);
+      // Stopped while the history loaded: nothing is sent.
+      if (!ownsSend(convId, reserved)) return;
       // Edit the last generated image when the model takes image input;
       // otherwise regenerate from the accumulated prompts.
       let sourceImageAttachmentId = '';

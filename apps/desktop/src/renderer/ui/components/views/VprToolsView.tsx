@@ -16,7 +16,7 @@ import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from
 import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
 import { offersConnectAnyway } from './app-card-actions';
 import { appsResource, gatewayResource, installedAppsResource } from '../../../modules/app/vpr-resources';
-import { createEndpointReads } from './endpoint-reads';
+import { copyFreshKey, createEndpointReads, readKeyToCopy } from './endpoint-reads';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
 import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
@@ -95,8 +95,7 @@ function CopyRow({ label, value, display, readValue }: {
   const { copied, copy } = useCopyFeedback(value);
   const onCopy = async () => {
     if (!readValue) return copy();
-    const current = await readValue();
-    if (current) await copy(current);
+    await copyFreshKey(readValue, copy);
   };
   return (
     <button
@@ -116,6 +115,15 @@ function CopyRow({ label, value, display, readValue }: {
  * Base URL + key for any OpenAI- or Anthropic-compatible tool the list does
  * not cover.
  */
+/**
+ * A gateway API key to copy. The key is always read again when copying (it
+ * may have been revoked or replaced in the console), so a key row can't be
+ * built without that read.
+ */
+function KeyCopyRow({ apiKey, readKey }: { apiKey: string; readKey: () => Promise<string | null> }) {
+  return <CopyRow label="Copy key" value={apiKey} display={maskKey(apiKey)} readValue={readKey} />;
+}
+
 function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
@@ -156,7 +164,7 @@ function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) 
           {endpoint?.ok && endpoint.baseUrl && endpoint.apiKey ? (
             <div className={styles.endpointRows}>
               <CopyRow label="Copy URL" value={endpoint.baseUrl} />
-              <CopyRow label="Copy key" value={endpoint.apiKey} display={maskKey(endpoint.apiKey)} />
+              <KeyCopyRow apiKey={endpoint.apiKey} readKey={() => readKeyToCopy(reads)} />
             </div>
           ) : (
             <p className={styles.endpointHint}>{endpoint?.error ?? 'Loading…'}</p>
@@ -681,7 +689,7 @@ export function VprToolsView() {
                       the Antseed provider in Zed’s AI settings.
                     </p>
                     <div className={styles.endpointRows}>
-                      <CopyRow label="Copy key" value={zedKey.apiKey} display={maskKey(zedKey.apiKey)} readValue={zedKey.keyToCopy} />
+                      <KeyCopyRow apiKey={zedKey.apiKey} readKey={zedKey.keyToCopy} />
                     </div>
                     {zedKey.pasted ? null : (
                       <button type="button" className={styles.settingTextLink} onClick={zedKey.markPasted}>

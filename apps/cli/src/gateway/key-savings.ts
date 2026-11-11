@@ -32,7 +32,9 @@ export function savingsJson(savings: KeySavings | null) {
  * longer read. Unknown ids are skipped.
  */
 export function keysUsage(store: GatewayStore, ids: readonly string[], prices: RetailPriceMap | null) {
-  const keys = [...new Set(ids.map((id) => id.trim()))].filter((id) => store.getKey(id))
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()))]
+  const existing = store.existingKeyIds(uniqueIds)
+  const keys = uniqueIds.filter((id) => existing.has(id))
   // Lifetime requests and spend for every key in one batched read.
   const summaries = store.keyUsageSummaries(keys, 0)
   const spent = keys.reduce((sum, id) => sum + (summaries.get(id)?.spentUsdc ?? 0), 0)

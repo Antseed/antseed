@@ -12,10 +12,15 @@ export function createEndpointReads(
 ) {
   let current = 0;
   return {
-    /** Reads and shows the endpoint; resolves to it, or null when a newer read or a close overtook this one. */
-    async refresh(): Promise<GatewayEndpointInfo | null> {
+    /**
+     * Reads and shows the endpoint; resolves to it, or null when a newer read
+     * or a close overtook this one. `keepShown` leaves what is shown in place
+     * while reading (a copy, whose row must stay); the answer, or the failure,
+     * still replaces it.
+     */
+    async refresh(options: { keepShown?: boolean } = {}): Promise<GatewayEndpointInfo | null> {
       const id = ++current;
-      show(null);
+      if (!options.keepShown) show(null);
       let endpoint: GatewayEndpointInfo;
       try {
         endpoint = (await read()) ?? { ok: false, error: 'Gateway unavailable' };
@@ -38,7 +43,21 @@ export function createEndpointReads(
  * The key to copy, read again at that moment: it may have been revoked or
  * replaced in the console since it was shown. Null when the read failed.
  */
-export async function readKeyToCopy(reads: { refresh: () => Promise<GatewayEndpointInfo | null> }): Promise<string | null> {
-  const endpoint = await reads.refresh();
+export async function readKeyToCopy(reads: { refresh: (options?: { keepShown?: boolean }) => Promise<GatewayEndpointInfo | null> }): Promise<string | null> {
+  const endpoint = await reads.refresh({ keepShown: true });
   return endpoint?.ok && endpoint.apiKey ? endpoint.apiKey : null;
+}
+
+/**
+ * Copies a key read at the moment of copying; when that read fails nothing is
+ * copied, so a revoked or replaced key never reaches the clipboard.
+ */
+export async function copyFreshKey(
+  readValue: () => Promise<string | null>,
+  copy: (value: string) => Promise<void>,
+): Promise<boolean> {
+  const current = await readValue().catch(() => null);
+  if (!current) return false;
+  await copy(current);
+  return true;
 }

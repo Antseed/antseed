@@ -137,6 +137,37 @@ describe('chat controller', () => {
     expect(request.sourceImageAttachmentId).toBe('img-b');
   });
 
+  it('a second image prompt while the first one\'s history loads is refused, and the first keeps its chat', async () => {
+    const convB = { ...conv('conv-b', 'model-b'), messages: [] as unknown[] };
+    const historyRead = deferred<void>();
+    let reads = 0;
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup([conv('conv-a', 'model-a'), convB], {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        // The first opening reads freely; the image's own history read waits.
+        if (id === 'conv-b' && ++reads > 1) await historyRead.promise;
+        return id === 'conv-b' ? { ok: true, data: { ...convB, messages: [] } } : { ok: false, error: 'not found' };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', supportsImages: true }] as never;
+    await api.refreshChatConversations();
+    // Chat B is open, but still opening as far as the image history goes.
+    const opening = api.openConversation('conv-b', { keepImageModel: true });
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('first');
+    await tick(5);
+    api.generateImage('second');
+    await tick(5);
+    expect(uiState.chatError).toBe('This conversation already has a request in progress.');
+    historyRead.resolve();
+    await opening;
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    await tick(20);
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+    expect(chatGenerateImage.mock.calls[0]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'first' });
+  });
+
   it('clears the sending state of an aborted chat before the abort settles', async () => {
     const abort = deferred<void>();
     const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });

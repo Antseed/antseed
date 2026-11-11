@@ -119,6 +119,28 @@ test('installing one agent after a failed sync never leaves another agent naming
   assert.ok(readFileSync(codexSkill, 'utf8').includes(`\`${next.origin}\``));
 });
 
+test('a partly removed agent is re-pointed with the rest, so none of its skills pairs the old gateway with the new key', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  await installAgentSkills('codex', endpoint, options);
+  // One of Codex's skills is deleted by hand; the others still read the shared key file.
+  const codexDir = path.join(options.home, '.agents', 'skills');
+  rmSync(path.join(codexDir, AGENT_SKILL_NAMES[0]), { recursive: true, force: true });
+  const next = { origin: 'https://gw-b.example', apiKey: 'sk-gateway-b' };
+  await syncAgentSkills(next, options);
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), next.apiKey);
+  for (const name of AGENT_SKILL_NAMES) {
+    const skill = readFileSync(path.join(codexDir, name, 'SKILL.md'), 'utf8');
+    assert.ok(skill.includes(`\`${next.origin}\``), `${name} names gateway B`);
+    assert.ok(!skill.includes(`\`${endpoint.origin}\``), `${name} no longer names gateway A`);
+  }
+
+  // Removing the fully installed agent keeps the key file while a partly installed one still reads it.
+  rmSync(path.join(codexDir, AGENT_SKILL_NAMES[0]), { recursive: true, force: true });
+  await removeAgentSkills('claude-code', options);
+  assert.ok(existsSync(agentSkillsKeyFile(options)));
+});
+
 test('never overwrites a skill folder the user made', async () => {
   const options = fixture();
   mkdirSync(path.join(options.home, '.claude', 'skills', 'antseed-images'), { recursive: true });

@@ -1746,6 +1746,13 @@ export class GatewayStore {
     }
   }
 
+  /** Which of `keyIds` name a key (revoked ones included), in one query. */
+  existingKeyIds(keyIds: readonly string[]): Set<string> {
+    if (keyIds.length === 0) return new Set()
+    const rows = this._stmt('SELECT id FROM api_keys WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(keyIds)) as Array<{ id: string }>
+    return new Set(rows.map((row) => row.id))
+  }
+
   /**
    * Lifetime requests and spend, plus spend since `since`, for many keys in
    * one grouped query per table (rather than `usageStats` per key). Every

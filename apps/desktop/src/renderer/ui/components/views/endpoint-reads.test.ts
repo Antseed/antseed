@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GatewayEndpointInfo } from '../../../types/bridge';
-import { createEndpointReads, readKeyToCopy } from './endpoint-reads';
+import { copyFreshKey, createEndpointReads, readKeyToCopy } from './endpoint-reads';
 
 const ok = (apiKey: string): GatewayEndpointInfo => ({ ok: true, baseUrl: 'http://127.0.0.1:8379/v1', origin: 'http://127.0.0.1:8379', apiKey, mode: 'local' });
 
@@ -59,5 +59,34 @@ describe('createEndpointReads', () => {
     await reads.refresh();
     fail = true;
     expect(await readKeyToCopy(reads)).toBeNull();
+  });
+
+  it('copying keeps the shown key row in place while the key is read again', async () => {
+    const shown: Array<GatewayEndpointInfo | null> = [];
+    const reads = createEndpointReads(async () => ok('sk-new'), (endpoint) => shown.push(endpoint));
+    await reads.refresh();
+    shown.length = 0;
+    await readKeyToCopy(reads);
+    // No `null` in between: the card's Copy key row isn't removed mid-copy.
+    expect(shown).toEqual([ok('sk-new')]);
+  });
+});
+
+describe('copyFreshKey', () => {
+  it('copies the key read at that moment, never the one shown before', async () => {
+    const copied: string[] = [];
+    let key = 'sk-old';
+    const reads = createEndpointReads(async () => ok(key), () => undefined);
+    await reads.refresh();
+    key = 'sk-replaced';
+    expect(await copyFreshKey(() => readKeyToCopy(reads), async (value) => { copied.push(value); })).toBe(true);
+    expect(copied).toEqual(['sk-replaced']);
+  });
+
+  it('copies nothing when the re-read fails', async () => {
+    const copied: string[] = [];
+    expect(await copyFreshKey(async () => null, async (value) => { copied.push(value); })).toBe(false);
+    expect(await copyFreshKey(async () => { throw new Error('offline'); }, async (value) => { copied.push(value); })).toBe(false);
+    expect(copied).toEqual([]);
   });
 });

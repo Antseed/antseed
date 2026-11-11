@@ -116,6 +116,20 @@ function isInstalledIn(skillsDir: string): boolean {
   return AGENT_SKILL_NAMES.every((name) => existsSync(path.join(skillsDir, name, MARKER_FILE)));
 }
 
+/**
+ * Whether any skill the app installed is still in `skillsDir`. A partly
+ * removed agent still reads the shared key file, so it is re-pointed (and its
+ * missing skills put back) with the others, and keeps the key file alive.
+ */
+function holdsManagedSkill(skillsDir: string): boolean {
+  return AGENT_SKILL_NAMES.some((name) => existsSync(path.join(skillsDir, name, MARKER_FILE)));
+}
+
+/** Every agent's skills folder that still holds a skill the app installed. */
+function managedSkillDirs(options: Options): string[] {
+  return AGENT_SKILL_TARGETS.map((target) => skillsDirOf(target, options)).filter(holdsManagedSkill);
+}
+
 export function listAgentSkillTargets(options: Options = {}): AgentSkillStatus[] {
   const home = homeOf(options);
   return AGENT_SKILL_TARGETS.map((target) => {
@@ -217,14 +231,14 @@ async function commitInstalls(staged: readonly StagedInstall[], apiKey: string, 
 }
 
 /**
- * Puts `skillsDirs` on `endpoint` together with every agent already installed:
- * they all read the one key file, so writing a new key for one agent while
- * another still names the previous gateway would send that key there. Every
- * copy is built first; if any can't be, nothing changes.
+ * Puts `skillsDirs` on `endpoint` together with every agent that still holds
+ * any of the app's skills (fully or partly installed): they all read the one
+ * key file, so writing a new key for one agent while another still names the
+ * previous gateway would send that key there. Every copy is built first; if
+ * any can't be, nothing changes.
  */
 async function installAll(skillsDirs: readonly string[], endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
-  const installed = listAgentSkillTargets(options).filter((target) => target.installed).map((target) => target.skillsDir);
-  const dirs = [...new Set([...skillsDirs, ...installed])];
+  const dirs = [...new Set([...skillsDirs, ...managedSkillDirs(options)])];
   if (dirs.length === 0) return;
   const staged: StagedInstall[] = [];
   try {
@@ -245,8 +259,8 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
     const dest = path.join(skillsDir, name);
     if (existsSync(path.join(dest, MARKER_FILE))) await rm(dest, { recursive: true, force: true });
   }
-  // The key file goes with the last agent that used it.
-  if (!listAgentSkillTargets(options).some((target) => target.installed)) {
+  // The key file goes with the last agent that used it, even partly.
+  if (managedSkillDirs(options).length === 0) {
     await rm(agentSkillsKeyFile(options), { force: true });
   }
 }

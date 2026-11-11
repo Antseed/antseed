@@ -188,6 +188,20 @@ test('request log records outcomes and content, prunes by age, and reports peer 
   }
 })
 
+test('existing key ids are found in one batch, revoked keys included', () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const [kept, revoked] = ['A', 'B'].map((label) => store.createKey({ label, buyerIdentity: 'team-x', limits: { daily: null, monthly: null, total: null }, expiresAt: null }).key)
+    store.revokeKey(revoked!.id)
+    assert.deepEqual(store.existingKeyIds([kept!.id, revoked!.id, 'key_unknown']), new Set([kept!.id, revoked!.id]))
+    assert.deepEqual(store.existingKeyIds([]), new Set())
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
 test('usage by model over several keys sums each key\'s usage, counting requests per key', () => {
   const { dir, cleanup } = tempDir()
   const store = new GatewayStore(dir)
