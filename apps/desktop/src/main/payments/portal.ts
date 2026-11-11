@@ -34,9 +34,10 @@ export function focusMainWindow(): void {
 
 export async function startPaymentsPortal(): Promise<void> {
   if (paymentsServer) return;
+  // Outside the try: when the stored signer can't be read, the caller gets the reason.
+  await ensureSecureIdentity();
+  const identityHex = secureIdentityEnv().ANTSEED_IDENTITY_HEX;
   try {
-    await ensureSecureIdentity();
-    const identityHex = secureIdentityEnv().ANTSEED_IDENTITY_HEX;
     paymentsServer = await createPaymentsServer({
       port: PAYMENTS_PORT,
       identityHex,

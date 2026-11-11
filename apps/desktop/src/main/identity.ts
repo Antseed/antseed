@@ -23,6 +23,8 @@ export function hasStoredIdentity(): boolean {
 let secureIdentity: Identity | null = null;
 let secureIdentityPromise: Promise<void> | null = null;
 let _safeStorageReady: boolean | null = null;
+// Set while a stored key exists but can't be read: what to tell the user.
+let identityReadError: string | null = null;
 
 function safeStorageAvailable(): boolean {
   if (_safeStorageReady === null) {
@@ -51,13 +53,27 @@ function identityFromHex(hex: string): Identity {
 // would silently destroy the signer key.
 const UNDECRYPTABLE = Symbol('undecryptable-identity');
 
-async function loadEncryptedIdentity(): Promise<string | null | typeof UNDECRYPTABLE> {
-  let encrypted: Buffer;
+class IdentityReadError extends Error {}
+
+// A key file's content, or null when the file does not exist. Only that means
+// there is no key: any other failure (I/O, permissions, too many open files)
+// says nothing about what is stored, so it stops the load.
+async function readIdentityFile(filePath: string): Promise<Buffer | null> {
   try {
-    encrypted = await readFile(ENCRYPTED_IDENTITY_PATH);
-  } catch {
-    return null; // No file — safe to migrate/create fresh.
+    return await readFile(filePath);
+  } catch (err) {
+    const { code } = err as NodeJS.ErrnoException;
+    if (code === 'ENOENT') return null;
+    throw new IdentityReadError(
+      `Your signer key at ${filePath} can't be read (${code}). It was left as it is and no new wallet was created. Check the file and its folder, then try again.`,
+      { cause: err },
+    );
   }
+}
+
+async function loadEncryptedIdentity(): Promise<string | null | typeof UNDECRYPTABLE> {
+  const encrypted = await readIdentityFile(ENCRYPTED_IDENTITY_PATH);
+  if (encrypted === null) return null; // No file — safe to migrate/create fresh.
   try {
     const decrypted = safeStorage.decryptString(encrypted);
     const trimmed = decrypted.trim();
@@ -92,9 +108,18 @@ async function saveEncryptedIdentity(hexKey: string): Promise<void> {
   await rename(tmpPath, ENCRYPTED_IDENTITY_PATH);
 }
 
+// The loaded key, or null when there is none. While a stored key can't be read
+// this throws the reason instead, since a caller with no key moves on to another
+// wallet (the CLI buyer uses or creates its own).
+function loadedKeyHex(): string | null {
+  if (secureIdentity) return bytesToHex(secureIdentity.privateKey);
+  if (identityReadError) throw new IdentityReadError(identityReadError);
+  return null;
+}
+
 export function secureIdentityEnv(): Record<string, string> {
-  if (!secureIdentity) return {};
-  return { ANTSEED_IDENTITY_HEX: bytesToHex(secureIdentity.privateKey) };
+  const hex = loadedKeyHex();
+  return hex ? { ANTSEED_IDENTITY_HEX: hex } : {};
 }
 
 const MAX_IDENTITY_RETRIES = 3;
@@ -131,6 +156,7 @@ export async function ensureSecureIdentity(): Promise<void> {
   }
 
   const attempt = (async () => {
+    let readError: string | null = null;
     try {
       if (!safeStorageAvailable()) {
         console.warn('[desktop] safeStorage not available — skipping secure identity');
@@ -162,16 +188,12 @@ export async function ensureSecureIdentity(): Promise<void> {
 
       // 2. Migrate existing plaintext file identity into encrypted store
       let migratedHex: string | null = null;
-      try {
-        const raw = await readFile(PLAINTEXT_IDENTITY_PATH, 'utf-8');
-        const trimmed = raw.trim();
-        if (trimmed.length === 64) {
-          migratedHex = trimmed;
-        } else if (trimmed.length > 0) {
-          console.warn(`[desktop] Plaintext identity file has unexpected length (${trimmed.length} chars, expected 64); skipping migration.`);
-        }
-      } catch {
-        // No existing file identity.
+      const raw = await readIdentityFile(PLAINTEXT_IDENTITY_PATH);
+      const trimmed = raw?.toString('utf-8').trim() ?? '';
+      if (trimmed.length === 64) {
+        migratedHex = trimmed;
+      } else if (trimmed.length > 0) {
+        console.warn(`[desktop] Plaintext identity file has unexpected length (${trimmed.length} chars, expected 64); skipping migration.`);
       }
 
       if (migratedHex) {
@@ -192,7 +214,12 @@ export async function ensureSecureIdentity(): Promise<void> {
       console.log(`[desktop] secure identity created: ${secureIdentity.peerId.slice(0, 12)}...`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[desktop] secure identity init failed: ${message}`);
+      if (err instanceof IdentityReadError) readError = message;
+      // Read failures are retried on every call, and balance polls call often: report each once.
+      if (message !== identityReadError) console.error(`[desktop] secure identity init failed: ${message}`);
+    } finally {
+      // Updated only now, so a caller can't catch the failure blank while a retry runs.
+      identityReadError = readError;
     }
   })();
 
@@ -203,7 +230,8 @@ export async function ensureSecureIdentity(): Promise<void> {
     // Reset on transient failure so a subsequent call can retry (up to MAX_IDENTITY_RETRIES).
     // If safeStorage is permanently unavailable, keep the promise so we don't re-warn.
     if (!secureIdentity && safeStorageAvailable() && secureIdentityPromise === attempt) {
-      identityRetryCount++;
+      // A read failure can clear at any moment and retrying it writes nothing, so it isn't counted.
+      if (!identityReadError) identityRetryCount++;
       secureIdentityPromise = null;
     }
   }
@@ -214,8 +242,7 @@ export function getSecureIdentity(): Identity | null {
 }
 
 export function exportIdentityPrivateKeyHex(): string | null {
-  if (!secureIdentity) return null;
-  return bytesToHex(secureIdentity.privateKey);
+  return loadedKeyHex();
 }
 
 // Preserve the current encrypted identity before an import overwrites it, so
@@ -225,8 +252,13 @@ async function backupIdentityBeforeImport(): Promise<string | null> {
   try {
     await copyFile(ENCRYPTED_IDENTITY_PATH, backupPath);
     return backupPath;
-  } catch {
-    return null; // No existing identity file — nothing to back up.
+  } catch (err) {
+    const { code } = err as NodeJS.ErrnoException;
+    if (code === 'ENOENT') return null; // No existing identity file — nothing to back up.
+    throw new Error(
+      `Your signer key at ${ENCRYPTED_IDENTITY_PATH} couldn't be backed up (${code}), so the new key wasn't imported and your key was left as it is. Check the file and its folder, then try again.`,
+      { cause: err },
+    );
   }
 }
 

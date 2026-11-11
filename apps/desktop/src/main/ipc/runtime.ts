@@ -167,7 +167,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       env: {
         ...(options.env ?? {}),
         ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...secureIdentityEnv(),
+        ...processManager.requireForStart(options.mode, secureIdentityEnv),
       },
     };
     if (isDesktopDebugEnabled()) {

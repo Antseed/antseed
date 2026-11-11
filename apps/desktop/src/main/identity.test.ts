@@ -239,6 +239,18 @@ test('a read that keeps failing recovers on a later call, without a restart', as
   assert.equal(logged.filter((line) => /can't be read/.test(line)).length, 1, 'repeats of one failure are logged once');
 });
 
+test('the failure stays in place while a retry is running', async () => {
+  writeFileSync(encryptedPath, sealed(KEY));
+  failRead(encryptedPath, 'EIO');
+  const identity = await loadIdentityModule();
+  await identity.ensureSecureIdentity();
+
+  const retry = identity.ensureSecureIdentity();
+
+  assert.throws(identity.secureIdentityEnv, (err: Error) => UNREADABLE.test(err.message), 'a child process must not start during a retry');
+  await retry;
+});
+
 test('a different read failure is logged again', async () => {
   writeFileSync(encryptedPath, sealed(KEY));
   failRead(encryptedPath, 'EIO', 1);

@@ -148,6 +148,20 @@ test('attached runtimes can be stopped locally without owning the shared process
   assert.deepEqual(logs, ['Attached to existing connect runtime']);
 });
 
+test('a start refused before spawning shows its reason in the status and the log', () => {
+  const logs: string[] = [];
+  const processManager = new ProcessManager((_mode, _stream, line) => logs.push(line));
+
+  assert.equal(processManager.requireForStart('connect', () => 'value'), 'value');
+  assert.equal(logs.length, 0);
+
+  assert.throws(() => processManager.requireForStart('connect', () => { throw new Error('No key.'); }), /^Error: No key\.$/);
+  const connect = processManager.getState().find((state) => state.mode === 'connect');
+  assert.equal(connect?.lastError, 'No key.');
+  assert.equal(connect?.running, false);
+  assert.deepEqual(logs, ['No key.']);
+});
+
 test('an attach-only desktop never spawns a runtime of its own', async () => {
   const previous = process.env['ANTSEED_DESKTOP_ATTACH_ONLY'];
   process.env['ANTSEED_DESKTOP_ATTACH_ONLY'] = '1';

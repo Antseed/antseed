@@ -453,6 +453,21 @@ export class ProcessManager {
     return { ...state };
   }
 
+  /**
+   * Reads something a start can't go without. If that throws, nothing is
+   * spawned, so no process reports it: the status and the log say why instead.
+   */
+  requireForStart<T>(mode: RuntimeMode, read: () => T): T {
+    try {
+      return read();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.states.get(mode)!.lastError = reason;
+      this.onLog(mode, 'system', reason);
+      throw err;
+    }
+  }
+
   getDaemonStateSnapshot(): DaemonStateSnapshot {
     const stateFile = join(homedir(), '.antseed', 'daemon.state.json');
     if (!existsSync(stateFile)) {

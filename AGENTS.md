@@ -69,7 +69,7 @@ Antseed is a credibly neutral marketplace run by a foundation: it carries the st
 | --- | --- |
 | USDC is integer base units (6 decimals). It is `bigint` through `packages/buyer-core/src/usdc-utils.ts`; only the gateway (`money.ts`) uses safe-integer `number`. Never a float. | `packages/buyer-core/src/pricing.test.ts` (positive values only) |
 | The buyer's signing key is a hot wallet that never receives funds and never needs gas. Withdrawals, refunds and rewards go to the operator or stay in `AntseedDeposits`, never to the buyer address. | `packages/contracts` tests; review |
-| Identity keys are never logged, printed, sent to a peer or written outside the identity store. | `packages/node/tests/identity.test.ts` (persistence only); desktop identity has no test |
+| Identity keys are never logged, printed, sent to a peer or written outside the identity store. | `packages/node/tests/identity.test.ts` (persistence only); `apps/desktop/src/main/identity.test.ts` (no key in logs or errors when its file can't be read) |
 | Agents and tests never touch `~/.antseed`, the keychain or port 8377. Use your own `--data-dir`. | review only |
 
 ## Map

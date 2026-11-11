@@ -225,6 +225,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     process.env['ANTSEED_PROXY_URL'] = `http://127.0.0.1:${String(proxyPort)}`;
     const runtimeRunning = isBuyerRuntimeRunning();
     let proxyAvailable = await isProxyAvailable(proxyPort);
+    let startFailure: string | null = null;
     if (!proxyAvailable && ensureBuyerRuntimeStarted) {
       if (runtimeRunning) {
         appendSystemLog(`Buyer runtime is running. Waiting for proxy :${proxyPort}...`);
@@ -240,13 +241,14 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           proxyAvailable = await waitForBuyerProxy(proxyPort);
         }
       } catch (error) {
-        appendSystemLog(`Buyer runtime auto-start failed: ${asErrorMessage(error)}`);
+        startFailure = asErrorMessage(error);
+        appendSystemLog(`Buyer runtime auto-start failed: ${startFailure}`);
       }
     }
     if (!proxyAvailable) {
       return {
         ok: false,
-        error: `Buyer proxy is not reachable on port ${proxyPort}. Start Buyer runtime or fix buyer.proxyPort in config.`,
+        error: startFailure ?? `Buyer proxy is not reachable on port ${proxyPort}. Start Buyer runtime or fix buyer.proxyPort in config.`,
       };
     }
 

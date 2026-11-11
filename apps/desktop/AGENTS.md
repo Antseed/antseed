@@ -5,7 +5,7 @@ A host for one user: the Electron main process (`src/main/`), the renderer (`src
 | Rule | Enforced by |
 | --- | --- |
 | Windows keep `contextIsolation: true` and `nodeIntegration: false`. | review only (`src/main/ui/window.ts`) |
-| The identity key is encrypted with `safeStorage` and never reaches the renderer. | no test |
+| The identity key is encrypted with `safeStorage` and never reaches the renderer. | `src/main/identity.test.ts` (stored encrypted); review only (the renderer) |
 
 **Ask first:** `src/main/identity.ts`, the preload, `webPreferences`, an IPC channel that exposes keys, files or processes.
 
