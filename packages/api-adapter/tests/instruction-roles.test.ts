@@ -81,10 +81,53 @@ describe('instructions sent as Chat Completions messages', () => {
     expect(body.system).toBe('One.\nTwo.');
   });
 
-  it('add nothing when they carry no text', () => {
+  it('stay instructions when they arrive between turns, in the order they were sent', () => {
+    const body = translate(CHAT, RESPONSES, {
+      model: 'm',
+      messages: [
+        { role: 'developer', content: 'First rule.' },
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'developer', content: 'Second rule.' },
+        { role: 'user', content: 'three' },
+      ],
+    });
+
+    expect(body.instructions).toBe('First rule.\n\nSecond rule.');
+    expect(body.input).toEqual([
+      userItem('one'),
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
+      userItem('three'),
+    ]);
+  });
+
+  it('leave a tool result right after its call', () => {
     const body = translate(CHAT, MESSAGES, {
       model: 'm',
-      messages: [{ role: 'developer', content: '' }, { role: 'user', content: 'hi' }],
+      messages: [
+        { role: 'user', content: 'run it' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'shell', arguments: '{}' } }],
+        },
+        { role: 'developer', content: 'Permissions changed.' },
+        { role: 'tool', tool_call_id: 'call_1', content: 'done' },
+      ],
+    });
+
+    expect(body.system).toBe('Permissions changed.');
+    expect(body.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'shell', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'done' }] },
+    ]);
+  });
+
+  it.each(['', ' \n'])('add nothing when they carry no text (%j)', (text) => {
+    const body = translate(CHAT, MESSAGES, {
+      model: 'm',
+      messages: [{ role: 'developer', content: text }, { role: 'user', content: 'hi' }],
     });
 
     expect(body.system).toBeUndefined();
@@ -206,10 +249,10 @@ describe('instructions sent as Responses input items', () => {
     expect(body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]);
   });
 
-  it('add nothing when they carry no text', () => {
+  it.each(['', ' \n'])('add nothing when they carry no text (%j)', (text) => {
     const body = translate(RESPONSES, CHAT, {
       model: 'm',
-      input: [developerItem(''), userItem('hi')],
+      input: [developerItem(text), userItem('hi')],
     });
 
     expect(body.messages).toEqual([{ role: 'user', content: 'hi' }]);

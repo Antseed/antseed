@@ -891,11 +891,12 @@ function isInstructionRole(role: unknown): boolean {
 
 /**
  * Both OpenAI protocols can send instructions as messages, anywhere in the
- * conversation. The hub keeps them as one string, in the order sent: Anthropic's
- * single `system` can't hold a position among the turns.
+ * conversation. For every target the hub keeps them in one string, in the order
+ * sent, at the head of the request: the only place all three protocols can hold
+ * them, since Anthropic's `system` has no position among the turns.
  */
 function appendInstructions(request: CanonicalLlmRequest, text: string): void {
-  if (text.length === 0) return;
+  if (text.trim().length === 0) return;
   request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
 }
 
