@@ -10,6 +10,8 @@ name: PR guard
 on:
   pull_request_target:
     branches: [main]
+    # `edited` re-runs the guard when the author changes the PR, e.g. ticks "Allow edits by maintainers".
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -23,6 +25,18 @@ jobs:
     name: PR guard
     runs-on: ubuntu-latest
     steps:
+      # main only merges branches that are up to date with it, so a maintainer must be able to merge main into a
+      # PR's branch. Only the event's own fields are read here; nothing from the PR runs.
+      - name: Require maintainer edits on a PR from a fork
+        env:
+          FROM_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          MAINTAINER_CAN_MODIFY: ${{ github.event.pull_request.maintainer_can_modify }}
+        run: |
+          if [ "$FROM_FORK" = "true" ] && [ "$MAINTAINER_CAN_MODIFY" != "true" ]; then
+            echo "::error::Tick \"Allow edits by maintainers\" on this pull request (in its sidebar), so a maintainer can update it with main. The check runs again when you do."
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.pull_request.base.sha }}

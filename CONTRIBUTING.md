@@ -110,6 +110,9 @@ the dependencies of that code. The list below is a minimum, not the full set:
 - Fix one underlying problem per PR. Put unrelated cleanup, formatting or a second fix in its
   own PR.
 - Use a conventional PR title: `fix(buyer-core): ...`, `feat(cli): ...`, `docs: ...`.
+- From a fork, leave "Allow edits by maintainers" ticked. `main` only merges branches that
+  are up to date with it, so a maintainer merges `main` into yours before merging. The PR
+  guard check fails until it is ticked.
 - Update `CHANGELOG.md` for user-facing changes: add a bullet under `## Unreleased`, in
   `### Added`, `### Changed` or `### Fixed`, that names the affected packages and says what
   changed for users, like the entries already there. If there is no user-facing change, say
