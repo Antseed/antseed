@@ -1174,7 +1174,11 @@ export class SellerRequestHandler {
           );
           const costUsdc = tokenCostUsdc + unitCostUsdc;
           const session = spm.getChannelByPeer(buyerPeerId);
-          if (session) {
+          if (session && spm.connectionsClosed) {
+            // The node is stopping and its connections are closed: this
+            // response never reached the buyer, so it is not billed.
+            debugLog(`[SellerHandler] Not billed (connections closed during stop): buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc}`);
+          } else if (session) {
             spm.recordSpend(session.sessionId, costUsdc);
             const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
             debugLog(`[SellerHandler] Cost recorded: buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc} cumulative=${cumulativeSpend} (in=${usage.inputTokens} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`);
