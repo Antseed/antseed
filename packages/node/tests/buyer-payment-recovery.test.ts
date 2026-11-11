@@ -303,9 +303,25 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       await manager.resendPendingReserveAuth(SELLER, negotiator.getOrCreatePaymentMux(SELLER, seller.conn));
 
       expect({ afterRead, storedAfterReplay: store.getChannel(channelId)?.confirmedReserveAmount }).toEqual({
-        afterRead: { ceiling: 2n * RESERVE, stored: (2n * RESERVE).toString() },
+        // The second top-up is still on its way: its ceiling stands.
+        afterRead: { ceiling: 3n * RESERVE, stored: (2n * RESERVE).toString() },
         storedAfterReplay: (2n * RESERVE).toString(),
       });
+    });
+
+    it('keeps a deposit it saw while budgeting a top-up', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, false);
+      const pmux = negotiator.getOrCreatePaymentMux(SELLER, seller.conn);
+      await manager.topUpReserve(SELLER, pmux);
+      // The first top-up lands, and the buyer sees it while it budgets a third.
+      deposit = 2n * RESERVE;
+      await manager.topUpReserve(SELLER, pmux);
+
+      await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+      expect(store.getChannel(channelId)?.confirmedReserveAmount).toBe((2n * RESERVE).toString());
     });
 
     it('keeps the reserve the chain confirmed when the buyer restarts', async () => {
@@ -371,6 +387,41 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
         status: CHANNEL_STATUS.ACTIVE,
         topUpPending,
         confirmed,
+      });
+    });
+
+    it('resends while a parallel 402 reads the chain before the top-up lands', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, false);
+      await sign(1_500_000n, seller);
+      // Two 402s of the burst: the second reads the chain once the first has
+      // replayed the top-up, and replays it only once the first has decided.
+      const secondRead = holdNextRead();
+      const replay = manager.resendPendingReserveAuth.bind(manager);
+      let secondAtReplay!: () => void;
+      const secondReconciled = new Promise<void>((resolve) => { secondAtReplay = resolve; });
+      let first!: Promise<string>;
+      vi.spyOn(manager, 'resendPendingReserveAuth')
+        .mockImplementationOnce(async (peerId, pmux) => {
+          const replayed = await replay(peerId, pmux);
+          secondRead.release();
+          await secondReconciled;
+          return replayed;
+        })
+        .mockImplementationOnce(async (peerId, pmux) => {
+          secondAtReplay();
+          await first;
+          return replay(peerId, pmux);
+        });
+      const second = outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
+      await secondRead.started;
+      first = outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
+
+      expect({ first: await first, second: await second, closeRequests: seller.closeRequests() }).toEqual({
+        first: 'retry',
+        second: 'retry',
+        closeRequests: [],
       });
     });
 

@@ -294,8 +294,8 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
   private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
 
-  /** sellerPeerId -> the highest deposit a chain read has shown for the active channel, starting from the stored confirmed reserve */
-  private readonly _depositRead = new Map<string, { channelId: string; amount: bigint }>();
+  /** sellerPeerId -> the highest deposit confirmed for the active channel, by a chain read or the store */
+  private readonly _confirmedDeposit = new Map<string, { channelId: string; amount: bigint }>();
 
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
@@ -471,8 +471,6 @@ export class BuyerPaymentManager {
       let confirmedReserve = 0n;
       if (channel.confirmedReserveAmount != null) {
         confirmedReserve = BigInt(channel.confirmedReserveAmount);
-        // The deposit confirmed before a restart still stands against a read that lags it.
-        this._depositRead.set(peerId, { channelId: channel.sessionId, amount: confirmedReserve });
       } else if (channel.reserveMaxAmount != null && channel.reserveAuthPending !== true) {
         confirmedReserve = BigInt(channel.reserveMaxAmount);
       }
@@ -573,7 +571,7 @@ export class BuyerPaymentManager {
   cleanupSession(sellerPeerId: string): void {
     this._cumulativeAmount.delete(sellerPeerId);
     this._sellerAccepted.delete(sellerPeerId);
-    this._depositRead.delete(sellerPeerId);
+    this._confirmedDeposit.delete(sellerPeerId);
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
     this._requestLedgers.delete(sellerPeerId);
@@ -917,21 +915,25 @@ export class BuyerPaymentManager {
   /**
    * Reconcile the locally usable ceiling with an on-chain read, and return the
    * channel's deposit. A deposit only grows while the channel is open, so a
-   * read below an earlier one comes from a node that is behind: the earlier
-   * one stands.
+   * read below the deposit confirmed before (stored, or shown by an earlier
+   * read) comes from a node that is behind: the confirmed one stands.
    */
   async reconcileReserveAmount(sellerPeerId: string, onChainAmount: bigint): Promise<bigint> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) return onChainAmount;
 
-    const earlier = this._depositRead.get(sellerPeerId);
-    const deposit = earlier?.channelId === session.sessionId && earlier.amount > onChainAmount ? earlier.amount : onChainAmount;
-    this._depositRead.set(sellerPeerId, { channelId: session.sessionId, amount: deposit });
+    const known = this._confirmedDeposit.get(sellerPeerId);
+    let deposit = BigInt(session.confirmedReserveAmount ?? '0');
+    if (known?.channelId === session.sessionId && known.amount > deposit) deposit = known.amount;
+    if (onChainAmount > deposit) deposit = onChainAmount;
+    this._confirmedDeposit.set(sellerPeerId, { channelId: session.sessionId, amount: deposit });
     const pending = this._pendingReserveAuth.get(sellerPeerId);
     const applied = pending != null && deposit >= pending.maxAmount;
     // The chain is authoritative even when it is ahead of our latest locally
     // persisted authorization (for example after recovery on another device).
-    this._currentReserveCeiling.set(sellerPeerId, deposit);
+    // A top-up still on its way keeps the ceiling it set: a recovery running
+    // in parallel has replayed it and judges its authorization against it.
+    this._currentReserveCeiling.set(sellerPeerId, pending && !applied ? pending.maxAmount : deposit);
     if (applied) {
       this._pendingReserveAuth.delete(sellerPeerId);
       // An initial ReserveAuth can land on-chain immediately before the browser

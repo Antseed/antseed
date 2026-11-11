@@ -1421,6 +1421,8 @@ export class BuyerPaymentNegotiator {
     this._lockedPeers.delete(peerId);
     this._firstRequestSent.delete(peerId);
     this._lastResponseCost.delete(peerId);
+    // A resend went over the dropped connection: its record would keep that connection.
+    this._resentForTarget.delete(peerId);
   }
 
   /**
@@ -1503,6 +1505,7 @@ export class BuyerPaymentNegotiator {
     this._firstRequestSent.clear();
     this._lastResponseCost.clear();
     this._muxes.clear();
+    this._resentForTarget.clear();
 
     for (const [, pending] of this._pendingPaymentRequired) {
       clearTimeout(pending.timer);
