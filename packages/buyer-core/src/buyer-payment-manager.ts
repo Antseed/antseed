@@ -73,6 +73,17 @@ const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
+/**
+ * How long a chain read below a channel's confirmed deposit is taken for a
+ * node that is behind. Nodes behind one RPC endpoint are usually a block or
+ * two apart, and Base mines a block every 2 s, so 30 s allows for a node 15
+ * blocks behind. The same lower deposit read again after that long is the
+ * chain's: a top-up an earlier read showed was rolled back, or the confirmed
+ * value never was the chain's. It is also longer than one catch-up round (the
+ * seller's 5 s wait and the 7 s a resend gets), so the 402s of one burst
+ * cannot take a lagging node's read as the chain's between them.
+ */
+const DEPOSIT_LAG_WINDOW_MS = 30_000;
 
 /**
  * Whole units of `unit` in `usage`, never negative. Speech billing reports no
@@ -294,8 +305,19 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
   private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
 
-  /** sellerPeerId -> the highest deposit confirmed for the active channel, by a chain read or the store */
-  private readonly _confirmedDeposit = new Map<string, { channelId: string; amount: bigint }>();
+  /**
+   * sellerPeerId -> the deposit confirmed for the active channel, by a chain
+   * read or the store. `lower` is a deposit below it that reads keep showing,
+   * and when the first of them came. `overStore` is set once such a read was
+   * accepted: the store can still hold the value it replaced, or get it back
+   * from a write that began before.
+   */
+  private readonly _confirmedDeposit = new Map<string, {
+    channelId: string;
+    amount: bigint;
+    lower?: { amount: bigint; since: number };
+    overStore?: boolean;
+  }>();
 
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
@@ -916,27 +938,42 @@ export class BuyerPaymentManager {
    * Reconcile the locally usable ceiling with an on-chain read, and return the
    * channel's deposit. A deposit only grows while the channel is open, so a
    * read below the deposit confirmed before (stored, or shown by an earlier
-   * read) comes from a node that is behind: the confirmed one stands.
+   * read) usually comes from a node that is behind: the confirmed one stands.
+   * The same lower deposit read again `DEPOSIT_LAG_WINDOW_MS` later, with no
+   * read at or above the confirmed one in between, replaces it.
    */
   async reconcileReserveAmount(sellerPeerId: string, onChainAmount: bigint): Promise<bigint> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) return onChainAmount;
 
-    const known = this._confirmedDeposit.get(sellerPeerId);
-    let deposit = BigInt(session.confirmedReserveAmount ?? '0');
-    if (known?.channelId === session.sessionId && known.amount > deposit) deposit = known.amount;
+    const kept = this._confirmedDeposit.get(sellerPeerId);
+    const known = kept?.channelId === session.sessionId ? kept : undefined;
+    const stored = BigInt(session.confirmedReserveAmount ?? '0');
+    let deposit = known && (known.overStore || known.amount > stored) ? known.amount : stored;
+    let lower: { amount: bigint; since: number } | undefined;
+    let overStore = known?.overStore;
+    let lowered = false;
     if (onChainAmount > deposit) {
       deposit = onChainAmount;
+      overStore = false;
     } else if (onChainAmount < deposit) {
-      // Usually a node that is behind. A read that stays below the confirmed
-      // deposit means the confirmed one is too high (a top-up a read showed
-      // was rolled back), and this line is the only sign of it.
-      debugWarn(
-        `[BuyerPayment] Ignoring a chain read of deposit ${onChainAmount} below the confirmed ${deposit}: ` +
-        `channel=${session.sessionId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}...`,
-      );
+      const where = `channel=${session.sessionId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}...`;
+      const seen = known?.lower?.amount === onChainAmount ? known.lower : undefined;
+      // An open channel's deposit is never zero: such a read says nothing.
+      if (seen && onChainAmount > 0n && Date.now() - seen.since >= DEPOSIT_LAG_WINDOW_MS) {
+        debugWarn(
+          `[BuyerPayment] Taking the chain's deposit ${onChainAmount} for the confirmed ${deposit}, ` +
+          `after reads kept showing it for ${DEPOSIT_LAG_WINDOW_MS} ms: ${where}`,
+        );
+        deposit = onChainAmount;
+        overStore = true;
+        lowered = true;
+      } else {
+        lower = seen ?? { amount: onChainAmount, since: Date.now() };
+        debugWarn(`[BuyerPayment] Ignoring a chain read of deposit ${onChainAmount} below the confirmed ${deposit}: ${where}`);
+      }
     }
-    this._confirmedDeposit.set(sellerPeerId, { channelId: session.sessionId, amount: deposit });
+    this._confirmedDeposit.set(sellerPeerId, { channelId: session.sessionId, amount: deposit, lower, overStore });
     const pending = this._pendingReserveAuth.get(sellerPeerId);
     const applied = pending != null && deposit >= pending.maxAmount;
     // The chain is authoritative even when it is ahead of our latest locally
@@ -951,9 +988,9 @@ export class BuyerPaymentManager {
       // equivalent confirmation and must reopen signing before the first
       // post-reload request is allowed through.
       if (pending.confirmedAmount === 0n) this._confirmedPeers.add(sellerPeerId);
-    } else if (pending && deposit > pending.confirmedAmount) {
-      // A top-up stacked on one that has since landed: replaying it must not
-      // store the deposit from before that one as confirmed.
+    } else if (pending && (deposit > pending.confirmedAmount || (lowered && deposit < pending.confirmedAmount))) {
+      // A top-up stacked on one that has since landed, or on one that was
+      // rolled back: replaying it must store the deposit the chain has now.
       this._pendingReserveAuth.set(sellerPeerId, { ...pending, confirmedAmount: deposit });
     }
 

@@ -1880,11 +1880,21 @@ export class BuyerPaymentNegotiator {
         // released before a replacement is funded; never forget a channel
         // that is still active on-chain.
         this._resentForTarget.delete(peer.peerId);
+        // The contract refuses a close above the channel's deposit, and the
+        // confirmed deposit can be above it (a top-up a read showed was rolled
+        // back): cap at the lower of it and a new read. When that read fails,
+        // this recovery's own read stands in.
+        const fresh = await this._getOnChainSessionState(session.sessionId);
+        this._assertLiveChannel(peer.peerId, session.sessionId);
+        const chainDeposit = fresh?.exists && fresh.status === CHANNEL_STATUS.ACTIVE
+          ? fresh.channel.deposit
+          : onChain.channel.deposit;
+        const closeCap = chainDeposit > 0n && (deposit <= 0n || chainDeposit < deposit) ? chainDeposit : deposit;
         try {
           const result = await this.requestChannelClose(
             peer.peerId,
             conn,
-            deposit > 0n ? { maxCumulative: deposit } : {},
+            closeCap > 0n ? { maxCumulative: closeCap } : {},
           );
           if (result.status !== 'closed') {
             debugWarn(

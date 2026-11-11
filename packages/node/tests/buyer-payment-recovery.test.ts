@@ -41,7 +41,8 @@ const REQUEST: SerializedHttpRequest = {
 /**
  * The buyer's end of one connection to the seller. It records the payment
  * frames the buyer sends and, like PeerConnection, refuses to send once it
- * is down. The seller declines every close request it gets as busy.
+ * is down. The seller declines every close request it gets as busy, unless
+ * it is `idle`.
  */
 interface SellerConnection {
   conn: PeerConnection & { state: ConnectionState };
@@ -53,6 +54,12 @@ interface SellerConnection {
   closeRequests(): string[];
   /** Answer close requests (default) or leave them waiting, as a seller that went down would. */
   answerCloses: boolean;
+  /**
+   * A seller with nothing in flight: it closes the channel at the amount a
+   * close request asks for when the chain's deposit covers it (the contract
+   * refuses a close above the deposit), and acknowledges a new channel's reserve.
+   */
+  idle: boolean;
   /**
    * The connection drops, and the node tells the negotiator, as it does on a
    * failed connection. With `teardown` false it does not: the node skips the
@@ -186,18 +193,25 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
         for (const frame of decoder.feed(data)) {
           frames.push(frame);
           if (frame.type === MessageType.CloseChannelRequest && seller.answerCloses) {
-            const { channelId } = codec.decodeCloseChannelRequest(frame.payload);
+            const { channelId, cumulativeAmount } = codec.decodeCloseChannelRequest(frame.payload);
+            const closes = seller.idle && BigInt(cumulativeAmount ?? '0') <= deposit;
             queueMicrotask(() => void negotiator.getPaymentMux(SELLER)?.handleFrame({
               type: MessageType.CloseChannelResult,
               messageId: 0,
-              payload: codec.encodeCloseChannelResult({
-                version: 1,
-                channelId,
-                status: 'rejected',
-                code: 'busy',
-                reason: 'a request is still being served on this channel',
-              }),
+              payload: codec.encodeCloseChannelResult(closes
+                ? { version: 1, channelId, status: 'closed', finalAmount: cumulativeAmount ?? '0' }
+                : {
+                  version: 1,
+                  channelId,
+                  status: 'rejected',
+                  code: 'busy',
+                  reason: 'a request is still being served on this channel',
+                }),
             }));
+          }
+          if (frame.type === MessageType.SpendingAuth && seller.idle) {
+            const { channelId, reserveMaxAmount } = codec.decodeSpendingAuth(frame.payload);
+            if (reserveMaxAmount != null) queueMicrotask(() => void manager.handleAuthAck(SELLER, { version: 1, channelId } as never));
           }
         }
       },
@@ -212,6 +226,7 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       reserveAuths: () => auths().flatMap((auth) => auth.reserveMaxAmount != null ? [auth.reserveMaxAmount] : []),
       closeRequests: () => ofType(MessageType.CloseChannelRequest).map((frame) => codec.decodeCloseChannelRequest(frame.payload).cumulativeAmount ?? '0'),
       answerCloses: true,
+      idle: false,
       drop(teardown = true): void {
         conn.state = ConnectionState.Failed;
         if (teardown) negotiator.onPeerDisconnect(SELLER);
@@ -422,7 +437,112 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       });
     });
 
-    it('keeps a top-up a read showed in the confirmed deposit when the chain rolls it back (a known limit)', async () => {
+    describe('that reads keep showing', () => {
+      /** The reserve ceiling, and the confirmed deposit as stored. */
+      const reserve = (channelId: string) => ({
+        ceiling: manager.getReserveCeiling(SELLER),
+        stored: store.getChannel(channelId)?.confirmedReserveAmount,
+      });
+      const TOPPED_UP = { ceiling: 2n * RESERVE, stored: (2n * RESERVE).toString() };
+      const OPENING = { ceiling: RESERVE, stored: RESERVE.toString() };
+
+      /** A channel topped up to 2 x RESERVE, with the clock stopped at the returned time. */
+      async function toppedUpChannel(seller: SellerConnection): Promise<{ channelId: string; at(ms: number): void }> {
+        const channelId = await openChannel(seller, 0n);
+        await topUp(seller, true);
+        const start = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+        return { channelId, at: (ms) => { clock.mockReturnValue(start + ms); } };
+      }
+
+      it('takes a lower deposit for the chain\'s once a read shows it again after the lag window', async () => {
+        const { channelId, at } = await toppedUpChannel(sellerConnection());
+        // The top-up is rolled back: from now on every read shows the opening reserve.
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        at(29_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        const insideWindow = reserve(channelId);
+        at(30_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+        expect({ insideWindow, afterWindow: reserve(channelId) }).toEqual({ insideWindow: TOPPED_UP, afterWindow: OPENING });
+      });
+
+      it('still takes a lower read for a lagging node after a read in between showed the confirmed deposit', async () => {
+        const { channelId, at } = await toppedUpChannel(sellerConnection());
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        at(20_000);
+        await manager.reconcileReserveAmount(SELLER, 2n * RESERVE);
+        // More than the window after the first lagging read, but the first since the chain's own.
+        at(40_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+
+        expect(reserve(channelId)).toEqual(TOPPED_UP);
+      });
+
+      it('starts the lag window again when the lower deposit that reads show changes', async () => {
+        const { channelId, at } = await toppedUpChannel(sellerConnection());
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        at(30_000);
+        await manager.reconcileReserveAmount(SELLER, 1_500_000n);
+        const firstOther = reserve(channelId);
+        at(60_000);
+        await manager.reconcileReserveAmount(SELLER, 1_500_000n);
+
+        expect({ firstOther, readAgain: reserve(channelId) }).toEqual({
+          firstOther: TOPPED_UP,
+          readAgain: { ceiling: 1_500_000n, stored: '1500000' },
+        });
+      });
+
+      it('never takes a deposit of zero for the chain\'s', async () => {
+        const { channelId, at } = await toppedUpChannel(sellerConnection());
+        await manager.reconcileReserveAmount(SELLER, 0n);
+        at(30_000);
+        await manager.reconcileReserveAmount(SELLER, 0n);
+
+        expect(reserve(channelId)).toEqual(TOPPED_UP);
+      });
+
+      it('keeps a lower deposit it took for the chain\'s while the store is still writing it', async () => {
+        const { channelId, at } = await toppedUpChannel(sellerConnection());
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        at(30_000);
+        // The read that is taken is still being stored when a parallel 402's read comes in.
+        const write = holdNextCommit();
+        const taken = manager.reconcileReserveAmount(SELLER, RESERVE);
+        await write.started;
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        write.release();
+        await taken;
+
+        expect(reserve(channelId)).toEqual(OPENING);
+      });
+
+      it('replays a top-up stacked on a rolled-back one against the deposit the chain has', async () => {
+        const seller = sellerConnection();
+        const channelId = await openChannel(seller, 0n);
+        await topUp(seller, false);
+        const pmux = negotiator.getOrCreatePaymentMux(SELLER, seller.conn);
+        await manager.topUpReserve(SELLER, pmux);
+        await manager.reconcileReserveAmount(SELLER, 2n * RESERVE);
+        // The first top-up is rolled back; the second is still on its way.
+        const start = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        clock.mockReturnValue(start + 30_000);
+        await manager.reconcileReserveAmount(SELLER, RESERVE);
+        const afterRead = reserve(channelId);
+        await manager.resendPendingReserveAuth(SELLER, pmux);
+
+        expect({ afterRead, storedAfterReplay: store.getChannel(channelId)?.confirmedReserveAmount }).toEqual({
+          afterRead: { ceiling: 3n * RESERVE, stored: RESERVE.toString() },
+          storedAfterReplay: RESERVE.toString(),
+        });
+      });
+    });
+
+    it('closes at the deposit the chain has when a top-up a read showed is rolled back', async () => {
       const seller = sellerConnection();
       const channelId = await openChannel(seller, 0n);
       await topUp(seller, true);
@@ -432,28 +552,47 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
       deposit = RESERVE;
 
       const first = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
-      // The seller cannot accept the resend, and asks again once it had time to land.
+      const resent = seller.spendingAuths().slice(sentBefore);
+      // The seller cannot accept the resend, and asks again once it had time to
+      // land. By then it has nothing else in flight on the channel.
+      seller.idle = true;
       vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
       const second = await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
 
+      const closed = store.getChannel(channelId);
       expect({
         first,
+        resent,
         second,
-        resent: seller.spendingAuths().slice(sentBefore),
-        // Above the chain's deposit: the seller declines it, and the contract refuses a close above the deposit.
         closeRequests: seller.closeRequests(),
-        ceiling: manager.getReserveCeiling(SELLER),
-        confirmed: store.getChannel(channelId)?.confirmedReserveAmount,
-        status: store.getChannel(channelId)?.status,
+        closed: { status: closed?.status, settledAmount: closed?.settledAmount },
+        replacedBy: manager.getActiveSession(SELLER)?.sessionId !== channelId,
       }).toEqual({
         first: 'retry',
-        second: 'return existing_channel_still_active',
         resent: ['1500000'],
-        closeRequests: ['1500000'],
-        ceiling: 2n * RESERVE,
-        confirmed: (2n * RESERVE).toString(),
-        status: CHANNEL_STATUS.ACTIVE,
+        // A close the contract accepts, and a new channel for the request.
+        second: 'retry',
+        closeRequests: [RESERVE.toString()],
+        closed: { status: CHANNEL_STATUS.SETTLED, settledAmount: RESERVE.toString() },
+        replacedBy: true,
       });
+    });
+
+    it('caps a close at the read of this recovery when the read for the close fails', async () => {
+      const seller = sellerConnection();
+      const channelId = await openChannel(seller, 0n);
+      await topUp(seller, true);
+      await sign(1_500_000n, seller);
+      deposit = RESERVE;
+      expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST))).toBe('retry');
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+      channels.getSession
+        .mockImplementationOnce(async () => chainInfo(deposit))
+        .mockImplementationOnce(async () => { throw new Error('the chain RPC is down'); });
+
+      await outcomeOf(negotiator.handle402(catchUp402(channelId, 1_500_000n, 900_000n), PEER, seller.conn, REQUEST));
+
+      expect(seller.closeRequests()).toEqual([RESERVE.toString()]);
     });
 
     it.each([
