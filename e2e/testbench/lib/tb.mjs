@@ -19,8 +19,8 @@ export function parseSse(text) {
   let usage = null;
   let done = false;
   for (const line of text.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
+    if (!line.startsWith('data:')) continue;
+    const data = line.slice('data:'.length).trim();
     if (data === '[DONE]') { done = true; continue; }
     const chunk = JSON.parse(data);
     for (const choice of chunk.choices ?? []) content += choice.delta?.content ?? '';

@@ -521,6 +521,35 @@ test('ResponsesSseNormalizer: rewrites events with no space after the colon', ()
   )
 })
 
+test('ConversationSseAdapter: reads CR line endings', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = 'data:{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\r\rdata:[DONE]\r\r'
+
+  const output = adapter.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+})
+
+test('ResponsesSseNormalizer: rewrites every event of a stream with CR line endings', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const input = 'event:a\rdata:{"type":"a","n":1}\r\revent:b\rdata:{"type":"b","n":2}\r\r'
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\nevent: b\ndata: {"n":2}\n\n')
+})
+
+test('ResponsesSseNormalizer: does not read a CRLF split across chunks as two line ends', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+
+  assert.deepEqual(normalizer.feed(Buffer.from('event: a\r'), false), [])
+  const output = normalizer.feed(Buffer.from('\ndata: {"type":"a","n":1}\r\n\r\n'), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
+})
+
 test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
   const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
   const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'

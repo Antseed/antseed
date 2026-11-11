@@ -45,7 +45,10 @@ describe('mock upstream', () => {
       assert.ok(lines.length >= 4, text);
       assert.ok(lines.every((line) => line.startsWith('data:') && !line.startsWith('data: ')), text);
       assert.equal(lines.at(-1), 'data:[DONE]');
-      assert.match(JSON.parse(lines[1].slice('data:'.length)).choices[0].delta.content, /Hello from/);
+      const parsed = parseSse(text);
+      assert.equal(parsed.done, true);
+      assert.match(parsed.content, /Hello from/);
+      assert.deepEqual(parsed.usage, MOCK_USAGE);
     } finally {
       await mock.stop();
     }

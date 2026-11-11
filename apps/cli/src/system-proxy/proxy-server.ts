@@ -3,7 +3,7 @@ import * as https from 'node:https'
 import * as net from 'node:net'
 import * as tls from 'node:tls'
 import { randomUUID } from 'node:crypto'
-import { parseSseBuffer } from '@antseed/api-adapter'
+import { parseSseBlock, splitSseBlocks } from '@antseed/api-adapter'
 import { SYSTEM_PROXY_SOURCE_HEADER, SYSTEM_ROUTED_MODEL_HEADER } from '../proxy/request-utils.js'
 import type { CertCache } from './cert-cache.js'
 import type {
@@ -753,10 +753,11 @@ export class ConversationSseAdapter {
     if (chunk.length > 0) {
       this.buffer += chunk.toString('utf8')
     }
-    const { events, remainder } = parseSseBuffer(this.buffer)
+    const { blocks, remainder } = splitSseBlocks(this.buffer)
     this.buffer = remainder
 
-    for (const { data } of events) {
+    for (const block of blocks) {
+      const data = parseSseBlock(block)?.data
       if (!data) continue
       if (data === '[DONE]') {
         out.push(this.finish())
@@ -871,9 +872,8 @@ export class ResponsesSseNormalizer {
       this.buffer += chunk.toString('utf8')
     }
 
-    const normalized = this.buffer.replace(/\r\n/g, '\n')
-    const blocks = normalized.split('\n\n')
-    this.buffer = blocks.pop() ?? ''
+    const { blocks, remainder } = splitSseBlocks(this.buffer)
+    this.buffer = remainder
 
     for (const block of blocks) {
       out.push(Buffer.from(this.normalizeBlock(block), 'utf8'))
@@ -888,7 +888,7 @@ export class ResponsesSseNormalizer {
   }
 
   private normalizeBlock(block: string): string {
-    const [frame] = parseSseBuffer(`${block}\n\n`).events
+    const frame = parseSseBlock(block)
     if (!frame?.event) {
       return `${block}\n\n`
     }

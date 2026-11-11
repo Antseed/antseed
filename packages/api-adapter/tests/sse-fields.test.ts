@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStreamingAdapter } from '../src/stream-transform.js';
-import { parseSseBuffer, type ParsedSseEvent } from '../src/utils.js';
+import { parseSseBlock, parseSseBuffer, splitSseBlocks, type ParsedSseEvent } from '../src/utils.js';
 
 type TextProtocol = 'openai-chat-completions' | 'anthropic-messages' | 'openai-responses';
 type Frame = { event?: string; data: unknown };
@@ -232,6 +232,28 @@ describe('translated streams read SSE as the standard defines it', () => {
       }
       expect(answerOf(to, written)).toEqual(expectedAnswer(to, text));
     });
+  });
+});
+
+describe('splitSseBlocks', () => {
+  it('returns the complete blocks with LF line ends and keeps the rest', () => {
+    expect(splitSseBlocks('a:1\r\nb:2\r\n\r\nc:3\r\rd:4')).toEqual({ blocks: ['a:1\nb:2', 'c:3'], remainder: 'd:4' });
+  });
+
+  it('keeps a CR at the very end as a CR', () => {
+    expect(splitSseBlocks('a:1\r')).toEqual({ blocks: [], remainder: 'a:1\r' });
+    expect(splitSseBlocks('a:1\r\r')).toEqual({ blocks: ['a:1'], remainder: '\r' });
+  });
+});
+
+describe('parseSseBlock', () => {
+  it('reads the fields of one block', () => {
+    expect(parseSseBlock('event:e\ndata:x')).toEqual({ event: 'e', data: 'x' });
+  });
+
+  it('finds no event in a block with no data', () => {
+    expect(parseSseBlock(': keep-alive')).toBeNull();
+    expect(parseSseBlock('event:e')).toBeNull();
   });
 });
 

@@ -2,6 +2,7 @@
 // optional. A client whose request is translated reads the same answer from such a stream, and what settles is the
 // cost of the answers the upstream served.
 import { MOCK_USAGE } from '../../lib/mock.mjs';
+import { runAll } from '../../lib/stress.mjs';
 
 export const meta = {
   description: 'An upstream that writes SSE with no space after the colon: Messages and Responses clients, translated from Chat Completions, read the whole answer, and what settles is exactly the cost of the answers served.',
@@ -60,13 +61,16 @@ export async function run(tb) {
   const messageEvents = translatedEvents(messages.text);
   const messageText = messageEvents.filter((event) => event.type === 'content_block_delta').map((event) => event.delta.text).join('');
   const closing = messageEvents.find((event) => event.type === 'message_delta');
-  tb.check('a Messages client read the whole answer', messageText === answer, { text: messageText, answer, settled });
-  tb.check('a Messages client read the stop reason', closing?.delta.stop_reason === 'end_turn', closing);
-  tb.check('a Messages client read the usage', closing?.usage.input_tokens === MOCK_USAGE.prompt_tokens && closing?.usage.output_tokens === MOCK_USAGE.completion_tokens, closing);
-
   const responseEvents = translatedEvents(responses.text);
   const responseText = responseEvents.filter((event) => event.type === 'response.output_text.delta').map((event) => event.delta).join('');
   const completed = responseEvents.find((event) => event.type === 'response.completed')?.response;
-  tb.check('a Responses client read the whole answer', responseText === answer && completed?.output_text === answer, { text: responseText, final: completed?.output_text, answer, settled });
-  tb.check('a Responses client read the usage', completed?.usage.input_tokens === MOCK_USAGE.prompt_tokens && completed?.usage.output_tokens === MOCK_USAGE.completion_tokens, completed?.usage);
+
+  // Every client's verdict is reported, even after one fails.
+  await runAll([
+    () => tb.check('a Messages client read the whole answer', messageText === answer, { text: messageText, answer, settled }),
+    () => tb.check('a Messages client read the stop reason', closing?.delta.stop_reason === 'end_turn', closing),
+    () => tb.check('a Messages client read the usage', closing?.usage.input_tokens === MOCK_USAGE.prompt_tokens && closing?.usage.output_tokens === MOCK_USAGE.completion_tokens, closing),
+    () => tb.check('a Responses client read the whole answer', responseText === answer && completed?.output_text === answer, { text: responseText, final: completed?.output_text, answer, settled }),
+    () => tb.check('a Responses client read the usage', completed?.usage.input_tokens === MOCK_USAGE.prompt_tokens && completed?.usage.output_tokens === MOCK_USAGE.completion_tokens, completed?.usage),
+  ]);
 }
