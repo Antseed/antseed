@@ -3276,7 +3276,7 @@ describe('SellerPaymentManager', () => {
       }).toEqual({ topUps: 1, blocked: false, ceiling: 2_000_000n, accepted: 1_300_000n, closed: 0 });
     });
 
-    it('closes the channel once its window passes with the work still past the deposit, as its next request would', async () => {
+    it('closes the channel once its window passes with the work still past the deposit, as its next request would, until it is closed', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       const channelId = makeChannelId(159);
       await storeChannel(channelId, 900_000n, 1_000_000n);
@@ -3292,9 +3292,11 @@ describe('SellerPaymentManager', () => {
       const withinWindow = closeWhenIdle.mock.calls.length;
       vi.setSystemTime(Date.now() + 30_000);
       await restarted.checkTimeouts();
+      // That close did not go through (here it never runs): the next pass tries again.
+      await restarted.checkTimeouts();
 
       expect({ withinWindow, after: closeWhenIdle.mock.calls, ask: await restarted.askAfterRestart(channelId) })
-        .toEqual({ withinWindow: 0, after: [[buyerIdentity.peerId]], ask: null });
+        .toEqual({ withinWindow: 0, after: [[buyerIdentity.peerId], [buyerIdentity.peerId]], ask: null });
     });
 
     it('leaves the channel open once its window passes if the chain holds enough for the work', async () => {
@@ -3311,11 +3313,14 @@ describe('SellerPaymentManager', () => {
 
       vi.setSystemTime(Date.now() + 30_000);
       await restarted.checkTimeouts();
+      // The restart is behind it: spend that later passes the deposit is judged by the next request, as on any channel.
+      restarted.recordSpend(channelId, 1_000_000n);
+      await restarted.checkTimeouts();
 
       expect({ closes: closeWhenIdle.mock.calls.length, ask: await restarted.askAfterRestart(channelId) }).toEqual({ closes: 0, ask: null });
     });
 
-    it('leaves the channel open once its window passes while a top-up is being submitted', async () => {
+    it('waits for a top-up being submitted when its window passes, and closes once that top-up fails', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       const channelId = makeChannelId(161);
       await storeChannel(channelId, 900_000n, 1_000_000n);
@@ -3323,7 +3328,8 @@ describe('SellerPaymentManager', () => {
       vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(
         makeOnChainChannel(buyerIdentity, sellerIdentity, { deposit: 1_000_000n, settled: 0n }) as never,
       );
-      const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockReturnValue(new Promise<string>(() => {}));
+      let failTopUp!: (err: Error) => void;
+      const topUp = vi.spyOn(restarted.channelsClient, 'topUp').mockReturnValue(new Promise<string>((_resolve, reject) => { failTopUp = reject; }));
       const closeWhenIdle = vi.spyOn(restarted, 'closeSessionWhenIdle').mockResolvedValue();
       await restarted.askAfterRestart(channelId);
       // The buyer's top-up arrives just before the window ends and is still mining.
@@ -3334,8 +3340,12 @@ describe('SellerPaymentManager', () => {
 
       vi.setSystemTime(Date.now() + 30_000);
       await restarted.checkTimeouts();
+      const whileMining = closeWhenIdle.mock.calls.length;
+      failTopUp(new Error('execution reverted: TopUpThresholdNotMet()'));
+      await restarted.waitForTopUp(channelId, 5_000);
+      await restarted.checkTimeouts();
 
-      expect({ running: restarted.isTopUpRunning(channelId), closes: closeWhenIdle.mock.calls.length }).toEqual({ running: true, closes: 0 });
+      expect({ whileMining, afterItFailed: closeWhenIdle.mock.calls.length }).toEqual({ whileMining: 0, afterItFailed: 1 });
     });
 
     it('forgets a restored channel once it is closed or gone on-chain', async () => {

@@ -191,7 +191,8 @@ export class SellerPaymentManager {
    * again what the restart lost, and last asked for an authorization up to
    * the deposit (0: not yet). An accepted auth does not end this, unlike
    * hydration: the lost top-up is still lost. A top-up that lands and covers
-   * what was served does.
+   * what was served ends it, and so does the window passing with the work
+   * within the deposit; past the deposit, the channel is closed.
    */
   private readonly _restartAsks = new Map<string, { since: number; depositAskedAt: number }>();
   /** Per-buyer mutex to prevent concurrent handleSpendingAuth for the same buyer. */
@@ -1775,7 +1776,7 @@ export class SellerPaymentManager {
     const ask = this._restartAsks.get(channelId);
     if (!ask) return null;
     const now = Date.now();
-    if (this._endRestartAskIfExpired(channelId, now)) return null;
+    if (this._restartWindowPassed(channelId, now)) return null;
     if (ask.since === 0) {
       ask.since = now;
       debugLog(`[SellerPayment] Asking the buyer to send again what the restart lost: channel=${channelId.slice(0, 18)}...`);
@@ -1788,13 +1789,10 @@ export class SellerPaymentManager {
     return this.getReserveMax(channelId);
   }
 
-  /** Ends a restart's ask once its window from the first ask has passed. Returns whether it ended now. */
-  private _endRestartAskIfExpired(channelId: string, now = Date.now()): boolean {
+  /** Whether the buyer had its window, from the first ask, to send again what a restart lost. */
+  private _restartWindowPassed(channelId: string, now = Date.now()): boolean {
     const ask = this._restartAsks.get(channelId);
-    if (!ask || ask.since === 0 || now - ask.since < RESTART_CATCH_UP_WINDOW_MS) return false;
-    this._restartAsks.delete(channelId);
-    debugLog(`[SellerPayment] The buyer had its chance to send again what the restart lost: channel=${channelId.slice(0, 18)}...`);
-    return true;
+    return ask != null && ask.since > 0 && now - ask.since >= RESTART_CATCH_UP_WINDOW_MS;
   }
 
   /** Whether topUp() settling `settleAmount` would pass the contract's settled threshold. */
@@ -2287,16 +2285,21 @@ export class SellerPaymentManager {
           await this.settleSession(channel.peerId);
           continue;
         }
-        // A buyer asked to send again what a restart lost let the window pass,
-        // the work still past the deposit: close as its next request would,
-        // rather than leave the channel open until one comes.
-        if (this._endRestartAskIfExpired(channel.sessionId) && onChainState.status === 'active'
-          && (this._spent.get(channel.sessionId) ?? 0n) > onChainState.channel.deposit
-          && !this.isTopUpRunning(channel.sessionId)) {
-          void this.closeSessionWhenIdle(channel.peerId).catch((err) => {
-            debugWarn(`[SellerPayment] Failed to close ${channel.sessionId.slice(0, 18)}... after the restart window: ${this._formatError(err)}`);
-          });
-          continue;
+        // The buyer had its window to send again what a restart lost. Work that
+        // fits the deposit needs nothing more. Work past it: close as the next
+        // request would, rather than leave the channel open until one comes,
+        // and on each later pass until it is closed (a top-up still being
+        // submitted, or a close that did not go through).
+        if (onChainState.status === 'active' && this._restartWindowPassed(channel.sessionId)) {
+          if ((this._spent.get(channel.sessionId) ?? 0n) <= onChainState.channel.deposit) {
+            this._restartAsks.delete(channel.sessionId);
+          } else if (!this.isTopUpRunning(channel.sessionId)) {
+            debugLog(`[SellerPayment] The buyer had its chance to send again what the restart lost: closing ${channel.sessionId.slice(0, 18)}...`);
+            void this.closeSessionWhenIdle(channel.peerId).catch((err) => {
+              debugWarn(`[SellerPayment] Failed to close ${channel.sessionId.slice(0, 18)}... after the restart window: ${this._formatError(err)}`);
+            });
+            continue;
+          }
         }
         // No auths, buyer gone, deadline elapsed: close with the current
         // on-chain settled amount. The contract skips signature verification

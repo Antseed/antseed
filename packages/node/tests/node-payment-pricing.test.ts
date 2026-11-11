@@ -1884,6 +1884,44 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(provider.handleRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('asks for the catch-up the chain covers before closing on an estimate, when the stored ceiling lags it', async () => {
+    const provider = makeProvider(0, 1_000_000, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    let reserveMax = 250_000n;
+    let accepted = 232_010n;
+    const sendNeedAuth = vi.fn();
+    // The buyer sends again what it signed once it is asked for it.
+    const prompted = () => sendNeedAuth.mock.calls.some(([needAuth]) => needAuth.requestId == null && needAuth.requiredCumulativeAmount === '417618');
+    const closedAt: bigint[] = [];
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 417_618n,
+        getAcceptedCumulative: () => accepted,
+        getReserveMax: () => reserveMax,
+        // A top-up to 750k landed while the seller was down; the store still has 250k.
+        refreshReserveMaxFromChain: vi.fn(async () => { reserveMax = 750_000n; return reserveMax; }),
+        awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+          if (prompted()) accepted = target;
+          return accepted >= target;
+        },
+        settleSession: vi.fn(async () => { closedAt.push(accepted); }),
+      }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      reserveEstimateOverdraftUsdc: 0n,
+      emit: () => false,
+    });
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+
+    // Its estimate exceeds what is left of the real deposit: the channel is closed, at what the buyer signed.
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-estimate-after-restart', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'local-test', max_tokens: 1 })) }) });
+
+    expect({ prompted: prompted(), closedAt }).toEqual({ prompted: true, closedAt: [417_618n] });
+  });
+
   it('stops serving when delivered spend is already at the reserve ceiling', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
