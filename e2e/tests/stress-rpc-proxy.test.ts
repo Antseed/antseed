@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+// @ts-expect-error The stress harness is plain .mjs with no type declarations.
 import { startRpcProxy } from '../stress/rpc-proxy.mjs';
 
 /** A chain stub at block 0x10 that records the block tag of every eth_call. */

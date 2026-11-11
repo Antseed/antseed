@@ -6,7 +6,7 @@ The buyer itself: request handling, payment negotiation, what it signs and reser
 | --- | --- |
 | Depends only on `protocol`, `api-adapter`, `ethers`, `tokenx`, `@noble/hashes` and `hash-wasm`. No Node-only APIs. | review only |
 | On a session channel, `maxPerRequestUsdc` limits one signing step, a catch-up allows one step per request in flight, and the reserve ceiling stops signing. `maxReserveAmountUsdc` limits the opening reserve and sets the top-up step, which grows under load. | `packages/node/tests/buyer-payment-manager.test.ts` |
-| Normal signing never lowers `cumulativeAmount`. A close capped at the channel's deposit signs lower and is not persisted. A catch-up signs at least the seller's required amount, unless a limit above stops it. | `packages/node/tests/buyer-payment-*.test.ts` |
+| Normal signing never lowers `cumulativeAmount`. A close capped at the channel's deposit signs lower and is not persisted. A catch-up signs the seller's required amount and nothing on top, or less when a limit above stops it. | `packages/node/tests/buyer-payment-*.test.ts`, `src/buyer-payment-manager.test.ts` |
 
 **Ask first:** what or how much the buyer signs or reserves, including defaults; a widened structural interface; a new dependency.
 
