@@ -504,6 +504,9 @@ describe('an answer cut at a limit, for a Responses client', () => {
     const final = JSON.parse(events.at(-2)!.data) as Json;
     expect(final.type).toBe('response.incomplete');
     expect(final.response).toMatchObject({ status: 'incomplete', incomplete_details: { reason } });
+    const done = jsonFrames(events).filter((frame) => frame.type === 'response.output_item.done');
+    expect(done.map((frame) => frame.item.status)).toEqual(['incomplete']);
+    expect(done.map((frame) => frame.item)).toEqual(final.response.output);
     expect(events.at(-1)?.data).toBe('[DONE]');
   });
 
@@ -581,7 +584,7 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(statuses(jsonFrames(events).filter((frame) => frame.type === 'response.output_item.done').map((frame) => frame.item))).toEqual([['function_call', 'completed']]);
   });
 
-  it('marks only the cut item incomplete in a not-streamed answer', () => {
+  it('marks only the cut item incomplete in a not-streamed answer, and in its stream for a streamed request', () => {
     const body = chatBody('length');
     body.choices[0].message.tool_calls = [{ id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":' } }];
     const answer = JSON.parse(decoder.decode(transformResponse(response(body), { from: CHAT, to: RESPONSES, fallbackModel: 'm' })!.body)) as Json;
@@ -590,6 +593,10 @@ describe('an answer cut at a limit, for a Responses client', () => {
       { type: 'message', status: 'completed' },
       { type: 'function_call', arguments: '{"path":', status: 'incomplete' },
     ]);
+
+    const streamed = transformResponse(response(body), { from: CHAT, to: RESPONSES, streamRequested: true, fallbackModel: 'm' })!;
+    const done = jsonFrames(parseSse(decoder.decode(streamed.body))).filter((frame) => frame.type === 'response.output_item.done');
+    expect(done.map((frame) => [frame.item.type, frame.item.status])).toEqual([['message', 'completed'], ['function_call', 'incomplete']]);
   });
 
   it('tells the ending only in the final event when the seller answers a streamed request with JSON', () => {
@@ -722,10 +729,25 @@ describe('nothing a source sends after its end reaches the client', () => {
   const bothWays = (from: StreamProtocol, to: StreamProtocol, frames: string[]): SseEvent[][] =>
     [translate(from, to, frames), translate(from, to, [frames.join('')])];
 
+  /** A different ending with other usage, in the source's own protocol, after its stream ended. */
+  const LATE_ENDING: Record<StreamProtocol, string[]> = {
+    [CHAT]: [chatChunk({}, 'length'), frame({ id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'm', choices: [], usage: { prompt_tokens: 9000, completion_tokens: 9000, total_tokens: 18000 } })],
+    [MESSAGES]: [typed('message_delta', { delta: { stop_reason: 'max_tokens', stop_sequence: null }, usage: { output_tokens: 9000 } }), typed('message_stop', {})],
+    [RESPONSES]: [typed('response.incomplete', { response: { id: 'resp_1', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 9000, output_tokens: 9000, total_tokens: 18000 }, output: [] } })],
+  };
+
   // The end is [DONE] for Chat, message_stop for Messages and response.completed for Responses.
   it.each(PAIRS)('after a finished %s stream, for a %s client', (from, to) => {
     for (const events of bothWays(from, to, [...SOURCES[from].text, ...SOURCES[from].finish, TAIL_FRAME[from]])) {
       expect(leaked(events), AFTER_END).toBe(false);
+      expectFinished(to, events);
+      expect(streamedText(to, events)).toBe('The answer is');
+    }
+  });
+
+  it.each(PAIRS)('after a finished %s stream, a later ending changes nothing for a %s client', (from, to) => {
+    for (const events of bothWays(from, to, [...SOURCES[from].text, ...SOURCES[from].finish, ...LATE_ENDING[from]])) {
+      expect(events.some((event) => event.data.includes('9000')), AFTER_END).toBe(false);
       expectFinished(to, events);
     }
   });
@@ -734,6 +756,7 @@ describe('nothing a source sends after its end reaches the client', () => {
     for (const events of bothWays(from, to, [...SOURCES[from].text, SOURCES[from].errorEvent, TAIL_FRAME[from]])) {
       expect(leaked(events), AFTER_END).toBe(false);
       EXPECT_FAILED[to](events, 'upstream failed');
+      expect(streamedText(to, events)).toBe('The answer is');
     }
   });
 
@@ -742,6 +765,7 @@ describe('nothing a source sends after its end reaches the client', () => {
     for (const events of bothWays(RESPONSES, to, [RESPONSE_CREATED, RESPONSE_TEXT, failed, TAIL_FRAME[RESPONSES]])) {
       expect(leaked(events), AFTER_END).toBe(false);
       EXPECT_FAILED[to](events, 'backend failed');
+      expect(streamedText(to, events)).toBe('The answer is');
     }
   });
 
