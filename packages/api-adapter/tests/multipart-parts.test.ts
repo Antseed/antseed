@@ -46,6 +46,7 @@ describe('readPlainMultipartParts', () => {
     ['a closing delimiter alone', `${named('model', 'svc')}${closing}`],
     ['no line end after the closing delimiter', `${named('model', 'svc')}--${boundary}--`],
     ['a blank line after the closing delimiter', `${named('model', 'svc')}${closing}\r\n`],
+    ['whitespace before the first delimiter', ` \t\r\n${named('model', 'svc')}${closing}`],
     ['a CRLF before the first delimiter', `\r\n${named('model', 'svc')}${closing}`],
     ['a charset before the boundary', `${named('model', 'svc')}${closing}`, `multipart/form-data; charset=utf-8; boundary=${boundary}`],
     ['a charset after the boundary', `${named('model', 'svc')}${closing}`, `multipart/form-data; boundary=${boundary}; charset=UTF-8`],
@@ -55,7 +56,6 @@ describe('readPlainMultipartParts', () => {
     ['a backslash in a filename', `${part('Content-Disposition: form-data; name="image"; filename="dir\\file.png"', 'PNG')}${closing}`],
     ['an escaped quote in a filename', `${part('Content-Disposition: form-data; name="image"; filename="a\\"b.png"', 'PNG')}${closing}`],
     ['another disposition parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
-    ['a preamble', `Preamble.\r\n${named('model', 'svc')}${closing}`],
   ])('reads %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).not.toBeNull();
   });
@@ -63,6 +63,8 @@ describe('readPlainMultipartParts', () => {
   it.each<[string, string, string?]>([
     ['not multipart', named('model', 'svc'), 'application/json'],
     ['no boundary', named('model', 'svc'), 'multipart/form-data'],
+    ['a non-empty preamble', `Preamble.\r\n${named('model', 'svc')}${closing}`],
+    ['a preamble with another form', `--other\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n--other--\r\n${named('model', 'svc')}${closing}`],
     ['a first delimiter inside a line', `x${named('model', 'svc')}${closing}`],
     ['a bare LF after a delimiter', `--${boundary}\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n${closing}`],
     ['text after a delimiter', `--${boundary}x\r\nContent-Disposition: form-data; name="model"\r\n\r\nsvc\r\n${closing}`],
