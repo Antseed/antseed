@@ -30,6 +30,8 @@ export type StoredGatewayKey = {
 type StoredFile = GatewaySettings & {
   /** Local keys by scope (`desktop`, or an app profile name), secrets encrypted. */
   localKeys: Record<string, { id: string | null; label: string; secretEnc: string }>;
+  /** Ids of local keys the desktop revoked (apps that stopped using their own key), kept so their history still counts. */
+  retiredKeyIds: string[];
   remoteKeyEnc: string | null;
 };
 
@@ -39,6 +41,7 @@ const DEFAULTS: StoredFile = {
   keyMode: 'shared',
   privacy: 'anonymous',
   localKeys: {},
+  retiredKeyIds: [],
   remoteKeyEnc: null,
 };
 
@@ -75,10 +78,11 @@ function load(): StoredFile {
       keyMode: raw.keyMode === 'per-app' ? 'per-app' : 'shared',
       privacy: raw.privacy === 'private' ? 'private' : 'anonymous',
       localKeys: raw.localKeys && typeof raw.localKeys === 'object' ? raw.localKeys : {},
+      retiredKeyIds: Array.isArray(raw.retiredKeyIds) ? raw.retiredKeyIds.filter((id): id is string => typeof id === 'string' && id.length > 0) : [],
       remoteKeyEnc: typeof raw.remoteKeyEnc === 'string' ? raw.remoteKeyEnc : null,
     };
   } catch {
-    cache = { ...DEFAULTS, localKeys: {} };
+    cache = { ...DEFAULTS, localKeys: {}, retiredKeyIds: [] };
   }
   return cache;
 }
@@ -169,6 +173,24 @@ export function setLocalKey(scope: string, key: StoredGatewayKey): void {
     ...current,
     localKeys: { ...current.localKeys, [scope]: { id: key.id, label: key.label, secretEnc: encrypt(key.secret) } },
   });
+}
+
+/**
+ * Forgets a revoked key's secret but keeps its id, so the requests, spend and
+ * savings it made still count in the desktop's totals.
+ */
+export function retireLocalKey(scope: string): void {
+  const current = load();
+  const entry = current.localKeys[scope];
+  if (!entry) return;
+  const localKeys = { ...current.localKeys };
+  delete localKeys[scope];
+  const retiredKeyIds = entry.id && !current.retiredKeyIds.includes(entry.id) ? [...current.retiredKeyIds, entry.id] : current.retiredKeyIds;
+  save({ ...current, localKeys, retiredKeyIds });
+}
+
+export function listRetiredKeyIds(): string[] {
+  return [...load().retiredKeyIds];
 }
 
 export function deleteLocalKey(scope: string): void {

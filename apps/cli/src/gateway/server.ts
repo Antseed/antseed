@@ -18,7 +18,7 @@ import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalS
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
 import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
-import { keySavings, roundUsd } from './key-savings.js'
+import { keySavings, savingsJson } from './key-savings.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -1107,14 +1107,7 @@ export class GatewayServer {
   private async _keySavings(key: ApiKeyRecord) {
     const prices = this._options.retailPrices ? await this._options.retailPrices().catch(() => null) : null
     if (!prices) return null
-    const savings = keySavings(this._options.store.usageByModel(key.id), prices)
-    if (!savings) return null
-    return {
-      retail_usd: roundUsd(savings.retailUsd),
-      paid_usd: roundUsd(savings.paidUsd),
-      saved_usd: roundUsd(Math.max(0, savings.retailUsd - savings.paidUsd)),
-      matched_requests: savings.matchedRequests,
-    }
+    return savingsJson(keySavings(this._options.store.usageByModel(key.id), prices))
   }
 
   private async _keyInfo(key: ApiKeyRecord, fresh = false) {

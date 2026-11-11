@@ -95,19 +95,22 @@ export class TeeVerification {
   }
 
   /**
-   * Why the seller's TEE attestation failed, from a settled check still in
-   * date; null when it passed, was never checked, or could not be run. A seller
-   * that advertises the TEE verifier but fails it (an unapproved build) is not
-   * one Private can send to.
+   * Why the seller's TEE attestation failed, from the newest settled check
+   * still in date; null when that check passed, or none was run or could be.
+   * Checks are kept per buyer identity, so an older pass (or one past its
+   * date) never hides a newer failure. A seller that advertises the TEE
+   * verifier but fails it (an unapproved build) is not one Private can send to.
    */
   teeFailure(peer: Peer): string | null {
+    let newest: Entry | null = null
     for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
       if (query.state.fetchStatus === 'fetching' || !entry?.outcome || entry.outcome.transient) continue
-      if (entry.outcome.sellerNodeVerified) return null
-      if (this.cacheExpiry(entry, TEE_MAX_AGE_MS) > this.now()) return entry.outcome.reason ?? 'TEE attestation did not pass'
+      if (this.cacheExpiry(entry, TEE_MAX_AGE_MS) <= this.now()) continue
+      if (!newest || entry.checkedAt > newest.checkedAt) newest = entry
     }
-    return null
+    if (!newest?.outcome || newest.outcome.sellerNodeVerified) return null
+    return newest.outcome.reason ?? 'TEE attestation did not pass'
   }
 
   /**

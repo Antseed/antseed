@@ -276,6 +276,31 @@ test('a failed TEE attestation is reported until it is due again; a pass or an u
   assert.equal(passed.teeFailure(peer), null);
 });
 
+test('an older or expired TEE pass never hides a newer failure from another identity\'s check', async () => {
+  let now = 100;
+  const unapproved = 'not an approved TEE seller build';
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: unapproved });
+
+  const expired = new TeeVerification(strict, () => now);
+  await expired.verifyForDisplay(peer, async () => pass);
+  now += TEE_MAX_AGE_MS + 1;
+  await expired.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(expired.teeFailure(peer), unapproved, 'the pass is past its date');
+
+  now = 100;
+  const newer = new TeeVerification(strict, () => now);
+  await newer.verifyForDisplay(peer, async () => pass);
+  now += 1_000;
+  await newer.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(newer.teeFailure(peer), unapproved, 'the newest check wins');
+
+  now += 1_000;
+  await newer.verify(peer, strict, async () => pass, false, 'team-b');
+  assert.equal(newer.teeFailure(peer), null, 'a newer pass wins in turn');
+  expired.close();
+  newer.close();
+});
+
 test('a seller counts as proven TEE only once its own attestation passed, while it is in date, with how far it reaches', async () => {
   let now = 100;
   const service = new TeeVerification(strict, () => now);

@@ -56,9 +56,12 @@ export function retailTokenCostUsd(totalInput: number, cachedInput: number, outp
     + output * (price.output ?? 0)) / 1_000_000;
 }
 
-/** One service's usage as the buyer reports it: base-unit USDC and token counts, as numbers or decimal strings. */
+/**
+ * One service's usage: its resolved name (null when it couldn't be resolved),
+ * base-unit USDC and token counts, as numbers or decimal strings.
+ */
 export type RetailUsageRow = {
-  serviceIdHash: string;
+  serviceName: string | null;
   amountUsdc: number | string;
   inputTokens: number | string;
   cachedInputTokens: number | string;
@@ -70,13 +73,11 @@ export type RetailUsageTotals = { retailUsd: number; paidUsd: number; matchedSer
 
 /**
  * Retail vs paid over the services whose name has a retail price. Services
- * without a match, or whose tokens cost nothing at retail, count on neither
- * side; free usage that matches counts at $0 paid. Null when nothing matched.
- * `names` maps a lowercase service-id hash to the service name.
+ * without a name or a match, or whose tokens cost nothing at retail, count on
+ * neither side; free usage that matches counts at $0 paid. Null when nothing matched.
  */
 export function totalRetailUsage(
   rows: readonly RetailUsageRow[],
-  names: ReadonlyMap<string, string>,
   prices: RetailPriceMap,
 ): RetailUsageTotals | null {
   const count = (value: number | string): number => {
@@ -85,8 +86,7 @@ export function totalRetailUsage(
   };
   const totals: RetailUsageTotals = { retailUsd: 0, paidUsd: 0, matchedServices: 0, matchedRequests: 0 };
   for (const row of rows) {
-    const name = names.get(row.serviceIdHash.toLowerCase());
-    const price = name ? prices.get(canonicalModelKey(name)) : undefined;
+    const price = row.serviceName ? prices.get(canonicalModelKey(row.serviceName)) : undefined;
     if (!price) continue;
     // The buyer's input tokens are fresh plus cached; cached ones are priced apart.
     const retail = retailTokenCostUsd(count(row.inputTokens), count(row.cachedInputTokens), count(row.outputTokens), price);

@@ -9,6 +9,8 @@ import { formatUsdc, usdcToDecimalString } from '../../../gateway/money.js'
 import { resolvePolicy } from '../../../gateway/policy-resolver.js'
 import { createKey, revokeKey, rotateKey, updateKey, type UpdateKeyInput } from '../../../gateway/services/keys.js'
 import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
+import { keysUsage } from '../../../gateway/key-savings.js'
+import { fetchComparableRetailPrices } from '../buyer/activity.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { addConfirmOptions, addPolicyOptions, confirmFlags, describePolicy, policyFromOptions } from './policy-options.js'
 import {
@@ -79,6 +81,21 @@ function printSecret(record: ApiKeyRecord, secret: string, verb: string): void {
 
 export function registerGatewayKeyCommands(gateway: Command): void {
   const key = gateway.command('key').description('Create and manage gateway API keys')
+
+  key.command('usage')
+    .description('Requests, spend and retail savings summed over keys, revoked ones included (for an app that retires its keys)')
+    .argument('<ids...>', 'key ids; unknown ones are skipped')
+    .option('--json', 'print machine-readable JSON', false)
+    .action((ids: string[], options: { json: boolean }, cmd: Command) => withGateway(cmd, async ({ store }) => {
+      const usage = keysUsage(store, ids, await fetchComparableRetailPrices())
+      if (options.json) {
+        printJson({ data: usage })
+        return
+      }
+      console.log(`Requests: ${usage.requests}`)
+      console.log(`Spent: $${usage.spent_usd}`)
+      console.log(`Saved: ${usage.savings ? `$${usage.savings.saved_usd}` : '-'}`)
+    }))
 
   addLimitOptions(
     key.command('create')

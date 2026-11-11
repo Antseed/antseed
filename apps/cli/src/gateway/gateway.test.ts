@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed } from '../proxy/spend-attribution.js'
 import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
+import { keysUsage } from './key-savings.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { retailTokenCostUsd } from '@antseed/node/retail-prices'
@@ -373,6 +374,17 @@ test('GET /v1/key/savings compares the key\'s own requests with retail prices', 
 
     prices = null
     assert.equal(JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data, null)
+
+    // The owner's view keeps a retired key's history: revoked, its own secret can't read it.
+    const current = new Map([[canonicalModelKey('example-model'), price]])
+    store.revokeKey(team.key.id)
+    assert.equal((await request(gateway.port, '/v1/key', { key: team.secret })).status, 401)
+    const both = keysUsage(store, [team.key.id, other.key.id, 'key_unknown'], current)
+    assert.equal(both.requests, 3)
+    assert.equal(both.spent_usd, '0.300000')
+    assert.equal(both.savings?.matched_requests, 3)
+    assert.equal(both.savings?.paid_usd, 0.3)
+    assert.equal(keysUsage(store, [team.key.id], null).savings, null)
   } finally {
     await gateway.stop()
     await buyer.close()

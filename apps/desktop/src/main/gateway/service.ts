@@ -5,7 +5,7 @@
  * keys, limits and funding are managed.
  */
 import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, sumSavings, withUsageOf } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayRewardsSummary, GatewaySavings, GatewayStatus } from '../../shared/gateway-types.js';
 import { applyPrivacyToKeys, publishUnderCurrentPrivacy } from './privacy-keys.js';
@@ -27,6 +27,8 @@ import path from 'node:path';
 import {
   DESKTOP_KEY_SCOPE,
   deleteLocalKey,
+  listRetiredKeyIds,
+  retireLocalKey,
   getGatewaySettings,
   getLocalKey,
   getLocalKeyEntry,
@@ -433,7 +435,7 @@ export async function rotateLocalKeys(): Promise<void> {
       const existing = getLocalKeyEntry(target);
       if (existing) setLocalKey(target, { ...existing, secret });
     },
-    forget: deleteLocalKey,
+    forget: retireLocalKey,
   });
   if (unusedFailure) throw unusedFailure;
 }
@@ -452,7 +454,7 @@ export async function revokeUnusedAppKeys(): Promise<void> {
       return null;
     },
     save: () => undefined,
-    forget: deleteLocalKey,
+    forget: retireLocalKey,
   });
 }
 
@@ -502,6 +504,17 @@ function otherLocalKeySecrets(): string[] {
 }
 
 /**
+ * Usage of local keys the desktop retired, read as the gateway's owner:
+ * their secrets are revoked, so `/v1/key` can't answer for them. Null when
+ * there are none or the read fails.
+ */
+async function readRetiredUsage(): Promise<ReturnType<typeof parseRetiredUsage>> {
+  const ids = listRetiredKeyIds();
+  if (ids.length === 0) return null;
+  return parseRetiredUsage(await runGatewayJson(['key', 'usage', ...ids]).catch(() => null));
+}
+
+/**
  * The desktop key's info from its gateway, local or remote, without summing
  * other keys: the balance the app spends from. `fresh` asks the gateway to
  * re-read the chain (after a deposit or before a payment decision).
@@ -539,9 +552,12 @@ export async function getGatewayKeyRewards(): Promise<GatewayRewardsSummary | nu
 export async function getGatewayKeySavings(): Promise<{ origin: string; savings: GatewaySavings | null }> {
   const { mode, origin, apiKey } = await getGatewayEndpoint();
   const secrets = mode === 'local' ? [apiKey, ...otherLocalKeySecrets()] : [apiKey];
-  const answers = await Promise.all(secrets.map((secret) => readKeyRoute(origin, secret, '/v1/key/savings')
-    .then((read) => (read.missing ? null : parseKeySavings(read.body)), () => null)));
-  return { origin, savings: sumSavings(answers) };
+  const [answers, retired] = await Promise.all([
+    Promise.all(secrets.map((secret) => readKeyRoute(origin, secret, '/v1/key/savings')
+      .then((read) => (read.missing ? null : parseKeySavings(read.body)), () => null))),
+    mode === 'local' ? readRetiredUsage() : Promise.resolve(null),
+  ]);
+  return { origin, savings: sumSavings([...answers, retired?.savings ?? null]) };
 }
 
 /**
@@ -554,8 +570,12 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
     const { mode, origin, apiKey } = await getGatewayEndpoint();
     const desktop = await readKeyInfo(origin, apiKey);
     if (!desktop || mode !== 'local') return desktop;
-    const infos = await Promise.all(otherLocalKeySecrets().map((secret) => readKeyInfo(origin, secret).catch(() => null)));
-    return withUsageOf(desktop, infos.filter((info): info is GatewayKeyInfo => info !== null));
+    const [infos, retired] = await Promise.all([
+      Promise.all(otherLocalKeySecrets().map((secret) => readKeyInfo(origin, secret).catch(() => null))),
+      readRetiredUsage(),
+    ]);
+    // Apps that stopped using a key of their own keep their history in the totals.
+    return withUsageOf(desktop, [...infos, retired?.usage ?? null].filter((info): info is GatewayKeyInfo => info !== null));
   } catch {
     return null;
   }

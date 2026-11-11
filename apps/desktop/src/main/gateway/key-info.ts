@@ -64,6 +64,22 @@ export function parseKeySavings(payload: unknown): GatewaySavings | null {
   return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: num(body['matched_requests']) ?? 0 };
 }
 
+/**
+ * `antseed gateway key usage --json` over keys the desktop retired: their
+ * requests and spend, shaped as key info so `withUsageOf` can add them, and
+ * their savings. Null when the answer isn't one.
+ */
+export function parseRetiredUsage(payload: unknown): { usage: GatewayKeyInfo; savings: GatewaySavings | null } | null {
+  const body = (payload as { data?: Record<string, unknown> | null } | null)?.data;
+  if (!body || typeof body !== 'object') return null;
+  const requests = typeof body['requests'] === 'number' && Number.isFinite(body['requests']) ? body['requests'] : 0;
+  const spentUsd = typeof body['spent_usd'] === 'string' ? body['spent_usd'] : null;
+  return {
+    usage: { label: null, buyerAddress: null, requests, spentUsd, limits: {}, balance: null },
+    savings: parseKeySavings({ data: body['savings'] }),
+  };
+}
+
 /** Savings over several keys (every key the desktop made), or null when none had any. */
 export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewaySavings | null {
   const present = list.filter((entry): entry is GatewaySavings => entry !== null);

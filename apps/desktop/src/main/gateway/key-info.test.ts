@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, sumSavings, withUsageOf } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
 
 test('key info is read from inside the gateway\'s data envelope', () => {
   assert.deepEqual(parseGatewayKeyInfo({
@@ -50,4 +50,25 @@ test('savings from several keys add up; none when no key had any', () => {
   const two = parseKeySavings({ data: { retail_usd: 1, paid_usd: 0, saved_usd: 1, matched_requests: 1 } });
   assert.deepEqual(sumSavings([one, null, two]), { retailUsd: 3, paidUsd: 0.5, savedUsd: 2.5, matchedRequests: 4 });
   assert.equal(sumSavings([null, parseKeySavings({ data: null })]), null);
+});
+
+test('an app that stops using its own key keeps its requests, spend and savings in the totals', () => {
+  const desktop = { label: 'Desktop', buyerAddress: '0xabc', requests: 3, spentUsd: '1.50', limits: {}, balance: null };
+  const app = { label: 'Desktop · Codex', buyerAddress: '0xabc', requests: 7, spentUsd: '0.25', limits: {}, balance: null };
+  const appSavings = { data: { retail_usd: 4, paid_usd: 0.25, saved_usd: 3.75, matched_requests: 7 } };
+  const before = { info: withUsageOf(desktop, [app]), savings: sumSavings([parseKeySavings(appSavings)]) };
+
+  // Shared mode revokes the app's key; the owner's read of its id answers instead.
+  const retired = parseRetiredUsage({ data: { requests: 7, spent_usd: '0.250000', savings: appSavings.data } });
+  assert.ok(retired);
+  const after = { info: withUsageOf(desktop, [retired.usage]), savings: sumSavings([retired.savings]) };
+  assert.equal(after.info.requests, before.info.requests);
+  assert.equal(after.info.spentUsd, before.info.spentUsd);
+  assert.deepEqual(after.savings, before.savings);
+});
+
+test('retired usage without savings, or an answer that is not one, adds nothing it does not have', () => {
+  assert.equal(parseRetiredUsage({ data: { requests: 2, spent_usd: '0.10', savings: null } })?.savings, null);
+  assert.equal(parseRetiredUsage(null), null);
+  assert.equal(parseRetiredUsage({ error: 'Unknown key' }), null);
 });

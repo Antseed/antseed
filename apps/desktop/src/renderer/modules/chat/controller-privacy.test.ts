@@ -355,6 +355,31 @@ describe('a model Private chose', () => {
     expect(chatAiSetModel).not.toHaveBeenCalled();
   });
 
+  it('a model picked for a new chat while Private\'s list loads survives the list and the switch back', async () => {
+    const listed = deferred<{ ok: boolean; data: unknown[] }>();
+    const { api, uiState } = setup({
+      models: [model('model-x', 'text', false), model('model-a'), model('model-b')],
+      conversations: [],
+      listModels: () => listed.promise,
+      // The pick is saved as the last model, as the app's storage keeps it.
+      stored: {},
+    });
+    privacyResource.setData(privacy('private'));
+    api.startNewChat();
+    uiState.chatSelectedModelId = 'model-x';
+    const landing = api.privacySwitchLanded('private');
+    // The dropdown stays usable while the list loads.
+    api.selectChatModel('model-b');
+    listed.resolve({ ok: true, data: [model('model-a'), model('model-b')] });
+    await landing;
+    expect(uiState.chatActiveConversation).toBeNull();
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+
+    privacyResource.setData(privacy('anonymous'));
+    await api.privacySwitchLanded('anonymous');
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+  });
+
   it('a fallback for a saved model that is no longer listed moves to a free model once one appears', async () => {
     const free = { ...model('model-free'), free: true };
     const { api, uiState } = setup({ lastModel: 'model-gone', models: [model('model-paid')], conversations: [] });

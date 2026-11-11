@@ -281,6 +281,12 @@ export function initChatModule({
   }
   /** A model the new chat was started on by hand (Home's), which the default must not replace. */
   let draftModel: string | null = null;
+  /**
+   * Bumped whenever the new-chat screen's model is chosen or the draft is
+   * replaced: a Private list read that resolves after it must not move the
+   * draft off what the user just picked.
+   */
+  let draftSelectionRevision = 0;
   uiState.chatPrivateConversationIds = loadPrivateChats();
 
   /** Remembers that a prompt in this chat went out under Private, whatever came back. */
@@ -420,9 +426,10 @@ export function initChatModule({
 
 
   /**
-   * On the toggle, before the gateway has switched, so the model changes at once
-   * when it plainly must. The open chat stays open unless `newChat`; carrying a
-   * chat with private history into Anonymous needs `keepPrivateHistory`.
+   * Applies the user's new-chat or private-history choice when the toggle is
+   * chosen. Model changes wait for privacySwitchLanded, after the gateway
+   * successfully switches. The open chat stays open unless `newChat`; carrying
+   * a chat with private history into Anonymous needs `keepPrivateHistory`.
    */
   function privacyModeChosen(_mode: 'anonymous' | 'private', choice: PrivacySwitchChoice = {}): void {
     if (choice.newChat && activeConversation) startNewChat();
@@ -448,10 +455,11 @@ export function initChatModule({
     // after the user moved on must not change another chat's model.
     const chatAtStart = uiState.chatActiveConversation;
     const before = uiState.chatSelectedModelId;
-    const revisionAtStart = chatAtStart ? modelChoices.get(chatAtStart)?.revision : undefined;
+    const revisionAtStart = chatAtStart ? modelChoices.get(chatAtStart)?.revision : draftSelectionRevision;
     await refreshChatModels({ force: true });
     if (uiState.chatActiveConversation !== chatAtStart) return;
-    if (chatAtStart && modelChoices.get(chatAtStart)?.revision !== revisionAtStart) return;
+    const revisionNow = chatAtStart ? modelChoices.get(chatAtStart)?.revision : draftSelectionRevision;
+    if (revisionNow !== revisionAtStart) return;
     // Judged from `before`: the refresh's own default for a model no longer listed prefers free.
     const next = chooseModelForPrivate(uiState.chatModels, before, selectHasFunds(uiState));
     if (next && next !== uiState.chatSelectedModelId) {
@@ -493,6 +501,7 @@ export function initChatModule({
     privateMoves.delete(uiState.chatActiveConversation ?? DRAFT);
     privateChoice = null;
     draftModel = null;
+    if (!uiState.chatActiveConversation) draftSelectionRevision += 1;
     clearChatNotices();
     saveLastChatModel(id);
     saveOpenChatModel(id);
@@ -939,6 +948,7 @@ export function initChatModule({
     startNewChat();
     if (!modelId) return;
     draftModel = modelId;
+    draftSelectionRevision += 1;
     if (uiState.chatSelectedModelId === modelId) return;
     uiState.chatSelectedModelId = modelId;
     void refreshPermissionModeForModel(modelId);
@@ -947,6 +957,7 @@ export function initChatModule({
 
   function startNewChat(): void {
     newChatDraftVersion += 1;
+    draftSelectionRevision += 1;
     // A first message still being prepared goes on in the background.
     shownDraft = 0;
     draftModel = null;

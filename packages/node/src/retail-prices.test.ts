@@ -53,19 +53,19 @@ describe('parseRetailPrices with malformed fields', () => {
 
 describe('totalRetailUsage', () => {
   const prices = new Map([[canonicalModelKey('vendor/model-a'), { input: 1, output: 2, cachedInput: null }]]);
-  const names = new Map([['0xaa', 'vendor/model-a'], ['0xbb', 'vendor/unpriced']]);
 
   it('totals matched services only, counting free usage at $0 paid', () => {
     const totals = totalRetailUsage([
-      { serviceIdHash: '0xAA', amountUsdc: '500000', inputTokens: '1000000', cachedInputTokens: '0', outputTokens: 500_000, requestCount: 3 },
-      { serviceIdHash: '0xaa', amountUsdc: 0, inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, requestCount: 1 },
-      { serviceIdHash: '0xbb', amountUsdc: '900000', inputTokens: '1000000', cachedInputTokens: '0', outputTokens: '0', requestCount: 5 },
-    ], names, prices);
+      { serviceName: 'vendor/model-a', amountUsdc: '500000', inputTokens: '1000000', cachedInputTokens: '0', outputTokens: 500_000, requestCount: 3 },
+      { serviceName: 'vendor/model-a', amountUsdc: 0, inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, requestCount: 1 },
+      { serviceName: 'vendor/unpriced', amountUsdc: '900000', inputTokens: '1000000', cachedInputTokens: '0', outputTokens: '0', requestCount: 5 },
+      { serviceName: null, amountUsdc: '900000', inputTokens: '1000000', cachedInputTokens: '0', outputTokens: '0', requestCount: 5 },
+    ], prices);
     expect(totals).toEqual({ retailUsd: 3, paidUsd: 0.5, matchedServices: 2, matchedRequests: 4 });
   });
 
   it('is null when nothing matched or nothing costs anything at retail', () => {
-    expect(totalRetailUsage([], names, prices)).toBeNull();
-    expect(totalRetailUsage([{ serviceIdHash: '0xaa', amountUsdc: '1', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0' }], names, prices)).toBeNull();
+    expect(totalRetailUsage([], prices)).toBeNull();
+    expect(totalRetailUsage([{ serviceName: 'vendor/model-a', amountUsdc: '1', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0' }], prices)).toBeNull();
   });
 });

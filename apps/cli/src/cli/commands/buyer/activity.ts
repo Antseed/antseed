@@ -250,7 +250,10 @@ function computeMeasuredSavings(
   names: Map<string, string>,
   referenceMap: RetailPriceMap,
 ): MeasuredSavings | null {
-  const totals = totalRetailUsage(services, names, referenceMap)
+  const totals = totalRetailUsage(services.map((row) => ({
+    ...row,
+    serviceName: names.get(row.serviceIdHash.toLowerCase()) ?? null,
+  })), referenceMap)
   if (!totals) return null
   const pct = Math.round(Math.max(0, Math.min(1, 1 - totals.paidUsd / totals.retailUsd)) * 100)
   return { pct, actualUsd: totals.paidUsd, baselineUsd: totals.retailUsd, matchedServices: totals.matchedServices }
