@@ -918,6 +918,7 @@ export class AntseedNode extends EventEmitter {
       this._connectionManager.closeAll();
       this._connectionManager = null;
     }
+    this._sellerPaymentManager?.markConnectionsClosed();
 
     // A top-up being mined lifts the ceiling over work already served: give
     // it a moment to land now that no new work can arrive.

@@ -569,6 +569,22 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.latestMetadata).toBe(reservePayload.metadata);
   });
 
+  it('bills nothing that finishes after a stopping node closed its connections', async () => {
+    const channelId = makeChannelId(98);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    manager.recordSpend(channelId, 100_000n);
+
+    manager.markConnectionsClosed();
+    manager.recordSpend(channelId, 300_000n);
+
+    expect(manager.connectionsClosed).toBe(true);
+    expect(manager.getCumulativeSpend(channelId)).toBe(100_000n);
+  });
+
   it('keeps the buyer lock free while an auth waits for the top-up that covers it', async () => {
     const channelId = makeChannelId(99);
 

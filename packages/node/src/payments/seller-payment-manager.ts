@@ -229,6 +229,8 @@ export class SellerPaymentManager {
   private readonly _pendingTopUp = new Map<string, { newMaxAmount: bigint; deadline: number; reserveAuthSig: string }>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
+  private _connectionsClosed = false;
   private readonly _topUpsWanted = new Set<string>();
   /** channelId -> ceiling of the topUp() being submitted now. */
   private readonly _topUpInFlight = new Map<string, bigint>();
@@ -1985,9 +1987,27 @@ export class SellerPaymentManager {
   // ── Spend tracking ──────────────────────────────────────────
 
   /**
+   * A stopping node closed every connection: a request that finishes after
+   * this cannot deliver its response, so its cost is not billed. Without it, a
+   * stop that waits (for a top-up being mined) bills in-flight work the buyer
+   * never received, and after the restart demands it before serving anything.
+   */
+  markConnectionsClosed(): void {
+    this._connectionsClosed = true;
+  }
+
+  get connectionsClosed(): boolean {
+    return this._connectionsClosed;
+  }
+
+  /**
    * Record USDC consumption after serving a request.
    */
   recordSpend(sessionId: string, costUsdc: bigint): void {
+    if (this._connectionsClosed) {
+      debugLog(`[SellerPayment] recordSpend skipped after connections closed: channel=${sessionId.slice(0, 18)}... cost=${costUsdc}`);
+      return;
+    }
     const current = this._spent.get(sessionId);
     if (current === undefined) {
       debugWarn(`[SellerPayment] recordSpend: unknown channelId ${sessionId.slice(0, 18)}...`);
