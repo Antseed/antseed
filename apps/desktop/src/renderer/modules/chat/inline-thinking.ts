@@ -37,7 +37,9 @@ export function syncInlineThink(blocks: ContentBlock[], textBlock: ContentBlock)
     type: 'thinking',
     thinking: '',
     streaming: true,
-    details: { inlineThinkFor: textBlock.renderKey },
+    // `inlineThink` marks it as moved out of the text: a stored reply's text
+    // block has no render key, so the key alone can't say so.
+    details: { inlineThink: true, inlineThinkFor: textBlock.renderKey },
   };
   blocks.splice(textIdx >= 0 ? textIdx : blocks.length, 0, thinkingBlock);
   if (closeIdx === -1) {
@@ -71,7 +73,7 @@ export function extractInlineThinkBlocks(blocks: ContentBlock[]): void {
     if (block?.type === 'text') syncInlineThink(blocks, block);
   }
   for (const block of blocks) {
-    if (block?.type === 'thinking' && block.details && (block.details as Record<string, unknown>).inlineThinkFor !== undefined) {
+    if (block?.type === 'thinking' && block.details && (block.details as Record<string, unknown>).inlineThink === true) {
       block.streaming = false;
     }
   }

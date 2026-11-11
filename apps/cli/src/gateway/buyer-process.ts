@@ -158,16 +158,13 @@ export function superviseAttachedBuyer(options: {
   checkMs?: number
 }): () => Promise<void> {
   let buyer: { stop: () => Promise<void> } | null = null
-  let stopped = false
+  // The watcher checks for a stop after each probe, so it never takes over once stopped.
   const stopWatching = watchAttachedBuyer({
     isRunning: options.isRunning,
-    takeOver: () => {
-      if (!stopped) buyer = options.start()
-    },
+    takeOver: () => { buyer = options.start() },
     ...(options.checkMs !== undefined ? { checkMs: options.checkMs } : {}),
   })
   return async () => {
-    stopped = true
     stopWatching()
     await buyer?.stop()
   }

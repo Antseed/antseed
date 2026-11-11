@@ -17,6 +17,7 @@ import { selectHeadlineBalanceUsdc } from '../../../core/balance';
 import { formatCredits } from '../../../core/format';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { appsResource, gatewayResource, savingsResource } from '../../../modules/app/vpr-resources';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import { useAgentSkills } from '../../hooks/useAgentSkills';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { daysSince, LOW_BALANCE_USD, pickHomePromo, promoDismissKey } from '../../../modules/app/home-promos';
@@ -76,11 +77,9 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
     return () => { cancelled = true; };
   }, []);
 
-  const openConsole = useCallback((path: string) => {
-    void window.antseedDesktop?.gatewayOpenConsole?.(path).then((result) => {
-      if (result && !result.ok) setError(result.error ?? 'Could not open your dashboard');
-    });
-  }, []);
+  // A failure reaches the shell's notice (with Try again), whether or not
+  // the setup card is open.
+  const openConsole = useCallback((path: string) => openGatewayConsole(path), []);
 
   const status = gateway.data?.status;
   const remote = status?.mode === 'remote';
@@ -117,7 +116,9 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const setupState = setupOnly || !progress.setupHidden
     ? progress.setupClosed ? 'closed' : progress.setupMinimized ? 'minimized' : 'open'
     : 'gone';
-  const shownSavings = savings && savings.savedUsd > 0 ? savings : null;
+  // Savings are read from this computer's buyer: once Home shows a remote
+  // gateway, figures cached from the local one say nothing about it.
+  const shownSavings = status?.mode === 'local' && savings && savings.savedUsd > 0 ? savings : null;
   const freeSavings = shownSavings && shownSavings.paidUsd <= 0 ? shownSavings : null;
   const pendingAnts = rewards?.available ? rewards.pendingAnts : null;
   const day = daysSince(progress.firstPromptAt);
@@ -178,6 +179,10 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
               <span className={styles.statusDot} />
               {status ? `${remote ? 'Remote gateway' : 'Local gateway'} · ${status.reachable ? 'ready' : status.starting ? 'starting' : 'unreachable'}` : 'Gateway starting'}
             </span>
+            {/* Why the gateway didn't start (for one, a buyer already running on another wallet). */}
+            {status && !status.reachable && !status.starting && status.lastError
+              ? <p className={styles.note} role="alert">{status.lastError}</p>
+              : null}
             <h1 className={styles.heading}>Welcome back</h1>
             <p className={styles.subline}>
               {remote
@@ -189,7 +194,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
           <section className={styles.card} aria-label="Your usage">
             <div className={styles.cardHead}>
               <h2 className={styles.cardTitle}>Your usage</h2>
-              <button type="button" className={styles.link} onClick={() => openConsole('/activity')}>
+              <button type="button" className={styles.link} onClick={() => { void openConsole('/activity'); }}>
                 Every request
                 <HugeiconsIcon icon={LinkSquare02Icon} size={13} strokeWidth={2} />
               </button>
@@ -326,14 +331,14 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
               doneLine={(
                 <>
                   Your keys, budgets and routing are in your{' '}
-                  <button type="button" className={styles.inlineLink} onClick={() => openConsole('/keys')}>dashboard</button>.
+                  <button type="button" className={styles.inlineLink} onClick={() => { void openConsole('/keys'); }}>dashboard</button>.
                 </>
               )}
             >
               <button
                 type="button"
                 className={styles.action}
-                onClick={() => { homeProgress.markKey(); openConsole('/keys?new=1'); }}
+                onClick={() => { void openConsole('/keys?new=1').then((opened) => { if (opened) homeProgress.markKey(); }); }}
               >
                 Generate API keys
                 <HugeiconsIcon icon={LinkSquare02Icon} size={13} strokeWidth={2} />

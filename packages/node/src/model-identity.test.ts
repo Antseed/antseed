@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalModelKey, sameCanonicalModel } from './model-identity.js';
+import { canonicalModelKey, parsePinnedModel, sameCanonicalModel } from './model-identity.js';
 
 describe('canonicalModelKey', () => {
   it('merges cosmetic variants and conservative Claude family aliases', () => {
@@ -49,5 +49,18 @@ describe('canonicalModelKey', () => {
     expect(sameCanonicalModel('fal-ai/veo3.1/fast', 'fal-ai/veo3.1')).toBe(false);
     expect(sameCanonicalModel('minimax/h3-max/text-to-video', 'minimax/h3/text-to-video')).toBe(false);
     expect(canonicalModelKey('bytedance/seedance-2.5/text-to-video')).toBe('seedance2.5texttovideo');
+  });
+});
+
+describe('parsePinnedModel', () => {
+  const peer = 'ab'.repeat(20);
+  it('splits a pinned model, with or without 0x, and lowercases the peer id', () => {
+    expect(parsePinnedModel(`${peer}@vendor/model`)).toEqual({ modelId: 'vendor/model', peerId: peer });
+    expect(parsePinnedModel(`0x${peer.toUpperCase()}@m@x`)).toEqual({ modelId: 'm@x', peerId: peer });
+  });
+  it('is null when the value pins no seller', () => {
+    expect(parsePinnedModel('vendor/model')).toBeNull();
+    expect(parsePinnedModel(`${peer.slice(2)}@model`)).toBeNull();
+    expect(parsePinnedModel(`${peer}@`)).toBeNull();
   });
 });

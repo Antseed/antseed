@@ -6,8 +6,9 @@
  */
 import { ANTSEED_MODEL_CONTEXT_WINDOW } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+import { sha256Hex, writeTextFile } from './config-patch-files.js';
 
 export const CODEX_MODEL_CATALOG_FILE = 'antseed-models.json';
 
@@ -59,9 +60,41 @@ export function buildCodexModelCatalog(configPath: string, models: ReadonlyArray
   }
 }
 
-export function writeCodexModelCatalog(configPath: string, catalog: string): void {
-  mkdirSync(path.dirname(configPath), { recursive: true });
-  writeFileSync(path.join(path.dirname(configPath), CODEX_MODEL_CATALOG_FILE), catalog, 'utf8');
+/** Records the digest of the catalog we wrote, so only that file is ever replaced or deleted. */
+function catalogOwnershipPath(configPath: string): string {
+  return `${configPath}.antseed.catalog.json`;
+}
+
+function catalogPath(configPath: string): string {
+  return path.join(path.dirname(configPath), CODEX_MODEL_CATALOG_FILE);
+}
+
+/**
+ * Whose `antseed-models.json` sits beside the config: none, ours (its content
+ * is what we recorded writing), or the user's own under the same name.
+ */
+export function codexModelCatalogOwner(configPath: string): 'none' | 'ours' | 'theirs' {
+  let content: string;
+  try {
+    content = readFileSync(catalogPath(configPath), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'none';
+    return 'theirs';
+  }
+  try {
+    const record = JSON.parse(readFileSync(catalogOwnershipPath(configPath), 'utf8')) as { sha256?: unknown };
+    return record.sha256 === sha256Hex(content) ? 'ours' : 'theirs';
+  } catch {
+    return 'theirs';
+  }
+}
+
+/** Writes our catalog; false (nothing written) when a catalog of the user's has that name. */
+export function writeCodexModelCatalog(configPath: string, catalog: string): boolean {
+  if (codexModelCatalogOwner(configPath) === 'theirs') return false;
+  writeTextFile(catalogPath(configPath), catalog);
+  writeTextFile(catalogOwnershipPath(configPath), `${JSON.stringify({ version: 1, sha256: sha256Hex(catalog) })}\n`);
+  return true;
 }
 
 /** Throws when Codex can't load its models with the config as it now stands. */
@@ -69,9 +102,15 @@ export function validateCodexModelCatalog(configPath: string): void {
   runCodexDebugModels(configPath);
 }
 
+/** Deletes our catalog and its record; a catalog of the user's under that name stays. */
 export function removeCodexModelCatalog(configPath: string): void {
+  if (codexModelCatalogOwner(configPath) === 'ours') unlinkIfPresent(catalogPath(configPath));
+  unlinkIfPresent(catalogOwnershipPath(configPath));
+}
+
+function unlinkIfPresent(filePath: string): void {
   try {
-    unlinkSync(path.join(path.dirname(configPath), CODEX_MODEL_CATALOG_FILE));
+    unlinkSync(filePath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }

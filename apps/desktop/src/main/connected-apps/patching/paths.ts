@@ -37,3 +37,8 @@ export function connectedAppsWslTargetsPath(): string {
 export function claudeGatewaySlotsPath(): string {
   return path.join(connectedAppsDataDir(), 'claude-gateway.slots.json');
 }
+
+/** Apps only the desktop stopped connecting whose cleanup hasn't succeeded yet; retried at launch. */
+export function retiredAppsPendingPath(): string {
+  return path.join(connectedAppsDataDir(), 'retired-apps-pending.json');
+}

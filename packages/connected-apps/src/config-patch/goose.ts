@@ -28,8 +28,34 @@ import {
 // The api key normally lives in the OS keyring; the config-file value covers
 // keyring-less setups, and the buyer proxy ignores the credential anyway.
 
+// Characters a YAML parser would fold, drop or reject inside a double-quoted
+// scalar: C0 and C1 controls, DEL, the Unicode line and paragraph separators
+// and the byte-order mark. They are written as \uXXXX escapes instead.
+const YAML_UNSAFE_CHAR = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/g;
+
+/** A YAML double-quoted scalar that reads back as exactly `value`. */
 export function yamlScalar(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(YAML_UNSAFE_CHAR, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return `"${escaped}"`;
+}
+
+const YAML_SIMPLE_ESCAPES: Record<string, string> = {
+  '0': '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\v', f: '\f', r: '\r', e: '\x1b',
+  ' ': ' ', '"': '"', '/': '/', '\\': '\\', N: '\u0085', _: '\u00a0', L: '\u2028', P: '\u2029',
+};
+
+/** The value of a YAML double-quoted scalar's body (its escapes decoded). */
+export function unescapeYamlDoubleQuoted(body: string): string {
+  return body.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (whole, escape: string) => {
+    if (escape.length > 1) {
+      const code = Number.parseInt(escape.slice(1), 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return YAML_SIMPLE_ESCAPES[escape] ?? escape;
+  });
 }
 
 export function yamlTopLevelKeyIndex(lines: readonly string[], key: string): number {
@@ -52,8 +78,10 @@ export function readYamlTopLevelString(lines: readonly string[], key: string): s
   const index = yamlTopLevelKeyIndex(lines, key);
   if (index === -1) return undefined;
   const raw = lines[index]!.slice(lines[index]!.indexOf(':') + 1).trim();
-  const quoted = raw.match(/^"((?:[^"\\]|\\.)*)"/) ?? raw.match(/^'([^']*)'/);
-  if (quoted) return quoted[1]!.replace(/\\(.)/g, '$1');
+  const doubleQuoted = raw.match(/^"((?:[^"\\]|\\.)*)"/);
+  if (doubleQuoted) return unescapeYamlDoubleQuoted(doubleQuoted[1]!);
+  const singleQuoted = raw.match(/^'((?:[^']|'')*)'/);
+  if (singleQuoted) return singleQuoted[1]!.replace(/''/g, "'");
   return raw.split('#')[0]!.trim();
 }
 
@@ -201,11 +229,12 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       movedUserProvider = true;
     }
     // Only an earlier patch of ours has anything to clean up: a local endpoint the
-    // user set up for goose's own openai provider isn't ours, and stays.
-    if (owned || readGoosePatchState(filePath) !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed') {
-      removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
-    }
-    let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
+    // user set up for goose's own openai provider isn't ours, and stays. The
+    // cleanup is planned in memory and lands with the one config write below,
+    // so a failure before it leaves the old config (and its state) working.
+    const earlierState = readGoosePatchState(filePath);
+    const cleansEarlierPatch = owned || earlierState !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed';
+    let lines = cleansEarlierPatch ? planGooseCleanup(filePath, previous, patch, [], true).lines : [...previous];
     while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
     lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
     if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
@@ -224,6 +253,8 @@ export function applyGooseCustomProviderToFile(filePath: string, patch: GooseCon
       requires_auth: false,
     });
     writeTextFile(filePath, `${lines.join('\n')}\n`);
+    // The earlier patch's ownership record goes only once the new config is in.
+    if (earlierState) deleteGoosePatchState(filePath);
   } catch (err) {
     try {
       if (movedUserProvider) {
@@ -277,12 +308,42 @@ export function removeGooseProviderFromFile(
   { keepSelection = false }: { keepSelection?: boolean } = {},
 ): boolean {
   if (!existsSync(filePath)) return false;
-  let lines = readFileSync(filePath, 'utf8').split('\n');
+  const state = readGoosePatchState(filePath);
+  const plan = planGooseCleanup(filePath, readFileSync(filePath, 'utf8').split('\n'), patch, extraHosts, keepSelection);
+  if (plan.changed) {
+    backupConfigFile(filePath);
+    const lines = [...plan.lines];
+    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+    writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+  }
+  // Only after the write: until the config stops selecting our provider it
+  // must stay, and a failed write can be retried with the user's one still saved.
+  if (plan.removesProvider) removeGooseCustomProvider(filePath);
+  if (!keepSelection) restoreGooseUserProvider(filePath);
+  if (state) deleteGoosePatchState(filePath);
+  if (!keepSelection) forgetSelection(filePath);
+  return plan.changed || state !== null;
+}
+
+/**
+ * What removing our patch does to the config, worked out without touching
+ * any file: the config's new lines, whether that changes anything, and
+ * whether our custom provider file goes once those lines are written.
+ * `keepSelection` (a refresh) keeps our provider and its selection: the
+ * replacement overwrites them.
+ */
+export function planGooseCleanup(
+  filePath: string,
+  original: readonly string[],
+  patch: GooseConfigPatchDef,
+  extraHosts: readonly string[],
+  keepSelection: boolean,
+): { lines: string[]; changed: boolean; removesProvider: boolean } {
+  let lines = [...original];
   const state = readGoosePatchState(filePath);
   const provider = readGooseCustomProvider(filePath);
-  // A refresh keeps our provider and its selection: the replacement overwrites
-  // them, and a failed write in between must leave goose working.
-  let changed = keepSelection ? false : removeGooseCustomProvider(filePath);
+  const removesProvider = !keepSelection && provider.ours;
+  let changed = removesProvider;
   // Selecting a provider of the user's own under that name isn't our patch.
   if (!keepSelection && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER && (provider.ours || !provider.exists)) {
     lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
@@ -314,8 +375,8 @@ export function removeGooseProviderFromFile(
     changed = true;
   }
   if (!keepSelection) {
-    // The user's own provider comes back only after the write below, so a failed write can be retried.
-    const restoresProvider = existsSync(savedGooseUserProviderPath(filePath)) && !readGooseCustomProvider(filePath).exists;
+    // The user's own provider comes back after the write, in place of ours.
+    const restoresProvider = existsSync(savedGooseUserProviderPath(filePath)) && (!provider.exists || removesProvider);
     changed = restoresProvider || changed;
     const saved = readSelection(filePath);
     if (changed && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === undefined) {
@@ -324,14 +385,5 @@ export function removeGooseProviderFromFile(
       }
     }
   }
-  if (changed) {
-    backupConfigFile(filePath);
-    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-    writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
-  }
-  // Only after the write, so a failed one can be retried with them.
-  if (!keepSelection) restoreGooseUserProvider(filePath);
-  if (state) deleteGoosePatchState(filePath);
-  if (!keepSelection) forgetSelection(filePath);
-  return changed || state !== null;
+  return { lines, changed, removesProvider };
 }

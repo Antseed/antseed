@@ -9,6 +9,8 @@ export interface BottomNoticeAction {
 
 interface Props {
   actions?: BottomNoticeAction[];
+  /** `below`: the actions are text links under the text, for a narrow toast with a longer message. */
+  actionsPlacement?: 'inline' | 'below';
   align?: 'center' | 'start';
   ariaLive?: 'assertive' | 'polite';
   body?: ReactNode;
@@ -26,6 +28,7 @@ interface Props {
 
 export function BottomNotice({
   actions = [],
+  actionsPlacement = 'inline',
   align = 'center',
   ariaLive,
   body,
@@ -57,8 +60,17 @@ export function BottomNotice({
         {title !== undefined && <span className={styles.title}>{title}</span>}
         {body !== undefined && <span className={styles.body}>{body}</span>}
         {detail}
+        {actionsPlacement === 'below' && actions.length > 0 && (
+          <span className={styles.links}>
+            {actions.map((action, index) => (
+              <button key={index} type="button" className={styles.link} onClick={action.onClick}>
+                {action.label}
+              </button>
+            ))}
+          </span>
+        )}
       </div>
-      {actions.map((action, index) => (
+      {actionsPlacement === 'inline' && actions.map((action, index) => (
         <button key={index} type="button" className={styles.action} onClick={action.onClick}>
           {action.label}
         </button>

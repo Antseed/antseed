@@ -17,7 +17,7 @@ import {
   type ConfigPatchDef,
   type ConfigPatchTarget,
 } from './config-patch.js';
-import { readWslTargetsForTool, saveWslTargetsForTool } from './wsl.js';
+import { readWslTargetsForTool, saveWslTargetsForTool, writeWslTargetsForTool } from './wsl.js';
 
 const KEY = 'antseed_test_0123456789';
 const MODELS = [
@@ -1090,4 +1090,136 @@ test('TOML strings decode their own escapes, the eight-digit Unicode one include
   assert.equal(unescapeTomlBasicString('caf\\u00e9\\tx'), 'café\tx');
   assert.equal(unescapeTomlBasicString('C:\\\\models\\"x\\".json'), 'C:\\models"x".json');
   assert.equal(unescapeTomlBasicString('\\U0001F600'), '😀');
+});
+
+test('goose: a legacy migration whose provider file cannot be written keeps the working config and its record', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const statePath = `${configPath}.antseed.state.json`;
+    const providers = path.join(dir, 'custom_providers');
+    const before = 'GOOSE_PROVIDER: "openai"\nGOOSE_MODEL: "qwen3-coder"\nOPENAI_HOST: "https://gw.example.com"\nOPENAI_API_KEY: "old"\n';
+    await writeFile(configPath, before, 'utf8');
+    await writeFile(statePath, JSON.stringify({ version: 1, host: 'https://gw.example.com', apiKeySha256: 'x' }), 'utf8');
+    await mkdir(providers);
+    await chmod(providers, 0o555);
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    try {
+      assert.throws(() => writeConfigPatch(patch, REMOTE), /EACCES|permission/i);
+    } finally {
+      await chmod(providers, 0o755);
+    }
+    assert.equal(await readFile(configPath, 'utf8'), before);
+    assert.equal(existsSync(statePath), true);
+    // And the retry migrates.
+    writeConfigPatch(patch, REMOTE);
+    assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_PROVIDER'], 'custom_antseed');
+    assert.equal(existsSync(statePath), false);
+  });
+});
+
+test('goose: a disconnect whose config write fails keeps the provider the config still selects', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await writeFile(configPath, 'GOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, REMOTE);
+    await chmod(configPath, 0o444);
+    try {
+      assert.throws(() => removeConfigPatch(patch), /EACCES|permission/i);
+    } finally {
+      await chmod(configPath, 0o600);
+    }
+    assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_PROVIDER'], 'custom_antseed');
+    assert.equal(existsSync(providerPath), true);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'anthropic', GOOSE_MODEL: 'claude-sonnet' });
+    assert.equal(existsSync(providerPath), false);
+  });
+});
+
+test('goose: a model id with a newline or control character reads back exactly as its catalog entry', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    const odd = 'vendor/odd\nmodel\t"x"\\y\u0085\u2028';
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, { origin: 'https://gw.example.com', apiKey: KEY, models: [{ id: odd }], defaultModel: odd });
+    const raw = await readFile(configPath, 'utf8');
+    assert.equal(raw.split('\n').filter((line) => line.startsWith('GOOSE_MODEL')).length, 1);
+    const selected = (parse(raw) as Record<string, unknown>)['GOOSE_MODEL'];
+    const provider = await readJson(providerPath);
+    assert.equal(selected, odd);
+    assert.equal(provider.models[0].name, selected);
+    // Our own reader agrees, so a refresh keeps the pick.
+    writeConfigPatch(patch, { origin: 'https://gw.example.com', apiKey: KEY, models: [{ id: 'other' }, { id: odd }] });
+    assert.equal((parse(await readFile(configPath, 'utf8')) as Record<string, unknown>)['GOOSE_MODEL'], odd);
+  });
+});
+
+test('codex: a catalog of the user\'s under our file name is never replaced or deleted', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const home = path.join(dir, 'home');
+      await mkdir(home);
+      const configPath = path.join(home, 'config.toml');
+      const catalogPath = path.join(home, 'antseed-models.json');
+      const mine = '{"models":[{"slug":"my-model"}]}';
+      await writeFile(catalogPath, mine, 'utf8');
+      await writeFile(configPath, 'model_catalog_json = "antseed-models.json"\n', 'utf8');
+      const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+      writeConfigPatch(patch, REMOTE);
+      assert.equal(await readFile(catalogPath, 'utf8'), mine);
+      writeConfigPatch(patch, 8377);
+      assert.equal(await readFile(catalogPath, 'utf8'), mine);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
+      removeConfigPatch(patch);
+      assert.equal(await readFile(catalogPath, 'utf8'), mine);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+  });
+});
+
+test('wsl: a save that fails writes no WSL config', () => {
+  const target = { distro: 'Ubuntu', configPath: '\\\\wsl.localhost\\Ubuntu\\home\\me\\.codex\\config.toml', host: '172.20.0.1', needsRelay: true } as never;
+  let wrote = false;
+  assert.throws(() => writeWslTargets([target], {
+    remembered: [],
+    save: () => { throw new Error('disk full'); },
+    write: () => { wrote = true; },
+  }), /disk full/);
+  assert.equal(wrote, false);
+});
+
+test('wsl: the strict targets save throws when the file cannot be written', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const locked = path.join(dir, 'locked');
+    await mkdir(locked);
+    await chmod(locked, 0o555);
+    try {
+      const row = { tool: 'codex', distro: 'Ubuntu', configPath: '\\\\wsl.localhost\\Ubuntu\\c.toml', host: 'h', needsRelay: true } as never;
+      assert.throws(() => writeWslTargetsForTool(path.join(locked, 'wsl-targets.json'), 'codex', [row]), /EACCES|permission/i);
+    } finally {
+      await chmod(locked, 0o755);
+    }
+  });
+});
+
+test('wsl: a distro whose home moved keeps the row for its old config until disconnect cleans it', () => {
+  const pathAt = (home: string, root = '\\\\wsl.localhost') => `${root}\\Ubuntu\\home\\${home}\\.codex\\config.toml`;
+  const at = (home: string, root?: string) => ({ distro: 'Ubuntu', configPath: pathAt(home, root), host: '172.20.0.1', needsRelay: true }) as never;
+  let saved: Array<{ configPath: string }> = [];
+  // The same file under the other share root and another case counts as rediscovered.
+  writeWslTargets([at('new')], { remembered: [at('old'), at('NEW', '\\\\wsl$')], save: (rows) => { saved = rows as never; }, write: () => {} });
+  assert.deepEqual(saved.map((row) => row.configPath), [pathAt('old'), pathAt('new')]);
 });

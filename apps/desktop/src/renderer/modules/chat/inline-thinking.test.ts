@@ -30,3 +30,9 @@ it('a stored reply cut off inside its thinking ends that block', () => {
   extractInlineThinkBlocks(blocks);
   expect(blocks[0]).toMatchObject({ type: 'thinking', thinking: 'never closed', streaming: false });
 });
+
+it('a stored reply with no render key, cut off inside its thinking, ends that block', () => {
+  const blocks: ContentBlock[] = [{ type: 'text', text: '<think>never closed' }];
+  extractInlineThinkBlocks(blocks);
+  expect(blocks[0]).toMatchObject({ type: 'thinking', thinking: 'never closed', streaming: false });
+});

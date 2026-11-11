@@ -139,6 +139,8 @@ export type NetworkModelBuildOptions = {
   offerFilter?: (offer: NetworkServiceOffer) => boolean
   /** How far a seller's passed TEE attestation reaches (null when none passed); the others' offers don't list the TEE verifier. */
   teeScope?: (peer: PeerInfo) => TeeScope | null
+  /** `buildNetworkServiceOffers(peers)`, when the caller already built it. */
+  offers?: NetworkServiceOffer[]
 }
 
 /** The offer's verifier list and TEE scope: the TEE verifier stays listed only for a seller whose attestation passed. */
@@ -273,7 +275,7 @@ export function buildNetworkModels(
   }
 
   const offerFilter = options.offerFilter
-  const discoveredOffers = buildNetworkServiceOffers(peers)
+  const discoveredOffers = options.offers ?? buildNetworkServiceOffers(peers)
   const allOffers = offerFilter ? discoveredOffers.filter(offerFilter) : discoveredOffers
   const offersByPeerModel = new Map<string, NetworkServiceOffer[]>()
   for (const offer of allOffers) {

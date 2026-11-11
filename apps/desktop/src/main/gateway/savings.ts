@@ -10,8 +10,7 @@
  * comparison is like for like. Mirrors the CLI's `buyer activity` savings.
  */
 import type { BuyerUsageServicePoint } from '@antseed/node';
-import { canonicalModelKey } from '@antseed/node/model-identity';
-import { parseRetailPrices, retailTokenCostUsd, type RetailPriceMap } from '@antseed/node/retail-prices';
+import { parseRetailPrices, totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices';
 import type { GatewaySavings } from '../../shared/gateway-types.js';
 
 export type { GatewaySavings };
@@ -25,7 +24,6 @@ export type ServiceUsage = Pick<
   'serviceIdHash' | 'amountUsdc' | 'inputTokens' | 'cachedInputTokens' | 'outputTokens' | 'requestCount'
 >;
 
-const USDC_BASE_UNITS_PER_USD = 1_000_000;
 const PRICES_TTL_MS = 10 * 60_000;
 /** A failed price fetch is retried sooner than a good one is refreshed. */
 const PRICES_RETRY_MS = 60_000;
@@ -66,23 +64,9 @@ export function computeSavings(
   names: Map<string, string>,
   prices: RetailPriceMap,
 ): GatewaySavings | null {
-  let retailUsd = 0;
-  let paidUsd = 0;
-  let matchedRequests = 0;
-  let matched = false;
-  for (const service of services) {
-    const name = names.get(service.serviceIdHash.toLowerCase());
-    const price = name ? prices.get(canonicalModelKey(name)) : undefined;
-    if (!price) continue;
-    // The buyer's input tokens are fresh plus cached; cached ones are priced apart.
-    const retail = retailTokenCostUsd(amount(service.inputTokens), amount(service.cachedInputTokens), amount(service.outputTokens), price);
-    if (retail <= 0) continue;
-    matched = true;
-    retailUsd += retail;
-    paidUsd += amount(service.amountUsdc) / USDC_BASE_UNITS_PER_USD;
-    matchedRequests += service.requestCount;
-  }
-  if (!matched) return null;
+  const totals = totalRetailUsage(services, names, prices);
+  if (!totals) return null;
+  const { retailUsd, paidUsd, matchedRequests } = totals;
   return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests };
 }
 

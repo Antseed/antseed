@@ -210,6 +210,40 @@ describe('privacy at the moment a request leaves', () => {
     expect(chatAiSendStream).toHaveBeenCalledTimes(2);
     expect(chatAiSendStream.mock.calls[1]?.[5]).toEqual({ requirePrivate: false, allowPrivateHistory: true });
   });
+
+  it('keeping a chat covers its history so far: a later Private turn needs asking again', async () => {
+    const { api, uiState, chatAiSendStream } = setup();
+    privacyResource.setData(privacy('private'));
+    await api.openConversation('conv-1');
+    api.sendMessage('hello');
+    await tick();
+    privacyResource.setData(privacy('anonymous'));
+    api.privacyModeChosen('anonymous', { keepPrivateHistory: true, conversationId: 'conv-1' });
+    // Back in Private for one more turn, then Anonymous again with no new consent.
+    privacyResource.setData(privacy('private'));
+    api.sendMessage('secret');
+    await tick();
+    privacyResource.setData(privacy('anonymous'));
+    api.sendMessage('again');
+    await tick();
+    expect(chatAiSendStream).toHaveBeenCalledTimes(2);
+    expect(uiState.chatError).toMatch(/sent in Private/);
+  });
+
+  it('consent is for the chat the user was warned about, not another chat opened since', async () => {
+    const { api, chatAiSendStream } = setup({ conversations: [conv('conv-1', 'model-a'), conv('conv-2', 'model-a')] });
+    privacyResource.setData(privacy('private'));
+    await api.openConversation('conv-1');
+    api.sendMessage('hello');
+    await tick();
+    await api.openConversation('conv-2');
+    privacyResource.setData(privacy('anonymous'));
+    api.privacyModeChosen('anonymous', { keepPrivateHistory: true, conversationId: 'conv-1' });
+    await api.openConversation('conv-1');
+    api.sendMessage('again');
+    await tick();
+    expect(chatAiSendStream).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('a new chat from Home', () => {
@@ -332,5 +366,33 @@ describe('a model Private chose', () => {
     uiState.chatModels = [model('model-paid'), free] as never;
     api.startNewChat();
     expect(uiState.chatSelectedModelId).toBe('model-free');
+  });
+});
+
+describe('opening a chat while its model is being saved', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', { querySelector: () => null });
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
+    privacyResource.setData(privacy('anonymous'));
+  });
+
+  it('keeps the newest pick when a read started during an older save comes back last', async () => {
+    const { api, uiState } = setup({ conversations: [conv('conv-1', 'model-x')], models: [model('model-x'), model('model-a'), model('model-b')] });
+    await api.openConversation('conv-1');
+    const bridge = (globalThis as unknown as { __lastBridge: Record<string, unknown> }).__lastBridge;
+    const olderSave = deferred<{ ok: boolean }>();
+    bridge.chatAiSetModel = vi.fn(() => olderSave.promise);
+    api.selectChatModel('model-a');
+    const read = deferred<{ ok: boolean; data: unknown }>();
+    bridge.chatAiGetConversation = vi.fn(() => read.promise);
+    const opening = api.openConversation('conv-1');
+    bridge.chatAiSetModel = vi.fn(async () => ({ ok: true }));
+    api.selectChatModel('model-b');
+    await tick();
+    olderSave.resolve({ ok: true });
+    await tick();
+    read.resolve({ ok: true, data: conv('conv-1', 'model-x') });
+    await opening;
+    expect(uiState.chatSelectedModelId).toBe('model-b');
   });
 });

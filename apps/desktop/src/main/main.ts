@@ -62,7 +62,7 @@ import {
   releaseConnectedAppsOnQuit,
 } from './connected-apps/patching/connection.js';
 import { closeLocalGateway, ensureLocalGateway, holdLocalGatewayUntil, initGatewayService } from './gateway/service.js';
-import { gatewaySettingsPath } from './gateway/settings.js';
+import { gatewaySettingsPath, getGatewaySettings } from './gateway/settings.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { isMultiInstanceDevelopment } from './dev-instance.js';
 import { runSafeStorageExport } from './safe-storage-export.js';
@@ -421,9 +421,13 @@ app.whenReady().then(async () => {
   // The local gateway (and its buyer) comes up with the app; connected apps
   // are re-pointed at it once it serves. Nothing to start for a remote one.
   settlePluginInstall(pluginReady);
-  // Apps and skills follow only a gateway that started (or a remote one).
-  void pluginReady
-    .then(() => ensureLocalGateway())
+  // Apps and skills follow only a gateway that started (or a remote one). A
+  // remote gateway needs no local router, so a failed install doesn't hold it
+  // up; ensureLocalGateway still waits for the install before any local start.
+  const launchGateway = getGatewaySettings().mode === 'local'
+    ? pluginReady.then(() => ensureLocalGateway())
+    : ensureLocalGateway();
+  void launchGateway
     .then(
       async () => {
         await reconnectAllApps().catch((err) => {

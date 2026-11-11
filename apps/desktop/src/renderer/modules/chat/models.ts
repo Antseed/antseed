@@ -61,6 +61,19 @@ export function shouldWaitForFreeModel(
 }
 
 /**
+ * Whether the selection's next turn is free. A model's Free badge means some
+ * seller serves it free; a pin to one seller is free only when that seller is
+ * the free one we know of (any other pin's price isn't known here, so no badge).
+ */
+export function selectionIsFree(model: Pick<ChatModel, 'free' | 'freeSellerId'> | null | undefined, selectedId: string | null | undefined): boolean {
+  if (!model?.free) return false;
+  const { peerId } = splitPinnedModel(selectedId);
+  if (!peerId) return true;
+  const bare = (id: string) => id.toLowerCase().replace(/^0x/, '');
+  return model.freeSellerId !== null && bare(model.freeSellerId) === bare(peerId);
+}
+
+/**
  * Where a funds note can send the user. A remote gateway pays from its own
  * wallet, so funding this device's signer wouldn't help it.
  */

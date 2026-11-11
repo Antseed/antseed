@@ -180,3 +180,15 @@ export function preferredModelDisplayName(serviceId: string, serviceLabel?: stri
   if (!source || !DISPLAY_SLUG_RE.test(source)) return source;
   return prettifyModelSlug(source);
 }
+
+const PINNED_MODEL_RE = /^(?:0x)?([0-9a-fA-F]{40})@(.+)$/;
+
+/**
+ * A request pins a seller with `<peerId>@<model>` (the peer id optionally
+ * 0x-prefixed). Returns the model and the lowercase peer id, or null when the
+ * value pins no seller. One parser for the gateway's records and the desktop.
+ */
+export function parsePinnedModel(value: string): { modelId: string; peerId: string } | null {
+  const match = PINNED_MODEL_RE.exec(value);
+  return match ? { modelId: match[2]!, peerId: match[1]!.toLowerCase() } : null;
+}

@@ -62,7 +62,10 @@ test('a parent that goes away while the buyer is still starting stops the buyer 
     const { spawn } = await import('node:child_process')
     stopWhenStdinCloses(process.stdin, requestShutdown)
     const buyer = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })
-    setupShutdownHandler(async () => { process.kill(buyer.pid, 'SIGKILL') })
+    // Wait for the exit, so this process reaps the buyer before it exits: an
+    // unreaped (zombie) buyer would still answer kill(pid, 0).
+    const buyerExited = new Promise((resolve) => buyer.once('exit', resolve))
+    setupShutdownHandler(async () => { process.kill(buyer.pid, 'SIGKILL'); await buyerExited })
     process.stdout.write(String(buyer.pid) + '\\n')
     await new Promise(() => {})
   `
@@ -70,12 +73,20 @@ test('a parent that goes away while the buyer is still starting stops the buyer 
     env: { ...process.env, [STOP_ON_STDIN_CLOSE_ENV]: '1' },
     stdio: ['pipe', 'pipe', 'inherit'],
   })
-  const buyerPid = await new Promise<number>((resolve) => gateway.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim()))))
   const exited = new Promise<number | null>((resolve) => gateway.once('exit', resolve))
-  gateway.stdin.end()
-  assert.equal(await exited, 0)
-  await new Promise((resolve) => setTimeout(resolve, 100))
-  assert.throws(() => process.kill(buyerPid, 0), /ESRCH/)
+  let buyerPid: number | null = null
+  try {
+    buyerPid = await new Promise<number>((resolve) => gateway.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim()))))
+    gateway.stdin.end()
+    assert.equal(await exited, 0)
+    assert.throws(() => process.kill(buyerPid!, 0), /ESRCH/)
+  } finally {
+    // An assertion failure must not leave either process behind.
+    if (gateway.exitCode === null && gateway.signalCode === null) gateway.kill('SIGKILL')
+    if (buyerPid !== null) {
+      try { process.kill(buyerPid, 'SIGKILL') } catch { /* already gone */ }
+    }
+  }
 })
 
 test('a stop asked before anything started just exits', { skip: process.platform === 'win32' }, async () => {

@@ -1,5 +1,4 @@
-/** Asks the gateway for TEE sellers only, on top of the key's policy (it can only narrow it). */
-export const REQUIRE_TEE_HEADER = 'x-antseed-require-tee';
+import { ANTSEED_REQUIRE_TEE_HEADER } from '@antseed/node';
 
 /**
  * Headers every request to the gateway carries: the key as a bearer token,
@@ -9,6 +8,6 @@ export const REQUIRE_TEE_HEADER = 'x-antseed-require-tee';
 export function gatewayRequestHeaders(endpoint: { apiKey: string; requireTee?: boolean }): Record<string, string> {
   return {
     authorization: `Bearer ${endpoint.apiKey}`,
-    ...(endpoint.requireTee ? { [REQUIRE_TEE_HEADER]: '1' } : {}),
+    ...(endpoint.requireTee ? { [ANTSEED_REQUIRE_TEE_HEADER]: '1' } : {}),
   };
 }

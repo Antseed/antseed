@@ -15,7 +15,9 @@ import { createSerialQueue } from '../serial-queue.js';
 import { startUnlessClosing } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
-import { encryptedIdentityPath, ensureSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
+import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
+import { attachedGateway } from '../runtime/attach-only.js';
+import { buyerSignerMismatchMessage, compareBuyerSigner, liveBuyerAddress } from './buyer-signer.js';
 import { isDesktopDebugEnabled } from '../app-context.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -59,6 +61,8 @@ let startsInFlight = 0;
 /** Whether any start has finished, either way, since launch. */
 let startSettled = false;
 let closing = false;
+/** Whether the running local buyer was confirmed to pay from the desktop's signer since the gateway last started. */
+let signerVerified = false;
 /** A buyer the app doesn't run, found on the port after a new signer was imported. */
 const foreignBuyerGuard = () => createForeignBuyerGuard(path.join(resolveConnectDataDir(), 'signer-change-pending.json'));
 const DEFAULT_BUYER_PORT = 8377;
@@ -162,10 +166,14 @@ async function startLocalGateway(): Promise<void> {
     if (await portInUse(foreignBuyerPort)) throw new Error(foreignBuyerMessage(foreignBuyerPort));
     foreignBuyerGuard().clear();
   }
-  if (isLocalRunning() && await probe(localGatewayOrigin())) return;
+  if (isLocalRunning() && await probe(localGatewayOrigin())) {
+    await verifyBuyerSigner();
+    return;
+  }
   startPromise ??= (async () => {
     try {
       if (!isLocalRunning()) {
+        signerVerified = false;
         await ensureSecureIdentity();
         // Never start on another wallet: without the signer key the CLI
         // would use or create a different identity.
@@ -193,6 +201,7 @@ async function startLocalGateway(): Promise<void> {
       while (Date.now() < deadline) {
         if (closing) throw new Error('Antseed Desktop is closing');
         if (await probe(localGatewayOrigin(), 1_500)) {
+          await verifyBuyerSigner();
           lastError = null;
           return;
         }
@@ -217,7 +226,48 @@ async function localBuyerPort(): Promise<number> {
 }
 
 export async function stopLocalGateway(): Promise<void> {
+  signerVerified = false;
   await deps().processManager.stop('gateway');
+}
+
+/**
+ * Throws when the local buyer pays from another wallet than the desktop's
+ * signer: the gateway attaches to any buyer already on its port. A buyer that
+ * can't be read yet is checked again on the next start or funding call.
+ */
+async function verifyBuyerSigner(): Promise<void> {
+  if (signerVerified) return;
+  await ensureSecureIdentity();
+  const port = await localBuyerPort();
+  const check = compareBuyerSigner(await liveBuyerAddress(port), getSecureIdentity()?.wallet.address ?? null);
+  if (check === 'mismatch') {
+    const message = buyerSignerMismatchMessage(port);
+    lastError = message;
+    throw new Error(message);
+  }
+  if (check === 'match') {
+    signerVerified = true;
+    if (lastError === buyerSignerMismatchMessage(port)) lastError = null;
+  }
+}
+
+export const REMOTE_FUNDING_ERROR = 'This app uses a remote gateway, which pays from its own balance. Add funds in that gateway\'s console (Wallet).';
+
+/**
+ * Why the desktop's own wallet can't be funded now, or null when it can: a
+ * remote gateway pays from its own balance, and a local buyer on another
+ * wallet wouldn't see the deposit. Read fresh before each checkout or deposit address.
+ */
+export async function localFundingBlock(): Promise<string | null> {
+  // An attach-only desktop (testbench) runs on a buyer that holds this app's wallet by construction.
+  if (getGatewaySettings().mode !== 'local') return attachedGateway() ? null : REMOTE_FUNDING_ERROR;
+  signerVerified = false;
+  try {
+    await verifyBuyerSigner();
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 /** After importing a signer. Answers why the gateway can't use it yet, or null once it does. */
@@ -347,13 +397,13 @@ export async function getGatewayEndpoint(app?: { name: string; label?: string })
   return { mode: 'local', origin: localGatewayOrigin(), apiKey: key.secret };
 }
 
-/** Issues new secrets for local keys: one scope, or all of them. Callers re-patch apps afterwards. */
-export async function rotateLocalKeys(scope?: string): Promise<void> {
+/** Issues new secrets for every local key in use. Callers re-patch apps afterwards. */
+export async function rotateLocalKeys(): Promise<void> {
   if (getGatewaySettings().mode !== 'local') throw new Error('Keys of a remote gateway are managed in its console');
   await ensureLocalGateway();
   // Unused keys that failed to revoke earlier get another try rather than a new secret.
-  const unusedFailure = scope ? null : await revokeUnusedAppKeys().then(() => null, (err: unknown) => err);
-  const usedScopes = scope ? [scope] : listLocalKeys().map((entry) => entry.scope)
+  const unusedFailure = await revokeUnusedAppKeys().then(() => null, (err: unknown) => err);
+  const usedScopes = listLocalKeys().map((entry) => entry.scope)
     .filter((target) => getGatewaySettings().keyMode === 'per-app' || target === DESKTOP_KEY_SCOPE);
   await rotateKeys(usedScopes, {
     get: getLocalKeyEntry,

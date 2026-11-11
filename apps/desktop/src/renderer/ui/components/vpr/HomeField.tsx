@@ -60,19 +60,29 @@ function FieldLayers({ night }: { night: boolean }) {
     timers.current.forEach((timer) => window.clearTimeout(timer));
   }, []);
 
+  // Reduced motion turned on mid-clip: end the transition at once and show
+  // the current mode's still, so neither the old still nor the old clip returns.
+  useEffect(() => {
+    if (!reducedMotion) return;
+    run.current += 1;
+    timers.current.forEach((timer) => window.clearTimeout(timer));
+    timers.current = [];
+    playingClip.current = null;
+    setClipShown({ day: false, night: false });
+    setCrossfade(true);
+    setLoopMode(target);
+  }, [reducedMotion, target]);
+
   useEffect(() => {
     const previous = previousTarget.current;
     if (previous === target) return;
     previousTarget.current = target;
+    // Reduced motion: the effect above has already shown the new still.
+    if (reducedMotion) return;
 
-    // A newer transition (or reduced motion) makes every pending one obsolete.
+    // A newer transition makes every pending one obsolete.
     run.current += 1;
     const thisRun = run.current;
-    if (reducedMotion) {
-      setCrossfade(true);
-      setLoopMode(target);
-      return;
-    }
 
     timers.current.forEach((timer) => window.clearTimeout(timer));
     timers.current = [];

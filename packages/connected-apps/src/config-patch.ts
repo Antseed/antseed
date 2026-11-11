@@ -6,6 +6,7 @@ import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
 import {
   buildCodexModelCatalog,
+  codexModelCatalogOwner,
   CODEX_MODEL_CATALOG_FILE,
   removeCodexModelCatalog,
   validateCodexModelCatalog,
@@ -16,6 +17,7 @@ import {
   discoverWslToolTargets,
   readWslTargetsForTool,
   saveWslTargetsForTool,
+  writeWslTargetsForTool,
   type WslConfigTarget,
   type WslTool,
 } from './wsl.js';
@@ -612,7 +614,8 @@ function applyWithInstallProbe(opts: {
   const wslTargetsFile = opts.wslTargetsFile;
   writeWslTargets(wslTargets, {
     remembered: wslTargetsFile ? readWslTargetsForTool(wslTargetsFile, opts.tool) : [],
-    save: (rows) => { if (wslTargetsFile) saveWslTargetsForTool(wslTargetsFile, opts.tool, rows); },
+    // Must be on disk before any WSL config gets the key: disconnect only visits remembered paths.
+    save: (rows) => { if (wslTargetsFile) writeWslTargetsForTool(wslTargetsFile, opts.tool, rows); },
     // Inside WSL, `localhost` is the distro's own VM under NAT networking —
     // a loopback config must carry the host the distro can actually reach the
     // Windows-side proxy/gateway on. A remote origin is reachable as-is.
@@ -626,16 +629,25 @@ function applyWithInstallProbe(opts: {
 /**
  * Patches each WSL target, remembering them all before writing any: a write
  * that fails partway leaves the ones already written (holding the gateway URL
- * and key) where disconnect can find them. A distro that didn't answer this
- * time keeps its row too, since its config may still hold them.
+ * and key) where disconnect can find them, and a save that fails writes
+ * nothing. A remembered config this discovery didn't find again (a distro that
+ * didn't answer, or one whose home moved) keeps its row too, since that file
+ * may still hold them.
  */
 export function writeWslTargets(
   targets: readonly WslConfigTarget[],
   opts: { remembered: readonly WslConfigTarget[]; save: (rows: WslConfigTarget[]) => void; write: (target: WslConfigTarget) => void },
 ): void {
-  const rediscovered = new Set(targets.map((target) => target.distro));
-  opts.save([...opts.remembered.filter((target) => !rediscovered.has(target.distro)), ...targets]);
+  const rediscovered = new Set(targets.map(wslTargetFilesKey));
+  opts.save([...opts.remembered.filter((target) => !rediscovered.has(wslTargetFilesKey(target))), ...targets]);
   for (const target of targets) opts.write(target);
+}
+
+/** The files a target patches, compared as Windows does: case-insensitive, either WSL share root. */
+function wslTargetFilesKey(target: WslConfigTarget): string {
+  const normalize = (filePath: string | undefined): string =>
+    (filePath ?? '').replace(/\//g, '\\').replace(/^\\\\wsl\$\\/i, '\\\\wsl.localhost\\').toLowerCase();
+  return `${target.distro.toLowerCase()}\u0000${normalize(target.configPath)}\u0000${normalize(target.settingsPath)}`;
 }
 
 /** The distro's share (`\\\\wsl$\\Ubuntu\\`), or the config's folder for any other path. */
@@ -1235,7 +1247,7 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
         return value === undefined ? [] : [[key, value]];
       })),
       ...(contextWindow ? { model_context_window: contextWindow } : {}),
-      ...(userCatalog !== undefined && userCatalog !== CODEX_MODEL_CATALOG_FILE ? { model_catalog_json: userCatalog } : {}),
+      ...(userCatalog !== undefined && !isManagedCodexCatalogRef(filePath, userCatalog) ? { model_catalog_json: userCatalog } : {}),
     });
   }
   lines = removeCodexProviderTable(lines, patch.providerKey).lines;
@@ -1265,8 +1277,8 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   // A catalog can only be built by the Codex on this machine, not one inside WSL.
   if (t.models.length === 0 || filePath.startsWith('\\\\')) return;
   const catalog = buildCodexModelCatalog(filePath, t.models);
-  if (!catalog) return;
-  writeCodexModelCatalog(filePath, catalog);
+  // A catalog of the user's under our file name is never overwritten.
+  if (!catalog || !writeCodexModelCatalog(filePath, catalog)) return;
   writeTextFile(filePath, `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`);
   // Codex refuses to start on a catalog it can't parse, so never leave one behind.
   try {
@@ -1278,12 +1290,21 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
 }
 
 /**
+ * Whether a `model_catalog_json` value refers to the catalog we manage: our
+ * file name, and that file isn't one of the user's (no record of writing it,
+ * or different content). A reference to a missing file of that name is ours.
+ */
+function isManagedCodexCatalogRef(filePath: string, ref: string | undefined): boolean {
+  return ref === CODEX_MODEL_CATALOG_FILE && codexModelCatalogOwner(filePath) !== 'theirs';
+}
+
+/**
  * The config without our catalog: back to the user's own if they had one,
  * otherwise no reference at all, since ours names a file that is being deleted.
  */
 function withoutManagedCodexCatalog(filePath: string, lines: string[]): string[] {
   const userCatalog = readSelection(filePath)['model_catalog_json'];
-  const withoutOurs = readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE
+  const withoutOurs = isManagedCodexCatalogRef(filePath, readTomlTopLevelString(lines, 'model_catalog_json'))
     ? removeTomlTopLevelKey(lines, 'model_catalog_json')
     : lines;
   return typeof userCatalog === 'string' && readTomlTopLevelString(withoutOurs, 'model_catalog_json') === undefined
@@ -1307,7 +1328,7 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
   let changed = removal.changed;
   const saved = readSelection(filePath);
   let removeCatalog = false;
-  if (readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE) {
+  if (isManagedCodexCatalogRef(filePath, readTomlTopLevelString(lines, 'model_catalog_json'))) {
     lines = removeTomlTopLevelKey(lines, 'model_catalog_json');
     if (typeof saved['model_catalog_json'] === 'string') lines = setTomlTopLevelString(lines, 'model_catalog_json', saved['model_catalog_json']);
     removeCatalog = true;

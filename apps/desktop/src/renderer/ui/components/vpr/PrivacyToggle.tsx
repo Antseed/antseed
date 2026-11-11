@@ -52,6 +52,8 @@ type PendingSwitch = {
   mode: GatewayPrivacyMode;
   explain: boolean;
   privateHistory: boolean;
+  /** The chat open when the warning was raised. */
+  conversationId: string | null;
   apply: (choice: PrivacySwitchChoice) => void;
 };
 
@@ -105,6 +107,7 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
   const privacy = useCachedResource(privacyResource);
   const { error } = usePrivacySwitch();
   const privateHistory = useOpenChatHasPrivateHistory();
+  const openChat = useUiSelector((state) => state.chatActiveConversation);
   const current = privacy.data?.mode ?? 'anonymous';
   const editable = privacy.data?.editable !== false;
   const locked = privacy.data?.requiredAbove === true;
@@ -121,7 +124,7 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
       apply({});
       return;
     }
-    setPendingSwitch({ mode, explain, privateHistory: leaving, apply });
+    setPendingSwitch({ mode, explain, privateHistory: leaving, conversationId: openChat, apply });
   }
 
   const currentOption = OPTIONS.find((option) => option.mode === current);
@@ -253,7 +256,10 @@ function listNames(names: string[]): string {
 export function PrivacySwitchDialog() {
   const pending = usePendingSwitch();
   const apps = useConnectedAppNames();
+  const openChat = useUiSelector((state) => state.chatActiveConversation);
   if (!pending) return null;
+  // The warning was about one chat: once another is open, it no longer applies.
+  const chatChanged = pending.privateHistory && pending.conversationId !== openChat;
   const toPrivate = pending.mode === 'private';
   const label = toPrivate ? 'Private' : 'Anonymous';
 
@@ -262,7 +268,8 @@ export function PrivacySwitchDialog() {
     setPendingSwitch(null);
     if (!current || !choice) return;
     if (current.explain) markSwitchExplained();
-    current.apply(choice);
+    if (current.privateHistory && current.conversationId !== openChat) return;
+    current.apply(current.privateHistory ? { ...choice, conversationId: current.conversationId } : choice);
   }
 
   const reach = apps.length > 0
@@ -272,8 +279,8 @@ export function PrivacySwitchDialog() {
   const footer = pending.privateHistory ? (
     <>
       <Button variant="ghost" onClick={() => finish(null)}>Cancel</Button>
-      <Button variant="outline" onClick={() => finish({ keepPrivateHistory: true })}>Keep this chat</Button>
-      <Button variant="primary" onClick={() => finish({ newChat: true })}>Start a new chat</Button>
+      <Button variant="outline" disabled={chatChanged} onClick={() => finish({ keepPrivateHistory: true })}>Keep this chat</Button>
+      <Button variant="primary" disabled={chatChanged} onClick={() => finish({ newChat: true })}>Start a new chat</Button>
     </>
   ) : (
     <>

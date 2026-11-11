@@ -97,6 +97,8 @@ export type PrivacySwitchChoice = {
   newChat?: boolean;
   /** Carry the open chat's private history into Anonymous anyway. */
   keepPrivateHistory?: boolean;
+  /** The chat the user was warned about; consent is recorded for it only, and only while it is still open. */
+  conversationId?: string | null;
 };
 
 export type ChatModuleApi = {
@@ -420,7 +422,12 @@ export function initChatModule({
    */
   function privacyModeChosen(_mode: 'anonymous' | 'private', choice: PrivacySwitchChoice = {}): void {
     if (choice.newChat && activeConversation) startNewChat();
-    else if (choice.keepPrivateHistory && activeConversation) privateHistoryAllowed.add(activeConversation.id);
+    else if (choice.keepPrivateHistory) {
+      const convId = choice.conversationId ?? uiState.chatActiveConversation;
+      // The warning named the chat on screen; another chat opened since then
+      // (or one still loading over the warned one) gets no consent.
+      if (convId && convId === uiState.chatActiveConversation) privateHistoryAllowed.add(convId);
+    }
     // Models move only once the gateway has switched (privacySwitchLanded): a
     // switch that fails changes nothing about the chat.
   }
@@ -711,6 +718,7 @@ export function initChatModule({
         if (block.details && typeof block.details === 'object') {
           const details = block.details as Record<string, unknown>;
           delete details.inlineThinkFor;
+          delete details.inlineThink;
           if (Object.keys(details).length === 0) delete block.details;
         }
       }
@@ -878,8 +886,11 @@ export function initChatModule({
         return;
       }
       const choice = modelChoices.get(convId);
-      const chosen = pendingModelUpdates.get(convId) ?? modelSaving
-        ?? (choice && choice.revision !== revisionAtRead ? choice : undefined);
+      // Newest first, as the list refresh does: a save still out, then a choice
+      // made since the read started, then the save that was out when it started.
+      const chosen = pendingModelUpdates.get(convId)
+        ?? (choice && choice.revision !== revisionAtRead ? choice : undefined)
+        ?? modelSaving;
       const conv = { ...(result.data as ChatConversation), ...(chosen ? { service: chosen.modelId } : {}) };
       const serverMessages = normalizeInlineThinkInMessages(Array.isArray(conv.messages) ? conv.messages : []);
       // A prompt waiting on funds may not be in the session yet; Try again needs it on screen.
@@ -1314,7 +1325,12 @@ export function initChatModule({
       showChatError(PRIVATE_HISTORY_REFUSAL);
       return null;
     }
-    if (mode === 'private') markPrivateChat(convId);
+    if (mode === 'private') {
+      markPrivateChat(convId);
+      // Consent covered the history the user was shown; a new Private turn
+      // needs it asked again before it can leave in Anonymous.
+      privateHistoryAllowed.delete(convId);
+    }
     return { requirePrivate: mode === 'private' || held, allowPrivateHistory: privateHistoryAllowed.has(convId) };
   }
 

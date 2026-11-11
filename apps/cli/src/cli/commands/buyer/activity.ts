@@ -3,8 +3,7 @@ import chalk from 'chalk'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getServiceMetadataId } from '@antseed/node'
-import { canonicalModelKey } from '@antseed/node/model-identity'
-import { parseRetailPrices, retailTokenCostUsd, type RetailPriceMap } from '@antseed/node/retail-prices'
+import { parseRetailPrices, totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
 import { getGlobalOptions } from '../types.js'
 import { BAKED_COMPARABLE_PRICES_URL } from '../../../generated/baked-defaults.js'
 import { loadConfig } from '../../../config/loader.js'
@@ -250,31 +249,10 @@ function computeMeasuredSavings(
   names: Map<string, string>,
   referenceMap: RetailPriceMap,
 ): MeasuredSavings | null {
-  let actualUsd = 0
-  let baselineUsd = 0
-  let matchedServices = 0
-  const tokens = (value: string): number => {
-    const numeric = Number(value)
-    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0
-  }
-  for (const service of services) {
-    const name = names.get(service.serviceIdHash.toLowerCase())
-    if (!name) continue
-    const ref = referenceMap.get(canonicalModelKey(name))
-    if (!ref || (ref.input === null && ref.output === null)) continue
-    // Buyer-side inputTokens are total logical input (fresh + cached).
-    const totalInput = tokens(service.inputTokens)
-    const output = tokens(service.outputTokens)
-    if (totalInput === 0 && output === 0) continue
-    const serviceBaseline = retailTokenCostUsd(totalInput, tokens(service.cachedInputTokens), output, ref)
-    if (serviceBaseline <= 0) continue
-    baselineUsd += serviceBaseline
-    actualUsd += tokens(service.amountUsdc) / 1_000_000
-    matchedServices += 1
-  }
-  if (matchedServices === 0 || baselineUsd <= 0) return null
-  const pct = Math.round(Math.max(0, Math.min(1, 1 - actualUsd / baselineUsd)) * 100)
-  return { pct, actualUsd, baselineUsd, matchedServices }
+  const totals = totalRetailUsage(services, names, referenceMap)
+  if (!totals) return null
+  const pct = Math.round(Math.max(0, Math.min(1, 1 - totals.paidUsd / totals.retailUsd)) * 100)
+  return { pct, actualUsd: totals.paidUsd, baselineUsd: totals.retailUsd, matchedServices: totals.matchedServices }
 }
 
 // ─── Formatting ───

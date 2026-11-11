@@ -223,15 +223,21 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
           {eligible.length > 0 && <div className={styles.modelDropdownSection}>Pin a seller · {eligible.length} allowed</div>}
           {eligible.map((candidate) => {
             const active = candidate.peerId === pinnedPeerId;
+            // After a failed refresh the list may predate a policy change, so
+            // its sellers stay visible but can't be pinned until Retry works.
+            // Auto stays available to clear a pin.
+            const stale = error !== null;
             return (
               <button
                 key={candidate.peerId}
                 type="button"
-                className={`${styles.modelDropdownItem}${active ? ` ${styles.active}` : ''}`}
+                className={`${styles.modelDropdownItem}${active ? ` ${styles.active}` : ''}${stale ? ` ${styles.itemDisabled}` : ''}`}
                 role="option"
                 aria-selected={active}
+                aria-disabled={stale || undefined}
+                disabled={stale}
                 onClick={() => pick(candidate.peerId)}
-                title={candidate.reasons.join(', ')}
+                title={stale ? 'Retry to pin a seller from the current list' : candidate.reasons.join(', ')}
               >
                 <SellerHeading candidate={candidate} price={priceTag(candidate)} showFailing />
                 <span className={styles.itemMeta}>

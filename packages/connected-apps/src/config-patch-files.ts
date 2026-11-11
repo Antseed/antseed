@@ -153,11 +153,7 @@ export function tryReadConfigPatchFile(filePath: string): JsonObject | null {
 }
 
 export function writeJsonFile(filePath: string, data: JsonObject): void {
-  const dir = path.dirname(filePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writePrivateFile(filePath, JSON.stringify(data, null, 2) + '\n');
+  writeTextFile(filePath, JSON.stringify(data, null, 2) + '\n');
 }
 
 export function restrictToOwner(filePath: string): void {

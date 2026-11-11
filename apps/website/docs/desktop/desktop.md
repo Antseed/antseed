@@ -13,7 +13,7 @@ Usage, history, API keys, limits and routing policy live in the gateway's [Gatew
 
 ## The local gateway
 
-The app starts a local gateway when it opens and stops it when it quits. It is the same gateway as `antseed gateway start`: its API is at `http://127.0.0.1:8379/v1` and its console at `http://127.0.0.1:8379/console`. The gateway supervises the buyer on port 8377.
+The app starts a local gateway when it opens and stops it when it quits. It is the same gateway as `antseed gateway start`: its API is at `http://127.0.0.1:8379/v1` and its console at `http://127.0.0.1:8379/console`. The gateway supervises the buyer on port 8377 by default, or on `buyer.proxyPort` if you set one in your config.
 
 The gateway uses the same `~/.antseed` data directory and wallet the app used before, so an existing balance carries over.
 
@@ -90,7 +90,7 @@ The first launch after the update:
 - re-points apps you had connected to the gateway, with the new key,
 - restores the operating system's proxy setting if an earlier version left it pointing at its system proxy (`127.0.0.1:8378`).
 
-The floating window and the thin window, the HTTPS interception and **Add custom app**, the **Internet-accessible endpoint** and **Agents**, staking, the **Models** and model pages, **Peers**, **Activity**, **Profile** and the power button were removed. Seller routing preferences (minimum trust, price, allow and block lists) are now the gateway's routing policy, set in the Gateway Console. Conversations no longer pin a model or seller; choose the model in each tool.
+The floating window and the thin window, the HTTPS interception and **Add custom app**, the **Internet-accessible endpoint** and **Agents**, staking, the **Models** and model pages, **Peers**, **Activity**, **Profile** and the power button were removed. Seller routing preferences (minimum trust, price, allow and block lists) are now the gateway's routing policy, set in the Gateway Console. Connected tools no longer follow a model or seller picked in the app; choose the model in each tool. Chats in the app keep their model, and a chat that was pinned to a seller before the update keeps that seller.
 
 ## Privacy
 

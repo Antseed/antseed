@@ -85,6 +85,8 @@ export function skillsNotUpdated(err: unknown): string {
   return `Saved, but the Antseed skills installed in your agents couldn't be updated (${reason}). They still use the old key or address: add Antseed to those agents again in Agents & apps.`;
 }
 
+const NO_SAVINGS = { retailUsd: 0, paidUsd: 0, savedUsd: 0, matchedRequests: 0 } as const;
+
 export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   /** Re-points every consumer; says why when the installed agent skills couldn't follow (null when they did). */
   const endpointChanged = async (restartApps: boolean): Promise<string | null> => {
@@ -193,9 +195,10 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   });
 
   // Usage is read from this app's buyer, so a remote gateway (paying from its
-  // own wallet) has nothing here to compare.
+  // own wallet) has nothing here to compare. That answer is "none", not a
+  // failed read (null), so a cached local figure doesn't stay on screen.
   ipcMain.handle('gateway:get-savings', async () => {
-    if (getGatewaySettings().mode !== 'local') return null;
+    if (getGatewaySettings().mode !== 'local') return NO_SAVINGS;
     return readGatewaySavings().catch(() => null);
   });
 

@@ -10,7 +10,8 @@ import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { gatewayRequestHeaders, REQUIRE_TEE_HEADER } from '../gateway/request-headers.js';
+import { ANTSEED_REQUIRE_TEE_HEADER } from '@antseed/node';
+import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 
 /** `/v1/...` for text and images; `/api/v1/video`, `/fal/...` for the video skill's retrievals. */
 const FORWARDED_PATH = /^\/(?:v1|api\/v1\/video|fal\/v1\/video)(?:\/|\?|$)/;
@@ -55,7 +56,7 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
   }
   const headers: http.OutgoingHttpHeaders = { ...req.headers };
   // A Private run's requirement can't be dropped or set to "0" by the shell.
-  if (gateway.requireTee) delete headers[REQUIRE_TEE_HEADER];
+  if (gateway.requireTee) delete headers[ANTSEED_REQUIRE_TEE_HEADER];
   Object.assign(headers, gatewayRequestHeaders(gateway));
   delete headers.host;
   delete headers.connection;

@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
+import { isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchDef, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
 import { RETIRED_APP_PROFILES } from '@antseed/connected-apps/defaults';
 import { readWslTargets } from '@antseed/connected-apps/wsl';
 import type { AppLaunchTarget } from '../launch-settings.js';
@@ -32,7 +32,9 @@ import {
   connectedAppsStatePath,
   connectedAppsWslTargetsPath,
   legacyDesktopStatePath,
+  retiredAppsPendingPath,
 } from './paths.js';
+import { migrateRetiredApps, retiredMigrationStore } from './retired-migration.js';
 import { connectableProfiles, findConnectableProfile, normalizeDesktopSystemProxyProfile, readStringArray, removeAllConfigPatches, retiredDesktopProfiles } from './profiles.js';
 import { stopWslRelays, syncWslRelays } from './wsl-relay.js';
 
@@ -72,11 +74,7 @@ function removeRetiredAppPatches(): void {
   // A testbench desktop shares the developer's apps, and never edits them.
   if (machineWideChangesDisabled()) return;
   const firstLaunchAfterUpdate = !existsSync(connectedAppsStatePath());
-  const retired = [
-    ...RETIRED_APP_PROFILES.map((raw, index) => normalizeDesktopSystemProxyProfile(raw, index)),
-    ...(firstLaunchAfterUpdate ? retiredDesktopProfiles(readLegacyDesktopConnected()) : []),
-  ];
-  retired.forEach((profile) => {
+  const cleanUp = (profile: { label: string; configPatch?: ConfigPatchDef }): void => {
     if (!profile.configPatch) return;
     try {
       if (!isConfigPatchConnected(profile.configPatch, connectedAppsWslTargetsPath())) return;
@@ -84,7 +82,23 @@ function removeRetiredAppPatches(): void {
       log(`${profile.label}: no longer supported — removed Antseed from its config`);
     } catch (err) {
       log(`${profile.label}: could not remove Antseed from its config: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
     }
+  };
+  for (const [index, raw] of RETIRED_APP_PROFILES.entries()) {
+    try { cleanUp(normalizeDesktopSystemProxyProfile(raw, index)); } catch { /* retried at every launch anyway */ }
+  }
+  // Retried at later launches until it succeeds; an install that already
+  // passed its first launch before this list existed has nothing pending.
+  const store = retiredMigrationStore(retiredAppsPendingPath());
+  if (!firstLaunchAfterUpdate && store.read() === null) store.write([]);
+  migrateRetiredApps({
+    store,
+    firstLaunchNames: () => retiredDesktopProfiles(readLegacyDesktopConnected()).map((profile) => profile.name),
+    cleanUp: (name) => {
+      const profile = retiredDesktopProfiles([name])[0];
+      if (profile) cleanUp(profile);
+    },
   });
   rmSync(claudeGatewaySlotsPath(), { force: true });
   if (firstLaunchAfterUpdate) void persist();
@@ -228,11 +242,11 @@ async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {
 }
 
 /**
- * Applies `names` (all connected apps when omitted). Failures are recorded per
- * app; an app the caller is adding that fails is rethrown after the rest are
- * wired, so the click that asked for it sees the error.
+ * Applies `names`. Failures are recorded per app; if `requiredApp` (the one the
+ * caller is adding) fails, it is rethrown after the rest are wired, so the
+ * click that asked for it sees the error.
  */
-async function applyPatches(names: string[], adding: string[] = []): Promise<void> {
+async function applyPatches(names: string[], requiredApp?: string): Promise<void> {
   const modelsFor = oncePerGatewayKey(textModels);
   let addError: Error | null = null;
   for (const name of names) {
@@ -243,7 +257,7 @@ async function applyPatches(names: string[], adding: string[] = []): Promise<voi
       const message = err instanceof Error ? err.message : String(err);
       errors[name] = message;
       log(`${findConnectableProfile(name)?.label ?? name}: connect failed — ${message}`);
-      if (adding.includes(name) && !addError) addError = err instanceof Error ? err : new Error(message);
+      if (name === requiredApp) addError = err instanceof Error ? err : new Error(message);
     }
   }
   await syncRelays();
@@ -261,7 +275,7 @@ export function connectApp(name: string): Promise<ConnectedAppsState> {
     const isNew = !connected.includes(name);
     if (isNew) connected = [...connected, name];
     try {
-      await applyPatches([name], [name]);
+      await applyPatches([name], name);
     } catch (err) {
       // A write that landed before the failure (the native config, one WSL
       // distro) stays connected, with its error, so Disconnect can take it out.

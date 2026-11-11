@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon } from '@hugeicons/core-free-icons';
 import type { ChatModel } from '../../../types/bridge';
-import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer } from '../../../modules/chat/models';
+import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
@@ -146,7 +146,7 @@ export function ChatModelDropdown({
         title={selected ? selected.id : undefined}
       >
         <span className={styles.modelDropdownLabel}>{triggerLabel}</span>
-        {selected?.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
+        {selectionIsFree(selected, selectedModelId) && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
         <HugeiconsIcon icon={ArrowDown01Icon} size={16} strokeWidth={1.5} />
       </button>
       {open && (

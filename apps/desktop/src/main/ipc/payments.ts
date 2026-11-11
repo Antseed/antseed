@@ -30,6 +30,7 @@ import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from 
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import { getTelemetryService } from '../telemetry/runtime.js';
+import { localFundingBlock } from '../gateway/service.js';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
@@ -43,6 +44,11 @@ export function registerPaymentsIpc(): void {
   ipcMain.handle('payments:open-pay-page', async (_event, opts: { kind?: PayPageKind; amountUsdc?: string }) => {
     try {
       const kind: PayPageKind = opts?.kind && PAY_PAGE_KINDS.includes(opts.kind) ? opts.kind : 'deposit';
+      // Withdrawing what this wallet already holds stays open; adding to it doesn't when it isn't what pays.
+      if (kind === 'deposit') {
+        const blocked = await localFundingBlock();
+        if (blocked) return { ok: false, error: blocked };
+      }
       await startPaymentsPortal();
       if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
       else getTelemetryService()?.clearPendingWithdraw();
@@ -77,6 +83,8 @@ export function registerPaymentsIpc(): void {
 
   ipcMain.handle('payments:open-card-provider', async (_event, opts?: { providerId?: string; amountUsdc?: string }) => {
     try {
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
@@ -171,6 +179,9 @@ export function registerPaymentsIpc(): void {
 
   ipcMain.handle('deposits:watch-start', async () => {
     try {
+      // No deposit address for a wallet that doesn't pay for this app's requests.
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };

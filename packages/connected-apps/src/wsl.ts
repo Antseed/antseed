@@ -15,7 +15,7 @@
  * persisted-targets file path is always passed in by the caller.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 
 /**
  * Per-tool install signals: the binary name, plus `$HOME`-relative paths the
@@ -191,18 +191,38 @@ export function discoverWslToolTargets(
  * replace only the given tool's rows.
  */
 export function saveWslTargetsForTool(filePath: string, tool: WslTool, targets: readonly WslConfigTarget[]): void {
+  try {
+    writeWslTargetsForTool(filePath, tool, targets);
+  } catch {
+    // Best-effort memory; discovery at the next connect rebuilds it.
+  }
+}
+
+/**
+ * Like saveWslTargetsForTool, but a failure throws, and the file is replaced
+ * whole (written beside it, then renamed) so it never holds half a list. For
+ * the record that must be on disk before a config gets the gateway's key.
+ */
+export function writeWslTargetsForTool(filePath: string, tool: WslTool, targets: readonly WslConfigTarget[]): void {
   const merged = [
     ...readWslTargets(filePath).filter((target) => target.tool !== tool),
     ...targets,
   ];
-  try {
-    if (merged.length === 0) {
+  if (merged.length === 0) {
+    try {
       unlinkSync(filePath);
-    } else {
-      writeFileSync(filePath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
-  } catch {
-    // Best-effort memory; discovery at the next connect rebuilds it.
+    return;
+  }
+  const temp = `${filePath}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    renameSync(temp, filePath);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
   }
 }
 

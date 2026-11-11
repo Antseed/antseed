@@ -106,18 +106,22 @@ async function freePort() {
 }
 
 /**
- * `antseed gateway --no-buyer` on the testbench buyer's data dir (so it shares
- * the buyer's control secret), on a free port, plus one API key for the desktop.
- * Never starts a second buyer.
+ * `antseed gateway start --no-buyer` on the testbench buyer's data dir (so it
+ * shares the buyer's control secret), on a free port, plus one API key for the
+ * desktop. The key is created first: a gateway without its console refuses to
+ * start with no active keys. Never starts a second buyer.
  */
 export async function startTestbenchGateway({ repo, manifest, reportDir }) {
   const buyerPort = Number(new URL(manifest.proxyUrl).port);
   const port = await freePort();
   const env = cliNodeEnv(process.env, manifest.home);
   const entry = cliEntry(repo);
+  const created = await runCli({ entry, dataDir: manifest.buyerDir, configPath: manifest.buyerConfig, args: ['gateway', 'key', 'create', '--label', 'Testbench desktop', '--json'], env });
+  const key = created.json?.apiKey;
+  if (typeof key !== 'string' || !key) throw new Error(`could not create a gateway key for the desktop: ${created.stderr || created.stdout}`);
   const node = spawnCliNode({
     who: 'desktop-gateway',
-    args: [entry, '--data-dir', manifest.buyerDir, '--config', manifest.buyerConfig, 'gateway', '--no-buyer', '--no-console', '--buyer-port', String(buyerPort), '--port', String(port)],
+    args: gatewayStartArgs({ entry, manifest, buyerPort, port }),
     env,
     logPath: join(reportDir, 'desktop-gateway.log'),
   });
@@ -126,14 +130,16 @@ export async function startTestbenchGateway({ repo, manifest, reportDir }) {
   try {
     // Any answer means it listens; /v1/key without a key is a 401.
     await waitForCliReady(node, async () => fetch(`${url}/v1/key`).then(() => true, () => false), { timeoutMs: 60_000 });
-    const created = await runCli({ entry, dataDir: manifest.buyerDir, configPath: manifest.buyerConfig, args: ['gateway', 'key', 'create', '--label', 'Testbench desktop', '--json'], env });
-    const key = created.json?.apiKey;
-    if (typeof key !== 'string' || !key) throw new Error(`could not create a gateway key for the desktop: ${created.stderr || created.stdout}`);
     return { url, key, stop };
   } catch (error) {
     await stop();
     throw error;
   }
+}
+
+/** `gateway start` options (they belong to the `start` subcommand, not `gateway`). */
+export function gatewayStartArgs({ entry, manifest, buyerPort, port }) {
+  return [entry, '--data-dir', manifest.buyerDir, '--config', manifest.buyerConfig, 'gateway', 'start', '--no-buyer', '--no-console', '--buyer-port', String(buyerPort), '--port', String(port)];
 }
 
 /** Launches the built full desktop (its own buyer) on a prepared profile environment; see lib/mainnet.mjs. */

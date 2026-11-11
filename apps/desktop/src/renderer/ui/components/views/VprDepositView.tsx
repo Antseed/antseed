@@ -14,7 +14,11 @@ import {
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
+import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
@@ -355,7 +359,32 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
-export function VprDepositView({ onSelectView }: Props) {
+/**
+ * Add funds for this computer's gateway. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't reach it: the page sends
+ * the user to that gateway's console, and nothing local (deposit watcher,
+ * checkout, address) starts until the gateway is known to be local.
+ */
+export function VprDepositView(props: Props) {
+  const mode = useCachedResource(gatewayResource).data?.status.mode;
+  if (mode === 'local') return <LocalDepositView {...props} />;
+  return (
+    <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+      {mode === 'remote' ? (
+        <VprCard>
+          <div className={styles.stack}>
+            <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+            <div>
+              <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+            </div>
+          </div>
+        </VprCard>
+      ) : null}
+    </VprPage>
+  );
+}
+
+function LocalDepositView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
     total: state.creditsTotalUsdc,
@@ -513,6 +542,8 @@ export function VprDepositView({ onSelectView }: Props) {
       } else {
         noteCheckoutOpened(method);
       }
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
     });
   }, [amount, chooseMethod, noteCheckoutOpened]);
 
@@ -655,6 +686,8 @@ export function VprDepositView({ onSelectView }: Props) {
               </span>
             </button>
             {payPageNotice && <div className={styles.cardNotice} role="alert">{payPageNotice}</div>}
+            {/* Every method funds through the watcher: when it can't start, say why here too. */}
+            {watchError && <div className={styles.cardNotice} role="alert">{watchError}</div>}
 
             <div className={styles.methodGroup}>
               <button

@@ -15,7 +15,7 @@ Use the gateway instead. It puts API keys, spend limits, routing policies and lo
 
 ## Start the buyer
 
-The desktop app runs a local gateway, which runs the buyer on this port while the app is open. Without the desktop app:
+The desktop app runs a local gateway, which runs the buyer on this port by default while the app is open (on `buyer.proxyPort` instead, if you changed it in your config). Without the desktop app:
 
 ```bash
 npm install -g @antseed/cli

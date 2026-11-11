@@ -13,13 +13,17 @@ export function ConsoleLaunchNotice({ onOpenSettings }: { onOpenSettings: () => 
         { label: 'Try again', onClick: () => { void openGatewayConsole(failure.path); } },
         { label: 'Gateway settings', onClick: () => { dismissConsoleLaunchFailure(); onOpenSettings(); } },
       ]}
+      actionsPlacement="below"
+      align="start"
       body={failure.error}
       dismissLabel="Dismiss"
       icon={<HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />}
+      // A toast above the bars: a deposit notice along the bottom can't cover it.
+      layout="toast"
       onDismiss={dismissConsoleLaunchFailure}
       role="alert"
       title="Couldn't open your gateway console"
-      tone="danger"
+      tone="neutral"
     />
   );
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../types/bridge';
 import {
+  selectionIsFree,
   buildCumulativeImagePrompt,
   chooseDefaultChatModel,
   chooseModelForPrivate,
@@ -117,4 +118,13 @@ test('a $0 offer only stakers get is labeled for stakers, not Free', () => {
   assert.equal(offerPriceLabel(zero, false), 'Free');
   assert.equal(offerPriceLabel(zero, true), 'Free for stakers');
   assert.equal(offerPriceLabel({ inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.9 }, true), '$0.10 / $0.90 per M');
+});
+
+test('a pin to a paid seller of a model with a free seller is not Free', () => {
+  const free = 'a'.repeat(40);
+  const model = { free: true, freeSellerId: `0x${free.toUpperCase()}` };
+  assert.equal(selectionIsFree(model, 'model-a'), true);
+  assert.equal(selectionIsFree(model, `${free}@model-a`), true);
+  assert.equal(selectionIsFree(model, `${'b'.repeat(40)}@model-a`), false);
+  assert.equal(selectionIsFree({ free: false, freeSellerId: null }, 'model-a'), false);
 });

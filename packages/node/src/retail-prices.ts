@@ -13,10 +13,15 @@ export function parseRetailPrices(body: unknown): RetailPriceMap | null {
   const data = body && typeof body === 'object' ? (body as Record<string, unknown>).data : null;
   if (!Array.isArray(data)) return null;
   // Absent stays null; an explicit 0 (free cache reads) is a price.
+  // Only numbers and numeric strings count; anything else (an object, a
+  // bad string) leaves that price unset instead of failing the whole list.
   const perMillion = (perToken: unknown): number | null => {
-    if (perToken === null || perToken === undefined || (typeof perToken === 'string' && !perToken.trim())) return null;
-    const numeric = Number(perToken);
-    return Number.isFinite(numeric) && numeric >= 0 ? numeric * 1_000_000 : null;
+    let numeric: number;
+    if (typeof perToken === 'number') numeric = perToken;
+    else if (typeof perToken === 'string' && perToken.trim()) numeric = Number(perToken);
+    else return null;
+    const scaled = numeric * 1_000_000;
+    return Number.isFinite(scaled) && scaled >= 0 ? scaled : null;
   };
   const prices: RetailPriceMap = new Map();
   for (const model of data) {
@@ -49,4 +54,47 @@ export function retailTokenCostUsd(totalInput: number, cachedInput: number, outp
   return ((totalInput - cached) * inputPrice
     + cached * (price.cachedInput ?? inputPrice)
     + output * (price.output ?? 0)) / 1_000_000;
+}
+
+/** One service's usage as the buyer reports it: base-unit USDC and token counts, as numbers or decimal strings. */
+export type RetailUsageRow = {
+  serviceIdHash: string;
+  amountUsdc: number | string;
+  inputTokens: number | string;
+  cachedInputTokens: number | string;
+  outputTokens: number | string;
+  requestCount?: number;
+};
+
+export type RetailUsageTotals = { retailUsd: number; paidUsd: number; matchedServices: number; matchedRequests: number };
+
+/**
+ * Retail vs paid over the services whose name has a retail price. Services
+ * without a match, or whose tokens cost nothing at retail, count on neither
+ * side; free usage that matches counts at $0 paid. Null when nothing matched.
+ * `names` maps a lowercase service-id hash to the service name.
+ */
+export function totalRetailUsage(
+  rows: readonly RetailUsageRow[],
+  names: ReadonlyMap<string, string>,
+  prices: RetailPriceMap,
+): RetailUsageTotals | null {
+  const count = (value: number | string): number => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  };
+  const totals: RetailUsageTotals = { retailUsd: 0, paidUsd: 0, matchedServices: 0, matchedRequests: 0 };
+  for (const row of rows) {
+    const name = names.get(row.serviceIdHash.toLowerCase());
+    const price = name ? prices.get(canonicalModelKey(name)) : undefined;
+    if (!price) continue;
+    // The buyer's input tokens are fresh plus cached; cached ones are priced apart.
+    const retail = retailTokenCostUsd(count(row.inputTokens), count(row.cachedInputTokens), count(row.outputTokens), price);
+    if (!(retail > 0) || !Number.isFinite(retail)) continue;
+    totals.retailUsd += retail;
+    totals.paidUsd += count(row.amountUsdc) / 1_000_000;
+    totals.matchedServices += 1;
+    totals.matchedRequests += count(row.requestCount ?? 0);
+  }
+  return totals.matchedServices > 0 ? totals : null;
 }

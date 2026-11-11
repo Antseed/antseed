@@ -641,13 +641,16 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
     const filesToSend = attachedFiles;
     resetComposer();
+    // The mode on screen when Send was pressed, so a failed switch to Private
+    // refuses the send instead of letting it go out in Anonymous.
+    const options = { privateAtSubmit: privateMode };
     if (imageMode) {
-      actions.generateImage(text);
+      actions.generateImage(text, options);
     } else {
-      actions.sendMessage(text, filesToSend);
+      actions.sendMessage(text, filesToSend, options);
     }
     scrollChatToBottom('smooth');
-  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode]);
+  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode, privateMode]);
 
   const handleRemovePending = useCallback((id: string) => {
     setPendingQueue((prev) => prev.filter((item) => item.id !== id));

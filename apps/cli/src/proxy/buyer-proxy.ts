@@ -3923,9 +3923,10 @@ export class BuyerProxy {
     const listPolicy = requestPolicy ?? (url.searchParams.get('scope') === 'network' ? null : {})
     // Each model is planned once, among only the sellers offering it: a list
     // holds hundreds of models, so planning across all peers takes over a second.
+    const offers = buildNetworkServiceOffers(peers)
     const sellersByModel = new Map<string, PeerInfo[]>()
     if (listPolicy) {
-      for (const offer of buildNetworkServiceOffers(peers)) {
+      for (const offer of offers) {
         const peer = peerById.get(offer.peerId)
         if (!peer) continue
         const key = canonicalModelKey(offer.serviceId)
@@ -3946,6 +3947,7 @@ export class BuyerProxy {
     }
     const teeScopes = new Map<string, ReturnType<TeeVerification['teeProvenScope']>>()
     const models = buildNetworkModels(peers, this._now(), {
+      offers,
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
       teeScope: (peer) => {

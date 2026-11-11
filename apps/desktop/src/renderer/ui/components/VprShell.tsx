@@ -141,6 +141,13 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const openDashboard = useCallback(() => {
     void openGatewayConsole('/');
   }, []);
+  // A remote gateway pays from its own wallet: Add funds opens its console's
+  // Wallet page, never this computer's checkout.
+  const gatewayMode = gateway.data?.status.mode;
+  const addFunds = useCallback(() => {
+    if (gatewayMode === 'remote') void openGatewayConsole('/wallet');
+    else onSelectView('deposit');
+  }, [gatewayMode, onSelectView]);
   const chatActive = activeView === 'chat';
   const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
 
@@ -241,7 +248,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         ) : (
           <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
         )}
-        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} compact={collapsed} />
+        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={addFunds} compact={collapsed} />
         <button
           type="button"
           className={styles.navButton}
@@ -268,7 +275,10 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           </button>
         ))}
         <p className={styles.status} title={collapsed ? `${gatewayStatusText(gatewayStatus)} · v${appVersion}` : undefined}>
-          <span className={gatewayStatus && !gatewayStatus.reachable && !gatewayStatus.starting ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
+          <span
+            className={gatewayStatus && !gatewayStatus.reachable && !gatewayStatus.starting ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}
+            title={gatewayStatus && !gatewayStatus.reachable ? gatewayStatus.lastError ?? undefined : undefined}
+          >
             {gatewayStatusText(gatewayStatus)}
           </span>
           <span className={styles.statusVersion}>v{appVersion}</span>
@@ -294,7 +304,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         <NetworkAlertBanner />
         <UpdateBanner />
         <ConsoleLaunchNotice onOpenSettings={() => onSelectView('preferences')} />
-        <DepositProgressBanner onAddFunds={() => onSelectView('deposit')} onDepositView={activeView === 'deposit'} />
+        <DepositProgressBanner onAddFunds={addFunds} onDepositView={activeView === 'deposit'} />
       </main>
     </div>
   );

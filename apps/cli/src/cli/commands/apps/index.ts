@@ -91,7 +91,7 @@ export function readDefaultRoutedModel(dataDir: string): string | null {
 
 export function noDefaultRouteWarning(buyerPort: number): string {
   return 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
-    + 'Pick a model in the Antseed desktop app, or set one on the running buyer: '
+    + 'Set one on the running buyer: '
     + `curl -X POST http://localhost:${buyerPort}/_antseed/route -H 'content-type: application/json' -d '{"model":"<peerId>@<service>"}'`
 }
 

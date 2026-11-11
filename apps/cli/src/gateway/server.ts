@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -17,7 +17,7 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, REQUIRE_TEE_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -356,7 +356,7 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[REQUIRE_TEE_HEADER]) || undefined))
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -1315,7 +1315,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
-  REQUIRE_TEE_HEADER,
+  ANTSEED_REQUIRE_TEE_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',

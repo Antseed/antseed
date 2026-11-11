@@ -565,11 +565,17 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     );
   };
 
+  // Where the user is now, for a delete that resolves after they moved on.
+  const placeRef = useRef({ highlightActive, chatActiveConversation });
+  placeRef.current = { highlightActive, chatActiveConversation };
   const handleDeleteConv = useCallback((id: string) => {
     const wasOnScreen = highlightActive && id === chatActiveConversation;
     // Leave only once it's gone: a failure is shown in the chat, which must stay on screen.
     void actions.deleteConversation(id).then((deleted) => {
-      if (deleted && wasOnScreen) onOpenConversationDeleted();
+      // The delete left the chat view on an empty new chat; once the user has
+      // opened another chat or view meanwhile, they stay where they went.
+      const still = placeRef.current;
+      if (deleted && wasOnScreen && still.highlightActive && still.chatActiveConversation === null) onOpenConversationDeleted();
     });
   }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
 
