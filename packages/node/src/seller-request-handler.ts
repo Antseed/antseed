@@ -589,8 +589,10 @@ export class SellerRequestHandler {
       if (videoRoute?.action === 'create' && !isFreeService && spm && this._deps.channelsClient) {
         const oneOff = spm.getOneOffChannelForRequest(buyerPeerId, request.requestId);
         if (!oneOff) {
+          // Before the chain reads, and again with the plan: parallel creates can all pass the first check.
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.oneOffRetryAfterSeconds(buyerPeerId, request.requestId))) return;
           const plan = await this._buildOneOffPlan(estimatedRequestCost);
-          spm.registerOneOffPlan(buyerPeerId, request.requestId, plan);
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.registerOneOffPlan(buyerPeerId, request.requestId, plan))) return;
           debugLog(`[SellerHandler] Video create ${request.requestId} needs a one-off channel (price=${estimatedRequestCost})`);
           const requirements = spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing);
           mux.sendProxyResponse({
@@ -763,22 +765,42 @@ export class SellerRequestHandler {
           if (atCeiling()) {
             // A top-up mining in the background may lift the ceiling: wait for
             // it (bounded) rather than close a channel that is being extended.
+            // Requests that finish during the wait and the chain read can push
+            // the spend past the ceiling that just landed while the next top-up
+            // is already mining: judge again after each one, within one budget.
+            const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
             let topUpLanded = true;
-            if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
-              topUpLanded = await spm.waitForTopUp(session.sessionId, TOP_UP_WAIT_MS, spent);
+            while (true) {
+              const ceilingBefore = reserveMax;
+              if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
+                topUpLanded = await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()), spent);
+              }
+              reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+              // The channel may have closed during the read: never admit work
+              // on a channel that is gone, and judge the others on fresh counters.
+              if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
+                sendSessionExpired('the reserve ceiling check');
+                return;
+              }
+              accepted = spm.getAcceptedCumulative(session.sessionId);
+              spent = spm.getCumulativeSpend(session.sessionId);
+              isBlocked = spm.isChannelBlocked(session.sessionId);
+              if (!topUpLanded || !atCeiling()) break;
+              // Wait again only for a top-up mining now, or for one queued for
+              // the fresh spend right after the ceiling moved; a queued top-up
+              // that did not start is not waited for twice.
+              const nextRunning = spm.isTopUpRunning(session.sessionId);
+              const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(session.sessionId, spent);
+              if (!nextRunning && !nextQueued) break;
+              if (Date.now() >= topUpDeadline) {
+                topUpLanded = !nextRunning;
+                break;
+              }
+              debugLog(`[SellerHandler] Still at the ceiling after a top-up for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax} ceilingBefore=${ceilingBefore} nextRunning=${nextRunning} nextQueued=${nextQueued}) — waiting for the next top-up`);
             }
-            reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
-            // The channel may have closed during the read: never admit work
-            // on a channel that is gone, and judge the others on fresh counters.
-            if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
-              sendSessionExpired('the reserve ceiling check');
-              return;
-            }
-            accepted = spm.getAcceptedCumulative(session.sessionId);
-            spent = spm.getCumulativeSpend(session.sessionId);
-            isBlocked = spm.isChannelBlocked(session.sessionId);
             if (!topUpLanded && atCeiling()) {
               // Still mining: a short retry, never an exhausted (closing) answer.
+              debugLog(`[SellerHandler] Top-up still mining at the wait budget for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax}) — returning 503 top_up_pending`);
               mux.sendProxyResponse({
                 requestId: request.requestId,
                 statusCode: 503,
@@ -1331,7 +1353,8 @@ export class SellerRequestHandler {
       : undefined;
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
-      if (!charge) this._closeOneOffBestEffort(channelId, 'free video');
+      if (charge) this._deps.sellerPaymentManager?.markOneOffCreateAccepted(charge.channelId);
+      else this._closeOneOffBestEffort(channelId, 'free video');
       return response;
     } catch (err) {
       debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
@@ -1368,6 +1391,14 @@ export class SellerRequestHandler {
     void spm.closeOneOffChannel(channelId, reason).catch((err) => {
       debugWarn(`[SellerHandler] Failed to close one-off channel ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /** Answers a video create whose buyer must wait for another one-off channel. Returns whether it did. */
+  private _sendOneOffBackoff(mux: ProxyMux, requestId: string, buyerPeerId: string, retryAfterSeconds: number | null): boolean {
+    if (retryAfterSeconds === null) return false;
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video channel, retry in ${retryAfterSeconds}s`);
+    this._sendJsonError(mux, requestId, 429, 'one_off_channel_backoff', `This seller is not opening another video payment channel for this buyer yet; retry in ${retryAfterSeconds} seconds`, { 'retry-after': String(retryAfterSeconds) });
+    return true;
   }
 
   private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {

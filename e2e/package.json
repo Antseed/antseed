@@ -7,8 +7,11 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
     "flow:local-chain": "node ./scripts/local-chain-full-flow.mjs",
-    "stress": "node ./stress/ci.mjs"
+    "stress": "node ./stress/ci.mjs",
+    "test:testbench": "node --test testbench/test/*.test.mjs",
+    "flow:testbench": "node testbench/test/e2e-flow.mjs"
   },
   "dependencies": {
     "@antseed/node": "workspace:*",

@@ -8,8 +8,9 @@ import { isMultiInstanceDevelopment } from '../dev-instance.js';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
-import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
+import { assertAttachOnlyRuntime, isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
+import { isAttachOnly, preserveTestbenchRouting } from '../runtime/attach-only.js';
 import { requestTeeSnapshot } from '../runtime/tee-verification.js';
 import type { DesktopTeeStatus } from '@antseed/node/tee-status';
 
@@ -141,9 +142,13 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   });
 
   ipcMain.handle('runtime:start', async (_event, options: StartOptions) => {
-    if (options.mode === 'connect' && isMultiInstanceDevelopment()) {
+    const attachOnly = isAttachOnly();
+    if (options.mode !== 'connect') assertAttachOnlyRuntime(options.mode, false, attachOnly);
+    if (options.mode === 'connect' && (isMultiInstanceDevelopment() || attachOnly)) {
       const port = await resolveBuyerProxyPort();
-      if (await isCompatibleSharedBuyer(port)) {
+      const compatible = await isCompatibleSharedBuyer(port);
+      assertAttachOnlyRuntime(options.mode, compatible, attachOnly);
+      if (compatible) {
         const state = processManager.attach('connect');
         appendLog('connect', 'system', `Reusing shared buyer proxy on 127.0.0.1:${port}.`);
         return {
@@ -178,13 +183,16 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   });
 
   ipcMain.handle('runtime:stop', async (_event, mode: RuntimeMode) => {
-    const preserveSharedBuyer = mode === 'connect' && isMultiInstanceDevelopment();
+    // A shared buyer (named dev instances) or the testbench buyer (attach-only)
+    // belongs to someone else: release it, never kill whatever holds its port.
+    const sharedBuyer = isMultiInstanceDevelopment() || isAttachOnly();
+    const preserveSharedBuyer = mode === 'connect' && sharedBuyer;
     const state = await processManager.stop(mode, preserveSharedBuyer);
     if (mode === 'connect') {
       // Normal Stop must silence the buyer proxy, not just our child. Named
       // development instances instead release shared ownership so one test
       // window cannot break every other window and connected tool.
-      if (!isMultiInstanceDevelopment()) {
+      if (!sharedBuyer) {
         await killOrphanBuyerProxy();
       }
     }
@@ -354,7 +362,8 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   ipcMain.handle(
     'runtime:update-config',
     async (_event, config: Record<string, unknown>): Promise<ApiResult> => {
-      const safeConfig = sanitizeDashboardConfigPayload(config);
+      const existing = isAttachOnly() ? await readConfig(ACTIVE_CONFIG_PATH).catch(() => ({})) : {};
+      const safeConfig = preserveTestbenchRouting(sanitizeDashboardConfigPayload(config), existing);
       if (Object.keys(safeConfig).length === 0) {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }
