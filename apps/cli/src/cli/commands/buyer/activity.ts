@@ -39,7 +39,15 @@ const MAX_CHANNEL_ROWS = 12
 
 // ─── Daemon reads ───
 
-interface DaemonChannelRow {
+/** The chain's record of a channel, as the daemon reports it with the row (`onChain` on `/_antseed/channels?all=1`). */
+interface DaemonChannelOnChain {
+  status: number
+  deposit: string
+  settled: string
+  closeRequestedAt: number
+}
+
+export interface DaemonChannelRow {
   channelId: string
   peerId: string
   seller: string
@@ -52,6 +60,8 @@ interface DaemonChannelRow {
   requestCount: number
   inputTokens: string
   outputTokens: string
+  /** Null when the daemon could not read it, or predates reporting it. */
+  onChain: DaemonChannelOnChain | null
 }
 
 interface DaemonServiceUsage {
@@ -83,7 +93,15 @@ function num(raw: Record<string, unknown>, key: string): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function normalizeChannelRow(entry: unknown): DaemonChannelRow | null {
+function normalizeOnChain(value: unknown): DaemonChannelOnChain | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const status = raw['status']
+  if (typeof status !== 'number' || !Number.isInteger(status)) return null
+  return { status, deposit: str(raw, 'deposit'), settled: str(raw, 'settled'), closeRequestedAt: num(raw, 'closeRequestedAt') }
+}
+
+export function normalizeChannelRow(entry: unknown): DaemonChannelRow | null {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
   const raw = entry as Record<string, unknown>
   const channelId = str(raw, 'channelId', '') || str(raw, 'sessionId', '')
@@ -103,6 +121,7 @@ function normalizeChannelRow(entry: unknown): DaemonChannelRow | null {
     // (BuyerChannelSummary in @antseed/node).
     inputTokens: str(raw, 'tokensDelivered'),
     outputTokens: str(raw, 'outputTokens'),
+    onChain: normalizeOnChain(raw['onChain']),
   }
 }
 
@@ -363,7 +382,7 @@ async function fetchClaimableRewards(config: AntseedConfig, address: string): Pr
   }
 }
 
-interface OnChainChannelState {
+export interface OnChainChannelState {
   /**
    * channelId → funds for live (Active) channels. `reserve` is the on-chain
    * deposit − settled (still held in Deposits); `recoverable` additionally
@@ -382,6 +401,110 @@ interface OnChainChannelState {
   status: Map<string, { status: number; closeRequestedAt: number }>
 }
 
+/** Record one channel's chain read. Status 0 is recorded too: no record anywhere is distinct from a failed read. */
+function noteChannelState(
+  state: OnChainChannelState,
+  row: DaemonChannelRow,
+  info: { status: number; deposit: bigint; settled: bigint; closeRequestedAt: number },
+): void {
+  state.status.set(row.channelId, { status: info.status, closeRequestedAt: info.closeRequestedAt })
+  if (info.status !== 1) return // no record, or settled/timed-out: nothing is held
+  const signed = safeBigInt(row.cumulativeSigned)
+  const spent = signed > info.settled ? signed : info.settled
+  state.locked.set(row.channelId, {
+    reserve: info.deposit > info.settled ? info.deposit - info.settled : 0n,
+    recoverable: info.deposit > spent ? info.deposit - spent : 0n,
+  })
+}
+
+/**
+ * On-chain state from the records the daemon reports with its rows, retired
+ * rows included. Null from a daemon that predates them (no `onChain` on the
+ * response), which this command then reads the chain for itself.
+ */
+export function daemonOnChainChannelState(body: Record<string, unknown>, rows: DaemonChannelRow[]): OnChainChannelState | null {
+  if (!body['onChain'] || typeof body['onChain'] !== 'object') return null
+  const state: OnChainChannelState = { locked: new Map(), status: new Map() }
+  for (const row of rows) {
+    if (!row.onChain) continue
+    noteChannelState(state, row, {
+      status: row.onChain.status,
+      deposit: safeBigInt(row.onChain.deposit),
+      settled: safeBigInt(row.onChain.settled),
+      closeRequestedAt: row.onChain.closeRequestedAt,
+    })
+  }
+  return state
+}
+
+/**
+ * On-chain reserve no listed channel accounts for, as the daemon reports it;
+ * null when it reports none or could not judge.
+ */
+export function daemonUnaccountedReserve(body: Record<string, unknown>): bigint | null {
+  const summary = body['onChain']
+  if (!summary || typeof summary !== 'object') return null
+  const value = (summary as Record<string, unknown>)['unaccountedReserved']
+  return typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : null
+}
+
+export interface ActivityChannels {
+  /** Channels the chain holds open (or whose state is unknown), most recoverable first. */
+  rows: DaemonChannelRow[]
+  /** Rows the store calls current that have no on-chain record: nothing is locked for them. */
+  unreserved: number
+  /** What the chain holds for the listed rows: deposit − settled. */
+  held: bigint
+  statusOf(row: DaemonChannelRow): string
+}
+
+/**
+ * The chain is the authority on liveness. A row the store calls active whose
+ * on-chain record says settled or timed out is history; a row the store
+ * retired (the buyer gave up on the session) whose record is still open is
+ * not. Rows with no chain read keep the store's word. Among live rows, those
+ * with nothing held are left out: there is nothing to close.
+ */
+export function activityChannels(channels: DaemonChannelRow[], onChain: OnChainChannelState): ActivityChannels {
+  const statusOf = (row: DaemonChannelRow): string => {
+    const chain = onChain.status.get(row.channelId)
+    if (!chain) return row.status
+    if (chain.status === 2) return 'settled'
+    if (chain.status === 3) return 'timedout'
+    if (chain.status === 1) {
+      if (chain.closeRequestedAt > 0) return 'closing'
+      return isCurrentChannelStatus(row.status) ? row.status : 'active'
+    }
+    return row.status
+  }
+  const current = channels.filter((row) => isCurrentChannelStatus(statusOf(row)))
+  // Confirmed no-record rows (the seller never landed reserve()) hold no
+  // funds and have nothing to close: they are local bookkeeping, not
+  // activity, so they are counted but not listed.
+  const unreserved = current.filter((row) => onChain.status.get(row.channelId)?.status === 0).length
+  const rows = current
+    .filter((row) => onChain.status.get(row.channelId)?.status !== 0)
+    .filter((row) => !onChain.locked.has(row.channelId) || onChain.locked.get(row.channelId)!.reserve > 0n)
+    .sort((left, right) => {
+      const leftLocked = onChain.locked.get(left.channelId)?.recoverable ?? -1n
+      const rightLocked = onChain.locked.get(right.channelId)?.recoverable ?? -1n
+      if (leftLocked !== rightLocked) return rightLocked > leftLocked ? 1 : -1
+      return (right.reservedAt || 0) - (left.reservedAt || 0)
+    })
+  const held = sumBigints(rows.map((row) => onChain.locked.get(row.channelId)?.reserve ?? 0n))
+  return { rows, unreserved, held, statusOf }
+}
+
+/** One row's amount: what closing recovers, or what the chain still holds once it is signed away in full. */
+export function formatChannelLocked(entry: { reserve: bigint; recoverable: bigint } | undefined): string {
+  if (!entry) return 'locked amount unavailable'
+  if (entry.recoverable > 0n) return `${formatUsd(entry.recoverable)} locked`
+  // Signed away in full but not settled: the seller can still claim it, and
+  // whatever it does not claim comes back when the channel closes.
+  return entry.reserve > 0n ? `${formatUsd(entry.reserve)} unsettled` : 'no funds locked'
+}
+
+/** For a daemon that predates the `onChain` records: read the chain here, for the rows the store calls current. */
 async function readOnChainChannelState(config: AntseedConfig, rows: DaemonChannelRow[]): Promise<OnChainChannelState> {
   const state: OnChainChannelState = { locked: new Map(), status: new Map() }
   try {
@@ -411,20 +534,15 @@ async function readOnChainChannelState(config: AntseedConfig, rows: DaemonChanne
       if (info.status === 0 && /^0x[0-9a-fA-F]{40}$/.test(row.seller)) {
         info = await facadeClientFor(row.seller).getSession(row.channelId).catch(() => info)
       }
-      // Record status 0 too: a successful read with no record anywhere means
-      // the seller never landed reserve() on-chain (or the channel predates a
-      // Channels redeployment) — distinct from a failed read, where nothing
-      // is recorded and the amount stays genuinely unknown.
-      state.status.set(row.channelId, { status: info.status, closeRequestedAt: Number(info.closeRequestedAt) })
-      if (info.status === 0) return
-      if (info.status !== 1) return // settled/timed-out: nothing is held any more
-      const deposit = BigInt(info.deposit.toString())
-      const settled = BigInt(info.settled.toString())
-      const signed = safeBigInt(row.cumulativeSigned)
-      const spent = signed > settled ? signed : settled
-      state.locked.set(row.channelId, {
-        reserve: deposit > settled ? deposit - settled : 0n,
-        recoverable: deposit > spent ? deposit - spent : 0n,
+      // A successful read with no record anywhere means the seller never
+      // landed reserve() on-chain (or the channel predates a Channels
+      // redeployment). A failed read records nothing, and the amount stays
+      // genuinely unknown.
+      noteChannelState(state, row, {
+        status: info.status,
+        deposit: BigInt(info.deposit.toString()),
+        settled: BigInt(info.settled.toString()),
+        closeRequestedAt: Number(info.closeRequestedAt),
       })
     })
   } catch {
@@ -471,17 +589,19 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
 
       // Savings baseline, balances, rewards, and on-chain channel state in
       // parallel; each degrades to "unavailable" on its own without failing
-      // the summary.
-      const currentChannels = channels.filter((row) => isCurrentChannelStatus(row.status))
+      // the summary. The daemon reports the chain's record of every row; one
+      // that predates that is read here.
+      const reported = daemonOnChainChannelState(channelsBody, channels)
       const [referenceMap, serviceNames, deposits, rewards, onChain] = await Promise.all([
         fetchComparableRetailPrices(),
         resolveServiceNames(globalOpts.dataDir, (usage?.services ?? []).map((s) => s.serviceIdHash)),
         fetchDepositsBalance(config, address),
         fetchClaimableRewards(config, address),
-        readOnChainChannelState(config, currentChannels),
+        reported ?? readOnChainChannelState(config, channels.filter((row) => isCurrentChannelStatus(row.status))),
       ])
       const locked = onChain.locked
       const onChainStatus = onChain.status
+      const unaccountedReserve = daemonUnaccountedReserve(channelsBody)
 
       const savings = usage && referenceMap
         ? computeMeasuredSavings(usage.services, serviceNames, referenceMap)
@@ -493,34 +613,7 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
         : sumBigints(channels.flatMap((row) => [row.inputTokens, row.outputTokens]))
       const windowSpent = sumBigints(history.map((day) => day.spentUsdc))
       const windowTokens = sumBigints(history.map((day) => day.tokens))
-      // The chain is the authority on liveness: locally-"active" rows whose
-      // on-chain record says settled/timed-out are history, not active. Among
-      // live rows, keep those whose reserve is still held (or unknown) — a
-      // fully signed-away channel shows "no funds locked" but stays closable.
-      const effectiveStatus = (row: DaemonChannelRow): string => {
-        const chain = onChainStatus.get(row.channelId)
-        if (!chain) return row.status
-        if (chain.status === 2) return 'settled'
-        if (chain.status === 3) return 'timedout'
-        if (chain.status === 1 && chain.closeRequestedAt > 0) return 'closing'
-        return row.status
-      }
-      // Confirmed no-record rows (the seller never landed reserve()) hold no
-      // funds and have nothing to close — they are local bookkeeping, not
-      // activity, so they are counted but not listed.
-      const currentByChain = currentChannels.filter((row) => isCurrentChannelStatus(effectiveStatus(row)))
-      const unreservedCount = currentByChain
-        .filter((row) => onChainStatus.get(row.channelId)?.status === 0)
-        .length
-      const activeRows = currentByChain
-        .filter((row) => onChainStatus.get(row.channelId)?.status !== 0)
-        .filter((row) => !locked.has(row.channelId) || locked.get(row.channelId)!.reserve > 0n)
-        .sort((left, right) => {
-          const leftLocked = locked.get(left.channelId)?.recoverable ?? -1n
-          const rightLocked = locked.get(right.channelId)?.recoverable ?? -1n
-          if (leftLocked !== rightLocked) return rightLocked > leftLocked ? 1 : -1
-          return (right.reservedAt || 0) - (left.reservedAt || 0)
-        })
+      const { rows: activeRows, unreserved: unreservedCount, held: totalHeld, statusOf: effectiveStatus } = activityChannels(channels, onChain)
 
       if (options.json) {
         console.log(JSON.stringify({
@@ -541,6 +634,8 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
             onChainStatus: onChainStatus.get(row.channelId)?.status ?? null,
           })),
           unreservedChannels: unreservedCount,
+          // On-chain reserve no listed channel accounts for; null when the daemon did not judge it.
+          unaccountedReservedBaseUnits: unaccountedReserve === null ? null : unaccountedReserve.toString(),
           deposits: deposits
             ? { available: deposits.available.toString(), reserved: deposits.reserved.toString() }
             : null,
@@ -580,10 +675,15 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
       }
       console.log('')
 
-      const totalLocked = sumBigints([...locked.values()].map((entry) => entry.recoverable))
-      console.log(chalk.bold('Active channels') + chalk.dim(locked.size > 0 ? `   ${formatUsd(totalLocked)} locked` : ''))
+      // What the chain holds for the listed channels, like "reserved" below:
+      // a row's own amount is what closing it recovers for certain.
+      console.log(chalk.bold('Active channels') + chalk.dim(locked.size > 0 ? `   ${formatUsd(totalHeld)} locked` : ''))
       if (unreservedCount > 0) {
         console.log(chalk.dim(`  (${unreservedCount} locally-tracked channel${unreservedCount === 1 ? '' : 's'} with no on-chain record hidden — nothing is locked for them)`))
+      }
+      if (unaccountedReserve !== null && unaccountedReserve > 0n) {
+        console.log(chalk.dim(`  ${formatUsd(unaccountedReserve)} more is reserved on-chain by a channel this buyer has no record of. With its channel id:`))
+        console.log(chalk.dim('  `antseed buyer channels request-close <channelId>`, then `withdraw` after the grace period.'))
       }
       if (activeRows.length === 0) {
         console.log(chalk.dim('  No active channels.'))
@@ -591,14 +691,8 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
         for (const row of activeRows.slice(0, MAX_CHANNEL_ROWS)) {
           const name = row.sellerDisplayName ?? `${row.seller.slice(0, 8)}…${row.seller.slice(-4)}`
           const entry = locked.get(row.channelId)
-          let lockedAmount: string
-          if (!entry) {
-            lockedAmount = chalk.dim('locked amount unavailable')
-          } else if (entry.recoverable === 0n) {
-            lockedAmount = chalk.dim('no funds locked')
-          } else {
-            lockedAmount = `${formatUsd(entry.recoverable)} locked`
-          }
+          const label = formatChannelLocked(entry)
+          const lockedAmount = entry && entry.recoverable > 0n ? label : chalk.dim(label)
           console.log(`  ${name.padEnd(24)} ${effectiveStatus(row).padEnd(12)} ${lockedAmount}`)
           console.log(chalk.dim(`    ${row.channelId}`))
         }

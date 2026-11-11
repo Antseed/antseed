@@ -2,6 +2,7 @@
 import type { AntsChainConfig, RewardsView } from '@antseed/ants'
 import { formatAntsExact } from '@antseed/ants'
 import { getChainConfig } from '@antseed/node'
+import type { ChannelChainState } from '../../../proxy/channel-chain.js'
 import { CHANNEL_CLOSE_GRACE_MS, type Channel, type ChainInfo, type DepositWatch, type Rewards, type Usdc, type Wallet } from '../types.js'
 
 const USDC_DECIMALS = 6
@@ -126,32 +127,32 @@ export function mapChannel(value: unknown): Channel | null {
   }
 }
 
-/** A channel's on-chain record (AntseedChannels `channels(id)`); status 0 = no record, 1 active, 2 settled, 3 timed out. */
-export interface ChannelChainState {
-  status: number
-  deposit: bigint
-  settled: bigint
-  closeRequestedAt: bigint
-}
+export type { ChannelChainState }
 
+const OPEN_LOCAL_STATUSES = new Set(['active', 'open'])
 
 /**
- * The buyer's channel store can lag the chain (a seller-side settle or close
- * is not always observed), and its `reserveCeiling` falls back to the
- * configured per-channel maximum for a channel it has not touched since it
- * started. Where the chain answered, its status and locked deposit win.
+ * The buyer's channel store can disagree with the chain both ways: a
+ * seller-side settle or close is not always observed, and a row the buyer
+ * retired (it gave up on the session) can still be open with its reserve
+ * locked. Its `reserveCeiling` also falls back to the configured per-channel
+ * maximum for a channel it has not touched since it started. Where the chain
+ * answered, its status and locked deposit win.
  * Status 0 (no record yet, e.g. a reserve still landing) keeps the local row
  * until its reserve deadline passes: the reserve can no longer land then, so
- * the row is 'expired' and holds nothing.
+ * a row the buyer still calls open is 'expired' and holds nothing.
  */
 export function applyChannelChainState(channel: Channel, state: ChannelChainState | undefined, nowSeconds: number, deadline: number | null = null): Channel {
   if (!state) return channel
   if (state.status === 0) {
-    return deadline !== null && deadline > 0 && nowSeconds > deadline
+    return OPEN_LOCAL_STATUSES.has(channel.status) && deadline !== null && deadline > 0 && nowSeconds > deadline
       ? { ...channel, status: 'expired', reserved: '0.000000', canCooperativeClose: false }
       : channel
   }
-  let status = channel.status
+  // Open on-chain, whatever the store calls it. A retired row is not the live
+  // session, so it never offers the seller's close (`canCooperativeClose` is
+  // already false for it).
+  let status = OPEN_LOCAL_STATUSES.has(channel.status) ? channel.status : 'active'
   if (state.status === 2) status = 'settled'
   else if (state.status === 3) status = 'timedout'
   else if (state.closeRequestedAt > 0n) status = BigInt(nowSeconds) * 1000n < state.closeRequestedAt * 1000n + BigInt(CHANNEL_CLOSE_GRACE_MS) ? 'closing' : 'withdrawable'
@@ -181,6 +182,35 @@ export function channelChainHints(body: unknown): { deadlines: Map<string, numbe
     if (seller) sellers.set(id, seller)
   }
   return { deadlines, sellers }
+}
+
+/**
+ * The on-chain record the buyer reports for each row (`onChain` on
+ * `GET /_antseed/channels?all=1`), by channel id. Null from a buyer that
+ * predates it, which the gateway then reads the chain for itself.
+ */
+export function channelChainStates(body: unknown): Map<string, ChannelChainState> | null {
+  const raw = record(body)
+  if (!raw['onChain'] || typeof raw['onChain'] !== 'object') return null
+  const states = new Map<string, ChannelChainState>()
+  for (const row of Array.isArray(raw['channels']) ? raw['channels'] : []) {
+    const channel = record(row)
+    const id = text(channel['channelId']) ?? text(channel['sessionId'])
+    const onChain = record(channel['onChain'])
+    const status = onChain['status']
+    if (!id || typeof status !== 'number' || !Number.isInteger(status)) continue
+    try {
+      states.set(id, {
+        status,
+        deposit: BigInt(text(onChain['deposit']) ?? '0'),
+        settled: BigInt(text(onChain['settled']) ?? '0'),
+        closeRequestedAt: BigInt(count(onChain['closeRequestedAt']) ?? 0),
+      })
+    } catch {
+      // A malformed amount: the row keeps what the buyer's store says.
+    }
+  }
+  return states
 }
 
 export function mapChannels(body: unknown): Channel[] {
