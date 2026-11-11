@@ -1374,12 +1374,18 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('does not transmit close when the pre-close authorization is not durable', async () => {
       vi.spyOn(negotiator, 'sendPostResponseAuthTo')
-        .mockRejectedValue(new Error('IndexedDB persistence failed'));
+        .mockRejectedValueOnce(new Error('IndexedDB persistence failed'));
 
       await expect(negotiator.requestChannelClose(SELLER_PEER_ID, conn))
         .rejects.toThrow('IndexedDB persistence failed');
       expect((bpm as Record<string, unknown>).buildCloseChannelRequest).not.toHaveBeenCalled();
       expect(conn.send).not.toHaveBeenCalled();
+
+      // The failure before anything was sent left the seller free to be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+      expect((await again).status).toBe('rejected');
     });
 
     it('sends the request and retires the session once the seller confirms', async () => {

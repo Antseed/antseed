@@ -511,11 +511,12 @@ describe('buyer recovery of a channel the seller asks to catch up on', () => {
   it('retries a 402 from the same burst whose terms came after the settle window, instead of closing the channel', async () => {
     const seller = sellerConnection();
     const channelId = await openChannel(seller, 500_000n);
-    expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST))).toBe('retry');
     const resentAt = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(resentAt);
+    expect(await outcomeOf(negotiator.handle402(catchUp402(channelId, 500_000n, 400_000n), PEER, seller.conn, REQUEST))).toBe('retry');
     // Another 402 of the burst arrives inside the settle window; its terms
     // come in a frame of their own after the window ends.
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(resentAt + 6_000);
+    clock.mockReturnValue(resentAt + 6_000);
     const sibling = outcomeOf(negotiator.handle402(termsToFollow402(), PEER, seller.conn, REQUEST));
     clock.mockReturnValue(resentAt + 7_500);
     sendTerms(channelId, 500_000n, 400_000n);
