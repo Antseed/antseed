@@ -8,7 +8,7 @@ import {
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
 } from './canonical.js';
-import { encodeJson, encodeText, parseJsonObject } from './utils.js';
+import { encodeJson, encodeText, extractErrorMessage, parseJsonObject } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -257,8 +257,10 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     );
   };
 
+  // The answer's ending is the final event's to tell.
+  const { incomplete_details: _ending, ...started } = body;
   pushEvent('response.created', {
-    response: { ...body, status: 'in_progress', output: [], output_text: '' },
+    response: { ...started, status: 'in_progress', output: [], output_text: '' },
   });
 
   const output = Array.isArray(body.output) ? body.output as Record<string, unknown>[] : [];
@@ -336,17 +338,6 @@ function fallbackResponseId(requestId: string, targetProtocol: ServiceApiProtoco
   if (targetProtocol === 'anthropic-messages') return `msg_${requestId}`;
   if (targetProtocol === 'openai-responses') return `resp_${requestId}`;
   return `chatcmpl-${requestId}`;
-}
-
-export function extractErrorMessage(parsed: Record<string, unknown>): string {
-  const error = parsed.error;
-  if (error && typeof error === 'object' && !Array.isArray(error)) {
-    const message = (error as Record<string, unknown>).message;
-    if (typeof message === 'string' && message.length > 0) return message;
-  }
-  if (typeof parsed.message === 'string' && parsed.message.length > 0) return parsed.message;
-  if (typeof error === 'string' && error.length > 0) return error;
-  return 'Upstream error';
 }
 
 function normalizeOpenAIError(parsed: Record<string, unknown>): Record<string, unknown> {

@@ -1,8 +1,8 @@
-import { extractErrorMessage } from './response-transform.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
   createChatStreamParser,
   encodeSseEvents,
+  extractErrorMessage,
   extractUsage,
   isSseFailure,
   RESPONSES_FINAL_ANSWER_TOOL,
@@ -683,7 +683,6 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let sequenceNumber = 0;
   let responseCreated = false;
   let outputStarted = false;
-  let outputDone = false;
   let textBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
@@ -817,59 +816,61 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
           const ending = openAIResponsesEnding(event.finishReason);
+          const finishedToolCalls = sortedToolCalls(toolCalls);
+          // An answer cut at a limit was cut in its last item: the items before it are whole.
+          const itemStatus = (last: boolean): 'completed' | 'incomplete' => (last ? ending.status : 'completed');
+          const messageStatus = itemStatus(finishedToolCalls.length === 0);
+          const toolCallStatus = (position: number) => itemStatus(position === finishedToolCalls.length - 1);
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
-          if (!outputDone) {
-            outputDone = true;
-            const msgId = getMessageId();
-            if (outputStarted) {
-              pushEvent(emitted, 'response.output_text.done', {
-                output_index: 0,
-                item_id: msgId,
-                content_index: 0,
-                text: textBuffer,
-                logprobs: [],
-              });
-              pushEvent(emitted, 'response.content_part.done', {
-                output_index: 0,
-                item_id: msgId,
-                content_index: 0,
-                part: { type: 'output_text', text: textBuffer, annotations: [] },
-              });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: 0,
-                item: {
-                  type: 'message',
-                  id: msgId,
-                  role: 'assistant',
-                  status: ending.status,
-                  content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                },
-              });
-            }
+          const msgId = getMessageId();
+          if (outputStarted) {
+            pushEvent(emitted, 'response.output_text.done', {
+              output_index: 0,
+              item_id: msgId,
+              content_index: 0,
+              text: textBuffer,
+              logprobs: [],
+            });
+            pushEvent(emitted, 'response.content_part.done', {
+              output_index: 0,
+              item_id: msgId,
+              content_index: 0,
+              part: { type: 'output_text', text: textBuffer, annotations: [] },
+            });
+            pushEvent(emitted, 'response.output_item.done', {
+              output_index: 0,
+              item: {
+                type: 'message',
+                id: msgId,
+                role: 'assistant',
+                status: messageStatus,
+                content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
+                ...(messagePhase ? { phase: messagePhase } : {}),
+              },
+            });
+          }
 
-            for (const toolCall of sortedToolCalls(toolCalls)) {
-              const outputIndex = getToolOutputIndex(toolCall.index);
-              const itemId = openAIResponsesFunctionCallId(toolCall.id);
-              pushEvent(emitted, 'response.function_call_arguments.done', {
-                output_index: outputIndex,
-                item_id: itemId,
+          for (const [position, toolCall] of finishedToolCalls.entries()) {
+            const outputIndex = getToolOutputIndex(toolCall.index);
+            const itemId = openAIResponsesFunctionCallId(toolCall.id);
+            pushEvent(emitted, 'response.function_call_arguments.done', {
+              output_index: outputIndex,
+              item_id: itemId,
+              call_id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+            });
+            pushEvent(emitted, 'response.output_item.done', {
+              output_index: outputIndex,
+              item: {
+                type: 'function_call',
+                id: itemId,
                 call_id: toolCall.id,
                 name: toolCall.name,
                 arguments: toolCall.arguments,
-              });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: outputIndex,
-                item: {
-                  type: 'function_call',
-                  id: itemId,
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: ending.status,
-                },
-              });
-            }
+                status: toolCallStatus(position),
+              },
+            });
           }
 
           pushEvent(emitted, `response.${ending.status}`, {
@@ -882,19 +883,19 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               output: [
                 ...(outputStarted ? [{
                   type: 'message' as const,
-                  id: getMessageId(),
+                  id: msgId,
                   role: 'assistant' as const,
-                  status: ending.status,
+                  status: messageStatus,
                   content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
                   ...(messagePhase ? { phase: messagePhase } : {}),
                 }] : []),
-                ...sortedToolCalls(toolCalls).map((toolCall) => ({
+                ...finishedToolCalls.map((toolCall, position) => ({
                   type: 'function_call' as const,
                   id: openAIResponsesFunctionCallId(toolCall.id),
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
-                  status: ending.status,
+                  status: toolCallStatus(position),
                 })),
               ],
               output_text: textBuffer,

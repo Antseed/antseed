@@ -64,6 +64,7 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     text: [chatChunk({ role: 'assistant', content: '' }), chatChunk({ content: 'The answer is' })],
     tool: [
       chatChunk({ role: 'assistant', content: '' }),
+      chatChunk({ content: 'The answer is' }),
       chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":' } }] }),
     ],
     partialFrame: 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"The ans',
@@ -77,8 +78,11 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     ],
     tool: [
       MESSAGE_START,
-      typed('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'write', input: {} } }),
-      typed('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":' } }),
+      typed('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      typed('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'The answer is' } }),
+      typed('content_block_stop', { index: 0 }),
+      typed('content_block_start', { index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'write', input: {} } }),
+      typed('content_block_delta', { index: 1, delta: { type: 'input_json_delta', partial_json: '{"path":' } }),
     ],
     partialFrame: 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_del',
     errorEvent: frame({ type: 'error', error: { type: 'overloaded_error', message: 'upstream failed' } }, 'error'),
@@ -91,8 +95,10 @@ const SOURCES: Record<StreamProtocol, { text: string[]; tool: string[]; partialF
     ],
     tool: [
       RESPONSE_CREATED,
-      typed('response.output_item.added', { output_index: 0, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'write', arguments: '', status: 'in_progress' } }),
-      typed('response.function_call_arguments.delta', { output_index: 0, item_id: 'fc_1', delta: '{"path":' }),
+      typed('response.output_item.added', { output_index: 0, item: { type: 'message', id: 'msg_1', role: 'assistant', status: 'in_progress', content: [] } }),
+      RESPONSE_TEXT,
+      typed('response.output_item.added', { output_index: 1, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'write', arguments: '', status: 'in_progress' } }),
+      typed('response.function_call_arguments.delta', { output_index: 1, item_id: 'fc_1', delta: '{"path":' }),
     ],
     partialFrame: 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","output_index":0,"del',
     errorEvent: frame({ type: 'error', code: 'server_error', message: 'upstream failed', param: null, sequence_number: 9 }, 'error'),
@@ -121,7 +127,7 @@ const EXPECT_FAILED: Record<StreamProtocol, (events: SseEvent[], message: string
     expect(events.at(-1)?.event, FAILURE).toBe('error');
     expect(JSON.parse(events.at(-1)!.data)).toEqual({ type: 'error', error: { type: 'api_error', message } });
     expect(names(events).filter((name) => name === 'error')).toHaveLength(1);
-    for (const closing of ['content_block_stop', 'message_delta', 'message_stop']) expect(names(events)).not.toContain(closing);
+    for (const closing of ['message_delta', 'message_stop']) expect(names(events)).not.toContain(closing);
   },
   [RESPONSES](events, message) {
     expect(events.at(-1)?.event, FAILURE).toBe('response.failed');
@@ -148,6 +154,20 @@ function failedResponse(events: SseEvent[]): Json {
   return (JSON.parse(failed!.data) as Json).response as Json;
 }
 
+/** Asserts the tool call that was cut never reads as finished: its block, item or choice is never closed. */
+function expectToolCallLeftOpen(to: StreamProtocol, events: SseEvent[]): void {
+  const frames = jsonFrames(events);
+  if (to === MESSAGES) {
+    const tool = frames.find((body) => body.type === 'content_block_start' && body.content_block.type === 'tool_use');
+    expect(tool).toBeDefined();
+    expect(frames.filter((body) => body.type === 'content_block_stop' && body.index === tool!.index)).toEqual([]);
+  } else if (to === RESPONSES) {
+    expect(frames.some((body) => body.type === 'response.output_item.added' && body.item.type === 'function_call')).toBe(true);
+  } else {
+    expect(frames.some((body) => body.choices?.[0]?.delta?.tool_calls)).toBe(true);
+  }
+}
+
 const streamedText = (to: StreamProtocol, events: SseEvent[]): string => jsonFrames(events).map((body) => {
   if (to === CHAT) return body.choices?.[0]?.delta?.content ?? '';
   if (to === MESSAGES) return body.type === 'content_block_delta' ? body.delta.text ?? '' : '';
@@ -170,11 +190,16 @@ describe.each(PAIRS)('a stream from %s translated to %s', (from, to) => {
   });
 
   it('reports an answer cut off inside a tool call', () => {
-    EXPECT_FAILED[to](translate(from, to, source.tool), CUT_OFF);
+    const events = translate(from, to, source.tool);
+    EXPECT_FAILED[to](events, CUT_OFF);
+    expectToolCallLeftOpen(to, events);
+    expect(streamedText(to, events)).toBe('The answer is');
   });
 
   it('reports an answer cut off inside a tool call with the relay error frame', () => {
-    EXPECT_FAILED[to](translate(from, to, [...source.tool, RELAY_ERROR_FRAME]), 'terminated');
+    const events = translate(from, to, [...source.tool, RELAY_ERROR_FRAME]);
+    EXPECT_FAILED[to](events, 'terminated');
+    expectToolCallLeftOpen(to, events);
   });
 
   it('reports a cut inside a frame, where the relay error frame cannot be read', () => {
@@ -224,6 +249,21 @@ describe('the failure a client is told', () => {
     const [chat] = jsonFrames(translate(MESSAGES, CHAT, [RELAY_ERROR_FRAME])).filter((chunk) => chunk.error);
     expect(chat).toEqual({ error: { message: 'terminated', type: 'api_error' } });
     expect(failedResponse(translate(CHAT, RESPONSES, [RELAY_ERROR_FRAME])).error).toEqual({ code: 'server_error', message: 'terminated' });
+    const [cutChat] = jsonFrames(translate(MESSAGES, CHAT, SOURCES[MESSAGES].text)).filter((chunk) => chunk.error);
+    expect(cutChat).toEqual({ error: { message: CUT_OFF, type: 'api_error' } });
+    expect(failedResponse(translate(CHAT, RESPONSES, SOURCES[CHAT].text)).error).toEqual({ code: 'server_error', message: CUT_OFF });
+  });
+
+  it('prefers the error code to its type', () => {
+    const chunk = frame({ error: { type: 'invalid_request_error', code: 'context_length_exceeded', message: 'too long' } });
+    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'context_length_exceeded', message: 'too long' });
+  });
+
+  it.each([
+    [MESSAGES, frame({ type: 'error', error: { type: 'overloaded_error', message: 'upstream failed' } })],
+    [RESPONSES, frame({ type: 'error', code: 'server_error', message: 'upstream failed', param: null })],
+  ] as const)('reads a %s error event that has no event line', (from, errorEvent) => {
+    EXPECT_FAILED[CHAT](translate(from, CHAT, [...SOURCES[from].text, errorEvent]), 'upstream failed');
   });
 
   it('keeps a string error type when the code is a number', () => {
@@ -392,13 +432,48 @@ describe('an answer cut at a limit, for a Responses client', () => {
     expect(events.at(-1)?.data).toBe('[DONE]');
   });
 
-  it('keeps a cut tool call from reading as completed', () => {
+  it('marks only the cut item incomplete in a streamed answer', () => {
     const frames = [...SOURCES[CHAT].tool, chatChunk({}, 'length'), frame('[DONE]')];
     const events = translate(CHAT, RESPONSES, frames);
     const final = JSON.parse(events.at(-2)!.data) as Json;
-    expect(final.response.output).toMatchObject([{ type: 'function_call', arguments: '{"path":', status: 'incomplete' }]);
-    const done = jsonFrames(events).find((body) => body.type === 'response.output_item.done');
-    expect(done?.item.status).toBe('incomplete');
+    expect(final.type).toBe('response.incomplete');
+    expect(final.response.output).toMatchObject([
+      { type: 'message', status: 'completed' },
+      { type: 'function_call', arguments: '{"path":', status: 'incomplete' },
+    ]);
+    const done = jsonFrames(events).filter((body) => body.type === 'response.output_item.done');
+    expect(done.map((body) => [body.item.type, body.item.status])).toEqual([['message', 'completed'], ['function_call', 'incomplete']]);
+  });
+
+  it('marks only the last of several tool calls incomplete', () => {
+    const frames = [
+      chatChunk({ role: 'assistant', content: '' }),
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }] }),
+      chatChunk({ tool_calls: [{ index: 1, id: 'call_2', type: 'function', function: { name: 'write', arguments: '{"path":' } }] }),
+      chatChunk({}, 'length'),
+      frame('[DONE]'),
+    ];
+    const final = JSON.parse(translate(CHAT, RESPONSES, frames).at(-2)!.data) as Json;
+    expect(final.response.output.map((item: Json) => [item.call_id, item.status])).toEqual([['call_1', 'completed'], ['call_2', 'incomplete']]);
+  });
+
+  it('marks only the cut item incomplete in a not-streamed answer', () => {
+    const body = chatBody('length');
+    body.choices[0].message.tool_calls = [{ id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":' } }];
+    const answer = JSON.parse(decoder.decode(transformResponse(response(body), { from: CHAT, to: RESPONSES, fallbackModel: 'm' })!.body)) as Json;
+    expect(answer.status).toBe('incomplete');
+    expect(answer.output).toMatchObject([
+      { type: 'message', status: 'completed' },
+      { type: 'function_call', arguments: '{"path":', status: 'incomplete' },
+    ]);
+  });
+
+  it('tells the ending only in the final event when the seller answers a streamed request with JSON', () => {
+    const transformed = transformResponse(response(chatBody('length')), { from: CHAT, to: RESPONSES, streamRequested: true, fallbackModel: 'm' })!;
+    const [created] = jsonFrames(parseSse(decoder.decode(transformed.body)));
+    expect(created!.type).toBe('response.created');
+    expect(created!.response.status).toBe('in_progress');
+    expect(created!.response).not.toHaveProperty('incomplete_details');
   });
 
   it('leaves an answer that finished on its own as completed', () => {
@@ -427,7 +502,10 @@ describe('an answer that finished stays finished', () => {
     typed('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 7 } }),
   ];
 
-  /** Asserts the stream ended once, as finished, with the reason it reported (end_turn, stop, completed by default). */
+  /**
+   * Asserts the stream ended once, as finished, with the reason it reported: a Messages stop_reason or a Chat
+   * finish_reason (end_turn and stop by default). A Responses client only learns completed, so it gets no reason.
+   */
   const expectFinished = (to: StreamProtocol, events: SseEvent[], reason: string | null = to === MESSAGES ? 'end_turn' : 'stop'): void => {
     if (to === MESSAGES) {
       expect(names(events)).not.toContain('error');
@@ -471,6 +549,10 @@ describe('an answer that finished stays finished', () => {
   // stop reason, as the not-streamed translation of a Chat answer without a finish_reason does.
   it.each([MESSAGES, RESPONSES] as const)('a Chat stream that ends with [DONE] and no finish_reason to %s', (to) => {
     expectFinished(to, translate(CHAT, to, [...SOURCES[CHAT].text, frame('[DONE]')]), to === MESSAGES ? null : 'stop');
+  });
+
+  it.each([MESSAGES, RESPONSES] as const)('a Chat stream that failed after [DONE] and no finish_reason to %s', (to) => {
+    expectFinished(to, translate(CHAT, to, [...SOURCES[CHAT].text, frame('[DONE]'), RELAY_ERROR_FRAME]), to === MESSAGES ? null : 'stop');
   });
 
   it.each([MESSAGES, RESPONSES] as const)('a Chat stream that failed after [DONE] to %s', (to) => {

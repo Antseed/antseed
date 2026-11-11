@@ -1033,7 +1033,7 @@ describe('createStreamingAdapter anthropic to chat', () => {
     expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
   });
 
-  it('still finishes a stream that ends without message_stop', () => {
+  it('still finishes a stream cut after its stop reason', () => {
     const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
     const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES.slice(0, 3));
 

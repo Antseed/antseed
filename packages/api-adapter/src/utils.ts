@@ -419,6 +419,18 @@ export function encodeSseEvents(events: Array<{ event?: string; data: unknown | 
   return encoder.encode(chunks.join(''));
 }
 
+/** The message of an error body in any of the standards, or a generic one. */
+export function extractErrorMessage(parsed: Record<string, unknown>): string {
+  const error = parsed.error;
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === 'string' && message.length > 0) return message;
+  }
+  if (typeof parsed.message === 'string' && parsed.message.length > 0) return parsed.message;
+  if (typeof error === 'string' && error.length > 0) return error;
+  return 'Upstream error';
+}
+
 /**
  * Whether an SSE event reports a failure, in any of the standards: an `event: error` frame (a seller's
  * relay sends plain text, a vendor JSON), an event of type `error`, or a chunk with an `error` field.

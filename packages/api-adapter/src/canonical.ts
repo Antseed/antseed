@@ -772,8 +772,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
 }
 
 export function renderCanonicalResponseToOpenAIResponsesBody(response: CanonicalLlmResponse): Record<string, unknown> {
-  const ending = openAIResponsesEnding(response.stopReason);
-  const output: unknown[] = [];
+  const output: Array<Record<string, unknown>> = [];
   const textItems = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
@@ -784,7 +783,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: ending.status,
+      status: 'completed',
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -798,9 +797,14 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: ending.status,
+      status: 'completed',
     });
   }
+
+  const ending = openAIResponsesEnding(response.stopReason);
+  // An answer cut at a limit was cut in its last item: the items before it are whole.
+  const last = output.at(-1);
+  if (last) last.status = ending.status;
 
   return {
     id: response.id,

@@ -52,8 +52,9 @@ export async function run(tb) {
   const { byTag } = await tb.deliveries(seller.id);
   const statuses = Object.fromEntries(Object.entries(byTag).map(([tag, entry]) => [tag, entry.status]));
   tb.check('the mock delivered the whole answers and cut the others after it started', byTag['whole-messages']?.status === 'ok' && byTag['whole-responses']?.status === 'ok' && byTag['cut-messages']?.status === 'disconnect' && byTag['cut-messages']?.started && byTag['cut-responses']?.status === 'disconnect' && byTag['cut-responses']?.started, statuses);
-  for (const reply of [wholeMessages, wholeResponses, cutMessages, cutResponses]) {
-    tb.check('the proxy streamed the answer', reply.status === 200 && (reply.headers['content-type'] ?? '').includes('text/event-stream'), { status: reply.status, contentType: reply.headers['content-type'], body: reply.text.slice(0, 500) });
+  const replies = { 'the whole Messages answer': wholeMessages, 'the whole Responses answer': wholeResponses, 'the cut Messages answer': cutMessages, 'the cut Responses answer': cutResponses };
+  for (const [label, reply] of Object.entries(replies)) {
+    tb.check(`the proxy streamed ${label}`, reply.status === 200 && (reply.headers['content-type'] ?? '').includes('text/event-stream'), { status: reply.status, contentType: reply.headers['content-type'], body: reply.text.slice(0, 500) });
   }
 
   const whole = { messages: parseFrames(wholeMessages.text), responses: parseFrames(wholeResponses.text) };
