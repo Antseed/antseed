@@ -75,7 +75,7 @@ function paymentManager() {
 }
 
 /** Serves one request on a paid channel and returns the answer, the spend recorded and the NeedAuth sent. */
-async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY }: { path?: string; body?: Uint8Array } = {}) {
+async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY, contentType = 'application/json' }: { path?: string; body?: Uint8Array; contentType?: string } = {}) {
   const { manager, spent } = paymentManager();
   const handler = new SellerRequestHandler({
     identity: identityFromPrivateKeyHex('11'.repeat(32)),
@@ -92,7 +92,7 @@ async function serve(provider: Provider, { path = '/v1/chat/completions', body =
   await mux.handleFrame({
     type: MessageType.HttpRequest,
     messageId: 1,
-    payload: encodeHttpRequest({ requestId: 'req-1', method: 'POST', path, headers: { 'content-type': 'application/json' }, body }),
+    payload: encodeHttpRequest({ requestId: 'req-1', method: 'POST', path, headers: { 'content-type': contentType }, body }),
   });
   const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
   return { response: decodeHttpResponse(frame.payload), spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined };
@@ -129,6 +129,15 @@ describe('seller billing of an answer without a usage report', () => {
   it('charges a chat answer sent in one piece that reports no usage', async () => {
     const text = 'Seeds store a young plant.';
     const { needAuth } = await serve(plainProvider(200, { id: 'x', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }] }));
+    expect(needAuth).toMatchObject({ inputTokens: String(REQUEST_TOKENS), outputTokens: String(estimateTokensFromText(text)) });
+  });
+
+  it('estimates the prompt whatever content type the request declares', async () => {
+    const text = 'Seeds store a young plant.';
+    const { needAuth } = await serve(
+      plainProvider(200, { choices: [{ index: 0, message: { role: 'assistant', content: text } }] }),
+      { contentType: 'text/plain' },
+    );
     expect(needAuth).toMatchObject({ inputTokens: String(REQUEST_TOKENS), outputTokens: String(estimateTokensFromText(text)) });
   });
 

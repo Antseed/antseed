@@ -62,6 +62,8 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { estimateChatAnswerUsage } from './billing/estimated-usage.js';
+import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { requestBodyService } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
@@ -378,6 +380,12 @@ export class SellerRequestHandler {
             })),
           });
         }
+        return;
+      }
+
+      // Everything below bills and routes by this path as written.
+      if (!isCanonicalRequestPath(request.path)) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', 'The request path must be in normal form: no dot segments, empty segments or percent escapes.');
         return;
       }
 
@@ -1046,6 +1054,14 @@ export class SellerRequestHandler {
             unitCostUsdc = unitBilling.costUsdc;
           } else {
             responseUsage = parseResponseUsage(response.body);
+            // An answer delivered without a usage figure is still paid for: it is billed by estimate.
+            if (!isServedFree && statusCode < 400 && !streamOutcome.failed && responseUsage.inputTokens + responseUsage.outputTokens === 0) {
+              const estimated = estimateChatAnswerUsage(request.body, response.body);
+              if (estimated) {
+                debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${estimated.inputTokens} out=${estimated.outputTokens})`);
+                responseUsage = estimated;
+              }
+            }
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
           if (!streamedResponseStarted) {
@@ -1222,7 +1238,7 @@ export class SellerRequestHandler {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
         const reportedUsage = responseUsage.freshInputTokens + responseUsage.outputTokens;
-        // A served answer without a usage report (a buyer can turn streaming usage off) counts as its estimate.
+        // A served answer with no usage figure, reported or estimated, counts as what was reserved for it.
         usageHold.tokens = statusCode < 400 && reportedUsage + responseUsage.cachedInputTokens === 0 ? usageHold.estimate : reportedUsage;
       }
     };
