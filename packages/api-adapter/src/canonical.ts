@@ -907,10 +907,12 @@ interface InstructionMessage {
  *
  * Instructions that end the request after an assistant turn, or make up all of
  * it, are what the model has to answer. Moved to the head, they would leave no
- * turn to answer, so they stay at the end as user turns.
+ * turn to answer, so they stay at the end as user turns. A message that carries
+ * nothing, such as an empty user message, is no turn to answer.
  */
 function placeInstructionMessages(request: CanonicalLlmRequest, messages: InstructionMessage[]): void {
-  const end = request.input.length;
+  let end = request.input.length;
+  while (end > 0 && isEmptyMessage(request.input[end - 1])) end -= 1;
   const last = request.input[end - 1];
   const answerable = last?.type === 'function_call_output' || (last?.type === 'message' && last.role === 'user');
   for (const { itemsBefore, content } of messages) {
@@ -918,9 +920,18 @@ function placeInstructionMessages(request: CanonicalLlmRequest, messages: Instru
       appendInstructions(request, textFromCanonicalContent(content));
       continue;
     }
-    const turn = content.filter((part) => part.type !== 'text' || part.text.trim().length > 0);
+    const turn = content.filter(carriesContent);
     if (turn.length > 0) request.input.push({ type: 'message', role: 'user', content: turn });
   }
+}
+
+function isEmptyMessage(item: CanonicalInputItem | undefined): boolean {
+  return item?.type === 'message' && !item.content.some(carriesContent);
+}
+
+/** Blank text and an image without a source carry nothing. */
+function carriesContent(part: CanonicalContentPart): boolean {
+  return part.type === 'text' ? part.text.trim().length > 0 : imageUrlFromCanonicalPart(part) !== undefined;
 }
 
 function appendInstructions(request: CanonicalLlmRequest, text: string): void {
