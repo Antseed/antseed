@@ -29,6 +29,7 @@ function translate(
 const inputText = (text: string) => ({ type: 'input_text', text });
 const userItem = (text: string) => ({ type: 'message', role: 'user', content: [inputText(text)] });
 const developerItem = (text: string) => ({ type: 'message', role: 'developer', content: [inputText(text)] });
+const assistantItem = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
 describe('instructions sent as Chat Completions messages', () => {
   const developer = {
@@ -96,7 +97,7 @@ describe('instructions sent as Chat Completions messages', () => {
     expect(body.instructions).toBe('First rule.\n\nSecond rule.');
     expect(body.input).toEqual([
       userItem('one'),
-      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
+      assistantItem('two'),
       userItem('three'),
     ]);
   });
@@ -222,7 +223,7 @@ describe('instructions sent as Responses input items', () => {
       input: [
         developerItem('First rule.'),
         userItem('one'),
-        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
+        assistantItem('two'),
         { role: 'system', content: 'Second rule.' },
         userItem('three'),
       ],
@@ -281,7 +282,7 @@ describe('instructions sent as Responses input items', () => {
       input: [
         developerItem('Rule.'),
         userItem('one'),
-        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
+        assistantItem('two'),
         developerItem('Summarize.'),
       ],
     });
@@ -354,10 +355,24 @@ describe('instructions sent as Responses input items', () => {
   });
 
   it('add no turn when the ones that end the request carry no text', () => {
-    const turns = [userItem('one'), { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] }];
+    const turns = [userItem('one'), assistantItem('two')];
     const body = translate(RESPONSES, MESSAGES, { model: 'm', input: [...turns, developerItem(' \n')] });
 
     expect(body.messages).toEqual(translate(RESPONSES, MESSAGES, { model: 'm', input: turns }).messages);
+  });
+
+  it('keep the image of one that ends the request, without its blank text', () => {
+    const image = { type: 'input_image', image_url: 'https://example.com/a.png' };
+    const turns = [userItem('one'), assistantItem('two')];
+    const body = translate(RESPONSES, MESSAGES, {
+      model: 'm',
+      input: [...turns, { type: 'message', role: 'developer', content: [inputText(' '), image] }],
+    });
+
+    expect(body.messages).toEqual(translate(RESPONSES, MESSAGES, {
+      model: 'm',
+      input: [...turns, { type: 'message', role: 'user', content: [image] }],
+    }).messages);
   });
 
   it('reach a router as the system prompt of the request being ranked', () => {
