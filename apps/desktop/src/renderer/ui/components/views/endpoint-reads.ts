@@ -12,7 +12,8 @@ export function createEndpointReads(
 ) {
   let current = 0;
   return {
-    async refresh(): Promise<void> {
+    /** Reads and shows the endpoint; resolves to it, or null when a newer read or a close overtook this one. */
+    async refresh(): Promise<GatewayEndpointInfo | null> {
       const id = ++current;
       show(null);
       let endpoint: GatewayEndpointInfo;
@@ -21,7 +22,9 @@ export function createEndpointReads(
       } catch (error) {
         endpoint = { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
-      if (id === current) show(endpoint);
+      if (id !== current) return null;
+      show(endpoint);
+      return endpoint;
     },
     /** Drops any read in flight and what was shown. */
     close(): void {
@@ -29,4 +32,13 @@ export function createEndpointReads(
       show(null);
     },
   };
+}
+
+/**
+ * The key to copy, read again at that moment: it may have been revoked or
+ * replaced in the console since it was shown. Null when the read failed.
+ */
+export async function readKeyToCopy(reads: { refresh: () => Promise<GatewayEndpointInfo | null> }): Promise<string | null> {
+  const endpoint = await reads.refresh();
+  return endpoint?.ok && endpoint.apiKey ? endpoint.apiKey : null;
 }

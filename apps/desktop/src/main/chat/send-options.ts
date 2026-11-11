@@ -18,9 +18,22 @@ export function streamOptionsFrom(options: unknown): OutgoingPrivacy {
   };
 }
 
-/** The `sendId` a run's terminal events (done, error) carry, when the send had one. */
+/** The `sendId` every event of a run carries, when the send had one. */
 export function sendTagOf(options: OutgoingPrivacy): { sendId?: number } {
   return typeof options.sendId === 'number' ? { sendId: options.sendId } : {};
+}
+
+/**
+ * Emits a run's reply events (start, blocks, deltas, tools, reply meta) tagged
+ * with its send, so the renderer drops a stopped run's late output instead of
+ * adding it to a newer send's reply.
+ */
+export function runEventEmitter(
+  sendToRenderer: (channel: string, payload: unknown) => void,
+  options: OutgoingPrivacy,
+): (channel: string, payload: Record<string, unknown>) => void {
+  const tag = sendTagOf(options);
+  return (channel, payload) => sendToRenderer(channel, { ...payload, ...tag });
 }
 
 type RunStreamingPrompt<R> = (

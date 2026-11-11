@@ -282,28 +282,28 @@ const api = {
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
   },
   // Streaming events
-  onChatAiReplyMeta(handler: (data: { conversationId: string; meta: Record<string, unknown> }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; meta: Record<string, unknown> }) => handler(data);
+  onChatAiReplyMeta(handler: (data: { conversationId: string; sendId?: number; meta: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; meta: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-reply-meta', listener);
     return () => ipcRenderer.off('chat:ai-reply-meta', listener);
   },
-  onChatAiStreamStart(handler: (data: { conversationId: string; turn: number }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; turn: number }) => handler(data);
+  onChatAiStreamStart(handler: (data: { conversationId: string; sendId?: number; turn: number }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; turn: number }) => handler(data);
     ipcRenderer.on('chat:ai-stream-start', listener);
     return () => ipcRenderer.off('chat:ai-stream-start', listener);
   },
-  onChatAiStreamDelta(handler: (data: { conversationId: string; index: number; blockType: string; text: string }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; index: number; blockType: string; text: string }) => handler(data);
+  onChatAiStreamDelta(handler: (data: { conversationId: string; sendId?: number; index: number; blockType: string; text: string }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; index: number; blockType: string; text: string }) => handler(data);
     ipcRenderer.on('chat:ai-stream-delta', listener);
     return () => ipcRenderer.off('chat:ai-stream-delta', listener);
   },
-  onChatAiStreamBlockStart(handler: (data: { conversationId: string; index: number; blockType: string; toolId?: string; toolName?: string }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; index: number; blockType: string; toolId?: string; toolName?: string }) => handler(data);
+  onChatAiStreamBlockStart(handler: (data: { conversationId: string; sendId?: number; index: number; blockType: string; toolId?: string; toolName?: string }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; index: number; blockType: string; toolId?: string; toolName?: string }) => handler(data);
     ipcRenderer.on('chat:ai-stream-block-start', listener);
     return () => ipcRenderer.off('chat:ai-stream-block-start', listener);
   },
-  onChatAiStreamBlockStop(handler: (data: { conversationId: string; index: number; blockType: string; toolId?: string; toolName?: string; input?: Record<string, unknown> }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; index: number; blockType: string; toolId?: string; toolName?: string; input?: Record<string, unknown> }) => handler(data);
+  onChatAiStreamBlockStop(handler: (data: { conversationId: string; sendId?: number; index: number; blockType: string; toolId?: string; toolName?: string; input?: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; index: number; blockType: string; toolId?: string; toolName?: string; input?: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-stream-block-stop', listener);
     return () => ipcRenderer.off('chat:ai-stream-block-stop', listener);
   },
@@ -317,18 +317,18 @@ const api = {
     ipcRenderer.on('chat:ai-stream-error', listener);
     return () => ipcRenderer.off('chat:ai-stream-error', listener);
   },
-  onChatAiToolExecuting(handler: (data: { conversationId: string; toolUseId: string; name: string; input: Record<string, unknown> }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; toolUseId: string; name: string; input: Record<string, unknown> }) => handler(data);
+  onChatAiToolExecuting(handler: (data: { conversationId: string; sendId?: number; toolUseId: string; name: string; input: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; toolUseId: string; name: string; input: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-tool-executing', listener);
     return () => ipcRenderer.off('chat:ai-tool-executing', listener);
   },
-  onChatAiToolUpdate(handler: (data: { conversationId: string; toolUseId: string; name: string; input: Record<string, unknown>; output: string; details?: Record<string, unknown> }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; toolUseId: string; name: string; input: Record<string, unknown>; output: string; details?: Record<string, unknown> }) => handler(data);
+  onChatAiToolUpdate(handler: (data: { conversationId: string; sendId?: number; toolUseId: string; name: string; input: Record<string, unknown>; output: string; details?: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; toolUseId: string; name: string; input: Record<string, unknown>; output: string; details?: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-tool-update', listener);
     return () => ipcRenderer.off('chat:ai-tool-update', listener);
   },
-  onChatAiToolResult(handler: (data: { conversationId: string; toolUseId: string; output: string; isError: boolean; details?: Record<string, unknown> }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; toolUseId: string; output: string; isError: boolean; details?: Record<string, unknown> }) => handler(data);
+  onChatAiToolResult(handler: (data: { conversationId: string; sendId?: number; toolUseId: string; output: string; isError: boolean; details?: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; sendId?: number; toolUseId: string; output: string; isError: boolean; details?: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-tool-result', listener);
     return () => ipcRenderer.off('chat:ai-tool-result', listener);
   },

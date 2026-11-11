@@ -216,17 +216,27 @@ async function commitInstalls(staged: readonly StagedInstall[], apiKey: string, 
   }
 }
 
-async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
-  const staged = await stageInstall(skillsDir, endpoint, options);
+/**
+ * Puts `skillsDirs` on `endpoint` together with every agent already installed:
+ * they all read the one key file, so writing a new key for one agent while
+ * another still names the previous gateway would send that key there. Every
+ * copy is built first; if any can't be, nothing changes.
+ */
+async function installAll(skillsDirs: readonly string[], endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
+  const installed = listAgentSkillTargets(options).filter((target) => target.installed).map((target) => target.skillsDir);
+  const dirs = [...new Set([...skillsDirs, ...installed])];
+  if (dirs.length === 0) return;
+  const staged: StagedInstall[] = [];
   try {
-    await commitInstalls([staged], endpoint.apiKey, options);
+    for (const dir of dirs) staged.push(await stageInstall(dir, endpoint, options));
+    await commitInstalls(staged, endpoint.apiKey, options);
   } finally {
-    await staged.discard();
+    for (const copy of staged) await copy.discard();
   }
 }
 
 export async function installAgentSkills(id: string, endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  await installInto(skillsDirOf(targetById(id), options), endpoint, options);
+  await installAll([skillsDirOf(targetById(id), options)], endpoint, options);
 }
 
 export async function removeAgentSkills(id: string, options: Options = {}): Promise<void> {
@@ -243,17 +253,8 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
 
 /** Re-points every installed copy at the current gateway and key (after a key replacement or a gateway switch). */
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  const installed = listAgentSkillTargets(options).filter((target) => target.installed);
-  if (installed.length === 0) return;
-  // Every copy is built before anything changes, then all of them and the key
-  // land together: a failure on any agent leaves all of them on the old gateway and key.
-  const staged: StagedInstall[] = [];
-  try {
-    for (const target of installed) staged.push(await stageInstall(target.skillsDir, endpoint, options));
-    await commitInstalls(staged, endpoint.apiKey, options);
-  } finally {
-    for (const copy of staged) await copy.discard();
-  }
+  // A failure on any agent leaves all of them on the old gateway and key.
+  await installAll([], endpoint, options);
 }
 
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */

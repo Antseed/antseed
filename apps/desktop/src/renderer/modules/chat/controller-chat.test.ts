@@ -150,6 +150,87 @@ describe('chat controller', () => {
     await waitFor(() => !uiState.chatSending);
   });
 
+  it('a reply stopped mid-stream stays its own message when a follow-up starts before its abort arrives', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text' });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial' });
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    // The stopped run's abort arrives only now, after the follow-up took the chat.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[0] });
+    answers[0]!({ ok: false });
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text' });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer' });
+    emit('done', { conversationId: 'conv-a', sendId: sendIds[1] });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const texts = (uiState.chatMessages as Array<{ role: string; content: unknown }>).map((message) => `${message.role}:${JSON.stringify(message.content)}`);
+    const first = texts.findIndex((text) => text.startsWith('assistant:') && text.includes('First partial'));
+    const second = texts.findIndex((text) => text.startsWith('assistant:') && text.includes('Second answer'));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(second).toBeGreaterThan(first);
+    expect(texts[second]).not.toContain('First partial');
+    // The follow-up's prompt sits between the two replies.
+    expect(texts.slice(first + 1, second).some((text) => text.startsWith('user:') && text.includes('second'))).toBe(true);
+  });
+
+  it('a stopped run\'s late output never reaches the follow-up\'s reply', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    const first = sendIds[0];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial', sendId: first });
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    const second = sendIds[1];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: second });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: second });
+    // The stopped run is still winding down: its late output arrives mid-follow-up.
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: ' LATE', sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 1, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer', sendId: second });
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: first });
+    answers[0]!({ ok: false });
+    emit('done', { conversationId: 'conv-a', sendId: second });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const replies = (uiState.chatMessages as Array<{ role: string; content: unknown }>)
+      .filter((message) => message.role === 'assistant')
+      .map((message) => JSON.stringify(message.content));
+    const followUp = replies.find((text) => text.includes('Second answer'));
+    expect(followUp).toBeDefined();
+    expect(followUp).not.toContain('LATE');
+    expect(replies.some((text) => text.includes('LATE'))).toBe(false);
+  });
+
   it('sends a queued message to the chat it was written in, on that chat\'s model', async () => {
     // The send only answers once its stream has ended.
     const streamEnded = deferred<{ ok: boolean }>();

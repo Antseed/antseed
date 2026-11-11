@@ -112,7 +112,7 @@ import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
 import type { OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
-import { sendTagOf } from './send-options.js';
+import { runEventEmitter, sendTagOf } from './send-options.js';
 
 /** What the engine knows about a gateway model, for one send. */
 export type ResolvedChatModel = {
@@ -215,6 +215,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // Terminal events name the send they end, so a late one can't end a newer send.
     const sendTag = sendTagOf(options);
     const emitChatStreamError = (payload: ChatStreamErrorPayload): void => emitStreamError({ ...payload, ...sendTag });
+    // Every event of this run's reply names its send too, so a stopped run's
+    // late block, delta or tool event can't land in a newer send's reply.
+    const emitRunEvent = runEventEmitter(sendToRenderer, options);
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
       permissionModeInput === 'manual' || permissionModeInput === 'full'
@@ -542,8 +545,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       if (event.type === 'turn_start') {
-        sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
+        emitRunEvent('chat:ai-stream-start', { conversationId, turn: turnIndex });
+        emitRunEvent('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
         turnIndex += 1;
         return;
       }
@@ -555,7 +558,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         }
         const update = event.assistantMessageEvent as AssistantMessageEvent;
         if (update.type === 'text_start') {
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -567,7 +570,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             hadPartialOutput = true;
             markFirstToken();
           }
-          sendToRenderer('chat:ai-stream-delta', {
+          emitRunEvent('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -576,7 +579,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'text_end') {
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -584,7 +587,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'thinking_start') {
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -593,7 +596,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         }
         if (update.type === 'thinking_delta') {
           if (update.delta.length > 0) markFirstToken();
-          sendToRenderer('chat:ai-stream-delta', {
+          emitRunEvent('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -602,7 +605,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'thinking_end') {
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -615,7 +618,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           if (isToolArgumentsObject(tool.arguments)) {
             toolArgsById.set(tool.id, tool.arguments);
           }
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'tool_use',
@@ -629,7 +632,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             ? update.toolCall.arguments
             : {};
           toolArgsById.set(update.toolCall.id, toolInput);
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'tool_use',
@@ -646,7 +649,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         if (eventArgs) {
           toolArgsById.set(event.toolCallId, eventArgs);
         }
-        sendToRenderer('chat:ai-tool-executing', {
+        emitRunEvent('chat:ai-tool-executing', {
           conversationId,
           toolUseId: event.toolCallId,
           name: event.toolName,
@@ -657,7 +660,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
       if (event.type === 'tool_execution_update') {
         const eventArgs = isToolArgumentsObject(event.args) ? event.args : undefined;
-        sendToRenderer('chat:ai-tool-update', {
+        emitRunEvent('chat:ai-tool-update', {
           conversationId,
           toolUseId: event.toolCallId,
           name: event.toolName,
@@ -685,7 +688,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           typeof event.result.details === 'object'
             ? (event.result.details as Record<string, unknown>)
             : undefined;
-        sendToRenderer('chat:ai-tool-result', {
+        emitRunEvent('chat:ai-tool-result', {
           conversationId,
           toolUseId: event.toolCallId,
           output: toToolOutputString(event.result),
@@ -821,7 +824,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const peerName = sellerName(peerId);
         servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
         answeringPeerId = peerId;
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
+        emitRunEvent('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
       }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
       await chatRun.result;
       // No tokens counted is the sign, but some sellers never report them, so the stream decides.

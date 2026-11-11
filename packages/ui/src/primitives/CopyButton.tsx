@@ -12,12 +12,16 @@ export async function copyText(value: string): Promise<boolean> {
 }
 
 /** Copies `value` and says so for a moment, for a control of any shape. */
-export function useCopyFeedback(value: string, onCopied?: () => void): { copied: boolean; copy: () => Promise<void> } {
+/**
+ * Copies `value`, or the value `copy` is called with: a caller that must read
+ * what it copies at that moment (a key that may have been replaced) passes it.
+ */
+export function useCopyFeedback(value: string, onCopied?: () => void): { copied: boolean; copy: (current?: string) => Promise<void> } {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
-  const copy = async () => {
-    if (await copyText(value)) {
+  const copy = async (current?: string) => {
+    if (await copyText(current ?? value)) {
       setCopied(true);
       onCopied?.();
       window.clearTimeout(timer.current);

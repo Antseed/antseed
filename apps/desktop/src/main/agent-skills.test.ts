@@ -94,6 +94,31 @@ test('a key that cannot be written puts every swapped copy back', async () => {
   assert.deepEqual(readdirSync(path.join(options.home, '.claude', 'skills')).filter((name) => name.startsWith('.antseed-install-')), []);
 });
 
+test('installing one agent after a failed sync never leaves another agent naming the old gateway with the new key', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  await installAgentSkills('codex', endpoint, options);
+  const codexDir = path.join(options.home, '.agents', 'skills');
+  const codexSkill = path.join(codexDir, 'antseed-ask', 'SKILL.md');
+  const next = { origin: 'https://gw-b.example', apiKey: 'sk-gateway-b' };
+  // Codex's skills folder can't be written, so the switch to gateway B fails for every agent.
+  chmodSync(codexDir, 0o500);
+  try {
+    await assert.rejects(syncAgentSkills(next, options));
+    // Adding the skills again to the agent that can be written: B's key must not
+    // land in the shared key file while Codex still sends it to gateway A.
+    await assert.rejects(installAgentSkills('claude-code', next, options));
+    assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), endpoint.apiKey);
+    assert.ok(readFileSync(codexSkill, 'utf8').includes(`\`${endpoint.origin}\``));
+  } finally {
+    chmodSync(codexDir, 0o700);
+  }
+  // Once Codex can be written, installing one agent puts every agent on B.
+  await installAgentSkills('claude-code', next, options);
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), next.apiKey);
+  assert.ok(readFileSync(codexSkill, 'utf8').includes(`\`${next.origin}\``));
+});
+
 test('never overwrites a skill folder the user made', async () => {
   const options = fixture();
   mkdirSync(path.join(options.home, '.claude', 'skills', 'antseed-images'), { recursive: true });
