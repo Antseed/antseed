@@ -71,6 +71,47 @@ describe('parseResponseUsage', () => {
     });
   });
 
+  describe('an event written over several data lines', () => {
+    const USAGE = { inputTokens: 3, outputTokens: 2, freshInputTokens: 3, cachedInputTokens: 0 };
+
+    it('joins the data lines of one event into one payload', () => {
+      const sse = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        '',
+        'data: {"choices":[],',
+        'data: "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n');
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('joins them across CRLF line endings and other fields of the event', () => {
+      const sse = 'event: message\r\ndata:{"choices":[],\r\nid: 7\r\ndata:"usage":{"prompt_tokens":3,"completion_tokens":2}}\r\n\r\n';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('reads an event whose usage object fills a line of its own', () => {
+      const sse = 'data: {"usage":\ndata: {"prompt_tokens":3,"completion_tokens":2}\ndata: }\n\n';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('reads the event at the end of a stream that has no closing blank line', () => {
+      const sse = 'data: {"choices":[],\ndata: "usage":{"prompt_tokens":3,"completion_tokens":2}}';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('still reads each line of a stream written with no blank lines between its events', () => {
+      const sse = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+        'data: [DONE]',
+      ].join('\n');
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+  });
+
   it('returns zeros when the body has no usage field', () => {
     const usage = parseResponseUsage(enc.encode(JSON.stringify({ model: 'foo' })));
     expect(usage).toEqual({ inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 });
