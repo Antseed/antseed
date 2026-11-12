@@ -4,7 +4,7 @@ import { gatewayCreditsInfo } from './gateway-credits.js';
 import { LastCredits } from './last-credits.js';
 
 const known = gatewayCreditsInfo({
-  label: 'Desktop', buyerAddress: '0x00000000000000000000000000000000000000aa', requests: 0, spentUsd: '0', limits: {}, createdAt: null,
+  label: 'Desktop', buyerAddress: '0x00000000000000000000000000000000000000aa', requests: 0, spentUsd: '0', limits: {},
   balance: { availableUsd: '5.000000', reservedUsd: '0', pendingUsd: '0', walletUsd: '0', creditLimitUsd: '0', operator: null, stale: false },
 });
 const failed = gatewayCreditsInfo(null);

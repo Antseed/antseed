@@ -1,4 +1,5 @@
 import type { GatewayKeyInfo, GatewayRewardsSummary, GatewaySavings } from '../../shared/gateway-types.js';
+import { usdcFromMicros, usdcToMicros } from '../payments/usdc-decimal.js';
 
 export type { GatewayKeyInfo };
 
@@ -19,13 +20,7 @@ export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {
     spentUsd: str(usage['spent_usd']),
     limits,
     balance: parseBalance(body['balance']),
-    createdAt: parseTime(body['created_at']),
   };
-}
-
-function parseTime(raw: unknown): number | null {
-  const time = typeof raw === 'string' ? Date.parse(raw) : NaN;
-  return Number.isFinite(time) ? time : null;
 }
 
 function parseBalance(raw: unknown): GatewayKeyInfo['balance'] {
@@ -88,6 +83,28 @@ export function parseRetiredUsage(payload: unknown): { usage: KeyUsage; savings:
   };
 }
 
+/**
+ * `antseed gateway key list --all --json`: the requests that succeeded and
+ * the spend of every key paying from `identity`, revoked ones included, i.e.
+ * everything the gateway has sent through that wallet's buyer. Failed
+ * requests never reached a seller, so the buyer has no record of them. Null
+ * when the answer isn't a key list.
+ */
+export function parseWalletKeyUsage(payload: unknown, identity: string): KeyUsage | null {
+  if (!Array.isArray(payload)) return null;
+  let requests = 0;
+  let spent = 0n;
+  for (const key of payload as Array<Record<string, unknown> | null>) {
+    if (!key || typeof key !== 'object' || key['identity'] !== identity) continue;
+    const total = typeof key['requests'] === 'number' && Number.isFinite(key['requests']) ? key['requests'] : 0;
+    const failed = typeof key['failedRequests'] === 'number' && Number.isFinite(key['failedRequests']) ? key['failedRequests'] : 0;
+    requests += Math.max(0, total - failed);
+    const spentUsd = (key['spentUsd'] ?? {}) as Record<string, unknown>;
+    spent += usdcToMicros(typeof spentUsd['total'] === 'string' ? spentUsd['total'] : null);
+  }
+  return { requests, spentUsd: usdcFromMicros(spent) };
+}
+
 /** Savings over several keys (every key the desktop made), or null when none had any. */
 export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewaySavings | null {
   const present = list.filter((entry): entry is GatewaySavings => entry !== null);
@@ -95,16 +112,6 @@ export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewayS
   const retailUsd = present.reduce((sum, entry) => sum + entry.retailUsd, 0);
   const paidUsd = present.reduce((sum, entry) => sum + entry.paidUsd, 0);
   return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: present.reduce((sum, entry) => sum + entry.matchedRequests, 0) };
-}
-
-/**
- * Where the gateway's accounting starts: the earliest creation time among the
- * keys Home sums. Usage before it is read from the buyer. Null when no key
- * says when it was made (a gateway too old to report it).
- */
-export function historyCutoff(infos: ReadonlyArray<Pick<GatewayKeyInfo, 'createdAt'> | null>): number | null {
-  const times = infos.flatMap((info) => (info?.createdAt != null ? [info.createdAt] : []));
-  return times.length > 0 ? Math.min(...times) : null;
 }
 
 /**

@@ -2,12 +2,16 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { KeyUsage } from '../gateway/key-info.js';
 import { liveBuyerAddress } from '../gateway/buyer-signer.js';
+import { usdcFromMicros, usdcToMicros } from './usdc-decimal.js';
 
 /**
- * Requests and spend from before the local gateway, read from the buyer's own
- * channels. The gateway accounts for every request from its first key on;
- * what the buyer served before that (the desktop used it directly) is in its
- * channel store only. Home adds this to the gateway's totals.
+ * Requests and spend the gateway never saw: what the buyer served before the
+ * local gateway existed (the desktop used it directly then). The gateway
+ * sends every request through this same buyer, so that history is the
+ * buyer's lifetime usage on the wallet less the gateway's own totals for the
+ * wallet's keys. It needs no request times, which the buyer doesn't keep:
+ * a channel used on both sides of the switch, or settled after it, counts
+ * once. Home adds it to the gateway's totals.
  */
 
 const READ_TIMEOUT_MS = 5_000;
@@ -26,25 +30,12 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-/** Whether a channel was last used before the cutoff; one open across it is left to the gateway, so nothing counts twice. */
-function endedBefore(entry: Record<string, unknown>, cutoffMs: number): boolean {
-  const updatedAt = entry['updatedAt'];
-  return typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt < cutoffMs;
-}
-
 function records(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object') : [];
 }
 
-/** USDC base units (6 decimals) as a decimal string, e.g. 1500000n → "1.5". */
-export function usdcDecimal(units: bigint): string {
-  const whole = units / 1_000_000n;
-  const fraction = (units % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
-  return fraction ? `${whole}.${fraction}` : whole.toString();
-}
-
 /**
- * Usage of the channels that ended before `cutoffMs`.
+ * Everything the buyer has served on the wallet.
  *
  * - `channels`: `GET /_antseed/channels?all=1` (paid and one-off channels).
  *   Spend is the larger of the last amount the buyer signed and what the
@@ -53,20 +44,26 @@ export function usdcDecimal(units: bigint): string {
  *   free channels), for request counts, so free requests count too. One-off
  *   requests, which it leaves out, come from `channels`.
  */
-export function historicUsage(channels: unknown, usagePoints: unknown, cutoffMs: number): KeyUsage {
+export function buyerLifetimeUsage(channels: unknown, usagePoints: unknown): KeyUsage {
   let requests = 0;
   let spent = 0n;
   for (const channel of records(channels)) {
-    if (!endedBefore(channel, cutoffMs)) continue;
     const signed = nonNegativeBigInt(channel['cumulativeSigned']);
     const settled = nonNegativeBigInt(channel['settledAmount']);
     spent += settled > signed ? settled : signed;
     if (channel['channelKind'] === 'one_off') requests += count(channel['requestCount']);
   }
-  for (const point of records(usagePoints)) {
-    if (endedBefore(point, cutoffMs)) requests += count(point['requestCount']);
-  }
-  return { requests, spentUsd: usdcDecimal(spent) };
+  for (const point of records(usagePoints)) requests += count(point['requestCount']);
+  return { requests, spentUsd: usdcFromMicros(spent) };
+}
+
+/** The buyer's lifetime usage less the gateway's; never below zero, so a gateway that counted more adds nothing. */
+export function usageBeforeGateway(buyer: KeyUsage, gateway: KeyUsage): KeyUsage {
+  const spent = usdcToMicros(buyer.spentUsd) - usdcToMicros(gateway.spentUsd);
+  return {
+    requests: Math.max(0, buyer.requests - gateway.requests),
+    spentUsd: usdcFromMicros(spent > 0n ? spent : 0n),
+  };
 }
 
 async function readBuyerJson(port: number, pathname: string): Promise<Record<string, unknown> | null> {
@@ -83,22 +80,37 @@ async function readBuyerJson(port: number, pathname: string): Promise<Record<str
   }
 }
 
-type SavedHistory = { scope: string; usage: KeyUsage };
+/** The buyer's lifetime usage when `walletAddress` is its default wallet (the desktop's own); null otherwise or when it can't be read. */
+async function readBuyerLifetime(port: number, walletAddress: string): Promise<KeyUsage | null> {
+  const buyerAddress = await liveBuyerAddress(port, READ_TIMEOUT_MS);
+  if (!buyerAddress || buyerAddress.toLowerCase() !== walletAddress.toLowerCase()) return null;
+  const [channels, usage] = await Promise.all([
+    readBuyerJson(port, '/_antseed/channels?all=1'),
+    readBuyerJson(port, '/_antseed/buyer-usage'),
+  ]);
+  if (!channels || channels['ok'] !== true || !Array.isArray(channels['channels'])) return null;
+  const totals = usage?.['totals'] as Record<string, unknown> | undefined;
+  if (!usage || usage['ok'] !== true || !Array.isArray(totals?.['channels'])) return null;
+  return buyerLifetimeUsage(channels['channels'], totals['channels']);
+}
+
+type SavedHistory = { wallet: string; usage: KeyUsage };
 
 function parseSaved(raw: unknown): SavedHistory | null {
-  const saved = raw as { scope?: unknown; usage?: { requests?: unknown; spentUsd?: unknown } } | null;
+  const saved = raw as { wallet?: unknown; usage?: { requests?: unknown; spentUsd?: unknown } } | null;
   const requests = saved?.usage?.requests;
   const spentUsd = saved?.usage?.spentUsd;
-  if (typeof saved?.scope !== 'string') return null;
+  if (typeof saved?.wallet !== 'string') return null;
   if (typeof requests !== 'number' || !Number.isSafeInteger(requests) || requests < 0) return null;
   if (typeof spentUsd !== 'string' || !/^\d+(\.\d{1,6})?$/.test(spentUsd)) return null;
-  return { scope: saved.scope, usage: { requests, spentUsd } };
+  return { wallet: saved.wallet, usage: { requests, spentUsd } };
 }
 
 /**
- * The buyer's usage before the gateway, read once and then kept: in memory,
- * and in `file` so later launches show it straight away instead of waiting
- * for the buyer to start. It never changes for a given wallet and cutoff.
+ * The usage from before the gateway, worked out once per wallet and then
+ * kept: in memory, and in `file` so later launches show it straight away
+ * instead of waiting for the buyer to start. Kept once, it can't drift as the
+ * gateway and the buyer go on counting the same new requests.
  */
 export class BuyerHistory {
   private memory: SavedHistory | null = null;
@@ -107,25 +119,25 @@ export class BuyerHistory {
   constructor(private readonly file: () => string | null) {}
 
   /**
-   * Usage before `cutoffMs` for `walletAddress`, the wallet paying for the
-   * desktop key. Read only when it is the buyer's default wallet (the
-   * desktop's own); otherwise, or when the buyer can't be read, null, and
-   * Home shows the gateway's totals alone. A failed read is not kept, so the
-   * next refresh tries again.
+   * Usage before the gateway for `walletAddress`, the wallet paying for the
+   * desktop key, with `gatewayUsage` giving the gateway's totals for that
+   * wallet's keys. Null, and Home shows the gateway's totals alone, when the
+   * buyer pays from another wallet or either side can't be read; that is not
+   * kept, so the next refresh tries again.
    */
-  async read(port: number, walletAddress: string, cutoffMs: number): Promise<KeyUsage | null> {
-    const scope = `${walletAddress.toLowerCase()}|${cutoffMs}`;
-    if (this.memory?.scope === scope) return this.memory.usage;
+  async read(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): Promise<KeyUsage | null> {
+    const wallet = walletAddress.toLowerCase();
+    if (this.memory?.wallet === wallet) return this.memory.usage;
     const saved = this.load();
-    if (saved?.scope === scope) {
+    if (saved?.wallet === wallet) {
       this.memory = saved;
       return saved.usage;
     }
-    const usage = await readFromBuyer(port, walletAddress, cutoffMs);
-    if (!usage) return null;
-    this.memory = { scope, usage };
+    const [buyer, gateway] = await Promise.all([readBuyerLifetime(port, walletAddress), gatewayUsage().catch(() => null)]);
+    if (!buyer || !gateway) return null;
+    this.memory = { wallet, usage: usageBeforeGateway(buyer, gateway) };
     this.save(this.memory);
-    return usage;
+    return this.memory.usage;
   }
 
   private load(): SavedHistory | null {
@@ -138,7 +150,7 @@ export class BuyerHistory {
     }
   }
 
-  /** Best effort: one that can't be written is read from the buyer again at the next launch. */
+  /** Best effort: one that can't be written is worked out again at the next launch. */
   private save(saved: SavedHistory): void {
     const file = this.file();
     if (!file) return;
@@ -151,17 +163,4 @@ export class BuyerHistory {
       // Kept in memory for this launch.
     }
   }
-}
-
-async function readFromBuyer(port: number, walletAddress: string, cutoffMs: number): Promise<KeyUsage | null> {
-  const buyerAddress = await liveBuyerAddress(port, READ_TIMEOUT_MS);
-  if (!buyerAddress || buyerAddress.toLowerCase() !== walletAddress.toLowerCase()) return null;
-  const [channels, usage] = await Promise.all([
-    readBuyerJson(port, '/_antseed/channels?all=1'),
-    readBuyerJson(port, '/_antseed/buyer-usage'),
-  ]);
-  if (!channels || channels['ok'] !== true || !Array.isArray(channels['channels'])) return null;
-  const totals = usage?.['totals'] as Record<string, unknown> | undefined;
-  if (!usage || usage['ok'] !== true || !Array.isArray(totals?.['channels'])) return null;
-  return historicUsage(channels['channels'], totals['channels'], cutoffMs);
 }
