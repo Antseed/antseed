@@ -159,10 +159,34 @@ describe('streamed image answers', () => {
     for (const stream of [true, 'true', 1]) {
       expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream }), String(stream)).toThrow(/"stream"/);
     }
-    for (const key of ['Stream', 'STREAM', '\u017ftream', ' stream', 'stream[]', 'str\u200beam']) {
+    for (const key of ['Stream', 'STREAM', '\u017ftream', ' stream', 'stream[]', 'str\u200beam', 'str\u00adeam', '\uff53\uff54\uff52\uff45\uff41\uff4d']) {
       expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', [key]: true }), JSON.stringify(key)).toThrow(/"stream"/);
     }
     expect(capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream: false }).context.unitLimits).toEqual({ output_images: 1 });
+  });
+
+  it('refuses values not every reader takes as false, as a buyer fault', () => {
+    for (const stream of ['false', 0, '']) {
+      expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream }), JSON.stringify(stream)).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
+    }
+  });
+
+  it('refuses a form that names a stream field in any way a lenient parser reads it', () => {
+    const form = (part: string) => [
+      '--b\r\nContent-Disposition: form-data; name="model"\r\n\r\nimage\r\n',
+      `--b\r\nContent-Disposition: form-data; ${part}`,
+      '--b--\r\n',
+    ].join('');
+    for (const part of [
+      'name="stream"\r\n\r\nfalse\r\n',
+      'name=stream\r\n\r\ntrue\r\n',
+      "name*=utf-8''stream\r\n\r\ntrue\r\n",
+      'name="stream"; filename=""\r\n\r\ntrue\r\n',
+      `name="Stream"\r\n\r\n${' '.repeat(5000)}true\r\n`,
+    ]) {
+      const request = { requestId: 'r', method: 'POST', path: '/v1/images/edits', headers: { 'content-type': 'multipart/form-data; boundary=b' }, body: encoder.encode(form(part)) };
+      expect(() => captureUnitBillingContext({ sellerPeerId: 'a'.repeat(40), provider: 'openai', service: 'image', serviceApiProtocol: 'openai-images', request }), part).toThrow(/"stream"/);
+    }
   });
 
   it('leaves a streamed chat request to token billing', () => {

@@ -4,6 +4,7 @@ import type {
   SpeechRequestFacts,
   TokenUsage,
 } from '@antseed/api-adapter';
+import { buyerFault } from './errors.js';
 import {
   extractImageRequestFacts,
   extractSpeechRequestFacts,
@@ -134,18 +135,45 @@ const videoBillingAdapter: UnitBillingAdapter = {
 };
 
 /**
- * The values of every top-level field some parser reads as `name`: the exact
- * key, and keys that differ from it in letter case (Unicode folds such as the
- * long s included), padding, invisible characters or a `[...]` suffix.
+ * A field name the way some parser reads it: compatibility forms (full-width
+ * letters), invisible and control characters, letter case (Unicode folds
+ * such as the long s), a `[...]` suffix, padding and separators set aside.
  */
+function foldFieldName(key: string): string {
+  const folded = key.normalize('NFKC').replace(/[\p{Cf}\p{Cc}]/gu, '').toUpperCase().toLowerCase();
+  const bracket = folded.indexOf('[');
+  return (bracket === -1 ? folded : folded.slice(0, bracket)).replace(/[\s_.-]/g, '');
+}
+
+/** The values of every top-level field of a body that some parser reads as `name`. */
 function fieldValues(body: Record<string, unknown> | null | undefined, name: string): unknown[] {
   if (!body) return [];
-  const fold = (key: string): string => {
-    const folded = key.replace(/[\u0000-\u001f\u007f\u200b-\u200d\u2060\ufeff]/g, '').toUpperCase().toLowerCase();
-    const bracket = folded.indexOf('[');
-    return (bracket === -1 ? folded : folded.slice(0, bracket)).trim();
-  };
-  return Object.entries(body).filter(([key]) => fold(key) === name).map(([, value]) => value);
+  const target = foldFieldName(name);
+  return Object.entries(body).filter(([key]) => foldFieldName(key) === target).map(([, value]) => value);
+}
+
+/**
+ * Every field name a multipart body gives, read as loosely as lenient parsers
+ * read it: any `name` parameter on a line naming form-data, quoted, unquoted
+ * or RFC 2231-encoded, of text and file parts alike and of any size. Null
+ * when the request is not multipart.
+ */
+function looseFormFieldNames(headers: Record<string, string>, body: Uint8Array): string[] | null {
+  if (!Object.entries(headers).some(([key, value]) => key.toLowerCase() === 'content-type' && /multipart\//i.test(value))) return null;
+  const names: string[] = [];
+  for (const line of new TextDecoder('latin1').decode(body).split(/\r\n|\r|\n/)) {
+    if (!/form-data/i.test(line)) continue;
+    for (const match of line.matchAll(/(?:^|[^a-z0-9])name\s*(?:\*[0-9]*\*?)?\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([^;\s]+))/gi)) {
+      let name = (match[1] ?? match[2] ?? match[3] ?? '').replace(/^[^']*'[^']*'/, '');
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // Not a valid escape: read as written.
+      }
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 // Speech is billed by the characters of `input`, and only when audio came back:
@@ -160,7 +188,7 @@ const speechBillingAdapter: UnitBillingAdapter = {
     if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
     // Delivery is proved by audio bytes; a stream of events is not read as audio, so it could not be billed.
     if (fieldValues(body, 'stream_format').some((value) => value !== null && value !== 'audio')) {
-      throw new Error('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"');
+      throw buyerFault('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"', 'invalid-request');
     }
     return {
       context: {
@@ -231,8 +259,12 @@ function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
   // This capture also stands in for token-billed protocols (chat), whose streams are billed by tokens.
   // Images are counted in a JSON answer; a streamed one is not read, so it could not be billed.
-  if (args.serviceApiProtocol === 'openai-images' && fieldValues(parsed, 'stream').some((value) => value !== null && value !== false)) {
-    throw new Error('Image billing requires the answer as JSON: send the request without "stream"');
+  // A form field is text, and not every reader takes "false" as false: a form names no stream at all.
+  if (args.serviceApiProtocol === 'openai-images' && (
+    fieldValues(parsed, 'stream').some((value) => value !== null && value !== false)
+    || Boolean(looseFormFieldNames(args.request.headers, args.request.body)?.some((name) => foldFieldName(name) === 'stream'))
+  )) {
+    throw buyerFault('Image billing requires the answer as JSON: send the request without "stream"', 'invalid-request');
   }
   const image = extractImageRequestFacts({
     path: args.request.path,

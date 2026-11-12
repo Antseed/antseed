@@ -228,6 +228,18 @@ describe('completed-request seller payments', () => {
       await expectRefused(harness, { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'true']]) });
     });
 
+    it('refuses a streamed image request under another spelling of its stream option, before serving it', async () => {
+      for (const body of [json({ model: 'image', prompt: 'A tree', Stream: true }), json({ model: 'image', prompt: 'A tree', stream: 'false' })]) {
+        const harness = unitHarness();
+        vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+        await expectRefused(harness, { path: '/v1/images/generations', headers, body });
+      }
+      const harness = unitHarness();
+      const edit = multipart([['model', 'image'], ['prompt', 'A tree']]);
+      const body = new TextDecoder().decode(edit.body).replace('--b0undary--', '--b0undary\r\nContent-Disposition: form-data; name=stream\r\n\r\ntrue\r\n--b0undary--');
+      await expectRefused(harness, { path: '/v1/images/edits', headers: edit.headers, body: encoder.encode(body) });
+    });
+
     it('refuses a speech request streamed as events before serving it', async () => {
       const harness = unitHarness();
       vi.mocked(harness.provider.handleRequest).mockImplementation(streamed([{ type: 'speech.audio.delta', audio: 'aGVsbG8=' }, { type: 'speech.audio.done' }]));

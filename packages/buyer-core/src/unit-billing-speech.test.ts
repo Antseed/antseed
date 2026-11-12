@@ -53,6 +53,9 @@ describe('speech billing', () => {
     const body = { model: 'tts-elevenlabs-turbo-v2-5', input: 'Hello', voice: 'Rachel' };
     expect(() => capture({ ...body, stream_format: 'sse' })).toThrow(/stream_format/);
     expect(() => capture({ ...body, Stream_Format: 'sse' })).toThrow(/stream_format/);
+    for (const key of ['streamFormat', 'stream-format', 'STREAM FORMAT', 'stream\u00ad_format']) {
+      expect(() => capture({ ...body, [key]: 'sse' }), key).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
+    }
     expect(() => capture({ ...body, stream_format: 'audio', 'stream_format[]': 'sse' })).toThrow(/stream_format/);
     expect(capture({ ...body, stream_format: 'audio' }).requestUsage).toEqual({ units: { input_characters: 5 } });
   });
