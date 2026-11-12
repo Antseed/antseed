@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_WEBHOOK_BODY_BYTES, NanoMdmAttestor, parsePlist } from './mdm.js';
+import { MAX_WEBHOOK_BODY_BYTES, NanoMdmAttestor, parseDeviceBindings, parsePlist } from './mdm.js';
 
 const SECRET = '9f2c4e7a1b8d3f60';
 
@@ -111,5 +111,14 @@ describe('NanoMDM device attestor', () => {
     const streamed = await fetch(webhook, { method: 'POST', body: chunked, duplex: 'half' } as RequestInit).catch(() => null);
     expect(streamed === null || streamed.status === 413).toBe(true);
     expect(onWebhook).not.toHaveBeenCalled();
+  });
+
+  it('parses each enrolled Mac\'s worker, refusing a Mac bound twice', () => {
+    const worker = '0x1000000000000000000000000000000000000001';
+    expect(parseDeviceBindings(` 00000000-0000-1000-8000-0123456789ab = ${worker.toUpperCase().replace('0X', '0x')} `))
+      .toEqual(new Map([['00000000-0000-1000-8000-0123456789AB', worker]]));
+    expect(parseDeviceBindings(undefined).size).toBe(0);
+    expect(() => parseDeviceBindings('not-a-udid!=0x1')).toThrow(/is not UDID=worker address/);
+    expect(() => parseDeviceBindings(`AAAAAAAA=${worker},aaaaaaaa=${worker}`)).toThrow(/binds Mac aaaaaaaa twice/);
   });
 });

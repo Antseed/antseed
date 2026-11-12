@@ -58,6 +58,7 @@ function deferredMdm(): DeviceAttestor & { lookups: Array<{ udid: string; nonce:
 
 const DAY_MS = 24 * 3600_000;
 const TEST_UDID = '00000000-0000-1000-8000-0123456789AB';
+const OTHER_UDID = '00000000-0000-1000-8000-0000000000FF';
 
 /**
  * Apple's behaviour behind the operator's MDM: a new attestation of a device
@@ -188,6 +189,8 @@ describe('colony pool', () => {
   const buyer = Wallet.createRandom();
 
   const logs: string[] = [];
+  /** Enrolled Macs bound to workers, as the operator's COLONY_POOL_MDM_DEVICES would. */
+  const deviceBindings = new Map<string, string>();
 
   async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; attestedTeams?: Set<string>; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean; deviceAttestationIntervalMs?: number; models?: Map<string, string> } = {}): Promise<void> {
     pool = new ColonyPool({
@@ -205,7 +208,7 @@ describe('colony pool', () => {
       ...(opts.models ? { models: opts.models } : {}),
       log: (line) => logs.push(line),
       ...(opts.attestationIntervalMs ? { attestationIntervalMs: opts.attestationIntervalMs } : {}),
-      ...(opts.deviceAttestor ? { deviceAttestor: opts.deviceAttestor, deviceAttestationRoots: [appleCa.rootPem] } : {}),
+      ...(opts.deviceAttestor ? { deviceAttestor: opts.deviceAttestor, deviceBindings, deviceAttestationRoots: [appleCa.rootPem] } : {}),
       ...(opts.requireDeviceAttestation ? { requireDeviceAttestation: true } : {}),
       ...(opts.deviceAttestationIntervalMs ? { deviceAttestationIntervalMs: opts.deviceAttestationIntervalMs } : {}),
     });
@@ -220,7 +223,7 @@ describe('colony pool', () => {
     poolUrl = `ws://127.0.0.1:${port}`;
   }
 
-  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester; models?: Record<string, string>; paused?: boolean } = {}): PoolWorker {
+  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester; models?: Record<string, string>; paused?: boolean; bind?: boolean } = {}): PoolWorker {
     const worker = new PoolWorker({
       poolUrl,
       baseUrl: upstream.url,
@@ -235,6 +238,8 @@ describe('colony pool', () => {
       ...(opts.models ? { models: opts.models } : {}),
     });
     workers.push(worker);
+    // Each test Mac is bound to the latest worker started, unless a test says otherwise.
+    if (opts.bind !== false) for (const udid of [TEST_UDID, OTHER_UDID]) deviceBindings.set(udid, worker.address.toLowerCase());
     if (opts.paused) worker.setPaused(true);
     worker.start();
     return worker;
@@ -738,7 +743,7 @@ describe('colony pool', () => {
     const mdm = fakeMdm();
     await setup({ verifyOnJoin: false, deviceAttestor: mdm, requireDeviceAttestation: true });
     const apple = startWorker({ attester: fakeAttester() });
-    startWorker(); // reports no Mac: disconnected
+    startWorker({ bind: false }); // reports no Mac: disconnected
     await waitFor(() => provider.services.includes(SERVICE));
     await waitFor(() => pool.workerSummaries().length === 1);
     expect(pool.workerSummaries()[0]).toMatchObject({ address: apple.address.toLowerCase(), appleVerified: true });
@@ -746,6 +751,22 @@ describe('colony pool', () => {
 
     const assignment = await assign() as WorkerKeyCertificate & { deviceAttestation?: { chain: string[]; challenge: string } };
     expect(assignment.deviceAttestation?.chain).toHaveLength(2);
+  });
+
+  it('asks Apple about a Mac only for the worker the operator bound it to', async () => {
+    const mdm = fakeMdm();
+    await setup({ verifyOnJoin: false, deviceAttestor: mdm, requireDeviceAttestation: true });
+    const owner = Wallet.createRandom();
+    deviceBindings.set(TEST_UDID, owner.address.toLowerCase());
+    // Another worker claims the owner's enrolled Mac: never attested, so never routed.
+    startWorker({ attester: fakeAttester(), bind: false });
+    await waitFor(() => logs.some((line) => line.includes('is not bound to it in COLONY_POOL_MDM_DEVICES')));
+    expect(mdm.asked).toEqual([]);
+    expect(provider.services).toEqual([]);
+    // The worker it is bound to is.
+    startWorker({ key: owner.privateKey, attester: fakeAttester(), bind: false });
+    await waitFor(() => pool.workerSummaries().some((w) => w.address === owner.address.toLowerCase() && w.appleVerified));
+    expect(mdm.asked).toEqual([TEST_UDID]);
   });
 
   it('keeps a Mac Apple reports with SIP off out of rotation when required', async () => {
@@ -853,7 +874,7 @@ describe('colony pool', () => {
 
     // The worker re-attests naming another Mac: the pool asks about it while the first lookup is still out.
     device.serial = 'C02OTHERMAC1';
-    device.udid = '00000000-0000-1000-8000-0000000000FF';
+    device.udid = OTHER_UDID;
     await waitFor(() => mdm.lookups.length === 2);
     expect(mdm.lookups[1]!.udid).toBe(device.udid);
 
@@ -873,7 +894,7 @@ describe('colony pool', () => {
     startWorker({ attester: fakeAttester({ device }) });
     await waitFor(() => mdm.lookups.length === 1);
     device.serial = 'C02OTHERMAC1';
-    device.udid = '00000000-0000-1000-8000-0000000000FF';
+    device.udid = OTHER_UDID;
     await waitFor(() => mdm.lookups.length === 2);
 
     mdm.lookups[1]!.resolve('C02OTHERMAC1');

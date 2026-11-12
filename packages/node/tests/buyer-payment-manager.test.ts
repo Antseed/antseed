@@ -773,6 +773,33 @@ describe('BuyerPaymentManager', () => {
     ]);
   });
 
+  it('credits a worker from headroom signed before its answer, re-signing at the same amount', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool-headroom');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const worker = '0x1000000000000000000000000000000000000001';
+    const usage = { inputTokens: 100n, cachedInputTokens: 0n, outputTokens: 10n };
+    const stats = (requestId: string) => ({
+      inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n,
+      reportedInputTokens: 100n, reportedOutputTokens: 10n, service: 'qwen', requestId,
+    });
+    // A seller prompt signs 500 ahead, before any answer: no worker to credit yet.
+    mux.sentSpendingAuths.length = 0;
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '500', currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect(decodeWorkerTail((mux.sentSpendingAuths[0] as { metadata: string }).metadata)).toBeNull();
+    // Two worker answers the headroom covers: the amount stays, each is credited.
+    for (const requestId of ['req-a', 'req-b']) {
+      manager.recordWorkerAttribution(sellerPeerId, requestId, worker);
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 100n });
+      manager.recordWorkerDelivery(requestId, usage);
+      await manager.signPerRequestAuth(sellerPeerId, stats(requestId));
+    }
+    const latest = manager.latestSpendingAuth(sellerPeerId)!;
+    expect(latest.cumulativeAmount).toBe('500');
+    expect(decodeWorkerTail(latest.metadata)).toEqual([{ worker, cumulativeAmount: 200n }]);
+  });
+
   it('credits only the recipient whose answer verified when a request is encrypted for several workers', async () => {
     const sellerPeerId = fakePeerId('seller-colony-pool-recipients');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

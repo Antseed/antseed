@@ -442,6 +442,14 @@ workers serve requests it never pays for.
   covers a colony pool's requests: the buyer never signs a payment for an
   answer an allowance covered, so its worker would wait for one forever. Each
   such request is paid as usual.
+- **Headroom pays workers too.** A buyer may sign ahead of what it has
+  counted (a seller prompt, a top-up). A verified worker answer that this
+  signed headroom covers is credited from it: the buyer signs the auth again
+  at the same amount with the worker in its tail. What it can credit is the
+  signed amount less every cost counted before, so a tail never adds up to
+  more than the auth signs. If the pool already settled that amount, the
+  contract ignores the new tail, the worker counts it as nothing it can
+  redeem, and the next increase pays it.
 - **Eight workers per channel.** A channel's attribution names at most eight
   workers. The buyer encrypts a request only for workers the channel can
   credit: the ones it credits, the recipients of its requests still awaiting
@@ -614,8 +622,8 @@ attestations, it is the app's own attestation every 5 minutes (self-reported,
 see Hardened Macs) that reports SIP, and the app stops serving when it is off.
 
 Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
-`COLONY_POOL_MDM_WEBHOOK_PORT`, `COLONY_POOL_MDM_WEBHOOK_HOST` and
-`COLONY_POOL_MDM_WEBHOOK_PATH` (required with the MDM: at least 16 random
+`COLONY_POOL_MDM_WEBHOOK_PORT`, `COLONY_POOL_MDM_WEBHOOK_HOST`,
+`COLONY_POOL_MDM_DEVICES` and `COLONY_POOL_MDM_WEBHOOK_PATH` (required with the MDM: at least 16 random
 characters, since the path is the webhook's only secret; bodies over 64 KiB
 are refused) connect a [NanoMDM](https://github.com/micromdm/nanomdm) server
 (commands are queued with `PUT /v1/enqueue/<udid>`; answers arrive on its
@@ -634,9 +642,18 @@ needs an Apple Business Manager account or a vendor-signed request), and
 Macs with Apple silicon on macOS 14 or later. Enrolling gives the operator
 MDM powers over the Mac, which owners should weigh.
 
+**Binding Macs to workers.** A worker names the Mac it runs on, and Apple's
+attestation proves that Mac's state, not that the worker runs on it. So the
+operator binds each Mac it enrolls to the worker address that runs on it
+(`COLONY_POOL_MDM_DEVICES`: `UDID=0xworker,…`, required with the MDM; a worker
+may run on several Macs, a Mac belongs to one worker). The pool asks Apple
+about a Mac only for the worker it is bound to: a worker naming a Mac bound to
+no one, or to another worker, is never Apple-verified.
+
 **Limits.** Apple vouches for the Mac and its SIP state, not for which app
-holds the decryption key. An owner running a modified app, on the enrolled
-Mac or on a second one, could still present the enrolled Mac's attestation.
+holds the decryption key. The owner of an enrolled Mac, running a modified
+app on it or on a second Mac under the bound worker's key, could still
+present the enrolled Mac's attestation.
 Tying the key to the device needs the worker's attestation key to come from the MDM itself (an ACME
 hardware-bound key, whose certificate Apple also attests), which this
 version does not do yet. Prompts are still in unencrypted memory, as above.

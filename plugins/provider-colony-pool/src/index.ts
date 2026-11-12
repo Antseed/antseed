@@ -11,7 +11,7 @@ import {
 } from '@antseed/provider-core';
 import { isChargeablePrice } from '@antseed/node/worker-e2e';
 import { WorkerLedger } from './ledger.js';
-import { NanoMdmAttestor } from './mdm.js';
+import { NanoMdmAttestor, parseDeviceBindings } from './mdm.js';
 import { parseModelPins } from './model-pins.js';
 
 import { ColonyPool } from './pool.js';
@@ -23,7 +23,7 @@ export { WorkerLedger } from './ledger.js';
 export { ColonyPool, NoWorkerAvailableError, WorkerUnavailableError, type ColonyPoolOptions, type WorkerSummary } from './pool.js';
 export { ColonyPoolProvider } from './provider.js';
 export * from './protocol.js';
-export { NanoMdmAttestor, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';
+export { NanoMdmAttestor, parseDeviceBindings, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';
 
 /** provider-core's parser, with an empty setting meaning the default. */
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
@@ -63,6 +63,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_MDM_API_KEY', label: 'MDM API Key', type: 'secret', required: false, description: 'NanoMDM API key' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_PORT', label: 'MDM Webhook Port', type: 'number', required: false, default: 8791, description: 'Port NanoMDM posts command results to, behind an HTTPS proxy or private tunnel' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_HOST', label: 'MDM Webhook Host', type: 'string', required: false, default: '127.0.0.1', description: 'Address the plain-HTTP webhook listens on: loopback by default, so only a local HTTPS proxy or tunnel reaches it' },
+    { key: 'COLONY_POOL_MDM_DEVICES', label: 'MDM Devices', type: 'string', required: false, description: 'Each enrolled Mac bound to the worker that runs on it, as UDID=0xworker,… (required with the MDM: Apple attests the Mac, not the worker)' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_PATH', label: 'MDM Webhook Path', type: 'secret', required: false, description: 'Secret path for that webhook URL, at least 16 random characters (required with the MDM)' },
     { key: 'COLONY_POOL_REQUIRE_DEVICE_ATTESTATION', label: 'Require Apple Attestation', type: 'boolean', required: false, default: false, description: 'Only route to Macs Apple attests through your MDM (SIP on, serial matches)' },
     { key: 'COLONY_POOL_VERIFY_ON_JOIN', label: 'Verify On Join', type: 'boolean', required: false, default: true, description: 'Send each newly offered model a short test completion before routing buyers to it' },
@@ -124,6 +125,10 @@ const plugin: AntseedProviderPlugin = {
     if (mdmUrl && !webhookPath) {
       throw new Error('COLONY_POOL_MDM_URL needs COLONY_POOL_MDM_WEBHOOK_PATH: at least 16 random characters (e.g. `openssl rand -hex 16`)');
     }
+    const deviceBindings = parseDeviceBindings(config['COLONY_POOL_MDM_DEVICES']);
+    if (mdmUrl && deviceBindings.size === 0) {
+      throw new Error('COLONY_POOL_MDM_URL needs COLONY_POOL_MDM_DEVICES: each enrolled Mac\'s UDID bound to its worker address (UDID=0xworker,…)');
+    }
     const deviceAttestor = mdmUrl && webhookPath
       ? new NanoMdmAttestor({
         url: mdmUrl,
@@ -167,7 +172,7 @@ const plugin: AntseedProviderPlugin = {
       verifyOnJoin: config['COLONY_POOL_VERIFY_ON_JOIN'] !== 'false',
       ...(models.size > 0 ? { models } : {}),
       ...(attestedTeams.length > 0 ? { attestedTeams: new Set(attestedTeams) } : {}),
-      ...(deviceAttestor ? { deviceAttestor, requireDeviceAttestation: config['COLONY_POOL_REQUIRE_DEVICE_ATTESTATION'] === 'true' } : {}),
+      ...(deviceAttestor ? { deviceAttestor, deviceBindings, requireDeviceAttestation: config['COLONY_POOL_REQUIRE_DEVICE_ATTESTATION'] === 'true' } : {}),
       log: (line) => console.log(line),
     });
 

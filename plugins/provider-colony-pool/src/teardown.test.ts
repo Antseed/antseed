@@ -81,6 +81,7 @@ describe('the colony pool provider lifecycle', () => {
       COLONY_POOL_MDM_URL: 'http://127.0.0.1:9/',
       COLONY_POOL_MDM_WEBHOOK_PORT: String(webhookPort),
       COLONY_POOL_MDM_WEBHOOK_PATH: 'a'.repeat(32),
+      COLONY_POOL_MDM_DEVICES: '00000000-0000-1000-8000-0123456789AB=0x1000000000000000000000000000000000000001',
     })) as unknown as Lifecycle;
     // The MDM webhook starts, then the worker port is taken.
     await expect(provider.init()).rejects.toThrow(/EADDRINUSE/);

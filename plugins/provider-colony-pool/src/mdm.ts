@@ -27,6 +27,25 @@ export interface NanoMdmAttestorOptions {
   log?: (line: string) => void;
 }
 
+/**
+ * Parse `COLONY_POOL_MDM_DEVICES`: `UDID=0xworker,…`, binding each enrolled
+ * Mac to the one worker address allowed to claim it. A worker may run on
+ * several Macs; a Mac belongs to one worker.
+ */
+export function parseDeviceBindings(raw: string | undefined): Map<string, string> {
+  const bindings = new Map<string, string>();
+  for (const entry of (raw ?? '').split(',').map((part) => part.trim()).filter(Boolean)) {
+    const [udid, worker] = entry.split('=', 2).map((part) => part.trim());
+    if (!udid || !/^[0-9A-Fa-f-]{8,64}$/.test(udid) || !worker || !/^0x[0-9a-fA-F]{40}$/.test(worker)) {
+      throw new Error(`COLONY_POOL_MDM_DEVICES: "${entry}" is not UDID=worker address`);
+    }
+    const key = udid.toUpperCase();
+    if (bindings.has(key)) throw new Error(`COLONY_POOL_MDM_DEVICES binds Mac ${udid} twice`);
+    bindings.set(key, worker.toLowerCase());
+  }
+  return bindings;
+}
+
 /** DeviceInformation answers can take a while: the Mac is woken by push and asks Apple for the attestation. */
 const DEFAULT_TIMEOUT_MS = 120_000;
 

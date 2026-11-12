@@ -635,6 +635,14 @@ export class BuyerPaymentManager {
    * their cost) join what the seller's workers are still owed; oldest first.
    * The advance may also pay the seller's own requests, so a worker is
    * credited at most its answers' counted cost, and never more than is signed.
+   *
+   * With `signedCumulative` (the amount the SpendingAuth signs), signed money
+   * no counted cost has used yet (headroom a seller prompt or a top-up signed
+   * ahead) pays workers too, even when the amount does not grow: the auth is
+   * re-signed at the same amount with the worker in its tail. What is
+   * allocated is every cost counted before this auth, less what workers are
+   * still owed, so attribution never exceeds the signed amount.
+   *
    * Commit the returned `due` (_commitWorkerCredit) once the SpendingAuth is.
    */
   private _creditWorkers(
@@ -642,7 +650,11 @@ export class BuyerPaymentManager {
     metadata: SpendingAuthMetadata,
     signedDelta: bigint,
     counted: Iterable<readonly [string, bigint]> = [],
+    signedCumulative?: bigint,
   ): { metadata: SpendingAuthMetadata; due: Map<string, bigint> } {
+    const owedBefore = [...this._workerCreditDue.get(sellerPeerId)?.values() ?? []].reduce((sum, owed) => sum + owed, 0n);
+    const allocated = (this._verifiedCost.get(sellerPeerId) ?? 0n) - owedBefore;
+    const headroom = signedCumulative !== undefined ? signedCumulative - allocated : 0n;
     const due = new Map(this._workerCreditDue.get(sellerPeerId));
     for (const [requestId, cost] of counted) {
       // Only the seller the request went to, and only for an answer that verified.
@@ -651,7 +663,7 @@ export class BuyerPaymentManager {
       }
     }
     let workers = metadata.workers;
-    let left = signedDelta;
+    let left = headroom > signedDelta ? headroom : signedDelta;
     for (const [requestId, owed] of due) {
       if (left <= 0n) break;
       const worker = this._workerDeliveries.verifiedWorker(requestId, sellerPeerId);
@@ -2060,7 +2072,7 @@ export class BuyerPaymentManager {
     );
     // The verified worker answers counted here are credited to their workers.
     const countedCosts = counted.map(([requestId, record]) => [requestId, record.costUsdc] as const);
-    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts);
+    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts, newAmount);
     const newMeta = credit.metadata;
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -2524,7 +2536,7 @@ export class BuyerPaymentManager {
     );
     // A verified worker answer counted here is credited to its worker.
     const countedCosts = record ? [[payload.requestId!, verifiedCostDelta] as const] : [];
-    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts);
+    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts, effectiveAmount);
     const newMeta = credit.metadata;
     // Persistence and transport failures must propagate to the connection
     // owner. In particular, swallowing an IndexedDB failure leaves the browser

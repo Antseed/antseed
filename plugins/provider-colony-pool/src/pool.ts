@@ -105,6 +105,13 @@ export interface ColonyPoolOptions {
   attestationIntervalMs?: number;
   /** The operator's MDM, for Apple-signed attestations of enrolled Macs (optional). */
   deviceAttestor?: DeviceAttestor;
+  /**
+   * Enrolled Mac (UDID, upper case) → the worker address the operator bound it
+   * to when enrolling it. Apple's attestation names the Mac, not the worker
+   * process, so the pool asks about a Mac only for the worker it is bound to:
+   * a worker naming a Mac bound to no one, or to another worker, gets none.
+   */
+  deviceBindings?: Map<string, string>;
   /** Only route to Macs Apple attests through the operator's MDM (SIP on, serial matches). */
   requireDeviceAttestation?: boolean;
   /**
@@ -864,8 +871,11 @@ export class ColonyPool {
     const retryMs = this.opts.deviceAttestationIntervalMs ?? DEVICE_ATTESTATION_INTERVAL_MS;
     let reason: string | undefined;
     let nextMs = retryMs;
+    const boundTo = attestation?.udid ? this.opts.deviceBindings?.get(attestation.udid.toUpperCase()) : undefined;
     if (!attestation?.udid || !attestation.serial || !attestationKey) {
       reason = 'it reports no Mac to attest';
+    } else if (boundTo?.toLowerCase() !== worker.address.toLowerCase()) {
+      reason = `the Mac it reports (${attestation.udid}) is not bound to it in COLONY_POOL_MDM_DEVICES`;
     } else {
       const challenge = deviceAttestationChallenge(worker.address, attestationKey, attestation.udid);
       try {
