@@ -13,6 +13,11 @@ name: Publish npm packages
 #   - POSTHOG_HOST and POSTHOG_PROJECT_API_KEY repo variables: the public
 #     PostHog project the CLI, buyer and gateway send telemetry to
 #     (scripts/bake-desktop-telemetry-config.mjs, docs/telemetry.md).
+#
+# A run that publishes the CLI also creates a GitHub release tagged
+# cli-v<version> (scripts/github-release-notes.mjs). It is never marked
+# Latest: the desktop app's auto-updater and download links read the latest
+# release, which must stay the desktop's.
 
 on:
   workflow_dispatch:
@@ -30,6 +35,8 @@ jobs:
     name: Build, test & publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
 
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +62,10 @@ jobs:
       # This step prints the resulting plan and fails on release invariants:
       # exact-pin dependents missing a bump, or local versions behind npm.
       - name: Publish plan
-        run: node scripts/npm-publish-plan.mjs
+        id: plan
+        run: |
+          node scripts/npm-publish-plan.mjs --json "$RUNNER_TEMP/publish-plan.json"
+          echo "plan=$(jq -c . "$RUNNER_TEMP/publish-plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Bake comparable-prices URL
         env:
@@ -100,3 +110,42 @@ jobs:
           --filter @antseed/relay
           publish --access public --no-git-checks
           ${{ inputs.dry_run && '--dry-run' || '' }}
+
+  # Its own job, so only this one holds a token that can write to the repo
+  # (dependency installs and tests in the publish job never see it).
+  github-release:
+    name: GitHub release
+    needs: publish
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # github-release-notes.mjs lists the PRs since the previous CLI bump.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.publish.outputs.plan }}
+        run: |
+          printf '%s' "$PLAN" > "$RUNNER_TEMP/publish-plan.json"
+          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/publish-plan.json" "$RUNNER_TEMP/release-notes.md")
+          if [ -z "$version" ]; then
+            echo "The CLI was not published in this run; no GitHub release."
+            exit 0
+          fi
+          if gh release view "cli-v${version}" >/dev/null 2>&1; then
+            echo "Release cli-v${version} already exists."
+            exit 0
+          fi
+          gh release create "cli-v${version}" --target "$GITHUB_SHA" --title "CLI ${version}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
