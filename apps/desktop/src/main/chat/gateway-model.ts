@@ -10,6 +10,7 @@ import type { Model } from '@mariozechner/pi-ai';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { gatewayRequestHeaders } from '../gateway/request-headers.js';
+import { anthropicThinkingMode } from './anthropic-thinking.js';
 
 /** pi-ai provider id for gateway models; never sent on the wire. */
 export const GATEWAY_PROVIDER_ID = 'antseed-gateway';
@@ -26,6 +27,8 @@ export type GatewayModelOptions = {
   protocol: ChatServiceProtocol;
   supportsImages: boolean;
   contextWindow?: number;
+  /** The sellers that can serve the request declare reasoning (`modelReasons`). */
+  reasoning?: boolean;
   /** The desktop chat, sent as its session id so the buyer keeps chats apart (two can open the same way). */
   conversationId?: string;
 };
@@ -44,7 +47,7 @@ type GatewayChatModel =
  * explicit bearer header: the Anthropic SDK otherwise only sends `x-api-key`,
  * which the gateway does not accept.
  */
-export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow, conversationId }: GatewayModelOptions): GatewayChatModel {
+export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow, reasoning = false, conversationId }: GatewayModelOptions): GatewayChatModel {
   // The OpenAI SDK appends /responses or /chat/completions to the base URL;
   // the Anthropic SDK appends /v1/messages itself.
   const baseUrl = protocol === 'anthropic-messages' ? endpoint.origin : `${endpoint.origin}/v1`;
@@ -53,7 +56,10 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     name: modelId,
     provider: GATEWAY_PROVIDER_ID,
     baseUrl,
-    reasoning: true,
+    // Over Anthropic Messages a model asked to think must be one whose form of
+    // thinking is known (`anthropic-thinking.ts`); otherwise pi-ai sends no
+    // `thinking` field. The OpenAI protocols keep pi-ai's own handling.
+    reasoning: protocol === 'anthropic-messages' ? reasoning && anthropicThinkingMode(modelId) !== null : true,
     input: (supportsImages ? ['text', 'image'] : ['text']) as ('text' | 'image')[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: contextWindow ?? ANTSEED_MODEL_CONTEXT_WINDOW,

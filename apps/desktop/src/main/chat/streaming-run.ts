@@ -68,7 +68,8 @@ import {
   makeGatewayModel,
   type ChatModel,
 } from './gateway-model.js';
-import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { modelAcceptsImages, modelReasons, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { anthropicThinkingExtension, DEFAULT_CHAT_THINKING_LEVEL } from './anthropic-thinking.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
 import { grantShellGateway } from './gateway-shell-relay.js';
 import { resolveSystemPrompt } from './system-prompt.js';
@@ -290,6 +291,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // the list failed) is spoken to over chat completions, text only.
     const protocol = chatModel?.protocol ?? 'openai-chat-completions';
     const supportsImages = chatModel ? modelAcceptsImages(chatModel, serviceId) : false;
+    const reasoning = chatModel ? modelReasons(chatModel, serviceId) : false;
     const modelLabel = chatModel?.label ?? serviceId;
 
     // Permissions belong to the model, whichever seller serves it.
@@ -310,6 +312,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       endpoint,
       protocol,
       supportsImages,
+      reasoning,
       conversationId,
       ...(chatModel?.contextWindow ? { contextWindow: chatModel.contextWindow } : {}),
     });
@@ -384,7 +387,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
       additionalSkillPaths: resolveBundledChatSkillPaths(),
-      extensionFactories: [toolApprovalExtension],
+      extensionFactories: [
+        toolApprovalExtension,
+        ...(protocol === 'anthropic-messages' ? [anthropicThinkingExtension({ modelId: serviceId, reasoning: gatewayModel.reasoning })] : []),
+      ],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });
     await resourceLoader.reload();
@@ -423,6 +429,11 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     ]);
 
     await session.setModel(gatewayModel);
+    // A chat that last ran on a model without reasoning saved its level as
+    // `off`; a model that reasons gets the default level back.
+    if (gatewayModel.reasoning && session.thinkingLevel === 'off') {
+      session.setThinkingLevel(settingsManager.getDefaultThinkingLevel() ?? DEFAULT_CHAT_THINKING_LEVEL);
+    }
     session.agent.sessionId = conversationId;
 
     const firstUserMessageText = getMessageText(session.messages.find((message) => message.role === 'user')) || trimmedMessage;
