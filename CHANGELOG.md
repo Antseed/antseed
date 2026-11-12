@@ -8,7 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
-- CLI releases on GitHub: every npm release that publishes `@antseed/cli` also creates a GitHub release tagged `cli-v<version>` (for example `cli-v0.1.245`), listing the packages published with their npm links, the install command, and the pull requests merged since the previous CLI version. It is not marked Latest, so the desktop app's update checks and download links keep pointing at the desktop release.
+- CLI releases on GitHub: every npm release that publishes `@antseed/cli` also creates a GitHub release tagged `cli-v<version>` (for example `cli-v0.1.245`), listing the packages published with their npm links, the install command, the pull requests merged since the previous CLI version, and a Thanks section crediting their authors from outside the Antseed organization. It is not marked Latest, so the desktop app's update checks and download links keep pointing at the desktop release.
 - Website: AI apps gateway landing page at `/apps`, linked as **For AI apps** in the navigation, with model pricing, provider choice, API keys and budgets, routing, and setup guidance.
 
 - Building from source: only the dependencies listed in `pnpm.onlyBuiltDependencies` (root `package.json`: the native modules, Electron, esbuild and a few others) run install scripts during `pnpm install`. A dependency that adds an install script no longer runs it until it is added there on purpose. Pull requests get a `PR guard` check that fails on hidden Unicode characters, packages resolved outside the npm registry, and install scripts added by authors outside the team, and lists changes to CI, agent instructions, dependencies and build tooling for a maintainer to read.
