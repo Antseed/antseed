@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
-import { estimateTokensFromBytesSampled, estimateTokensFromText } from '../src/payments/pricing.js';
+import { estimateTokensFromBytes, estimateTokensFromBytesSampled, estimateTokensFromText } from '../src/payments/pricing.js';
 import { decodeHttpResponse, decodeHttpResponseChunk, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { MessageType } from '../src/types/protocol.js';
@@ -118,6 +118,26 @@ describe('seller billing of an answer without a usage report', () => {
       lastRequestCost: String(REQUEST_TOKENS + outputTokens),
     });
     expect(spent).toBe(BigInt(REQUEST_TOKENS + outputTokens));
+  });
+
+  it('counts every byte of a large prompt, whatever sits where a sampled count would look', async () => {
+    // A 1 MiB request whose text is blank exactly at the windows a sampled count reads.
+    const prefix = '{"model":"test-model","messages":[{"role":"user","content":"';
+    const suffix = '"}],"stream":true}';
+    const total = 1 << 20;
+    const chars = Array.from({ length: total - prefix.length - suffix.length }, (_, i) => 'seed '[i % 5]!);
+    const stride = Math.floor((total - 8192) / 7);
+    for (let window = 0; window < 8; window++) {
+      for (let at = window * stride; at < window * stride + 8192; at++) {
+        const index = at - prefix.length;
+        if (index >= 0 && index < chars.length) chars[index] = ' ';
+      }
+    }
+    const body = encoder.encode(`${prefix}${chars.join('')}${suffix}`);
+    const full = estimateTokensFromBytes(body);
+    expect(estimateTokensFromBytesSampled(body), 'the layout defeats a sampled count').toBeLessThan(full / 10);
+    const { needAuth } = await serve(plainProvider(200, { id: 'x', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: 'Seeds.' }, finish_reason: 'stop' }] }), { body });
+    expect(needAuth?.inputTokens).toBe(String(full));
   });
 
   it('counts reasoning and tool arguments as generated output', async () => {
