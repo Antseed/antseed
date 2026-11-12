@@ -264,9 +264,8 @@ function RunFirstBanner() {
                 with <code>curl -fsSL https://antseed.com/install.sh | bash</code> and use{' '}
                 <code>http://localhost:8379/v1</code>. Its keys only work while the computer
                 is on, and other machines can't reach it unless you publish it with a{' '}
-                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>,
-                or <strong>Agents → Internet-accessible endpoint</strong> in the{' '}
-                <Link to="/install">desktop app</Link>) or, on a network you trust, start it
+                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>)
+                or, on a network you trust, start it
                 with <code>--host 0.0.0.0</code>. You can{' '}
                 <Link to="/docs/gateway/migrate">move it to a server</Link> later with its
                 keys and wallets. See the <Link to="/docs/quickstart">quickstart</Link>.

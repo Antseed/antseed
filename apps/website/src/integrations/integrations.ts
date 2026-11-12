@@ -169,7 +169,7 @@ function gatewayEnv(extraNote?: string): ConfigBlock {
       ANTSEED_API_KEY: GATEWAY_KEY,
     },
     note: [
-      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`, or Agents → Internet-accessible endpoint in the desktop app) for other machines. No gateway yet: see Run Antseed first above.`,
+      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`) for other machines. No gateway yet: see Run Antseed first above.`,
       extraNote,
     ].filter(Boolean).join(' '),
   };
@@ -631,7 +631,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Pi runs on another machine than the buyer',
         fix:
-          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
+          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
       },
       {
         problem: 'An error from the endpoint mid-conversation',
@@ -802,7 +802,7 @@ openclaw gateway restart`,
       {
         problem: 'OpenClaw runs remotely and cannot reach `127.0.0.1:8377`',
         fix:
-          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
+          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -976,7 +976,7 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: 'Hermes runs on a remote host and can\'t reach `127.0.0.1:8377`',
-        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
+        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
       },
     ],
     links: [
