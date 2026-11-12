@@ -14,9 +14,7 @@
  * their authors from outside the organization (read with `gh api`, so it needs
  * GH_TOKEN; people who can push to the repository and bots are left out).
  *
- * Usage: node scripts/github-release-notes.mjs <notes.md> [<thanks.tsv>]
- * With <thanks.tsv>, also writes one `<PR number>\t<login>` line per credited PR,
- * for the workflow to tell each contributor the release is out.
+ * Usage: node scripts/github-release-notes.mjs <notes.md>
  * Prints the CLI version, or nothing when that version is not on npm yet.
  */
 import { writeFileSync } from 'node:fs';
@@ -24,7 +22,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { root, readPackage, publishablePackages } from './publishable-packages.mjs';
 
-const [notesPath, thanksPath] = process.argv.slice(2);
+const [notesPath] = process.argv.slice(2);
 if (!notesPath) {
   console.error('usage: github-release-notes.mjs <notes.md>');
   process.exit(2);
@@ -102,8 +100,4 @@ if (thanks.size > 0) {
 lines.push('Details of each change are in [CHANGELOG.md](https://github.com/Antseed/antseed/blob/main/CHANGELOG.md).', '');
 
 writeFileSync(notesPath, lines.join('\n'));
-if (thanksPath) {
-  const rows = [...thanks].flatMap(([login, numbers]) => numbers.map((n) => `${n}\t${login}\n`));
-  writeFileSync(thanksPath, rows.join(''));
-}
 console.log(cli.version);
