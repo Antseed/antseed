@@ -62,7 +62,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { billedRequestBody, requestPathRefusal, type ServiceRefusal } from './requested-service.js';
+import { billedRequestBody, requestPathRefusal, type BilledRequestBody, type ServiceRefusal } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -154,13 +154,10 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
 
 /**
- * The service a request is priced and billed as, or why it names none. When the service was read
- * from the body, `body` and `contentType` are the body the seller wrote from what it read, which
- * its provider is handed in place of the buyer's.
+ * The service a request is priced and billed as, or why it names none: as read from the body, with
+ * the body the seller wrote for its provider, or named by the path, with the buyer's body passed on.
  */
-type RequestedService =
-  | { service: string; contentType?: string; body?: Uint8Array }
-  | { service: null; refusal: ServiceRefusal };
+type RequestedService = BilledRequestBody | { service: string; contentType?: undefined; body?: undefined };
 
 const SERVICE_REQUIRED: ServiceRefusal = { code: 'model_required', message: 'Request must name a published service.' };
 

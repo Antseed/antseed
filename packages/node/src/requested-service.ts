@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
+import { MAX_PAYLOAD_SIZE } from '@antseed/protocol/messages';
 import { extractRequestBodyFields, parseJsonObject } from '@antseed/api-adapter';
 import type { SerializedHttpRequest } from './types/http.js';
 
@@ -14,6 +15,11 @@ import type { SerializedHttpRequest } from './types/http.js';
  * must be spelled exactly (a reader that ignores letter case would take `Size` for `size`), a known
  * upstream model selector is refused, in the body or the path, and a priced image value must be one
  * billing reads. Video and speech billing refuse the values they cannot read themselves.
+ *
+ * The selector lists are best effort: the node cannot know every field, header or path an upstream
+ * reads. Add a selector here when one is found; a plugin whose upstream reads another refuses or
+ * removes it itself. Seller-configured aliases and fallback upstreams must serve the advertised service.
+ * Routing-protocol requests and video retrieves do not name their service in the body, and pass as sent.
  */
 
 /** Why a seller serves no service for a request body. `code` and `message` are what the buyer is answered. */
@@ -23,14 +29,16 @@ export interface ServiceRefusal {
     | 'model_required'
     /** `service` and `model` disagree, or a service field is spelled another way, `modelId`, or not a short text field. */
     | 'ambiguous_service'
-    /** A top-level field selects an upstream model beside the billed one. */
+    /** A top-level field, a path segment or a query parameter selects an upstream model, or the path is not written plainly. */
     | 'unsupported_model_selector'
     /** A service field or billing input appears more than once in a form. */
     | 'repeated_field'
     /** A billing input is spelled another way, or a priced value is not one billing reads. */
     | 'invalid_billing_field'
     /** A multipart body is not a form the seller can read. */
-    | 'unsupported_multipart_body';
+    | 'unsupported_multipart_body'
+    /** The body the seller would write for its provider is larger than a request may be. */
+    | 'request_too_large';
   message: string;
 }
 
@@ -58,13 +66,13 @@ const BILLING_FIELDS = new Set<string>([
 const PRICED_TEXT_FIELDS = ['size', 'quality', 'resolution'];
 
 /** Form fields billing reads: each must be one short text part. */
-const FORM_BILLED_FIELDS = new Set(['service', 'model', 'n', 'size', 'quality', 'resolution']);
+const FORM_BILLED_FIELDS = new Set([...SERVICE_FIELDS, 'n', ...PRICED_TEXT_FIELDS]);
 
 /** Billing reads a form text field only up to this size. */
 const MAX_FORM_TEXT_BYTES = 4096;
 
 const SELECTOR_FIELDS = ['models', 'route', 'fallbacks', 'default_fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks',
-  'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id'];
+  'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id', 'deployment', 'engine', 'model_id'];
 
 /**
  * Top-level fields refused outright. The selectors pick an upstream model beside, or in place of,
@@ -113,7 +121,10 @@ export function billedRequestBody(request: Pick<SerializedHttpRequest, 'headers'
  * like the selector fields.
  */
 export function requestPathRefusal(path: string): ServiceRefusal | undefined {
-  const [pathname = '', query = ''] = path.split('?', 2);
+  // The query starts at the first `?`; a later `?` is part of it, as URL parsers read it.
+  const queryStart = path.indexOf('?');
+  const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
+  const query = queryStart === -1 ? '' : path.slice(queryStart + 1);
   // A server that decodes `%64eployments` or `%2F`, or splits at `;`, would read segments this check does not.
   if (!/^\/[A-Za-z0-9._~:/-]*$/.test(pathname) || query.includes(';')) {
     return { code: 'unsupported_model_selector', message: 'Request path must be written plainly: letters, digits and . _ ~ : / - only, and no ";" in the query.' };
@@ -143,7 +154,13 @@ function billedJson(bytes: Uint8Array): BilledRequestBody {
   if (typeof service !== 'string') return service;
   const priced = pricedValueRefusal(body);
   if (priced) return priced;
-  return { service, contentType: 'application/json', body: new TextEncoder().encode(JSON.stringify(body)) };
+  return written(service, 'application/json', new TextEncoder().encode(JSON.stringify(body)));
+}
+
+/** The body the seller hands its provider, unless writing it made it larger than a request may be. */
+function written(service: string, contentType: string, body: Uint8Array): BilledRequestBody {
+  if (body.length > MAX_PAYLOAD_SIZE) return refuse('request_too_large', 'Request body is too large once written for the provider.');
+  return { service, contentType, body };
 }
 
 function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
@@ -166,7 +183,7 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
   const priced = pricedValueRefusal(fields);
   if (priced) return priced;
   const boundary = `----FormBoundary${randomBytes(16).toString('hex')}`;
-  return { service, contentType: `multipart/form-data; boundary=${boundary}`, body: writeForm(parts, boundary) };
+  return written(service, `multipart/form-data; boundary=${boundary}`, writeForm(parts, boundary));
 }
 
 /**
@@ -189,7 +206,8 @@ function nameRefusal(name: string, seen: Set<string>): Refused | undefined {
 
 /** A name as the loosest reader reads it. Linear time: no regex runs over buyer-controlled lengths. */
 function baseName(name: string): string {
-  const folded = name.toUpperCase().toLowerCase();
+  // Some readers drop control and zero-width characters from a key, so `model` followed by one is still `model`.
+  const folded = name.replace(/[\u0000-\u001f\u007f\u200b-\u200d\u2060\ufeff]/g, '').toUpperCase().toLowerCase();
   const bracket = folded.indexOf('[');
   return (bracket === -1 ? folded : folded.slice(0, bracket)).trim();
 }
@@ -240,12 +258,17 @@ interface FormPart {
 }
 
 const HEADER_END = Buffer.from('\r\n\r\n');
+/** Bounds on what a form may hold, so that reading and writing a hostile one stays cheap before any payment. */
+const MAX_PARTS = 1000;
+const MAX_PART_HEADER_BYTES = 8192;
+const MAX_CONTENT_TYPE_LENGTH = 1024;
 
 /**
  * The parts of a form, or why it is not one. Only what this returns is forwarded: a preamble, an
  * epilogue, and every part header beside the disposition and a file's type are dropped.
  */
 function readFormParts(bytes: Uint8Array, contentType: string): FormPart[] | string {
+  if (contentType.length > MAX_CONTENT_TYPE_LENGTH) return 'the content type is too long';
   const match = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
   const boundary = match?.[1] ?? match?.[2];
   if (!boundary) return 'the content type names no boundary';
@@ -264,8 +287,9 @@ function readFormParts(bytes: Uint8Array, contentType: string): FormPart[] | str
   for (;;) {
     if (body[at] === 0x2d && body[at + 1] === 0x2d) return parts;
     if (body[at] !== 0x0d || body[at + 1] !== 0x0a) return 'a delimiter is not followed by a line break';
+    if (parts.length === MAX_PARTS) return 'it has too many parts';
     const headerEnd = body.indexOf(HEADER_END, at);
-    if (headerEnd === -1) return 'a part has no header block';
+    if (headerEnd === -1 || headerEnd - at > MAX_PART_HEADER_BYTES) return 'a part has no header block, or one too long';
     const next = body.indexOf(delimiter, headerEnd + 2);
     if (next === -1) return 'it has no closing delimiter';
     const part = readPartHeaders(body.toString('latin1', at + 2, headerEnd));

@@ -229,7 +229,7 @@ describe('billedRequestBody', () => {
       expect(billedRequestBody(multipart(model, file(name)))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
     });
 
-    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]', 'model\u017F', 'fallbac\u212As'])('refuses a selector spelled %j', (name) => {
+    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]', 'model\u017F', 'fallbac\u212As', 'model_id', 'Engine', 'deployment', 'models\u200B'])('refuses a selector spelled %j', (name) => {
       expect(billedRequestBody(json({ model: 'svc', [name]: ['other'] }))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
     });
 
@@ -262,6 +262,8 @@ describe('billedRequestBody', () => {
       ['a JSON model in two cases', json({ model: 'svc', Model: 'svc' }), 'ambiguous_service', '"Model"'],
       ['a JSON service written with a long s', json({ model: 'svc', '\u017Fervice': 'other' }), 'ambiguous_service'],
       ['a JSON model in array form', json({ model: 'svc', 'model[]': 'other' }), 'ambiguous_service'],
+      ['a JSON model followed by a NUL', json({ model: 'svc', 'model\u0000': 'other' }), 'ambiguous_service'],
+      ['a JSON model followed by a zero-width space', json({ model: 'svc', 'model\u200B': 'other' }), 'ambiguous_service'],
       ['a JSON modelId', json({ model: 'svc', modelId: 'svc' }), 'ambiguous_service', '"modelId"'],
       ['multipart service and model that differ', multipart(field('service', 'svc'), field('model', 'other')), 'ambiguous_service'],
       ['a padded multipart model', multipart(field('model', ' svc ')), 'ambiguous_service'],
@@ -345,8 +347,27 @@ describe('billedRequestBody', () => {
       expect(fast(multipart(model, [`Content-Disposition: form-data; name="a"; f="${'\\a'.repeat(40_000)}"`, '1']))).toBeLessThan(250);
     });
 
-    it('reads a form with many parts in one pass', () => {
-      expect(fast(multipart(model, ...Array.from({ length: 20_000 }, (_, index) => field(`metadata[${index}]`, 'x'))))).toBeLessThan(1000);
+    it('reads a form with many parts in one pass, and refuses one with too many', () => {
+      const parts = (count: number) => Array.from({ length: count }, (_, index) => field(`metadata[${index}]`, 'x'));
+      expect(requestBodyService(multipart(model, ...parts(999)))).toBe('svc');
+      expect(fast(multipart(model, ...parts(999)))).toBeLessThan(250);
+      expect(billedRequestBody(multipart(model, ...parts(1000)))).toMatchObject({ refusal: { code: 'unsupported_multipart_body' } });
+    });
+
+    // Bodies a buyer could send to make the seller spend time and memory before any payment.
+    it('refuses hostile forms quickly', () => {
+      const started = performance.now();
+      expect(billedRequestBody(multipart(model, [`Content-Disposition: form-data; name="image"; filename="${'a'.repeat(4 * 1024 * 1024)}"`, 'png']))).toMatchObject({ refusal: { code: 'unsupported_multipart_body' } });
+      expect(billedRequestBody(raw(`${frame([model])}${`--${boundary}\r\nContent-Disposition: form-data; name="x"\r\n\r\n\r\n`.repeat(200_000)}${closing}`))).toMatchObject({ refusal: { code: 'unsupported_multipart_body' } });
+      expect(billedRequestBody(multipart(model, [`Content-Disposition: form-data; name="x"\r\n${'X-A: b\r\n'.repeat(2000)}`, '1']))).toMatchObject({ refusal: { code: 'unsupported_multipart_body' } });
+      expect(billedRequestBody(raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; ${'x=1; '.repeat(300)}boundary=${boundary}` }))).toMatchObject({ refusal: { code: 'unsupported_multipart_body' } });
+      expect(performance.now() - started).toBeLessThan(1000);
+    });
+
+    it('refuses a body that would be larger than a request may be once written', () => {
+      // `1e20` is written out as 21 digits, so this 16 MiB body would be written as about 70 MiB.
+      const numbers = Array.from({ length: 3_300_000 }, () => '1e20').join(',');
+      expect(billedRequestBody(rawJson(`{"model":"svc","input":[${numbers}]}`))).toMatchObject({ refusal: { code: 'request_too_large' } });
     });
   });
 
@@ -357,6 +378,7 @@ describe('billedRequestBody', () => {
       '/v1/images/generations?quality=high', '/v1/chat/completions?fallbacks[]=other', '/bedrock/model/other/invoke',
       '/openai/%64eployments/other/chat/completions', '/openai/deployments%2Fother/chat/completions', '/openai/deployments;x/other/chat/completions',
       '/v1/chat/completions?a=1;model=other', '/v1/chat/completions?%6dodel=other', '/v1//chat/completions\\models/other',
+      '/v1/chat/completions?x=1?&model=other', '/v1/chat/completions?deployment=other', '/v1/completions?engine=other', '/v1/chat/completions?model_id=other',
     ])('%s', (path) => {
       expect(requestPathRefusal(path)).toMatchObject({ code: 'unsupported_model_selector' });
     });
