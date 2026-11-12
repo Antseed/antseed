@@ -33,6 +33,13 @@ enum WorkerStatus: Equatable {
         }
     }
 
+    /// The status once the pool's welcome lists what it took: a pool that refused
+    /// the service this Mac offers routes it nothing, however sharing is set.
+    static func joined(sharing: Bool, service: String, rejected: [String]) -> WorkerStatus {
+        if rejected.contains(service) { return .failed("The pool doesn't accept \(service) with this model") }
+        return sharing ? .serving : .paused
+    }
+
     var color: Color {
         switch self {
         case .serving: .green
@@ -323,7 +330,7 @@ final class WorkerController: ObservableObject {
             backoff = 1
             poolShareBps = frame["workerShareBps"] as? Int ?? 0
             prices = ((frame["prices"] as? [String: Any]) ?? [:]).compactMapValues { WorkerPayment.Price($0) }
-            status = sharing ? .serving : .paused
+            status = .joined(sharing: sharing, service: config.service, rejected: frame["rejected"] as? [String] ?? [])
             log("joined pool \(config.poolURL.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
             refreshPayout()

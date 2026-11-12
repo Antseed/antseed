@@ -1015,16 +1015,17 @@ describe('BuyerPaymentManager', () => {
     });
 
     it('refuses the first seller\'s NeedAuth after the request is retried through another seller', async () => {
-      const { needAuth } = await setup('seller-pool-retried-away');
-      manager.recordWorkerDelivery('req-pool', usage);
+      const { needAuth, answered } = await setup('seller-pool-retried-away');
+      answered();
       manager.recordWorkerAttribution(fakePeerId('seller-pool-retry-target'), 'req-pool', worker);
       await needAuth();
       expect(mux.sentSpendingAuths).toHaveLength(0);
     });
 
     it('refuses to pay for more tokens than the worker authenticated', async () => {
-      const { needAuth } = await setup('seller-pool-inflated');
-      manager.recordWorkerDelivery('req-pool', usage);
+      const { needAuth, answered } = await setup('seller-pool-inflated');
+      // Recorded as delivered, so only the worker's sealed usage can refuse the claim.
+      answered();
       // Consistently priced, but for 600 output tokens where the worker sealed 400.
       await needAuth({ inputTokens: '1000', outputTokens: '600', lastRequestCost: '12000' });
       expect(mux.sentSpendingAuths).toHaveLength(0);
@@ -1044,30 +1045,30 @@ describe('BuyerPaymentManager', () => {
       });
 
       it('refuses cached input billed as fresh', async () => {
-        const { needAuth } = await setup('seller-pool-cached-as-fresh', cachedPricing);
-        manager.recordWorkerDelivery('req-pool', cachedUsage);
+        const { needAuth, answered } = await setup('seller-pool-cached-as-fresh', cachedPricing);
+        answered(cachedUsage, 6570n);
         // Consistently priced for 1000 fresh tokens: 3000 + 6000.
         await needAuth({ inputTokens: '1000', cachedInputTokens: '0', freshInputTokens: '1000', outputTokens: '400', lastRequestCost: '9000' });
         expect(mux.sentSpendingAuths).toHaveLength(0);
       });
 
       it('refuses cached input billed as fresh when the fresh count is left out', async () => {
-        const { needAuth } = await setup('seller-pool-cached-dropped', cachedPricing);
-        manager.recordWorkerDelivery('req-pool', cachedUsage);
+        const { needAuth, answered } = await setup('seller-pool-cached-dropped', cachedPricing);
+        answered(cachedUsage, 6570n);
         await needAuth({ inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000' });
         expect(mux.sentSpendingAuths).toHaveLength(0);
       });
 
       it('refuses an inflated cached count', async () => {
-        const { needAuth } = await setup('seller-pool-cached-inflated', cachedPricing);
-        manager.recordWorkerDelivery('req-pool', cachedUsage);
+        const { needAuth, answered } = await setup('seller-pool-cached-inflated', cachedPricing);
+        answered(cachedUsage, 6570n);
         await needAuth({ inputTokens: '1000', cachedInputTokens: '5000', freshInputTokens: '100', outputTokens: '400', lastRequestCost: '7770' });
         expect(mux.sentSpendingAuths).toHaveLength(0);
       });
 
       it('refuses a cost above the authenticated usage even within the estimate tolerance', async () => {
-        const { needAuth } = await setup('seller-pool-cached-tolerance', cachedPricing);
-        manager.recordWorkerDelivery('req-pool', cachedUsage);
+        const { needAuth, answered } = await setup('seller-pool-cached-tolerance', cachedPricing);
+        answered(cachedUsage, 6570n);
         await needAuth({ inputTokens: '1000', cachedInputTokens: '900', freshInputTokens: '100', outputTokens: '400', lastRequestCost: '8000' });
         expect(mux.sentSpendingAuths).toHaveLength(0);
       });

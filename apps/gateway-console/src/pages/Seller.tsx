@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart, DataTable } from '@antseed/ui'
+import { BarChart, DataTable, type DataTableColumn } from '@antseed/ui'
 import type { SellerUsage, SellerWorker } from '../api/types'
 import { Badge, EmptyState, ErrorAlert, Figure, LoadingRows, PageLink, Panel, Segmented, StatTile } from '../components/ui'
 import { formatDuration, formatNumber, formatRelative, formatUsd, shortId } from '../lib/format'
@@ -143,6 +143,31 @@ function workerStatus(row: SellerWorker) {
 
 const percent = (value: number | null) => (value === null ? '—' : `${Math.round(value * 100)}%`)
 
+const WORKER_COLUMNS: DataTableColumn<SellerWorker>[] = [
+  { key: 'rank', header: 'Rank', align: 'right', render: (row) => (row.rank === null ? '—' : `#${row.rank}`), sortValue: (row) => row.rank ?? Infinity },
+  { key: 'name', header: 'Worker', render: (row) => <span className="gc-ellipsis" title={row.address}>{workerName(row)}</span>, sortValue: (row) => workerName(row) },
+  {
+    key: 'status', header: 'Status', sortValue: (row) => (!row.connected ? 3 : row.benchedUntil !== null ? 1 : row.priority === 0 ? 2 : 0),
+    render: workerStatus,
+  },
+  {
+    key: 'answered', header: 'Answered (24h)', align: 'right', render: (row) => percent(row.successRateDay), sortValue: (row) => row.successRateDay ?? -1,
+  },
+  {
+    key: 'answeredWeek', header: 'Answered (7d)', align: 'right', optional: true, render: (row) => percent(row.successRateWeek), sortValue: (row) => row.successRateWeek ?? -1,
+  },
+  {
+    key: 'firstByte', header: 'First byte', align: 'right', optional: true,
+    render: (row) => (row.firstByteMsMedian === null ? '—' : row.firstByteMsMedian < 1000 ? `${Math.round(row.firstByteMsMedian)} ms` : `${(row.firstByteMsMedian / 1000).toFixed(1)} s`),
+    sortValue: (row) => row.firstByteMsMedian ?? Infinity,
+  },
+  { key: 'speed', header: 'Speed', align: 'right', render: (row) => (row.tokensPerSecond === null ? '—' : `${formatNumber(Math.round(row.tokensPerSecond))} tok/s`), sortValue: (row) => row.tokensPerSecond ?? 0 },
+  { key: 'requests', header: 'Requests (7d)', align: 'right', render: (row) => formatNumber(row.requestsWeek), sortValue: (row) => row.requestsWeek },
+  { key: 'online', header: 'Online (7d)', align: 'right', optional: true, render: (row) => `${formatNumber(Math.round(row.onlineHoursWeek))} h`, sortValue: (row) => row.onlineHoursWeek },
+  { key: 'earned', header: 'Earned (7d)', align: 'right', render: (row) => formatUsd(row.earnedWeekUsdc), sortValue: (row) => row.earnedWeekUsdc },
+  { key: 'total', header: 'Earned total', align: 'right', secondary: true, render: (row) => formatUsd(row.earnedTotalUsdc), sortValue: (row) => row.earnedTotalUsdc },
+]
+
 /** Only for a seller running the colony-pool provider: the Macs serving it, in the pool's routing order. */
 function WorkersPanel() {
   const workers = useSellerWorkers()
@@ -151,30 +176,7 @@ function WorkersPanel() {
     <Panel title="Workers" description="Macs serving this seller's colony pool, in the order the pool sends them buyers (reliability, speed and your priority weights). Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
       <DataTable<SellerWorker> label="Workers" rows={workers.data.workers} rowKey={(row) => row.address}
         empty={<EmptyState title="No workers yet" body="Workers appear here once a Mac joins the pool." />}
-        columns={[
-          { key: 'rank', header: 'Rank', align: 'right', render: (row) => (row.rank === null ? '—' : `#${row.rank}`), sortValue: (row) => row.rank ?? Infinity },
-          { key: 'name', header: 'Worker', render: (row) => <span className="gc-ellipsis" title={row.address}>{workerName(row)}</span>, sortValue: (row) => workerName(row) },
-          {
-            key: 'status', header: 'Status', sortValue: (row) => (!row.connected ? 3 : row.benchedUntil !== null ? 1 : row.priority === 0 ? 2 : 0),
-            render: workerStatus,
-          },
-          {
-            key: 'answered', header: 'Answered (24h)', align: 'right', render: (row) => percent(row.successRateDay), sortValue: (row) => row.successRateDay ?? -1,
-          },
-          {
-            key: 'answeredWeek', header: 'Answered (7d)', align: 'right', optional: true, render: (row) => percent(row.successRateWeek), sortValue: (row) => row.successRateWeek ?? -1,
-          },
-          {
-            key: 'firstByte', header: 'First byte', align: 'right', optional: true,
-            render: (row) => (row.firstByteMsMedian === null ? '—' : row.firstByteMsMedian < 1000 ? `${Math.round(row.firstByteMsMedian)} ms` : `${(row.firstByteMsMedian / 1000).toFixed(1)} s`),
-            sortValue: (row) => row.firstByteMsMedian ?? Infinity,
-          },
-          { key: 'speed', header: 'Speed', align: 'right', render: (row) => (row.tokensPerSecond === null ? '—' : `${formatNumber(Math.round(row.tokensPerSecond))} tok/s`), sortValue: (row) => row.tokensPerSecond ?? 0 },
-          { key: 'requests', header: 'Requests (7d)', align: 'right', render: (row) => formatNumber(row.requestsWeek), sortValue: (row) => row.requestsWeek },
-          { key: 'online', header: 'Online (7d)', align: 'right', optional: true, render: (row) => `${formatNumber(Math.round(row.onlineHoursWeek))} h`, sortValue: (row) => row.onlineHoursWeek },
-          { key: 'earned', header: 'Earned (7d)', align: 'right', render: (row) => formatUsd(row.earnedWeekUsdc), sortValue: (row) => row.earnedWeekUsdc },
-          { key: 'total', header: 'Earned total', align: 'right', secondary: true, render: (row) => formatUsd(row.earnedTotalUsdc), sortValue: (row) => row.earnedTotalUsdc },
-        ]} />
+        columns={WORKER_COLUMNS} />
     </Panel>
   )
 }

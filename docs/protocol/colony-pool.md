@@ -594,12 +594,18 @@ attestations, it is the app's own attestation every 5 minutes (self-reported,
 see Hardened Macs) that reports SIP, and the app stops serving when it is off.
 
 Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
-`COLONY_POOL_MDM_WEBHOOK_PORT` and `COLONY_POOL_MDM_WEBHOOK_PATH` (required
-with the MDM: at least 16 random characters, since the path is the webhook's
-only secret; bodies over 64 KiB are refused) connect a
-[NanoMDM](https://github.com/micromdm/nanomdm) server (commands are queued
-with `PUT /v1/enqueue/<udid>`; answers arrive on its webhook, configured
-with `-webhook-url http://<pool>:<port>/<path>`).
+`COLONY_POOL_MDM_WEBHOOK_PORT`, `COLONY_POOL_MDM_WEBHOOK_HOST` and
+`COLONY_POOL_MDM_WEBHOOK_PATH` (required with the MDM: at least 16 random
+characters, since the path is the webhook's only secret; bodies over 64 KiB
+are refused) connect a [NanoMDM](https://github.com/micromdm/nanomdm) server
+(commands are queued with `PUT /v1/enqueue/<udid>`; answers arrive on its
+webhook). The webhook listener is plain HTTP and listens on `127.0.0.1` by
+default. Put an HTTPS reverse proxy or an authenticated private tunnel in
+front of it and point NanoMDM at that, with
+`-webhook-url https://<proxy>/<path>`; never send the path over plain HTTP
+between hosts, since anyone who sees it can post to the webhook. Set the host
+to another address only when the proxy or tunnel needs it, and keep that
+address unreachable from anywhere else.
 `COLONY_POOL_REQUIRE_DEVICE_ATTESTATION` routes only to Apple-verified Macs.
 Other MDMs can implement the `DeviceAttestor` interface.
 

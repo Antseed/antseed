@@ -17,8 +17,9 @@ export interface NanoMdmAttestorOptions {
   url: string;
   /** NanoMDM API key (HTTP basic auth as user `nanomdm`). */
   apiKey: string;
-  /** Port this pool listens on for NanoMDM's webhook (`nanomdm -webhook-url http://<pool>:<port>/<path>`). */
+  /** Port this pool listens on for NanoMDM's webhook, reached through an HTTPS proxy or private tunnel. */
   webhookPort: number;
+  /** Address of that plain-HTTP listener; loopback unless set, so the secret path never crosses a network in clear. */
   webhookHost?: string;
   /** Secret path NanoMDM posts to: the webhook's only authentication, so it must be unguessable. */
   webhookPath: string;
@@ -81,7 +82,7 @@ export class NanoMdmAttestor implements DeviceAttestor {
     });
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(this.opts.webhookPort, this.opts.webhookHost ?? '0.0.0.0', () => resolve());
+      server.listen(this.opts.webhookPort, this.opts.webhookHost ?? '127.0.0.1', () => resolve());
     });
     this.server = server;
   }
