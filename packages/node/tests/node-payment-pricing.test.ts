@@ -288,7 +288,9 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
   return {
     oneOffPlans: plans,
     openOneOff: open,
-    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown) => { plans.set(key(buyer, requestId), plan); }),
+    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown): number | null => { plans.set(key(buyer, requestId), plan); return null; }),
+    oneOffRetryAfterSeconds: vi.fn((): number | null => null),
+    markOneOffCreateAccepted: vi.fn(),
     getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
       ?? (opened ? open(buyer, requestId) : null),
     claimOneOffChannel: (channelId: string) => {
@@ -706,6 +708,80 @@ describe('native video job ownership', () => {
         expect(bodyOf(response).error.code).toBe('invalid_billing_request');
         expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('holds back a buyer with too many unproven channels: a 429 with Retry-After, no plan and no chain reads', async () => {
+      const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
+      const { provider, create, spm, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('120');
+        expect(bodyOf(response).error.code).toBe('one_off_channel_backoff');
+        expect(bodyOf(response).error.message).toContain('retry in 120 seconds');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(firstSignCap).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { firstSignCap.mockRestore(); store.close(); }
+    });
+
+    it('holds back a create that loses the last offer to a parallel one during the chain reads', async () => {
+      const { provider, create, store } = setupOneOff({ registerOneOffPlan: vi.fn(() => 60) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('60');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('still runs a create whose channel is already open while its buyer is held back', async () => {
+      const { provider, create, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) }, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+      } finally { store.close(); }
+    });
+
+    it('stops counting a channel against its buyer when its paid create is accepted', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledWith('one-off-video-1');
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the provider refuses the create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.handleRequest = vi.fn(async request => ({
+        requestId: request.requestId, statusCode: 429, headers: {}, body: Buffer.from('{"error":{"message":"busy"}}'),
+      }));
+      try {
+        await create('video-1');
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the accepted job cannot be recorded', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      vi.spyOn(store, 'recordAcceptedCreate').mockImplementation(() => { throw new Error('database is locked'); });
+      try {
+        expect((await create('video-1')).statusCode).toBe(503);
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('has no channel to mark for a free create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.serviceUnitBillingModels = { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0 }] } } };
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 

@@ -83,7 +83,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     uint256 public constant MAX_WORKERS_PER_CHANNEL = 8;
 
     /// @notice Domain tag of the worker payout authorization digest.
-    bytes32 public constant PAYOUT_TYPEHASH = keccak256("antseed-worker-payout/v1");
+    bytes32 public constant PAYOUT_TAG = keccak256("antseed-worker-payout/v1");
 
     /// @notice Maximum epochs per `claimEpochEmissions` / `claimAnts` call.
     uint256 public constant MAX_EPOCHS_PER_CLAIM = 32;
@@ -524,7 +524,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         view
         returns (bytes32)
     {
-        return keccak256(abi.encode(PAYOUT_TYPEHASH, block.chainid, address(this), worker, payout, nonce, deadline));
+        return keccak256(abi.encode(PAYOUT_TAG, block.chainid, address(this), worker, payout, nonce, deadline));
     }
 
     function _channelKey(bytes32 channelId) internal view returns (bytes32) {

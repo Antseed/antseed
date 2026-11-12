@@ -61,8 +61,13 @@ plugins/              Provider and router plugins
   provider-claude-code/     Claude Code keychain provider
   provider-claude-oauth/    Claude OAuth provider
   provider-openai/          OpenAI-compatible provider (OpenAI, Together, OpenRouter)
+  provider-openai-responses/ OpenAI Responses provider via Codex auth (testing only)
   provider-local-llm/       Local LLM provider (Ollama, llama.cpp)
   provider-typesafe/        TypeSafe System One decision-model provider
+  provider-venice-video/    Venice video API provider
+  provider-fal-video/       fal.ai video models provider
+  provider-fal-image/       fal.ai image models provider (OpenAI Images API)
+  provider-alibaba-video/   Alibaba Cloud Model Studio video provider (Wan, HappyHorse)
   provider-irp-router/      IRP routing provider (serves any Inference Routing Protocol router)
   provider-free-model-router/ IRP routing provider that ranks free models among a buyer's candidates
   router-local/             Local router (Claude Code, Aider, Continue.dev)
@@ -82,7 +87,9 @@ docs/protocol/        Protocol specification
 @antseed/node (core SDK)
   ├── provider-core
   │     └── provider-anthropic, provider-claude-code, provider-claude-oauth,
-  │         provider-openai, provider-local-llm, provider-typesafe,
+  │         provider-openai, provider-openai-responses, provider-local-llm,
+  │         provider-typesafe, provider-venice-video, provider-fal-video,
+  │         provider-fal-image, provider-alibaba-video,
   │         provider-irp-router, provider-free-model-router
   ├── router-core
   │     └── router-local
