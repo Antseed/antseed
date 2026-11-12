@@ -64,7 +64,7 @@ import {
 import { parseResponseUsage } from './utils/response-usage.js';
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
-import { requestBodyService } from './requested-service.js';
+import { SERVICE_REQUIRED, billedRequestBody, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -154,6 +154,13 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  */
 /** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+
+/**
+ * The service a request is priced and billed as, or why it names none: as read from the body, with
+ * the body the seller wrote for its provider, or named by the path, with the buyer's body passed on.
+ */
+type RequestedService = BilledRequestBody | { service: string; contentType?: undefined; body?: undefined };
+
 
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
@@ -245,6 +252,8 @@ export class SellerRequestHandler {
   private readonly _providerLoadCounts = new Map<string, number>();
   /** Provider name → its ID (see announcedProviderId). */
   private readonly _providerIds = new Map<string, string>();
+  /** The service each request in flight is priced and billed as: read once, since a body can be large. */
+  private readonly _requestedServices = new WeakMap<SerializedHttpRequest, RequestedService>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
@@ -295,6 +304,7 @@ export class SellerRequestHandler {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
+      const wireBody = request.body;
       // Delegations are for this seller only: no route may pass them on to a provider or prover.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
@@ -397,25 +407,38 @@ export class SellerRequestHandler {
       // and surfaces a clear error instead of an opaque upstream 4xx.
       const provider = this.matchProvider(request);
       if (!provider) {
-        const requestedService = this._extractRequestedService(request);
+        const requested = this._requestedService(request);
         const allServices = this._deps.providers.flatMap((p) => p.services);
-        const errorMessage = requestedService === null
-          ? 'Request must include a "service" or "model" field matching a published service.'
-          : `Service "${requestedService}" is not served by this peer.`;
-        debugWarn(`[SellerHandler] Rejecting: ${errorMessage} available=[${allServices.join(', ')}]`);
+        // A request that names no one service is told why, so a buyer can see what this seller does not accept.
+        const refusal: { code: string; message: string } = requested.service === null
+          ? requested.refusal
+          : { code: 'model_not_found', message: `Service "${requested.service}" is not served by this peer.` };
+        debugWarn(`[SellerHandler] Rejecting: ${refusal.message} available=[${allServices.join(', ')}]`);
         mux.sendProxyResponse({
           requestId: request.requestId,
           statusCode: 400,
           headers: { 'content-type': 'application/json' },
           body: new TextEncoder().encode(JSON.stringify({
             error: {
-              message: errorMessage,
+              message: refusal.message,
               type: 'invalid_request_error',
-              code: requestedService === null ? 'model_required' : 'model_not_found',
+              code: refusal.code,
             },
           })),
         });
         return;
+      }
+
+      // The service this request is priced and billed as, which the provider serves. The provider is
+      // handed the body the seller wrote from what it read, so no reader after it finds other fields.
+      // A matched provider means a service was named, so this always applies.
+      const billed = this._requestedService(request);
+      if (billed.service !== null) {
+        setTrustedHeader(request.headers, 'x-antseed-service', billed.service);
+        if (billed.body) {
+          request.body = billed.body;
+          setTrustedHeader(request.headers, 'content-type', billed.contentType);
+        }
       }
 
       // A request the provider refuses anyway is answered before any payment step.
@@ -920,6 +943,7 @@ export class SellerRequestHandler {
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
         headers: wireHeaders,
+        body: wireBody,
       };
 
       // Track active seller session at request start
@@ -1625,13 +1649,32 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    return this._requestedService(request).service;
+  }
+
+  private _requestedService(request: SerializedHttpRequest): RequestedService {
+    let requested = this._requestedServices.get(request);
+    if (!requested) {
+      requested = this._readRequestedService(request);
+      this._requestedServices.set(request, requested);
+    }
+    return requested;
+  }
+
+  private _readRequestedService(request: SerializedHttpRequest): RequestedService {
+    const named = (service: string | undefined): RequestedService => (service ? { service } : { service: null, refusal: SERVICE_REQUIRED });
     // Routing protocols whose paths name no service address this seller's single service of that protocol.
     const routingProtocol = routingProtocolForPath(request.path);
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
-      return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
+      return named(routingServices(this._deps.providers, routingProtocol)[0]?.service);
     }
-    if (nativeVideoRoute(request)) return requestService(request) ?? null;
-    return requestBodyService(request);
+    const videoRoute = nativeVideoRoute(request);
+    if (videoRoute?.action === 'retrieve') return named(requestService(request));
+    const requested = billedRequestBody(request);
+    // A video create is billed by its `model` alone, so a `service` beside it has to say the same.
+    return videoRoute && requested.service !== null && requested.service !== requestService(request)
+      ? { service: null, refusal: { code: 'model_required', message: 'A video request must name its service in a "model" field.' } }
+      : requested;
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {
