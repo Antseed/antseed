@@ -287,3 +287,14 @@ test('switching wallets waits for a refresh in progress and is saved', async (t)
   // The refresh finished first (3 requests, $1 for the old wallet), then the 2 counted since went to it too.
   assert.deepEqual(state.wallets[WALLET.toLowerCase()]?.gateway, { requests: 5, spentUsd: '1.5' });
 });
+
+test('a signer imported while a remote gateway is in use: local requests after switching back are the new wallet\'s', () => {
+  // Wallet A on the local gateway: 10 requests ($1).
+  let state = nextHistoryState(null, OLD, { requests: 10, spentUsd: '1' }, { requests: 10, spentUsd: '1' });
+  // Remote gateway in use; wallet B imported. The stopped local gateway's saved totals are the checkpoint.
+  state = switchedHistoryState(state, NEW, { requests: 10, spentUsd: '1' });
+  // Back on the local gateway: 5 requests ($0.50) before Home refreshes.
+  state = nextHistoryState(state, NEW, { requests: 5, spentUsd: '0.5' }, { requests: 15, spentUsd: '1.5' });
+  assert.deepEqual(state.wallets[NEW]?.history, { requests: 0, spentUsd: '0' });
+  assert.deepEqual(state.wallets[NEW]?.gateway, { requests: 5, spentUsd: '0.5' });
+});

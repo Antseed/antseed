@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { KeyUsage } from '../gateway/key-info.js';
-import { fetchBuyerJson, liveBuyerAddress } from '../gateway/buyer-signer.js';
+import { compareBuyerSigner, fetchBuyerJson, liveBuyerAddress } from '../gateway/buyer-signer.js';
 import { usdcFromMicros, usdcToMicros } from './usdc-decimal.js';
 
 /**
@@ -73,8 +73,7 @@ async function readBuyerJson(port: number, pathname: string): Promise<Record<str
 
 /** The buyer's lifetime usage when `walletAddress` is its default wallet (the desktop's own); null otherwise or when it can't be read. */
 async function readBuyerLifetime(port: number, walletAddress: string): Promise<KeyUsage | null> {
-  const buyerAddress = await liveBuyerAddress(port, READ_TIMEOUT_MS);
-  if (!buyerAddress || buyerAddress.toLowerCase() !== walletAddress.toLowerCase()) return null;
+  if (compareBuyerSigner(await liveBuyerAddress(port, READ_TIMEOUT_MS), walletAddress) !== 'match') return null;
   const [channels, usage] = await Promise.all([
     readBuyerJson(port, '/_antseed/channels?all=1'),
     readBuyerJson(port, '/_antseed/buyer-usage'),
