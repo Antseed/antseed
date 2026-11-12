@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadControlClient } from './lib/control.mjs';
-import { desktopEnv, electronRootArgs } from './lib/desktop.mjs';
+import { desktopEnv, electronRootArgs, startTestbenchGateway } from './lib/desktop.mjs';
 import { ownProcessEntry, processStartTime } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { isInside, testbenchPaths } from './lib/paths.mjs';
@@ -28,6 +28,8 @@ const sharePath = join(paths.dir, 'share.json');
 const authFile = join(paths.dir, 'share-xauthority');
 const log = (message) => console.log(`[share] ${new Date().toISOString()} ${message}`);
 const children = [];
+/** Stoppers for helpers that aren't tracked child processes (the desktop's gateway). */
+const onStop = [];
 let server = null;
 // Every share.json save goes through this queue, in call order (see createStateWriter).
 const shareWriter = createStateWriter((state) => saveJson(sharePath, state));
@@ -109,7 +111,13 @@ async function startDesktop(display, manifest) {
   if (!isInside(stateDir, manifest.dir)) throw new Error(`Refusing to reset ${stateDir}`);
   if (plan.fresh) await rm(stateDir, { recursive: true, force: true });
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
-  const env = displayEnv(desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), stateDir: 'desktop-share' }), { display, authFile });
+  // Chat needs a gateway, and an attach-only desktop may not start its own.
+  const gateway = await startTestbenchGateway({ repo, manifest, reportDir: paths.logs });
+  onStop.push(gateway.stop);
+  const env = displayEnv(desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), stateDir: 'desktop-share', extra: {
+    ANTSEED_DESKTOP_GATEWAY_URL: gateway.url,
+    ANTSEED_DESKTOP_GATEWAY_KEY: gateway.key,
+  } }), { display, authFile });
   delete env.WAYLAND_DISPLAY;
   const electron = createRequire(join(desktopDir, 'package.json'))('electron');
   const args = ['.', ...electronRootArgs(), ...(process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT ? [`--remote-debugging-port=${process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT}`, '--remote-debugging-address=127.0.0.1'] : [])];
@@ -142,6 +150,7 @@ async function stop(reason) {
         try { await exited; } finally { clearTimeout(timer); }
       }
     }
+    for (const stopExtra of onStop.splice(0)) await stopExtra().catch((error) => log(error.message));
     await rm(join(paths.dir, 'share-vnc.sock'), { force: true });
     await rm(authFile, { force: true });
     if (shareWriter.state) {

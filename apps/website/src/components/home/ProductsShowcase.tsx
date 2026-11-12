@@ -10,7 +10,7 @@ import styles from './ProductsShowcase.module.css';
 /**
  * PRODUCTS — the two ways to use Antseed, one after the other: the gateway
  * (the one we lead with) on an ink card with the live console demo, then
- * the AI VPN desktop app with the homepage's AI VPN demo.
+ * Antseed Desktop app with the homepage's Antseed Desktop demo.
  *
  * Both demos are decorative and script-heavy, so they mount only as they
  * near the viewport (LazyMount); until then a box of the same aspect ratio
@@ -46,7 +46,7 @@ export function ProductsShowcase() {
         <Reveal>
           <SectionHeader
             title="Run AI on your terms"
-            lead="Use the gateway to manage shared access, or the AI VPN to connect the tools on your computer."
+            lead="Use the gateway to manage shared access, or Antseed Desktop to connect the tools on your computer."
           />
         </Reveal>
 
@@ -90,7 +90,7 @@ export function ProductsShowcase() {
           </div>
           <div className={styles.copy}>
             <p className={styles.kicker}>Desktop app to work locally</p>
-            <h3 className={styles.cardTitle}>Antseed AI VPN</h3>
+            <h3 className={styles.cardTitle}>Antseed Desktop</h3>
             <p className={styles.cardLead}>
               Access the same market through a desktop app that connects to the tools you already use.
             </p>

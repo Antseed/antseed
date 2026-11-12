@@ -222,7 +222,8 @@ describe('GasAutoRefueler', () => {
   it('tells a certain non-spend from an uncertain one', () => {
     expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'CALL_EXCEPTION' }))).toBe(true);
     expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'INSUFFICIENT_FUNDS' }))).toBe(true);
-    expect(swapCertainlyNotSpent(new Error('Transaction was dropped or replaced'))).toBe(true);
+    expect(swapCertainlyNotSpent(new Error('Transaction was dropped or replaced'))).toBe(false);
+    expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'NONCE_EXPIRED' }))).toBe(false);
     expect(swapCertainlyNotSpent(Object.assign(new Error('x'), { code: 'TIMEOUT' }))).toBe(false);
     expect(swapCertainlyNotSpent(new Error('fetch failed'))).toBe(false);
   });

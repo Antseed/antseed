@@ -32,7 +32,3 @@ export function desktopSystemProxyDataDir(): string | null {
   return envPath('ANTSEED_SYSTEM_PROXY_DATA_DIR');
 }
 
-export function desktopSystemProxyCliDataDir(): string | null {
-  const dataDir = desktopSystemProxyDataDir();
-  return dataDir ? path.dirname(dataDir) : null;
-}

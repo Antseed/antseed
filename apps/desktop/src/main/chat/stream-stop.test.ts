@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cancelFreeTierRetry, classifyChatStreamFailure, formatChatStreamStopForLog } from './stream-stop.js';
+import { cancelFreeTierRetry, classifyChatStreamFailure, formatChatStreamStopForLog, GATEWAY_FUNDS_MESSAGE, toGatewayStopReason } from './stream-stop.js';
 import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
 
 test('classifyChatStreamFailure detects retryable upstream 502 failures', () => {
@@ -386,4 +386,39 @@ test('a free-tier refusal cancels the agent backoff before any retry is sent', a
 test('an ordinary 429 keeps the agent backoff', () => {
   const reason = classifyChatStreamFailure({ error: new Error('429 Too Many Requests'), stopReason: 'error' });
   assert.equal(cancelFreeTierRetry(reason, { abortRetry: () => assert.fail('must not cancel') }), false);
+});
+
+test('toGatewayStopReason turns a gateway 402 into a calm payment_required stop', () => {
+  const raw = '402 {"error":{"type":"insufficient_quota","code":"spend_limit_reached","message":"This key reached its daily limit of $5.00."}}';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: raw, stopReason: 'error' }), raw);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.message, 'This key reached its daily limit of $5.00.');
+  assert.equal(reason.errorCode, 'spend_limit_reached');
+});
+
+test('toGatewayStopReason uses the add-funds message for unexplained 402s and insufficient balances', () => {
+  const bare = toGatewayStopReason(classifyChatStreamFailure({ message: '402 Payment Required', stopReason: 'error' }), '402 Payment Required');
+  assert.equal(bare.kind, 'payment_required');
+  assert.equal(bare.message, GATEWAY_FUNDS_MESSAGE);
+  const text = 'buyer has insufficient balance to open a channel';
+  assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: text, stopReason: 'error' }), text).kind, 'payment_required');
+});
+
+test('toGatewayStopReason turns the buyer\'s insufficient_deposits into the add-funds notice', () => {
+  const raw = '402 {"error":{"type":"insufficient_deposits","message":"You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run \\"antseed buyer deposit <amount>\\" from the CLI, then retry."}}';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: raw, stopReason: 'error' }), raw);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.message, GATEWAY_FUNDS_MESSAGE);
+  const plain = 'You are out of Antseed credits for this request. (insufficient_deposits)';
+  assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: plain, stopReason: 'error' }), plain).kind, 'payment_required');
+});
+
+test('toGatewayStopReason explains a rejected key and leaves other failures alone', () => {
+  const unauthorized = toGatewayStopReason(classifyChatStreamFailure({ message: '401 Unauthorized', stopReason: 'error' }), '401 Unauthorized');
+  assert.equal(unauthorized.kind, 'http_error');
+  assert.equal(unauthorized.retryable, false);
+  assert.match(unauthorized.message, /rejected the API key/);
+  const upstream = classifyChatStreamFailure({ message: '503 Service Unavailable', stopReason: 'error' });
+  assert.deepEqual(toGatewayStopReason(upstream, '503 Service Unavailable'), upstream);
 });
