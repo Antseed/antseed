@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
-import { MAX_PAYLOAD_SIZE } from '@antseed/protocol/messages';
 import {
-  IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, extractRequestBodyFields, parseJsonObject,
+  IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, MAX_MULTIPART_TEXT_FIELD_BYTES, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS,
+  extractRequestBodyFields, parseJsonObject,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest } from './types/http.js';
 
@@ -39,7 +39,7 @@ export interface ServiceRefusal {
     | 'invalid_billing_field'
     /** A multipart body is not a form the seller can read. */
     | 'unsupported_multipart_body'
-    /** The body the seller would write for its provider is larger than a request may be, or nested too deeply to write. */
+    /** The body the seller would write for its provider is much larger than the buyer's, or nested too deeply to write. */
     | 'request_too_large';
   message: string;
 }
@@ -53,6 +53,16 @@ type Refused = Extract<BilledRequestBody, { service: null }>;
 
 const refuse = (code: ServiceRefusal['code'], message: string): Refused => ({ service: null, refusal: { code, message } });
 const quote = (name: string) => JSON.stringify(name.length > 64 ? `${name.slice(0, 64)}...` : name);
+/**
+ * How much larger than the buyer's body the body the seller writes may be. A form gains a few dozen
+ * bytes a part (a longer boundary, quoted names) and JSON only from numbers written with an exponent,
+ * so honest bodies stay well inside this; a body built to grow when written again does not.
+ */
+const MAX_WRITTEN_GROWTH_BYTES = 128 * 1024;
+
+/** Why a request names no service, when it names none at all. */
+export const SERVICE_REQUIRED: ServiceRefusal = { code: 'model_required', message: 'Request must name a published service.' };
+
 const NO_SERVICE = refuse('model_required', 'Request must name one service, in a "service" or "model" field of a JSON or multipart body.');
 
 /** The fields a buyer names its service in. */
@@ -63,7 +73,7 @@ const SERVICE_FIELDS = new Set(['service', 'model']);
  * the billing readers themselves, so a field billing starts to read is checked here too.
  */
 const BILLING_FIELDS = new Set<string>([
-  ...SERVICE_FIELDS, ...UNIT_BILLING_MATCH_KEYS_V1, ...IMAGE_REQUEST_FIELDS, ...SPEECH_REQUEST_FIELDS, ...VIDEO_CREATE_FIELDS,
+  ...SERVICE_FIELDS, ...UNIT_BILLING_MATCH_KEYS_V1, ...IMAGE_REQUEST_FIELDS, ...SPEECH_REQUEST_FIELDS, ...VIDEO_CREATE_FIELDS, ...VIDEO_SOURCE_FIELDS,
 ]);
 
 /** Text values an image is priced by: when present, one short plain string. */
@@ -72,8 +82,6 @@ const PRICED_TEXT_FIELDS: readonly string[] = IMAGE_PRICE_ATTRIBUTES;
 /** Form fields billing reads (image billing, the only one that reads forms): each must be one short text part. */
 const FORM_BILLED_FIELDS = new Set([...SERVICE_FIELDS, 'n', ...PRICED_TEXT_FIELDS]);
 
-/** Billing reads a form text field only up to this size. */
-const MAX_FORM_TEXT_BYTES = 4096;
 
 const SELECTOR_FIELDS = ['models', 'route', 'fallbacks', 'default_fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks',
   'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id', 'deployment', 'engine', 'model_id'];
@@ -134,6 +142,11 @@ export function requestPathRefusal(path: string): ServiceRefusal | undefined {
     return { code: 'unsupported_model_selector', message: 'Request path must be written plainly: letters, digits and . _ ~ : / - only, and no ";" in the query.' };
   }
   const segments = pathname.toLowerCase().split('/');
+  // Billing matches some paths exactly, while a URL parser resolves `.` and `..` and some servers fold `//`,
+  // so a path that is not already in its plain form could be priced as one endpoint and served as another.
+  if (segments.slice(1).some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return { code: 'unsupported_model_selector', message: 'Request path must be written plainly: no empty, "." or ".." segments.' };
+  }
   const selector = segments.findIndex((segment, index) => ['deployments', 'engines', 'models', 'model'].includes(segment) && index < segments.length - 1);
   if (selector !== -1) return { code: 'unsupported_model_selector', message: `Path segment ${quote(segments[selector]!)} selects an upstream model, which this seller does not accept: it serves the one service named in "model".` };
   for (const name of new URLSearchParams(query).keys()) {
@@ -165,12 +178,16 @@ function billedJson(bytes: Uint8Array): BilledRequestBody {
     // A body nested deeper than the stack allows parses, but cannot be written again.
     return refuse('request_too_large', 'Request body is nested too deeply to write for the provider.');
   }
-  return written(service, 'application/json', new TextEncoder().encode(text));
+  // A string is never longer than its UTF-8 bytes, so a text over the limit is refused before it is encoded.
+  if (text.length > bytes.length + MAX_WRITTEN_GROWTH_BYTES) return TOO_LARGE;
+  return written(service, 'application/json', new TextEncoder().encode(text), bytes.length);
 }
 
-/** The body the seller hands its provider, unless writing it made it larger than a request may be. */
-function written(service: string, contentType: string, body: Uint8Array): BilledRequestBody {
-  if (body.length > MAX_PAYLOAD_SIZE) return refuse('request_too_large', 'Request body is too large once written for the provider.');
+const TOO_LARGE = refuse('request_too_large', 'Request body grows too much once written for the provider.');
+
+/** The body the seller hands its provider, unless writing it made it much larger than the buyer's. */
+function written(service: string, contentType: string, body: Uint8Array, sentBytes: number): BilledRequestBody {
+  if (body.length > sentBytes + MAX_WRITTEN_GROWTH_BYTES) return TOO_LARGE;
   return { service, contentType, body };
 }
 
@@ -183,7 +200,7 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
     const refusal = nameRefusal(part.name, seen);
     if (refusal) return refusal;
     if (!FORM_BILLED_FIELDS.has(part.name)) continue;
-    const text = part.filename === undefined && part.content.length <= MAX_FORM_TEXT_BYTES ? utf8(part.content) : undefined;
+    const text = part.filename === undefined && part.content.length <= MAX_MULTIPART_TEXT_FIELD_BYTES ? utf8(part.content) : undefined;
     if (text === undefined) {
       return refuse(SERVICE_FIELDS.has(part.name) ? 'ambiguous_service' : 'invalid_billing_field', `Field ${quote(part.name)} must be sent as one short UTF-8 text field.`);
     }
@@ -194,7 +211,7 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
   const priced = pricedValueRefusal(fields);
   if (priced) return priced;
   const boundary = `----FormBoundary${randomBytes(16).toString('hex')}`;
-  return written(service, `multipart/form-data; boundary=${boundary}`, writeForm(parts, boundary));
+  return written(service, `multipart/form-data; boundary=${boundary}`, writeForm(parts, boundary), bytes.length);
 }
 
 /**

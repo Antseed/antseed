@@ -247,7 +247,7 @@ export function speechAudioDelivered(
 }
 
 /** Text fields larger than this are dropped — billing fields are all short. */
-const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
+export const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 
 /**
  * Extract the text (non-file) fields from a multipart/form-data body, e.g. the

@@ -62,7 +62,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { billedRequestBody, requestPathRefusal, type BilledRequestBody, type ServiceRefusal } from './requested-service.js';
+import { SERVICE_REQUIRED, billedRequestBody, requestPathRefusal, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -159,7 +159,6 @@ const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upst
  */
 type RequestedService = BilledRequestBody | { service: string; contentType?: undefined; body?: undefined };
 
-const SERVICE_REQUIRED: ServiceRefusal = { code: 'model_required', message: 'Request must name a published service.' };
 
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
@@ -422,11 +421,14 @@ export class SellerRequestHandler {
 
       // The service this request is priced and billed as, which the provider serves. The provider is
       // handed the body the seller wrote from what it read, so no reader after it finds other fields.
+      // A matched provider means a service was named, so this always applies.
       const billed = this._requestedService(request);
-      setTrustedHeader(request.headers, 'x-antseed-service', billed.service!);
-      if (billed.service !== null && billed.body && billed.contentType) {
-        request.body = billed.body;
-        setTrustedHeader(request.headers, 'content-type', billed.contentType);
+      if (billed.service !== null) {
+        setTrustedHeader(request.headers, 'x-antseed-service', billed.service);
+        if (billed.body) {
+          request.body = billed.body;
+          setTrustedHeader(request.headers, 'content-type', billed.contentType);
+        }
       }
 
       // A request the provider refuses anyway is answered before any payment step.

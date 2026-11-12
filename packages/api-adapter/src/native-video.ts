@@ -116,6 +116,12 @@ export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string
   'fal-video': ['reference_video_urls', 'video_urls'],
 };
 
+/**
+ * The inline sources whose length bounds what an upstream bills: the video plugins pass these to
+ * `videoSourceLengthProblem` and `audioSourceLengthProblem`. A seller checks each is spelled exactly.
+ */
+export const VIDEO_SOURCE_FIELDS: readonly string[] = ['video_url', 'audio_url'];
+
 /** Every request field `nativeVideoFacts` reads from a create, beside its service. A seller checks each is spelled exactly. */
 export const VIDEO_CREATE_FIELDS: readonly string[] = [
   'duration', 'resolution', 'aspect_ratio', 'audio', 'generate_audio', ...new Set(Object.values(REFERENCE_VIDEO_FIELDS).flat()),

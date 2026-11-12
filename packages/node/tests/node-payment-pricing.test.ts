@@ -505,6 +505,19 @@ describe('charges for requests whose fields every reader reads alike', () => {
     expect(Object.fromEntries(Object.keys(expected).map((name) => [name, fields.getAll(name)]))).toEqual(expected);
   });
 
+  it.each(['/v1/images/./generations', '/v1/chat/completions/../../images/generations', '//v1/images/generations', '/v1/images/generations/'])(
+    'charges nothing and calls no provider for an image request on the path %s, which billing would not price',
+    async (path) => {
+      const { serve, received, charges } = imageSeller();
+      const body = new TextEncoder().encode('{"model":"image-model"}');
+      expect(await serve(path, { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 400, code: 'unsupported_model_selector' });
+      expect(charges()).toEqual([]);
+      expect(received).toEqual([]);
+      expect(await serve('/v1/images/generations', { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 200 });
+      expect(charges()).toEqual([20_000n]);
+    },
+  );
+
   it('charges a JSON image request with a count sent twice by the one count its provider receives', async () => {
     const { serve, received, charges } = imageSeller();
     const body = new TextEncoder().encode('{"model":"image-model","quality":"low","n":1,"n":2}');

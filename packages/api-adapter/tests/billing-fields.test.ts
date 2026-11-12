@@ -8,14 +8,18 @@ import {
   nativeVideoFacts,
 } from '../src/index.js';
 
-/** A body that records every field read from it, and answers each with `value`. */
+/**
+ * A body that records every field read from it, and answers each with `value`. A reader that
+ * enumerates the body's keys could read fields this cannot list, so enumerating fails the test.
+ */
 function spyBody(value: unknown): { body: Record<string, unknown>; read: Set<string> } {
   const read = new Set<string>();
+  const record = (key: string | symbol) => { if (typeof key === 'string') read.add(key); };
   const body = new Proxy({}, {
-    get: (_target, key) => {
-      if (typeof key === 'string') read.add(key);
-      return value;
-    },
+    get: (_target, key) => { record(key); return value; },
+    has: (_target, key) => { record(key); return value !== undefined; },
+    getOwnPropertyDescriptor: (_target, key) => { record(key); return undefined; },
+    ownKeys: () => { throw new Error('a billing reader enumerated the body; list the fields it reads instead'); },
   }) as Record<string, unknown>;
   return { body, read };
 }

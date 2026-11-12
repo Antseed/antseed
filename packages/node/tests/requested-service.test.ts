@@ -369,7 +369,16 @@ describe('billedRequestBody', () => {
       expect(billedRequestBody(rawJson(`{"model":"svc","x":${'['.repeat(depth)}${']'.repeat(depth)}}`))).toMatchObject({ refusal: { code: 'request_too_large' } });
     });
 
-    it('refuses a body that would be larger than a request may be once written', () => {
+    it('serves an honest body however large, and a form whose rewrite grows only by its part headers', () => {
+      const large = billedRequestBody(rawJson(`{"model":"svc","input":"${'x'.repeat(65 * 1024 * 1024)}"}`));
+      expect(large.service).toBe('svc');
+      const tiny = 'b';
+      const parts = Array.from({ length: 999 }, (_, index) => `--${tiny}\r\nContent-Disposition: form-data; name=m${index}\r\n\r\n\r\n`).join('');
+      const form = billedRequestBody(raw(`--${tiny}\r\nContent-Disposition: form-data; name=model\r\n\r\nsvc\r\n${parts}--${tiny}--`, { 'content-type': `multipart/form-data; boundary=${tiny}` }));
+      expect(form.service).toBe('svc');
+    });
+
+    it('refuses a body that grows much larger once written', () => {
       // `1e20` is written out as 21 digits, so this 16 MiB body would be written as about 70 MiB.
       const numbers = Array.from({ length: 3_300_000 }, () => '1e20').join(',');
       expect(billedRequestBody(rawJson(`{"model":"svc","input":[${numbers}]}`))).toMatchObject({ refusal: { code: 'request_too_large' } });
@@ -384,6 +393,7 @@ describe('billedRequestBody', () => {
       '/openai/%64eployments/other/chat/completions', '/openai/deployments%2Fother/chat/completions', '/openai/deployments;x/other/chat/completions',
       '/v1/chat/completions?a=1;model=other', '/v1/chat/completions?%6dodel=other', '/v1//chat/completions\\models/other',
       '/v1/chat/completions?x=1?&model=other', '/v1/chat/completions?deployment=other', '/v1/completions?engine=other', '/v1/chat/completions?model_id=other',
+      '/v1/images/./generations', '/v1/chat/completions/../../images/generations', '//v1/images/generations', '/v1/images/generations/', '/v1/images//generations',
     ])('%s', (path) => {
       expect(requestPathRefusal(path)).toMatchObject({ code: 'unsupported_model_selector' });
     });
