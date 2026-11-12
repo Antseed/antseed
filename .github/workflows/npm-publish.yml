@@ -118,6 +118,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # Commenting on the credited contributors' PRs.
+      pull-requests: write
     steps:
       # Pinned to commits: this job can write to the repository.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -133,8 +135,9 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/release-notes.md")
+          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/thanks.tsv")
           if [ -z "$version" ]; then
             echo "This CLI version is not on npm; no GitHub release."
             exit 0
@@ -143,5 +146,11 @@ jobs:
             echo "Release cli-v${version} already exists."
             exit 0
           fi
-          gh release create "cli-v${version}" --target "$GITHUB_SHA" --title "CLI ${version}" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
+          url=$(gh release create "cli-v${version}" --target "$GITHUB_SHA" --title "CLI ${version}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false)
+          # Each credited contributor hears the release is out, on their PR. Once
+          # only: a rerun finds the release and stops above.
+          while IFS=$'\t' read -r number login; do
+            gh pr comment "$number" --body "@${login} thanks again! This is in the Antseed CLI ${version} release, out now, and its notes credit you: ${url}" \
+              || echo "::warning::Could not comment on #${number}"
+          done < "$RUNNER_TEMP/thanks.tsv"

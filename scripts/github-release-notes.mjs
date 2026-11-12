@@ -12,9 +12,11 @@
  * whose version changed since the previous CLI version bump and is on npm),
  * the pull requests merged since that bump, and a Thanks section crediting
  * their authors from outside the organization (read with `gh api`, so it needs
- * GH_TOKEN; organization members and bots are left out).
+ * GH_TOKEN; people who can push to the repository and bots are left out).
  *
- * Usage: node scripts/github-release-notes.mjs <notes.md>
+ * Usage: node scripts/github-release-notes.mjs <notes.md> [<thanks.tsv>]
+ * With <thanks.tsv>, also writes one `<PR number>\t<login>` line per credited PR,
+ * for the workflow to tell each contributor the release is out.
  * Prints the CLI version, or nothing when that version is not on npm yet.
  */
 import { writeFileSync } from 'node:fs';
@@ -22,7 +24,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { root, readPackage, publishablePackages } from './publishable-packages.mjs';
 
-const [notesPath] = process.argv.slice(2);
+const [notesPath, thanksPath] = process.argv.slice(2);
 if (!notesPath) {
   console.error('usage: github-release-notes.mjs <notes.md>');
   process.exit(2);
@@ -61,14 +63,21 @@ if (since) {
 }
 
 // Outside contributors, each with their pull requests, oldest first, like the
-// Thanks section of other projects' release notes.
+// Thanks section of other projects' release notes. The team is everyone who
+// can push to the repository: organization membership can be private, so a
+// PR's author_association does not show it to the workflow's token.
 const repo = process.env.GITHUB_REPOSITORY || 'Antseed/antseed';
-const TEAM = new Set(['OWNER', 'MEMBER']);
+const ghApi = (path, query) => execFileSync('gh', ['api', path, '-q', query], { encoding: 'utf8' }).trim();
+const TEAM = new Set(['admin', 'maintain', 'write']);
+const team = new Map();
+const onTeam = (login) => {
+  if (!team.has(login)) team.set(login, TEAM.has(ghApi(`repos/${repo}/collaborators/${login}/permission`, '.permission')));
+  return team.get(login);
+};
 const thanks = new Map();
 for (const pull of [...pulls].reverse()) {
-  const [login, association, type] = execFileSync('gh', ['api', `repos/${repo}/pulls/${pull.number}`,
-    '-q', '[.user.login, .author_association, .user.type] | join(" ")'], { encoding: 'utf8' }).trim().split(' ');
-  if (TEAM.has(association) || type === 'Bot') continue;
+  const [login, type] = ghApi(`repos/${repo}/pulls/${pull.number}`, '[.user.login, .user.type] | join(" ")').split(' ');
+  if (type === 'Bot' || onTeam(login)) continue;
   thanks.set(login, [...(thanks.get(login) ?? []), pull.number]);
 }
 
@@ -93,4 +102,8 @@ if (thanks.size > 0) {
 lines.push('Details of each change are in [CHANGELOG.md](https://github.com/Antseed/antseed/blob/main/CHANGELOG.md).', '');
 
 writeFileSync(notesPath, lines.join('\n'));
+if (thanksPath) {
+  const rows = [...thanks].flatMap(([login, numbers]) => numbers.map((n) => `${n}\t${login}\n`));
+  writeFileSync(thanksPath, rows.join(''));
+}
 console.log(cli.version);
