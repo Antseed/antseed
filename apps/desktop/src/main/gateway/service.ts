@@ -294,7 +294,13 @@ export async function localFundingBlock(): Promise<string | null> {
 export async function restartLocalGatewayForNewIdentity(): Promise<string | null> {
   return restartForNewIdentity({
     local: getGatewaySettings().mode === 'local',
-    stop: stopLocalGateway,
+    stop: async () => {
+      await stopLocalGateway();
+      // Nothing goes through the gateway now: all it counted so far was the
+      // previous wallet's, and the new signer's share of its usage starts here.
+      const wallet = getSecureIdentity()?.wallet.address;
+      if (wallet) await buyerHistory.switchWallet(wallet, readWalletKeyUsage);
+    },
     start: ensureLocalGateway,
     buyerPort: localBuyerPort,
     portInUse,

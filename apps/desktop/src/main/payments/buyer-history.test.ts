@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { BuyerHistory, buyerLifetimeUsage, nextHistoryState, usageBeforeGateway } from './buyer-history.js';
+import { BuyerHistory, buyerLifetimeUsage, nextHistoryState, switchedHistoryState, usageBeforeGateway } from './buyer-history.js';
 import { parseWalletKeyUsage, withUsageOf, type KeyUsage } from '../gateway/key-info.js';
 
 const WALLET = '0x00000000000000000000000000000000000000aa';
@@ -254,4 +254,36 @@ test('a gateway whose data was reset: what it lost shows as history, from the bu
   assert.deepEqual(state.wallets[OLD], { gateway: { requests: 2, spentUsd: '0.2' }, history: { requests: 50, spentUsd: '5' } });
   state = nextHistoryState(state, OLD, { requests: 55, spentUsd: '5.5' }, { requests: 5, spentUsd: '0.5' });
   assert.deepEqual(state.wallets[OLD], { gateway: { requests: 5, spentUsd: '0.5' }, history: { requests: 50, spentUsd: '5' } });
+});
+
+test('requests the new signer sends before the next refresh are its own, with the import checkpointed', () => {
+  // The old wallet: 10 gateway requests ($1).
+  let state = nextHistoryState(null, OLD, { requests: 10, spentUsd: '1' }, { requests: 10, spentUsd: '1' });
+  // Import: the gateway is stopped, its totals read as the checkpoint.
+  state = switchedHistoryState(state, NEW, { requests: 10, spentUsd: '1' });
+  // An app sends 5 requests ($0.50) with the new signer before Home refreshes.
+  state = nextHistoryState(state, NEW, { requests: 5, spentUsd: '0.5' }, { requests: 15, spentUsd: '1.5' });
+  assert.deepEqual(state.wallets[NEW], { gateway: { requests: 5, spentUsd: '0.5' }, history: { requests: 0, spentUsd: '0' } });
+  assert.deepEqual(state.wallets[OLD]?.gateway, { requests: 10, spentUsd: '1' });
+});
+
+test('a checkpoint before any refresh still starts the new wallet\'s share at the import', () => {
+  let state = switchedHistoryState(null, NEW, { requests: 40, spentUsd: '4' });
+  state = nextHistoryState(state, NEW, { requests: 23, spentUsd: '2.3' }, { requests: 43, spentUsd: '4.3' });
+  assert.deepEqual(state.wallets[NEW], { gateway: { requests: 3, spentUsd: '0.3' }, history: { requests: 20, spentUsd: '2' } });
+});
+
+test('switching wallets waits for a refresh in progress and is saved', async (t) => {
+  const file = savedFile(t);
+  const buyer = await fakeBuyer(WALLET);
+  t.after(() => buyer.server.close());
+  const history = new BuyerHistory(() => file, 0);
+  history.read(buyer.port, WALLET, gatewayUsage);
+  // The refresh is still running when the signer changes.
+  await history.switchWallet(NEW, async () => ({ requests: 5, spentUsd: '1.5' }));
+  const state = JSON.parse(readFileSync(file, 'utf8')) as { active: string; lastGateway: KeyUsage; wallets: Record<string, { gateway: KeyUsage }> };
+  assert.equal(state.active, NEW);
+  assert.deepEqual(state.lastGateway, { requests: 5, spentUsd: '1.5' });
+  // The refresh finished first (3 requests, $1 for the old wallet), then the 2 counted since went to it too.
+  assert.deepEqual(state.wallets[WALLET.toLowerCase()]?.gateway, { requests: 5, spentUsd: '1.5' });
 });
