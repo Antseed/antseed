@@ -34,17 +34,21 @@ function normalize(value: unknown): unknown {
 
 /**
  * What a patch writes, as the connection's and the model list's fingerprints.
- * The model list is what the app's config got (`written`), not the target's:
- * the app lists only the unlisted model it is on, and the target's default
- * reaches it only where it had no selection.
+ * The model list is what the app's config got (`modelIds`), not the target's:
+ * the app lists only the unlisted model it is on. `chosen` is the selection
+ * Antseed last made for the app where it had none it could keep (the
+ * target's default): a selection the user made in the app isn't Antseed's
+ * change, so it isn't part of the fingerprint.
  */
-export function configPatchFingerprint(target: ConfigPatchTarget, written: WrittenModels): { connection: string; models: string } {
+function configPatchFingerprint(target: ConfigPatchTarget, modelIds: readonly string[], chosen: readonly string[]): { connection: string; models: string } {
   const fields = Object.entries(target as Record<string, unknown>);
   return {
     connection: fingerprint(Object.fromEntries(fields.filter(([key]) => !MODEL_LIST_FIELDS.has(key)))),
-    models: fingerprint({ modelIds: [...written.modelIds].sort(), defaulted: [...written.defaulted].sort() }),
+    models: fingerprint({ modelIds: [...modelIds].sort(), chosen: [...chosen].sort() }),
   };
 }
+
+type RecordedWrite = { connection: string; models: string; chosen: readonly string[] };
 
 export type ConfigChangeLog = {
   /** Records a successful write of `target` (`written`: what the config got); true when it differs from the last one. */
@@ -56,15 +60,22 @@ export type ConfigChangeLog = {
 };
 
 export function createConfigChangeLog(now: () => number = Date.now): ConfigChangeLog {
-  const lastWrites = new Map<string, { connection: string; models: string }>();
+  const lastWrites = new Map<string, RecordedWrite>();
   const changed = new Map<string, number>();
   return {
     recordWrite(name, target, written) {
-      const next = configPatchFingerprint(target, written);
       const last = lastWrites.get(name);
+      // `defaulted` is what this write had to choose; a later write that keeps
+      // that choice (now the app's selection) reports nothing, and the config
+      // still holds the earlier choice, so it stays recorded.
+      const chosen = written.defaulted.length > 0 ? written.defaulted : last?.chosen ?? [];
+      const next: RecordedWrite = { ...configPatchFingerprint(target, written.modelIds, chosen), chosen };
       // A model list the gateway couldn't return leaves the app's list as it was.
       const unread = target.modelsLoaded === false || (target.modelsLoaded === undefined && target.models.length === 0);
-      if (last && unread) next.models = last.models;
+      if (last && unread) {
+        next.models = last.models;
+        next.chosen = last.chosen;
+      }
       if (last && last.connection === next.connection && last.models === next.models) return false;
       lastWrites.set(name, next);
       changed.set(name, now());

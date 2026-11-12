@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { sameCanonicalModel } from '@antseed/protocol/model-identity';
+import { findModelById } from '@antseed/protocol/model-identity';
 import type { ResolvedTarget } from './config-patch.js';
 
 /**
@@ -42,19 +42,6 @@ export type ModelPick = {
 };
 
 /**
- * The model in `models` that `id` names: its own id, else (ignoring case) its
- * id, else the same model by the buyer's canonical rule (the `/v1/models`
- * entry can name it `glm-5` one read and `z-ai/glm-5` the next).
- */
-function findModel(models: ReadonlyArray<ConfigPatchModel>, id: string): ConfigPatchModel | undefined {
-  const exact = models.find((model) => model.id === id);
-  if (exact) return exact;
-  const key = id.toLowerCase();
-  return models.find((model) => model.id.toLowerCase() === key)
-    ?? models.find((model) => sameCanonicalModel(id, model.id));
-}
-
-/**
  * The models a (re)patch writes into one tool config, and the model each of
  * the tool's selections (`currents`) should be. A selection the user made in
  * the tool is kept while the gateway still serves that model: under the id
@@ -74,9 +61,9 @@ export function pickModels(target: ResolvedTarget, currents: readonly unknown[])
   };
   const selected = currents.map((current) => {
     if (typeof current !== 'string' || current.length === 0) return useFallback();
-    const listed = findModel(target.models, current) ?? findModel(kept, current);
+    const listed = findModelById(target.models, current) ?? findModelById(kept, current);
     if (listed) return listed.id;
-    const unlisted = findModel(target.unlistedModels, current);
+    const unlisted = findModelById(target.unlistedModels, current);
     if (!unlisted) return useFallback();
     kept.push(unlisted);
     return unlisted.id;

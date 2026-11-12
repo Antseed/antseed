@@ -9,18 +9,19 @@ import type { GatewayPrivacy, GatewayPrivacyMode } from '../../shared/gateway-ty
 export type PrivacyRead = { privacy: GatewayPrivacy; changed: boolean };
 
 /**
- * A read of the mode in turn with switches (`queue`), `changed` when the read
- * itself moved the saved mode. The saved mode is taken inside the turn, so a
- * read queued behind a switch doesn't count the switch's change as its own.
+ * A read or switch of the mode in turn with the others (`queue`), `changed`
+ * when the operation itself moved the saved mode. The saved mode is taken
+ * inside the turn, so an operation queued behind a switch doesn't count the
+ * switch's change as its own.
  */
-export function readPrivacyInTurn(
+export function privacyInTurn(
   queue: { run: <T>(task: () => Promise<T>) => Promise<T> },
-  read: () => Promise<GatewayPrivacy>,
+  operation: () => Promise<GatewayPrivacy>,
   savedPrivacy: () => GatewayPrivacyMode,
 ): Promise<PrivacyRead> {
   return queue.run(async () => {
     const before = savedPrivacy();
-    const privacy = await read();
+    const privacy = await operation();
     return { privacy, changed: savedPrivacy() !== before };
   });
 }
@@ -31,7 +32,7 @@ export type PrivacySwitchDeps = {
    * in turn, like a read); throws for a remote gateway, whose console sets it.
    */
   setPrivacy: (mode: GatewayPrivacyMode) => Promise<PrivacyRead>;
-  /** Reads the mode (`readPrivacyInTurn`), bringing every key in line with one the console changed. */
+  /** Reads the mode (`privacyInTurn`), bringing every key in line with one the console changed. */
   getPrivacy: () => Promise<PrivacyRead>;
   gatewayMode: () => 'local' | 'remote';
   /** Drops the model list and route previews read under the old policy. */

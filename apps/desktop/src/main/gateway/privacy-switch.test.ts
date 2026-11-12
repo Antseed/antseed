@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { GatewayPrivacy, GatewayPrivacyMode } from '../../shared/gateway-types.js';
-import { readPrivacy, readPrivacyInTurn, switchPrivacy, type PrivacySwitchDeps } from './privacy-switch.js';
+import { readPrivacy, privacyInTurn, switchPrivacy, type PrivacySwitchDeps } from './privacy-switch.js';
 import { createSerialQueue } from '../serial-queue.js';
 
 /**
@@ -25,7 +25,7 @@ function harness(options: { gateway?: 'local' | 'remote' } = {}) {
       saved = mode;
       return { privacy: privacy(mode), changed: saved !== before };
     }),
-    getPrivacy: () => readPrivacyInTurn(queue, async () => {
+    getPrivacy: () => privacyInTurn(queue, async () => {
       calls.push('get');
       saved = keyMode;
       return privacy(keyMode);

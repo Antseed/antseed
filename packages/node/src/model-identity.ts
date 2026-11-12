@@ -2,7 +2,7 @@ import { canonicalModelKey, stripModelDecorations } from '@antseed/protocol/mode
 
 // The routing match key lives in @antseed/protocol so packages that only need
 // it don't depend on the node SDK; re-exported here for existing callers.
-export { CODING_ONLY_SUFFIX_RE, canonicalModelKey, sameCanonicalModel } from '@antseed/protocol/model-identity';
+export { CODING_ONLY_SUFFIX_RE, canonicalModelKey, findModelById, sameCanonicalModel } from '@antseed/protocol/model-identity';
 
 const DISPLAY_TOKEN_CASING: Record<string, string> = {
   ai: 'AI',

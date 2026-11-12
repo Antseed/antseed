@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalModelKey, sameCanonicalModel } from './model-identity.js';
+import { canonicalModelKey, findModelById, sameCanonicalModel } from './model-identity.js';
 
 describe('canonicalModelKey', () => {
   it('merges cosmetic variants and conservative Claude family aliases', () => {
@@ -55,5 +55,15 @@ describe('canonicalModelKey', () => {
     expect(sameCanonicalModel('fal-ai/veo3.1/fast', 'fal-ai/veo3.1')).toBe(false);
     expect(sameCanonicalModel('minimax/h3-max/text-to-video', 'minimax/h3/text-to-video')).toBe(false);
     expect(canonicalModelKey('bytedance/seedance-2.5/text-to-video')).toBe('seedance2.5texttovideo');
+  });
+});
+
+describe('findModelById', () => {
+  it('prefers the exact id, then the id ignoring case, then the canonical model', () => {
+    const items = [{ id: 'z-ai/glm-5' }, { id: 'GLM-5' }, { id: 'glm-5' }];
+    expect(findModelById(items, 'glm-5')).toBe(items[2]);
+    expect(findModelById(items.slice(0, 2), 'glm-5')).toBe(items[1]);
+    expect(findModelById(items.slice(0, 1), 'glm-5')).toBe(items[0]);
+    expect(findModelById(items, 'kimi-k2')).toBeUndefined();
   });
 });

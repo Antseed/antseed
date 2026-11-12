@@ -74,3 +74,16 @@ export function sameCanonicalModel(a: string, b: string): boolean {
   const keyA = canonicalModelKey(a);
   return keyA.length > 0 && keyA === canonicalModelKey(b);
 }
+
+/**
+ * The item `id` names: the one with that id, else (ignoring case) the one
+ * with that id, else the same model by the canonical rule (a listing can name
+ * a model `glm-5` one read and `z-ai/glm-5` the next).
+ */
+export function findModelById<T extends { id: string }>(items: readonly T[], id: string): T | undefined {
+  const exact = items.find((item) => item.id === id);
+  if (exact) return exact;
+  const key = id.toLowerCase();
+  return items.find((item) => item.id.toLowerCase() === key)
+    ?? items.find((item) => sameCanonicalModel(id, item.id));
+}

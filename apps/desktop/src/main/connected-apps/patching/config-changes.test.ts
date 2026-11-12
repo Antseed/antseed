@@ -136,3 +136,51 @@ test('a low-trust seller coming or going changes an app\'s config only when it c
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('an app Antseed gave its default model needs no restart when the same target is applied again', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'antseed-desktop-config-changes-'));
+  try {
+    const configPath = path.join(dir, 'opencode.json');
+    const patch = {
+      configPath,
+      providerKey: 'antseed',
+      npm: '@antseed/tool-provider',
+      providerName: 'Antseed',
+      baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+    };
+    const time = clock();
+    const log = createConfigChangeLog(time.now);
+    const write = (t: ConfigPatchTarget) => log.recordWrite('opencode', t, writeConfigPatch(patch, t, undefined));
+    const needsRestart = (managed: { launchedAt: number }) =>
+      runningAppNeedsRestart({ running: true }, managed, log.changedAt()['opencode'] ?? null);
+
+    // OpenCode with no model selected: the patch selects the target's default.
+    await writeFile(configPath, JSON.stringify({}), 'utf8');
+    assert.equal(write(target()), true);
+    assert.equal((JSON.parse(await readFile(configPath, 'utf8')) as { model?: string }).model, 'antseed/model-a');
+    time.advance(1_000);
+    const managed = { launchedAt: time.now() };
+    const connectedAt = log.changedAt()['opencode'];
+
+    // The same target again (a privacy switch that leaves the models as they were).
+    time.advance(1_000);
+    assert.equal(write(target()), false);
+    assert.equal(log.changedAt()['opencode'], connectedAt);
+    assert.equal(needsRestart(managed), false);
+
+    // The user switching models inside the app isn't Antseed's change.
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(configPath, JSON.stringify({ ...config, model: 'antseed/model-b' }), 'utf8');
+    time.advance(1_000);
+    assert.equal(write(target()), false);
+    assert.equal(needsRestart(managed), false);
+
+    // A real model-list change is.
+    time.advance(1_000);
+    assert.equal(write(target({ models: [...target().models, { id: 'model-c', label: 'Model C' }] })), true);
+    assert.equal(log.changedAt()['opencode'], time.now());
+    assert.equal(needsRestart(managed), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

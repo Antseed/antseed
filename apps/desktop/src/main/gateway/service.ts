@@ -13,7 +13,7 @@ import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
 import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
 import { createSerialQueue } from '../serial-queue.js';
-import { readPrivacyInTurn, type PrivacyRead } from './privacy-switch.js';
+import { privacyInTurn, type PrivacyRead } from './privacy-switch.js';
 import { CLOSING_ERROR, START_CANCELLED_ERROR, StartGenerations, startUnlessCancelled } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -651,7 +651,7 @@ export function currentPrivacyMode(): GatewayPrivacyMode | null {
  * it; judged in turn too, so a switch that ran just before doesn't count.
  */
 export function getGatewayPrivacy(): Promise<PrivacyRead> {
-  return readPrivacyInTurn(privacySwitches, readGatewayPrivacy, () => getGatewaySettings().privacy);
+  return privacyInTurn(privacySwitches, readGatewayPrivacy, () => getGatewaySettings().privacy);
 }
 
 async function readGatewayPrivacy(): Promise<GatewayPrivacy> {
@@ -685,11 +685,7 @@ export function whenPrivacySettled(): Promise<void> {
  * `changed` when the switch moved the saved mode, judged in turn like a read.
  */
 export function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<PrivacyRead> {
-  return privacySwitches.run(async () => {
-    const before = getGatewaySettings().privacy;
-    const privacy = await applyGatewayPrivacy(mode);
-    return { privacy, changed: getGatewaySettings().privacy !== before };
-  });
+  return privacyInTurn(privacySwitches, () => applyGatewayPrivacy(mode), () => getGatewaySettings().privacy);
 }
 
 async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {

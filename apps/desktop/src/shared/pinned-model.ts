@@ -1,4 +1,4 @@
-import { parsePinnedModel, sameCanonicalModel } from '@antseed/node/model-identity';
+import { findModelById, parsePinnedModel } from '@antseed/node/model-identity';
 
 /**
  * A chat can pin one seller for its model with `<peerId>@<model>`, the form
@@ -21,12 +21,7 @@ export function splitPinnedModel(value: string | null | undefined): { modelId: s
 export function findListedModel<T extends { id: string }>(items: readonly T[], modelId: string | null | undefined): T | null {
   const { modelId: listedId } = splitPinnedModel(modelId);
   if (!listedId) return null;
-  const exact = items.find((item) => item.id === listedId);
-  if (exact) return exact;
-  const wanted = listedId.toLowerCase();
-  return items.find((item) => item.id.toLowerCase() === wanted)
-    ?? items.find((item) => sameCanonicalModel(listedId, item.id))
-    ?? null;
+  return findModelById(items, listedId) ?? null;
 }
 
 /** A seller id as pins carry it: lowercase, without `0x`. Compare ids in this form. */
