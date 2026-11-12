@@ -11,7 +11,7 @@ Agents such as Hermes and OpenClaw connect to Antseed like any OpenAI- or Anthro
 | Where the agent runs | Endpoint |
 |---|---|
 | Anywhere, with its own key and budget | A [gateway API key](#gateway-api-key) (recommended) |
-| Another machine, reaching your desktop app or a CLI buyer | A [tunnel endpoint](#tunnel-endpoint), which is a gateway on your computer |
+| Another machine, reaching a CLI buyer on your computer | A [tunnel endpoint](#tunnel-endpoint), which is a gateway on your computer |
 | The same computer as the buyer, without a gateway | The [local buyer proxy](#local-buyer-proxy) |
 
 The local buyer proxy listens only on `127.0.0.1`. An agent on another machine cannot reach it, and you should not publish port 8377: it checks no API key, so anyone who reaches it can spend your deposit.
@@ -45,7 +45,7 @@ This installs the gateway, and the buyer it needs, as a per-user service that st
 
 ## Tunnel endpoint
 
-A tunnel endpoint is a public HTTPS URL for your desktop app or CLI buyer, protected by a generated key. In the desktop app, open **Agents** and set up an **Internet-accessible endpoint**. With the CLI, run `antseed tunnel start`. See [Tunnels](/docs/tunnels).
+A tunnel endpoint is a public HTTPS URL for a CLI buyer on your computer, protected by a generated key. Run `antseed tunnel start`. See [Tunnels](/docs/tunnels).
 
 Use the base URL ending in `/v1` and the generated Antseed API key, sent as a bearer token.
 
@@ -59,7 +59,7 @@ export ANTSEED_API_KEY="antseed-p2p"
 curl "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"
 ```
 
-The model `antseed` follows the model picked in the desktop app. It works only here, on the local buyer proxy of a desktop app with a model picked; through a gateway, use concrete model ids. See [Use the local buyer proxy](/docs/api).
+The model `antseed` follows the default route saved in the buyer. It works only here, on the local buyer proxy; through a gateway, use concrete model ids. See [Use the local buyer proxy](/docs/api).
 
 ## Hermes
 

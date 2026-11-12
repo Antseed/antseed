@@ -169,7 +169,7 @@ function gatewayEnv(extraNote?: string): ConfigBlock {
       ANTSEED_API_KEY: GATEWAY_KEY,
     },
     note: [
-      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`, or Agents → Internet-accessible endpoint in the desktop app) for other machines. No gateway yet: see Run Antseed first above.`,
+      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`) for other machines. No gateway yet: see Run Antseed first above.`,
       extraNote,
     ].filter(Boolean).join(' '),
   };
@@ -194,7 +194,7 @@ export const integrations: Integration[] = [
     oneLiner: "Anthropic's official CLI agent - point it at your Antseed gateway, or launch it with `antseed claude`.",
     description: [
       'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it connects to Antseed with two environment variables: <code>ANTHROPIC_BASE_URL</code> for the endpoint and <code>ANTHROPIC_AUTH_TOKEN</code> for the key.',
-      'Using the <a href="/docs/desktop">desktop app (AI VPN)</a> on the same computer? The quickest route is <strong>Connected apps</strong>: connect Claude Code there, then pick the model in the app, per conversation, without touching any config.',
+      'Using <a href="/docs/desktop">Antseed Desktop</a> on the same computer? Its local gateway works here too, with an API key from <strong>Settings</strong>. The app does not connect Claude Code for you, because Claude Code\'s model list only takes Claude-named models, but you can add Antseed\'s skills to it under <strong>Agents &amp; apps</strong>, so it keeps its own model and calls Antseed when you ask.',
       'Otherwise, the recommended endpoint is a gateway: it gives Claude Code its own API key with budgets and usage logs, and it works from any machine. The gateway only accepts the key as <code>Authorization: Bearer</code>, which is what <code>ANTHROPIC_AUTH_TOKEN</code> sends. When Claude Code runs on the same computer as a buyer, <code>antseed claude</code> launches it against the local buyer proxy instead, with no key.',
       'No Anthropic API key or subscription is needed. Antseed pays sellers per request in USDC from your gateway workspace wallet or your buyer deposit.',
       'When Claude Code calls the Messages API, Antseed selects the highest-ranked eligible offer under your Price + Trust preferences. Stable session metadata gives the conversation soft affinity to the seller that actually served it, with failover when needed. Every model on the network (listed by <code>GET /v1/models</code>) is a valid <code>--model</code> value; prefix it with a peer id (<code>&lt;peerId&gt;@&lt;service-id&gt;</code>) only when you want to force a specific seller.',
@@ -631,7 +631,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Pi runs on another machine than the buyer',
         fix:
-          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
+          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
       },
       {
         problem: 'An error from the endpoint mid-conversation',
@@ -812,7 +812,7 @@ openclaw gateway restart`,
       {
         problem: 'OpenClaw runs remotely and cannot reach `127.0.0.1:8377`',
         fix:
-          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
+          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -948,7 +948,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     modelHints: {
       suggested: ['kimi-k3', 'glm-5.1', 'deepseek-v4-pro', 'minimax-m2.7', 'deepseek-v4-flash'],
       note:
-        'Use a concrete model id that passed the test above. Do not use the id `antseed`: it follows the model picked in the desktop app, so it only works against the local buyer proxy with the app running, never through a gateway.',
+        'Use a concrete model id that passed the test above. Do not use the id `antseed`: it follows the buyer\'s default route (set with `POST /_antseed/route`), so it only works against the local buyer proxy, never through a gateway.',
     },
     test: [
       {
@@ -968,7 +968,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     troubleshooting: [
       {
         problem: '`no_default_route`',
-        fix: 'The model id `antseed` routes to the model picked in the desktop app, and none is picked. Use a concrete id from the model test.',
+        fix: 'The model id `antseed` routes to the buyer\'s default route, and none is set. Use a concrete id from the model test.',
       },
       {
         problem: '`model_not_found … No policy-allowed peer currently serves model`',
@@ -1008,7 +1008,7 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: 'Hermes runs on a remote host and can\'t reach `127.0.0.1:8377`',
-        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
+        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
       },
     ],
     links: [

@@ -25,7 +25,7 @@ export type { ChartPoint, StackSeries } from './primitives/Charts';
 export { ConfirmDialog } from './primitives/ConfirmDialog';
 export type { ConfirmDialogProps } from './primitives/ConfirmDialog';
 
-export { CopyButton, copyText } from './primitives/CopyButton';
+export { CopyButton, copyText, useCopyFeedback } from './primitives/CopyButton';
 export type { CopyButtonProps } from './primitives/CopyButton';
 
 export { DataTable, Pager, usePager } from './primitives/DataTable';

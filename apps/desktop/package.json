@@ -1,7 +1,7 @@
 {
   "name": "@antseed/desktop",
-  "productName": "Antseed AI VPN",
-  "version": "0.2.78",
+  "productName": "Antseed Desktop",
+  "version": "0.2.79",
   "private": true,
   "description": "Desktop app for Antseed",
   "author": "Antseed <hello@antseed.com>",
@@ -79,7 +79,6 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-loading-skeleton": "^3.5.0",
     "sass": "^1.97.3",
     "typescript": "^5.6.0",
     "vite": "^6.0.0",
