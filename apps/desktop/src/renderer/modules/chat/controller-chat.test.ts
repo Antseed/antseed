@@ -182,6 +182,43 @@ describe('chat controller', () => {
     expect(request.sourceImageAttachmentId).toBe('img-b');
   });
 
+  it('the workspace holds still until a first message\'s chat exists, then follows a chat opened meanwhile', async () => {
+    const created = deferred<void>();
+    const setWorkspace: string[] = [];
+    const pickDirectory = vi.fn().mockResolvedValue({ ok: true, path: '/picked' });
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b', '/project-b')];
+    const createdOn: string[] = [];
+    let current = '/project-a';
+    const { api, uiState, sends } = setup(conversations, {
+      pickDirectory,
+      chatAiSetWorkspace: async (path: string) => { setWorkspace.push(path); current = path; return { ok: true, data: { current: path, default: '/default' } }; },
+      chatAiCreateConversation: async (service: string) => {
+        await created.promise;
+        // The main process makes the chat in whatever workspace is current.
+        createdOn.push(current);
+        const made = conv(`conv-${conversations.length + 1}`, service, current);
+        conversations.push(made);
+        return { ok: true, data: made };
+      },
+    });
+    uiState.chatWorkspacePath = '/project-a';
+    await api.refreshChatConversations();
+    api.sendMessage('first');
+    await tick(5);
+    expect(uiState.chatWorkspaceLocked).toBe(true);
+    await api.chooseWorkspace();
+    expect(pickDirectory).not.toHaveBeenCalled();
+    await api.openConversation('conv-b');
+    expect(setWorkspace).toEqual([]);
+    created.resolve();
+    await waitFor(() => setWorkspace.length === 1);
+    expect(createdOn).toEqual(['/project-a']);
+    expect(setWorkspace).toEqual(['/project-b']);
+    expect(uiState.chatWorkspaceLocked).toBe(false);
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toMatchObject({ content: 'first' });
+  });
+
   it('a text prompt sent while a chat opens carries that chat\'s history, never the previous chat\'s', async () => {
     const said = (role: 'user' | 'assistant', content: string) => ({ role, content, createdAt: 1 });
     const convA = { ...conv('conv-a', 'model-a'), messages: [said('user', 'from a')] };

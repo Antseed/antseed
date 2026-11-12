@@ -18,10 +18,37 @@ export function rewardsValue(rewards: GatewayRewardsSummary | null, error: strin
 /** The line under the amount: what it is, or why there's none. */
 export function rewardsHint(rewards: GatewayRewardsSummary | null, error: string | null): string {
   if (!rewards) return error ?? 'Reading your rewards…';
+  // A failed refresh keeps the last amount, but says it may be out of date.
+  if (error) return `Couldn't refresh your rewards: ${error}`;
   if (rewards.remoteChainUnverified) return 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.';
   if (!rewards.available) return 'Rewards are not live on this network yet.';
   const epoch = rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : '';
   return `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${epoch}.`;
+}
+
+type RewardsRead = { ok: boolean; data?: GatewayRewardsSummary; error?: string };
+
+/**
+ * One read of the rewards: a summary replaces the last one and clears the
+ * error; a failure sets the error and keeps the last summary on screen.
+ */
+export async function readRewards(
+  read: (() => Promise<RewardsRead> | undefined) | undefined,
+  setRewards: (rewards: GatewayRewardsSummary) => void,
+  setError: (error: string | null) => void,
+): Promise<void> {
+  try {
+    const result = await read?.();
+    if (!result) return;
+    if (result.ok && result.data) {
+      setRewards(result.data);
+      setError(null);
+    } else {
+      setError(result.error ?? 'Could not read your rewards');
+    }
+  } catch (err: unknown) {
+    setError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
@@ -35,16 +62,7 @@ export function VprRewardsView() {
   const [consoleError, setConsoleError] = useState<string | null>(null);
 
   const load = useCallback((force: boolean) => {
-    void window.antseedDesktop?.gatewayGetRewards?.({ force })
-      .then((result) => {
-        if (result.ok && result.data) {
-          setRewards(result.data);
-          setError(null);
-        } else {
-          setError(result.error ?? 'Could not read your rewards');
-        }
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    void readRewards(() => window.antseedDesktop?.gatewayGetRewards?.({ force }), setRewards, setError);
   }, []);
 
   // Fresh on entry and when the window regains focus, e.g. after claiming in the console.

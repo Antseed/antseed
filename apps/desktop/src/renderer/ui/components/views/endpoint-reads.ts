@@ -1,42 +1,55 @@
 import type { GatewayEndpointInfo } from '../../../types/bridge';
 
 /**
- * Reads of the gateway endpoint for a card that shows its URL and key. Each
- * read first clears what was shown, so a failed one never leaves an old key
- * to copy (the key may have been rotated in the console), and an answer that
- * a newer read or a close has overtaken is dropped.
+ * Reads whose answer replaces what is shown, where only the newest counts:
+ * an answer that a newer read or a close has overtaken is dropped. Each read
+ * first clears what was shown, unless `keepShown`; `clearOnClose` clears it
+ * on close too.
+ */
+export function createLatestReads<T>(
+  load: () => Promise<T>,
+  show: (value: T | null) => void,
+  { clearOnClose = false }: { clearOnClose?: boolean } = {},
+) {
+  let current = 0;
+  return {
+    /**
+     * Reads and shows the answer; resolves to it, or null when a newer read
+     * or a close overtook this one. `keepShown` leaves what is shown in place
+     * while reading; the answer still replaces it.
+     */
+    async refresh(options: { keepShown?: boolean } = {}): Promise<T | null> {
+      const id = ++current;
+      if (!options.keepShown) show(null);
+      const value = await load();
+      if (id !== current) return null;
+      show(value);
+      return value;
+    },
+    /** Drops any read in flight. */
+    close(): void {
+      current += 1;
+      if (clearOnClose) show(null);
+    },
+  };
+}
+
+/**
+ * Reads of the gateway endpoint for a card that shows its URL and key. A
+ * failed read never leaves an old key to copy (the key may have been rotated
+ * in the console), and a close clears what was shown.
  */
 export function createEndpointReads(
   read: () => Promise<GatewayEndpointInfo> | undefined,
   show: (endpoint: GatewayEndpointInfo | null) => void,
 ) {
-  let current = 0;
-  return {
-    /**
-     * Reads and shows the endpoint; resolves to it, or null when a newer read
-     * or a close overtook this one. `keepShown` leaves what is shown in place
-     * while reading (a copy, whose row must stay); the answer, or the failure,
-     * still replaces it.
-     */
-    async refresh(options: { keepShown?: boolean } = {}): Promise<GatewayEndpointInfo | null> {
-      const id = ++current;
-      if (!options.keepShown) show(null);
-      let endpoint: GatewayEndpointInfo;
-      try {
-        endpoint = (await read()) ?? { ok: false, error: 'Gateway unavailable' };
-      } catch (error) {
-        endpoint = { ok: false, error: error instanceof Error ? error.message : String(error) };
-      }
-      if (id !== current) return null;
-      show(endpoint);
-      return endpoint;
-    },
-    /** Drops any read in flight and what was shown. */
-    close(): void {
-      current += 1;
-      show(null);
-    },
-  };
+  return createLatestReads<GatewayEndpointInfo>(async () => {
+    try {
+      return (await read()) ?? { ok: false, error: 'Gateway unavailable' };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, show, { clearOnClose: true });
 }
 
 /**

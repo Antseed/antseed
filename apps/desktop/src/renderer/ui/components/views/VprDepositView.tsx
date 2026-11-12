@@ -369,18 +369,20 @@ export function VprDepositView(props: Props) {
   const mode = useCachedResource(gatewayResource).data?.status.mode;
   if (mode === 'local') return <LocalDepositView {...props} />;
   return (
-    <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
-      {mode === 'remote' ? (
-        <VprCard>
-          <div className={styles.stack}>
-            <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
-            <div>
-              <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+    <section className={`view view-vpr-deposit view-pinned-header ${styles.view}`} role="tabpanel">
+      <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+        {mode === 'remote' ? (
+          <VprCard>
+            <div className={styles.stack}>
+              <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+              <div>
+                <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+              </div>
             </div>
-          </div>
-        </VprCard>
-      ) : null}
-    </VprPage>
+          </VprCard>
+        ) : null}
+      </VprPage>
+    </section>
   );
 }
 

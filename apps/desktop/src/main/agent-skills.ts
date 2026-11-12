@@ -271,6 +271,16 @@ export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Op
   await installAll([], endpoint, options);
 }
 
+/**
+ * Re-points the installed copies, asking for the endpoint (and so a key) only
+ * when an agent holds any of the app's skills, a partly removed one too: its
+ * remaining skills still read the shared key file.
+ */
+export async function syncManagedAgentSkills(getEndpoint: () => Promise<AgentSkillsEndpoint>, options: Options = {}): Promise<void> {
+  if (managedSkillDirs(options).length === 0) return;
+  await syncAgentSkills(await getEndpoint(), options);
+}
+
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */
 export function agentSetupPrompt(endpoint: AgentSkillsEndpoint): string {
   return [

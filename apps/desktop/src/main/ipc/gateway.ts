@@ -37,7 +37,7 @@ import {
   installAgentSkills,
   listAgentSkillTargets,
   removeAgentSkills,
-  syncAgentSkills,
+  syncManagedAgentSkills,
 } from '../agent-skills.js';
 import { errorResult } from './results.js';
 
@@ -52,8 +52,7 @@ export type GatewayIpcDeps = {
 
 /** Re-points installed skills at the current gateway and key. Asks for no key when none are installed. */
 export async function syncInstalledAgentSkills(): Promise<void> {
-  if (!listAgentSkillTargets().some((target) => target.installed)) return;
-  await syncAgentSkills(await getGatewayEndpoint(AGENT_SKILLS_APP));
+  await syncManagedAgentSkills(() => getGatewayEndpoint(AGENT_SKILLS_APP));
 }
 
 /** The settings or keys changed, but the agents' installed skills still hold the old ones. */

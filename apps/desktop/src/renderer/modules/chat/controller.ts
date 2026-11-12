@@ -160,6 +160,10 @@ export function initChatModule({
   let conversationOpenToken = 0;
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
+  // First messages still creating their chat, and the workspace of a chat
+  // opened meanwhile, switched to once they're done.
+  let draftsCreating = 0;
+  let heldWorkspacePath: string | null = null;
   let newChatDraftVersion = 0;
   /**
    * First messages of new chats, before their chats exist. Each submission has
@@ -898,8 +902,31 @@ export function initChatModule({
     }
   }
 
+  /**
+   * A new chat is made in the current workspace, so it holds still from Send
+   * until the first message's chat exists: the workspace button is disabled,
+   * and a chat opened from another project switches to it afterwards.
+   */
+  function holdWorkspace(): () => void {
+    draftsCreating += 1;
+    uiState.chatWorkspaceLocked = true;
+    notifyUiStateChanged();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      draftsCreating -= 1;
+      if (draftsCreating > 0) return;
+      uiState.chatWorkspaceLocked = false;
+      const held = heldWorkspacePath;
+      heldWorkspacePath = null;
+      notifyUiStateChanged();
+      if (held) void restoreWorkspace(held);
+    };
+  }
+
   async function chooseWorkspace(): Promise<void> {
-    if (!bridge?.pickDirectory || !bridge.chatAiSetWorkspace) return;
+    if (!bridge?.pickDirectory || !bridge.chatAiSetWorkspace || uiState.chatWorkspaceLocked) return;
     try {
       const picked = await bridge.pickDirectory();
       if (!picked.ok || !picked.path) return;
@@ -981,7 +1008,8 @@ export function initChatModule({
 
       const convWorkspacePath = conv.workspacePath;
       if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0 && convWorkspacePath !== workspacePathAtOpen) {
-        void restoreWorkspace(convWorkspacePath);
+        if (draftsCreating > 0) heldWorkspacePath = convWorkspacePath;
+        else void restoreWorkspace(convWorkspacePath);
       }
     } catch (err) {
       if (!isCurrentOpen()) return;
@@ -1195,48 +1223,54 @@ export function initChatModule({
       let submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
       const needsFree = () => (draftVersion === newChatDraftVersion ? needsFreeModel() : needsFreeModel(submitted));
       setDraftSending(true);
+      const releaseWorkspace = holdWorkspace();
       void (async () => {
-        // A new chat keeps its model, and the mode being switched to can move it.
-        if (await holdForPrivacySwitch()) {
+        try {
+          // A new chat keeps its model, and the mode being switched to can move it.
+          if (await holdForPrivacySwitch()) {
+            if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+            const mode = privacyResource.getSnapshot().data?.mode;
+            if (mode) await privacySwitchLanded(mode);
+            if (draftVersion === newChatDraftVersion) {
+              applyDefaultModel();
+              writtenWith = uiState.chatSelectedModelId;
+              submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
+            }
+          }
+          const waited = await waitForFreeModel(stillDraft, needsFree);
           if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-          const mode = privacyResource.getSnapshot().data?.mode;
-          if (mode) await privacySwitchLanded(mode);
-          if (draftVersion === newChatDraftVersion) {
-            applyDefaultModel();
-            writtenWith = uiState.chatSelectedModelId;
-            submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
+          // The draft's model is captured here: the user may switch before the
+          // conversation finishes creating. A wait that found a free model moves to it.
+          let modelId = writtenWith;
+          if (waited) {
+            if (draftVersion === newChatDraftVersion) {
+              applyDefaultModel();
+              modelId = uiState.chatSelectedModelId;
+            } else if (!submitted.chosen && !needsFreeModel(submitted)) {
+              // Left behind: the free model the wait found, never the last model
+              // saved, which another chat may have chosen meanwhile.
+              modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
+            }
           }
-        }
-        const waited = await waitForFreeModel(stillDraft, needsFree);
-        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-        // The draft's model is captured here: the user may switch before the
-        // conversation finishes creating. A wait that found a free model moves to it.
-        let modelId = writtenWith;
-        if (waited) {
-          if (draftVersion === newChatDraftVersion) {
-            applyDefaultModel();
-            modelId = uiState.chatSelectedModelId;
-          } else if (!submitted.chosen && !needsFreeModel(submitted)) {
-            // Left behind: the free model the wait found, never the last model
-            // saved, which another chat may have chosen meanwhile.
-            modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
+          const convId = await createConversationForModel(modelId, { activate: false });
+          releaseWorkspace();
+          // Stopped while the chat was being made: it stays, empty, and nothing is sent.
+          if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+          // The new chat's send is this prompt's from here on, before it opens:
+          // a second submit while it loads finds it busy, and Stop there cancels this.
+          const reserved = convId ? beginSend(convId) : null;
+          // Only the draft on screen owns the composer's sending state.
+          if (shownDraft === draftToken) {
+            shownDraft = 0;
+            if (uiState.chatActiveConversation === null) setDraftSending(false);
           }
+          if (!convId || reserved === null) return;
+          if (draftVersion === newChatDraftVersion) await openConversation(convId);
+          if (!ownsSend(convId, reserved)) return;
+          sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
+        } finally {
+          releaseWorkspace();
         }
-        const convId = await createConversationForModel(modelId, { activate: false });
-        // Stopped while the chat was being made: it stays, empty, and nothing is sent.
-        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-        // The new chat's send is this prompt's from here on, before it opens:
-        // a second submit while it loads finds it busy, and Stop there cancels this.
-        const reserved = convId ? beginSend(convId) : null;
-        // Only the draft on screen owns the composer's sending state.
-        if (shownDraft === draftToken) {
-          shownDraft = 0;
-          if (uiState.chatActiveConversation === null) setDraftSending(false);
-        }
-        if (!convId || reserved === null) return;
-        if (draftVersion === newChatDraftVersion) await openConversation(convId);
-        if (!ownsSend(convId, reserved)) return;
-        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
       })();
       return;
     }

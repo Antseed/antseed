@@ -159,6 +159,8 @@ export type RendererUiState = {
   browserPreviewRequestId: number;
   chatWorkspacePath: string;
   chatWorkspaceDefaultPath: string;
+  /** A first message is still creating its chat, which takes the current workspace: it can't change until then. */
+  chatWorkspaceLocked: boolean;
 
   // --- Streaming indicator ---
   chatWaitingForStream: boolean;
@@ -259,6 +261,7 @@ export function createInitialUiState(): RendererUiState {
     browserPreviewRequestId: 0,
     chatWorkspacePath: '',
     chatWorkspaceDefaultPath: '',
+    chatWorkspaceLocked: false,
 
     // Streaming indicator
     chatWaitingForStream: false,
