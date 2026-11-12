@@ -140,8 +140,13 @@ const speechBillingAdapter: UnitBillingAdapter = {
   units: ['input_characters'],
   protocols: AUDIO_SPEECH_PROTOCOLS,
   capture: (args) => {
-    const speech = extractSpeechRequestFacts(parseJsonObject(args.request.body));
+    const body = parseJsonObject(args.request.body);
+    const speech = extractSpeechRequestFacts(body);
     if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
+    // Delivery is proved by audio bytes; a stream of events is not read as audio, so it could not be billed.
+    if (body?.stream_format !== undefined && body.stream_format !== null && body.stream_format !== 'audio') {
+      throw new Error('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"');
+    }
     return {
       context: {
         sellerPeerId: args.sellerPeerId,
@@ -209,6 +214,11 @@ export function captureUnitBillingContext(args: CaptureUnitBillingArgs): Capture
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
+  // This capture also stands in for token-billed protocols (chat), whose streams are billed by tokens.
+  // Images are counted in a JSON answer; a streamed one is not read, so it could not be billed.
+  if (args.serviceApiProtocol === 'openai-images' && parsed?.stream !== undefined && parsed.stream !== null && parsed.stream !== false) {
+    throw new Error('Image billing requires the answer as JSON: send the request without "stream"');
+  }
   const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,

@@ -169,7 +169,8 @@ export function extractImageRequestFacts(input: {
 }): ImageRequestFacts {
   const body = input.body ?? {};
   const facts: ImageRequestFacts = {};
-  const normalizedPath = input.path?.split('?')[0];
+  // Endpoints are matched in any letter case, as protocol detection matches them.
+  const normalizedPath = input.path?.split('?')[0]?.toLowerCase();
   const isOpenAiImageEndpoint = normalizedPath === '/v1/images/generations'
     || normalizedPath === '/v1/images/edits';
 
