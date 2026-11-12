@@ -158,12 +158,12 @@ describe('model route ranking', () => {
   it('lets a preview read the next seller without spending the turn', () => {
     const alpha = route({ peerId: 'a'.repeat(40) });
     const beta = route({ peerId: 'b'.repeat(40) });
-    const preview = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model', false)[0]?.peerId;
-    const again = rankModelRoutes([beta, alpha], preferences, 1, 'preview-model', false)[0]?.peerId;
+    const preview = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model', advance: false })[0]?.peerId;
+    const again = rankModelRoutes([beta, alpha], preferences, 1, { rotationKey: 'preview-model', advance: false })[0]?.peerId;
     expect(again).toBe(preview);
-    const live = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model')[0]?.peerId;
+    const live = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model' })[0]?.peerId;
     expect(live).toBe(preview);
-    const next = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model')[0]?.peerId;
+    const next = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model' })[0]?.peerId;
     expect(next).not.toBe(live);
   });
 
@@ -173,8 +173,8 @@ describe('model route ranking', () => {
     const modelA: string[] = [];
     const modelB: string[] = [];
     for (let i = 0; i < 4; i += 1) {
-      modelA.push(rankModelRoutes([alpha, beta], preferences, 1, 'model-a')[0]?.peerId ?? '');
-      modelB.push(rankModelRoutes([beta, alpha], preferences, 1, 'model-b')[0]?.peerId ?? '');
+      modelA.push(rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'model-a' })[0]?.peerId ?? '');
+      modelB.push(rankModelRoutes([beta, alpha], preferences, 1, { rotationKey: 'model-b' })[0]?.peerId ?? '');
     }
     expect(new Set(modelA)).toEqual(new Set([alpha.peerId, beta.peerId]));
     expect(new Set(modelB)).toEqual(new Set([alpha.peerId, beta.peerId]));

@@ -268,28 +268,41 @@ function rotateEqualHead<T extends ModelRouteCandidate>(
   return ranked;
 }
 
+export type ModelRouteRankingOptions = {
+  /** Keeps one model's rotation from moving another's. */
+  rotationKey?: string
+  /**
+   * False for a route preview or a model list: show the next seller
+   * without spending the turn a live request should take. Omitted means
+   * the ranking spends the turn.
+   */
+  advance?: boolean
+}
+
 export function rankModelRoutes<T extends ModelRouteCandidate>(
   routes: T[],
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
-  rotationKey?: string,
-  // A route preview and a model list pass false. They show the next seller
-  // without spending the turn a live request should take.
-  advance = true,
+  options?: ModelRouteRankingOptions,
 ): T[] {
   const ranked = routes
     .map((route) => scoreModelRoute(route, preferences, now))
     .sort((a, b) => compareScoredModelRoutes(a, b, preferences, now));
-  return rotateEqualHead(ranked, preferences, now, rotationKey, advance).map(({ route }) => route);
+  return rotateEqualHead(
+    ranked,
+    preferences,
+    now,
+    options?.rotationKey,
+    options?.advance !== false,
+  ).map(({ route }) => route);
 }
 
 export function chooseBestModelRoute<T extends ModelRouteCandidate>(
   routes: T[],
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
-  rotationKey?: string,
-  advance = true,
+  options?: ModelRouteRankingOptions,
 ): T | null {
-  return rankModelRoutes(routes, preferences, now, rotationKey, advance)
+  return rankModelRoutes(routes, preferences, now, options)
     .find((route) => isModelRouteEligible(route, preferences)) ?? null;
 }
