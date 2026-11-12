@@ -1,4 +1,6 @@
 import type { GatewayKeyInfo, GatewayRewardsSummary, GatewaySavings } from '../../shared/gateway-types.js';
+import { usdcFromMicros, usdcToMicros } from '../payments/usdc-decimal.js';
+import { finiteNumber, record } from './response-fields.js';
 
 export type { GatewayKeyInfo };
 
@@ -80,6 +82,29 @@ export function parseRetiredUsage(payload: unknown): { usage: KeyUsage; savings:
     usage: { requests, spentUsd },
     savings: parseKeySavings({ data: body['savings'] }),
   };
+}
+
+/**
+ * `antseed gateway key list --all --json`: the requests and the spend of
+ * every key paying from `identity`, revoked ones included, i.e. everything
+ * the gateway has sent through that wallet's buyer. Failed requests count
+ * too: a seller's error can count in the buyer's usage, and the gateway can't
+ * tell those from failures that never reached a seller, so taking them all
+ * means the history worked out from this can come out short, never double.
+ * Null when the answer isn't a key list.
+ */
+export function parseWalletKeyUsage(payload: unknown, identity: string): KeyUsage | null {
+  if (!Array.isArray(payload)) return null;
+  let requests = 0;
+  let spent = 0n;
+  for (const entry of payload as unknown[]) {
+    const key = record(entry);
+    if (key['identity'] !== identity) continue;
+    requests += Math.max(0, finiteNumber(key['requests']) ?? 0);
+    const spentUsd = record(key['spentUsd'])['total'];
+    spent += usdcToMicros(typeof spentUsd === 'string' ? spentUsd : null);
+  }
+  return { requests, spentUsd: usdcFromMicros(spent) };
 }
 
 /** Savings over several keys (every key the desktop made), or null when none had any. */

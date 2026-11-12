@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, parseWalletKeyUsage, sumSavings, withUsageOf } from './key-info.js';
 
 test('key info is read from inside the gateway\'s data envelope', () => {
   assert.deepEqual(parseGatewayKeyInfo({
@@ -71,4 +71,18 @@ test('retired usage without savings, or an answer that is not one, adds nothing 
   assert.equal(parseRetiredUsage({ data: { requests: 2, spent_usd: '0.10', savings: null } })?.savings, null);
   assert.equal(parseRetiredUsage(null), null);
   assert.equal(parseRetiredUsage({ error: 'Unknown key' }), null);
+});
+
+test('the gateway\'s totals for a wallet cover every key paying from it, revoked ones and failed requests included', () => {
+  const keys = [
+    { label: 'Desktop', status: 'active', identity: 'default', requests: 120, failedRequests: 20, spentUsd: { total: '4.250000' } },
+    { label: 'Desktop', status: 'revoked', identity: 'default', requests: 10, failedRequests: 0, spentUsd: { total: '1.000000' } },
+    { label: 'Team', status: 'active', identity: 'team-a', requests: 50, failedRequests: 0, spentUsd: { total: '9.000000' } },
+  ];
+  // A seller's error can count in the buyer's usage, so failed requests are taken out of the history too.
+  assert.deepEqual(parseWalletKeyUsage(keys, 'default'), { requests: 130, spentUsd: '5.25' });
+  assert.deepEqual(parseWalletKeyUsage([], 'default'), { requests: 0, spentUsd: '0' });
+  assert.deepEqual(parseWalletKeyUsage([null, { identity: 'default', requests: 'x', spentUsd: null }, { identity: 'default', requests: -4 }], 'default'), { requests: 0, spentUsd: '0' });
+  assert.equal(parseWalletKeyUsage({ keys }, 'default'), null);
+  assert.equal(parseWalletKeyUsage(null, 'default'), null);
 });
