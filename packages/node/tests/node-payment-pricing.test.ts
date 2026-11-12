@@ -269,7 +269,9 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
   return {
     oneOffPlans: plans,
     openOneOff: open,
-    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown) => { plans.set(key(buyer, requestId), plan); }),
+    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown): number | null => { plans.set(key(buyer, requestId), plan); return null; }),
+    oneOffRetryAfterSeconds: vi.fn((): number | null => null),
+    markOneOffCreateAccepted: vi.fn(),
     getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
       ?? (opened ? open(buyer, requestId) : null),
     claimOneOffChannel: (channelId: string) => {
@@ -687,6 +689,80 @@ describe('native video job ownership', () => {
         expect(bodyOf(response).error.code).toBe('invalid_billing_request');
         expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('holds back a buyer with too many unproven channels: a 429 with Retry-After, no plan and no chain reads', async () => {
+      const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
+      const { provider, create, spm, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('120');
+        expect(bodyOf(response).error.code).toBe('one_off_channel_backoff');
+        expect(bodyOf(response).error.message).toContain('retry in 120 seconds');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(firstSignCap).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { firstSignCap.mockRestore(); store.close(); }
+    });
+
+    it('holds back a create that loses the last offer to a parallel one during the chain reads', async () => {
+      const { provider, create, store } = setupOneOff({ registerOneOffPlan: vi.fn(() => 60) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('60');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('still runs a create whose channel is already open while its buyer is held back', async () => {
+      const { provider, create, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) }, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+      } finally { store.close(); }
+    });
+
+    it('stops counting a channel against its buyer when its paid create is accepted', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledWith('one-off-video-1');
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the provider refuses the create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.handleRequest = vi.fn(async request => ({
+        requestId: request.requestId, statusCode: 429, headers: {}, body: Buffer.from('{"error":{"message":"busy"}}'),
+      }));
+      try {
+        await create('video-1');
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the accepted job cannot be recorded', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      vi.spyOn(store, 'recordAcceptedCreate').mockImplementation(() => { throw new Error('database is locked'); });
+      try {
+        expect((await create('video-1')).statusCode).toBe(503);
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('has no channel to mark for a free create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.serviceUnitBillingModels = { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0 }] } } };
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
@@ -2258,6 +2334,147 @@ it('waits for a pending top-up to start, between two top-ups, before treating th
     covering: waitForTopUp.mock.calls[0]?.[2],
     closed: settleSession.mock.calls.length,
   }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
+});
+
+describe('a channel at its ceiling while top-ups follow each other', () => {
+  /** One request against a seller whose payment manager is the given mock; returns what the buyer got. */
+  async function requestAtCeiling(requestId: string, spm: Record<string, unknown>) {
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({ settleSession, ...spm }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    const body = response.statusCode === 200 ? {} : JSON.parse(new TextDecoder().decode(response.body));
+    return { status: response.statusCode, answer: body.code ?? body.error ?? null, closed: settleSession.mock.calls.length };
+  }
+
+  it('keeps the channel open when the next top-up starts mining while the ceiling is re-read after one lands', async () => {
+    // Parallel load over a slow RPC: the awaited top-up lands, and during the chain read that follows,
+    // requests that finish push the spend past the new ceiling while the next top-up, which covers it, starts.
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = true;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax += 1_000_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('next-top-up-mining', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+      async refreshReserveMaxFromChain() {
+        if (reserveMax === 2_000_000n && spent === 1_000_000n) {
+          spent = 2_300_000n;
+          running = true;
+        }
+        return reserveMax;
+      },
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
+  });
+
+  it('waits for a top-up that starts during the ceiling read when none was running on entry', async () => {
+    // Nothing is mining or queued when the request reaches the ceiling. During the chain read the buyer's
+    // next ReserveAuth arrives, its top-up starts, and requests that finish push the spend past the ceiling.
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = false;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax = 2_000_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('top-up-starts-during-read', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+      async refreshReserveMaxFromChain() {
+        if (spent === 1_000_000n) {
+          spent = 1_300_000n;
+          running = true;
+        }
+        return reserveMax;
+      },
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 1 });
+  });
+
+  it('answers a retryable 503, never exhausted, when a top-up is still mining at the end of the wait budget', async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      let reserveMax = 1_000_000n;
+      let spent = 1_000_000n;
+      // Each top-up takes 8 s to land, the spend is past the new ceiling by then, and the next one is mining.
+      const waitForTopUp = vi.fn(async () => {
+        now += 8_000;
+        reserveMax += 1_000_000n;
+        spent = reserveMax + 300_000n;
+        return true;
+      });
+      const result = await requestAtCeiling('top-ups-keep-mining', {
+        getCumulativeSpend: () => spent,
+        getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+        getReserveMax: () => reserveMax,
+        isTopUpRunning: () => true,
+        waitForTopUp,
+      });
+
+      expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 503, answer: 'top_up_pending', closed: 0, waits: 2 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('closes as exhausted after one wait when the spend is past the new ceiling and no top-up covers it', async () => {
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = true;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax = 2_000_000n;
+      spent = 2_300_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('nothing-covers-the-spend', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 402, answer: PAYMENT_CODE_CHANNEL_EXHAUSTED, closed: 1, waits: 1 });
+  });
+
+  it('waits once, not for the whole budget, for a queued top-up that never starts', async () => {
+    const waitForTopUp = vi.fn(async () => true);
+    const result = await requestAtCeiling('queued-top-up-never-starts', {
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_000_000n,
+      getReserveMax: () => 1_000_000n,
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: () => true,
+      waitForTopUp,
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 402, answer: PAYMENT_CODE_CHANNEL_EXHAUSTED, closed: 1, waits: 1 });
+  });
 });
 
 

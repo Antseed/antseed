@@ -21,9 +21,12 @@ export async function run(tb) {
     const value = await signed();
     return value >= amount ? value : null;
   }, label, { timeoutMs: 30_000 });
-  const loseNextNeedAuth = async () => {
-    await tb.faults.loseNeedAuths(1);
-    return async () => (await tb.waitFor(async () => (await tb.faults.lostNeedAuths())[0], 'a lost NeedAuth frame', { timeoutMs: 30_000 }));
+  const loseNextNeedAuths = async (count) => {
+    await tb.faults.loseNeedAuths(count);
+    return async () => (await tb.waitFor(async () => {
+      const frames = await tb.faults.lostNeedAuths();
+      return frames.length >= count ? frames : null;
+    }, `${count} lost NeedAuth frame(s)`, { timeoutMs: 30_000 }));
   };
   tb.metric('costPerChatMicroUsdc', String(cost));
 
@@ -35,19 +38,21 @@ export async function run(tb) {
   tb.check('chat 1 is signed in full', first === cost, { signed: String(first), cost: String(cost) });
 
   // No public path leaves a buyer under-signed, so lose the NeedAuth that bills chat 2.
-  let lost = await loseNextNeedAuth();
+  let lost = await loseNextNeedAuths(1);
   await tb.chat({ model, prompt: 'paid request 2, its NeedAuth is lost' });
-  const billing = await lost();
+  const [billing] = await lost();
   const underSigned = await signed();
   tb.check('chat 2 NeedAuth was lost, so the buyer signed less than the seller delivered', billing.lastRequestCost != null && underSigned === cost, { lost: billing, signed: String(underSigned), delivered: String(2n * cost) });
 
-  // The seller answers chat 3 with a 402 and a cost-free NeedAuth carrying the same target. Losing that
-  // NeedAuth leaves the buyer's 402 negotiator (extendCurrentSpendingAuth) as the only path that signs.
-  lost = await loseNextNeedAuth();
+  // The seller asks for the catch-up twice, each time with a cost-free NeedAuth carrying the same target:
+  // once when chat 3 arrives (before it waits for the buyer), and once with the 402 it then answers.
+  // Either one would sign the target by itself. Losing both leaves the buyer's 402 negotiator
+  // (extendCurrentSpendingAuth) as the only path that signs.
+  lost = await loseNextNeedAuths(2);
   const third = await tb.chat({ model, prompt: 'paid request 3, triggers the 402 catch-up' });
-  const catchUp = await lost();
+  const catchUps = await lost();
   const target = 2n * cost;
-  tb.check('seller asked for exactly its delivered spend in the 402 catch-up', catchUp.lastRequestCost == null && BigInt(catchUp.requiredCumulativeAmount) === target, { lost: catchUp, delivered: String(target) });
+  tb.check('seller asked for exactly its delivered spend in both catch-up NeedAuths, and both were lost', catchUps.length === 2 && catchUps.every((frame) => frame.lastRequestCost == null && BigInt(frame.requiredCumulativeAmount) === target), { lost: catchUps, delivered: String(target) });
   tb.check('chat 3 answered after the catch-up', third.content.length > 0, third.content);
   tb.metric('catchUpTargetMicroUsdc', String(target));
 

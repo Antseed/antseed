@@ -279,7 +279,7 @@ describe('topology mode', () => {
   it('issue-1200 asks for buyerFaults; the scenarios cli mode must run do not', async () => {
     const load = async (name) => validateScenarioModule(await import(pathToFileURL(scenarioFile(name)).href), name);
     assert.ok((await load('issue-1200-spendingauth-catchup')).requires.includes('buyerFaults'));
-    for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel']) {
+    for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'stress-restart-seller-topup', 'issue-1050-stale-channel']) {
       const scenario = await load(name);
       assert.doesNotThrow(() => assertScenarioSupported(scenario, 'local', 'cli'), name);
     }
@@ -322,7 +322,7 @@ describe('scenario modules', () => {
   });
 
   it('every shipped scenario is valid', async () => {
-    const stress = ['stress-smoke', 'stress-seq', 'stress-c8', 'stress-c32', 'stress-c64', 'stress-smallreserve', 'stress-images', 'stress-faults', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel'];
+    const stress = ['stress-smoke', 'stress-seq', 'stress-c8', 'stress-c32', 'stress-c64', 'stress-smallreserve', 'stress-images', 'stress-faults', 'stress-restart-buyer', 'stress-restart-seller', 'stress-restart-seller-topup', 'issue-1050-stale-channel'];
     const cliScenarios = ['cli-buyer-commands', 'buyer-withdraw-and-exit', 'free-tier'];
     for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup', ...stress, ...cliScenarios]) {
       const scenario = validateScenarioModule(await import(pathToFileURL(scenarioFile(name)).href), name);

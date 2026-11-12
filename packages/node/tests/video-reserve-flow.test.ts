@@ -22,7 +22,7 @@ import type { Identity } from '../src/p2p/identity.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
-import type { SpendingAuthPayload } from '../src/types/protocol.js';
+import type { NeedAuthPayload, SpendingAuthPayload } from '../src/types/protocol.js';
 import { computeChannelId } from '@antseed/protocol/signatures';
 
 interface ChainChannel { deposit: bigint; settled: bigint; status: number }
@@ -60,8 +60,11 @@ function identity(): Identity {
 
 type Listener = (...args: any[]) => void;
 
-/** Two ends of an in-memory framed connection. Delivery is async like a real socket. */
-function connectionPair(): { buyerSide: PeerConnection; sellerSide: PeerConnection } {
+/**
+ * Two ends of an in-memory framed connection. Delivery is async like a real socket. With `coalesce`, all that
+ * one end sends before the other end reads arrives as a single chunk, as on a byte-stream transport.
+ */
+function connectionPair(coalesce = false): { buyerSide: PeerConnection; sellerSide: PeerConnection } {
   const make = () => {
     const listeners = new Map<string, Set<Listener>>();
     const end: any = {
@@ -75,13 +78,23 @@ function connectionPair(): { buyerSide: PeerConnection; sellerSide: PeerConnecti
       off(event: string, listener: Listener) { listeners.get(event)?.delete(listener); },
       emitMessage(data: Uint8Array) { for (const listener of listeners.get('message') ?? []) listener(data); },
       send: (_data: Uint8Array) => {},
+      /** The connection reports a new state to its listeners, as a real one does when it closes. */
+      emitState(state: ConnectionState) { for (const listener of listeners.get('stateChange') ?? []) listener(state); },
     };
     return end;
   };
   const buyerSide = make();
   const sellerSide = make();
-  buyerSide.send = (data: Uint8Array) => { const copy = data.slice(); setImmediate(() => sellerSide.emitMessage(copy)); };
-  sellerSide.send = (data: Uint8Array) => { const copy = data.slice(); setImmediate(() => buyerSide.emitMessage(copy)); };
+  const sendTo = (target: any) => {
+    let unread: Uint8Array[] = [];
+    return (data: Uint8Array) => {
+      const copy = data.slice();
+      if (!coalesce) return void setImmediate(() => target.emitMessage(copy));
+      if (unread.push(copy) === 1) setImmediate(() => { const chunk = Buffer.concat(unread); unread = []; target.emitMessage(chunk); });
+    };
+  };
+  buyerSide.send = sendTo(sellerSide);
+  sellerSide.send = sendTo(buyerSide);
   return { buyerSide, sellerSide };
 }
 
@@ -105,6 +118,8 @@ interface Harness {
   buyer: BuyerPaymentManager;
   seller: SellerPaymentManager;
   buyerHandler: BuyerRequestHandler;
+  negotiator: BuyerPaymentNegotiator;
+  buyerConn: PeerConnection;
   chain: Map<string, ChainChannel>;
   sessionChannelId(): string;
   oneOffChannelIds(): string[];
@@ -149,6 +164,15 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     availableBalance?: bigint;
     reserveEstimateOverdraftUsdc?: bigint;
     freeTier?: { consume: ReturnType<typeof vi.fn>; reportUsageRequest: ReturnType<typeof vi.fn> };
+    /** Chat request IDs the seller's upstream answers with a 502. */
+    failChats?: string[];
+    /** A streamed upstream answer for a chat, or null to fall through to the buffered one. */
+    streamChat?: (request: SerializedHttpRequest, callbacks: { onResponseStart(start: any): void; onResponseChunk(chunk: any): void | Promise<void> }) => Promise<any | null>;
+    chatBody?: (request: SerializedHttpRequest) => { statusCode: number; body: unknown } | null;
+    maxPerRequestUsdc?: bigint;
+    requestTimeoutMs?: number;
+    /** Deliver frames sent together as one chunk (see connectionPair). */
+    coalesceFrames?: boolean;
   } = {}): Harness {
     const buyerIdentity = identity();
     const sellerIdentity = identity();
@@ -168,7 +192,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       usdcAddress: '0x' + 'ee'.repeat(20),
       identityRegistryAddress: '0x' + 'ff'.repeat(20),
       defaultAuthDurationSecs: 3600,
-      maxPerRequestUsdc: 500_000n,
+      maxPerRequestUsdc: options.maxPerRequestUsdc ?? 500_000n,
       maxReserveAmountUsdc: FIRST_RESERVE,
       maxVideoRequestUsdc: 5_000_000n,
       dataDir: join(directory, 'buyer'),
@@ -255,6 +279,10 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       getCapacity: () => ({ current: 0, max: 4 }),
       // The finished video streams as a real 5 s MP4, so it passes the delivery check.
       async handleRequestStream(request, callbacks) {
+        if (options.streamChat && request.path === '/v1/chat/completions') {
+          const streamed = await options.streamChat(request, callbacks);
+          if (streamed) return streamed;
+        }
         if (!request.path.endsWith('/video/retrieve')) return provider.handleRequest(request);
         if (options.retrieveStatus === 'REFUSED_400' || options.retrieveStatus === 'BUSY_429') {
           const refused = options.retrieveStatus === 'REFUSED_400';
@@ -297,6 +325,11 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
           jobCounter += 1;
           return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: `job-${jobCounter}`, status: 'PENDING' })) };
         }
+        const custom = options.chatBody?.(request);
+        if (custom) return { requestId: request.requestId, statusCode: custom.statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(custom.body)) };
+        if (options.failChats?.includes(request.requestId)) {
+          return { requestId: request.requestId, statusCode: 502, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ error: 'upstream unavailable' })) };
+        }
         return {
           requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
           body: Buffer.from(JSON.stringify({ id: 'chat', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 1000, total_tokens: 1000 } })),
@@ -304,12 +337,15 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       }),
     };
 
-    const { buyerSide, sellerSide } = connectionPair();
+    const { buyerSide, sellerSide } = connectionPair(options.coalesceFrames);
 
     // Seller side, wired like AntseedNode._handleIncomingConnection.
     const sellerPayment = new PaymentMux(sellerSide);
     const sellerVerification = new VerificationMux(sellerSide);
     sellerPayment.onSpendingAuth((payload) => { void seller.handleSpendingAuth(buyerIdentity.peerId, payload, sellerPayment); });
+    sellerPayment.onCloseChannelRequest((payload) => {
+      void seller.handleCloseChannelRequest(buyerIdentity.peerId, payload, sellerPayment).then((result) => sellerPayment.sendCloseChannelResult(result));
+    });
     const sellerHandler = new SellerRequestHandler({
       identity: sellerIdentity, providers: [provider], sellerPaymentManager: seller, sessionTracker: null,
       channelsClient: seller.channelsClient, announcer: null, emit: () => false, resourceOwnershipStore: ownership,
@@ -333,7 +369,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const buyerProxy = new ProxyMux(buyerSide);
     const buyerVerification = new VerificationMux(buyerSide);
     wireFrames(buyerSide, { proxy: buyerProxy, payment: buyerPayment, verification: buyerVerification });
-    const buyerHandler = new BuyerRequestHandler({ requestTimeoutMs: 120_000 }, {
+    const buyerHandler = new BuyerRequestHandler({ requestTimeoutMs: options.requestTimeoutMs ?? 120_000 }, {
       localPeerId: buyerIdentity.peerId,
       negotiator,
       verificationStorage: null,
@@ -387,7 +423,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const oneOffChannelIds = () => [...chain.keys()].filter((channelId) => sellerStore.getChannel(channelId)?.channelKind === 'one_off');
 
     return {
-      buyerIdentity, sellerIdentity, peer, buyer, seller, buyerHandler, chain, sessionChannelId, oneOffChannelIds,
+      buyerIdentity, sellerIdentity, peer, buyer, seller, buyerHandler, negotiator, buyerConn: buyerSide, chain, sessionChannelId, oneOffChannelIds,
       reserve, topUp, close, providerCreates, sentAuths,
       disconnect: () => seller.onBuyerDisconnect(buyerIdentity.peerId),
       releaseTopUp: () => { expect(releaseTopUp).not.toBeNull(); releaseTopUp!(); },
@@ -447,6 +483,97 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.seller.getChannelByPeer(h.buyerIdentity.peerId)?.sessionId).toBe(sessionId);
     expect(h.chain.get(sessionId)).toMatchObject({ deposit: FIRST_RESERVE, settled: 0n, status: 1 });
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+  });
+
+  it('charges each chat once through the seller NeedAuth the request handler made chargeable', async () => {
+    const h = setup();
+    const needAuth = vi.spyOn(h.buyer, 'handleNeedAuth');
+    await openChannelWithChat(h);
+    expect((await h.send(h.chatRequest('chat-2'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(2n * CHAT_DELIVERED);
+
+    // Both charges came from the seller's NeedAuth, each naming the request the handler sent.
+    const charges = needAuth.mock.calls.map(([, payload]) => payload).filter((payload) => payload.lastRequestCost != null);
+    expect(charges.map((payload) => [payload.requestId, payload.lastRequestCost])).toEqual([
+      ['chat-1', CHAT_DELIVERED.toString()],
+      ['chat-2', CHAT_DELIVERED.toString()],
+    ]);
+
+    // Replaying a charge, or charging a request the buyer never sent, signs nothing.
+    const mux = { sendSpendingAuth: vi.fn() } as unknown as PaymentMux;
+    await h.buyer.handleNeedAuth(h.peer.peerId, { ...charges[1]!, requiredCumulativeAmount: (3n * CHAT_DELIVERED).toString() }, mux);
+    await h.buyer.handleNeedAuth(h.peer.peerId, { ...charges[1]!, requestId: 'never-sent', requiredCumulativeAmount: (3n * CHAT_DELIVERED).toString() }, mux);
+    expect(mux.sendSpendingAuth).not.toHaveBeenCalled();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(2n * CHAT_DELIVERED);
+  });
+
+  it('counts a seller cost only up to what the chat response the buyer received shows', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    // The seller serves chat-2 but claims five times its cost, with token counts to match.
+    const honest: NeedAuthPayload[] = [];
+    const handle = h.buyer.handleNeedAuth.bind(h.buyer);
+    vi.spyOn(h.buyer, 'handleNeedAuth').mockImplementation((peerId, payload, mux) => {
+      if (payload.lastRequestCost == null) return handle(peerId, payload, mux);
+      honest.push(payload);
+      const times5 = (value: string | undefined): string => (BigInt(value ?? '0') * 5n).toString();
+      return handle(peerId, {
+        ...payload,
+        lastRequestCost: times5(payload.lastRequestCost),
+        inputTokens: times5(payload.inputTokens),
+        freshInputTokens: times5(payload.freshInputTokens),
+        outputTokens: times5(payload.outputTokens),
+        requiredCumulativeAmount: (CHAT_DELIVERED + 5n * CHAT_DELIVERED).toString(),
+      }, mux);
+    });
+    expect((await h.send(h.chatRequest('chat-2'))).statusCode).toBe(200);
+    await h.settle();
+    expect(honest.map((payload) => [payload.requestId, payload.lastRequestCost])).toEqual([['chat-2', CHAT_DELIVERED.toString()]]);
+
+    // The buyer priced chat-2 from the response it received: that much, within
+    // the 1.4x cost tolerance, is verified. The rest of the claim is not.
+    const verified = CHAT_DELIVERED + CHAT_DELIVERED * 14n / 10n;
+    expect(h.buyer.getVerifiedCost(h.peer.peerId), 'verified a cost the response does not show').toBe(verified);
+    // The seller asked for 6x a chat in total and got what is verified plus the overdraft window.
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(6n * CHAT_DELIVERED < verified + 500_000n ? 6n * CHAT_DELIVERED : verified + 500_000n);
+
+    // chat-2 is counted: its honest frame, sent now, adds nothing.
+    const mux = { sendSpendingAuth: vi.fn() } as unknown as PaymentMux;
+    await handle(h.peer.peerId, { ...honest[0]!, requiredCumulativeAmount: (10n * CHAT_DELIVERED).toString() }, mux);
+    expect(mux.sendSpendingAuth).not.toHaveBeenCalled();
+    expect(h.buyer.getVerifiedCost(h.peer.peerId)).toBe(verified);
+  });
+
+  it('charges parallel chats exactly once each', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    const answers = await Promise.all(['chat-2', 'chat-3', 'chat-4', 'chat-5'].map((id) => h.send(h.chatRequest(id))));
+    expect(answers.map((answer) => answer.statusCode)).toEqual([200, 200, 200, 200]);
+    await h.settle();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(5n * CHAT_DELIVERED);
+    expect(h.buyer.getVerifiedCost(h.peer.peerId)).toBe(5n * CHAT_DELIVERED);
+  });
+
+  it('does not sign for a chat whose upstream failed, whatever the seller claims for it', async () => {
+    const h = setup({ failChats: ['chat-2'] });
+    await openChannelWithChat(h);
+    // The seller claims a full chat's cost for the request its upstream failed.
+    const handle = h.buyer.handleNeedAuth.bind(h.buyer);
+    vi.spyOn(h.buyer, 'handleNeedAuth').mockImplementation((peerId, payload, mux) => handle(peerId, payload.requestId === 'chat-2' ? {
+      ...payload,
+      lastRequestCost: CHAT_DELIVERED.toString(), outputTokens: '1000',
+      requiredCumulativeAmount: (2n * CHAT_DELIVERED).toString(),
+    } : payload, mux));
+    expect((await h.send(h.chatRequest('chat-2'))).statusCode).toBe(502);
+    await h.settle();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId), 'signed for a failed chat').toBe(CHAT_DELIVERED);
+    expect(h.buyer.getVerifiedCost(h.peer.peerId)).toBe(CHAT_DELIVERED);
+
+    // The next chat is served and charged as usual.
+    expect((await h.send(h.chatRequest('chat-3'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(2n * CHAT_DELIVERED);
   });
 
   it('opens a video channel without any chat session, and hasSession stays false', async () => {
@@ -818,6 +945,10 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.chain.get(videoChannel!)).toMatchObject({ status: 1 });
     // The seller still knows the channel, so it is not orphaned on-chain.
     expect(h.seller.isOneOffChannel(videoChannel!)).toBe(true);
+    // It cost the seller gas and is still open, so it keeps counting against the buyer.
+    const offer = { openingReserveAmount: '800000', requiredCumulativeAmount: '0', requestCost: '800000' };
+    for (let index = 1; index < 16; index += 1) expect(h.seller.registerOneOffPlan(h.buyerIdentity.peerId, `offer-${index}`, offer)).toBeNull();
+    expect(h.seller.registerOneOffPlan(h.buyerIdentity.peerId, 'one-too-many', offer)).toBe(5);
 
     h.close.mockImplementation(landOnChain);
     await h.seller.checkTimeouts();
@@ -947,6 +1078,438 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
 
     expect(h.seller.claimOneOffChannel(channelId)).toBe(false);
   });
+
+  // ── Channels that earn the seller nothing ──────────────────────────────
+
+  /** One-off channels a buyer may have earning nothing before the seller stops offering more. */
+  const UNPAID_LIMIT = 16;
+
+  /** A client looping on an answer: the same create, one at a time, each under a new request ID. */
+  async function sendVideos(h: Harness, count: number, label: string) {
+    const answers: Array<Awaited<ReturnType<Harness['send']>>> = [];
+    for (let index = 0; index < count; index += 1) answers.push(await h.send(h.videoRequest(`${label}-${index}`)));
+    await h.settle();
+    return answers;
+  }
+
+  const statusesOf = (answers: Array<{ statusCode: number }>) => answers.map((answer) => answer.statusCode);
+  const repeat = <T,>(value: T, count: number): T[] => Array.from({ length: count }, () => value);
+  const advanceClock = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+  it('stops reserving for a buyer whose creates the provider keeps refusing', async () => {
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+
+    const answers = await sendVideos(h, UNPAID_LIMIT + 4, 'refused');
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(h.close).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(h.providerCreates).toHaveLength(UNPAID_LIMIT);
+    expect(statusesOf(answers)).toEqual([...repeat(400, UNPAID_LIMIT), ...repeat(429, 4)]);
+    const heldBack = answers.at(-1)!;
+    expect(JSON.parse(Buffer.from(heldBack.body).toString()).error.code).toBe('one_off_channel_backoff');
+    expect(Number(heldBack.headers['retry-after'])).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('offers one more channel each time the wait has passed, doubling the wait up to an hour', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+    await sendVideos(h, UNPAID_LIMIT, 'refused');
+
+    const waits = [60, 120, 240, 480, 960, 1_920, 3_600, 3_600];
+    for (const [index, waitSeconds] of waits.entries()) {
+      const early = await h.send(h.videoRequest(`early-${index}`));
+      expect(early.statusCode).toBe(429);
+      expect(early.headers['retry-after']).toBe(String(waitSeconds));
+
+      advanceClock(waitSeconds * 1_000);
+      expect((await h.send(h.videoRequest(`probe-${index}`))).statusCode).toBe(400);
+      await h.settle();
+      expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + index + 1);
+    }
+  }, 30_000);
+
+  it('stops counting channels closed more than a day ago', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+    await sendVideos(h, UNPAID_LIMIT, 'refused');
+    expect((await h.send(h.videoRequest('held-back'))).statusCode).toBe(429);
+
+    advanceClock(24 * 60 * 60_000 + 1);
+
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT, 'next-day'))).toEqual(repeat(400, UNPAID_LIMIT));
+    expect((await h.send(h.videoRequest('held-back-again'))).statusCode).toBe(429);
+  }, 30_000);
+
+  it('bounds a burst of parallel creates, which all arrive before any is refused', async () => {
+    const h = setup({ videoPricing: 'cheap', createResponse: 'rejected' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 8 }, (_, index) => h.send(h.videoRequest(`burst-${index}`))));
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(statusesOf(answers).filter((status) => status === 429)).toHaveLength(8);
+  }, 30_000);
+
+  it('serves a whole parallel batch up to the limit, and charges each video', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
+    await h.settle();
+
+    expect(statusesOf(answers)).toEqual(repeat(200, UNPAID_LIMIT));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    for (let job = 1; job <= UNPAID_LIMIT; job += 1) expect((await h.send(h.retrieveRequest(`retrieve-${job}`, `job-${job}`))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(800_000n, UNPAID_LIMIT));
+  }, 30_000);
+
+  it('asks the rest of a batch above the limit to retry shortly, and serves it then', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
+    await h.settle();
+
+    const heldBack = answers.flatMap((answer, index) => (answer.statusCode === 429 ? [{ answer, index }] : []));
+    expect(heldBack).toHaveLength(4);
+    for (const { answer } of heldBack) expect(answer.headers['retry-after']).toBe('5');
+
+    const retried = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
+    expect(statusesOf(retried)).toEqual(repeat(200, 4));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+  }, 30_000);
+
+  it('starts counting again once the buyer pays for a video, which is charged as usual', async () => {
+    const options: { videoPricing: 'cheap'; createResponse?: 'rejected' } = { videoPricing: 'cheap', createResponse: 'rejected' };
+    const h = setup(options);
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'before'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
+
+    delete options.createResponse;
+    expect((await h.send(h.videoRequest('accepted'))).statusCode).toBe(200);
+    await h.settle();
+    const closesBeforeDelivery = h.close.mock.calls.length;
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close).toHaveBeenCalledTimes(closesBeforeDelivery + 1);
+    expect(h.close.mock.calls.at(-1)![2]).toBe(800_000n);
+
+    options.createResponse = 'rejected';
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'after'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
+  }, 30_000);
+
+  it('never holds back a buyer for jobs still running, however many', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+
+    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT + 4, 'running'))).toEqual(repeat(200, UNPAID_LIMIT + 4));
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    expect(h.close).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it('counts a video that was accepted and then failed: the buyer paid nothing for it', async () => {
+    const h = setup({ videoPricing: 'cheap', retrieveStatus: 'FAILED' });
+
+    for (let index = 1; index <= UNPAID_LIMIT; index += 1) {
+      expect((await h.send(h.videoRequest(`video-${index}`))).statusCode).toBe(200);
+      await h.send(h.retrieveRequest(`retrieve-${index}`, `job-${index}`));
+      await h.settle();
+    }
+
+    expect(h.close).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect((await h.send(h.videoRequest('next'))).statusCode).toBe(429);
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+  }, 30_000);
+
+  it('keeps opening channels for refused creates that pay the opening fee', async () => {
+    const h = setup({ createResponse: 'rejected' });
+
+    const answers = await sendVideos(h, UNPAID_LIMIT + 4, 'refused');
+
+    expect(statusesOf(answers)).toEqual(repeat(400, UNPAID_LIMIT + 4));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(SERIOUS_FEE, UNPAID_LIMIT + 4));
+  }, 30_000);
+
+  it('counts a channel whose top-up failed: the buyer paid nothing for it', async () => {
+    const h = setup({ topUpBehavior: 'revert' });
+
+    const answers = await Promise.allSettled(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`burst-${index}`))));
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
+    expect(answers.filter((answer) => answer.status === 'rejected')).toHaveLength(UNPAID_LIMIT);
+    expect((await h.send(h.videoRequest('after'))).statusCode).toBe(429);
+  }, 60_000);
+
+  it('spends one reserve on a buyer retrying a refused chat, whose channel stays open for the retries', async () => {
+    const h = setup({ chatBody: () => ({ statusCode: 400, body: { error: 'refused' } }) });
+
+    for (let index = 0; index < 5; index += 1) expect((await h.send(h.chatRequest(`chat-${index}`))).statusCode).toBe(400);
+    await h.settle();
+
+    expect(h.reserve).toHaveBeenCalledOnce();
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  // ── Review probes ──────────────────────────────────────────────────────
+
+  const sse = (events: unknown[]): Uint8Array => Buffer.from(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+  const spentOnSession = (h: Harness): bigint => h.seller.getCumulativeSpend(h.sessionChannelId());
+
+  /** An OpenAI chat stream of `completionTokens` output tokens (priced at $100/M), held open at `gate` after its first chunk. */
+  function streamedChat(completionTokens: number, gate?: Promise<void>, only?: string[]) {
+    return async (request: SerializedHttpRequest, callbacks: { onResponseStart(start: any): void; onResponseChunk(chunk: any): void | Promise<void> }) => {
+      if (only && !only.includes(request.requestId)) return null;
+      const start = { requestId: request.requestId, statusCode: 200, body: new Uint8Array(0), headers: { 'content-type': 'text/event-stream', 'x-antseed-streaming': '1' } };
+      const first = sse([{ id: 'c', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'hel' } }] }]);
+      const rest = Buffer.concat([sse([
+        { id: 'c', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'lo' }, finish_reason: 'stop' }] },
+        { id: 'c', object: 'chat.completion.chunk', choices: [], usage: { prompt_tokens: 0, completion_tokens: completionTokens, total_tokens: completionTokens } },
+      ]), Buffer.from('data: [DONE]\n\n')]);
+      callbacks.onResponseStart(start);
+      await callbacks.onResponseChunk({ requestId: request.requestId, data: first, done: false });
+      if (gate) await gate;
+      await callbacks.onResponseChunk({ requestId: request.requestId, data: rest, done: false });
+      await callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+      return { ...start, body: Buffer.concat([first, rest]) };
+    };
+  }
+
+  /** The seller holds the whole stream until `gate`, so a buyer that gives up first has received nothing. */
+  function heldChat(completionTokens: number, gate: Promise<void>, only: string[]) {
+    const streamed = streamedChat(completionTokens, undefined, only);
+    return async (request: SerializedHttpRequest, callbacks: { onResponseStart(start: any): void; onResponseChunk(chunk: any): void | Promise<void> }) => {
+      if (!only.includes(request.requestId)) return null;
+      await gate;
+      return streamed(request, callbacks);
+    };
+  }
+
+  it('pays the seller for a request the buyer aborted before any byte arrived, up to the output the request allows, without parking the next chat', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // A $0.05 window: smaller than the aborted chat, so only the request's own limit can verify it.
+    const h = setup({ maxPerRequestUsdc: 50_000n, streamChat: heldChat(1_000, gate, ['chat-2']) });
+    await openChannelWithChat(h);
+    const abort = new AbortController();
+    const aborted = h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), { onResponseStart() {}, onResponseChunk() {} }, { signal: abort.signal });
+    setTimeout(() => abort.abort(), 50);
+    await expect(aborted).rejects.toThrow(/aborted/);
+    // The seller finishes it anyway: 1,000 output tokens, the request's max_tokens.
+    release();
+    await h.settle();
+    expect(spentOnSession(h)).toBe(2n * CHAT_DELIVERED);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId), 'the aborted chat was not paid').toBe(2n * CHAT_DELIVERED);
+
+    const startedAt = Date.now();
+    expect((await h.send(h.chatRequest('chat-3'))).statusCode).toBe(200);
+    expect(Date.now() - startedAt, 'parked for the seller catch-up wait').toBeLessThan(4_500);
+    await h.settle();
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(spentOnSession(h));
+  }, 30_000);
+
+  it('a streamed chat the buyer receives in full is charged exactly once, at the cost both sides parse from the stream', async () => {
+    const h = setup({ streamChat: streamedChat(2_000, undefined, ['chat-2']) });
+    await openChannelWithChat(h);
+    const response = await h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), { onResponseStart() {}, onResponseChunk() {} });
+    expect(response.statusCode).toBe(200);
+    await h.settle();
+    expect(spentOnSession(h)).toBe(CHAT_DELIVERED + 200_000n);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + 200_000n);
+    expect(h.buyer.getVerifiedCost(h.peer.peerId)).toBe(CHAT_DELIVERED + 200_000n);
+  });
+
+  it('a response and its cost frame that arrive in one chunk: the response is recorded before the frame is judged', async () => {
+    // The seller sends its cost frame right behind the response. Nothing waits for the buyer's response path:
+    // it must have recorded the response by the time the frame is judged, or every such claim would be refused.
+    const h = setup({ coalesceFrames: true, streamChat: streamedChat(2_000, undefined, ['chat-2']) });
+    await openChannelWithChat(h);
+    expect((await h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), { onResponseStart() {}, onResponseChunk() {} })).statusCode).toBe(200);
+    const startedAt = Date.now();
+    expect((await h.send(h.chatRequest('chat-3'))).statusCode).toBe(200);
+    expect(Date.now() - startedAt, 'parked for the seller catch-up wait').toBeLessThan(4_500);
+    await h.settle();
+    expect(spentOnSession(h)).toBe(2n * CHAT_DELIVERED + 200_000n);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(spentOnSession(h));
+    expect(h.buyer.getVerifiedCost(h.peer.peerId), 'a claim was judged before its response was recorded').toBe(spentOnSession(h));
+  }, 30_000);
+
+  it('cooperative close right after a chat: the channel closes at exactly what was served', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    expect((await h.send(h.chatRequest('chat-2'))).statusCode).toBe(200);
+    // No settle(): the close races the seller's NeedAuth for chat-2.
+    let result = await h.negotiator.requestChannelClose(h.peer.peerId, h.buyerConn as any);
+    for (let attempt = 0; attempt < 5 && result.status !== 'closed' && result.code === 'busy'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      result = await h.negotiator.requestChannelClose(h.peer.peerId, h.buyerConn as any);
+    }
+    expect(`${result.status}:${result.code ?? ''}`).toBe('closed:');
+    expect(result.finalAmount).toBe((2n * CHAT_DELIVERED).toString());
+  }, 30_000);
+
+  it('pays the seller for a stream the buyer aborted, priced up to what the request allows, and the next chat is not parked', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // The aborted chat costs $0.60, above the $0.50 overdraft window.
+    const h = setup({ streamChat: streamedChat(6_000, gate, ['chat-2']) });
+    await openChannelWithChat(h);
+
+    const abort = new AbortController();
+    const aborted = h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), {
+      onResponseStart() {},
+      onResponseChunk() { abort.abort(); },
+    }, { signal: abort.signal });
+    await expect(aborted).rejects.toThrow(/aborted/);
+    // The seller is not told: it finishes the stream and bills it.
+    release();
+    await h.settle();
+    expect(spentOnSession(h), 'the seller billed the aborted chat').toBe(CHAT_DELIVERED + 600_000n);
+    const signedAfterAbort = h.buyer.getCumulativeAmount(h.peer.peerId);
+
+    const startedAt = Date.now();
+    const next = await h.send(h.chatRequest('chat-3'));
+    const elapsed = Date.now() - startedAt;
+    await h.settle();
+    console.log(`[probe] aborted $0.60 stream: signed right after=${signedAfterAbort}; next chat status=${next.statusCode} after ${elapsed}ms; signed=${h.buyer.getCumulativeAmount(h.peer.peerId)} verified=${h.buyer.getVerifiedCost(h.peer.peerId)} spent=${spentOnSession(h)}`);
+    expect(next.statusCode).toBe(200);
+    expect(signedAfterAbort, 'the cost frame for the aborted chat is answered').toBe(CHAT_DELIVERED + 600_000n);
+    expect(elapsed, 'parked for the seller catch-up wait').toBeLessThan(4_500);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(spentOnSession(h));
+  }, 30_000);
+
+  it('closes cooperatively after an aborted stream above the window', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const h = setup({ streamChat: streamedChat(6_000, gate, ['chat-2']) });
+    await openChannelWithChat(h);
+    const abort = new AbortController();
+    const aborted = h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), {
+      onResponseStart() {},
+      onResponseChunk() { abort.abort(); },
+    }, { signal: abort.signal });
+    await expect(aborted).rejects.toThrow(/aborted/);
+    release();
+    await h.settle();
+
+    const spentBeforeClose = spentOnSession(h);
+    const outcomes: string[] = [];
+    let finalAmount: string | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await h.negotiator.requestChannelClose(h.peer.peerId, h.buyerConn as any);
+      finalAmount = result.finalAmount;
+      outcomes.push(`${result.status}:${result.code ?? ''}`);
+      await h.settle();
+      if (result.status === 'closed') break;
+    }
+    console.log(`[probe] close after an aborted $0.60 stream: ${outcomes.join(', ')}; signed=${h.buyer.getCumulativeAmount(h.peer.peerId)} spent=${spentBeforeClose}`);
+    expect(outcomes.at(-1)).toBe('closed:');
+    expect(spentBeforeClose).toBe(CHAT_DELIVERED + 600_000n);
+    expect(finalAmount, 'closed at what the seller served').toBe(spentBeforeClose.toString());
+  }, 60_000);
+
+  it('pays nothing for an error answer that carries a usage block, by NeedAuth or at close', async () => {
+    const h = setup({ chatBody: (request) => request.requestId === 'chat-2'
+      ? { statusCode: 500, body: { error: 'boom', usage: { prompt_tokens: 0, completion_tokens: 3_000, total_tokens: 3_000 } } }
+      : null });
+    await openChannelWithChat(h);
+    const needAuth = vi.spyOn(h.buyer, 'handleNeedAuth');
+    const ownSigning = vi.spyOn(h.buyer, 'signPerRequestAuth');
+    expect((await h.send(h.chatRequest('chat-2'))).statusCode).toBe(500);
+    await h.settle();
+    const afterError = h.buyer.getCumulativeAmount(h.peer.peerId);
+    const claimed = needAuth.mock.calls.map(([, payload]) => payload).find((payload) => payload.requestId === 'chat-2');
+    const sentBeforeClose = h.sentAuths.length;
+    const result = await h.negotiator.requestChannelClose(h.peer.peerId, h.buyerConn as any);
+    const ownSigned = ownSigning.mock.calls.map(([, stats]) => `${stats.requestId}:${stats.sellerClaimedCost}`);
+    const signedByBuyerItself = h.sentAuths[sentBeforeClose]?.cumulativeAmount;
+    console.log(`[probe] error answer with usage: seller claimed ${claimed?.lastRequestCost}; signed after the error=${afterError}; buyer's own signing at close=${ownSigned.join(',')} -> cumulative ${signedByBuyerItself}; close=${result.status}:${result.code ?? ''} finalAmount=${result.finalAmount}`);
+    expect(afterError, 'the NeedAuth cost for the error answer is refused').toBe(CHAT_DELIVERED);
+    expect(ownSigned, 'the close signs for the last response, not the error answer').toEqual(['chat-1:100000']);
+    expect(signedByBuyerItself, 'the error answer was paid at close').toBe(CHAT_DELIVERED.toString());
+  }, 30_000);
+
+  it('a seller billing a cut-off stream past what the request allows is paid through 402 retries, one window each', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const h = setup({ maxPerRequestUsdc: 200_000n, streamChat: streamedChat(7_000, gate, ['chat-2']) });
+    await openChannelWithChat(h);
+    const abort = new AbortController();
+    const aborted = h.buyerHandler.sendRequest(h.peer, h.chatRequest('chat-2'), {
+      onResponseStart() {},
+      onResponseChunk() { abort.abort(); },
+    }, { signal: abort.signal });
+    await expect(aborted).rejects.toThrow(/aborted/);
+    release();
+    await h.settle();
+    expect(spentOnSession(h)).toBe(CHAT_DELIVERED + 700_000n);
+
+    const startedAt = Date.now();
+    const next = await h.send(h.chatRequest('chat-3'));
+    const elapsed = Date.now() - startedAt;
+    await h.settle();
+    console.log(`[probe] $0.20 window, aborted $0.70 stream: next chat status=${next.statusCode} ${Buffer.from(next.body).toString().slice(0, 120)} after ${elapsed}ms; signed=${h.buyer.getCumulativeAmount(h.peer.peerId)} spent=${spentOnSession(h)}`);
+    // The mock streams 7,000 output tokens for a request that allows 1,000:
+    // the excess is not verifiable, so it waits for the buyer's 402 retries.
+    expect(next.statusCode).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(4_500);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(spentOnSession(h));
+  }, 60_000);
+
+  // An attempt the seller can end itself: only the overdraft window pays for it.
+
+  /**
+   * The seller answers nothing for the chats in `only` until the test releases them (in the order they arrived),
+   * then bills 1,400 output tokens for a request that allows 1,000: the most the cost tolerance would let through.
+   */
+  function stalledChats(only: string[]) {
+    const gates: Array<() => void> = [];
+    const streamChat = async (request: SerializedHttpRequest, callbacks: { onResponseStart(start: any): void; onResponseChunk(chunk: any): void | Promise<void> }) => {
+      if (!only.includes(request.requestId)) return null;
+      return heldChat(1_400, new Promise<void>((resolve) => { gates.push(resolve); }), only)(request, callbacks);
+    };
+    return { streamChat, gates };
+  }
+
+  it('a seller that drops the connection on every request has nothing verified and is paid at most the overdraft window', async () => {
+    const ids = ['drop-1', 'drop-2', 'drop-3', 'drop-4', 'drop-5', 'drop-6'];
+    const { streamChat, gates } = stalledChats(ids);
+    const h = setup({ streamChat });
+    await openChannelWithChat(h);
+    for (const id of ids) {
+      const dropped = h.buyerHandler.sendRequest(h.peer, h.chatRequest(id), { onResponseStart() {}, onResponseChunk() {} });
+      // The buyer sees the connection close with nothing received.
+      setTimeout(() => (h.buyerConn as any).emitState(ConnectionState.Closed), 20);
+      await expect(dropped).rejects.toThrow(/closed during request/);
+      // Once its bills have used up the window, the seller holds the next request for its catch-up wait.
+      const release = gates.shift();
+      if (!release) break;
+      release();
+      await h.settle();
+    }
+    console.log(`[probe] requests the seller dropped, billing 140000 each: signed=${h.buyer.getCumulativeAmount(h.peer.peerId)} verified=${h.buyer.getVerifiedCost(h.peer.peerId)} spent=${spentOnSession(h)}`);
+    expect(h.buyer.getVerifiedCost(h.peer.peerId), 'requests the seller dropped count as verified').toBe(CHAT_DELIVERED);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + 500_000n);
+  }, 60_000);
+
+  it('a request that times out, or that the caller gives up on the seller for, is paid only inside the overdraft window', async () => {
+    const { streamChat, gates } = stalledChats(['slow', 'given-up']);
+    const h = setup({ requestTimeoutMs: 200, streamChat });
+    await openChannelWithChat(h);
+    await expect(h.send(h.chatRequest('slow'))).rejects.toThrow(/timed out/);
+    gates.shift()!();
+    await h.settle();
+    // The proxy's attempt timeout: it aborts with an error and moves on to another seller.
+    const attempt = new AbortController();
+    const givenUp = h.buyerHandler.sendRequest(h.peer, h.chatRequest('given-up'), undefined, { signal: attempt.signal });
+    setTimeout(() => attempt.abort(new Error('no answer within 1s')), 50);
+    await expect(givenUp).rejects.toThrow(/aborted/);
+    gates.shift()!();
+    await h.settle();
+    expect(spentOnSession(h)).toBe(CHAT_DELIVERED + 280_000n);
+    expect(h.buyer.getVerifiedCost(h.peer.peerId), 'an attempt the seller let run out counts as verified').toBe(CHAT_DELIVERED);
+    // A slow honest seller is still paid: its bills fit the window.
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + 280_000n);
+  }, 30_000);
 });
 
 /** Minimal MP4 (ftyp, mvhd duration, small mdat) that passes the delivery check. */
