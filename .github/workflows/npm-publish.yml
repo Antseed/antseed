@@ -14,8 +14,8 @@ name: Publish npm packages
 #     PostHog project the CLI, buyer and gateway send telemetry to
 #     (scripts/bake-desktop-telemetry-config.mjs, docs/telemetry.md).
 #
-# A run that publishes the CLI also creates a GitHub release tagged
-# cli-v<version> (scripts/github-release-notes.mjs). It is never marked
+# Once the CLI version on this commit is on npm, the run also creates a
+# GitHub release tagged cli-v<version> (scripts/github-release-notes.mjs). It is never marked
 # Latest: the desktop app's auto-updater and download links read the latest
 # release, which must stay the desktop's.
 
@@ -35,8 +35,6 @@ jobs:
     name: Build, test & publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      plan: ${{ steps.plan.outputs.plan }}
 
     steps:
       - uses: actions/checkout@v4
@@ -62,10 +60,7 @@ jobs:
       # This step prints the resulting plan and fails on release invariants:
       # exact-pin dependents missing a bump, or local versions behind npm.
       - name: Publish plan
-        id: plan
-        run: |
-          node scripts/npm-publish-plan.mjs --json "$RUNNER_TEMP/publish-plan.json"
-          echo "plan=$(jq -c . "$RUNNER_TEMP/publish-plan.json")" >> "$GITHUB_OUTPUT"
+        run: node scripts/npm-publish-plan.mjs
 
       - name: Bake comparable-prices URL
         env:
@@ -116,7 +111,9 @@ jobs:
   github-release:
     name: GitHub release
     needs: publish
-    if: ${{ !inputs.dry_run }}
+    # Also after a failed publish: the CLI may be on npm already, and the
+    # script checks npm, so a run that published nothing makes no release.
+    if: ${{ !inputs.dry_run && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -135,12 +132,10 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          PLAN: ${{ needs.publish.outputs.plan }}
         run: |
-          printf '%s' "$PLAN" > "$RUNNER_TEMP/publish-plan.json"
-          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/publish-plan.json" "$RUNNER_TEMP/release-notes.md")
+          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/release-notes.md")
           if [ -z "$version" ]; then
-            echo "The CLI was not published in this run; no GitHub release."
+            echo "This CLI version is not on npm; no GitHub release."
             exit 0
           fi
           if gh release view "cli-v${version}" >/dev/null 2>&1; then

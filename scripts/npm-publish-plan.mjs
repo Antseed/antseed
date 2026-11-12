@@ -25,11 +25,10 @@
  *      the unreleased @antseed/fingerprints had, and failed at startup).
  *      Needs the full git history.
  *
- * Usage: node scripts/npm-publish-plan.mjs [--json <path>]
- * With --json, writes the packages to publish ([{ name, version }]) to <path>.
+ * Usage: node scripts/npm-publish-plan.mjs
  * Exits non-zero on invariant violations or registry errors.
  */
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -163,12 +162,6 @@ for (const row of rows) {
   console.log(`  ${String(row[0]).padEnd(widths[0])}  ${String(row[1]).padEnd(widths[1])}  ${String(row[2]).padEnd(widths[2])}  ${row[3]}`);
 }
 console.log(`\n${toPublish.size} package(s) will be published.`);
-
-const jsonFlag = process.argv.indexOf('--json');
-if (jsonFlag !== -1) {
-  const plan = packages.filter((pkg) => toPublish.has(pkg.name)).map(({ name, version }) => ({ name, version }));
-  writeFileSync(process.argv[jsonFlag + 1], `${JSON.stringify(plan, null, 2)}\n`);
-}
 
 if (problems.length > 0) {
   console.error('\nRelease invariant violations:');
