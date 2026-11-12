@@ -195,6 +195,13 @@ export function nativeVideoFacts(request: SerializedHttpRequest, parsedBody?: Re
   if (!body) throw new Error('Video submission requires a JSON object');
   const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
+  // Billing reads only these plain types and prices any other value as absent, which a looser upstream might not.
+  for (const name of ['audio', 'generate_audio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'boolean') throw new Error(`Video "${name}" must be true or false`);
+  }
+  for (const name of ['resolution', 'aspect_ratio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'string') throw new Error(`Video "${name}" must be text`);
+  }
   const audio = route.protocol === 'fal-video' ? body.generate_audio ?? body.audio : body.audio;
   return {
     protocol: route.protocol, action: route.action,
