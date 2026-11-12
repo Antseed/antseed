@@ -477,9 +477,9 @@ describe('charges for requests whose fields every reader reads alike', () => {
     ['a quality billing would not read, sent as a file', [['Content-Disposition: form-data; name="quality"; filename=""', 'high']], 'invalid_billing_field'],
     ['a quality billing would not read, over the field limit', [text('quality', `high${' '.repeat(4096)}`)], 'invalid_billing_field'],
     ['a quality under another spelling', [text('Quality', 'high')], 'invalid_billing_field'],
-    ['a quality under two spellings', [text('quality', 'low'), text('Quality', 'high')], 'repeated_field'],
-    ['a quality in a part billing would read under another name', [['Content-Disposition: form-data; filenamename="quality"; name="user"', 'low'], text('quality', 'high')], 'unsupported_multipart_body'],
-    ['a part whose other header quotes a disposition line', [text('quality', 'low'), ['X-Note: content-disposition: form-data; name="quality"\r\nContent-Disposition: form-data; name="prompt"', 'high']], 'unsupported_multipart_body'],
+    ['a quality under two spellings', [text('quality', 'low'), text('Quality', 'high')], 'invalid_billing_field'],
+    ['a count billing would not read', [text('quality', 'low'), text('n', '4abc')], 'invalid_billing_field'],
+    ['a parameter key padded with a control byte', [text('quality', 'low'), ['Content-Disposition: form-data; name="decoy"; name\x1f="quality"', 'high']], 'unsupported_multipart_body'],
   ])('charges nothing and calls no provider for a multipart image request with %s', async (_name, parts, code) => {
     const { serve, received, charges } = imageSeller();
     expect(await serve('/v1/images/edits', form([text('model', 'image-model'), ...parts]))).toEqual({ status: 400, code });
@@ -487,16 +487,39 @@ describe('charges for requests whose fields every reader reads alike', () => {
     expect(received).toEqual([]);
   });
 
+  // Some form parser reads each of these parts as the field in brackets; the seller writes only the name it read.
+  it.each<[string, Part[], bigint, Record<string, string[]>]>([
+    ['a part billing reads as "user" (quality)', [['Content-Disposition: form-data; filenamename="quality"; name="user"', 'low'], text('quality', 'high')], 40_000n, { quality: ['high'], user: ['low'] }],
+    ['a part whose other header quotes a disposition line (quality)', [text('quality', 'low'), ['X-Note: content-disposition: form-data; name="quality"\r\nContent-Disposition: form-data; name="prompt"', 'high']], 10_000n, { quality: ['low'], prompt: ['high'] }],
+    ['an escaped quote hiding a name (quality)', [text('quality', 'low'), ['Content-Disposition: form-data; name="decoy"; foo="a\\\\"; bar="x; name=quality; y"', 'high']], 10_000n, { quality: ['low'], decoy: ['high'] }],
+    ['an extra parameter on the quality', [['Content-Disposition: form-data; name="quality"; x=a/b', 'low']], 10_000n, { quality: ['low'] }],
+  ])('charges a multipart image request with %s by the value its provider receives', async (_name, parts, charge, expected) => {
+    const { serve, received, charges } = imageSeller();
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), ...parts]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([charge]);
+    const fields = await new Response(received[0]!.body, { headers: { 'content-type': received[0]!.headers['content-type']! } }).formData();
+    expect(Object.fromEntries(Object.keys(expected).map((name) => [name, fields.getAll(name)]))).toEqual(expected);
+  });
+
+  it('charges a JSON image request with a count sent twice by the one count its provider receives', async () => {
+    const { serve, received, charges } = imageSeller();
+    const body = new TextEncoder().encode('{"model":"image-model","quality":"low","n":1,"n":2}');
+    expect(await serve('/v1/images/generations', { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 200 });
+    expect(charges()).toEqual([20_000n]);
+    expect(JSON.parse(new TextDecoder().decode(received[0]!.body))).toEqual({ model: 'image-model', quality: 'low', n: 2 });
+  });
+
   it.each<[string, string]>([
-    ['a count sent twice', '{"model":"image-model","quality":"low","n":1,"n":2}'],
     ['a count sent in two letter cases', '{"model":"image-model","quality":"low","n":1,"N":2}'],
     ['a quality sent in two letter cases', '{"model":"image-model","Quality":"high","quality":"low","n":2}'],
     ['a quality only in another letter case', '{"model":"image-model","Quality":"high","n":2}'],
     ['a count only in another letter case', '{"model":"image-model","quality":"low","N":8}'],
-  ])('charges nothing and calls no provider for a JSON image request with %s', async (name, body) => {
+    ['a quality in a list', '{"model":"image-model","quality":["high"],"n":2}'],
+    ['a count billing would not read', '{"model":"image-model","quality":"low","n":"4abc"}'],
+  ])('charges nothing and calls no provider for a JSON image request with %s', async (_name, body) => {
     const { serve, received, charges } = imageSeller();
     const json = (text: string) => ({ headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(text) });
-    expect(await serve('/v1/images/generations', json(body))).toEqual({ status: 400, code: name.includes(' only ') ? 'invalid_billing_field' : 'repeated_field' });
+    expect(await serve('/v1/images/generations', json(body))).toEqual({ status: 400, code: 'invalid_billing_field' });
     expect(charges()).toEqual([]);
     expect(received).toEqual([]);
     expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":2}'))).toEqual({ status: 200 });
@@ -2684,6 +2707,16 @@ describe('speech seller payments', () => {
       error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
     });
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, unknown]>([['a number', 5], ['a list', ['Hello']]])('refuses speech input sent as %s before reaching the upstream or asking for payment', async (_name, input) => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input, voice: 'af_sky' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error.code).toBe('invalid_billing_request');
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
   });
 

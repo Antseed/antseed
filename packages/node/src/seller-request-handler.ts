@@ -62,7 +62,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { readRequestBodyService, type ServiceRefusal } from './requested-service.js';
+import { billedRequestBody, requestPathRefusal, type ServiceRefusal } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -154,11 +154,12 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
 
 /**
- * The service a request is priced and billed as, or why it names none. `format` is set when the
- * service was read from the body: the format the seller read, which its provider must read too.
+ * The service a request is priced and billed as, or why it names none. When the service was read
+ * from the body, `body` and `contentType` are the body the seller wrote from what it read, which
+ * its provider is handed in place of the buyer's.
  */
 type RequestedService =
-  | { service: string; format?: 'json' | 'multipart' }
+  | { service: string; contentType?: string; body?: Uint8Array }
   | { service: null; refusal: ServiceRefusal };
 
 const SERVICE_REQUIRED: ServiceRefusal = { code: 'model_required', message: 'Request must name a published service.' };
@@ -303,6 +304,7 @@ export class SellerRequestHandler {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
+      const wireBody = request.body;
       // Delegations are for this seller only: no route may pass them on to a provider or prover.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
@@ -421,12 +423,14 @@ export class SellerRequestHandler {
         return;
       }
 
-      // The service this request is priced and billed as, which the provider serves.
+      // The service this request is priced and billed as, which the provider serves. The provider is
+      // handed the body the seller wrote from what it read, so no reader after it finds other fields.
       const billed = this._requestedService(request);
       setTrustedHeader(request.headers, 'x-antseed-service', billed.service!);
-      // The seller read this body as JSON to price it, so the provider and its upstream are told it is
-      // JSON, whatever label the buyer gave it: a form reader would take other fields from the same bytes.
-      if (billed.service !== null && billed.format === 'json') setTrustedHeader(request.headers, 'content-type', 'application/json');
+      if (billed.service !== null && billed.body && billed.contentType) {
+        request.body = billed.body;
+        setTrustedHeader(request.headers, 'content-type', billed.contentType);
+      }
 
       // A request the provider refuses anyway is answered before any payment step.
       let refusal: ProviderRequestRefusal | null;
@@ -930,6 +934,7 @@ export class SellerRequestHandler {
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
         headers: wireHeaders,
+        body: wireBody,
       };
 
       // Track active seller session at request start
@@ -1626,6 +1631,8 @@ export class SellerRequestHandler {
 
   private _readRequestedService(request: SerializedHttpRequest): RequestedService {
     const named = (service: string | undefined): RequestedService => (service ? { service } : { service: null, refusal: SERVICE_REQUIRED });
+    const pathRefusal = requestPathRefusal(request.path);
+    if (pathRefusal) return { service: null, refusal: pathRefusal };
     // Routing protocols whose paths name no service address this seller's single service of that protocol.
     const routingProtocol = routingProtocolForPath(request.path);
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
@@ -1633,7 +1640,7 @@ export class SellerRequestHandler {
     }
     const videoRoute = nativeVideoRoute(request);
     if (videoRoute?.action === 'retrieve') return named(requestService(request));
-    const requested = readRequestBodyService(request);
+    const requested = billedRequestBody(request);
     // A video create is billed by its `model` alone, so a `service` beside it has to say the same.
     return videoRoute && requested.service !== null && requested.service !== requestService(request)
       ? { service: null, refusal: { code: 'model_required', message: 'A video request must name its service in a "model" field.' } }

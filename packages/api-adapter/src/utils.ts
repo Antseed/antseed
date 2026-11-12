@@ -162,16 +162,6 @@ export function extractProviderResponseFacts(parsed: Record<string, unknown>): P
   };
 }
 
-/** The request fields an image is priced by, beside its service and the number of images. */
-const IMAGE_PRICE_ATTRIBUTES = ['size', 'quality', 'resolution'] as const;
-
-/**
- * The fields `extractImageRequestFacts` prices a multipart form by, beside the
- * service it names. Each is a short text value; a seller checks that every
- * reader of the form finds the same one.
- */
-export const MULTIPART_PRICED_FIELDS: readonly string[] = [...IMAGE_PRICE_ATTRIBUTES, 'n'];
-
 export function extractImageRequestFacts(input: {
   path?: string;
   method?: string;
@@ -184,7 +174,7 @@ export function extractImageRequestFacts(input: {
     || normalizedPath === '/v1/images/edits';
 
   setStringAttr(facts, 'model', body.model ?? body.service);
-  for (const key of IMAGE_PRICE_ATTRIBUTES) {
+  for (const key of ['size', 'quality', 'resolution'] as const) {
     setStringAttr(facts, key, body[key] ?? body[toCamelCase(key)]);
   }
   if (isOpenAiImageEndpoint) {
@@ -250,169 +240,6 @@ export function speechAudioDelivered(
 /** Text fields larger than this are dropped — billing fields are all short. */
 const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 
-/** One part of a multipart/form-data body. */
-interface MultipartPart {
-  /** The part's header block, one character per byte. */
-  headers: string;
-  /** The part's content, not copied. */
-  content: Uint8Array;
-}
-
-/** A part of a multipart/form-data body written the plain way. */
-export interface PlainMultipartPart extends MultipartPart {
-  /** The part's field name. */
-  name: string;
-  /** Whether billing reads this part as text under that name, and every reader reads the same text. */
-  billedText: boolean;
-}
-
-/** Splits a body at its delimiters. `framed` says each delimiter has a line to itself, with only whitespace before the first and after the last. */
-function splitMultipart(body: Uint8Array, contentType: string | undefined) {
-  if (!contentType) return null;
-  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
-  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
-  if (!boundary) return null;
-
-  // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
-  // even through binary file parts; text field values are re-decoded as UTF-8.
-  const text = new TextDecoder('latin1').decode(body);
-  const delimiter = `--${boundary}`;
-  const parts: MultipartPart[] = [];
-  let index = text.indexOf(delimiter);
-  let framed = (index === 0 || text.startsWith('\r\n', index - 2)) && text.slice(0, index).trim() === '';
-  while (index !== -1) {
-    index += delimiter.length;
-    if (text.startsWith('--', index)) {
-      return { parts, text, delimiter, framed: framed && text.slice(index + 2).trim() === '' };
-    }
-    framed &&= text.startsWith('\r\n', index);
-    const headerEnd = text.indexOf('\r\n\r\n', index);
-    if (headerEnd === -1) break;
-    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
-    if (next === -1) break;
-    parts.push({ headers: text.slice(index, headerEnd), content: body.subarray(headerEnd + 4, next) });
-    index = next + 2;
-  }
-  return { parts, text, delimiter, framed: false };
-}
-
-/**
- * The name a text part goes by to billing and to a relay, which both take the
- * first `name="..."` in its disposition; undefined for a file or an unnamed part.
- */
-function looseTextFieldName(headers: string): string | undefined {
-  const dispositionParams = /(?:^|\r\n)content-disposition:[ \t]*form-data[ \t]*;([^\r\n]*)/i.exec(headers)?.[1];
-  if (dispositionParams === undefined || /filename\s*=/i.test(dispositionParams)) return undefined;
-  return /name="([^"]*)"/.exec(dispositionParams)?.[1];
-}
-
-/** The name billing reads a part's text under; undefined for a file, an unnamed part or one over the size limit. */
-function multipartTextFieldName({ headers, content }: MultipartPart): string | undefined {
-  return content.length > MAX_MULTIPART_TEXT_FIELD_BYTES ? undefined : looseTextFieldName(headers);
-}
-
-/** A charset parameter under which ASCII text reads the same. */
-const ASCII_CHARSET = String.raw`charset="?(?:utf-?8|us-ascii|iso-8859-1)"?`;
-
-/** A multipart content type with one simple boundary, and at most a charset from the list beside it. */
-const PLAIN_MULTIPART_TYPE = new RegExp(
-  String.raw`^multipart\/form-data\s*;\s*(?:${ASCII_CHARSET}\s*;\s*)?boundary=(?:"[\w'()+,./:=?-]+"|[\w'+.-]+)\s*(?:;\s*${ASCII_CHARSET}\s*)?$`,
-  'i',
-);
-
-/** Headers beside the disposition that leave a text part's bytes reading the same to every reader. */
-const PLAIN_TEXT_HEADER = new RegExp(
-  String.raw`^(?:content-type:\s*text\/plain(?:\s*;\s*${ASCII_CHARSET})?|content-transfer-encoding:\s*(?:7bit|8bit|binary))\s*$`,
-  'i',
-);
-
-/**
- * One `; key=value` parameter of a Content-Disposition value. A value holds an
- * escaped quote only when a reader that ended it at that quote would find no
- * further parameter in the rest.
- */
-const DISPOSITION_PARAM = /\s*;\s*([^\s;="]+)=("(?:[^"\\]|\\(?!"))*"|"(?:[^"\\;=]|\\.)*"|[^\s;"]+)\s*/y;
-
-/** A field name every reader reads alike: ASCII, with nothing a reader might decode. */
-const PLAIN_NAME = /^(?:"((?:(?!=\?)[^"\\%\x00-\x1f\x7f-\xff])*)"|([\w.[\]-]+))$/;
-
-/** The field name in a `form-data` disposition, when one parameter names it, plainly. */
-function plainDispositionName(value: string): string | undefined {
-  if (!value.startsWith('form-data')) return undefined;
-  DISPOSITION_PARAM.lastIndex = 'form-data'.length;
-  let end = DISPOSITION_PARAM.lastIndex;
-  let name: string | undefined;
-  for (let param = DISPOSITION_PARAM.exec(value); param; param = DISPOSITION_PARAM.exec(value)) {
-    end = DISPOSITION_PARAM.lastIndex;
-    // `name*`, `name*0`, `NAME`, `xname` and the like read as the name to some reader; `filename` and its extended forms never do.
-    if (/name(?:\*|$)/i.test(param[1]!) && !/^filename(?:\*(?:\d+\*?)?)?$/i.test(param[1]!)) {
-      const plain = param[1] === 'name' ? PLAIN_NAME.exec(param[2]!) : null;
-      if (!plain || name !== undefined) return undefined;
-      name = plain[1] ?? plain[2];
-    }
-  }
-  return end === value.length ? name : undefined;
-}
-
-/**
- * The field name in a part's headers, when they are one to a line and name it plainly.
- * `content-disposition:` may appear only once, as that header's own start: a reader
- * that searches the whole header block for it, as relays in plugins installed before
- * this rule do, would otherwise take a line quoted in another header for the part's own.
- */
-function plainPartName(headers: string): string | undefined {
-  if (headers.match(/content-disposition\s*:/gi)?.length !== 1) return undefined;
-  let name: string | undefined;
-  for (const line of headers.split('\r\n').slice(1)) {
-    const header = /^([!-9;-~]+):[ \t]*(.*)$/.exec(line);
-    if (!header) return undefined;
-    const field = header[1]!.toLowerCase();
-    if (field === 'content-disposition') {
-      const disposition = plainDispositionName(header[2]!);
-      if (name !== undefined || disposition === undefined) return undefined;
-      name = disposition;
-    } else if (field === 'content-type' && /^\s*(?:multipart|message)\//i.test(header[2]!)) {
-      return undefined;
-    }
-  }
-  return name;
-}
-
-/** Whether a part is text every reader reads the same: no filename, and no header that changes its bytes. */
-function isPlainText({ headers, content }: MultipartPart): boolean {
-  return headers.split('\r\n').slice(1).every((line) => {
-    if (/^content-disposition:/i.test(line)) return !/filename/i.test(line);
-    const length = /^content-length:\s*(\d+)\s*$/i.exec(line);
-    return length ? Number(length[1]) === content.length : PLAIN_TEXT_HEADER.test(line);
-  });
-}
-
-/**
- * The parts of a multipart/form-data body written the plain way every form
- * encoder writes it; null for any other. Plain means a simple boundary, found
- * only where it frames a part, with each delimiter starting its line and only
- * whitespace before the first and after the last, and part headers one to a line, each with a
- * simply written name that the looser readers find too, and no second
- * `Content-Disposition:`. Readers agree on such a body, where they can disagree
- * on one written any other way.
- */
-export function readPlainMultipartParts(body: Uint8Array, contentType: string | undefined): PlainMultipartPart[] | null {
-  if (!contentType || !PLAIN_MULTIPART_TYPE.test(contentType.trim())) return null;
-  const split = splitMultipart(body, contentType);
-  if (!split?.framed || split.text.split(split.delimiter).length !== split.parts.length + 2) return null;
-  const parts: PlainMultipartPart[] = [];
-  for (const part of split.parts) {
-    const name = plainPartName(part.headers);
-    // `_charset_` sets the charset of every other field, for the readers that honor it.
-    if (name === undefined || name.toLowerCase() === '_charset_') return null;
-    // Billing and the relays find a text part's name by a looser match, which has to find this name.
-    const loose = looseTextFieldName(part.headers);
-    if (loose !== undefined && loose !== name) return null;
-    parts.push({ ...part, name, billedText: multipartTextFieldName(part) === name && isPlainText(part) });
-  }
-  return parts;
-}
-
 /**
  * Extract the text (non-file) fields from a multipart/form-data body, e.g. the
  * model/prompt/n/size fields of an OpenAI `/v1/images/edits` request. File
@@ -424,13 +251,34 @@ export function parseMultipartFormFields(
   body: Uint8Array,
   contentType: string | undefined,
 ): Record<string, string> | null {
-  const split = splitMultipart(body, contentType);
-  if (!split) return null;
+  if (!contentType) return null;
+  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
+  if (!boundary) return null;
+
+  // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
+  // even through binary file parts; text field values are re-decoded as UTF-8.
+  const text = new TextDecoder('latin1').decode(body);
+  const delimiter = `--${boundary}`;
   const fields: Record<string, string> = {};
-  for (const part of split.parts) {
-    const name = multipartTextFieldName(part);
-    // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
-    if (name && !(name in fields)) fields[name] = decoder.decode(part.content);
+  let index = text.indexOf(delimiter);
+  while (index !== -1) {
+    index += delimiter.length;
+    if (text.startsWith('--', index)) break;
+    const headerEnd = text.indexOf('\r\n\r\n', index);
+    if (headerEnd === -1) break;
+    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
+    if (next === -1) break;
+    const headerBlock = text.slice(index, headerEnd);
+    const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
+    if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
+      const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
+      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
+      }
+    }
+    index = next + 2;
   }
   return fields;
 }

@@ -91,6 +91,35 @@ describe('the seller serves exactly the service it bills', () => {
     ['multipart with a buyer header', multipart([field('model', 'billed-model')], { 'x-antseed-service': 'other-model' }), 'billed-model'],
     ['multipart with a buyer header in another case', multipart([field('model', 'billed-model')], { 'X-Antseed-Service': 'other-model' }), 'billed-model'],
     ['multipart through an alias with a buyer header', multipart([field('model', 'aliased-model')], { 'x-antseed-service': 'other-model' }), 'upstream-alias'],
+    // The seller writes the body again from what it read, so these reach the upstream as what was billed.
+    ['a multipart boundary with a leading space', {
+      ...multipart([]),
+      headers: { 'content-type': 'multipart/form-data; boundary=" abc"' },
+      body: new TextEncoder().encode('--abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--abc\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n-- abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n-- abc--\r\n--abc--\r\n'),
+    }, 'other-model'],
+    ['a repeated JSON model', { ...json({}), body: new TextEncoder().encode('{"model":"other-model","model":"billed-model"}') }, 'billed-model'],
+    ['a repeated JSON n', { ...json({}), body: new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}') }, 'billed-model'],
+    ['a multipart part that billing would read under another name', multipart([
+      field('model', 'billed-model'),
+      ['Content-Disposition: form-data; filenamename="size"; name="user"', '1024x1024'],
+      field('size', '1792x1024'),
+    ]), 'billed-model'],
+    ['a multipart part that a relay would read as the model', multipart([
+      ['Content-Disposition: form-data; filenamename="model"; name="user"', 'other-model'],
+      field('model', 'aliased-model'),
+    ]), 'upstream-alias'],
+    ['a multipart body with text before its first part', {
+      ...multipart([]),
+      body: new TextEncoder().encode(`--other\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n--other--\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--${boundary}--\r\n`),
+    }, 'billed-model'],
+    ['a multipart file part whose other header quotes a disposition line', multipart([
+      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'],
+      field('model', 'aliased-model'),
+    ]), 'upstream-alias'],
+    ['a multipart prompt part whose other header quotes a disposition line', multipart([
+      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt'],
+      field('model', 'aliased-model'),
+    ]), 'upstream-alias'],
   ])('%s reaches the upstream as one model field', async (_name, sent, upstreamModel) => {
     const calls = stubUpstream();
     const provider = await openaiPlugin.createProvider(CONFIG);
@@ -111,48 +140,20 @@ describe('the seller serves exactly the service it bills', () => {
     ['an upper-case multipart model parameter', multipart([field('model', 'billed-model'), ['Content-Disposition: form-data; NAME="model"', 'other-model']])],
     ['a repeated multipart model', multipart([field('model', 'billed-model'), field('model', 'other-model')])],
     ['multipart modelId next to model', multipart([field('model', 'billed-model'), field('modelId', 'other-model')])],
-    ['a multipart boundary with a leading space', {
-      ...multipart([]),
-      headers: { 'content-type': 'multipart/form-data; boundary=" abc"' },
-      body: new TextEncoder().encode('--abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--abc\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nx\r\n-- abc\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n-- abc--\r\n--abc--\r\n'),
-    }],
     ['a multipart name in continuations', multipart([['Content-Disposition: form-data; name*0="mod"; name*1="el"', 'other-model'], field('model', 'billed-model')])],
     ['JSON with a null model beside a service', json({ service: 'billed-model', model: null })],
     ['multipart service with modelId', multipart([field('service', 'billed-model'), field('modelId', 'billed-model')])],
     ['a BOM before a multipart model', multipart([field('model', '\uFEFFbilled-model')])],
     ['a padded JSON model', json({ model: ' billed-model ' })],
     ['a padded multipart model', multipart([field('model', ' billed-model ')])],
-    ['a repeated JSON model', { ...json({}), body: new TextEncoder().encode('{"model":"other-model","model":"billed-model"}') }],
-    ['a repeated JSON n', { ...json({}), body: new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}') }],
     ['a JSON n in two letter cases', json({ model: 'billed-model', n: 1, N: 10 })],
     ['a JSON size only in another letter case', json({ model: 'billed-model', Size: '1792x1024' })],
-    ['a multipart part that billing would read under another name', multipart([
-      field('model', 'billed-model'),
-      ['Content-Disposition: form-data; filenamename="size"; name="user"', '1024x1024'],
-      field('size', '1792x1024'),
-    ])],
-    ['a multipart part that a relay would read as the model', multipart([
-      ['Content-Disposition: form-data; filenamename="model"; name="user"', 'other-model'],
-      field('model', 'aliased-model'),
-    ])],
     ['a JSON model list', json({ model: 'billed-model', models: ['other-model'], route: 'fallback' })],
     ['a JSON fallback list', json({ model: 'billed-model', fallbacks: ['other-model'] })],
     ['a multipart fallback list', multipart([field('model', 'billed-model'), field('fallbacks', 'other-model')])],
     ['a repeated multipart quality', multipart([field('model', 'billed-model'), field('quality', 'low'), field('quality', 'high')])],
     ['a repeated multipart n', multipart([field('model', 'billed-model'), field('n', '1'), field('n', '10')])],
     ['a multipart size sent as a file', multipart([field('model', 'billed-model'), ['Content-Disposition: form-data; name="size"; filename=""', '1024x1024']])],
-    ['a multipart body with text before its first part', {
-      ...multipart([]),
-      body: new TextEncoder().encode(`--other\r\nContent-Disposition: form-data; name="model"\r\n\r\nother-model\r\n--other--\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--${boundary}--\r\n`),
-    }],
-    ['a multipart file part whose other header quotes a disposition line', multipart([
-      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'],
-      field('model', 'aliased-model'),
-    ])],
-    ['a multipart prompt part whose other header quotes a disposition line', multipart([
-      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt'],
-      field('model', 'aliased-model'),
-    ])],
     ['a form sent as a form, not JSON', { ...json({}, { 'content-type': 'application/x-www-form-urlencoded' }), body: new TextEncoder().encode('model=billed-model&prompt=x') }],
   ])('%s never reaches the upstream', async (_name, sent) => {
     const calls = stubUpstream();
@@ -206,6 +207,24 @@ describe('the seller serves exactly the service it bills', () => {
     const audio = sent.get('audio') as File;
     expect(audio.name).toBe('voice.wav');
     expect([...new Uint8Array(await audio.arrayBuffer())]).toEqual([4, 5, 6]);
+  });
+
+  it('sends the upstream the values billing read, not those a decoy part names', async () => {
+    const calls = stubUpstream();
+    const provider = await openaiPlugin.createProvider(CONFIG);
+    const response = await serve(provider, multipart([
+      field('model', 'aliased-model'),
+      ['Content-Disposition: form-data; filenamename="size"; name="user"', '1024x1024'],
+      field('size', '1792x1024'),
+      field('quality', 'low'),
+      ['Content-Disposition: form-data; name="decoy"; foo="a\\\\"; bar="x; name=quality; y"', 'high'],
+      ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt'],
+    ]));
+    expect(response.statusCode).toBe(200);
+    const sent = await new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body }).formData();
+    expect([...sent.entries()]).toEqual([
+      ['model', 'upstream-alias'], ['user', '1024x1024'], ['size', '1792x1024'], ['quality', 'low'], ['decoy', 'high'], ['prompt', 'keep this prompt'],
+    ]);
   });
 
   it('forwards the rest of a multipart request unchanged', async () => {

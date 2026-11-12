@@ -11,7 +11,6 @@ import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { VerificationMux } from '../src/verification/index.js';
-import { relayMultipartBody } from './helpers/frozen-relay-multipart.js';
 
 const FREE = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
 const PAID = { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } };
@@ -120,7 +119,7 @@ describe('the seller serves the service it bills', () => {
     });
     expect(result.response.statusCode).toBe(400);
     expect(result.error.code).toBe('unsupported_model_selector');
-    expect(result.error.message).toMatch(/^Field "(models|fallbacks)" selects an upstream model/);
+    expect(result.error.message).toMatch(/^Field "(models|fallbacks)" is not accepted/);
     expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
     expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
     expect(target.received).toEqual([]);
@@ -146,10 +145,11 @@ describe('the seller serves the service it bills', () => {
     ['a body naming no service', jsonRequest({ messages: [] }), 'model_required'],
     ['a service this seller does not publish', jsonRequest({ model: 'unpublished-model' }), 'model_not_found'],
     ['a JSON modelId', jsonRequest({ model: 'billed-model', modelId: 'billed-model' }), 'ambiguous_service'],
-    ['a repeated JSON n', request({ 'content-type': 'application/json' }, new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}')), 'repeated_field'],
     ['a multipart quality in another case', multipartRequest([['model', 'billed-model'], ['QUALITY', 'high']]), 'invalid_billing_field'],
-    ['a multipart body with a preamble', { ...multipartRequest([['model', 'billed-model']]), body: new TextEncoder().encode(`preamble\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--${boundary}--\r\n`) }, 'unsupported_multipart_body'],
-    ['two Content-Type headers', jsonRequest({ model: 'billed-model' }, { 'Content-Type': 'text/plain' }), 'ambiguous_content_type'],
+    ['a count billing would not read', jsonRequest({ model: 'billed-model', n: '4abc' }), 'invalid_billing_field'],
+    ['a multipart field name a reader could decode', multipartRequest([['model', 'billed-model'], ['m%6Fdel', 'other-model']]), 'unsupported_multipart_body'],
+    ['a path naming another model', { ...jsonRequest({ model: 'billed-model' }), path: '/openai/deployments/other-model/chat/completions' }, 'unsupported_model_selector'],
+    ['a query naming another model', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/completions?model=other-model' }, 'unsupported_model_selector'],
   ])('answers %s with its own error code, before payment', async (_name, sent, code) => {
     const target = provider(PAID);
     const result = await serve(target, sent, {
@@ -169,6 +169,13 @@ describe('the seller serves the service it bills', () => {
 
   const contentTypes = (received: SerializedHttpRequest) =>
     Object.entries(received.headers).filter(([name]) => name.toLowerCase() === 'content-type');
+  /** The fields of a JSON body, or the entries of a form as the platform's own parser reads them. */
+  const formEntries = async (received: Pick<SerializedHttpRequest, 'headers' | 'body'>) => {
+    const contentType = contentTypes(received as SerializedHttpRequest)[0]![1];
+    if (!contentType.startsWith('multipart/')) return Object.entries(JSON.parse(new TextDecoder().decode(received.body)) as object);
+    const form = await new Response(received.body, { headers: { 'content-type': contentType } }).formData();
+    return Promise.all([...form.entries()].map(async ([key, value]) => [key, typeof value === 'string' ? value : `file:${value.name}:${await value.text()}`]));
+  };
 
   it.each<[string, Record<string, string>]>([
     ['a form, as curl -d sends', { 'content-type': 'application/x-www-form-urlencoded' }],
@@ -192,7 +199,7 @@ describe('the seller serves the service it bills', () => {
     expect(serviceHeaders(received)).toEqual([['x-antseed-service', 'billed-model']]);
   });
 
-  it('refuses a body under such a label that is not JSON, and leaves a form\'s content type as the buyer sent it', async () => {
+  it('refuses a body under such a label that is not JSON, and hands a form on under the seller\'s own boundary', async () => {
     const form = provider();
     const refused = await serve(form, request({ 'content-type': 'application/x-www-form-urlencoded' }, new TextEncoder().encode('model=billed-model&prompt=x')));
     expect(refused.response.statusCode).toBe(400);
@@ -202,8 +209,10 @@ describe('the seller serves the service it bills', () => {
     const target = provider();
     const sent = multipartRequest([['model', 'billed-model']], {});
     expect((await serve(target, { ...sent, headers: { 'Content-Type': sent.headers['content-type']! } })).response.statusCode).toBe(200);
-    expect(contentTypes(target.received[0]!)).toEqual([['Content-Type', `multipart/form-data; boundary=${boundary}`]]);
-    expect(target.received[0]!.body).toEqual(sent.body);
+    const [[name, contentType]] = contentTypes(target.received[0]!) as [[string, string]];
+    expect(name).toBe('content-type');
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=----FormBoundary[0-9a-f]{32}$/);
+    expect(await formEntries(target.received[0]!)).toEqual(await formEntries(sent));
   });
 
   it.each<[string, Record<string, string>]>([
@@ -220,7 +229,7 @@ describe('the seller serves the service it bills', () => {
       const { response } = await serve(target, sent);
       expect(response.statusCode).toBe(200);
       expect(serviceHeaders(target.received[0]!)).toEqual([['x-antseed-service', 'billed-model']]);
-      expect(target.received[0]!.body).toEqual(sent.body);
+      expect(await formEntries(target.received[0]!)).toEqual(await formEntries(sent));
     }
   });
 
@@ -249,73 +258,6 @@ describe('the seller serves the service it bills', () => {
     expect(serviceHeaders(received)).toEqual([['x-antseed-service', 'billed-model']]);
   });
 
-  // Installed plugins pin their own relay, so these run a copy frozen before this change (see the helper).
-  describe('in front of a relay installed before this change', () => {
-    type Part = [headers: string, content: string];
-    const ALIASES = { 'billed-model': 'upstream-model' };
-    const text = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
-    const image: Part = ['Content-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'];
-    const form = (parts: Part[]) => request(
-      { 'content-type': `multipart/form-data; boundary=${boundary}` },
-      new TextEncoder().encode(`${parts.map(([headers, content]) => `--${boundary}\r\n${headers}\r\n\r\n${content}\r\n`).join('')}--${boundary}--\r\n`),
-      '/v1/images/edits',
-    );
-    /** What an upstream reads from the body that relay sends it, by a parser sharing none of the seller's or the relay's code. */
-    const upstreamReads = async (handed: Pick<SerializedHttpRequest, 'headers' | 'body'>) => {
-      const sent = relayMultipartBody(handed, ALIASES);
-      const read = await new Response(sent, { headers: { 'content-type': handed.headers['content-type']! } }).formData();
-      return Promise.all([...read.entries()].map(async ([name, value]) => [name, typeof value === 'string' ? value : `file:${await value.text()}`]));
-    };
-    const payments = {
-      channelsClient: {},
-      sellerPaymentManager: {
-        hasSession: () => false,
-        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
-      },
-    };
-    const quoted = 'content-disposition: form-data; name="model"';
-
-    it.each<[string, Part[]]>([
-      ['on a file part', [[`X-Note: ${quoted}\r\n${image[0]}`, 'PNG'], text('model', 'billed-model')]],
-      ['on a prompt part', [[`X-Note: ${quoted}\r\n${text('prompt', '')[0]}`, 'keep this prompt'], text('model', 'billed-model')]],
-      ['in upper case', [[`X-Note: ${quoted.toUpperCase().replace('"MODEL"', '"model"')}\r\n${image[0]}`, 'PNG'], text('model', 'billed-model')]],
-      ['in a Content-Type parameter', [[`Content-Type: image/png; ${quoted}\r\nContent-Disposition: form-data; name="image"; filename="a.png"`, 'PNG'], text('model', 'billed-model')]],
-      ['naming modelId beside a service field', [[`X-Note: ${quoted.replace('model', 'modelId')}\r\n${image[0]}`, 'PNG'], text('service', 'billed-model')]],
-    ])('refuses a part whose other header quotes a disposition line, before that relay could rewrite it: %s', async (_name, parts) => {
-      const sent = form(parts);
-      // Why it is refused: that relay takes the quoting part for the model field and writes the upstream model into it.
-      const rewritten = await upstreamReads({ headers: { ...sent.headers, 'x-antseed-service': 'billed-model' }, body: sent.body });
-      expect(rewritten.some(([name, value]) => /^(image|prompt)$/.test(name!) && String(value).includes('upstream-model'))).toBe(true);
-
-      const target = provider(PAID);
-      const result = await serve(target, sent, payments);
-      expect(result.response.statusCode).toBe(400);
-      expect(result.error.code).toBe('unsupported_multipart_body');
-      expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
-      expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
-      expect(target.received).toEqual([]);
-    });
-
-    it.each<[string, Part[], Array<[string, string]>]>([
-      ['a model, a prompt and a file', [text('model', 'billed-model'), text('prompt', 'make it blue'), image],
-        [['model', 'upstream-model'], ['prompt', 'make it blue'], ['image', 'file:PNG']]],
-      ['a file before the model', [image, text('model', 'billed-model')],
-        [['image', 'file:PNG'], ['model', 'upstream-model']]],
-      ['a prompt quoting a disposition line in its text', [text('prompt', quoted), text('model', 'billed-model')],
-        [['prompt', quoted], ['model', 'upstream-model']]],
-      ['a file with the type before the disposition', [['Content-Type: image/png\r\nContent-Disposition: form-data; name="image"; filename="model"', 'PNG'], text('model', 'billed-model')],
-        [['image', 'file:PNG'], ['model', 'upstream-model']]],
-      ['a file with another header', [[`${image[0]}\r\nX-Note: taken today`, 'PNG'], text('model', 'billed-model')],
-        [['image', 'file:PNG'], ['model', 'upstream-model']]],
-      ['lower-case part headers', [['content-disposition: form-data; name="model"', 'billed-model'], image],
-        [['model', 'upstream-model'], ['image', 'file:PNG']]],
-    ])('hands that relay a body it rewrites only in the model part: %s', async (_name, parts, expected) => {
-      const target = provider();
-      expect((await serve(target, form(parts))).response.statusCode).toBe(200);
-      expect(await upstreamReads(target.received[0]!)).toEqual(expected);
-    });
-  });
-
   it('serves a video by the model it bills and passes its body through unchanged', async () => {
     const video = provider(FREE, {
       name: 'venice',
@@ -335,6 +277,23 @@ describe('the seller serves the service it bills', () => {
       expect(serviceHeaders(video.received[0]!)).toEqual([['x-antseed-service', 'video']]);
       expect(video.received[0]!.body).toEqual(sent.body);
     } finally { store.close(); }
+  });
+
+  it('refuses a video option billing would read as absent before payment', async () => {
+    const video = provider(PAID, {
+      name: 'venice',
+      services: ['video'],
+      serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1, match: { audio: 'true' } }, { unit: 'video_seconds', priceUsd: 0.05 }] } } },
+    });
+    const result = await serve(video, { ...jsonRequest({ model: 'video', prompt: 'x', duration: 5, audio: 'true' }), path: '/api/v1/video/queue' }, {
+      channelsClient: {},
+      sellerPaymentManager: { hasSession: () => false, getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }) },
+    });
+    expect(result.response.statusCode).toBe(400);
+    expect(result.error.code).toBe('invalid_billing_request');
+    expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    expect(video.received).toEqual([]);
   });
 
   it('refuses a video create whose service field names another service', () => {
