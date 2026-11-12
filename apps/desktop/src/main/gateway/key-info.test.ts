@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
+import { historyCutoff, parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf } from './key-info.js';
 
 test('key info is read from inside the gateway\'s data envelope', () => {
   assert.deepEqual(parseGatewayKeyInfo({
@@ -18,7 +18,20 @@ test('key info is read from inside the gateway\'s data envelope', () => {
     spentUsd: '1.50',
     limits: { daily: { limitUsd: '5.00', spentUsd: '1.50' } },
     balance: { availableUsd: '12.500000', reservedUsd: '0.250000', pendingUsd: '0.100000', walletUsd: null, creditLimitUsd: '50.000000', operator: null, stale: false },
+    createdAt: null,
   });
+});
+
+test('the key\'s creation time is read, and an unreadable one is unknown', () => {
+  assert.equal(parseGatewayKeyInfo({ data: { created_at: '2026-11-11T14:00:43.000Z' } })?.createdAt, Date.UTC(2026, 10, 11, 14, 0, 43));
+  assert.equal(parseGatewayKeyInfo({ data: { created_at: 'yesterday' } })?.createdAt, null);
+  assert.equal(parseGatewayKeyInfo({ data: {} })?.createdAt, null);
+});
+
+test('the gateway\'s accounting starts at its earliest key; no key that says when means no history cut', () => {
+  assert.equal(historyCutoff([{ createdAt: 2_000 }, null, { createdAt: 1_000 }, { createdAt: null }]), 1_000);
+  assert.equal(historyCutoff([{ createdAt: null }, null]), null);
+  assert.equal(historyCutoff([]), null);
 });
 
 test('a gateway that does not report the balance leaves it unknown', () => {
@@ -32,8 +45,8 @@ test('an answer without the envelope is no key info', () => {
 });
 
 test('usage sums every key on the wallet; limits stay the desktop key\'s', () => {
-  const desktop = { label: 'Desktop', buyerAddress: '0xabc', requests: 3, spentUsd: '1.50', limits: { daily: { limitUsd: '5.00', spentUsd: '1.50' } }, balance: null };
-  const app = { label: 'Desktop · Codex', buyerAddress: '0xabc', requests: 7, spentUsd: '0.25', limits: {}, balance: null };
+  const desktop = { label: 'Desktop', buyerAddress: '0xabc', requests: 3, spentUsd: '1.50', limits: { daily: { limitUsd: '5.00', spentUsd: '1.50' } }, balance: null, createdAt: null };
+  const app = { label: 'Desktop · Codex', buyerAddress: '0xabc', requests: 7, spentUsd: '0.25', limits: {}, balance: null, createdAt: null };
   assert.deepEqual(withUsageOf(desktop, [app]), { ...desktop, requests: 10, spentUsd: '1.75' });
   assert.deepEqual(withUsageOf({ ...desktop, spentUsd: null }, []), { ...desktop, spentUsd: null });
 });
@@ -53,8 +66,8 @@ test('savings from several keys add up; none when no key had any', () => {
 });
 
 test('an app that stops using its own key keeps its requests, spend and savings in the totals', () => {
-  const desktop = { label: 'Desktop', buyerAddress: '0xabc', requests: 3, spentUsd: '1.50', limits: {}, balance: null };
-  const app = { label: 'Desktop · Codex', buyerAddress: '0xabc', requests: 7, spentUsd: '0.25', limits: {}, balance: null };
+  const desktop = { label: 'Desktop', buyerAddress: '0xabc', requests: 3, spentUsd: '1.50', limits: {}, balance: null, createdAt: null };
+  const app = { label: 'Desktop · Codex', buyerAddress: '0xabc', requests: 7, spentUsd: '0.25', limits: {}, balance: null, createdAt: null };
   const appSavings = { data: { retail_usd: 4, paid_usd: 0.25, saved_usd: 3.75, matched_requests: 7 } };
   const before = { info: withUsageOf(desktop, [app]), savings: sumSavings([parseKeySavings(appSavings)]) };
 

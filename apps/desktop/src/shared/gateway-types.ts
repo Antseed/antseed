@@ -111,6 +111,8 @@ export type GatewayKeyInfo = {
   limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
   /** What the paying wallet holds; null when the gateway doesn't say (older gateways). */
   balance: GatewayKeyBalance | null;
+  /** When the key was created (ms); null when the gateway doesn't say. */
+  createdAt: number | null;
 };
 
 export type GatewayEndpointInfo =

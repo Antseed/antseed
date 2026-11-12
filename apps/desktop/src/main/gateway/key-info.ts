@@ -19,7 +19,13 @@ export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {
     spentUsd: str(usage['spent_usd']),
     limits,
     balance: parseBalance(body['balance']),
+    createdAt: parseTime(body['created_at']),
   };
+}
+
+function parseTime(raw: unknown): number | null {
+  const time = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isFinite(time) ? time : null;
 }
 
 function parseBalance(raw: unknown): GatewayKeyInfo['balance'] {
@@ -89,6 +95,16 @@ export function sumSavings(list: ReadonlyArray<GatewaySavings | null>): GatewayS
   const retailUsd = present.reduce((sum, entry) => sum + entry.retailUsd, 0);
   const paidUsd = present.reduce((sum, entry) => sum + entry.paidUsd, 0);
   return { retailUsd, paidUsd, savedUsd: Math.max(0, retailUsd - paidUsd), matchedRequests: present.reduce((sum, entry) => sum + entry.matchedRequests, 0) };
+}
+
+/**
+ * Where the gateway's accounting starts: the earliest creation time among the
+ * keys Home sums. Usage before it is read from the buyer. Null when no key
+ * says when it was made (a gateway too old to report it).
+ */
+export function historyCutoff(infos: ReadonlyArray<Pick<GatewayKeyInfo, 'createdAt'> | null>): number | null {
+  const times = infos.flatMap((info) => (info?.createdAt != null ? [info.createdAt] : []));
+  return times.length > 0 ? Math.min(...times) : null;
 }
 
 /**

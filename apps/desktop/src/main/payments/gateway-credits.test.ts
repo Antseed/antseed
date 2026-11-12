@@ -4,7 +4,7 @@ import { gatewayCreditsInfo } from './gateway-credits.js';
 import type { GatewayKeyBalance } from '../../shared/gateway-types.js';
 
 const info = (balance: GatewayKeyBalance | null) => ({
-  label: 'Desktop', buyerAddress: '0x00000000000000000000000000000000000000aa', requests: 0, spentUsd: '0', limits: {}, balance,
+  label: 'Desktop', buyerAddress: '0x00000000000000000000000000000000000000aa', requests: 0, spentUsd: '0', limits: {}, createdAt: null, balance,
 });
 
 const balance = (overrides: Partial<GatewayKeyBalance> = {}): GatewayKeyBalance => ({
