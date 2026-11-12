@@ -24,7 +24,6 @@ import { attachedGateway } from '../runtime/attach-only.js';
 import { gatewayKeyScope } from './key-scope.js';
 import { buyerSignerMismatchMessage, compareBuyerSigner, liveBuyerAddress } from './buyer-signer.js';
 import { isDesktopDebugEnabled } from '../app-context.js';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -296,12 +295,6 @@ export async function restartLocalGatewayForNewIdentity(): Promise<string | null
   return restartForNewIdentity({
     local: getGatewaySettings().mode === 'local',
     stop: stopLocalGateway,
-    // Nothing goes through the local gateway now: all it counted so far was
-    // the previous wallet's, and the new signer's share of its usage starts here.
-    checkpoint: async () => {
-      const wallet = getSecureIdentity()?.wallet.address;
-      if (wallet) await buyerHistory.switchWallet(wallet, readWalletKeyUsage);
-    },
     start: ensureLocalGateway,
     buyerPort: localBuyerPort,
     portInUse,
@@ -520,9 +513,6 @@ const buyerHistory = new BuyerHistory(() => path.join(resolveConnectDataDir(), '
 
 /** What the gateway has sent through the default wallet's buyer: every key paying from it, revoked ones included, read as the owner. */
 async function readWalletKeyUsage(): Promise<KeyUsage | null> {
-  // No local gateway has run here yet (a remote one is in use): it has counted
-  // nothing, and asking the CLI would create its database.
-  if (!existsSync(path.join(resolveConnectDataDir(), 'gateway', 'gateway.db'))) return { requests: 0, spentUsd: '0' };
   return parseWalletKeyUsage(await runGatewayJson(['key', 'list', '--all']).catch(() => null), DEFAULT_BUYER_IDENTITY);
 }
 

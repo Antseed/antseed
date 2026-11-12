@@ -13,7 +13,6 @@ function ops(inUse: boolean) {
     calls,
     ops: {
       stop: async () => { calls.push('stop'); },
-      checkpoint: async () => { calls.push('checkpoint'); },
       start: async () => { calls.push('start'); },
       buyerPort: async () => 8377,
       portInUse: async () => inUse,
@@ -26,22 +25,22 @@ function ops(inUse: boolean) {
 test('with the port free, the gateway restarts on the new identity', async () => {
   const { calls, ops: o } = ops(false);
   assert.equal(await restartForNewIdentity(o), null);
-  assert.deepEqual(calls, ['stop', 'checkpoint', 'start']);
+  assert.deepEqual(calls, ['stop', 'start']);
 });
 
 test('a buyer still on the port is someone else\'s: no restart, and the user is told', async () => {
   const { calls, ops: o } = ops(true);
   assert.match((await restartForNewIdentity(o))!, /still running on port 8377 with the old wallet/);
-  assert.deepEqual(calls, ['stop', 'checkpoint', 'foreign 8377']);
+  assert.deepEqual(calls, ['stop', 'foreign 8377']);
 });
 
-test('with a remote gateway, nothing restarts, but the signer change is checkpointed and an old-wallet buyer recorded, for a later local switch', async () => {
+test('with a remote gateway, nothing restarts but an old-wallet buyer is still recorded for a later local switch', async () => {
   const busy = ops(true);
   assert.equal(await restartForNewIdentity({ ...busy.ops, local: false }), null);
-  assert.deepEqual(busy.calls, ['checkpoint', 'foreign 8377']);
+  assert.deepEqual(busy.calls, ['foreign 8377']);
   const free = ops(false);
   assert.equal(await restartForNewIdentity({ ...free.ops, local: false }), null);
-  assert.deepEqual(free.calls, ['checkpoint']);
+  assert.deepEqual(free.calls, []);
 });
 
 test('a start that fails is reported', async () => {

@@ -12,6 +12,11 @@ import { usdcFromMicros, usdcToMicros } from './usdc-decimal.js';
  * wallet's keys. It needs no request times, which the buyer doesn't keep:
  * a channel used on both sides of the switch, or settled after it, counts
  * once. Home adds it to the gateway's totals.
+ *
+ * Known limit, accepted: the gateway doesn't record which wallet paid, so
+ * after importing another signer the earlier wallet's gateway usage is
+ * subtracted from the new wallet's history too. That history can come out
+ * short, never too high.
  */
 
 const READ_TIMEOUT_MS = 5_000;
@@ -84,91 +89,16 @@ async function readBuyerLifetime(port: number, walletAddress: string): Promise<K
   return buyerLifetimeUsage(channels['channels'], totals['channels']);
 }
 
-const NO_USAGE: KeyUsage = { requests: 0, spentUsd: '0' };
+type SavedHistory = { wallet: string; usage: KeyUsage };
 
-function addUsage(a: KeyUsage, b: KeyUsage): KeyUsage {
-  return { requests: a.requests + b.requests, spentUsd: usdcFromMicros(usdcToMicros(a.spentUsd) + usdcToMicros(b.spentUsd)) };
-}
-
-/**
- * What the desktop keeps per wallet. The gateway doesn't record which wallet
- * paid for a request (its keys pay from "the default wallet", whichever that
- * is), and importing a signer changes it under the same keys. So at each
- * refresh, what the gateway counted since the last one is credited to the
- * wallet that was paying then, and a wallet's history subtracts only its own
- * share.
- */
-export type HistoryState = {
-  /** The wallet paying at the last refresh. */
-  active: string;
-  /** The gateway's totals for the default wallet's keys at the last refresh. */
-  lastGateway: KeyUsage;
-  wallets: Record<string, { gateway: KeyUsage; history: KeyUsage }>;
-};
-
-/**
- * Credits what the gateway counted since the last refresh to the wallet that
- * was paying then. A gateway whose totals went down lost its data: the
- * shares start again from its new totals, and what it lost shows as history,
- * since the buyer still has it.
- */
-function creditGrowth(state: HistoryState, gateway: KeyUsage): HistoryState['wallets'] {
-  const reset = gateway.requests < state.lastGateway.requests
-    || usdcToMicros(gateway.spentUsd) < usdcToMicros(state.lastGateway.spentUsd);
-  const wallets: HistoryState['wallets'] = {};
-  for (const [address, entry] of Object.entries(state.wallets)) {
-    wallets[address] = reset ? { ...entry, gateway: NO_USAGE } : entry;
-  }
-  const grown = reset ? gateway : usageBeforeGateway(gateway, state.lastGateway);
-  const previous = wallets[state.active];
-  wallets[state.active] = { history: previous?.history ?? NO_USAGE, gateway: addUsage(previous?.gateway ?? NO_USAGE, grown) };
-  return wallets;
-}
-
-/**
- * The state after a refresh that read `buyer` (the lifetime usage of
- * `wallet`, the one paying now) and `gateway` (its keys' totals). On the
- * first refresh nothing tells whose earlier gateway usage it was, so it is
- * taken as this wallet's.
- */
-export function nextHistoryState(state: HistoryState | null, wallet: string, buyer: KeyUsage, gateway: KeyUsage): HistoryState {
-  const wallets = state ? creditGrowth(state, gateway) : {};
-  const own = state ? wallets[wallet]?.gateway ?? NO_USAGE : gateway;
-  wallets[wallet] = { gateway: own, history: usageBeforeGateway(buyer, own) };
-  return { active: wallet, lastGateway: gateway, wallets };
-}
-
-/**
- * The state when the signer changes to `wallet`, with `gateway` read while no
- * request can go through (the gateway is stopped for the change): all of it
- * so far is the previous wallet's, and the new one's share starts here. With
- * no state yet, the previous wallet isn't known; the new one still starts here.
- */
-export function switchedHistoryState(state: HistoryState | null, wallet: string, gateway: KeyUsage): HistoryState {
-  return { active: wallet, lastGateway: gateway, wallets: state ? creditGrowth(state, gateway) : {} };
-}
-
-function parseUsage(raw: unknown): KeyUsage | null {
-  const usage = raw as { requests?: unknown; spentUsd?: unknown } | null;
-  const requests = usage?.requests;
-  const spentUsd = usage?.spentUsd;
+function parseSaved(raw: unknown): SavedHistory | null {
+  const saved = raw as { wallet?: unknown; usage?: { requests?: unknown; spentUsd?: unknown } } | null;
+  const requests = saved?.usage?.requests;
+  const spentUsd = saved?.usage?.spentUsd;
+  if (typeof saved?.wallet !== 'string') return null;
   if (typeof requests !== 'number' || !Number.isSafeInteger(requests) || requests < 0) return null;
   if (typeof spentUsd !== 'string' || !/^\d+(\.\d{1,6})?$/.test(spentUsd)) return null;
-  return { requests, spentUsd };
-}
-
-function parseState(raw: unknown): HistoryState | null {
-  const saved = raw as { active?: unknown; lastGateway?: unknown; wallets?: unknown } | null;
-  const lastGateway = parseUsage(saved?.lastGateway);
-  if (typeof saved?.active !== 'string' || !lastGateway || !saved.wallets || typeof saved.wallets !== 'object') return null;
-  const wallets: HistoryState['wallets'] = {};
-  for (const [wallet, entry] of Object.entries(saved.wallets as Record<string, { gateway?: unknown; history?: unknown } | null>)) {
-    const gateway = parseUsage(entry?.gateway);
-    const history = parseUsage(entry?.history);
-    if (!gateway || !history) return null;
-    wallets[wallet] = { gateway, history };
-  }
-  return { active: saved.active, lastGateway, wallets };
+  return { wallet: saved.wallet, usage: { requests, spentUsd } };
 }
 
 /** How often the history is worked out again while Home is open. */
@@ -178,17 +108,16 @@ const REFRESH_EVERY_MS = 30_000;
  * The usage from before the gateway. It is worked out again from both sides
  * every so often rather than frozen: a request still in flight (counted by the
  * gateway, not yet by the buyer) or a charge the gateway hasn't taken in yet
- * puts one reading off by that much, and the next one corrects it. The state
- * is kept in memory and in `file`, so a later launch shows the last result
- * straight away instead of waiting for the buyer to start.
+ * puts one reading off by that much, and the next one corrects it. The last
+ * result is kept in memory and in `file`, so a later launch shows it straight
+ * away instead of waiting for the buyer to start.
  */
 export class BuyerHistory {
-  private state: HistoryState | null = null;
-  private loaded = false;
+  private memory: SavedHistory | null = null;
   private refreshing: Promise<void> | null = null;
   private lastRefreshAt = -Infinity;
 
-  /** `file` gives where the state is saved; null keeps it in memory only. */
+  /** `file` gives where the result is saved; null keeps it in memory only. */
   constructor(
     private readonly file: () => string | null,
     private readonly refreshEveryMs = REFRESH_EVERY_MS,
@@ -198,18 +127,22 @@ export class BuyerHistory {
    * Usage before the gateway for `walletAddress`, the wallet paying for the
    * desktop key: the last result for that wallet, or null before there is
    * one (Home then shows the gateway's totals alone). Never waits: when the
-   * last refresh is older than the interval, it runs again in the background,
-   * with `gatewayUsage` giving the gateway's totals for the default wallet's
-   * keys. A refresh that can't read both sides, or finds the buyer paying
-   * from another wallet, keeps the last result.
+   * last result is older than the refresh interval, it is worked out again in
+   * the background, with `gatewayUsage` giving the gateway's totals for the
+   * wallet's keys. A refresh that can't read both sides, or finds the buyer
+   * paying from another wallet, keeps the last result.
    */
   read(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): KeyUsage | null {
-    this.ensureLoaded();
+    const wallet = walletAddress.toLowerCase();
+    if (this.memory?.wallet !== wallet) {
+      const saved = this.load();
+      this.memory = saved?.wallet === wallet ? saved : null;
+    }
     if (!this.refreshing && Date.now() - this.lastRefreshAt >= this.refreshEveryMs) {
       this.lastRefreshAt = Date.now();
       this.refreshing = this.refresh(port, walletAddress, gatewayUsage).finally(() => { this.refreshing = null; });
     }
-    return this.state?.wallets[walletAddress.toLowerCase()]?.history ?? null;
+    return this.memory?.usage ?? null;
   }
 
   /** The refresh in progress, if any (for tests). */
@@ -217,58 +150,34 @@ export class BuyerHistory {
     return this.refreshing ?? Promise.resolve();
   }
 
-  /**
-   * The signer changed to `walletAddress`. Call it while the gateway is
-   * stopped for the change, so what `gatewayUsage` reads is all the previous
-   * wallet's. Waits for a refresh in progress, and none starts until it's
-   * done. When the gateway's totals can't be read, the next refresh credits
-   * what it counted meanwhile to the previous wallet.
-   */
-  async switchWallet(walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): Promise<void> {
-    this.ensureLoaded();
-    while (this.refreshing) await this.refreshing;
-    this.refreshing = (async () => {
-      const gateway = await gatewayUsage().catch(() => null);
-      if (!gateway) return;
-      this.state = switchedHistoryState(this.state, walletAddress.toLowerCase(), gateway);
-      this.save(this.state);
-    })().finally(() => { this.refreshing = null; });
-    await this.refreshing;
-  }
-
-  private ensureLoaded(): void {
-    if (this.loaded) return;
-    this.state = this.load();
-    this.loaded = true;
-  }
-
   private async refresh(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): Promise<void> {
     const [buyer, gateway] = await Promise.all([readBuyerLifetime(port, walletAddress), gatewayUsage().catch(() => null)]);
     if (!buyer || !gateway) return;
-    const next = nextHistoryState(this.state, walletAddress.toLowerCase(), buyer, gateway);
-    const changed = JSON.stringify(next) !== JSON.stringify(this.state);
-    this.state = next;
+    const next = { wallet: walletAddress.toLowerCase(), usage: usageBeforeGateway(buyer, gateway) };
+    const changed = !this.memory || this.memory.wallet !== next.wallet
+      || this.memory.usage.requests !== next.usage.requests || this.memory.usage.spentUsd !== next.usage.spentUsd;
+    this.memory = next;
     if (changed) this.save(next);
   }
 
-  private load(): HistoryState | null {
+  private load(): SavedHistory | null {
     const file = this.file();
     if (!file) return null;
     try {
-      return parseState(JSON.parse(readFileSync(file, 'utf8')));
+      return parseSaved(JSON.parse(readFileSync(file, 'utf8')));
     } catch {
       return null;
     }
   }
 
   /** Best effort: one that can't be written is worked out again at the next launch. */
-  private save(state: HistoryState): void {
+  private save(saved: SavedHistory): void {
     const file = this.file();
     if (!file) return;
     try {
       mkdirSync(path.dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
-      writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify(saved), { mode: 0o600 });
       renameSync(tmp, file);
     } catch {
       // Kept in memory for this launch.

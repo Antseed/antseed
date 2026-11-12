@@ -17,19 +17,12 @@ export async function restartForNewIdentity(ops: {
   /** False while a remote gateway is in use: nothing local to restart, but the check still applies. */
   local: boolean;
   stop: () => Promise<void>;
-  /**
-   * Records that the signer changed, while nothing goes through the local
-   * gateway: after it stops, or straight away with a remote gateway in use,
-   * since the local one isn't running then and counts nothing until it starts.
-   */
-  checkpoint: () => Promise<void>;
   start: () => Promise<void>;
   buyerPort: () => Promise<number>;
   portInUse: (port: number) => Promise<boolean>;
   onForeignBuyer: (port: number) => void;
 }): Promise<string | null> {
   if (ops.local) await ops.stop();
-  await ops.checkpoint();
   const port = await ops.buyerPort();
   if (await ops.portInUse(port)) {
     // Recorded in remote mode too, so a later switch to this computer can't attach to it.
