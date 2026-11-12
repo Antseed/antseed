@@ -73,7 +73,7 @@ describe('billedRequestBody', () => {
       ['provider preferences that keep the model', '{"model":"svc","provider":{"order":["example"],"allow_fallbacks":false}}'],
       ['white space around the tokens', ' { "model" : "svc" , "n" : 1 } '],
       ['escapes and text that looks like fields', '{"prompt":"he said \\"model\\": {\\"","model":"svc"}'],
-      ['non-ASCII text', '{"prompt":"café \u{1f600}","model":"svc"}'],
+      ['non-ASCII text', '{"prompt":"caf\u00E9 \u{1f600}","model":"svc"}'],
       ['a key written with an escape', '{"\\u006dodel":"svc"}'],
       ['billing inputs spelled plainly and other fields in any case', '{"model":"svc","n":2,"size":"1024x1024","quality":"high","resolution":"2K","duration":5,"aspect_ratio":"16:9","audio":{"voice":"a"},"input":"x","prompt":"x","aspectRatio":"16:9","User":"a","Temperature":1,"stop[]":"x"}'],
       ['other keys that differ only by letter case', '{"model":"svc","user":"a","User":"b"}'],
@@ -175,7 +175,7 @@ describe('billedRequestBody', () => {
         ["Content-Disposition: form-data; name=\"image\"; filename*=UTF-8''caf%C3%A9.png", 'png'],
         ['Content-Disposition: form-data; name="mask"; filename="a\\"b.png"', 'png'],
       ));
-      expect(entries).toEqual([['model', 'svc'], ['file', 'file:speech.mp3:RIFF'], ['image', 'file:café.png:png'], ['mask', 'file:a_b.png:png']]);
+      expect(entries).toEqual([['model', 'svc'], ['file', 'file:speech.mp3:RIFF'], ['image', 'file:caf\u00E9.png:png'], ['mask', 'file:a_b.png:png']]);
     });
 
     it('reads a browser or Node FormData, files and repeated fields included', async () => {
@@ -193,7 +193,7 @@ describe('billedRequestBody', () => {
       expect(entries).toEqual(await formEntries(request));
     });
 
-    it.each(['dir\\file.png', 'quote"file.png', 'semi;colon.png', 'café.png', 'line\nbreak.png', 'name="model".png'])('reads a FormData with a file named %j', async (filename) => {
+    it.each(['dir\\file.png', 'quote"file.png', 'semi;colon.png', 'caf\u00E9.png', 'line\nbreak.png', 'name="model".png'])('reads a FormData with a file named %j', async (filename) => {
       const request = await encoded((form) => {
         form.append('model', 'svc');
         form.append('image', png(), filename);
@@ -229,7 +229,7 @@ describe('billedRequestBody', () => {
       expect(billedRequestBody(multipart(model, file(name)))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
     });
 
-    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]', 'modelſ', 'fallbacKs'])('refuses a selector spelled %j', (name) => {
+    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]', 'model\u017F', 'fallbac\u212As'])('refuses a selector spelled %j', (name) => {
       expect(billedRequestBody(json({ model: 'svc', [name]: ['other'] }))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
     });
 
@@ -260,12 +260,12 @@ describe('billedRequestBody', () => {
       ['a padded JSON model', json({ model: ' svc' }), 'ambiguous_service'],
       ['a JSON model only in another case', json({ MODEL: 'svc' }), 'ambiguous_service', '"MODEL"'],
       ['a JSON model in two cases', json({ model: 'svc', Model: 'svc' }), 'ambiguous_service', '"Model"'],
-      ['a JSON service written with a long s', json({ model: 'svc', 'ſervice': 'other' }), 'ambiguous_service'],
+      ['a JSON service written with a long s', json({ model: 'svc', '\u017Fervice': 'other' }), 'ambiguous_service'],
       ['a JSON model in array form', json({ model: 'svc', 'model[]': 'other' }), 'ambiguous_service'],
       ['a JSON modelId', json({ model: 'svc', modelId: 'svc' }), 'ambiguous_service', '"modelId"'],
       ['multipart service and model that differ', multipart(field('service', 'svc'), field('model', 'other')), 'ambiguous_service'],
       ['a padded multipart model', multipart(field('model', ' svc ')), 'ambiguous_service'],
-      ['a BOM before a multipart model', multipart(field('model', '﻿svc')), 'ambiguous_service'],
+      ['a BOM before a multipart model', multipart(field('model', '\uFEFFsvc')), 'ambiguous_service'],
       ['a multipart model sent as a file', multipart(file('model')), 'ambiguous_service', '"model"'],
       ['a multipart model over the field limit', multipart(model, field('service', `${' '.repeat(5000)}svc`)), 'ambiguous_service'],
       ['a multipart modelId', multipart(field('modelId', 'svc')), 'ambiguous_service', '"modelId"'],
@@ -289,7 +289,7 @@ describe('billedRequestBody', () => {
       ['a parameter key padded with a control byte', multipart(model, ['Content-Disposition: form-data; name="decoy"; name\x1f="model"', 'other']), 'unsupported_multipart_body'],
       ['a percent-encoded name', multipart(model, field('m%6Fdel', 'other')), 'unsupported_multipart_body'],
       ['an encoded-word name', multipart(model, field('=?utf-8?q?model?=', 'other')), 'unsupported_multipart_body'],
-      ['a non-ASCII name', multipart(model, field('model ', 'other')), 'unsupported_multipart_body'],
+      ['a non-ASCII name', multipart(model, field('model\u00A0', 'other')), 'unsupported_multipart_body'],
       ['a name with a space', multipart(model, field('model ', 'other')), 'unsupported_multipart_body'],
       ['a transfer-encoded part', multipart(['Content-Disposition: form-data; name="model"\r\nContent-Transfer-Encoding: base64', 'c3Zj']), 'unsupported_multipart_body'],
       ['a multipart quality sent as a file', multipart(model, file('quality')), 'invalid_billing_field', '"quality"'],
@@ -388,7 +388,7 @@ describe('billedRequestBody', () => {
       'X-Note: content-disposition: form-data; name="model"\r\n', 'X-Note: CONTENT-DISPOSITION:\tFORM-DATA;NAME="n"\r\n',
       'Content-Type: image/png; content-disposition: form-data; name="modelId"\r\n', '\r\nX-Note: content-disposition: form-data; name="model"',
       '; content-disposition: form-data; name="size"', 'content-disposition:', 'form-data; name="model"', '\r\nContent-Type: text/plain', '\r\nContent-Length: 4',
-      '; filename=""', '; filename="b"', 'name="quality"', 'name="n"', 'name="image"', '\r\n', '\n', ' ', '"', ';', '\\', '%', '\x1f', '﻿', ' ',
+      '; filename=""', '; filename="b"', 'name="quality"', 'name="n"', 'name="image"', '\r\n', '\n', ' ', '"', ';', '\\', '%', '\x1f', '\uFEFF', '\u00A0',
       ' filenamename="size";', '; foo="a\\\\"; bar="x; name=model; y"', '; name*=UTF-8\'\'model', '; x=a/b', 'NAME="model"', 'name=model', 'file', 'x',
       `--${boundary}`, `--${boundary}--`, `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`,
       `--${boundary}\r\nContent-Disposition: form-data; name="quality"\r\n\r\nlow\r\n`, `--${boundary}\r\nContent-Disposition: form-data; name="n"\r\n\r\n9\r\n`,
