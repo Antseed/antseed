@@ -162,6 +162,12 @@ export function extractProviderResponseFacts(parsed: Record<string, unknown>): P
   };
 }
 
+/** The text fields an image is priced by, beside its service and count. */
+export const IMAGE_PRICE_ATTRIBUTES = ['size', 'quality', 'resolution'] as const;
+
+/** Every request field `extractImageRequestFacts` reads. A seller checks each is spelled exactly. */
+export const IMAGE_REQUEST_FIELDS: readonly string[] = ['model', 'service', ...IMAGE_PRICE_ATTRIBUTES, 'n', 'prompt'];
+
 export function extractImageRequestFacts(input: {
   path?: string;
   method?: string;
@@ -175,7 +181,7 @@ export function extractImageRequestFacts(input: {
     || normalizedPath === '/v1/images/edits';
 
   setStringAttr(facts, 'model', body.model ?? body.service);
-  for (const key of ['size', 'quality', 'resolution'] as const) {
+  for (const key of IMAGE_PRICE_ATTRIBUTES) {
     setStringAttr(facts, key, body[key] ?? body[toCamelCase(key)]);
   }
   if (isOpenAiImageEndpoint) {
@@ -195,6 +201,9 @@ export function extractImageRequestFacts(input: {
   }
   return facts;
 }
+
+/** Every request field `extractSpeechRequestFacts` reads. A seller checks each is spelled exactly. */
+export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format'];
 
 /** What an OpenAI `POST /v1/audio/speech` request asks for. */
 export interface SpeechRequestFacts {
@@ -239,7 +248,7 @@ export function speechAudioDelivered(
 }
 
 /** Text fields larger than this are dropped — billing fields are all short. */
-const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
+export const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 
 /**
  * Extract the text (non-file) fields from a multipart/form-data body, e.g. the
