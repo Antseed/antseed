@@ -1,5 +1,6 @@
 import type { GatewayKeyInfo, GatewayRewardsSummary, GatewaySavings } from '../../shared/gateway-types.js';
 import { usdcFromMicros, usdcToMicros } from '../payments/usdc-decimal.js';
+import { finiteNumber, record } from './response-fields.js';
 
 export type { GatewayKeyInfo };
 
@@ -84,23 +85,24 @@ export function parseRetiredUsage(payload: unknown): { usage: KeyUsage; savings:
 }
 
 /**
- * `antseed gateway key list --all --json`: the requests that succeeded and
- * the spend of every key paying from `identity`, revoked ones included, i.e.
- * everything the gateway has sent through that wallet's buyer. Failed
- * requests never reached a seller, so the buyer has no record of them. Null
- * when the answer isn't a key list.
+ * `antseed gateway key list --all --json`: the requests and the spend of
+ * every key paying from `identity`, revoked ones included, i.e. everything
+ * the gateway has sent through that wallet's buyer. Failed requests count
+ * too: a seller's error can count in the buyer's usage, and the gateway can't
+ * tell those from failures that never reached a seller, so taking them all
+ * means the history worked out from this can come out short, never double.
+ * Null when the answer isn't a key list.
  */
 export function parseWalletKeyUsage(payload: unknown, identity: string): KeyUsage | null {
   if (!Array.isArray(payload)) return null;
   let requests = 0;
   let spent = 0n;
-  for (const key of payload as Array<Record<string, unknown> | null>) {
-    if (!key || typeof key !== 'object' || key['identity'] !== identity) continue;
-    const total = typeof key['requests'] === 'number' && Number.isFinite(key['requests']) ? key['requests'] : 0;
-    const failed = typeof key['failedRequests'] === 'number' && Number.isFinite(key['failedRequests']) ? key['failedRequests'] : 0;
-    requests += Math.max(0, total - failed);
-    const spentUsd = (key['spentUsd'] ?? {}) as Record<string, unknown>;
-    spent += usdcToMicros(typeof spentUsd['total'] === 'string' ? spentUsd['total'] : null);
+  for (const entry of payload as unknown[]) {
+    const key = record(entry);
+    if (key['identity'] !== identity) continue;
+    requests += Math.max(0, finiteNumber(key['requests']) ?? 0);
+    const spentUsd = record(key['spentUsd'])['total'];
+    spent += usdcToMicros(typeof spentUsd === 'string' ? spentUsd : null);
   }
   return { requests, spentUsd: usdcFromMicros(spent) };
 }

@@ -107,6 +107,22 @@ function parseSaved(raw: unknown): SavedHistory | null {
 }
 
 /**
+ * Both sides must describe the same moment: the gateway takes in the buyer's
+ * charges by polling (every 2 s, each poll allowed 3 s), so a charge the buyer
+ * signed a moment ago may not be in the gateway's totals yet. A result is kept
+ * only when neither side changed across this window.
+ */
+const QUIET_WINDOW_MS = 8_000;
+/** How soon after an attempt that found traffic (or couldn't read) the next may start. */
+const RETRY_AFTER_MS = 15_000;
+
+function sameUsage(a: KeyUsage, b: KeyUsage): boolean {
+  return a.requests === b.requests && usdcToMicros(a.spentUsd) === usdcToMicros(b.spentUsd);
+}
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
  * The usage from before the gateway, worked out once per wallet and then
  * kept: in memory, and in `file` so later launches show it straight away
  * instead of waiting for the buyer to start. Kept once, it can't drift as the
@@ -114,18 +130,25 @@ function parseSaved(raw: unknown): SavedHistory | null {
  */
 export class BuyerHistory {
   private memory: SavedHistory | null = null;
+  private attempt: Promise<void> | null = null;
+  private lastAttemptAt = -Infinity;
 
   /** `file` gives where the result is saved; null keeps it in memory only. */
-  constructor(private readonly file: () => string | null) {}
+  constructor(
+    private readonly file: () => string | null,
+    private readonly timing: { quietWindowMs: number; retryAfterMs: number } = { quietWindowMs: QUIET_WINDOW_MS, retryAfterMs: RETRY_AFTER_MS },
+  ) {}
 
   /**
    * Usage before the gateway for `walletAddress`, the wallet paying for the
-   * desktop key, with `gatewayUsage` giving the gateway's totals for that
-   * wallet's keys. Null, and Home shows the gateway's totals alone, when the
-   * buyer pays from another wallet or either side can't be read; that is not
-   * kept, so the next refresh tries again.
+   * desktop key, once known; null until then, and Home shows the gateway's
+   * totals alone. Never waits: the first time, it starts working it out in
+   * the background, with `gatewayUsage` giving the gateway's totals for the
+   * wallet's keys. That is kept only when the buyer pays from that wallet,
+   * both sides could be read, and neither changed across the quiet window;
+   * otherwise a later call tries again.
    */
-  async read(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): Promise<KeyUsage | null> {
+  read(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): KeyUsage | null {
     const wallet = walletAddress.toLowerCase();
     if (this.memory?.wallet === wallet) return this.memory.usage;
     const saved = this.load();
@@ -133,11 +156,27 @@ export class BuyerHistory {
       this.memory = saved;
       return saved.usage;
     }
-    const [buyer, gateway] = await Promise.all([readBuyerLifetime(port, walletAddress), gatewayUsage().catch(() => null)]);
-    if (!buyer || !gateway) return null;
-    this.memory = { wallet, usage: usageBeforeGateway(buyer, gateway) };
+    if (!this.attempt && Date.now() - this.lastAttemptAt >= this.timing.retryAfterMs) {
+      this.lastAttemptAt = Date.now();
+      this.attempt = this.workOut(port, walletAddress, gatewayUsage).finally(() => { this.attempt = null; });
+    }
+    return null;
+  }
+
+  /** The attempt in progress, if any (for tests). */
+  settled(): Promise<void> {
+    return this.attempt ?? Promise.resolve();
+  }
+
+  private async workOut(port: number, walletAddress: string, gatewayUsage: () => Promise<KeyUsage | null>): Promise<void> {
+    const readBoth = () => Promise.all([readBuyerLifetime(port, walletAddress), gatewayUsage().catch(() => null)]);
+    const [buyerBefore, gatewayBefore] = await readBoth();
+    if (!buyerBefore || !gatewayBefore) return;
+    await wait(this.timing.quietWindowMs);
+    const [buyer, gateway] = await readBoth();
+    if (!buyer || !gateway || !sameUsage(buyer, buyerBefore) || !sameUsage(gateway, gatewayBefore)) return;
+    this.memory = { wallet: walletAddress.toLowerCase(), usage: usageBeforeGateway(buyer, gateway) };
     this.save(this.memory);
-    return this.memory.usage;
   }
 
   private load(): SavedHistory | null {

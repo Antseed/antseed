@@ -607,7 +607,7 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
     // paying wallet yet; the local buyer pays from the desktop's signer
     // (checked before the gateway starts), so saved history shows at once.
     const wallet = desktop.buyerAddress ?? getSecureIdentity()?.wallet.address ?? null;
-    const history = wallet ? await buyerHistory.read(await localBuyerPort(), wallet, readWalletKeyUsage) : null;
+    const history = wallet ? buyerHistory.read(await localBuyerPort(), wallet, readWalletKeyUsage) : null;
     // Apps that stopped using a key of their own keep their history in the totals.
     return withUsageOf(desktop, [...infos, retired?.usage ?? null, history].filter((usage): usage is KeyUsage => usage !== null));
   } catch {
