@@ -14,9 +14,9 @@ import type { SerializedHttpRequest } from './types/http.js';
  * every reader of a body the seller wrote finds the fields billing found.
  *
  * What remains is what a rewrite cannot settle: `service` and `model` must agree, a billing input
- * must be spelled exactly (a reader that ignores letter case would take `Size` for `size`), a priced
- * image value must be one billing reads, and the path must be plain, since billing matches some paths
- * exactly. Video and speech billing refuse the values they cannot read themselves.
+ * must be spelled exactly (a reader that ignores letter case would take `Size` for `size`), and a priced
+ * image value must be one billing reads. Video and speech billing refuse the values they cannot read
+ * themselves, and the handler refuses a path not in normal form (`isCanonicalRequestPath`).
  *
  * Every check here makes two readers of the same request agree. What an upstream does with a field
  * every reader reads alike (a fallback list, a deployment in the path, a header) is its plugin's to
@@ -32,8 +32,6 @@ export interface ServiceRefusal {
     | 'model_required'
     /** `service` and `model` disagree, or a service field is spelled another way, `modelId`, or not a short text field. */
     | 'ambiguous_service'
-    /** The request path is not written plainly, so billing and the upstream could read it as different endpoints. */
-    | 'unsupported_path'
     /** A service field or billing input appears more than once in a form. */
     | 'repeated_field'
     /** A billing input is spelled another way, or a priced value is not one billing reads. */
@@ -120,19 +118,6 @@ export function billedRequestBody(request: Pick<SerializedHttpRequest, 'headers'
   return /^multipart\/form-data/i.test(contentType) ? billedForm(request.body, contentType) : billedJson(request.body);
 }
 
-/**
- * Why a request path is refused, if it is. Billing matches some paths exactly (an image request is
- * priced by its endpoint), while a URL parser resolves `.` and `..`, a server may fold `//`, decode
- * `%67` or split at `;`, so a path not already in its plain form could be priced as one endpoint and
- * served as another.
- */
-export function requestPathRefusal(path: string): ServiceRefusal | undefined {
-  const queryStart = path.indexOf('?');
-  const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
-  const plain = /^\/[A-Za-z0-9._~:/-]*$/.test(pathname)
-    && pathname.split('/').slice(1).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-  return plain ? undefined : { code: 'unsupported_path', message: 'Request path must be written plainly: letters, digits and . _ ~ : - in non-empty segments, with no "." or ".." segment.' };
-}
 
 function billedJson(bytes: Uint8Array): BilledRequestBody {
   const body = parseJsonObject(bytes);

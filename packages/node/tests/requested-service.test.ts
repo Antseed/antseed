@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { billedRequestBody, requestBodyFields, requestBodyService, requestPathRefusal } from '../src/requested-service.js';
+import { billedRequestBody, requestBodyFields, requestBodyService } from '../src/requested-service.js';
 
 const encoder = new TextEncoder();
 const boundary = 'form-boundary';
@@ -369,25 +369,6 @@ describe('billedRequestBody', () => {
       // `1e20` is written out as 21 digits, so this 16 MiB body would be written as about 70 MiB.
       const numbers = Array.from({ length: 3_300_000 }, () => '1e20').join(',');
       expect(billedRequestBody(rawJson(`{"model":"svc","input":[${numbers}]}`))).toMatchObject({ refusal: { code: 'request_too_large' } });
-    });
-  });
-
-  describe('refuses a path billing and the upstream could read as different endpoints', () => {
-    it.each([
-      '/v1/images/./generations', '/v1/chat/completions/../../images/generations', '//v1/images/generations', '/v1/images/generations/', '/v1/images//generations',
-      '/v1/images/%67enerations', '/v1/images%2Fgenerations', '/v1/images;x/generations', '/v1//chat/completions\\x', 'v1/chat/completions', '',
-    ])('%j', (path) => {
-      expect(requestPathRefusal(path)).toMatchObject({ code: 'unsupported_path' });
-    });
-
-    // What an upstream does with a path or query every reader reads alike is its plugin's to refuse.
-    it.each([
-      '/v1/chat/completions', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/responses/resp_1', '/v1/images/edits',
-      '/v1/routing/models', '/api/v1/video/queue', '/fal/v1/video/queue', '/v1/chat/completions?api-version=2024-10-21',
-      '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/systemone', '/v1/routing/rank', '/api/v1/video/retrieve', '/fal/v1/video/retrieve',
-      '/openai/deployments/x/chat/completions', '/v1/chat/completions?model=x&a=1;b', '/v1/images/generations?quality=high',
-    ])('serves %s', (path) => {
-      expect(requestPathRefusal(path)).toBeUndefined();
     });
   });
 

@@ -126,7 +126,7 @@ describe('the seller serves the service it bills', () => {
     ['a multipart quality in another case', multipartRequest([['model', 'billed-model'], ['QUALITY', 'high']]), 'invalid_billing_field'],
     ['a count billing would not read', jsonRequest({ model: 'billed-model', n: '4abc' }), 'invalid_billing_field'],
     ['a multipart field name a reader could decode', multipartRequest([['model', 'billed-model'], ['m%6Fdel', 'other-model']]), 'unsupported_multipart_body'],
-    ['a path billing would read as another endpoint', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/./completions' }, 'unsupported_path'],
+    ['a path billing would read as another endpoint', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/./completions' }, 'invalid_request_path'],
   ])('answers %s with its own error code, before payment', async (_name, sent, code) => {
     const target = provider(PAID);
     const result = await serve(target, sent, paidPayments());
