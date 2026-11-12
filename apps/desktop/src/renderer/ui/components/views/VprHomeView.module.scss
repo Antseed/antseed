@@ -146,7 +146,7 @@
 .composerFooter {
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
+  /* One row, as in the chat: a long model name ellipsizes instead of wrapping. */
   align-items: center;
   gap: 8px;
 }

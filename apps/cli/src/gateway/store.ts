@@ -1713,11 +1713,11 @@ export class GatewayStore {
   usageStats(keyId: string, since = 0): KeyUsageStats {
     const requests = this._stmt(`
       SELECT COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
-      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ?
+      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const rolled = this._stmt(`
       SELECT COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(failed_requests), 0) AS failed
-      FROM request_rollups WHERE key_id = ? AND hour_start >= ?
+      FROM request_rollups r WHERE key_id = ? AND hour_start >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const ledger = this._stmt(`
       SELECT COALESCE(-SUM(CASE WHEN kind = 'spend' THEN amount_usdc ELSE 0 END), 0) AS spent,
@@ -1763,12 +1763,12 @@ export class GatewayStore {
     if (keyIds.length === 0) return summaries
     const ids = JSON.stringify(keyIds)
     const requests = this._stmt(`
-      SELECT key_id, COUNT(*) AS requests FROM gateway_requests
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, COUNT(*) AS requests FROM gateway_requests r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     const rolled = this._stmt(`
-      SELECT key_id, SUM(requests) AS requests FROM request_rollups
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, SUM(requests) AS requests FROM request_rollups r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     for (const row of [...requests, ...rolled]) {
       const summary = summaries.get(row.key_id)
@@ -2225,6 +2225,12 @@ const MAX_ERROR_CODE = 100
 const MAX_ERROR_MESSAGE = 500
 /** A failed request: finished with an error status. One still in flight is not a failure. */
 const FAILED_SQL = '(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))'
+/**
+ * A call to a model, the kind a key's request count counts. Reads that name
+ * no model (listing `/v1/models`, a video's status) stay in the request log
+ * but aren't usage: an app polling the model list hasn't sent anything.
+ */
+const MODEL_REQUEST_SQL = '(r.model IS NOT NULL)'
 /**
  * A request whose tokens come only from its response: its spend recorded no
  * token counts (free sellers record none), so the response's own count is used.

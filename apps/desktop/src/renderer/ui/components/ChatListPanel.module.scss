@@ -7,6 +7,8 @@
   flex-direction: column;
   min-height: 0;
   margin-top: 16px;
+  /* Room between the last chat and the balance card below. */
+  margin-bottom: 12px;
   /* The sidebar is a window-drag region, which swallows clicks. The rows are
      divs, so the global no-drag rule for buttons doesn't cover them. */
   -webkit-app-region: no-drag;
@@ -77,6 +79,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+  padding-bottom: 8px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
