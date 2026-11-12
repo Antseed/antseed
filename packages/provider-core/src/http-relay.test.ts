@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { HttpRelay, type RelayConfig, type RelayCallbacks } from './http-relay.js';
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '@antseed/node';
 
@@ -837,6 +837,16 @@ describe('HttpRelay', () => {
       return request.model === 'upstream-b' ? ['temperature', 'top_k'] : [];
     };
 
+    let warn: MockInstance<typeof console.warn>;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
     async function sentBody(
       body: Record<string, unknown>,
       config?: Partial<RelayConfig>,
@@ -854,90 +864,60 @@ describe('HttpRelay', () => {
     }
 
     it('drops the named fields and keeps the rest', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const body = await sentBody({ model: 'upstream-b', temperature: 0.2, top_p: 0.9, max_tokens: 8 });
-        expect(body).toEqual({ model: 'upstream-b', top_p: 0.9, max_tokens: 8 });
-        // Only the field that was there is reported.
-        expect(warn).toHaveBeenCalledTimes(1);
-        expect(String(warn.mock.calls[0]![0])).toContain('dropped temperature (');
-      } finally {
-        warn.mockRestore();
-      }
+      const body = await sentBody({ model: 'upstream-b', temperature: 0.2, top_p: 0.9, max_tokens: 8 });
+      expect(body).toEqual({ model: 'upstream-b', top_p: 0.9, max_tokens: 8 });
+      // Only the field that was there is reported.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('dropped temperature (');
     });
 
     it('leaves a model it names nothing for untouched, without a log line', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        expect(await sentBody({ model: 'upstream-a', temperature: 0.2 })).toEqual({ model: 'upstream-a', temperature: 0.2 });
-        expect(warn).not.toHaveBeenCalled();
-      } finally {
-        warn.mockRestore();
-      }
+      expect(await sentBody({ model: 'upstream-a', temperature: 0.2 })).toEqual({ model: 'upstream-a', temperature: 0.2 });
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('judges the model the upstream will see, and the path without its query', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const body = await sentBody(
-          { model: 'announced', temperature: 0.2 },
-          { allowedServices: ['announced'], serviceRewriteMap: { announced: 'upstream-b' } },
-          { path: '/v1/messages?beta=true' },
-        );
-        expect(body).toEqual({ model: 'upstream-b' });
-        expect(seen).toEqual([{ path: '/v1/messages', model: 'upstream-b' }]);
-      } finally {
-        warn.mockRestore();
-      }
+      const body = await sentBody(
+        { model: 'announced', temperature: 0.2 },
+        { allowedServices: ['announced'], serviceRewriteMap: { announced: 'upstream-b' } },
+        { path: '/v1/messages?beta=true' },
+      );
+      expect(body).toEqual({ model: 'upstream-b' });
+      expect(seen).toEqual([{ path: '/v1/messages', model: 'upstream-b' }]);
     });
 
     it('logs a dropped field once per model', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
-        const relay = new HttpRelay(
-          makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB }),
-          { onResponse: () => undefined },
-        );
-        const body = new TextEncoder().encode(JSON.stringify({ model: 'upstream-b', temperature: 0 }));
-        await relay.handleRequest(makeRequest({ requestId: 'a', body }));
-        await relay.handleRequest(makeRequest({ requestId: 'b', body }));
-        expect(warn).toHaveBeenCalledTimes(1);
-      } finally {
-        warn.mockRestore();
-      }
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB }),
+        { onResponse: () => undefined },
+      );
+      const body = new TextEncoder().encode(JSON.stringify({ model: 'upstream-b', temperature: 0 }));
+      await relay.handleRequest(makeRequest({ requestId: 'a', body }));
+      await relay.handleRequest(makeRequest({ requestId: 'b', body }));
+      expect(warn).toHaveBeenCalledTimes(1);
     });
 
     it('quotes the model in the log line and stops logging after 100 models', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
-        const relay = new HttpRelay(
-          makeConfig({ allowedServices: [], omitJsonFields: () => ['temperature'] }),
-          { onResponse: () => undefined },
-        );
-        for (let i = 0; i < 105; i += 1) {
-          const body = new TextEncoder().encode(JSON.stringify({ model: `m${i}\nfake log line`, temperature: 0 }));
-          await relay.handleRequest(makeRequest({ requestId: `r${i}`, body }));
-        }
-        expect(warn).toHaveBeenCalledTimes(100);
-        expect(String(warn.mock.calls[0]?.[0])).not.toContain('\n');
-      } finally {
-        warn.mockRestore();
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: () => ['temperature'] }),
+        { onResponse: () => undefined },
+      );
+      for (let i = 0; i < 105; i += 1) {
+        const body = new TextEncoder().encode(JSON.stringify({ model: `m${i}\nfake log line`, temperature: 0 }));
+        await relay.handleRequest(makeRequest({ requestId: `r${i}`, body }));
       }
+      expect(warn).toHaveBeenCalledTimes(100);
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain('\n');
     });
 
     it('runs before injectJsonFields, so an operator can still set a field', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const body = await sentBody(
-          { model: 'upstream-b', temperature: 0.2 },
-          { injectJsonFields: { temperature: 1 } },
-        );
-        expect(body).toEqual({ model: 'upstream-b', temperature: 1 });
-      } finally {
-        warn.mockRestore();
-      }
+      const body = await sentBody(
+        { model: 'upstream-b', temperature: 0.2 },
+        { injectJsonFields: { temperature: 1 } },
+      );
+      expect(body).toEqual({ model: 'upstream-b', temperature: 1 });
     });
   });
 
