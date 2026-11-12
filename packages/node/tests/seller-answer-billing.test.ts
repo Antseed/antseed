@@ -260,17 +260,24 @@ describe('seller billing of an answer without a usage report', () => {
     expect(spent).toBe(0n);
   });
 
-  it('ends a stream the provider fails mid-line with an error event of its own, and charges nothing by estimate', async () => {
-    const provider = streamingProvider([]);
-    provider.handleRequestStream = vi.fn(async (request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
-      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: new Uint8Array(0) });
-      callbacks.onResponseChunk({ requestId: request.requestId, data: encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"Se'), done: false });
-      throw new Error('upstream reset');
-    });
-    const { spent, needAuth, chunks } = await serve(provider);
-    expect(chunks.join('')).toMatch(/"content":"Se\n\nevent: error\ndata: /);
-    expect(needAuth?.lastRequestCost ?? '0').toBe('0');
-    expect(spent).toBe(0n);
+  it('ends a stream the provider fails mid-line or mid-event with an error event of its own, and charges nothing by estimate', async () => {
+    const cuts: Array<[string, string]> = [
+      ['data: {"choices":[{"index":0,"delta":{"content":"Se', '\n\n'],
+      ['data: {"choices":[{"index":0,"delta":{"content":"Seeds"}}]}\n', '\n'],
+      ['data: {"choices":[{"index":0,"delta":{"content":"Seeds"}}]}\n\n', ''],
+    ];
+    for (const [streamed, closing] of cuts) {
+      const provider = streamingProvider([]);
+      provider.handleRequestStream = vi.fn(async (request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
+        callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: new Uint8Array(0) });
+        callbacks.onResponseChunk({ requestId: request.requestId, data: encoder.encode(streamed), done: false });
+        throw new Error('upstream reset');
+      });
+      const { spent, needAuth, chunks } = await serve(provider);
+      expect(chunks.join('').startsWith(`${streamed}${closing}event: error\ndata: `), JSON.stringify(streamed)).toBe(true);
+      expect(needAuth?.lastRequestCost ?? '0').toBe('0');
+      expect(spent).toBe(0n);
+    }
   });
 
   it('charges nothing by estimate for a stream whose error event spans several data lines', async () => {
