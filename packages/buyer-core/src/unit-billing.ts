@@ -133,6 +133,21 @@ const videoBillingAdapter: UnitBillingAdapter = {
   measure: extractVideoResponseUsage,
 };
 
+/**
+ * The values of every top-level field some parser reads as `name`: the exact
+ * key, and keys that differ from it in letter case (Unicode folds such as the
+ * long s included), padding, invisible characters or a `[...]` suffix.
+ */
+function fieldValues(body: Record<string, unknown> | null | undefined, name: string): unknown[] {
+  if (!body) return [];
+  const fold = (key: string): string => {
+    const folded = key.replace(/[\u0000-\u001f\u007f\u200b-\u200d\u2060\ufeff]/g, '').toUpperCase().toLowerCase();
+    const bracket = folded.indexOf('[');
+    return (bracket === -1 ? folded : folded.slice(0, bracket)).trim();
+  };
+  return Object.entries(body).filter(([key]) => fold(key) === name).map(([, value]) => value);
+}
+
 // Speech is billed by the characters of `input`, and only when audio came back:
 // a refused voice or any other error answer is free.
 const speechBillingAdapter: UnitBillingAdapter = {
@@ -144,7 +159,7 @@ const speechBillingAdapter: UnitBillingAdapter = {
     const speech = extractSpeechRequestFacts(body);
     if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
     // Delivery is proved by audio bytes; a stream of events is not read as audio, so it could not be billed.
-    if (body?.stream_format !== undefined && body.stream_format !== null && body.stream_format !== 'audio') {
+    if (fieldValues(body, 'stream_format').some((value) => value !== null && value !== 'audio')) {
       throw new Error('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"');
     }
     return {
@@ -216,7 +231,7 @@ function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
   // This capture also stands in for token-billed protocols (chat), whose streams are billed by tokens.
   // Images are counted in a JSON answer; a streamed one is not read, so it could not be billed.
-  if (args.serviceApiProtocol === 'openai-images' && parsed?.stream !== undefined && parsed.stream !== null && parsed.stream !== false) {
+  if (args.serviceApiProtocol === 'openai-images' && fieldValues(parsed, 'stream').some((value) => value !== null && value !== false)) {
     throw new Error('Image billing requires the answer as JSON: send the request without "stream"');
   }
   const image = extractImageRequestFacts({

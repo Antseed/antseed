@@ -234,6 +234,19 @@ describe('completed-request seller payments', () => {
       await expectRefused(harness, { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) });
     });
 
+    it('serves and bills a speech request that asks for the audio itself', async () => {
+      const harness = unitHarness();
+      // An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz).
+      const mp3 = new Uint8Array(417 * 3);
+      for (let frame = 0; frame < 3; frame++) mp3.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: mp3,
+      }));
+      const response = await harness.send('speech', { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'audio' }) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { input_characters: '11' } } }));
+    });
+
     it('serves and bills an image request that asks for no stream', async () => {
       const harness = unitHarness();
       vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
