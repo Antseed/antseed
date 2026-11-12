@@ -109,8 +109,10 @@ export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | '
  * A pin goes too: the seller it names may not be one Private allows.
  */
 export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: string, hasFunds: boolean): string | null {
+  // A router the gateway still lists under Private stays: the user chose it, and its pick is priced alone.
+  if (privateModels.some((model) => model.router && model.id === selectedId)) return null;
   const { modelId: listedId, peerId } = splitPinnedModel(selectedId);
-  const text = privateModels.filter((model) => model.type === 'text');
+  const text = privateModels.filter((model) => model.type === 'text' && !model.router);
   const selected = findChatModel(text, listedId) ?? undefined;
   if (selected && (hasFunds || selected.free)) return peerId ? selected.id : null;
   // A stand-in shouldn't cost much: the user didn't choose it.

@@ -67,6 +67,15 @@ test('routers list on their own, first, and Auto shows only them', () => {
   assert.equal(chooseDefaultChatModel([router, free], null), 'free');
 });
 
+test('switching to Private keeps a router the gateway still lists, and never moves to one', () => {
+  const router = { ...model('<peerId>@example-router'), router: { sellerName: null, priceUsdPerRequest: 0.0001, models: 3 } } as ChatModel;
+  const paidTee = { ...model('paid-tee'), tee: true, toolUse: true, inputUsdPerMillion: 1, outputUsdPerMillion: 2 } as ChatModel;
+  assert.equal(chooseModelForPrivate([router, paidTee], '<peerId>@example-router', true), null);
+  // Once it's gone from the list the chat moves to a model, not to another router.
+  assert.equal(chooseModelForPrivate([paidTee], '<peerId>@example-router', true), 'paid-tee');
+  assert.equal(chooseModelForPrivate([router, paidTee], 'gone-model', true), 'paid-tee');
+});
+
 test('the dropdown search matches ids and labels and splits text from image models', () => {
   const models = [model('qwen-3', 'text', 'Qwen 3'), model('flux-1', 'image', 'FLUX'), model('glm-5')];
   assert.deepEqual(filterChatModels(models, 'qwen').text.map((m) => m.id), ['qwen-3']);
