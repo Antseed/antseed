@@ -63,7 +63,7 @@ curl -fsSL https://antseed.com/install.sh | bash -s -- --local
      http://localhost:8379/console/setup#…
    ```
 
-Leave `antseed gateway start` running and continue with [Claim the console](#claim-the-console).
+Leave `antseed gateway start` running and continue with [Claim the console](#claim-the-console). To keep the gateway running after you close the terminal, and start it at login, run `antseed gateway service install` instead (macOS and Linux, no root).
 
 ## On a server
 

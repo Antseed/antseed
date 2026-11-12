@@ -120,6 +120,7 @@ For a video longer than the model's longest clip, the agent plans it as several 
 | Price above $5.00, or "above the configured limit" | Choose a shorter duration or a lower resolution. |
 | `400` on create | The seller rejected a field, named in the error. Nothing started; the agent fixes the field and asks before trying again. Above $1.00, the opening fee is kept. |
 | `422 invalid_video_duration` | An edit's `duration` must be the source's length in whole seconds, rounded down. The agent corrects it and asks before trying again. |
+| `429 one_off_channel_backoff` | Too many of your recent videos on this seller ended unpaid, whatever the reason, or too many are starting at once, so it won't open another payment channel yet. Nothing started and nothing was charged. Wait for the time the error names (also in `Retry-After`), or use another seller. |
 | `video_not_delivered` | The seller says the job finished but sent no video. Nothing was charged; the agent offers the next seller. |
 
 The skill's [request reference](https://github.com/Antseed/antseed/blob/main/skills/antseed-videos/references/requests.md#errors) lists every error and what the agent does about it.

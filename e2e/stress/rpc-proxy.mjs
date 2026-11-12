@@ -4,7 +4,23 @@
 // a transaction (stale eth_call / eth_getBalance, receipts not found yet).
 // Proxies in front of one chain share a `chain` clock: a transaction sent
 // through one makes reads through every one of them lag.
+//
+// holdTopUp() makes the proxy keep the next AntseedChannels topUp()
+// transaction instead of sending it: the node sees a send that never returns,
+// as if it stopped right before the transaction went out. dropHeldTopUp()
+// answers it with an error once the node is gone; the chain never sees it.
 import { createServer } from 'node:http';
+import { Transaction, id } from 'ethers';
+
+const TOP_UP_SELECTOR = id('topUp(bytes32,uint128,bytes,bytes,uint128,uint256,bytes)').slice(0, 10);
+
+function isTopUpTransaction(raw) {
+  try {
+    return Transaction.from(raw).data.slice(0, 10).toLowerCase() === TOP_UP_SELECTOR;
+  } catch {
+    return false;
+  }
+}
 
 export async function startRpcProxy({
   port,
@@ -26,7 +42,9 @@ export async function startRpcProxy({
     rnd = (rnd * 1664525 + 1013904223) >>> 0;
     return rnd / 2 ** 32;
   };
-  const stats = { calls: 0, rateLimited: 0, staleReads: 0, receiptMisses: 0 };
+  const stats = { calls: 0, rateLimited: 0, staleReads: 0, receiptMisses: 0, heldTopUps: 0 };
+  // One topUp() to keep back: armed by holdTopUp(), then the held request until dropHeldTopUp().
+  let topUpHold = null;
   let tokens = burst;
   let refilledAt = Date.now();
 
@@ -78,6 +96,14 @@ export async function startRpcProxy({
   };
 
   const handleOne = async (req) => {
+    if (req.method === 'eth_sendRawTransaction' && topUpHold && !topUpHold.heldAt && isTopUpTransaction(req.params?.[0])) {
+      const hold = topUpHold;
+      hold.heldAt = Date.now();
+      stats.heldTopUps += 1;
+      hold.onHeld();
+      await hold.dropped;
+      return { jsonrpc: '2.0', id: req.id, error: { code: -32603, message: 'stress rpc proxy: held topUp transaction dropped' } };
+    }
     if (req.method === 'eth_sendRawTransaction') {
       const res = await forward(req);
       chain.lastTxAt = Date.now();
@@ -116,6 +142,24 @@ export async function startRpcProxy({
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     stats,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    /** Keeps the next topUp() transaction back. Resolves once one is held; the chain has not seen it. */
+    holdTopUp() {
+      if (topUpHold) throw new Error('a topUp hold is already armed');
+      let onHeld; let drop;
+      const held = new Promise((resolve) => { onHeld = resolve; });
+      const dropped = new Promise((resolve) => { drop = resolve; });
+      topUpHold = { heldAt: null, onHeld, drop, held, dropped };
+      return held;
+    },
+    /** Whether a held topUp() is waiting, and when it arrived. */
+    topUpHoldState: () => (topUpHold ? { armed: true, heldAt: topUpHold.heldAt } : { armed: false, heldAt: null }),
+    /** Answers the held topUp() with an error without sending it, and disarms the hold. */
+    dropHeldTopUp() {
+      const hold = topUpHold;
+      topUpHold = null;
+      hold?.drop();
+      return Boolean(hold?.heldAt);
+    },
+    close: () => new Promise((resolve) => { topUpHold?.drop(); topUpHold = null; server.close(() => resolve()); }),
   };
 }

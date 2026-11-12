@@ -342,11 +342,11 @@ const subscribeMarketFetch = createSharedFetch(async signal => {
 }, 8000);
 
 /** Shared market fetch (session-cached) behind the showcase and pick hooks. */
-function useMarket(): CachedMarket | null {
+function useMarket(enabled = true): CachedMarket | null {
   const [market, setMarket] = useState<CachedMarket | null>(null);
 
   useEffect(() => {
-    if (!ExecutionEnvironment.canUseDOM) return undefined;
+    if (!ExecutionEnvironment.canUseDOM || !enabled) return undefined;
     const cached = readCache();
     if (cached) {
       setMarket(cached);
@@ -361,15 +361,15 @@ function useMarket(): CachedMarket | null {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [enabled]);
 
   return market;
 }
 
 /** The pricing-card rows: live network picks, or the dated fallback snapshot.
     `minSave` (percent) puts the models with the biggest savings first. */
-export function useMarketplaceShowcase(count = 4, {minSave = 0}: {minSave?: number} = {}): ShowcaseRow[] {
-  const market = useMarket();
+export function useMarketplaceShowcase(count = 4, {minSave = 0, enabled = true}: {minSave?: number; enabled?: boolean} = {}): ShowcaseRow[] {
+  const market = useMarket(enabled);
   return market
     ? pickShowcase(market.offerings, market.models, market.popularity, count, minSave)
     : FALLBACK_ROWS;
