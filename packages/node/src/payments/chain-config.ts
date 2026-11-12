@@ -180,7 +180,7 @@ const DEFAULT_CHAIN_ID: ChainId = 'base-mainnet';
 
 /**
  * Get the chain config for a given chain ID.
- * Falls back to base-sepolia if not found.
+ * Falls back to base-mainnet (the default chain) when the ID is missing or unknown.
  */
 export function getChainConfig(chainId?: ChainId | string): ChainConfig {
   if (!chainId) return withRecognizedUsageDefaults(CHAIN_CONFIGS[DEFAULT_CHAIN_ID]);

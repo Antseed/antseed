@@ -295,7 +295,7 @@ export interface NodePaymentsConfig {
   defaultMaxAmountUsdc?: string;
   /** Default auth duration in seconds. Default: 90000 */
   defaultAuthDurationSecs?: number;
-  /** Minimum USDC per request (base units) for seller. Default: "10000" ($0.01). */
+  /** Minimum USDC per request (base units) for seller. Default: "500000" ($0.50). */
   minBudgetPerRequest?: string;
   /** Minimum unsettled delta (base units) required before idle settle submits a tx. Default: "2000" (~$0.002). */
   minSettleDelta?: string;

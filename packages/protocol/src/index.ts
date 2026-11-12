@@ -16,8 +16,8 @@ export * from './capability.js';
 export * from './peer-metadata.js';
 export * from './peer-pricing.js';
 export * from './connection-state.js';
-// Both signatures (SpendingAuth metadata, 2n) and peer-metadata (discovery
-// records, 10) define METADATA_VERSION. The root export keeps the payments
+// Both signatures (SpendingAuth metadata, currently 5n) and peer-metadata
+// (discovery records, currently 17) define METADATA_VERSION. The root export keeps the payments
 // one, matching @antseed/node's public API; use the ./peer-metadata subpath
 // for the discovery constant.
 export { METADATA_VERSION } from './signatures.js';

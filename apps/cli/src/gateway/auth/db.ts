@@ -3,8 +3,8 @@ import { createHash, randomBytes } from 'node:crypto'
 
 /**
  * Auth tables share the gateway database but track their own schema version.
- * Append-only once shipped; v1 has not shipped yet, so columns still go
- * straight into it.
+ * Append-only: v1 has shipped, so a schema change is a new entry, never an
+ * edit to an existing one.
  */
 const MIGRATIONS: readonly string[] = [
   `

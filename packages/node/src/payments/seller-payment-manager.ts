@@ -31,7 +31,7 @@ export interface SellerPaymentConfig {
   channelsContractAddress: string;
   chainId: number;
   dataDir: string;
-  /** Minimum USDC per request (base units). Default: "10000" ($0.01). */
+  /** Minimum USDC per request (base units). Default: "500000" ($0.50). */
   minBudgetPerRequest?: string;
   /** Whether to immediately settle when buyer disconnects. Default: true. */
   settleOnDisconnect?: boolean;

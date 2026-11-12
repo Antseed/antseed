@@ -128,8 +128,8 @@ const BASE_MAINNET: WebPaymentConfig = {
   rpcUrl: 'https://base.publicnode.com',
 };
 
-// Stay under the ~256 KiB SCTP message ceiling browsers negotiate with
-// libdatachannel sellers; the shared mux default (512 KiB) assumes node peers.
+// Stay well under the ~256 KiB SCTP message ceiling browsers negotiate with
+// libdatachannel sellers; the shared mux default (240 KiB) leaves less headroom.
 const BROWSER_UPLOAD_THRESHOLD_BYTES = 192 * 1024;
 
 interface SessionWiring {
