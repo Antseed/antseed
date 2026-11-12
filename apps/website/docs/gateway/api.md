@@ -232,6 +232,8 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
 }
 ```
 
+`usage.requests` counts calls to a model. Listing `/v1/models` or checking a video's status shows in the request log but is not counted.
+
 `balance` is what the wallet paying for the key (`buyer_address`) holds: `available_usd` is free to spend, `reserved_usd` is held for open seller channels, `pending_usd` is the part of it already signed to sellers but not settled yet, `wallet_usd` is USDC in the wallet not yet swept into deposits, `credit_limit_usd` is the most the wallet may hold in deposits, and `operator` is the address its withdrawals and rewards go to. `stale` means the gateway couldn't reach the chain and these are its last known values. `balance` is `null` when the gateway can't read it. Antseed Desktop shows this as its balance, with the local gateway and with a remote one.
 
 ### Rewards and savings

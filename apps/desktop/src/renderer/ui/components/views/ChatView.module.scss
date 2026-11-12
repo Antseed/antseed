@@ -319,9 +319,10 @@
 
 .chat-input-meta-left {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  /* One row: a long model name ellipsizes instead of wrapping the pickers. */
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -329,6 +330,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
   position: relative;
   border-bottom-left-radius: 20px;
@@ -341,6 +343,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 280px;
   background: var(--bg-card);
@@ -444,6 +447,7 @@
 
 .permission-mode-picker {
   position: relative;
+  flex: none;
 }
 
 .permission-mode-button {

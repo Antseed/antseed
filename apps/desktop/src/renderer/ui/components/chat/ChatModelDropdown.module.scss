@@ -29,6 +29,11 @@
     background: var(--bg-hover);
     border-color: var(--border);
   }
+
+  /* Only the name gives up room: icons and tags keep their size. */
+  > :not(.model-dropdown-label) {
+    flex: none;
+  }
 }
 
 .model-dropdown-label {
