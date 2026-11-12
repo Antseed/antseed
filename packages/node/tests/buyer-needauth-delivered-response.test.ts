@@ -238,6 +238,23 @@ describe('BuyerPaymentManager: a NeedAuth cost is owed only for a response the b
     expect(manager.getReserveCeiling(sellerPeerId), 'a top-up was signed').toBe(RESERVE);
   });
 
+  it('pays a charge for a response it could not price inside the overdraft window, and past it through its 402 retry', async () => {
+    send('no-usage-1');
+    deliver('no-usage-1', 0n);
+    await sellerSends(claim('no-usage-1', 100_000n, 100_000n));
+    expect(signed(), 'an honest seller went unpaid').toBe(100_000n);
+    expect(manager.getVerifiedCost(sellerPeerId), 'verified a cost the response does not show').toBe(0n);
+
+    send('no-usage-2');
+    deliver('no-usage-2', 0n);
+    await sellerSends(claim('no-usage-2', WINDOW, 100_000n + WINDOW));
+    expect(signed(), 'signed past the overdraft window').toBe(WINDOW);
+
+    // The seller's next 402 asks for all it has served: the buyer's retry reopens the window and pays it.
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 100_000n + WINDOW);
+    expect(signed()).toBe(100_000n + WINDOW);
+  });
+
   it('signs an honest claim for exactly what it asks', async () => {
     send('served');
     deliver('served', 10_000n);

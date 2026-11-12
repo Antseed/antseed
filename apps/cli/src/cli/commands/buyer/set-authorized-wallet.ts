@@ -121,7 +121,7 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
     .option('--self', 'authorize the buyer hot wallet itself (requires ETH for gas)', false)
     .option('--no-open', 'print the secure local URL without opening a browser')
     .option('--identity <name>', 'authorize for this buyer identity\'s wallet (e.g. a gateway workspace\'s) instead of the default one')
-    .addHelpText('after', '\nBy default, opens the AI VPN wallet flow so the connected external wallet submits the transaction and pays gas. --self instead makes the buyer hot wallet its own authorized wallet. The authorized wallet controls withdrawals and future authorization transfers.')
+    .addHelpText('after', '\nBy default, opens the Antseed Desktop wallet flow so the connected external wallet submits the transaction and pays gas. --self instead makes the buyer hot wallet its own authorized wallet. The authorized wallet controls withdrawals and future authorization transfers.')
     .action(async (options: SetAuthorizedWalletOptions) => {
       let spinner: ReturnType<typeof ora> | undefined;
       try {

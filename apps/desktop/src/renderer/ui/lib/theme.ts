@@ -4,11 +4,21 @@
  * on boot — the main app, the setup title bar, and the floating pill — and a
  * `storage` listener keeps already-open windows in sync when the mode is
  * changed from any of them.
+ *
+ * Private mode paints the night palette on top of the saved mode without ever
+ * changing it, so going back to Anonymous restores the user's own setting.
  */
 
 export type ThemeMode = 'light' | 'dark';
 
 const THEME_STORAGE_KEY = 'antseed:theme';
+
+let chosenMode: ThemeMode = 'light';
+let privateNight = false;
+
+function paint(): void {
+  document.body.classList.toggle('dark-theme', privateNight || chosenMode === 'dark');
+}
 
 export function getStoredThemeMode(): ThemeMode | null {
   try {
@@ -19,13 +29,14 @@ export function getStoredThemeMode(): ThemeMode | null {
   }
 }
 
-/** The mode currently painted, regardless of what is persisted. */
+/** The mode the user chose, whatever Private is painting over it. */
 export function activeThemeMode(): ThemeMode {
-  return document.body.classList.contains('dark-theme') ? 'dark' : 'light';
+  return chosenMode;
 }
 
 export function applyThemeMode(mode: ThemeMode): void {
-  document.body.classList.toggle('dark-theme', mode === 'dark');
+  chosenMode = mode;
+  paint();
   try {
     localStorage.setItem(THEME_STORAGE_KEY, mode);
   } catch {
@@ -33,16 +44,21 @@ export function applyThemeMode(mode: ThemeMode): void {
   }
 }
 
+/** Paint the night palette while Private is on, leaving the saved mode alone. */
+export function setPrivateNight(on: boolean): void {
+  privateNight = on;
+  paint();
+}
+
 /** Paint the persisted mode and follow changes made from other windows. */
 export function initThemeMode(): void {
-  const stored = getStoredThemeMode();
-  if (stored) {
-    document.body.classList.toggle('dark-theme', stored === 'dark');
-  }
+  chosenMode = getStoredThemeMode() ?? 'light';
+  paint();
   window.addEventListener('storage', (event) => {
     if (event.key !== THEME_STORAGE_KEY) return;
     if (event.newValue === 'dark' || event.newValue === 'light') {
-      document.body.classList.toggle('dark-theme', event.newValue === 'dark');
+      chosenMode = event.newValue;
+      paint();
     }
   });
 }

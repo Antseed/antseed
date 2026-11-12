@@ -10,7 +10,9 @@
  *
  * The notes list how to install the CLI, the packages released with it (those
  * whose version changed since the previous CLI version bump and is on npm),
- * and the pull requests merged since that bump.
+ * the pull requests merged since that bump, and a Thanks section crediting
+ * their authors from outside the organization (read with `gh api`, so it needs
+ * GH_TOKEN; people who can push to the repository and bots are left out).
  *
  * Usage: node scripts/github-release-notes.mjs <notes.md>
  * Prints the CLI version, or nothing when that version is not on npm yet.
@@ -54,8 +56,27 @@ if (since) {
   for (const line of git('log', '--merges', '--first-parent', '--format=%s%x09%b', `${since}..HEAD`).split('\n')) {
     const [subject, title] = line.split('\t');
     const match = /^Merge pull request #(\d+) from /.exec(subject ?? '');
-    if (match && title && !/^chore: Bump versions/i.test(title)) pulls.push(`- ${title.trim()} (#${match[1]})`);
+    if (match && title && !/^chore: Bump versions/i.test(title)) pulls.push({ number: Number(match[1]), title: title.trim() });
   }
+}
+
+// Outside contributors, each with their pull requests, oldest first, like the
+// Thanks section of other projects' release notes. The team is everyone who
+// can push to the repository: organization membership can be private, so a
+// PR's author_association does not show it to the workflow's token.
+const repo = process.env.GITHUB_REPOSITORY || 'Antseed/antseed';
+const ghApi = (path, query) => execFileSync('gh', ['api', path, '-q', query], { encoding: 'utf8' }).trim();
+const TEAM = new Set(['admin', 'maintain', 'write']);
+const team = new Map();
+const onTeam = (login) => {
+  if (!team.has(login)) team.set(login, TEAM.has(ghApi(`repos/${repo}/collaborators/${login}/permission`, '.permission')));
+  return team.get(login);
+};
+const thanks = new Map();
+for (const pull of [...pulls].reverse()) {
+  const [login, type] = ghApi(`repos/${repo}/pulls/${pull.number}`, '[.user.login, .user.type] | join(" ")').split(' ');
+  if (type === 'Bot' || onTeam(login)) continue;
+  thanks.set(login, [...(thanks.get(login) ?? []), pull.number]);
 }
 
 const npmLink = (pkg) => `[\`${pkg.name}@${pkg.version}\`](https://www.npmjs.com/package/${pkg.name}/v/${pkg.version})`;
@@ -71,7 +92,11 @@ const lines = [
   ...released.map((pkg) => `- ${npmLink(pkg)}`),
   '',
 ];
-if (pulls.length > 0) lines.push('## Pull requests', '', ...pulls, '');
+if (pulls.length > 0) lines.push('## Pull requests', '', ...pulls.map((pull) => `- ${pull.title} (#${pull.number})`), '');
+if (thanks.size > 0) {
+  const credits = [...thanks].sort(([a], [b]) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+  lines.push('## Thanks', '', ...credits.map(([login, numbers]) => `- @${login} (${numbers.map((n) => `#${n}`).join(', ')})`), '');
+}
 lines.push('Details of each change are in [CHANGELOG.md](https://github.com/Antseed/antseed/blob/main/CHANGELOG.md).', '');
 
 writeFileSync(notesPath, lines.join('\n'));

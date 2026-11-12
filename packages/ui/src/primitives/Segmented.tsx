@@ -4,17 +4,21 @@ import { focusSibling, rovingIndex } from './roving';
 export interface SegmentedProps<T extends string> {
   value: T;
   onChange: (value: T) => void;
-  options: Array<{ value: T; label: ReactNode; disabled?: boolean }>;
+  options: Array<{ value: T; label: ReactNode; disabled?: boolean; title?: string }>;
   /** Accessible name of the group. */
   label: string;
   className?: string;
+  /** Extra classes for an option's button, e.g. a per-choice selected look. */
+  itemClassName?: (value: T, selected: boolean) => string | undefined;
+  /** Leaves the look to `className` / `itemClassName`; the behavior (radio roles, arrow keys) stays. */
+  bare?: boolean;
 }
 
 /** A single-choice button group (radio semantics, arrow keys move the choice). */
-export function Segmented<T extends string>({ value, onChange, options, label, className }: SegmentedProps<T>) {
+export function Segmented<T extends string>({ value, onChange, options, label, className, itemClassName, bare = false }: SegmentedProps<T>) {
   const selected = Math.max(0, options.findIndex((option) => option.value === value));
   return (
-    <div className={['as-segmented', className].filter(Boolean).join(' ')} role="radiogroup" aria-label={label}>
+    <div className={[bare ? null : 'as-segmented', className].filter(Boolean).join(' ')} role="radiogroup" aria-label={label}>
       {options.map((option, index) => {
         const on = option.value === value;
         return (
@@ -25,7 +29,12 @@ export function Segmented<T extends string>({ value, onChange, options, label, c
             aria-checked={on}
             tabIndex={index === selected ? 0 : -1}
             disabled={option.disabled}
-            className={on ? 'as-segmented__item as-segmented__item--on' : 'as-segmented__item'}
+            title={option.title}
+            className={[
+              bare ? null : 'as-segmented__item',
+              bare || !on ? null : 'as-segmented__item--on',
+              itemClassName?.(option.value, on),
+            ].filter(Boolean).join(' ') || undefined}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => {
               const next = rovingIndex(event, index, options.length);
@@ -34,7 +43,7 @@ export function Segmented<T extends string>({ value, onChange, options, label, c
               const target = options[next];
               if (!target || target.disabled) return;
               onChange(target.value);
-              focusSibling(event, next, '.as-segmented__item');
+              focusSibling(event, next, '[role="radio"]');
             }}
           >
             {option.label}

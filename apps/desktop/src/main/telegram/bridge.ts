@@ -6,11 +6,12 @@
 // keyboards; whichever surface (desktop dialog or Telegram) decides first
 // wins via PiChatEngine.resolveToolApproval.
 
+import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { randomBytes } from 'node:crypto';
 import { onChatEvents } from '../chat/event-bus.js';
 import type { ChatStreamStopReason } from '../chat/stream-stop.js';
 import type { ToolApprovalRequest } from '../chat/permissions.js';
-import type { PiChatEngine } from '../chat/engine.js';
+import type { PiChatEngine } from '../chat/engine-types.js';
 import {
   createTelegramBotClient,
   splitTelegramMessage,
@@ -27,16 +28,14 @@ import {
   saveTelegramSettings,
   type TelegramSettings,
 } from './store.js';
-import { LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
+import { TurnSlot } from './turn-slot.js';
+import { setUpTurnConversation } from './conversation-setup.js';
 
-function telegramModelPickerText(current: string, hasModels: boolean): string {
-  const explanation = current === 'antseed'
-    ? 'A router is active for new chats; there is no fixed default model. Picking a model leaves router mode.\n\n'
-    : '';
-  return explanation + (hasModels
-    ? 'Pick a model — it applies to this chat and becomes the default in the app:'
-    : 'No models discovered yet — try again in a moment.');
+function telegramModelPickerText(hasModels: boolean): string {
+  return hasModels
+    ? 'Pick a model. It applies to this chat and to new ones here:'
+    : 'No models available yet. Try again in a moment.';
 }
 
 export type TelegramBridgeStatus = {
@@ -67,7 +66,7 @@ export type TelegramBridgeOptions = {
   onStatusChanged?: (status: TelegramBridgeStatus) => void;
 };
 
-const OFFLINE_NOTE = 'I can only answer while your computer is on and the Antseed AI VPN is running.';
+const OFFLINE_NOTE = 'I can only answer while your computer is on and Antseed Desktop is open.';
 /** Cap on the best-effort goodbye send so a slow network can never delay quit. */
 const GOODBYE_TIMEOUT_MS = 3_000;
 
@@ -78,7 +77,7 @@ const POLL_BACKOFF_MAX_MS = 30_000;
 const TG_TEXT_LIMIT = 4096;
 
 const WELCOME_TEXT = [
-  'Connected to your AI VPN. Messages here run on the agent on your computer.',
+  'Connected to Antseed Desktop. Messages here run on the agent on your computer.',
   OFFLINE_NOTE,
   '',
   '/new — start a fresh conversation',
@@ -97,7 +96,10 @@ const BOT_COMMANDS = [
 ];
 
 type ActiveTurn = {
+  /** Empty until the chat is looked up: the turn holds the slot from the moment its message arrives. */
   conversationId: string;
+  /** Set by /stop or /new, or when the bridge stops: the turn must not send. */
+  cancelled: boolean;
   chatId: number;
   draftId: number;
   buffer: string;
@@ -145,7 +147,7 @@ function extractTextFromUiMessage(payload: unknown): string {
 
 function describeStreamError(error: string, stopReason?: ChatStreamStopReason): string {
   if (stopReason?.kind === 'payment_required' || /payment_required/i.test(error)) {
-    return 'Payment required — open the Antseed AI VPN to add credits, then send your message again.';
+    return 'Payment required — open Antseed Desktop to add funds, then send your message again.';
   }
   if (stopReason?.kind === 'aborted' || /aborted/i.test(error)) {
     return 'Stopped.';
@@ -159,7 +161,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   let pollAbort: AbortController | null = null;
   let pollGeneration = 0;
   let lastError: string | null = null;
-  let activeTurn: ActiveTurn | null = null;
+  const turnSlot = new TurnSlot<ActiveTurn>();
   let unsubscribeBus: (() => void) | null = null;
   let draftCounter = 0;
   /** Disabled for the session after the first hard sendMessageDraft failure. */
@@ -170,7 +172,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   /** Snapshot behind the /model keyboard; gen invalidates stale keyboards. */
   let modelPick: {
     gen: number;
-    options: Array<{ id: string; label: string; peerId: string; provider: string; favorite?: boolean }>;
+    options: Array<{ id: string; label: string }>;
     chatId: number;
     messageId: number;
   } | null = null;
@@ -257,7 +259,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       clearInterval(turn.keepAliveTimer);
       turn.keepAliveTimer = null;
     }
-    if (activeTurn === turn) activeTurn = null;
+    turnSlot.release(turn);
   };
 
   // ── Outbound messages ───────────────────────────────────────────────
@@ -333,8 +335,8 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     }
 
     const conversationId = (payload as { conversationId?: unknown } | null)?.conversationId;
-    const turn = activeTurn;
-    if (!turn || conversationId !== turn.conversationId) return;
+    const turn = turnSlot.current;
+    if (!turn || !turn.conversationId || conversationId !== turn.conversationId) return;
 
     if (channel === 'chat:ai-stream-delta') {
       const delta = payload as { blockType?: unknown; text?: unknown };
@@ -377,109 +379,37 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
 
   // ── Inbound Telegram updates ────────────────────────────────────────
 
-  const resolveDefaultRoute = async (): Promise<{ peerId?: string; service?: string }> => {
-    let bareModel = '';
-    let routed: { peerId: string; service: string } | null = null;
-    try {
-      const port = await engine.getProxyPort();
-      const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
-      if (!response.ok) throw new Error(`Read route failed (${response.status})`);
-      const body = await response.json() as { ok?: boolean; model?: string | null; router?: unknown };
-      if (!body.model && body.router) return { service: 'antseed' };
-      const model = typeof body.model === 'string' ? body.model.trim() : '';
-      const at = model.indexOf('@');
-      if (at > 0) {
-        routed = { peerId: model.slice(0, at), service: model.slice(at + 1) };
-      } else {
-        bareModel = model;
-      }
-    } catch {
-      // Buyer proxy offline or no default route — fall through to the catalog.
-    }
-    try {
-      const entries = await engine.discoverServiceCatalog();
-      if (routed) {
-        // A stored route can point at a peer the buyer routing policy now
-        // rejects (seller repriced, limits changed) — the proxy would 502
-        // every message. Trust it only while the policy-filtered catalog
-        // still lists the pair; an empty catalog just means discovery isn't
-        // ready yet, so keep the route in that case.
-        const peerId = routed.peerId.toLowerCase();
-        const service = routed.service.trim().toLowerCase();
-        const allowed = entries.length === 0 || entries.some((entry) => (
-          entry.peerId?.toLowerCase() === peerId && entry.id.trim().toLowerCase() === service
-        ));
-        if (allowed) return routed;
-        log(`Default route ${routed.peerId.slice(0, 12)}...@${routed.service} is outside the buyer routing policy — picking a fresh default.`);
-        bareModel = routed.service;
-      }
-      if (bareModel) return { service: bareModel };
-      // No stored route (fresh install, or a route the policy rejects).
-      // Mirror the app's picker: the renderer-pushed curated list (favorites
-      // first) when available, otherwise the first discovered catalog entry.
-      const picked = (engine.getModelPicker()?.models ?? []).find((model) => model.routePeerId);
-      if (picked) return { service: picked.serviceId };
-      const chosen = entries.find((entry) => entry.peerId);
-      if (chosen) return { service: chosen.id };
-    } catch {
-      // Discovery unavailable — the engine will surface the buyer error.
-    }
-    return {};
+  /** The bot's own pick while it can still be routed to, else the best model that works without funds. */
+  /** Pass `models` when the caller has just loaded them, so the catalog isn't fetched twice. */
+  const resolveModel = async (models?: Awaited<ReturnType<PiChatEngine['listModels']>>): Promise<string | null> => {
+    models ??= await engine.listModels();
+    const saved = settings?.model;
+    if (saved && models.some((model) => model.id === saved)) return saved;
+    return models[0]?.id ?? null;
   };
 
   const showModelPicker = async (): Promise<void> => {
-    const options: NonNullable<typeof modelPick>['options'] = [];
-    // The renderer-pushed curated list — the exact rows the app's model
-    // dropdown shows (starred favorites first, then the recommended lineup).
-    const picker = engine.getModelPicker();
-    for (const model of picker?.models ?? []) {
-      if (!model.routePeerId) continue;
-      options.push({
-        id: model.routeServiceId ?? model.serviceId,
-        label: model.label || model.serviceId,
-        peerId: model.routePeerId,
-        provider: model.routeProvider ?? model.provider,
-        favorite: model.favorite,
-      });
-      if (options.length >= MODEL_PICK_LIMIT) break;
+    let models: Awaited<ReturnType<PiChatEngine['listModels']>> = [];
+    try {
+      models = await engine.listModels();
+    } catch (err) {
+      log(`Could not load models for /model: ${asErrorMessage(err)}`);
     }
+    const options = models.slice(0, MODEL_PICK_LIMIT).map((model) => ({ id: model.id, label: model.label || model.id }));
     if (options.length === 0) {
-      // No renderer push yet (early after launch) — fall back to the
-      // policy-filtered catalog: one row per model, best-ranked peer first.
-      let entries: Awaited<ReturnType<PiChatEngine['discoverServiceCatalog']>> = [];
-      try {
-        entries = await engine.discoverServiceCatalog();
-      } catch {
-        // Fall through to the empty-catalog message.
-      }
-      const seen = new Set<string>();
-      for (const entry of entries) {
-        if (!entry.peerId) continue;
-        const key = entry.id.trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        options.push({ id: entry.id, label: entry.label || entry.id, peerId: entry.peerId, provider: entry.provider });
-        if (options.length >= MODEL_PICK_LIMIT) break;
-      }
-    }
-    const current = (await resolveDefaultRoute()).service?.trim().toLowerCase() ?? '';
-    if (options.length === 0) {
-      void sendToOwner(telegramModelPickerText(current, false));
+      void sendToOwner(telegramModelPickerText(false));
       return;
     }
+    const current = await resolveModel(models).catch(() => null);
     modelPickGen += 1;
     const gen = modelPickGen;
     const keyboard: TgReplyMarkup = {
       inline_keyboard: options.map((option, index) => ([{
-        text: [
-          option.id.trim().toLowerCase() === current ? '✓ ' : '',
-          option.favorite ? '★ ' : '',
-          option.label,
-        ].join(''),
+        text: `${option.id === current ? '✓ ' : ''}${option.label}`,
         callback_data: `mdl:${String(gen)}:${String(index)}`,
       }])),
     };
-    const sent = await sendToOwner(telegramModelPickerText(current, true), keyboard);
+    const sent = await sendToOwner(telegramModelPickerText(true), keyboard);
     if (sent && settings?.ownerChatId != null) {
       modelPick = { gen, options, chatId: settings.ownerChatId, messageId: sent.message_id };
     }
@@ -490,58 +420,60 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     const pick = modelPick;
     const option = pick?.gen === gen ? pick.options[index] : undefined;
     if (!pick || !option) {
-      await client.answerCallbackQuery(query.id, 'Expired — send /model again.').catch(() => {});
+      await client.answerCallbackQuery(query.id, 'Expired. Send /model again.').catch(() => {});
       return;
     }
     modelPick = null;
-    // Same two writes a dropdown pick in the app performs: rebind the active
-    // conversation, and move the sticky selection new conversations inherit
-    // (buyer default route + the app UI, via setDefaultRoute's notification).
     const conversationId = settings?.activeConversationId;
-    const rebind = conversationId
-      ? await engine.selectPeer({
-          conversationId,
-          peerId: null,
-          service: option.id,
-          provider: option.provider,
-          routeMode: 'auto',
-        })
-      : { ok: true as const };
-    await engine.setDefaultRoute('', option.id, option.provider);
-    await client.answerCallbackQuery(query.id, 'Model set').catch(() => {});
-    await client.editMessageText(pick.chatId, pick.messageId, `Model: ${option.label}`).catch(() => {});
-    if (!rebind.ok && rebind.error) {
-      log(`Conversation model update after /model failed: ${rebind.error}`);
-    }
-  };
-
-  const ensureConversation = async (): Promise<string> => {
-    if (settings?.activeConversationId) return settings.activeConversationId;
-    const route = await resolveDefaultRoute();
-    const conversation = await engine.createConversation(route.service, undefined, route.peerId, route.peerId ? 'pinned' : 'auto');
-    bridgeConversationIds.add(conversation.id);
     if (settings) {
-      settings.activeConversationId = conversation.id;
+      settings.model = option.id;
       await persistSettings();
     }
-    return conversation.id;
+    if (conversationId) {
+      await engine.setConversationModel(conversationId, option.id).catch((err: unknown) => {
+        log(`Conversation model update after /model failed: ${asErrorMessage(err)}`);
+      });
+    }
+    await client.answerCallbackQuery(query.id, 'Model set').catch(() => {});
+    await client.editMessageText(pick.chatId, pick.messageId, `Model: ${option.label}`).catch(() => {});
   };
 
+  /** Private may have narrowed the list since this chat's model was chosen; its messages would all fail. */
+  const moveOffUnlistedModel = async (conversationId: string): Promise<void> => {
+    const current = await engine.getConversationModel(conversationId);
+    if (!current) return;
+    const models = await engine.listModels();
+    const { modelId } = splitPinnedModel(current);
+    if (models.length === 0 || models.some((model) => model.id === modelId)) return;
+    const next = await resolveModel(models);
+    if (!next) return;
+    await engine.setConversationModel(conversationId, next);
+    const label = models.find((model) => model.id === next)?.label || next;
+    void sendToOwner(`${modelId} isn't available with your current privacy setting, so this chat now uses ${label}.`);
+  };
+
+  const ensureConversation = (owns: () => boolean): Promise<string | null> => setUpTurnConversation({
+    active: () => settings?.activeConversationId,
+    exists: (conversationId) => engine.hasConversation(conversationId),
+    prepareExisting: (conversationId) => moveOffUnlistedModel(conversationId).catch((err: unknown) => {
+      log(`Could not check this chat's model: ${asErrorMessage(err)}`);
+    }),
+    resolveModel,
+    create: (model) => engine.createConversation(model),
+    saveActive: async (conversationId) => {
+      if (!settings) return;
+      settings.activeConversationId = conversationId;
+      await persistSettings();
+    },
+    owns,
+    remember: (conversationId) => { bridgeConversationIds.add(conversationId); },
+  });
+
   const runUserText = async (chatId: number, text: string): Promise<void> => {
-    if (activeTurn) {
-      void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
-      return;
-    }
-    let conversationId: string;
-    try {
-      conversationId = await ensureConversation();
-    } catch (err) {
-      void sendToOwner(`Couldn't start a conversation: ${asErrorMessage(err)}`);
-      return;
-    }
     draftCounter += 1;
     const turn: ActiveTurn = {
-      conversationId,
+      conversationId: '',
+      cancelled: false,
       chatId,
       draftId: draftCounter,
       buffer: '',
@@ -552,7 +484,26 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       statusText: 'Thinking…',
       keepAliveTimer: null,
     };
-    activeTurn = turn;
+    // Taken before the chat and its model are looked up, so a second message
+    // can't start a competing turn meanwhile and /stop can cancel this one.
+    if (!turnSlot.reserve(turn)) {
+      void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
+      return;
+    }
+    let conversationId: string | null;
+    try {
+      // A turn cancelled while this waits (/new, /stop) saves nothing.
+      conversationId = await ensureConversation(() => turnSlot.owns(turn));
+    } catch (err) {
+      if (turnSlot.owns(turn)) void sendToOwner(`Couldn't start a conversation: ${asErrorMessage(err)}`);
+      clearTurn(turn);
+      return;
+    }
+    if (!conversationId || !turnSlot.owns(turn)) {
+      clearTurn(turn);
+      return;
+    }
+    turn.conversationId = conversationId;
     // Show "Thinking…" right away, and keep the ephemeral draft alive while
     // the agent works without producing text (long tool calls, retries).
     pushDraft(turn);
@@ -561,7 +512,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       const result = await engine.sendMessageStream(conversationId, text);
       // Success and stream errors are reported through bus events; this
       // fallback only covers early returns that never started a stream
-      // (e.g. buyer proxy unreachable).
+      // (e.g. gateway unreachable).
       if (!result.ok && !turn.finalized) {
         turn.finalized = true;
         void sendToOwner(describeStreamError(result.error ?? 'Unknown error', result.stopReason));
@@ -593,7 +544,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     }
     // Never respond with anything useful to strangers poking an unpaired bot.
     try {
-      await client?.sendMessage(message.chat.id, 'This bot is not paired. Pair it from the Antseed AI VPN on your computer.');
+      await client?.sendMessage(message.chat.id, 'This bot is not paired. Pair it from Antseed Desktop on your computer.');
     } catch {
       // Ignore.
     }
@@ -610,7 +561,11 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     if (text === '/new') {
-      if (activeTurn) await engine.abort(activeTurn.conversationId).catch(() => {});
+      const turn = turnSlot.cancel();
+      if (turn) {
+        clearTurn(turn);
+        if (turn.conversationId) await engine.abort(turn.conversationId).catch(() => {});
+      }
       if (settings) {
         settings.activeConversationId = null;
         await persistSettings();
@@ -623,9 +578,16 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     if (text === '/stop') {
-      const turn = activeTurn;
+      const turn = turnSlot.current;
       if (!turn) {
         void sendToOwner('Nothing is running.');
+        return;
+      }
+      // Still being set up: nothing was sent, so it just doesn't go.
+      if (!turn.conversationId) {
+        turnSlot.cancel();
+        clearTurn(turn);
+        void sendToOwner('Stopped.');
         return;
       }
       await engine.abort(turn.conversationId).catch(() => {});
@@ -654,7 +616,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       await client.answerCallbackQuery(query.id).catch(() => {});
       return;
     }
-    const decision = decisionCode === 'a1' ? 'allow_once' : decisionCode === 'ap' ? 'always_allow_peer' : 'deny';
+    const decision = decisionCode === 'a1' ? 'allow_once' : decisionCode === 'ap' ? 'always_allow' : 'deny';
     const pending = pendingApprovals.get(approvalId);
     pendingApprovals.delete(approvalId);
     const resolved = engine.resolveToolApproval(approvalId, decision);
@@ -755,7 +717,8 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     pollGeneration += 1;
     pollAbort?.abort();
     pollAbort = null;
-    if (activeTurn) clearTurn(activeTurn);
+    const turn = turnSlot.cancel();
+    if (turn) clearTurn(turn);
   };
 
   // ── Public API ──────────────────────────────────────────────────────
@@ -806,6 +769,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
         pairingCode: samePairedBot ? null : newPairingCode(),
         activeConversationId: samePairedBot ? settings!.activeConversationId : null,
         lastUpdateId: null,
+        model: samePairedBot ? settings!.model : null,
       };
       client = nextClient;
       lastError = null;
@@ -847,7 +811,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       }
       if (!wasRunning || settings?.ownerChatId == null) return;
       await Promise.race([
-        sendToOwner(`Going offline — the Antseed AI VPN is closing. ${OFFLINE_NOTE}`),
+        sendToOwner(`Going offline: Antseed Desktop is closing. ${OFFLINE_NOTE}`),
         new Promise((resolve) => { setTimeout(resolve, GOODBYE_TIMEOUT_MS); }),
       ]);
     },
