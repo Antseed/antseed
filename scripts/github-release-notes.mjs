@@ -15,21 +15,16 @@
  * Usage: node scripts/github-release-notes.mjs <notes.md>
  * Prints the CLI version, or nothing when that version is not on npm yet.
  */
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { root, readPackage, publishablePackages } from './publishable-packages.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [notesPath] = process.argv.slice(2);
 if (!notesPath) {
   console.error('usage: github-release-notes.mjs <notes.md>');
   process.exit(2);
 }
-
-// Must match the --filter set in .github/workflows/npm-publish.yml.
-const GROUP_DIRS = ['packages', 'plugins'];
-const EXTRA_DIRS = ['apps/cli', 'apps/network-stats', 'apps/payments', 'apps/ants', 'apps/gateway-console', 'apps/relay'];
 
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 
@@ -40,13 +35,6 @@ async function onNpm(name, version) {
   return true;
 }
 
-function readPackage(dir) {
-  const manifestPath = join(root, dir, 'package.json');
-  if (!existsSync(manifestPath)) return null;
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  return manifest.private ? null : { dir, name: manifest.name, version: manifest.version };
-}
-
 const cli = readPackage('apps/cli');
 if (!(await onNpm(cli.name, cli.version))) process.exit(0);
 
@@ -55,12 +43,9 @@ if (!(await onNpm(cli.name, cli.version))) process.exit(0);
 // packages it depends on).
 const since = git('log', '-2', '--format=%H', '-G"version": ', '--', 'apps/cli/package.json').split('\n')[1];
 
-const dirs = [...GROUP_DIRS.flatMap((group) => readdirSync(join(root, group)).map((entry) => join(group, entry))), ...EXTRA_DIRS];
 const released = [];
-for (const dir of dirs) {
-  const pkg = readPackage(dir);
-  if (!pkg) continue;
-  const bumped = !since || git('log', '-1', '--format=%H', '-G"version": ', `${since}..HEAD`, '--', join(dir, 'package.json'));
+for (const pkg of publishablePackages()) {
+  const bumped = !since || git('log', '-1', '--format=%H', '-G"version": ', `${since}..HEAD`, '--', join(pkg.dir, 'package.json'));
   if (bumped && (await onNpm(pkg.name, pkg.version))) released.push(pkg);
 }
 
