@@ -4297,6 +4297,49 @@ test('GET /v1/models is answered locally with the network-wide model list', asyn
   assert.equal(forwarded, 0)
 })
 
+test('GET /v1/models keeps a model whose cheaper provider fits the price cap, as a real request would use it', async () => {
+  const twin = makePeer('a', ['pricey', 'cheap'])
+  twin.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+    cheap: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 3 } } },
+  }
+  twin.providerServiceApiProtocols = {
+    pricey: { services: { 'twin-model': ['openai-chat-completions'] } },
+    cheap: { services: { 'twin-model': ['openai-chat-completions'] } },
+  }
+  const overCap = makePeer('b', ['pricey'])
+  overCap.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'only-pricey': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+  }
+  overCap.providerServiceApiProtocols = { pricey: { services: { 'only-pricey': ['openai-chat-completions'] } } }
+  // As the local router does: a request naming its provider is priced through that provider.
+  const router = {
+    allowsPeerForPolicy: (request: SerializedHttpRequest, peer: PeerInfo) => {
+      const provider = request.headers['x-antseed-provider'] ?? peer.providers[0]!
+      const services = peer.providerPricing![provider]!.services!
+      return Object.values(services).every((price) => price.inputUsdPerMillion <= 8)
+    },
+    onResult: () => undefined,
+  }
+  const proxy = makeBuyerProxyWithPeers([twin, overCap], [twin, overCap], router)
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))
+  assert.equal(res.statusCode, 200, res.body)
+  const ids = JSON.parse(res.body).data.map((model: { id: string }) => model.id)
+  assert.ok(ids.includes('twin-model'), `listed: ${ids.join(', ')}`)
+  assert.ok(!ids.includes('only-pricey'), `listed: ${ids.join(', ')}`)
+})
+
+test('route preview keeps sellers of models that are not chat models', async () => {
+  const imager = makePeer('a', ['openai'])
+  imager.onChainReputationScore = 90
+  imager.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'picture-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } }
+  imager.providerServiceApiProtocols = { openai: { services: { 'picture-model': ['openai-images'] } } }
+  const proxy = makeBuyerProxyWithPeers([imager], [imager], permissiveRouter())
+  const preview = await (proxy as any)._routePreview('picture-model', null)
+  assert.deepEqual(preview.map((candidate: { peerId: string }) => candidate.peerId), [imager.peerId])
+})
+
 test('GET /v1/models?type= filters by model type and rejects unknown types', async () => {
   const proxy = makeBuyerProxyWithPeers(makeNetworkModelPeers())
 
@@ -5461,8 +5504,12 @@ test('requests with the routed-model alias fail clearly when no default route is
 
   const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
   assert.equal(res.statusCode, 400)
-  const parsed = JSON.parse(res.body) as { error?: { code?: string } }
+  const parsed = JSON.parse(res.body) as { error?: { code?: string; message?: string } }
   assert.equal(parsed.error?.code, 'no_default_route')
+  // The desktop has no model picker for this route any more, so the error
+  // must point at what still sets it.
+  assert.doesNotMatch(parsed.error?.message ?? '', /desktop/i)
+  assert.match(parsed.error?.message ?? '', /POST \/_antseed\/route/)
 })
 
 test('substituteRoutedModelAlias updates content-length when substituting', () => {

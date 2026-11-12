@@ -1,5 +1,5 @@
 /**
- * Checkout popup windows (the hosted AntSeed Pay page and any sized popups
+ * Checkout popup windows (the hosted Antseed Pay page and any sized popups
  * it opens — card processors, sign-ins).
  *
  * Sized popups open as plain Electron child windows: no browser chrome (the
