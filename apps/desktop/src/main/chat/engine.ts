@@ -244,16 +244,19 @@ export function registerPiChatHandlers({
     const startedAt = Date.now();
     try {
       const endpoint = await getGatewayEndpoint();
-      const entries = await fetchGatewayModelEntries(endpoint, { force: payload?.force === true });
+      const options = { force: payload?.force === true };
+      // Routers lead the picker. Without them the models still list.
+      const [entries, routers] = await Promise.all([
+        fetchGatewayModelEntries(endpoint, options),
+        fetchGatewayRouters(endpoint, options).catch((error: unknown): ChatModel[] => {
+          appendSystemLog(`Chat router list failed: ${asErrorMessage(error)}`);
+          return [];
+        }),
+      ]);
       lastEntries = entries;
       // Every model, those no trusted seller serves marked: the picker lists
       // the apps' set and still finds a chat's model among the rest.
       const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
-      // Routers lead the picker. Without them the models still list.
-      const routers = await fetchGatewayRouters(endpoint, { force: payload?.force === true }).catch((error: unknown) => {
-        appendSystemLog(`Chat router list failed: ${asErrorMessage(error)}`);
-        return [] as ChatModel[];
-      });
       return { ok: true, data: [...routers, ...models] };
     } catch (error) {
       const message = asErrorMessage(error);
