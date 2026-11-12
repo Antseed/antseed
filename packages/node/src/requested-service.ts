@@ -37,7 +37,7 @@ export interface ServiceRefusal {
     | 'invalid_billing_field'
     /** A multipart body is not a form the seller can read. */
     | 'unsupported_multipart_body'
-    /** The body the seller would write for its provider is larger than a request may be. */
+    /** The body the seller would write for its provider is larger than a request may be, or nested too deeply to write. */
     | 'request_too_large';
   message: string;
 }
@@ -154,7 +154,14 @@ function billedJson(bytes: Uint8Array): BilledRequestBody {
   if (typeof service !== 'string') return service;
   const priced = pricedValueRefusal(body);
   if (priced) return priced;
-  return written(service, 'application/json', new TextEncoder().encode(JSON.stringify(body)));
+  let text: string;
+  try {
+    text = JSON.stringify(body);
+  } catch {
+    // A body nested deeper than the stack allows parses, but cannot be written again.
+    return refuse('request_too_large', 'Request body is nested too deeply to write for the provider.');
+  }
+  return written(service, 'application/json', new TextEncoder().encode(text));
 }
 
 /** The body the seller hands its provider, unless writing it made it larger than a request may be. */

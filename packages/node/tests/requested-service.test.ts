@@ -364,6 +364,11 @@ describe('billedRequestBody', () => {
       expect(performance.now() - started).toBeLessThan(1000);
     });
 
+    it('refuses a JSON body nested too deeply to write again, without throwing', () => {
+      const depth = 100_000;
+      expect(billedRequestBody(rawJson(`{"model":"svc","x":${'['.repeat(depth)}${']'.repeat(depth)}}`))).toMatchObject({ refusal: { code: 'request_too_large' } });
+    });
+
     it('refuses a body that would be larger than a request may be once written', () => {
       // `1e20` is written out as 21 digits, so this 16 MiB body would be written as about 70 MiB.
       const numbers = Array.from({ length: 3_300_000 }, () => '1e20').join(',');
