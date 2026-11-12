@@ -8,7 +8,8 @@ export type { ApprovedSellerImage } from './approved-seller-images.js'
  * which reviewed software handles its prompts, not just that the hardware is genuine. A seller
  * node runs Antseed's TEE seller image (deploy/tee-seller) as a dstack (Phala) app:
  *   - the CVM's OS (MRTD and RTMR0-2: firmware, VM shape, kernel, boot config, root filesystem)
- *     is a released dstack production image listed in `os`;
+ *     is a released dstack production image listed in `os`, or the seller sent vm_config and the
+ *     full event log and a local lite check returns an os_image_hash listed in `osImages`;
  *   - the app compose (measured into RTMR3 as its hash) runs one of the `images` and passes the
  *     compose rules in dstack-app-compose.ts, which keep every setting that decides where
  *     prompts go readable by the buyer.
@@ -22,8 +23,15 @@ export interface ApprovedDstackOs {
   rtmr2: string
 }
 
+/** An approved dstack OS image identified by its os_image_hash (64 lowercase hex). */
+export interface ApprovedOsImage {
+  name: string
+  hash: string
+}
+
 export interface ApprovedNodeBuilds {
   os: readonly ApprovedDstackOs[]
+  osImages: readonly ApprovedOsImage[]
   images: readonly ApprovedSellerImage[]
 }
 
@@ -56,6 +64,11 @@ export const APPROVED_DSTACK_OS: readonly ApprovedDstackOs[] = DSTACK_0_6_1_RTMR
   rtmr0,
 }))
 
+/** Approved production dstack OS image hashes for the local lite OS check. */
+export const APPROVED_OS_IMAGES: readonly ApprovedOsImage[] = [
+  { name: 'dstack 0.6.1', hash: 'ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6' },
+]
+
 const MEASUREMENT_FIELDS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2'] as const
 const isMeasurement = (v: unknown): boolean => typeof v === 'string' && /^[0-9a-fA-F]{96}$/.test(v)
 
@@ -63,6 +76,12 @@ function isApprovedDstackOs(m: unknown): m is ApprovedDstackOs {
   if (!m || typeof m !== 'object') return false
   const e = m as Record<string, unknown>
   return typeof e['name'] === 'string' && MEASUREMENT_FIELDS.every((f) => isMeasurement(e[f]))
+}
+
+function isApprovedOsImage(m: unknown): m is ApprovedOsImage {
+  if (!m || typeof m !== 'object') return false
+  const e = m as Record<string, unknown>
+  return typeof e['name'] === 'string' && typeof e['hash'] === 'string' && /^[0-9a-f]{64}$/.test(e['hash'])
 }
 
 function isApprovedSellerImage(m: unknown): m is ApprovedSellerImage {
@@ -73,11 +92,11 @@ function isApprovedSellerImage(m: unknown): m is ApprovedSellerImage {
 
 /**
  * The approved builds plus a buyer's own additions from ANTSEED_VERIFIER_NODE_BUILDS: JSON
- * `{ "os": [...], "images": [...] }`, inline or "@/path/to/file.json". Additions only widen what
- * this buyer accepts; malformed entries are ignored.
+ * `{ "os": [...], "osImages": [...], "images": [...] }`, inline or "@/path/to/file.json".
+ * Additions only widen what this buyer accepts; malformed entries are ignored.
  */
 export function readApprovedNodeBuilds(): ApprovedNodeBuilds {
-  const builds = { os: [...APPROVED_DSTACK_OS], images: [...APPROVED_SELLER_IMAGES] }
+  const builds = { os: [...APPROVED_DSTACK_OS], osImages: [...APPROVED_OS_IMAGES], images: [...APPROVED_SELLER_IMAGES] }
   const raw = process.env['ANTSEED_VERIFIER_NODE_BUILDS']?.trim()
   if (!raw) return builds
   try {
@@ -85,6 +104,7 @@ export function readApprovedNodeBuilds(): ApprovedNodeBuilds {
     const list = (key: string): unknown[] => (Array.isArray(parsed?.[key]) ? parsed[key] as unknown[] : [])
     return {
       os: [...builds.os, ...list('os').filter(isApprovedDstackOs)],
+      osImages: [...builds.osImages, ...list('osImages').filter(isApprovedOsImage)],
       images: [...builds.images, ...list('images').filter(isApprovedSellerImage)],
     }
   } catch (err) {

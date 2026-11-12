@@ -5,7 +5,7 @@ authors: [antseed]
 tags: [verification, models, research, KBF]
 description: "A study of model integrity, and why fingerprinting finds what benchmarks can't. We fingerprinted MiniMax M3 across 11 providers on OpenRouter and found two distinct behaviors under one label."
 keywords: [model verification, model fingerprinting, Knowledge Boundary Fingerprinting, KBF, MiniMax M3, open weights, OpenRouter, model integrity]
-image: /img/blog/minimax-m3-fingerprinting/og.jpg
+image: /og-image-open-market.png
 date: 2026-11-12
 ---
 
