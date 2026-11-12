@@ -310,6 +310,16 @@ export interface RequestRouter {
   rank: number | null
 }
 
+/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
+export interface ModelUsage {
+  model: string
+  amountUsdc: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  requests: number
+}
+
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */
 export interface KeyUsageSummary {
   requests: number
@@ -1633,6 +1643,73 @@ export class GatewayStore {
     return spend
   }
 
+  /**
+   * A key's usage per model (the one that served it, else the one asked
+   * for), for comparing with retail prices: metered spend
+   * and tokens from the ledger, plus the tokens responses reported where no
+   * spend was metered (free requests). Rows without a model are left out.
+   * The reported tokens come from the request log, so requests pruned from it
+   * no longer count theirs. `requests` counts requests, not ledger entries: a
+   * request metered in several spend entries, or in both the ledger and the
+   * log, counts once.
+   */
+  usageByModel(keyId: string): ModelUsage[] {
+    return this.usageByModelForKeys([keyId])
+  }
+
+  /**
+   * `usageByModel` summed over `keyIds` in one batched read per source (the
+   * retired keys an app's history spans). Requests are counted per key before
+   * the sum, so request tags from different keys are never merged.
+   */
+  usageByModelForKeys(keyIds: readonly string[]): ModelUsage[] {
+    if (keyIds.length === 0) return []
+    const ids = JSON.stringify(keyIds)
+    const ledger = this._stmt(`
+      SELECT COALESCE(served_model, model) AS model, COALESCE(-SUM(amount_usdc), 0) AS amount, COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+      GROUP BY key_id, COALESCE(served_model, model)
+    `).all(ids) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    const reported = this._stmt(`
+      SELECT COALESCE(r.served_model, r.model) AS model, COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
+      FROM gateway_requests r
+      WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      GROUP BY r.key_id, COALESCE(r.served_model, r.model)
+    `).all(ids) as Array<{ model: string; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    // Distinct requests per key and model over both sources; a spend entry
+    // without a request tag stands for its own request.
+    const counted = this._stmt(`
+      SELECT model, COUNT(DISTINCT request) AS requests FROM (
+        SELECT key_id, COALESCE(served_model, model) AS model, COALESCE(request_tag, 'entry:' || external_ref) AS request
+        FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+        UNION
+        SELECT r.key_id AS key_id, COALESCE(r.served_model, r.model) AS model, r.tag AS request
+        FROM gateway_requests r
+        WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      ) GROUP BY key_id, model
+    `).all(ids, ids) as Array<{ model: string; requests: number }>
+    const requests = new Map<string, number>()
+    for (const row of counted) requests.set(row.model, (requests.get(row.model) ?? 0) + row.requests)
+    const byModel = new Map<string, ModelUsage>()
+    const add = (model: string, row: Omit<ModelUsage, 'model' | 'requests'>) => {
+      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+      byModel.set(model, {
+        model,
+        amountUsdc: current.amountUsdc + row.amountUsdc,
+        inputTokens: current.inputTokens + row.inputTokens,
+        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
+        outputTokens: current.outputTokens + row.outputTokens,
+        requests: 0,
+      })
+    }
+    for (const row of ledger) add(row.model, { amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    for (const row of reported) add(row.model, { amountUsdc: 0, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    return [...byModel.values()].map((usage) => ({ ...usage, requests: requests.get(usage.model) ?? 0 }))
+  }
+
   usageStats(keyId: string, since = 0): KeyUsageStats {
     const requests = this._stmt(`
       SELECT COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
@@ -1667,6 +1744,13 @@ export class GatewayStore {
       cachedInputTokens: ledger.cached_input_tokens + reported.cached_input_tokens,
       outputTokens: ledger.output_tokens + reported.output_tokens,
     }
+  }
+
+  /** Which of `keyIds` name a key (revoked ones included), in one query. */
+  existingKeyIds(keyIds: readonly string[]): Set<string> {
+    if (keyIds.length === 0) return new Set()
+    const rows = this._stmt('SELECT id FROM api_keys WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(keyIds)) as Array<{ id: string }>
+    return new Set(rows.map((row) => row.id))
   }
 
   /**
