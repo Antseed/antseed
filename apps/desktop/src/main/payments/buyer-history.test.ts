@@ -71,12 +71,13 @@ test('replacing the earliest key leaves the totals unchanged', () => {
   assert.equal(after.spentUsd, before.spentUsd);
 });
 
-type Buyer = { server: Server; port: number; hits: string[]; failing: { value: boolean }; signedMicros: { value: number } };
+type Buyer = { server: Server; port: number; hits: string[]; failing: { value: boolean }; signedMicros: { value: number }; requestCount: { value: number } };
 
 async function fakeBuyer(address: string): Promise<Buyer> {
   const hits: string[] = [];
   const failing = { value: false };
   const signedMicros = { value: 3_000_000 };
+  const requestCount = { value: 7 };
   const server = createServer((req, res) => {
     hits.push(req.url ?? '');
     if (failing.value) {
@@ -86,13 +87,13 @@ async function fakeBuyer(address: string): Promise<Buyer> {
     const send = (body: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
     if (req.url === '/_antseed/buyer-identities') return send({ ok: true, identities: [{ name: 'default', address }] });
     if (req.url === '/_antseed/channels?all=1') {
-      return send({ ok: true, channels: [{ channelKind: 'paid', cumulativeSigned: String(signedMicros.value), settledAmount: null, requestCount: 7 }] });
+      return send({ ok: true, channels: [{ channelKind: 'paid', cumulativeSigned: String(signedMicros.value), settledAmount: null, requestCount: requestCount.value }] });
     }
-    if (req.url === '/_antseed/buyer-usage') return send({ ok: true, totals: { channels: [{ requestCount: 7 }] } });
+    if (req.url === '/_antseed/buyer-usage') return send({ ok: true, totals: { channels: [{ requestCount: requestCount.value }] } });
     res.writeHead(404).end();
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { server, port: (server.address() as AddressInfo).port, hits, failing, signedMicros };
+  return { server, port: (server.address() as AddressInfo).port, hits, failing, signedMicros, requestCount };
 }
 
 function savedFile(t: { after: (fn: () => void) => void }): string {
@@ -104,115 +105,103 @@ function savedFile(t: { after: (fn: () => void) => void }): string {
 const GATEWAY: KeyUsage = { requests: 3, spentUsd: '1' };
 const gatewayUsage = async () => GATEWAY;
 const HISTORY = { requests: 4, spentUsd: '2' };
-const FAST = { quietWindowMs: 20, retryAfterMs: 0 };
 
-/** One read, the background attempt it starts, and the read after it. */
+/** One read, the background refresh it starts, and the result after it. */
 async function readAndSettle(history: BuyerHistory, port: number, wallet: string, usage: () => Promise<KeyUsage | null>): Promise<KeyUsage | null> {
   history.read(port, wallet, usage);
   await history.settled();
-  return history.read(port, wallet, usage);
+  const result = history.read(port, wallet, usage);
+  await history.settled();
+  return result;
 }
 
-test('history never makes Home wait: it is worked out in the background, then kept', async (t) => {
+test('history never makes Home wait: it is worked out in the background', async (t) => {
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  const history = new BuyerHistory(() => null, FAST);
+  const history = new BuyerHistory(() => null, 60_000);
   assert.equal(history.read(buyer.port, WALLET, gatewayUsage), null, 'nothing yet');
   await history.settled();
   assert.deepEqual(history.read(buyer.port, WALLET.toUpperCase().replace('0X', '0x'), gatewayUsage), HISTORY);
   const reads = buyer.hits.length;
-  assert.deepEqual(history.read(buyer.port, WALLET, async () => ({ requests: 99, spentUsd: '99' })), HISTORY, 'kept, not worked out again');
-  assert.equal(buyer.hits.length, reads);
-});
-
-test('a failed read on either side keeps nothing, and a later read tries again', async (t) => {
-  const buyer = await fakeBuyer(WALLET);
-  t.after(() => buyer.server.close());
-  // One attempt each: an attempt that finds nothing is not retried for a while.
-  const once = () => new BuyerHistory(() => null, { quietWindowMs: 20, retryAfterMs: 60_000 });
-  buyer.failing.value = true;
-  assert.equal(await readAndSettle(once(), buyer.port, WALLET, gatewayUsage), null);
-  buyer.failing.value = false;
-  assert.equal(await readAndSettle(once(), buyer.port, WALLET, async () => null), null, 'gateway totals unreadable');
-  assert.equal(await readAndSettle(once(), buyer.port, WALLET, async () => { throw new Error('gateway CLI failed'); }), null);
-
-  // Tried again on a later read.
-  const history = new BuyerHistory(() => null, FAST);
-  buyer.failing.value = true;
-  history.read(buyer.port, WALLET, gatewayUsage);
+  assert.deepEqual(history.read(buyer.port, WALLET, gatewayUsage), HISTORY);
   await history.settled();
-  buyer.failing.value = false;
-  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, gatewayUsage), HISTORY);
+  assert.equal(buyer.hits.length, reads, 'not worked out again before the refresh interval');
 });
 
-test('a charge the gateway takes in during the window never becomes history', async (t) => {
+test('a charge the gateway takes in late is corrected at the next refresh', async (t) => {
   const file = savedFile(t);
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  const history = new BuyerHistory(() => file, FAST);
+  const history = new BuyerHistory(() => file, 0);
 
-  // The buyer already signed a $0.50 charge the gateway hasn't taken in yet; it arrives during the window.
-  let reads = 0;
-  const lagging = async () => (++reads === 1 ? GATEWAY : { requests: 3, spentUsd: '1.5' });
-  assert.equal(await readAndSettle(history, buyer.port, WALLET, lagging), null);
-  assert.throws(() => readFileSync(file), 'nothing is saved');
-
-  // Next try, with both sides caught up: the charge belongs to the gateway, not to the history.
-  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => ({ requests: 3, spentUsd: '1.5' })), { requests: 4, spentUsd: '1.5' });
+  // The buyer signed a $0.50 charge ($3 in all) that the gateway hasn't taken in yet ($0.50 before it).
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => ({ requests: 3, spentUsd: '0.5' })), { requests: 4, spentUsd: '2.5' });
+  // Once it has, the charge is the gateway's, not history; the saved figure follows.
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => ({ requests: 3, spentUsd: '1' })), HISTORY);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { wallet: WALLET, usage: HISTORY });
 });
 
-test('new buyer usage during the window keeps nothing', async (t) => {
+test('a request still in flight is corrected once the buyer counts it', async (t) => {
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  const history = new BuyerHistory(() => null, { quietWindowMs: 50, retryAfterMs: 0 });
-  history.read(buyer.port, WALLET, gatewayUsage);
-  setTimeout(() => { buyer.signedMicros.value += 100_000; }, 10);
-  await history.settled();
-  assert.equal(history.read(buyer.port, WALLET, async () => null), null);
+  const history = new BuyerHistory(() => null, 0);
+  // 7 requests before the gateway; one gateway request has started but the buyer hasn't counted it yet.
+  const gateway = async () => ({ requests: 1, spentUsd: '0' });
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, gateway), { requests: 6, spentUsd: '3' });
+  // It completes: the buyer counts it, and the history is 7 again (Home: 1 + 7).
+  buyer.requestCount.value = 8;
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, gateway), { requests: 7, spentUsd: '3' });
 });
 
-test('an attempt that found traffic waits before the next one', async (t) => {
+test('a refresh that can\'t read both sides keeps the last result', async (t) => {
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  const history = new BuyerHistory(() => null, { quietWindowMs: 0, retryAfterMs: 60_000 });
+  const history = new BuyerHistory(() => null, 0);
   buyer.failing.value = true;
-  history.read(buyer.port, WALLET, gatewayUsage);
-  await history.settled();
+  assert.equal(await readAndSettle(history, buyer.port, WALLET, gatewayUsage), null, 'none before a first result');
   buyer.failing.value = false;
-  const reads = buyer.hits.length;
-  assert.equal(history.read(buyer.port, WALLET, gatewayUsage), null);
-  await history.settled();
-  assert.equal(buyer.hits.length, reads, 'no new attempt yet');
+  assert.equal(await readAndSettle(history, buyer.port, WALLET, async () => null), null, 'gateway totals unreadable');
+  assert.equal(await readAndSettle(history, buyer.port, WALLET, async () => { throw new Error('gateway CLI failed'); }), null);
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, gatewayUsage), HISTORY);
+
+  buyer.failing.value = true;
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, gatewayUsage), HISTORY);
+  buyer.failing.value = false;
+  assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => null), HISTORY);
 });
 
 test('a later launch shows the saved history straight away, before the buyer answers', async (t) => {
   const file = savedFile(t);
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  assert.deepEqual(await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, WALLET, gatewayUsage), HISTORY);
+  assert.deepEqual(await readAndSettle(new BuyerHistory(() => file, 0), buyer.port, WALLET, gatewayUsage), HISTORY);
 
   // Next launch: the buyer is still starting.
   buyer.failing.value = true;
-  const reads = buyer.hits.length;
-  assert.deepEqual(new BuyerHistory(() => file, FAST).read(buyer.port, WALLET, async () => null), HISTORY);
-  assert.equal(buyer.hits.length, reads, 'the buyer is not asked');
+  const next = new BuyerHistory(() => file, 0);
+  assert.deepEqual(next.read(buyer.port, WALLET, async () => null), HISTORY);
+  await next.settled();
 });
 
-test('saved history for another wallet, or a damaged file, is worked out again', async (t) => {
+test('saved history for another wallet, or a damaged file, is not shown', async (t) => {
   const file = savedFile(t);
   const buyer = await fakeBuyer(WALLET);
   t.after(() => buyer.server.close());
-  await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, WALLET, gatewayUsage);
+  await readAndSettle(new BuyerHistory(() => file, 0), buyer.port, WALLET, gatewayUsage);
 
   buyer.failing.value = true;
-  assert.equal(await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, '0x00000000000000000000000000000000000000cc', gatewayUsage), null, 'another wallet');
+  const other = new BuyerHistory(() => file, 0);
+  assert.equal(other.read(buyer.port, '0x00000000000000000000000000000000000000cc', gatewayUsage), null, 'another wallet');
+  await other.settled();
   for (const damaged of ['not json', JSON.stringify({ wallet: WALLET, usage: { requests: -1, spentUsd: '3' } }), JSON.stringify({ wallet: WALLET, usage: { requests: 4, spentUsd: '3e5' } })]) {
     writeFileSync(file, damaged);
-    assert.equal(await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, WALLET, gatewayUsage), null, damaged);
+    const fresh = new BuyerHistory(() => file, 0);
+    assert.equal(fresh.read(buyer.port, WALLET, gatewayUsage), null, damaged);
+    await fresh.settled();
   }
 
   buyer.failing.value = false;
-  assert.deepEqual(await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, WALLET, gatewayUsage), HISTORY);
+  assert.deepEqual(await readAndSettle(new BuyerHistory(() => file, 0), buyer.port, WALLET, gatewayUsage), HISTORY);
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { wallet: WALLET, usage: HISTORY }, 'a fresh result replaces it');
 });
 
@@ -220,7 +209,7 @@ test('a buyer paying from another wallet gives no history', async (t) => {
   const file = savedFile(t);
   const buyer = await fakeBuyer('0x00000000000000000000000000000000000000bb');
   t.after(() => buyer.server.close());
-  assert.equal(await readAndSettle(new BuyerHistory(() => file, FAST), buyer.port, WALLET, gatewayUsage), null);
+  assert.equal(await readAndSettle(new BuyerHistory(() => file, 60_000), buyer.port, WALLET, gatewayUsage), null);
   assert.deepEqual(buyer.hits, ['/_antseed/buyer-identities'], 'its channels are never read');
   assert.throws(() => readFileSync(file), 'nothing is saved');
 });

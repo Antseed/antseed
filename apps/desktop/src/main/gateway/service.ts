@@ -508,7 +508,7 @@ async function readKeyInfo(origin: string, apiKey: string, fresh = false): Promi
   return read.missing ? null : parseGatewayKeyInfo(read.body);
 }
 
-/** Usage from before the local gateway, saved next to the desktop's gateway settings once worked out. */
+/** Usage from before the local gateway, kept up to date and saved next to the desktop's gateway settings. */
 const buyerHistory = new BuyerHistory(() => path.join(resolveConnectDataDir(), 'desktop-usage-history.json'));
 
 /** What the gateway has sent through the default wallet's buyer: every key paying from it, revoked ones included, read as the owner. */
