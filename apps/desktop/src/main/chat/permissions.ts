@@ -5,7 +5,7 @@ import { CHAT_DATA_DIR } from './paths.js';
 const CHAT_SETTINGS_FILE = path.join(CHAT_DATA_DIR, 'settings.json');
 
 export type ChatPermissionMode = 'manual' | 'full';
-export type ToolApprovalDecision = 'allow_once' | 'always_allow_peer' | 'deny';
+export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
 
 export type ToolApprovalRequest = {
   id: string;
@@ -16,8 +16,9 @@ export type ToolApprovalRequest = {
   permissionLabel: string;
   input: Record<string, unknown>;
   workspacePath: string;
-  peerId: string | null;
-  peerName: string | null;
+  /** Model the approval is scoped to: "always allow" is remembered per model. */
+  modelId: string | null;
+  modelName: string | null;
   title: string;
   description: string;
   subject: string;
@@ -32,6 +33,11 @@ export type ChatPeerSettings = {
 
 export type ChatGlobalSettings = {
   workspacePath: string | null;
+  /**
+   * Agent-access settings per scope. Scopes are gateway model ids now; the
+   * key keeps its old name (and old per-peer rows stay inert) so existing
+   * settings files load unchanged.
+   */
   peers: Record<string, ChatPeerSettings>;
 };
 
@@ -46,8 +52,8 @@ export function normalizePermissionMode(value: unknown): ChatPermissionMode {
   return value === 'full' ? 'full' : 'manual';
 }
 
-function normalizePeerId(peerId: string | null | undefined): string | null {
-  const trimmed = peerId?.trim();
+function normalizeScopeId(modelId: string | null | undefined): string | null {
+  const trimmed = modelId?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
@@ -72,10 +78,10 @@ function normalizePeers(value: unknown): Record<string, ChatPeerSettings> {
   const peers: Record<string, ChatPeerSettings> = {};
   if (!value || typeof value !== 'object') return peers;
 
-  for (const [peerId, settings] of Object.entries(value as Record<string, unknown>)) {
-    const normalizedPeerId = normalizePeerId(peerId);
-    if (!normalizedPeerId) continue;
-    peers[normalizedPeerId] = normalizePeerSettings(settings);
+  for (const [modelId, settings] of Object.entries(value as Record<string, unknown>)) {
+    const scopeId = normalizeScopeId(modelId);
+    if (!scopeId) continue;
+    peers[scopeId] = normalizePeerSettings(settings);
   }
 
   return peers;
@@ -114,11 +120,11 @@ async function saveChatSettings(next: ChatGlobalSettings): Promise<void> {
   await writeFile(CHAT_SETTINGS_FILE, JSON.stringify(chatSettingsCache, null, 2), 'utf8');
 }
 
-export async function getPeerPermissionMode(peerId: string | null | undefined): Promise<ChatPermissionMode> {
-  const normalizedPeerId = normalizePeerId(peerId);
-  if (!normalizedPeerId) return 'manual';
+export async function getModelPermissionMode(modelId: string | null | undefined): Promise<ChatPermissionMode> {
+  const scopeId = normalizeScopeId(modelId);
+  if (!scopeId) return 'manual';
   const settings = await loadChatSettings();
-  return settings.peers[normalizedPeerId]?.permissionMode ?? 'manual';
+  return settings.peers[scopeId]?.permissionMode ?? 'manual';
 }
 
 export async function getChatWorkspacePath(): Promise<string | null> {
@@ -138,46 +144,46 @@ export async function setChatWorkspacePath(workspacePath: string): Promise<void>
   });
 }
 
-export async function setPeerPermissionMode(peerId: string | null | undefined, mode: ChatPermissionMode): Promise<void> {
-  const normalizedPeerId = normalizePeerId(peerId);
-  if (!normalizedPeerId) {
-    throw new Error('Cannot persist permission mode without a peer id');
+export async function setModelPermissionMode(modelId: string | null | undefined, mode: ChatPermissionMode): Promise<void> {
+  const scopeId = normalizeScopeId(modelId);
+  if (!scopeId) {
+    throw new Error('Cannot persist permission mode without a model id');
   }
   const settings = await loadChatSettings();
-  const peerSettings = settings.peers[normalizedPeerId] ?? { permissionMode: 'manual', toolPermissions: [] };
+  const modelSettings = settings.peers[scopeId] ?? { permissionMode: 'manual', toolPermissions: [] };
   await saveChatSettings({
     ...settings,
     peers: {
       ...settings.peers,
-      [normalizedPeerId]: {
-        ...peerSettings,
+      [scopeId]: {
+        ...modelSettings,
         permissionMode: normalizePermissionMode(mode),
       },
     },
   });
 }
 
-export async function isToolAllowedForPeer(peerId: string | null | undefined, permissionKey: string): Promise<boolean> {
-  const normalizedPeerId = normalizePeerId(peerId);
-  if (!normalizedPeerId) return false;
+export async function isToolAllowedForModel(modelId: string | null | undefined, permissionKey: string): Promise<boolean> {
+  const scopeId = normalizeScopeId(modelId);
+  if (!scopeId) return false;
   const settings = await loadChatSettings();
-  return settings.peers[normalizedPeerId]?.toolPermissions.includes(permissionKey) ?? false;
+  return settings.peers[scopeId]?.toolPermissions.includes(permissionKey) ?? false;
 }
 
-export async function allowToolForPeer(peerId: string | null | undefined, permissionKey: string): Promise<void> {
-  const normalizedPeerId = normalizePeerId(peerId);
-  if (!normalizedPeerId) {
-    throw new Error('Cannot persist tool approval without a peer id');
+export async function allowToolForModel(modelId: string | null | undefined, permissionKey: string): Promise<void> {
+  const scopeId = normalizeScopeId(modelId);
+  if (!scopeId) {
+    throw new Error('Cannot persist tool approval without a model id');
   }
   const settings = await loadChatSettings();
-  const peerSettings = settings.peers[normalizedPeerId] ?? { permissionMode: 'manual', toolPermissions: [] };
+  const modelSettings = settings.peers[scopeId] ?? { permissionMode: 'manual', toolPermissions: [] };
   await saveChatSettings({
     ...settings,
     peers: {
       ...settings.peers,
-      [normalizedPeerId]: {
-        ...peerSettings,
-        toolPermissions: normalizeToolPermissions([...peerSettings.toolPermissions, permissionKey]),
+      [scopeId]: {
+        ...modelSettings,
+        toolPermissions: normalizeToolPermissions([...modelSettings.toolPermissions, permissionKey]),
       },
     },
   });

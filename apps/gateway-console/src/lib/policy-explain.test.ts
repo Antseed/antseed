@@ -9,7 +9,7 @@ const peer = (peerId: string, name: string, tee = false) => ({ peerId, displayNa
 const PEERS = [peer(A, 'Alpha', true), peer(B, 'Beta'), peer(C, 'Gamma')]
 
 const candidate = (peerId: string, eligible: boolean, trustScore: number, input = 1): RoutePreview['candidates'][number] => ({
-  peerId, displayName: null, rank: eligible ? 1 : null, eligible, reasons: [], inputUsdPerMillion: input, outputUsdPerMillion: 2, trustScore, selection: null,
+  peerId, displayName: null, rank: eligible ? 1 : null, eligible, reasons: [], inputUsdPerMillion: input, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, trustScore, selection: null,
 })
 
 describe('policy sentences', () => {

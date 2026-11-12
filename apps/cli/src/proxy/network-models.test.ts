@@ -19,6 +19,14 @@ test('network model offers preserve advertised verifiers without inferring suppo
   assert.ok(model)
   assert.deepEqual(model.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, ['antseed-verifier'])
   assert.deepEqual(model.peers.find((peer) => peer.peerId === legacyPeer.peerId)?.advertisedVerifierIds, [])
+  // A buyer that checks attestations lists the TEE verifier only for sellers that passed.
+  const unproven = buildNetworkModels(peers, NOW_MS, { teeScope: () => null })[0]
+  assert.deepEqual(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, [])
+  assert.equal(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.teeScope, undefined)
+  const proven = buildNetworkModels(peers, NOW_MS, { teeScope: (peer) => (peer.peerId === teePeer.peerId ? 'seller-node' : null) })[0]
+  const provenPeer = proven?.peers.find((peer) => peer.peerId === teePeer.peerId)
+  assert.deepEqual(provenPeer?.advertisedVerifierIds, ['antseed-verifier'])
+  assert.equal(provenPeer?.teeScope, 'seller-node')
   teePeer.capabilities = []
   assert.deepEqual(buildNetworkModels(peers, NOW_MS)[0]?.peers[0]?.advertisedVerifierIds, [])
 })

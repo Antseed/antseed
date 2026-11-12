@@ -4,7 +4,7 @@
  * On phones the site's "Get Started" CTAs land here instead of the desktop
  * installer: Antseed runs on a computer, so the mobile path walks through
  * creating a Telegram bot with @BotFather now and pasting the token into
- * the AI VPN later. Two screens, hash-routed (`#instructions`) so the browser
+ * Antseed Desktop later. Two screens, hash-routed (`#instructions`) so the browser
  * back button works between them. Rendered without the site Layout — the
  * design is a bare, focused flow with its own "Back to site" affordance.
  */
@@ -170,18 +170,18 @@ function InstructionsScreen({onBack}: {onBack: () => void}) {
           />
           <div className={styles.stepRow}>
             <span className={styles.stepNumber}>2</span>
-            <p>You&apos;ll get a token back, keep it, you&apos;ll paste it into the AI VPN after installing.</p>
+            <p>You&apos;ll get a token back, keep it, you&apos;ll paste it into Antseed Desktop after installing.</p>
           </div>
         </Reveal>
         <Reveal delay={180} className={styles.stepCard}>
           <img
             className={`${styles.stepImage} ${styles.stepImageFlush}`}
             src="/img/get-started/step-vpr.png"
-            alt="Antseed AI VPN's Telegram Bot settings with the token field"
+            alt="Antseed Desktop's Telegram Bot settings with the token field"
           />
           <div className={styles.stepRow}>
             <span className={styles.stepNumber}>3</span>
-            <p>When you get to your computer, install the AI VPN and paste the token into it.</p>
+            <p>When you get to your computer, install Antseed Desktop and paste the token into it.</p>
           </div>
         </Reveal>
       </div>
@@ -226,7 +226,7 @@ export default function GetStartedPage() {
         <title>Get Started — Antseed</title>
         <meta
           name="description"
-          content="Get on the Antseed network from your phone: create a Telegram bot now, paste the token into the AI VPN on your computer later."
+          content="Get on the Antseed network from your phone: create a Telegram bot now, paste the token into Antseed Desktop on your computer later."
         />
       </Head>
       {step === 1 ? <IntroScreen onContinue={goInstructions} /> : <InstructionsScreen onBack={goIntro} />}
