@@ -32,7 +32,8 @@ export function saveLastChatModel(modelId: string): void {
  * listing now names differently (the same model by the canonical rule) still finds it.
  */
 export function findChatModel(models: ChatModel[], modelId: string | null | undefined): ChatModel | null {
-  return findListedModel(models, modelId);
+  // A router's id is its `<peerId>@<serviceId>` as a whole, not a pinned model.
+  return models.find((model) => model.router && model.id === modelId) ?? findListedModel(models, modelId);
 }
 
 /**
@@ -56,7 +57,8 @@ export function pickerChatModels(models: ChatModel[], inUse: Array<string | null
 export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string | null): string | null {
   const last = findChatModel(models, lastModelId);
   if (last?.type === 'text') return last.id;
-  const text = models.filter((model) => model.type === 'text');
+  // A router picks models whose prices it doesn't list, so it is never the default.
+  const text = models.filter((model) => model.type === 'text' && !model.router);
   const best = [...text].sort(compareDefaultModels)[0];
   return best?.id ?? null;
 }
@@ -133,15 +135,20 @@ export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: st
 export function filterChatModels(
   models: ChatModel[],
   query: string,
-  freeOnly = false,
-): { text: ChatModel[]; image: ChatModel[] } {
+  filter: 'free' | 'routers' | null = null,
+): { routers: ChatModel[]; text: ChatModel[]; image: ChatModel[] } {
   const needle = query.trim().toLowerCase();
   const matches = needle
-    ? models.filter((model) => model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle))
+    ? models.filter((model) => model.id.toLowerCase().includes(needle)
+      || model.label.toLowerCase().includes(needle)
+      || (model.router?.sellerName?.toLowerCase().includes(needle) ?? false))
     : models;
-  const shown = freeOnly ? matches.filter((model) => model.free) : matches;
+  const routers = filter === 'free' ? [] : matches.filter((model) => model.router);
+  if (filter === 'routers') return { routers, text: [], image: [] };
+  const shown = matches.filter((model) => !model.router && (filter !== 'free' || model.free));
   const freeFirst = (left: ChatModel, right: ChatModel) => Number(right.free) - Number(left.free);
   return {
+    routers,
     text: shown.filter((model) => model.type === 'text').sort(freeFirst),
     image: shown.filter((model) => model.type === 'image').sort(freeFirst),
   };

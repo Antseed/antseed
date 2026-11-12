@@ -9,13 +9,13 @@ it('renders accessible Help and API keys buttons in that order', () => {
   expect(markup.indexOf('aria-label="Help"')).toBeLessThan(markup.indexOf('aria-label="API keys"'));
 });
 
-it('opens the existing help route', () => {
+it('opens Help, and the Gateway page for API keys', () => {
   const onSelectView = vi.fn();
   const actions = VprHeaderActions({ onSelectView });
   for (const button of Children.toArray(actions.props.children)) {
     if (isValidElement<{ onClick: () => void }>(button)) button.props.onClick();
   }
-  expect(onSelectView.mock.calls).toEqual([['help']]);
+  expect(onSelectView.mock.calls).toEqual([['help'], ['gateway']]);
 });
 
 it('tolerates rendering outside a navigation provider', () => {

@@ -31,6 +31,12 @@ const OPTIONS: PrivacyOption[] = [
   },
 ];
 
+/** What the switch dialog says about each mode: the option's description, cut to its claims. */
+const SWITCH_SUMMARY: Record<GatewayPrivacyMode, string> = {
+  anonymous: 'Providers never see your name or email, only an anonymous address. Every model is open to you.',
+  private: 'Providers can’t read your chats: your app checks each one runs on sealed hardware (a TEE) first. Only models marked “TEE end to end” are sealed all the way.',
+};
+
 function optionHint(option: PrivacyOption): string {
   return `${option.description} ${PRIVACY_SCOPE_HINT}`;
 }
@@ -317,11 +323,8 @@ export function PrivacySwitchDialog() {
       <div className={styles.switchDialog}>
         {pending.explain ? (
           <>
-            <p>{OPTIONS.find((option) => option.mode === pending.mode)?.description}</p>
-            <p>
-              This is a setting for your whole gateway, not just this chat: it changes where requests from {reach} are sent.
-              {toPrivate ? ' If your model has no seller on sealed hardware, the chat moves to one that does.' : ''}
-            </p>
+            <p>{SWITCH_SUMMARY[pending.mode]}</p>
+            <p>Applies to {reach}.</p>
           </>
         ) : null}
         {pending.privateHistory ? (

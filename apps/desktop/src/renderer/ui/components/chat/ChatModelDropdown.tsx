@@ -40,6 +40,12 @@ type ChatModelDropdownProps = {
  * image generation.
  */
 function renderModelPrice(model: ChatModel) {
+  if (model.router) {
+    const price = model.router.priceUsdPerRequest;
+    // Only the pick is free; the model it picks may charge.
+    if (price === 0) return <span className={styles.tag}>Free picks</span>;
+    return price ? `$${price} per pick` : null;
+  }
   if (model.free) return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
   if (model.minImageUsd) return `from $${model.minImageUsd} per image`;
   // Not free to everyone, so a $0 price here is a stakers-only offer (the only sellers it has).
@@ -75,9 +81,11 @@ export function ChatModelDropdown({
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
-  const [freeOnly, setFreeOnly] = useState(false);
-  const { text, image } = useMemo(() => filterChatModels(models, query, freeOnly), [models, query, freeOnly]);
+  const [filter, setFilter] = useState<'free' | 'routers' | null>(null);
+  const { routers, text, image } = useMemo(() => filterChatModels(models, query, filter), [models, query, filter]);
   const hasFree = useMemo(() => models.some((model) => model.free), [models]);
+  const hasRouters = useMemo(() => models.some((model) => model.router), [models]);
+  const toggleFilter = (next: 'free' | 'routers') => setFilter((value) => (value === next ? null : next));
   const showSearch = models.length >= SEARCH_THRESHOLD;
 
   useDropdownDismiss(ref, open, setOpen);
@@ -85,7 +93,7 @@ export function ChatModelDropdown({
   useEffect(() => {
     if (!open) {
       setQuery('');
-      setFreeOnly(false);
+      setFilter(null);
       return undefined;
     }
     const frame = requestAnimationFrame(() => searchRef.current?.focus());
@@ -96,7 +104,10 @@ export function ChatModelDropdown({
 
   function renderModel(model: ChatModel) {
     const active = model === selected;
-    const meta = [
+    const meta = model.router ? [
+      model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null,
+      model.router.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
+    ].filter(Boolean) : [
       model.id !== model.label ? model.id : null,
       model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
     ].filter(Boolean);
@@ -119,6 +130,7 @@ export function ChatModelDropdown({
           <span className={styles.itemPrice}>{renderModelPrice(model)}</span>
         </span>
         <span className={styles.itemTags}>
+          {model.router && <span className={styles.tag} title="Picks the model for each message">Router</span>}
           {model.type === 'image' && <span className={`${styles.tag} ${styles.tagBrand}`}>Image</span>}
           {model.tee && (model.teeEndToEnd
             ? <span className={`${styles.tag} ${styles.tagTee}`} title="Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE">TEE end to end</span>
@@ -127,14 +139,14 @@ export function ChatModelDropdown({
           {model.type === 'text' && model.supportsImages && <span className={styles.tag}>Vision</span>}
           {model.reasoning && <span className={styles.tag}>Reasoning</span>}
           {model.toolUse && <span className={styles.tag}>Tools</span>}
-          {model.sellers > 0 && <span className={styles.itemSellers}>{model.sellers} seller{model.sellers === 1 ? '' : 's'}</span>}
+          {model.sellers > 0 && !model.router && <span className={styles.itemSellers}>{model.sellers} seller{model.sellers === 1 ? '' : 's'}</span>}
         </span>
         {meta.length > 0 && <span className={styles.itemMeta}>{meta.map((part) => <span key={part}>{part}</span>)}</span>}
       </button>
     );
   }
 
-  const empty = text.length === 0 && image.length === 0;
+  const empty = routers.length === 0 && text.length === 0 && image.length === 0;
 
   return (
     <div className={`${styles.modelDropdown}${menuAnchor === 'container' ? ` ${styles.anchorContainer}` : ''}`} ref={ref}>
@@ -160,7 +172,7 @@ export function ChatModelDropdown({
           role="listbox"
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
-          {(showSearch || hasFree) && (
+          {(showSearch || hasFree || hasRouters) && (
             <div className={styles.modelDropdownFilters}>
               {showSearch && (
                 <input
@@ -173,12 +185,23 @@ export function ChatModelDropdown({
                   aria-label="Search models"
                 />
               )}
+              {hasRouters && (
+                <button
+                  type="button"
+                  className={`${styles.freeFilter}${filter === 'routers' ? ` ${styles.freeFilterOn}` : ''}`}
+                  aria-pressed={filter === 'routers'}
+                  title="Routers pick the model for each message"
+                  onClick={() => toggleFilter('routers')}
+                >
+                  Auto
+                </button>
+              )}
               {hasFree && (
                 <button
                   type="button"
-                  className={`${styles.freeFilter}${freeOnly ? ` ${styles.freeFilterOn}` : ''}`}
-                  aria-pressed={freeOnly}
-                  onClick={() => setFreeOnly((value) => !value)}
+                  className={`${styles.freeFilter}${filter === 'free' ? ` ${styles.freeFilterOn}` : ''}`}
+                  aria-pressed={filter === 'free'}
+                  onClick={() => toggleFilter('free')}
                 >
                   Free
                 </button>
@@ -195,10 +218,12 @@ export function ChatModelDropdown({
           )}
           {!error && empty && (
             <div className={styles.modelDropdownStatus}>
-              {loading ? 'Loading models…' : query || freeOnly ? 'No models match.' : 'The gateway lists no models yet.'}
+              {loading ? 'Loading models…' : query || filter ? 'No models match.' : 'The gateway lists no models yet.'}
             </div>
           )}
-          {text.length > 0 && image.length > 0 && <div className={styles.modelDropdownSection}>Text models</div>}
+          {routers.length > 0 && <div className={styles.modelDropdownSection}>Routers</div>}
+          {routers.map(renderModel)}
+          {text.length > 0 && (image.length > 0 || routers.length > 0) && <div className={styles.modelDropdownSection}>Text models</div>}
           {text.map(renderModel)}
           {image.length > 0 && <div className={styles.modelDropdownSection}>Image models</div>}
           {image.map(renderModel)}

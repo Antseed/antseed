@@ -53,6 +53,7 @@ import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
 import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
 import { clearGatewayModelCache, fetchGatewayModelEntries, type GatewayModelEntry } from '../gateway/models.js';
+import { fetchGatewayRouters } from '../gateway/routers.js';
 import type {
   ActiveRun,
   ChatStreamErrorPayload,
@@ -248,7 +249,12 @@ export function registerPiChatHandlers({
       // Every model, those no trusted seller serves marked: the picker lists
       // the apps' set and still finds a chat's model among the rest.
       const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
-      return { ok: true, data: models };
+      // Routers lead the picker. Without them the models still list.
+      const routers = await fetchGatewayRouters(endpoint, { force: payload?.force === true }).catch((error: unknown) => {
+        appendSystemLog(`Chat router list failed: ${asErrorMessage(error)}`);
+        return [] as ChatModel[];
+      });
+      return { ok: true, data: [...routers, ...models] };
     } catch (error) {
       const message = asErrorMessage(error);
       appendSystemLog(`Chat model list failed: ${message}`);
