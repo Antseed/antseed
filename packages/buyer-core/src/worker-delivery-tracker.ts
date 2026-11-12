@@ -241,6 +241,18 @@ export class WorkerDeliveryTracker {
     }
   }
 
+  /**
+   * The seller's channel ended and its request records went with it: its
+   * answered worker requests can no longer be credited, so they stop holding
+   * worker slots on the next channel. They are retired as completed, so a
+   * NeedAuth for one is still refused.
+   */
+  retireAnswered(sellerPeerId: string): void {
+    for (const [requestId, delivery] of [...this._deliveries]) {
+      if (delivery.sellerPeerId === sellerPeerId && delivery.state === 'verified') this.retire(requestId);
+    }
+  }
+
   /** The seller announces colony-pool workers (see BuyerPaymentManager.markWorkerSeller). */
   markSeller(sellerPeerId: string): void {
     this._workerSellers.add(sellerPeerId);

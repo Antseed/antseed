@@ -385,6 +385,13 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         return _channelCumulative[_channelKey(channelId)];
     }
 
+    /// @notice What this pool settled on `channelId` and paid `worker` there, read
+    ///         together so a worker never compares the two across a settlement.
+    function workerCredit(bytes32 channelId, address worker) external view returns (uint128 settled, uint128 credited) {
+        bytes32 key = _channelKey(channelId);
+        return (_channelCumulative[key], _workerCumulative[key][worker]);
+    }
+
     /// @notice How much of the buyer's attribution to `worker` on `channelId`
     ///         (current channels contract) settlements have paid. It trails the
     ///         buyer-signed amount only while a settlement's delta could not

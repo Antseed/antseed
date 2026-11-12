@@ -19,8 +19,7 @@ export const COLONY_POOL_ABI = [
   'function epochWeight(uint256 epoch, address account) external view returns (uint256)',
   'function payoutOf(address worker) external view returns (address)',
   'function payoutNonce(address worker) external view returns (uint256)',
-  'function channelCumulative(bytes32 channelId) external view returns (uint128)',
-  'function workerCumulative(bytes32 channelId, address worker) external view returns (uint128)',
+  'function workerCredit(bytes32 channelId, address worker) external view returns (uint128 settled, uint128 credited)',
 ] as const;
 
 /** A worker's signed instruction to pay its earnings to `payout` (see AntseedColonyPool.setPayout). */
@@ -79,14 +78,10 @@ export class ColonyPoolClient extends BaseEvmClient {
     return this.read().getFunction('epochWeight')(epoch, account);
   }
 
-  /** The channel's cumulative amount this pool has settled and attributed. */
-  async channelCumulative(channelId: string): Promise<bigint> {
-    return this.read().getFunction('channelCumulative')(channelId);
-  }
-
-  /** How much of the buyer's attribution to `worker` on the channel settlements have paid. */
-  async workerCumulative(channelId: string, worker: string): Promise<bigint> {
-    return this.read().getFunction('workerCumulative')(channelId, worker);
+  /** What this pool settled on the channel and paid `worker` there, from one read. */
+  async workerCredit(channelId: string, worker: string): Promise<{ settled: bigint; credited: bigint }> {
+    const [settled, credited] = await this.read().getFunction('workerCredit')(channelId, worker) as [bigint, bigint];
+    return { settled, credited };
   }
 
   async payoutOf(worker: string): Promise<string> {

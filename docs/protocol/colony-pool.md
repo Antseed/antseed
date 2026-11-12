@@ -434,7 +434,7 @@ workers serve requests it never pays for.
   on the channel at the declared prices, with the buyer's formula. It serves
   a request only while the answers not covered by the payment, plus the
   requests still running there, number fewer than 2. An answer whose price
-  rounds to nothing is owed nothing, so it is paid as soon as it is served. A buyer
+  rounds to nothing is owed nothing and never waits in the unpaid queue. A buyer
   that never pays gets two answers per channel, and every channel is an
   on-chain reserve. Answers that did not reach the buyer whole are not owed,
   and neither are ones the worker could not send to the pool.
@@ -454,21 +454,26 @@ workers serve requests it never pays for.
   TypeScript worker next to its key as `<key-file>.payments.json`, the Mac
   app in its data directory as `payments.json`, both owner-only), so a
   restart never lets a payment that already paid for answers pay for new
-  ones. Past 10,000 channels a worker forgets the least recently used one
-  with nothing unpaid or unsettled; when such a channel returns, what its
-  payment already attributes counts as paying for answers served before,
-  never for new ones.
+  ones. A worker forgets a channel once the chain shows it closed (it never
+  serves it again), and past 10,000 channels the least recently used one with
+  nothing unpaid or unsettled; when such a channel returns, what its payment
+  already attributes counts as paying for answers served before, never for
+  new ones.
 - **Checked against settlement.** A signed attribution is trusted until the
   channel settles past it. Settlement is the operator's: the pool contract
   settles only for its operators and credits workers from the auth the pool
   settles, which may not be the one the buyer showed the worker, so a worker
-  holds the buyer's payment but cannot redeem it itself. While a channel has
-  signed payments not yet seen settled, the worker reads the pool contract's
-  `channelCumulative` and its own `workerCumulative` there, at most once a
-  minute and beside the request it is serving. Once the channel settled past
-  a payment that `workerCumulative` falls short of, the worker refuses that
-  buyer from then on. Until settlement, a worker's exposure is the answers it
-  served on the payments the pool has not settled yet.
+  holds the buyer's payment but cannot redeem it itself. With each buyer
+  request the worker reads the pool contract's `workerCredit(channel, worker)`
+  (what the pool settled on the channel, and what it paid this worker there,
+  in one call). It counts the payment's attribution only up to what the pool
+  already paid it plus what the payment adds since that settlement, since
+  the contract pays workers only from what later settlements add. Once the
+  channel settled past a payment the buyer showed the worker yet paid it
+  less, the worker refuses that buyer from then on. Until settlement, a
+  worker's exposure is the answers it served on payments the pool has not
+  settled yet. When the read fails, the signed attribution stands and the
+  next request reads again.
 
 ## Hardened Macs
 

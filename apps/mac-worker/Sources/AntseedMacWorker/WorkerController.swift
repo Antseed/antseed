@@ -98,8 +98,6 @@ final class WorkerController: ObservableObject {
     private var prices: [String: WorkerPayment.Price] = [:]
     /// What each channel's buyer owes this Mac for its answers, and has paid; kept across restarts.
     private lazy var payments = WorkerPaymentLedger(file: config.dataDirectory.appendingPathComponent("payments.json"))
-    /// When each channel's pool credit was last read.
-    private var settlementChecks: [String: Date] = [:]
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
     /// Its verdicts are for `poolSeller`; a challenge naming another pool starts a fresh one.
     private lazy var channels = makeChannelVerdicts()
@@ -112,6 +110,8 @@ final class WorkerController: ObservableObject {
                 if self.channelDeposits.count >= 10_000 { self.channelDeposits.removeAll() }
                 self.channelDeposits[channel.lowercased()] = state.deposit
             }
+            // It never serves again, so its account can go: no old payment can be replayed on it.
+            if state.closed { self.payments.forget(channel: channel) }
             return state.belongs
         }
         verdicts.onVerdict = { [weak self] channel, buyer, verified in
@@ -411,29 +411,29 @@ final class WorkerController: ObservableObject {
         }
     }
 
-    /// Once a minute at most, while `channel` has signed payments not yet seen
-    /// settled, read what the pool contract settled and credited this Mac there,
-    /// and refuse `buyer` from then on if it credited less than signed. It runs
-    /// beside the request, so a slow RPC never delays an answer.
-    private func checkSettlement(channel: String, buyer: String) {
+    /// What of `paid` the pool can still pay this Mac, and a settlement check. The
+    /// pool contract pays a worker from what later settlements add to the channel,
+    /// so attribution beyond what it already paid this Mac plus what the payment
+    /// adds since the last settlement is credit nothing funds. Read with the
+    /// settlement (one call): once the channel settled past a payment the buyer
+    /// showed this Mac yet paid it less, the buyer is refused from then on. When
+    /// the read fails, the signed attribution stands and the next request checks again.
+    private func redeemable(channel: String, buyer: String, paid: (attributed: UInt64, cumulative: UInt64)) async -> (attributed: UInt64, cumulative: UInt64) {
         let rpcURLs = config.rpcURLs
-        guard !rpcURLs.isEmpty, let pool = poolSeller, payments.awaitsSettlement(channel: channel) else { return }
-        let key = channel.lowercased()
-        if let last = settlementChecks[key], Date().timeIntervalSince(last) < 60 { return }
-        if settlementChecks.count >= 10_000 { settlementChecks.removeAll() }
-        settlementChecks[key] = Date()
-        let worker = address
-        Task { [weak self] in
-            do {
-                let credit = try await Chain(rpcURLs: rpcURLs, timeout: 5).poolCredit(channel: channel, worker: worker, pool: pool)
-                guard let self else { return }
-                if self.payments.reconcile(channel: channel, buyer: buyer, settled: credit.settled, credited: credit.credited) {
-                    self.log("a settlement on channel \(channel.prefix(18))… credited this Mac less than buyer \(buyer) signed; refusing that buyer")
-                }
-            } catch {
-                self?.log("could not read the pool's credit on channel \(channel.prefix(18))…: \(error.localizedDescription)")
-            }
+        guard !rpcURLs.isEmpty, let pool = poolSeller else { return paid }
+        let credit: (settled: UInt64, credited: UInt64)
+        do {
+            credit = try await Chain(rpcURLs: rpcURLs, timeout: 2).poolCredit(channel: channel, worker: address, pool: pool)
+        } catch {
+            log("could not read the pool's credit on channel \(channel.prefix(18))…: \(error.localizedDescription)")
+            return paid
         }
+        if payments.reconcile(channel: channel, buyer: buyer, settled: credit.settled, credited: credit.credited) {
+            log("a settlement on channel \(channel.prefix(18))… paid this Mac less than buyer \(buyer) signed; refusing that buyer")
+        }
+        let unsettled = paid.cumulative > credit.settled ? paid.cumulative - credit.settled : 0
+        let (cap, overflow) = credit.credited.addingReportingOverflow(unsettled)
+        return (overflow ? paid.attributed : min(paid.attributed, cap), paid.cumulative)
     }
 
     private func serve(_ frame: [String: Any], id: String) async {
@@ -480,15 +480,14 @@ final class WorkerController: ObservableObject {
             guard let channel = sealed.channel, let buyer = sealed.buyer, let price = prices[sealed.model], price.isChargeable else {
                 return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
             }
+            // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
+            let paid = await redeemable(channel: channel, buyer: buyer, paid: attributed(sealed, channel: channel, buyer: buyer))
             guard !payments.refuses(buyer: buyer) else {
                 return fail(id, "This worker no longer serves this buyer: a settlement credited it less than the buyer signed")
             }
-            // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
-            let paid = attributed(sealed, channel: channel, buyer: buyer)
             if let refused = payments.admit(channel: channel, attributed: paid.attributed, cumulative: paid.cumulative) {
                 return fail(id, refused)
             }
-            checkSettlement(channel: channel, buyer: buyer)
             if let binding = sealed.binding, let expires = sealed.expires,
                let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
                 payments.released(channel: channel)

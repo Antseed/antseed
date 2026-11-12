@@ -11,26 +11,35 @@ export interface WorkerChain {
 }
 
 /**
- * The Channels client a worker verifies requests with: the chain's own RPC and
- * its fallbacks, so one endpoint failing does not refuse every paid request. An
+ * The chain's RPC endpoints a worker reads with: the chain's own RPC and its
+ * fallbacks, so one endpoint failing does not refuse every paid request. An
  * operator's `--rpc-url` replaces both, as elsewhere in Antseed: its fallbacks
  * would be the chain default's, not the operator's.
  */
+function resolveWorkerChain(chainId: string, rpcUrl: string | undefined, chains: Record<string, WorkerChain | undefined>) {
+  const chain = chains[chainId];
+  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
+  const fallbacks = rpcUrl ? [] : chain.fallbackRpcUrls ?? [];
+  return {
+    channelsAddress: chain.channelsContractAddress,
+    evmChainId: chain.evmChainId,
+    rpc: {
+      rpcUrl: rpcUrl ?? chain.rpcUrl,
+      evmChainId: chain.evmChainId,
+      ...(fallbacks.length > 0 ? { fallbackRpcUrls: fallbacks } : {}),
+    },
+  };
+}
+
+/** The Channels client a worker verifies requests with. */
 export function workerChannelsClient(
   chainId: string,
   rpcUrl?: string,
   channelsAddress?: string,
   chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
 ): ChannelsClient {
-  const chain = chains[chainId];
-  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
-  const fallbacks = rpcUrl ? [] : chain.fallbackRpcUrls ?? [];
-  return new ChannelsClient({
-    rpcUrl: rpcUrl ?? chain.rpcUrl,
-    contractAddress: channelsAddress ?? chain.channelsContractAddress,
-    evmChainId: chain.evmChainId,
-    ...(fallbacks.length > 0 ? { fallbackRpcUrls: fallbacks } : {}),
-  });
+  const resolved = resolveWorkerChain(chainId, rpcUrl, chains);
+  return new ChannelsClient({ ...resolved.rpc, contractAddress: channelsAddress ?? resolved.channelsAddress });
 }
 
 /** The Channels deployment buyers sign SpendingAuths for: the one this worker reads channels on. */
@@ -39,9 +48,8 @@ export function workerChannelsDomain(
   channelsAddress?: string,
   chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
 ): ChannelsDomain {
-  const chain = chains[chainId];
-  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
-  return { chainId: chain.evmChainId, channelsAddress: channelsAddress ?? chain.channelsContractAddress };
+  const resolved = resolveWorkerChain(chainId, undefined, chains);
+  return { chainId: resolved.evmChainId, channelsAddress: channelsAddress ?? resolved.channelsAddress };
 }
 
 /**
@@ -60,29 +68,22 @@ export function workerChannelVerifier(
 
 /**
  * Reads a pool contract's settlement of a channel and its credit to a worker
- * there, on the same RPC endpoints the worker reads channels with.
+ * there, in one call (`workerCredit`), on the same RPC endpoints the worker
+ * reads channels with.
  */
 export function workerPoolCreditReader(
   chainId: string,
   rpcUrl?: string,
   chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
 ): PoolCreditReader {
-  const chain = chains[chainId];
-  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
-  const fallbacks = rpcUrl ? [] : chain.fallbackRpcUrls ?? [];
+  const resolved = resolveWorkerChain(chainId, rpcUrl, chains);
   const clients = new Map<string, ColonyPoolClient>();
-  return async (pool, channel, worker) => {
+  return (pool, channel, worker) => {
     let client = clients.get(pool.toLowerCase());
     if (!client) {
-      client = new ColonyPoolClient({
-        rpcUrl: rpcUrl ?? chain.rpcUrl,
-        contractAddress: pool,
-        evmChainId: chain.evmChainId,
-        ...(fallbacks.length > 0 ? { fallbackRpcUrls: fallbacks } : {}),
-      });
+      client = new ColonyPoolClient({ ...resolved.rpc, contractAddress: pool });
       clients.set(pool.toLowerCase(), client);
     }
-    const [settled, credited] = await Promise.all([client.channelCumulative(channel), client.workerCumulative(channel, worker)]);
-    return { settled, credited };
+    return client.workerCredit(channel, worker);
   };
 }

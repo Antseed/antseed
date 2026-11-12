@@ -187,4 +187,19 @@ describe('WorkerDeliveryTracker', () => {
     // None was retired to make room.
     expect(tracker.get('o0')?.state).toBe('verified');
   });
+
+  it('frees the worker slots of a closed channel\'s answered requests, still refusing them', () => {
+    const tracker = new WorkerDeliveryTracker(() => true);
+    tracker.recordAttribution('seller', 'answered', '0xA');
+    tracker.recordDelivery('answered', { inputTokens: 1n, cachedInputTokens: 0n, outputTokens: 1n });
+    tracker.recordAttribution('seller', 'waiting', '0xB');
+    tracker.recordAttribution('other', 'elsewhere', '0xC');
+    tracker.recordDelivery('elsewhere', { inputTokens: 1n, cachedInputTokens: 0n, outputTokens: 1n });
+    expect([...tracker.reservedWorkers('seller')].sort()).toEqual(['0xa', '0xb']);
+    tracker.retireAnswered('seller');
+    // A request still awaiting its answer keeps its recipients reserved; another seller is untouched.
+    expect([...tracker.reservedWorkers('seller')]).toEqual(['0xb']);
+    expect(tracker.isCompleted('seller', 'answered')).toBe(true);
+    expect([...tracker.reservedWorkers('other')]).toEqual(['0xc']);
+  });
 });

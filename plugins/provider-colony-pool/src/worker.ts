@@ -75,15 +75,13 @@ export interface VerifiedChannel {
 /**
  * Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`:
  * its facts when it does (`true` when they are unknown, as in tests), false
- * when it does not, `null` = not on-chain (yet).
+ * when it does not, `'closed'` when it did but pays for nothing more,
+ * `null` = not on-chain (yet).
  */
-export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<VerifiedChannel | boolean | null>;
+export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<VerifiedChannel | boolean | 'closed' | null>;
 
 /** What a pool contract settled on a channel (`settled`) and credited a worker there (`credited`). */
 export type PoolCreditReader = (pool: string, channel: string, worker: string) => Promise<{ settled: bigint; credited: bigint }>;
-
-/** How often a channel with unsettled payments has its pool credit read, at most. */
-const SETTLEMENT_CHECK_MS = 60_000;
 
 /** A channel check's outcome: verified (with its reserve, when known), refused, or not on-chain within the wait. */
 type ChannelVerdict = { deposit: bigint | null } | false | null;
@@ -103,10 +101,10 @@ export function trustedChannelVerifier(
   return async (channel, buyer, seller) => {
     const session = await readChannel(channel);
     if (/^0x0+$/.test(session.buyer)) return null; // not visible yet
-    // A settled or timed-out channel keeps its buyer and seller but pays for nothing more.
-    if (session.status !== CHANNEL_ACTIVE) return false;
     const belongs = session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
-    return belongs ? { deposit: BigInt(session.deposit) } : false;
+    if (!belongs) return false;
+    // A settled or timed-out channel keeps its buyer and seller but pays for nothing more.
+    return session.status === CHANNEL_ACTIVE ? { deposit: BigInt(session.deposit) } : 'closed';
   };
 }
 
@@ -242,8 +240,6 @@ export class PoolWorker {
   private readonly verifying = new Map<string, Promise<ChannelVerdict>>();
   /** What each channel's buyer owes this worker for its answers, and has paid. */
   private readonly payments: WorkerPaymentLedger;
-  /** When each channel's pool credit was last read. */
-  private readonly settlementChecks = new Map<string, number>();
   /** Served buyer requests: binding hash → its signed expiry, kept until then so a replay is refused. */
   private readonly served = new Map<string, number>();
 
@@ -419,7 +415,11 @@ export class PoolWorker {
         this.channelOwners.set(`${seller}|${channel}`, buyer);
         return { deposit: result === true ? null : result.deposit };
       }
-      if (result === false) {
+      if (result === 'closed') {
+        // It never serves again, so its account can go: no old payment can be replayed on it.
+        this.payments.forget(channel);
+      }
+      if (result === false || result === 'closed') {
         if (this.refusedChannels.size >= MAX_CACHED_CHANNELS) this.refusedChannels.clear();
         this.refusedChannels.add(`${seller}|${channel}|${buyer}`);
         this.log(`channel ${channel.slice(0, 18)}… is not an active channel of buyer ${buyer} with this pool; refusing it`);
@@ -491,12 +491,11 @@ export class PoolWorker {
       const price = this.welcome?.prices?.[inspected.model];
       if (!isChargeablePrice(price)) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
       const channel = bound.channel.toLowerCase();
-      if (this.payments.refuses(bound.buyer)) throw new Error('This worker no longer serves this buyer: a settlement credited it less than the buyer signed');
       // Paid before served: the buyer's signed payments must cover this worker's earlier answers on the channel.
-      const paid = this.attributed(inspected, verdict.deposit);
+      const paid = await abortable(this.redeemable(channel, bound.buyer, this.attributed(inspected, verdict.deposit)), signal);
+      if (this.payments.refuses(bound.buyer)) throw new Error('This worker no longer serves this buyer: a settlement credited it less than the buyer signed');
       this.payments.admit(channel, paid.attributed, paid.cumulative);
       owed = { channel, price };
-      this.checkSettlement(channel, bound.buyer);
     }
     let answered: UsageLike | null = null;
     try {
@@ -534,26 +533,32 @@ export class PoolWorker {
   }
 
   /**
-   * Once a minute at most, while `channel` has signed payments not yet seen
-   * settled, read what the pool contract settled and credited this worker
-   * there, and refuse `buyer` from then on if it credited less than signed.
-   * It runs beside the request, so a slow RPC never delays an answer.
+   * What of `paid` the pool can still pay this worker, and a settlement check.
+   * The pool contract pays a worker from what later settlements add to the
+   * channel, so attribution beyond what it already paid this worker plus what
+   * the payment adds since the last settlement is credit nothing funds. Read
+   * with the settlement (one call, one block): once the channel settled past a
+   * payment the buyer showed this worker yet paid it less, the buyer is
+   * refused from then on. Without a reader, or when the read fails, the signed
+   * attribution stands and the next request checks again.
    */
-  private checkSettlement(channel: string, buyer: string): void {
+  private async redeemable(channel: string, buyer: string, paid: { attributed: bigint; cumulative: bigint }): Promise<{ attributed: bigint; cumulative: bigint }> {
     const read = this.opts.poolCredit;
     const pool = this.seller;
-    if (!read || !pool || !this.payments.awaitsSettlement(channel)) return;
-    const now = Date.now();
-    if ((this.settlementChecks.get(channel) ?? 0) + SETTLEMENT_CHECK_MS > now) return;
-    if (this.settlementChecks.size >= MAX_CACHED_CHANNELS) this.settlementChecks.clear();
-    this.settlementChecks.set(channel, now);
-    read(pool, channel, this.wallet.address).then(({ settled, credited }) => {
-      if (this.payments.reconcile(channel, buyer, settled, credited)) {
-        this.log(`a settlement on channel ${channel.slice(0, 18)}… credited this worker less than buyer ${buyer} signed; refusing that buyer`);
-      }
-    }, (err: unknown) => {
+    if (!read || !pool) return paid;
+    let credit: { settled: bigint; credited: bigint };
+    try {
+      credit = await withTimeout(read(pool, channel, this.wallet.address), this.opts.channelWaitMs ?? DEFAULT_CHANNEL_WAIT_MS);
+    } catch (err) {
       this.log(`could not read the pool's credit on channel ${channel.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`);
-    });
+      return paid;
+    }
+    if (this.payments.reconcile(channel, buyer, credit.settled, credit.credited)) {
+      this.log(`a settlement on channel ${channel.slice(0, 18)}… paid this worker less than buyer ${buyer} signed; refusing that buyer`);
+    }
+    const unsettled = paid.cumulative > credit.settled ? paid.cumulative - credit.settled : 0n;
+    const cap = credit.credited + unsettled;
+    return { attributed: paid.attributed < cap ? paid.attributed : cap, cumulative: paid.cumulative };
   }
 
   /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole, null when it owes nothing. */

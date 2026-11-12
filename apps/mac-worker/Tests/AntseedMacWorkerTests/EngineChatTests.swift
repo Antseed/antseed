@@ -90,6 +90,8 @@ final class EngineChatTests: XCTestCase {
         XCTAssertEqual(refused(["seed": true]), "`seed` must be a number")
         XCTAssertEqual(refused(["logit_bias": ["50256": -100]]), "`logit_bias` is not supported by this worker")
         XCTAssertEqual(refused(["logprobs": true]), "`logprobs` is not supported by this worker")
+        XCTAssertEqual(refused(["functions": [["name": "lookup", "parameters": ["type": "object"]]]]), "`functions` is not supported by this worker")
+        XCTAssertEqual(refused(["function_call": ["name": "lookup"]]), "`function_call` is not supported by this worker")
         XCTAssertEqual(refused(["n": 2]), "`n` must be 1; this worker returns one choice")
         XCTAssertNil(refused(["stop": NSNull(), "logprobs": NSNull(), "n": NSNull()]))
     }

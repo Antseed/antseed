@@ -18,6 +18,8 @@ enum EngineChat {
     static let refusedFields = [
         "logit_bias", "top_logprobs", "audio", "modalities", "prediction", "web_search_options",
         "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs",
+        // The legacy form of `tools` / `tool_choice`, which the engine doesn't read.
+        "functions", "function_call",
     ]
 
     /// The request fields that shape the answer, checked and in the engine's

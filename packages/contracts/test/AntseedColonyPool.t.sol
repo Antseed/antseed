@@ -346,6 +346,9 @@ contract AntseedColonyPoolTest is Test {
         uint256 net2 = _settle(ch, 200e6, _e2(workerA, 80e6, workerB, 80e6));
         assertEq(pool.usdcBalance(workerB) - b1, (net2 * 60e6) / 100e6, "carried over");
         assertEq(pool.workerCumulative(ch, workerB), 80e6);
+        (uint128 settled, uint128 credited) = pool.workerCredit(ch, workerB);
+        assertEq(settled, 200e6);
+        assertEq(credited, 80e6);
         _assertSolvent();
     }
 

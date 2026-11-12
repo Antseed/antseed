@@ -249,8 +249,7 @@ final class WorkerPaymentLedger {
             account.checkpoints.append(Checkpoint(cumulative: cumulative, attributed: attributed))
             if account.checkpoints.count > Self.maxCheckpoints { account.checkpoints.removeFirst() }
         }
-        // Answers paid for leave `owed`, oldest first. One whose cost rounds to
-        // nothing is owed nothing: the buyer's payment never grows for it.
+        // Answers paid for leave `owed`, oldest first.
         while let first = account.owed.first {
             let (settled, overflow) = account.settledCost.addingReportingOverflow(first)
             guard !overflow, settled <= account.paid else { break }
@@ -266,13 +265,21 @@ final class WorkerPaymentLedger {
         return nil
     }
 
-    /// The admitted request on `channel` delivered an answer costing `cost`.
+    /// The admitted request on `channel` delivered an answer costing `cost`. One costing nothing is owed nothing.
     func served(channel: String, cost: UInt64) {
         let key = channel.lowercased()
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
-        account.owed.append(cost)
+        if cost > 0 { account.owed.append(cost) }
         accounts[key] = account
+        save()
+    }
+
+    /// Forget `channel`: it closed on-chain, so it never gets another request to replay a payment on.
+    func forget(channel: String) {
+        let key = channel.lowercased()
+        guard accounts.removeValue(forKey: key) != nil else { return }
+        order.removeAll { $0 == key }
         save()
     }
 
@@ -282,11 +289,6 @@ final class WorkerPaymentLedger {
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
         accounts[key] = account
-    }
-
-    /// Whether `channel` has signed payments this worker has not yet seen settled.
-    func awaitsSettlement(channel: String) -> Bool {
-        !(accounts[channel.lowercased()]?.checkpoints.isEmpty ?? true)
     }
 
     /// Compare what `buyer` signed to this worker on `channel` with what the pool

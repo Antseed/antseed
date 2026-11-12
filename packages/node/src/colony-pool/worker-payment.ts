@@ -186,8 +186,7 @@ export class WorkerPaymentLedger {
       account.checkpoints.push([cumulative, attributed]);
       if (account.checkpoints.length > MAX_CHECKPOINTS) account.checkpoints.shift();
     }
-    // Answers paid for leave `owed`, oldest first. One whose cost rounds to
-    // nothing is owed nothing: the buyer's payment never grows for it.
+    // Answers paid for leave `owed`, oldest first.
     while (account.owed.length > 0 && account.settledCost + account.owed[0]! <= account.paid) {
       account.settledCost += account.owed.shift()!;
     }
@@ -199,24 +198,24 @@ export class WorkerPaymentLedger {
     this.save();
   }
 
-  /** The admitted request on `channel` delivered an answer costing `cost`. */
+  /** The admitted request on `channel` delivered an answer costing `cost`. One costing nothing is owed nothing. */
   served(channel: string, cost: bigint): void {
     const account = this.accounts.get(channel.toLowerCase());
     if (!account) return;
     account.running = Math.max(0, account.running - 1);
-    account.owed.push(cost);
+    if (cost > 0n) account.owed.push(cost);
     this.save();
+  }
+
+  /** Forget `channel`: it closed on-chain, so it never gets another request to replay a payment on. */
+  forget(channel: string): void {
+    if (this.accounts.delete(channel.toLowerCase())) this.save();
   }
 
   /** The admitted request on `channel` ended without an answer to pay for. */
   released(channel: string): void {
     const account = this.accounts.get(channel.toLowerCase());
     if (account) account.running = Math.max(0, account.running - 1);
-  }
-
-  /** Whether `channel` has signed payments this worker has not yet seen settled. */
-  awaitsSettlement(channel: string): boolean {
-    return (this.accounts.get(channel.toLowerCase())?.checkpoints.length ?? 0) > 0;
   }
 
   /**

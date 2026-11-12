@@ -74,23 +74,25 @@ struct Chain {
         try await channelState(channel: channel, buyer: buyer, pool: pool, channels: channels).belongs
     }
 
-    /// `channelBelongs`, with the channel's reserve: what the buyer's payments on it can redeem.
-    func channelState(channel: String, buyer: String, pool: String, channels: String) async throws -> (belongs: Bool?, deposit: UInt64) {
+    /// `channelBelongs`, with the channel's reserve (what the buyer's payments on it can redeem) and
+    /// whether it was this buyer's channel with the pool but is closed, so it never pays for more.
+    func channelState(channel: String, buyer: String, pool: String, channels: String) async throws -> (belongs: Bool?, deposit: UInt64, closed: Bool) {
         let id = try Data(hexString: channel)
         guard id.count == 32 else { throw Failure.rpc("A channel id is 32 bytes") }
         let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + id)
         let deposit = result.count >= 96 ? WorkerPayment.saturating([UInt8](result[64..<96])) : 0
-        return (Self.channelVerdict(result, buyer: buyer, pool: pool), deposit)
+        let verdict = Self.channelVerdict(result, buyer: buyer, pool: pool)
+        return (verdict, deposit, verdict == false && Self.channelVerdict(result, buyer: buyer, pool: pool, anyStatus: true) == true)
     }
 
-    /// What the pool contract settled on `channel`, and how much of the buyer's attribution to `worker` there it paid.
+    /// What the pool contract settled on `channel`, and how much of the buyer's attribution to `worker`
+    /// there it paid: one call (`workerCredit`), so both come from the same block.
     func poolCredit(channel: String, worker: String, pool: String) async throws -> (settled: UInt64, credited: UInt64) {
         let id = try Data(hexString: channel)
         guard id.count == 32 else { throw Failure.rpc("A channel id is 32 bytes") }
-        let s = try await ethCall(to: pool, data: Self.selector("channelCumulative(bytes32)") + id)
-        let c = try await ethCall(to: pool, data: Self.selector("workerCumulative(bytes32,address)") + id + Self.addressWord(worker))
-        guard s.count == 32, c.count == 32 else { throw Failure.rpc("Malformed pool credit answer") }
-        return (WorkerPayment.saturating([UInt8](s)), WorkerPayment.saturating([UInt8](c)))
+        let words = [UInt8](try await ethCall(to: pool, data: Self.selector("workerCredit(bytes32,address)") + id + Self.addressWord(worker)))
+        guard words.count == 64 else { throw Failure.rpc("Malformed workerCredit answer") }
+        return (WorkerPayment.saturating(Array(words[0..<32])), WorkerPayment.saturating(Array(words[32..<64])))
     }
 
     /// The payout wallet the pool records for `worker`; nil when none. Throws on a malformed answer.
@@ -116,7 +118,7 @@ struct Chain {
 
     /// Decodes the `channels(bytes32)` getter: buyer, seller, deposit, settled,
     /// metadataHash, deadline, settledAt, closeRequestedAt, status (9 words).
-    static func channelVerdict(_ result: Data, buyer: String, pool: String) -> Bool? {
+    static func channelVerdict(_ result: Data, buyer: String, pool: String, anyStatus: Bool = false) -> Bool? {
         let bytes = [UInt8](result)
         guard bytes.count >= 9 * 32 else { return nil }
         let onChainBuyer = Data(bytes[12..<32]).prefixedHex
@@ -126,7 +128,7 @@ struct Chain {
         let statusHigh = bytes[(8 * 32)..<(8 * 32 + 31)]
         return onChainBuyer.lowercased() == buyer.lowercased()
             && onChainSeller.lowercased() == pool.lowercased()
-            && statusHigh.allSatisfy { $0 == 0 } && status == activeStatus
+            && (anyStatus || (statusHigh.allSatisfy { $0 == 0 } && status == activeStatus))
     }
 }
 

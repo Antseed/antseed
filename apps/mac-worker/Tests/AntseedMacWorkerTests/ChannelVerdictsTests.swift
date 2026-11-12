@@ -122,6 +122,9 @@ final class ChannelRecordTests: XCTestCase {
     func testClosedChannelIsRefusedOnTheFirstLookup() {
         // Settled (2) and TimedOut (3) keep buyer and seller on-chain.
         XCTAssertEqual(Chain.channelVerdict(record(buyer: buyer, seller: pool, status: 2), buyer: buyer, pool: pool), false)
+        // Closed, but this buyer's channel with the pool: its account can be retired.
+        XCTAssertEqual(Chain.channelVerdict(record(buyer: buyer, seller: pool, status: 2), buyer: buyer, pool: pool, anyStatus: true), true)
+        XCTAssertEqual(Chain.channelVerdict(record(buyer: buyer, seller: buyer, status: 2), buyer: buyer, pool: pool, anyStatus: true), false)
         XCTAssertEqual(Chain.channelVerdict(record(buyer: buyer, seller: pool, status: 3), buyer: buyer, pool: pool), false)
     }
 

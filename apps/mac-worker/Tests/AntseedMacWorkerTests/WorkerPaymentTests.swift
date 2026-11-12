@@ -189,16 +189,35 @@ final class WorkerPaymentTests: XCTestCase {
         XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
         ledger.served(channel: channel, cost: 9_000)
         XCTAssertNil(ledger.admit(channel: channel, attributed: 9_000, cumulative: 10_000))
-        XCTAssertTrue(ledger.awaitsSettlement(channel: channel))
         // Not settled that far yet: nothing to judge.
         XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 5_000, credited: 0))
         // Settled past it and credited in full: done with that payment.
         XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 10_000, credited: 9_000))
-        XCTAssertFalse(ledger.awaitsSettlement(channel: channel))
         ledger.served(channel: channel, cost: 9_000)
         XCTAssertNil(ledger.admit(channel: channel, attributed: 18_000, cumulative: 20_000))
         // Settled past it with an auth that credits this worker nothing more.
         XCTAssertTrue(ledger.reconcile(channel: channel, buyer: buyer, settled: 20_000, credited: 9_000))
         XCTAssertTrue(ledger.refuses(buyer: buyer.lowercased()))
+    }
+
+    @MainActor
+    func testNeverQueuesAnAnswerThatCostsNothingEvenBehindAnUnpaidOne() {
+        let ledger = WorkerPaymentLedger()
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+        ledger.served(channel: channel, cost: 9_000)
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+        ledger.served(channel: channel, cost: 0)
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0), "one answer unpaid, so one more may run")
+    }
+
+    @MainActor
+    func testForgetsAClosedChannel() {
+        let ledger = WorkerPaymentLedger()
+        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+            ledger.served(channel: channel, cost: 9_000)
+        }
+        ledger.forget(channel: channel)
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
     }
 }

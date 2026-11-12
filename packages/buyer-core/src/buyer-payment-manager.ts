@@ -785,6 +785,8 @@ export class BuyerPaymentManager {
     this._clearRequestBillingForSeller(sellerPeerId);
     // Worker delivery state outlives the session: a NeedAuth names a request,
     // and a forgotten worker request must stay refused on the next channel too.
+    // Answered ones lost their records above, so they free their worker slots.
+    this._workerDeliveries.retireAnswered(sellerPeerId);
   }
 
   getActiveSession(sellerPeerId: string): StoredChannel | null {

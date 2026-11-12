@@ -312,8 +312,8 @@ describe('worker lifecycle', () => {
     expect(await verifier(`0x${'02'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
     expect(await verifier(`0x${'03'.repeat(32)}`, buyer.address, SELLER)).toBeNull();
     // A closed channel keeps its buyer and seller but is no longer active.
-    expect(await verifier(`0x${'04'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
-    expect(await verifier(`0x${'05'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
+    expect(await verifier(`0x${'04'.repeat(32)}`, buyer.address, SELLER)).toBe('closed');
+    expect(await verifier(`0x${'05'.repeat(32)}`, buyer.address, SELLER)).toBe('closed');
     expect(reads).toHaveLength(5);
   });
 
@@ -405,32 +405,38 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
-  it('refuses a buyer once a settlement credits this worker less than the buyer signed it', async () => {
+  it('counts only attribution the pool can still pay, and refuses a buyer once a settlement paid this worker less than signed', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     const domain = { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' };
     const reads: Array<[string, string, string]> = [];
+    let credit = { settled: 0n, credited: 0n };
     start({
       channelsDomain: domain,
       channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })),
-      // The pool settled the channel to 18 with an auth that credits this worker nothing.
-      poolCredit: async (pool, channel, address) => { reads.push([pool, channel, address]); return { settled: 18n, credited: 0n }; },
+      poolCredit: async (pool, channel, address) => { reads.push([pool, channel, address]); return credit; },
     });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
-    const pay = (amount: bigint): Promise<WorkerPayment> => signTestWorkerPayment({ signer: buyer, channel: CHANNEL, worker: worker!.address, amount, domain });
+    const pay = (amount: bigint, cumulativeAmount = amount): Promise<WorkerPayment> =>
+      signTestWorkerPayment({ signer: buyer, channel: CHANNEL, worker: worker!.address, amount, domain, cumulativeAmount });
     for (const id of ['k1', 'k2']) {
       await request(id);
       await waitFor(() => fakePool.ended(id));
     }
-    // Shown a payment of 18 for both answers: served, and the pool's credit is read beside it.
+    // The channel already settled to 18 without paying this worker: a payment of 18 adds nothing it can redeem.
+    credit = { settled: 18n, credited: 0n };
     await request('k3', { payment: await pay(18n) });
-    await waitFor(() => fakePool.ended('k3'));
-    await waitFor(() => reads.length === 1);
-    expect(reads[0]).toEqual([SELLER, CHANNEL.toLowerCase(), worker!.address]);
-    await sleep(20);
-    // Settled past 18 yet credited nothing: the buyer gets no more work, paid or not.
-    await request('k4', { payment: await pay(27n) });
-    await waitFor(() => fakePool.errorFor('k4') !== undefined);
-    expect(fakePool.errorFor('k4')).toMatch(/no longer serves this buyer/);
+    await waitFor(() => fakePool.errorFor('k3') !== undefined);
+    expect(fakePool.errorFor('k3')).toMatch(/has not arrived/);
+    // Unsettled, 18 more on the channel pays for both answers.
+    credit = { settled: 18n, credited: 0n };
+    await request('k4', { payment: await pay(18n, 36n) });
+    await waitFor(() => fakePool.ended('k4'));
+    expect(reads.at(-1)).toEqual([SELLER, CHANNEL.toLowerCase(), worker!.address]);
+    // Then the pool settles past that payment and pays this worker nothing: the buyer gets no more work.
+    credit = { settled: 36n, credited: 0n };
+    await request('k5', { payment: await pay(27n, 45n) });
+    await waitFor(() => fakePool.errorFor('k5') !== undefined);
+    expect(fakePool.errorFor('k5')).toMatch(/no longer serves this buyer/);
     expect(upstream.bodies).toHaveLength(3);
   });
 

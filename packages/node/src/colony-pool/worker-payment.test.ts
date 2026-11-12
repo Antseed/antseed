@@ -175,18 +175,36 @@ describe('worker payments', () => {
     ledger.admit(channel, 0n);
     ledger.served(channel, 9_000n);
     ledger.admit(channel, 9_000n, 10_000n);
-    expect(ledger.awaitsSettlement(channel)).toBe(true);
     // Not settled that far yet: nothing to judge.
     expect(ledger.reconcile(channel, buyer.address, 5_000n, 0n)).toBe(false);
-    expect(ledger.awaitsSettlement(channel)).toBe(true);
     // Settled past it and credited in full: done with that payment.
     expect(ledger.reconcile(channel, buyer.address, 10_000n, 9_000n)).toBe(false);
-    expect(ledger.awaitsSettlement(channel)).toBe(false);
     expect(ledger.refuses(buyer.address)).toBe(false);
     ledger.served(channel, 9_000n);
     ledger.admit(channel, 18_000n, 20_000n);
     // Settled past it with an auth that credits this worker nothing more.
     expect(ledger.reconcile(channel, buyer.address, 20_000n, 9_000n)).toBe(true);
     expect(ledger.refuses(buyer.address.toLowerCase())).toBe(true);
+  });
+
+  it('never queues an answer that costs nothing, even behind an unpaid one', () => {
+    const ledger = new WorkerPaymentLedger();
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 0n);
+    // One answer unpaid, so one more may run.
+    ledger.admit(channel, 0n);
+  });
+
+  it('forgets a closed channel, freeing its place for new ones', () => {
+    const ledger = new WorkerPaymentLedger();
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    ledger.forget(channel);
+    // Forgotten: nothing owed on it any more (a closed channel gets no more work anyway).
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 0n);
   });
 });
