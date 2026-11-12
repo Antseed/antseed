@@ -16,6 +16,7 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
   const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
   for (const event of readStreamEvents(new TextDecoder().decode(body))) {
     for (const value of event.values) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       const usage = extractUsage(value as Record<string, unknown>);
       if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
       if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);

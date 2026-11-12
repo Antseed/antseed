@@ -941,6 +941,8 @@ export class SellerRequestHandler {
       const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
+      /** The last two bytes streamed to the buyer (LF is 10): whether a cut stream left a line or an event open. */
+      let streamTail: number[] = [10, 10];
       let responseStartedAt = startTime;
       // First generated token and in-stream failures of a streamed answer, for the performance this seller announces.
       const streamOutcome = new StreamOutcome();
@@ -1009,6 +1011,7 @@ export class SellerRequestHandler {
                 heldDoneChunkData = chunk.data;
                 return;
               }
+              if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
               mux.sendProxyChunk(chunk);
             },
           });
@@ -1092,7 +1095,9 @@ export class SellerRequestHandler {
             responseForAuth = null;
             mux.sendProxyError(request.requestId);
           } else if (streamedResponseStarted) {
-            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
+            // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
+            const closing = streamTail[1] !== 10 ? '\n\n' : streamTail[0] !== 10 ? '\n' : '';
+            const errorFrame = new TextEncoder().encode(`${closing}event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
               requestId: request.requestId,

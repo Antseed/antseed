@@ -118,6 +118,12 @@ describe('parseResponseUsage', () => {
   });
 });
 
+describe('parseResponseUsage on data that is not an object', () => {
+  it('skips a null, a number or a list in a stream instead of failing', () => {
+    expect(parseResponseUsage(new TextEncoder().encode('data: null\n\ndata: 5\n\ndata: []\n\ndata: {"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'))).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+  });
+});
+
 describe('readStreamEvents', () => {
   const read = (text: string) => [...readStreamEvents(text)];
 

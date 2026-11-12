@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { estimateTokensFromBytesSampled, estimateTokensFromText } from '../src/payments/pricing.js';
-import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
+import { decodeHttpResponse, decodeHttpResponseChunk, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { MessageType } from '../src/types/protocol.js';
 import type { Provider, ProviderStreamCallbacks } from '../src/interfaces/seller-provider.js';
@@ -99,7 +99,8 @@ async function serve(provider: Provider, { path = '/v1/chat/completions', body =
     });
   }
   const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
-  return { response: decodeHttpResponse(frame.payload), spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined, paymentRequired: sendPaymentRequired.mock.calls.length };
+  const chunks = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).filter((message) => message.type === MessageType.HttpResponseChunk).map((message) => new TextDecoder().decode(decodeHttpResponseChunk(message.payload).data));
+  return { response: decodeHttpResponse(frame.payload), chunks, spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined, paymentRequired: sendPaymentRequired.mock.calls.length };
 }
 
 describe('seller billing of an answer without a usage report', () => {
@@ -256,6 +257,19 @@ describe('seller billing of an answer without a usage report', () => {
   it('charges nothing by estimate for a stream that failed', async () => {
     const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), 'event: error\ndata: upstream dropped\n\n']));
     expect(needAuth?.lastRequestCost).toBe('0');
+    expect(spent).toBe(0n);
+  });
+
+  it('ends a stream the provider fails mid-line with an error event of its own, and charges nothing by estimate', async () => {
+    const provider = streamingProvider([]);
+    provider.handleRequestStream = vi.fn(async (request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: new Uint8Array(0) });
+      callbacks.onResponseChunk({ requestId: request.requestId, data: encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"Se'), done: false });
+      throw new Error('upstream reset');
+    });
+    const { spent, needAuth, chunks } = await serve(provider);
+    expect(chunks.join('')).toMatch(/"content":"Se\n\nevent: error\ndata: /);
+    expect(needAuth?.lastRequestCost ?? '0').toBe('0');
     expect(spent).toBe(0n);
   });
 
