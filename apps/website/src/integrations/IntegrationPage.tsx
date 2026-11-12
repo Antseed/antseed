@@ -172,7 +172,8 @@ function RunFirstBanner() {
           <ul className={styles.glossaryList}>
             <li>
               <strong>Gateway</strong> - the API server you run with{' '}
-              <code>antseed gateway start</code> or the server installer, at{' '}
+              <code>antseed gateway start</code> (or in the background with{' '}
+              <code>antseed gateway service install</code>) or the server installer, at{' '}
               <code>/v1</code> on port 8379. It gives every tool its own API key with
               budgets, routing policy and usage logs, and passes requests to a buyer.
               Reach it locally, on your network, behind a{' '}

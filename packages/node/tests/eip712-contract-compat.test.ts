@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { keccak256, toUtf8Bytes, verifyTypedData } from 'ethers';
+import { TypedDataEncoder, verifyTypedData, type TypedDataField } from 'ethers';
 import {
   SPENDING_AUTH_TYPES,
+  RESERVE_AUTH_TYPES,
+  SET_OPERATOR_TYPES,
+  FREE_USAGE_OPEN_TYPES,
+  FREE_USAGE_AUTH_TYPES,
   makeChannelsDomain,
+  makeDepositsDomain,
+  makeFreeUsageDomain,
   signSpendingAuth,
   computeMetadataHash,
   ZERO_METADATA_HASH,
@@ -10,23 +16,90 @@ import {
 } from '../src/payments/evm/signatures.js';
 import { loadOrCreateIdentity } from '../src/p2p/identity.js';
 import { tmpdir } from 'node:os';
+import { readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// The Solidity sources are the reference: a contract change must fail these tests.
+const CONTRACTS_DIR = fileURLToPath(new URL('../../contracts', import.meta.url));
+// Dependencies, Foundry tests and mocks, scripts and build output are not deployed protocol contracts.
+const SKIPPED_DIRS = new Set(['lib', 'test', 'script', 'out', 'cache', 'broadcast', 'node_modules']);
+
+function readContractSources(dir: string): string[] {
+  const sources: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!SKIPPED_DIRS.has(entry.name)) sources.push(...readContractSources(join(dir, entry.name)));
+    } else if (entry.name.endsWith('.sol')) {
+      sources.push(readFileSync(join(dir, entry.name), 'utf8'));
+    }
+  }
+  return sources;
+}
+
+/** Collects `name -> value` pairs, failing if two contracts disagree on one name. */
+function collectUnique(sources: string[], pattern: RegExp, toEntry: (m: RegExpMatchArray) => [string, string]): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const source of sources) {
+    for (const match of source.matchAll(pattern)) {
+      const [name, value] = toEntry(match);
+      const previous = found.get(name);
+      if (previous !== undefined && previous !== value) {
+        throw new Error(`Contracts disagree on ${name}: "${previous}" vs "${value}"`);
+      }
+      found.set(name, value);
+    }
+  }
+  return found;
+}
+
+const CONTRACT_SOURCES = readContractSources(CONTRACTS_DIR);
+
+/** Primary type name -> EIP-712 type string, from `bytes32 ... constant X_TYPEHASH = keccak256("...")`. */
+const SOLIDITY_TYPE_STRINGS = collectUnique(
+  CONTRACT_SOURCES,
+  /bytes32\s+(?:public\s+|internal\s+|private\s+)?constant\s+\w+_TYPEHASH\s*=\s*keccak256\(\s*"([^"]+)"\s*\)/g,
+  (m) => [m[1]!.slice(0, m[1]!.indexOf('(')), m[1]!],
+);
+
+/** Domain name -> version, from `EIP712("name", "version")` constructor calls. */
+const SOLIDITY_DOMAINS = collectUnique(
+  CONTRACT_SOURCES,
+  /EIP712\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/g,
+  (m) => [m[1]!, m[2]!],
+);
+
+const TS_TYPES: Record<string, Record<string, TypedDataField[]>> = {
+  SpendingAuth: SPENDING_AUTH_TYPES,
+  ReserveAuth: RESERVE_AUTH_TYPES,
+  SetOperator: SET_OPERATOR_TYPES,
+  FreeUsageOpen: FREE_USAGE_OPEN_TYPES,
+  FreeUsageAuth: FREE_USAGE_AUTH_TYPES,
+};
+
+const TS_DOMAINS = [
+  makeChannelsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
+  makeDepositsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
+  makeFreeUsageDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
+];
 
 describe('EIP-712 Contract Compatibility', () => {
-  it('SPENDING_AUTH_TYPES typehash matches contract format', () => {
-    // The contract computes:
-    // keccak256("SpendingAuth(bytes32 channelId,uint256 cumulativeAmount,bytes32 metadataHash)")
-    const expectedTypeString =
-      'SpendingAuth(bytes32 channelId,uint256 cumulativeAmount,bytes32 metadataHash)';
-    const expectedHash = keccak256(toUtf8Bytes(expectedTypeString));
+  it('every typehash in the Solidity sources has a TS type, and the reverse', () => {
+    expect([...SOLIDITY_TYPE_STRINGS.keys()].sort()).toEqual(Object.keys(TS_TYPES).sort());
+  });
 
-    // Verify our TS type definition produces the same encoding
-    const fields = SPENDING_AUTH_TYPES.SpendingAuth;
-    const tsTypeString = `SpendingAuth(${fields.map((f) => `${f.type} ${f.name}`).join(',')})`;
-    const tsHash = keccak256(toUtf8Bytes(tsTypeString));
+  it.each(Object.keys(TS_TYPES))('%s type string matches the Solidity typehash string', (primaryType) => {
+    const tsTypeString = TypedDataEncoder.from(TS_TYPES[primaryType]!).encodeType(primaryType);
+    expect(tsTypeString).toBe(SOLIDITY_TYPE_STRINGS.get(primaryType));
+  });
 
-    expect(tsHash).toBe(expectedHash);
+  it('every EIP712 domain in the Solidity sources has a TS domain, and the reverse', () => {
+    expect([...SOLIDITY_DOMAINS.keys()].sort()).toEqual(TS_DOMAINS.map((d) => d.name).sort());
+  });
+
+  it.each(TS_DOMAINS.map((d) => [d.name, d.version]))('%s domain version %s matches the Solidity constructor', (name, version) => {
+    expect(version).toBe(SOLIDITY_DOMAINS.get(name as string));
   });
 
   it('TS SpendingAuth type string has exactly the right field order and types', () => {

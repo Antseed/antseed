@@ -36,7 +36,7 @@ npm install -g @antseed/cli
 antseed gateway start
 ```
 
-This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself.
+This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself. To run it in the background instead, starting at login and restarting if it stops, use `antseed gateway service install` (a launchd agent on macOS, a systemd user service on Linux, no root).
 
 The console has no owner yet. Get a one-time setup link, open it, and register a passkey or connect a wallet to become the owner:
 
