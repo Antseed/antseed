@@ -62,6 +62,8 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { usageForBilling } from '@antseed/buyer-core';
+import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { requestBodyService } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
@@ -246,6 +248,8 @@ export class SellerRequestHandler {
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
+  /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
+  private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: SellerRequestHandlerDeps) {
@@ -378,6 +382,12 @@ export class SellerRequestHandler {
             })),
           });
         }
+        return;
+      }
+
+      // Everything below bills and routes by this path as written.
+      if (!isCanonicalRequestPath(request.path)) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', 'The request path must be in normal form: no dot segments, empty segments or percent escapes.');
         return;
       }
 
@@ -931,6 +941,8 @@ export class SellerRequestHandler {
       const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
+      /** The last two bytes streamed to the buyer (LF is 10): whether a cut stream left a line or an event open. */
+      let streamTail: number[] = [10, 10];
       let responseStartedAt = startTime;
       // First generated token and in-stream failures of a streamed answer, for the performance this seller announces.
       const streamOutcome = new StreamOutcome();
@@ -999,6 +1011,7 @@ export class SellerRequestHandler {
                 heldDoneChunkData = chunk.data;
                 return;
               }
+              if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
               mux.sendProxyChunk(chunk);
             },
           });
@@ -1047,7 +1060,14 @@ export class SellerRequestHandler {
             billingUsageReport = unitBilling.billingUsage;
             unitCostUsdc = unitBilling.costUsdc;
           } else {
-            responseUsage = parseResponseUsage(response.body);
+            // An answer delivered without a usage figure is still paid for: it is billed by
+            // estimate, the same one the buyer makes from the same bytes.
+            const billed = isServedFree ? { usage: parseResponseUsage(response.body), estimated: false } : usageForBilling(request.body, response);
+            responseUsage = billed.usage;
+            if (billed.estimated) {
+              debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${responseUsage.inputTokens} out=${responseUsage.outputTokens})`);
+              this._reportUsageMissing(provider.name, requestedModel);
+            }
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
           if (!streamedResponseStarted) {
@@ -1075,7 +1095,9 @@ export class SellerRequestHandler {
             responseForAuth = null;
             mux.sendProxyError(request.requestId);
           } else if (streamedResponseStarted) {
-            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
+            // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
+            const closing = streamTail[1] !== 10 ? '\n\n' : streamTail[0] !== 10 ? '\n' : '';
+            const errorFrame = new TextEncoder().encode(`${closing}event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
               requestId: request.requestId,
@@ -1228,7 +1250,7 @@ export class SellerRequestHandler {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
         const reportedUsage = responseUsage.freshInputTokens + responseUsage.outputTokens;
-        // A served answer without a usage report (a buyer can turn streaming usage off) counts as its estimate.
+        // A served answer with no usage figure, reported or estimated, counts as what was reserved for it.
         usageHold.tokens = statusCode < 400 && reportedUsage + responseUsage.cachedInputTokens === 0 ? usageHold.estimate : reportedUsage;
       }
     };
@@ -1408,6 +1430,17 @@ export class SellerRequestHandler {
   private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
     debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider}", retry in ${retryAfterSeconds}s`);
     this._sendJsonError(mux, requestId, 429, 'buyer_usage_limited', 'This buyer has reached its usage limit with this seller; retry later', { 'retry-after': String(retryAfterSeconds) });
+  }
+
+  /**
+   * Tell the operator, once per provider and service, that the upstream sends
+   * no usage figure: its answers are billed by estimate from then on.
+   */
+  private _reportUsageMissing(provider: string, service: string): void {
+    const key = `${provider}\u0000${service}`;
+    if (this._usageMissingReported.has(key)) return;
+    this._usageMissingReported.add(key);
+    this._deps.emit('provider:usage-missing', { provider, service });
   }
 
   private _sendJsonError(
@@ -1634,6 +1667,8 @@ export class SellerRequestHandler {
     const requestProtocol = detectRequestServiceApiProtocol(request);
     const selected = selectTargetProtocolForRequest(requestProtocol, candidates);
     if (selected) return selected.targetProtocol;
+    // Not a protocol this service speaks or could be translated to: billing it as one of those would measure nothing it delivered.
+    if (requestProtocol && candidates.length > 0) throw new Error(`Service "${service}" does not offer ${requestProtocol}`);
     if (protocols?.[0]) return protocols[0];
     return billingProtocols[0] ?? "openai-chat-completions";
   }

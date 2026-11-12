@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { APPROVED_DSTACK_OS } from './approved-node-measurements.js'
+import { APPROVED_DSTACK_OS, APPROVED_OS_IMAGES, readApprovedNodeBuilds } from './approved-node-measurements.js'
 
 describe('APPROVED_DSTACK_OS', () => {
   it('lists well-formed measurements, one entry per name', () => {
@@ -20,5 +20,42 @@ describe('APPROVED_DSTACK_OS', () => {
       rtmr1: '89ef86c5125b986c325f0a94acfa87718a4ef3a4d4f237dbb72dda3cf777fd2c054555fb4407eb53338d7d67329a7333',
       rtmr2: 'e9000e338f33233e8f51b7fd031e1c158bdcf8572eab041c0bc8eb7fef48b23259a6a556e6c8e2af99999fc39c793179',
     })
+  })
+})
+
+describe('APPROVED_OS_IMAGES', () => {
+  it('lists the dstack 0.6.1 production OS image hash', () => {
+    expect(APPROVED_OS_IMAGES).toContainEqual({
+      name: 'dstack 0.6.1',
+      hash: 'ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6',
+    })
+    for (const image of APPROVED_OS_IMAGES) expect(image.hash).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('readApprovedNodeBuilds', () => {
+  it('adds well-formed os and osImages entries and ignores malformed ones', () => {
+    const os = {
+      name: 'custom os',
+      mrtd: '11'.repeat(48),
+      rtmr0: '22'.repeat(48),
+      rtmr1: '33'.repeat(48),
+      rtmr2: '44'.repeat(48),
+    }
+    const osImage = { name: 'custom image', hash: 'ab'.repeat(32) }
+    process.env['ANTSEED_VERIFIER_NODE_BUILDS'] = JSON.stringify({
+      os: [os, { name: 'bad os', mrtd: '1' }],
+      osImages: [osImage, { name: 'uppercase', hash: 'AB'.repeat(32) }, { name: 'short', hash: 'aa' }, { hash: 'cd'.repeat(32) }],
+    })
+    try {
+      const builds = readApprovedNodeBuilds()
+      expect(builds.os).toContainEqual(os)
+      expect(builds.os.some((item) => item.name === 'bad os')).toBe(false)
+      expect(builds.osImages).toContainEqual(APPROVED_OS_IMAGES[0])
+      expect(builds.osImages).toContainEqual(osImage)
+      expect(builds.osImages.some((item) => item.name === 'uppercase' || item.name === 'short')).toBe(false)
+    } finally {
+      delete process.env['ANTSEED_VERIFIER_NODE_BUILDS']
+    }
   })
 })
