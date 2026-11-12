@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
 import { MAX_PAYLOAD_SIZE } from '@antseed/protocol/messages';
-import { extractRequestBodyFields, parseJsonObject } from '@antseed/api-adapter';
+import {
+  IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, extractRequestBodyFields, parseJsonObject,
+} from '@antseed/api-adapter';
 import type { SerializedHttpRequest } from './types/http.js';
 
 /*
@@ -56,16 +58,18 @@ const NO_SERVICE = refuse('model_required', 'Request must name one service, in a
 /** The fields a buyer names its service in. */
 const SERVICE_FIELDS = new Set(['service', 'model']);
 
-/** Every billing input, by its exact name: each appears once and is spelled exactly so. */
+/**
+ * Every billing input, by its exact name: each appears once and is spelled exactly so. Taken from
+ * the billing readers themselves, so a field billing starts to read is checked here too.
+ */
 const BILLING_FIELDS = new Set<string>([
-  ...SERVICE_FIELDS, ...UNIT_BILLING_MATCH_KEYS_V1, 'n',
-  'duration', 'generate_audio', 'reference_video_urls', 'video_urls', 'prompt', 'input',
+  ...SERVICE_FIELDS, ...UNIT_BILLING_MATCH_KEYS_V1, ...IMAGE_REQUEST_FIELDS, ...SPEECH_REQUEST_FIELDS, ...VIDEO_CREATE_FIELDS,
 ]);
 
 /** Text values an image is priced by: when present, one short plain string. */
-const PRICED_TEXT_FIELDS = ['size', 'quality', 'resolution'];
+const PRICED_TEXT_FIELDS: readonly string[] = IMAGE_PRICE_ATTRIBUTES;
 
-/** Form fields billing reads: each must be one short text part. */
+/** Form fields billing reads (image billing, the only one that reads forms): each must be one short text part. */
 const FORM_BILLED_FIELDS = new Set([...SERVICE_FIELDS, 'n', ...PRICED_TEXT_FIELDS]);
 
 /** Billing reads a form text field only up to this size. */

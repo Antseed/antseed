@@ -116,6 +116,11 @@ export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string
   'fal-video': ['reference_video_urls', 'video_urls'],
 };
 
+/** Every request field `nativeVideoFacts` reads from a create, beside its service. A seller checks each is spelled exactly. */
+export const VIDEO_CREATE_FIELDS: readonly string[] = [
+  'duration', 'resolution', 'aspect_ratio', 'audio', 'generate_audio', ...new Set(Object.values(REFERENCE_VIDEO_FIELDS).flat()),
+];
+
 /** The announced video options a create's price depends on (a subset of `VideoOptions`). */
 export interface NativeVideoPricedOptions {
   aspectRatios?: readonly string[];
