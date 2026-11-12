@@ -62,7 +62,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { estimateChatAnswerUsage } from './billing/estimated-usage.js';
+import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { requestBodyService } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
@@ -248,6 +248,8 @@ export class SellerRequestHandler {
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
+  /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
+  private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: SellerRequestHandlerDeps) {
@@ -1055,14 +1057,13 @@ export class SellerRequestHandler {
             billingUsageReport = unitBilling.billingUsage;
             unitCostUsdc = unitBilling.costUsdc;
           } else {
-            responseUsage = parseResponseUsage(response.body);
-            // An answer delivered without a usage figure is still paid for: it is billed by estimate.
-            if (!isServedFree && statusCode < 400 && responseUsage.inputTokens + responseUsage.outputTokens === 0) {
-              const estimated = estimateChatAnswerUsage(request.body, response.body);
-              if (estimated) {
-                debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${estimated.inputTokens} out=${estimated.outputTokens})`);
-                responseUsage = estimated;
-              }
+            // An answer delivered without a usage figure is still paid for: it is billed by
+            // estimate, the same one the buyer makes from the same bytes.
+            const billed = isServedFree ? { usage: parseResponseUsage(response.body), estimated: false } : usageForBilling(request.body, response);
+            responseUsage = billed.usage;
+            if (billed.estimated) {
+              debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${responseUsage.inputTokens} out=${responseUsage.outputTokens})`);
+              this._reportUsageMissing(provider.name, requestedModel);
             }
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
@@ -1424,6 +1425,17 @@ export class SellerRequestHandler {
   private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
     debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider}", retry in ${retryAfterSeconds}s`);
     this._sendJsonError(mux, requestId, 429, 'buyer_usage_limited', 'This buyer has reached its usage limit with this seller; retry later', { 'retry-after': String(retryAfterSeconds) });
+  }
+
+  /**
+   * Tell the operator, once per provider and service, that the upstream sends
+   * no usage figure: its answers are billed by estimate from then on.
+   */
+  private _reportUsageMissing(provider: string, service: string): void {
+    const key = `${provider}\u0000${service}`;
+    if (this._usageMissingReported.has(key)) return;
+    this._usageMissingReported.add(key);
+    this._deps.emit('provider:usage-missing', { provider, service });
   }
 
   private _sendJsonError(

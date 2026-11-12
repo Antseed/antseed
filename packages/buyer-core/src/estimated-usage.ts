@@ -1,7 +1,6 @@
 import { parseJsonObject } from '@antseed/api-adapter';
-import { isStreamError } from '../health/stream-outcome.js';
-import { estimateTokensFromBytesSampled } from '../payments/pricing.js';
-import type { ResponseUsage } from '../utils/response-usage.js';
+import { estimateTokensFromBytesSampled } from './pricing.js';
+import { parseResponseUsage, readStreamEvents, type ResponseUsage } from './response-usage.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -13,11 +12,20 @@ const ATTACHMENT_PARTS = new Set(['image_url', 'input_audio', 'file']);
 /** What one attachment counts as: roughly what chat upstreams bill for an image. */
 const ATTACHMENT_TOKENS = 1_290;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Whether a parsed stream event reports a failure: an error event in the OpenAI chat, OpenAI Responses or Anthropic Messages stream. */
+export function isStreamError(event: Record<string, unknown>): boolean {
+  return event.type === 'error' || event.type === 'response.failed' || isRecord(event.error);
+}
+
 /** Every string the model wrote in a chat message or delta: content, reasoning, tool names and arguments. */
 function generatedText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) return value.map(generatedText).join('');
-  if (!value || typeof value !== 'object') return '';
+  if (!isRecord(value)) return '';
   return Object.entries(value)
     .filter(([key]) => GENERATED_FIELDS.has(key))
     .map(([, field]) => generatedText(field))
@@ -35,18 +43,14 @@ function chatAnswerText(body: Uint8Array): string | null {
   const whole = parseJsonObject(body);
   if (whole) return choicesText(whole);
   let answer: string | null = null;
-  for (const block of decoder.decode(body).split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/);
-    if (lines.some((line) => line.startsWith('event:') && line.slice(6).trim() === 'error')) return null;
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5)).join('\n')) as Record<string, unknown>;
-    } catch {
-      continue; // Not JSON, such as [DONE].
+  for (const event of readStreamEvents(decoder.decode(body))) {
+    if (event.names.includes('error')) return null;
+    for (const value of event.values) {
+      if (!isRecord(value)) continue;
+      if (isStreamError(value)) return null;
+      const text = choicesText(value);
+      if (text !== null) answer = (answer ?? '') + text;
     }
-    if (isStreamError(event)) return null;
-    const text = choicesText(event);
-    if (text !== null) answer = (answer ?? '') + text;
   }
   return answer;
 }
@@ -80,4 +84,20 @@ export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: U
     cachedInputTokens: 0,
     outputTokens: estimateTokensFromBytesSampled(encoder.encode(text)),
   };
+}
+
+/**
+ * The usage a paid answer is billed by. The buyer and the seller both call it
+ * on the same request and answer bytes, so they agree on the charge: the
+ * answer's own usage figure, or, for a delivered chat answer whose figure is
+ * missing or all zeros, the estimate (`estimated` is then true).
+ */
+export function usageForBilling(
+  requestBody: Uint8Array,
+  response: { statusCode: number; body: Uint8Array },
+): { usage: ResponseUsage; estimated: boolean } {
+  const usage = parseResponseUsage(response.body);
+  if (response.statusCode >= 400 || usage.inputTokens + usage.outputTokens > 0) return { usage, estimated: false };
+  const estimate = estimateChatAnswerUsage(requestBody, response.body);
+  return estimate ? { usage: estimate, estimated: true } : { usage, estimated: false };
 }

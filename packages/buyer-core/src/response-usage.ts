@@ -13,30 +13,53 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
   if (parsed) {
     return extractUsage(parsed);
   }
-  const text = new TextDecoder().decode(body);
   const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
-  /** Adds one payload's usage to the total; false when the payload is not JSON. */
-  const read = (payload: string): boolean => {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
-      return false;
+  for (const event of readStreamEvents(new TextDecoder().decode(body))) {
+    for (const value of event.values) {
+      const usage = extractUsage(value as Record<string, unknown>);
+      if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
+      if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
+      if (usage.freshInputTokens > 0) total.freshInputTokens = Math.max(total.freshInputTokens, usage.freshInputTokens);
+      if (usage.cachedInputTokens > 0) total.cachedInputTokens = Math.max(total.cachedInputTokens, usage.cachedInputTokens);
     }
-    const usage = extractUsage(event);
-    if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
-    if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
-    if (usage.freshInputTokens > 0) total.freshInputTokens = Math.max(total.freshInputTokens, usage.freshInputTokens);
-    if (usage.cachedInputTokens > 0) total.cachedInputTokens = Math.max(total.cachedInputTokens, usage.cachedInputTokens);
-    return true;
-  };
-  /** The data lines of the event being read; a blank line ends an event. */
+  }
+  return total;
+}
+
+/** One event of a server-sent event stream: the names its `event:` lines give and the JSON values its data carries. */
+export interface StreamEvent {
+  names: string[];
+  values: unknown[];
+}
+
+const NOT_JSON = Symbol('not JSON');
+
+function parseJson(payload: string): unknown {
+  try {
+    return JSON.parse(payload) as unknown;
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * The events of a server-sent event stream, read the same way by the buyer
+ * and the seller. The data lines of one event are joined with "\n" into one
+ * payload, as the SSE spec says. Lines that do not join into JSON are read one
+ * by one: a stream written with no blank lines between its events. Data that
+ * is not JSON, such as `[DONE]`, is left out.
+ */
+export function readStreamEvents(text: string): StreamEvent[] {
+  const events: StreamEvent[] = [];
+  let names: string[] = [];
   let dataLines: string[] = [];
   const endEvent = (): void => {
-    // The SSE spec joins the data lines of one event with "\n" into one payload.
-    // Lines that do not join into JSON are read one by one: a stream written with no blank lines between its events.
-    const joined = dataLines.length > 1 && read(dataLines.join('\n'));
-    if (!joined) dataLines.forEach((payload) => read(payload));
+    if (names.length > 0 || dataLines.length > 0) {
+      const joined = dataLines.length > 1 ? parseJson(dataLines.join('\n')) : NOT_JSON;
+      const values = joined === NOT_JSON ? dataLines.map(parseJson).filter((value) => value !== NOT_JSON) : [joined];
+      events.push({ names, values });
+    }
+    names = [];
     dataLines = [];
   };
   for (const line of text.split('\n')) {
@@ -45,10 +68,11 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
       endEvent();
       continue;
     }
+    if (trimmed.startsWith('event:')) names.push(trimmed.slice(6).trim());
     if (!trimmed.startsWith('data:')) continue;
     const payload = trimmed.slice(5).trim();
     if (payload && payload !== '[DONE]') dataLines.push(payload);
   }
   endEvent();
-  return total;
+  return events;
 }
