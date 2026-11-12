@@ -1668,6 +1668,16 @@ test('a video job that reports failed is retired: later retrieves never reach th
   }
 })
 
+/** Answers every request the proxy sends to a seller with an empty success, handing it to `onRequest` first. */
+function captureProxyRequests(proxy: BuyerProxy, onRequest: (request: SerializedHttpRequest) => void): void {
+  const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    onRequest(request)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  ;(proxy as any)._node.sendRequest = capture
+  ;(proxy as any)._node.sendRequestStream = capture
+}
+
 // The seller refuses a body that names more than one service, so what the proxy
 // sends must name exactly the service it routed to, read by the seller's own reader.
 for (const [label, fields] of [
@@ -1685,12 +1695,7 @@ for (const [label, fields] of [
     peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     let sent: SerializedHttpRequest | undefined
-    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
-      sent = request
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
-    }
-    ;(proxy as any)._node.sendRequest = capture
-    ;(proxy as any)._node.sendRequestStream = capture
+    captureProxyRequests(proxy, (request) => { sent = request })
     const response = await invokeProxy(proxy, makeProxyRequest({ body: { ...fields(peer.peerId), messages: [] } }))
     assert.equal(response.statusCode, 200, response.body)
     assert.equal(requestBodyService(sent!), 'glm-5')
@@ -1705,12 +1710,7 @@ for (const contentType of ['text/plain;charset=UTF-8', 'application/x-www-form-u
     peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     let sent: SerializedHttpRequest | undefined
-    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
-      sent = request
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
-    }
-    ;(proxy as any)._node.sendRequest = capture
-    ;(proxy as any)._node.sendRequestStream = capture
+    captureProxyRequests(proxy, (request) => { sent = request })
     const response = await invokeProxy(proxy, makeProxyRequest({ headers: { 'content-type': contentType, 'x-antseed-pin-peer': peer.peerId }, body: { model: 'glm-5', messages: [] } }))
     assert.equal(response.statusCode, 200, response.body)
     assert.equal(sent!.headers['content-type'], contentType)
@@ -1726,12 +1726,7 @@ test('a multipart request reaches the seller naming the routed service', async (
   for (const model of ['image-model', `${peer.peerId}@image-model`]) {
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     let sent: SerializedHttpRequest | undefined
-    const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
-      sent = request
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
-    }
-    ;(proxy as any)._node.sendRequest = capture
-    ;(proxy as any)._node.sendRequestStream = capture
+    captureProxyRequests(proxy, (request) => { sent = request })
     const response = await invokeProxy(proxy, makeProxyRequest({
       path: '/v1/images/edits',
       headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },

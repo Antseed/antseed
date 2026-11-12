@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
 import {
-  IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, MAX_MULTIPART_TEXT_FIELD_BYTES, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS,
+  IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, MAX_MULTIPART_TEXT_FIELD_BYTES, headerValue, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS,
   extractRequestBodyFields, parseJsonObject,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest } from './types/http.js';
@@ -116,7 +116,7 @@ export function requestBodyFields(request: Pick<SerializedHttpRequest, 'headers'
  * says `multipart/form-data`, and as JSON otherwise.
  */
 export function billedRequestBody(request: Pick<SerializedHttpRequest, 'headers' | 'body'>): BilledRequestBody {
-  const contentType = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.trim() ?? '';
+  const contentType = headerValue(request.headers, 'content-type').trim();
   return /^multipart\/form-data/i.test(contentType) ? billedForm(request.body, contentType) : billedJson(request.body);
 }
 

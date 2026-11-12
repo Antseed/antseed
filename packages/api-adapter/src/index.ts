@@ -40,6 +40,7 @@ export {
   extractRequestBodyFields,
   parseJsonObject,
   parseMultipartFormFields,
+  headerValue,
   IMAGE_PRICE_ATTRIBUTES,
   IMAGE_REQUEST_FIELDS,
   MAX_MULTIPART_TEXT_FIELD_BYTES,
