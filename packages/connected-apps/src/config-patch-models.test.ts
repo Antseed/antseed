@@ -212,6 +212,25 @@ for (const writer of WRITERS) {
   });
 }
 
+for (const writer of WRITERS) {
+  test(`${writer.name}: a write reports the models the config got, not the target's`, async () => {
+    await withDir(async (dir) => {
+      const patch = writer.patch(dir);
+      // A first write selects the default: the tool had none.
+      assert.deepEqual(writeConfigPatch(patch, target([A, B], { unlistedModels: [C] })), { modelIds: [A.id, B.id], defaulted: [A.id] });
+      // On a listed model: unlisted ones and the default don't reach the config.
+      await writer.select(dir, B.id);
+      assert.deepEqual(writeConfigPatch(patch, target([A, B], { unlistedModels: [C], defaultModel: A.id })), { modelIds: [A.id, B.id], defaulted: [] });
+      // On an unlisted model: it is listed, and only it.
+      writeConfigPatch(patch, target([A, B, C]));
+      await writer.select(dir, C.id);
+      const extra = { id: 'model-d', label: 'Model D' };
+      assert.deepEqual(writeConfigPatch(patch, target([A, B], { unlistedModels: [C, extra] })), { modelIds: [A.id, B.id, C.id], defaulted: [] });
+      removeConfigPatch(patch);
+    });
+  });
+}
+
 const LISTING_WRITERS = WRITERS.filter((writer) => !['Claude Code', 'Codex'].includes(writer.name));
 
 for (const writer of LISTING_WRITERS) {

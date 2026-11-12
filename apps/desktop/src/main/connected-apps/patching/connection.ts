@@ -196,8 +196,8 @@ async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => 
   // A failed write keeps the WSL rows: a distro patched before the failure
   // holds the gateway URL and key, and disconnect has to find it.
   const target = patchTarget(endpoint, models);
-  writeConfigPatch(profile.configPatch, target, connectedAppsWslTargetsPath());
-  configChanges.recordWrite(name, target);
+  const written = writeConfigPatch(profile.configPatch, target, connectedAppsWslTargetsPath());
+  configChanges.recordWrite(name, target, written);
   // Codex's model catalog runs Codex itself: awaited here, off the main
   // thread, and dropped if quit starts before it lands.
   await finishConfigPatch(profile.configPatch, target, { isCurrent: () => !shuttingDown });

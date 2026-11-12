@@ -680,9 +680,16 @@ export function whenPrivacySettled(): Promise<void> {
   return privacySwitches.whenSettled();
 }
 
-/** One at a time: run together, two quick choices could land in either order. */
-export function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {
-  return privacySwitches.run(() => applyGatewayPrivacy(mode));
+/**
+ * One at a time: run together, two quick choices could land in either order.
+ * `changed` when the switch moved the saved mode, judged in turn like a read.
+ */
+export function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<PrivacyRead> {
+  return privacySwitches.run(async () => {
+    const before = getGatewaySettings().privacy;
+    const privacy = await applyGatewayPrivacy(mode);
+    return { privacy, changed: getGatewaySettings().privacy !== before };
+  });
 }
 
 async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {

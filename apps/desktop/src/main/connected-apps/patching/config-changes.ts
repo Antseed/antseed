@@ -6,9 +6,9 @@
  * that failed before writing changes nothing.
  */
 import { createHash } from 'node:crypto';
-import type { ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
+import type { ConfigPatchTarget, WrittenModels } from '@antseed/connected-apps/config-patch';
 
-/** The fields that make up an app's model list; the rest is its connection (gateway, key). */
+/** The target's model fields; the rest is its connection (gateway, key). */
 const MODEL_LIST_FIELDS = new Set(['models', 'unlistedModels', 'defaultModel', 'modelsLoaded']);
 
 /**
@@ -32,18 +32,23 @@ function normalize(value: unknown): unknown {
   return value;
 }
 
-/** What a patch writes, as the connection's and the model list's fingerprints. */
-export function configPatchFingerprint(target: ConfigPatchTarget): { connection: string; models: string } {
+/**
+ * What a patch writes, as the connection's and the model list's fingerprints.
+ * The model list is what the app's config got (`written`), not the target's:
+ * the app lists only the unlisted model it is on, and the target's default
+ * reaches it only where it had no selection.
+ */
+export function configPatchFingerprint(target: ConfigPatchTarget, written: WrittenModels): { connection: string; models: string } {
   const fields = Object.entries(target as Record<string, unknown>);
   return {
     connection: fingerprint(Object.fromEntries(fields.filter(([key]) => !MODEL_LIST_FIELDS.has(key)))),
-    models: fingerprint(Object.fromEntries(fields.filter(([key]) => MODEL_LIST_FIELDS.has(key) && key !== 'modelsLoaded'))),
+    models: fingerprint({ modelIds: [...written.modelIds].sort(), defaulted: [...written.defaulted].sort() }),
   };
 }
 
 export type ConfigChangeLog = {
-  /** Records a successful write of `target` to the app's config; true when it differs from the last one. */
-  recordWrite: (name: string, target: ConfigPatchTarget) => boolean;
+  /** Records a successful write of `target` (`written`: what the config got); true when it differs from the last one. */
+  recordWrite: (name: string, target: ConfigPatchTarget, written: WrittenModels) => boolean;
   /** The app's config is no longer Antseed's (disconnected): its next write is a change. */
   forget: (name: string) => void;
   /** App name → when its config last changed, for apps written since the desktop started. */
@@ -51,22 +56,22 @@ export type ConfigChangeLog = {
 };
 
 export function createConfigChangeLog(now: () => number = Date.now): ConfigChangeLog {
-  const written = new Map<string, { connection: string; models: string }>();
+  const lastWrites = new Map<string, { connection: string; models: string }>();
   const changed = new Map<string, number>();
   return {
-    recordWrite(name, target) {
-      const next = configPatchFingerprint(target);
-      const last = written.get(name);
+    recordWrite(name, target, written) {
+      const next = configPatchFingerprint(target, written);
+      const last = lastWrites.get(name);
       // A model list the gateway couldn't return leaves the app's list as it was.
       const unread = target.modelsLoaded === false || (target.modelsLoaded === undefined && target.models.length === 0);
       if (last && unread) next.models = last.models;
       if (last && last.connection === next.connection && last.models === next.models) return false;
-      written.set(name, next);
+      lastWrites.set(name, next);
       changed.set(name, now());
       return true;
     },
     forget(name) {
-      written.delete(name);
+      lastWrites.delete(name);
       changed.delete(name);
     },
     changedAt: () => Object.fromEntries(changed),

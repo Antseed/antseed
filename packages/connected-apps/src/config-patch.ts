@@ -416,6 +416,17 @@ export type ConfigPatchTarget = {
   defaultModel?: string;
 };
 
+/**
+ * The models a write put in a tool's config: the ids it lists (the target's
+ * models plus any unlisted one the tool is on) and the default it selected
+ * where the tool had no selection it could keep. A selection the tool already
+ * had is left out: rewriting it changes nothing for a running tool.
+ */
+export type WrittenModels = {
+  readonly modelIds: readonly string[];
+  readonly defaulted: readonly string[];
+};
+
 /** A ConfigPatchTarget (or legacy buyer port) normalized for the writers. */
 export type ResolvedTarget = {
   /** True for the numeric buyer-port form: writers keep their pre-gateway output byte for byte. */
@@ -430,6 +441,8 @@ export type ResolvedTarget = {
   readonly defaultModel?: string;
   /** Whether WSL configs get the distro-reachable host substituted in. */
   readonly loopback: boolean;
+  /** Told what each `pickModels` call chose, so `writeConfigPatch` can report it. */
+  readonly recordPick?: (pick: { modelIds: readonly string[]; defaulted: readonly string[] }) => void;
   /** Resolves a profile baseURL template (`http://localhost:{buyerPort}[/v1]`). */
   baseUrl(template: string): string;
 };
@@ -524,9 +537,30 @@ export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, target: 
  * - A number is the legacy buyer-proxy port: loopback base URL, the dummy
  *   'antseed' key, and the single ROUTED_MODEL_ALIAS model (the CLI's
  *   `antseed apps connect`).
+ *
+ * Returns the models the tool's config was written with (see WrittenModels).
  */
-export function writeConfigPatch(patch: ConfigPatchDef, target: ConfigPatchTarget | number, wslTargetsFile?: string): void {
-  const t = resolveTarget(target);
+export function writeConfigPatch(patch: ConfigPatchDef, target: ConfigPatchTarget | number, wslTargetsFile?: string): WrittenModels {
+  const modelIds = new Set<string>();
+  const defaulted = new Set<string>();
+  let picked = false;
+  const t: ResolvedTarget = {
+    ...resolveTarget(target),
+    recordPick: (pick) => {
+      picked = true;
+      for (const id of pick.modelIds) modelIds.add(id);
+      for (const id of pick.defaulted) defaulted.add(id);
+    },
+  };
+  writeConfigPatchFor(patch, t, wslTargetsFile);
+  // A writer that doesn't pick (it lists the target's models and selects none) writes the target's list.
+  return {
+    modelIds: [...(picked ? modelIds : t.modelIds)].sort(),
+    defaulted: [...defaulted].sort(),
+  };
+}
+
+function writeConfigPatchFor(patch: ConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
   if (patch.format === 'codex') {
     applyCodexConfigPatch(patch, t, wslTargetsFile);
     return;

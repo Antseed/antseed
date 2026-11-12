@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { sameCanonicalModel } from '@antseed/node/model-identity';
+import { sameCanonicalModel } from '@antseed/protocol/model-identity';
 import type { ResolvedTarget } from './config-patch.js';
 
 /**
@@ -62,22 +62,29 @@ function findModel(models: ReadonlyArray<ConfigPatchModel>, id: string): ConfigP
  * model the target leaves out (`unlistedModels`), listed beside the target's
  * so the tool still offers it. Any other selection becomes the target
  * default; undefined when the target serves no models, in which case the
- * selection is left alone.
+ * selection is left alone. Each pick is reported to `target.recordPick`.
  */
 export function pickModels(target: ResolvedTarget, currents: readonly unknown[]): { models: ReadonlyArray<ConfigPatchModel>; modelIds: readonly string[]; selected: Array<string | undefined> } {
   const kept: ConfigPatchModel[] = [];
   const fallback = target.defaultModel ?? target.models[0]?.id;
+  const defaulted: string[] = [];
+  const useFallback = (): string | undefined => {
+    if (fallback) defaulted.push(fallback);
+    return fallback;
+  };
   const selected = currents.map((current) => {
-    if (typeof current !== 'string' || current.length === 0) return fallback;
+    if (typeof current !== 'string' || current.length === 0) return useFallback();
     const listed = findModel(target.models, current) ?? findModel(kept, current);
     if (listed) return listed.id;
     const unlisted = findModel(target.unlistedModels, current);
-    if (!unlisted) return fallback;
+    if (!unlisted) return useFallback();
     kept.push(unlisted);
     return unlisted.id;
   });
   const models = kept.length > 0 ? [...target.models, ...kept] : target.models;
-  return { models, modelIds: models.map((model) => model.id), selected };
+  const modelIds = models.map((model) => model.id);
+  target.recordPick?.({ modelIds, defaulted });
+  return { models, modelIds, selected };
 }
 
 /** `pickModels` for a tool with one selection. */

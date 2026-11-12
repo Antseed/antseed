@@ -20,9 +20,10 @@ function harness(options: { gateway?: 'local' | 'remote' } = {}) {
     setPrivacy: (mode) => queue.run(async () => {
       await held;
       calls.push(`set:${mode}`);
+      const before = saved;
       keyMode = mode;
       saved = mode;
-      return privacy(mode);
+      return { privacy: privacy(mode), changed: saved !== before };
     }),
     getPrivacy: () => readPrivacyInTurn(queue, async () => {
       calls.push('get');
@@ -51,6 +52,13 @@ test('a privacy switch drops the cached model list, then rewrites every connecte
   const result = await switchPrivacy('private', deps);
   assert.equal(result.mode, 'private');
   assert.deepEqual(calls, ['set:private', 'clear-caches', 'refresh-apps']);
+});
+
+test('choosing the mode already in effect leaves the caches and apps alone', async () => {
+  const { deps, calls } = harness();
+  const result = await switchPrivacy('anonymous', deps);
+  assert.equal(result.mode, 'anonymous');
+  assert.deepEqual(calls, ['set:anonymous']);
 });
 
 test('a switch that failed partway still rewrites the apps, since some keys may have changed', async () => {

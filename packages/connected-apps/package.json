@@ -41,7 +41,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@antseed/node": "workspace:*",
     "@antseed/protocol": "workspace:*",
     "yaml": "^2.8.2"
   },

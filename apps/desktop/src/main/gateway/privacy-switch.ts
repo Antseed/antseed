@@ -26,8 +26,11 @@ export function readPrivacyInTurn(
 }
 
 export type PrivacySwitchDeps = {
-  /** Applies the mode to every key; throws for a remote gateway, whose console sets it. */
-  setPrivacy: (mode: GatewayPrivacyMode) => Promise<GatewayPrivacy>;
+  /**
+   * Applies the mode to every key, `changed` when the saved mode moved (judged
+   * in turn, like a read); throws for a remote gateway, whose console sets it.
+   */
+  setPrivacy: (mode: GatewayPrivacyMode) => Promise<PrivacyRead>;
   /** Reads the mode (`readPrivacyInTurn`), bringing every key in line with one the console changed. */
   getPrivacy: () => Promise<PrivacyRead>;
   gatewayMode: () => 'local' | 'remote';
@@ -50,8 +53,9 @@ function policyChanged(deps: PrivacySwitchDeps): void {
 
 export async function switchPrivacy(mode: GatewayPrivacyMode, deps: PrivacySwitchDeps): Promise<GatewayPrivacy> {
   try {
-    const privacy = await deps.setPrivacy(mode);
-    policyChanged(deps);
+    const { privacy, changed } = await deps.setPrivacy(mode);
+    // Choosing the mode already in effect leaves every key's models as they were.
+    if (changed) policyChanged(deps);
     return privacy;
   } catch (err) {
     // A switch that failed partway may have changed some keys already. A
