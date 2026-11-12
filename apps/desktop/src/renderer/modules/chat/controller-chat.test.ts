@@ -219,6 +219,40 @@ describe('chat controller', () => {
     expect(sends[0]).toMatchObject({ content: 'first' });
   });
 
+  it('a first image prompt holds the workspace until its chat exists', async () => {
+    const created = deferred<void>();
+    const setWorkspace: string[] = [];
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b', '/project-b')];
+    const createdOn: string[] = [];
+    let current = '/project-a';
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiSetWorkspace: async (path: string) => { setWorkspace.push(path); current = path; return { ok: true, data: { current: path, default: '/default' } }; },
+      chatAiCreateConversation: async (service: string) => {
+        await created.promise;
+        createdOn.push(current);
+        const made = conv(`conv-${conversations.length + 1}`, service, current);
+        conversations.push(made);
+        return { ok: true, data: made };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', supportsImages: true }] as never;
+    uiState.chatWorkspacePath = '/project-a';
+    await api.refreshChatConversations();
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('a cat');
+    await tick(5);
+    expect(uiState.chatWorkspaceLocked).toBe(true);
+    await api.openConversation('conv-b');
+    expect(setWorkspace).toEqual([]);
+    created.resolve();
+    await waitFor(() => setWorkspace.length === 1);
+    expect(createdOn).toEqual(['/project-a']);
+    expect(setWorkspace).toEqual(['/project-b']);
+    expect(uiState.chatWorkspaceLocked).toBe(false);
+  });
+
   it('a chat opened back in the held workspace replaces a switch deferred for another chat', async () => {
     const created = deferred<void>();
     const setWorkspace: string[] = [];

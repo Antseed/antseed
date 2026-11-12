@@ -1667,7 +1667,12 @@ export function initChatModule({
         shownDraft = draftToken;
         const stillDraft = () => !stoppedDrafts.has(draftToken);
         setDraftSending(true);
-        convId = await createConversationForModel(textModelId, { activate: false });
+        const releaseWorkspace = holdWorkspace();
+        try {
+          convId = await createConversationForModel(textModelId, { activate: false });
+        } finally {
+          releaseWorkspace();
+        }
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
         if (convId) reserved = beginSend(convId);
         if (shownDraft === draftToken) {
