@@ -49,23 +49,23 @@ function parseJson(payload: string): unknown {
  * by one: a stream written with no blank lines between its events. Data that
  * is not JSON, such as `[DONE]`, is left out.
  */
-export function readStreamEvents(text: string): StreamEvent[] {
-  const events: StreamEvent[] = [];
+export function* readStreamEvents(text: string): Generator<StreamEvent> {
   let names: string[] = [];
   let dataLines: string[] = [];
-  const endEvent = (): void => {
-    if (names.length > 0 || dataLines.length > 0) {
-      const joined = dataLines.length > 1 ? parseJson(dataLines.join('\n')) : NOT_JSON;
-      const values = joined === NOT_JSON ? dataLines.map(parseJson).filter((value) => value !== NOT_JSON) : [joined];
-      events.push({ names, values });
-    }
+  const takeEvent = (): StreamEvent | null => {
+    const joined = dataLines.length > 1 ? parseJson(dataLines.join('\n')) : NOT_JSON;
+    const event = names.length > 0 || dataLines.length > 0
+      ? { names, values: joined === NOT_JSON ? dataLines.map(parseJson).filter((value) => value !== NOT_JSON) : [joined] }
+      : null;
     names = [];
     dataLines = [];
+    return event;
   };
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
     if (trimmed === '') {
-      endEvent();
+      const event = takeEvent();
+      if (event) yield event;
       continue;
     }
     if (trimmed.startsWith('event:')) names.push(trimmed.slice(6).trim());
@@ -73,6 +73,6 @@ export function readStreamEvents(text: string): StreamEvent[] {
     const payload = trimmed.slice(5).trim();
     if (payload && payload !== '[DONE]') dataLines.push(payload);
   }
-  endEvent();
-  return events;
+  const last = takeEvent();
+  if (last) yield last;
 }

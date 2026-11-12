@@ -603,12 +603,15 @@ export class HttpRelay {
 
       const reader = fetchResponse.body.getReader();
       let totalStreamBytes = 0;
+      /** The last two bytes streamed (LF is 10): whether a cut stream left a line or an event open. */
+      let tail: number[] = [10, 10];
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
+          if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
           this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
@@ -619,8 +622,9 @@ export class HttpRelay {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
         this._callbacks.onResponseChunk?.({
           requestId: request.requestId,
+          // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
-            `event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
+            `${tail[1] !== 10 ? '\n\n' : tail[0] !== 10 ? '\n' : ''}event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
           ),
           done: false,
         });

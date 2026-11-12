@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseResponseUsage } from '../src/utils/response-usage.js';
+import { parseResponseUsage, readStreamEvents } from '../src/utils/response-usage.js';
 
 const enc = new TextEncoder();
 
@@ -115,5 +115,25 @@ describe('parseResponseUsage', () => {
   it('returns zeros when the body has no usage field', () => {
     const usage = parseResponseUsage(enc.encode(JSON.stringify({ model: 'foo' })));
     expect(usage).toEqual({ inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 });
+  });
+});
+
+describe('readStreamEvents', () => {
+  const read = (text: string) => [...readStreamEvents(text)];
+
+  it('reads each event with its names and the JSON its data lines carry, leaving out [DONE]', () => {
+    expect(read('event: delta\ndata: {"a":1}\n\ndata: [DONE]\n\n')).toEqual([{ names: ['delta'], values: [{ a: 1 }] }]);
+  });
+
+  it('joins the data lines of one event into one payload', () => {
+    expect(read('data: {"a":\ndata: 1}\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }]);
+  });
+
+  it('reads the lines of a stream with no blank lines one by one', () => {
+    expect(read('data: {"a":1}\ndata: {"b":2}\n')).toEqual([{ names: [], values: [{ a: 1 }, { b: 2 }] }]);
+  });
+
+  it('keeps an error event whose data is not JSON', () => {
+    expect(read('data: {"a":1}\n\nevent: error\ndata: upstream dropped\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }, { names: ['error'], values: [] }]);
   });
 });

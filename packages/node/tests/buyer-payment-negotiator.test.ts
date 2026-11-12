@@ -59,6 +59,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     isLockConfirmed: vi.fn().mockReturnValue(false),
     isLockRejected: vi.fn().mockReturnValue(false),
     recordAndPersistTokens: vi.fn(),
+    recordDeliveredResponse: vi.fn(),
     recordObservedUnitUsage: vi.fn(),
     getRequestBilling: vi.fn().mockReturnValue(undefined),
     getSessionPricing: vi.fn().mockReturnValue(null),
@@ -1144,8 +1145,6 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('prices a chat answer with no usage figure by the estimate the seller bills, from the same bytes', () => {
       (bpm.getSessionPricing as ReturnType<typeof vi.fn>).mockReturnValue({ inputUsdPerMillion: 1, outputUsdPerMillion: 1 });
-      const recordDeliveredResponse = vi.fn();
-      (bpm as unknown as { recordDeliveredResponse: typeof recordDeliveredResponse }).recordDeliveredResponse = recordDeliveredResponse;
       const requestBody = enc.encode(JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'Tell me about seeds.' }], stream: true }));
       const response: SerializedHttpResponse = {
         requestId: 'req-no-usage',
@@ -1159,7 +1158,28 @@ describe('BuyerPaymentNegotiator', () => {
       const inputTokens = estimateTokensFromBytesSampled(requestBody);
       const outputTokens = estimateTokensFromText('Seeds grow.');
       expect(bpm.recordAndPersistTokens).toHaveBeenCalledWith(peer.peerId, inputTokens, outputTokens);
-      expect(recordDeliveredResponse).toHaveBeenCalledWith(peer.peerId, 'req-no-usage', expect.objectContaining({ costUsdc: BigInt(inputTokens + outputTokens) }));
+      expect(bpm.recordDeliveredResponse).toHaveBeenCalledWith(peer.peerId, 'req-no-usage', expect.objectContaining({ costUsdc: BigInt(inputTokens + outputTokens) }));
+    });
+
+    it('prices nothing by estimate for an error answer, a failed stream or a body that is not a chat answer', () => {
+      (bpm.getSessionPricing as ReturnType<typeof vi.fn>).mockReturnValue({ inputUsdPerMillion: 1, outputUsdPerMillion: 1 });
+      const requestBody = enc.encode(JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'Tell me about seeds.' }], stream: true }));
+      const answers: Array<[number, string]> = [
+        [500, JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'never delivered' } }] })],
+        [200, 'data: {"choices":[{"index":0,"delta":{"content":"Seeds"}}]}\n\nevent: error\ndata: upstream dropped\n\n'],
+        [200, JSON.stringify({ ok: true })],
+      ];
+      for (const [statusCode, body] of answers) {
+        negotiator.estimateCostFromResponse(peer, { requestId: 'r', statusCode, headers: {}, body: enc.encode(body) }, 'm', 'r', requestBody);
+      }
+      expect(vi.mocked(bpm.recordAndPersistTokens).mock.calls).toEqual(answers.map(() => [peer.peerId, 0, 0]));
+    });
+
+    it('prices a stream written with no blank lines between its events by the same estimate', () => {
+      const requestBody = enc.encode(JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'Tell me about seeds.' }], stream: true }));
+      const body = 'data: {"choices":[{"index":0,"delta":{"content":"Seeds "}}]}\ndata: {"choices":[{"index":0,"delta":{"content":"grow."}}]}\ndata: [DONE]\n';
+      negotiator.estimateCostFromResponse(peer, { requestId: 'r', statusCode: 200, headers: {}, body: enc.encode(body) }, 'm', 'r', requestBody);
+      expect(bpm.recordAndPersistTokens).toHaveBeenCalledWith(peer.peerId, estimateTokensFromBytesSampled(requestBody), estimateTokensFromText('Seeds grow.'));
     });
 
     it('estimateCostFromResponse records zero tokens when no usage field (no body.length/4 fallback)', () => {

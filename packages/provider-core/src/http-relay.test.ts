@@ -984,6 +984,27 @@ describe('HttpRelay', () => {
       expect(chunks.at(-1)!.done).toBe(true);
     });
 
+    it('ends a stream cut mid-line or mid-event with an error event of its own', async () => {
+      for (const [streamed, closing] of [['data: {"choices":[{"delta":{"content":"Se', '\n\n'], ['data: {"partial":true}\n', '\n'], ['data: {"partial":true}\n\n', '']] as const) {
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(streamed));
+          },
+          // The cut comes on the next read, after the bytes above were delivered.
+          pull(controller) {
+            controller.error(new Error('ECONNRESET'));
+          },
+        }, { highWaterMark: 0 }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+        const chunks: SerializedHttpResponseChunk[] = [];
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => {}, onResponseChunk: (chunk) => chunks.push(chunk) });
+
+        await relay.handleRequest(kimiRequest());
+
+        expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toBe(`${streamed}${closing}event: error\ndata: ECONNRESET\n\n`);
+      }
+    });
+
     it('only uses a fallback for the services it lists', async () => {
       fetchMock.mockResolvedValue(fail(429));
       const responses: SerializedHttpResponse[] = [];
