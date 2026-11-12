@@ -338,8 +338,28 @@ contract AntseedColonyPoolTest is Test {
         assertEq(pool.usdcBalance(workerA), (net * 80e6) / 100e6, "A full");
         assertEq(pool.usdcBalance(workerB), (net * 20e6) / 100e6, "B clamped to remaining 20");
         assertEq(pool.usdcBalance(remainderSink), net - (net * 80e6) / 100e6 - (net * 20e6) / 100e6);
-        // Stored values are the buyer-signed cumulatives, even when clamped.
+        // B's stored value is what was paid, so the clamped 60 stays owed.
+        assertEq(pool.workerCumulative(ch, workerB), 20e6);
+
+        // The next settlement pays B's carried-over 60 from its delta of 100.
+        uint256 b1 = pool.usdcBalance(workerB);
+        uint256 net2 = _settle(ch, 200e6, _e2(workerA, 80e6, workerB, 80e6));
+        assertEq(pool.usdcBalance(workerB) - b1, (net2 * 60e6) / 100e6, "carried over");
         assertEq(pool.workerCumulative(ch, workerB), 80e6);
+        _assertSolvent();
+    }
+
+    function test_clampedAttributionNeverPaysTwice() public {
+        bytes32 ch = _reserve(bytes32(uint256(61)), 1000e6);
+        // Settled once with nothing for A, then A's 100 lands in a delta of 10.
+        _settle(ch, 90e6, new Entry[](0));
+        _settle(ch, 100e6, _e1(workerA, 100e6));
+        assertEq(pool.workerCumulative(ch, workerA), 10e6);
+        // Later deltas pay the remaining 90 and no more.
+        uint256 a1 = pool.usdcBalance(workerA);
+        uint256 net = _settle(ch, 300e6, _e1(workerA, 100e6));
+        assertEq(pool.usdcBalance(workerA) - a1, (net * 90e6) / 200e6);
+        assertEq(pool.workerCumulative(ch, workerA), 100e6);
         _assertSolvent();
     }
 

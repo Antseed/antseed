@@ -18,6 +18,7 @@ import {
   type WorkerAttestation,
   type WorkerEncryptionKey,
   WorkerPaymentLedger,
+  type WorkerLedgerStore,
 } from '@antseed/node/worker-e2e';
 import {
   decodeBody,
@@ -78,6 +79,12 @@ export interface VerifiedChannel {
  */
 export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<VerifiedChannel | boolean | null>;
 
+/** What a pool contract settled on a channel (`settled`) and credited a worker there (`credited`). */
+export type PoolCreditReader = (pool: string, channel: string, worker: string) => Promise<{ settled: bigint; credited: bigint }>;
+
+/** How often a channel with unsettled payments has its pool credit read, at most. */
+const SETTLEMENT_CHECK_MS = 60_000;
+
 /** A channel check's outcome: verified (with its reserve, when known), refused, or not on-chain within the wait. */
 type ChannelVerdict = { deposit: bigint | null } | false | null;
 
@@ -135,6 +142,14 @@ export interface PoolWorkerOptions {
    * only the answers a buyer may run ahead of payment (MAX_UNPAID_ANSWERS).
    */
   channelsDomain?: ChannelsDomain;
+  /** Keeps the payment ledger between runs, so a restart never lets earlier payments pay for new answers. */
+  ledgerStore?: WorkerLedgerStore;
+  /**
+   * Reads what the pool contract (`pool`, the channel's seller) settled on a
+   * channel and credited this worker there. With it, a buyer whose settled
+   * payments credit this worker less than it signed is refused.
+   */
+  poolCredit?: PoolCreditReader;
   /** How long the pool may send nothing (not even a ping) before the worker reconnects (default 45 s). */
   poolSilenceMs?: number;
   /** How long the local model has to start answering (default 5 min), and then to send each next chunk (default 60 s). */
@@ -226,13 +241,16 @@ export class PoolWorker {
   /** Pending: one lookup per `channel|buyer`, shared by the requests waiting on it. */
   private readonly verifying = new Map<string, Promise<ChannelVerdict>>();
   /** What each channel's buyer owes this worker for its answers, and has paid. */
-  private readonly payments = new WorkerPaymentLedger();
+  private readonly payments: WorkerPaymentLedger;
+  /** When each channel's pool credit was last read. */
+  private readonly settlementChecks = new Map<string, number>();
   /** Served buyer requests: binding hash → its signed expiry, kept until then so a replay is refused. */
   private readonly served = new Map<string, number>();
 
   constructor(opts: PoolWorkerOptions) {
     this.opts = opts;
     this.wallet = new Wallet(opts.privateKey);
+    this.payments = new WorkerPaymentLedger(opts.ledgerStore);
   }
 
   get address(): string {
@@ -473,9 +491,12 @@ export class PoolWorker {
       const price = this.welcome?.prices?.[inspected.model];
       if (!isChargeablePrice(price)) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
       const channel = bound.channel.toLowerCase();
+      if (this.payments.refuses(bound.buyer)) throw new Error('This worker no longer serves this buyer: a settlement credited it less than the buyer signed');
       // Paid before served: the buyer's signed payments must cover this worker's earlier answers on the channel.
-      this.payments.admit(channel, this.attributed(inspected, verdict.deposit));
+      const paid = this.attributed(inspected, verdict.deposit);
+      this.payments.admit(channel, paid.attributed, paid.cumulative);
       owed = { channel, price };
+      this.checkSettlement(channel, bound.buyer);
     }
     let answered: UsageLike | null = null;
     try {
@@ -495,19 +516,44 @@ export class PoolWorker {
    * none, or one that does not verify (unsigned by the buyer, for another
    * Channels contract, or beyond the channel's reserve).
    */
-  private attributed(inspected: InspectedRequest, deposit: bigint | null): bigint {
+  private attributed(inspected: InspectedRequest, deposit: bigint | null): { attributed: bigint; cumulative: bigint } {
     const { payment, binding } = inspected;
     const domain = this.opts.channelsDomain;
-    if (!payment || !binding || !domain) return 0n;
+    const none = { attributed: 0n, cumulative: 0n };
+    if (!payment || !binding || !domain) return none;
     try {
-      return attributedPayment(payment, {
+      const attributed = attributedPayment(payment, {
         channel: binding.channel, buyer: binding.buyer, worker: this.wallet.address,
         deposit: deposit ?? BigInt(payment.cumulativeAmount), domain,
       });
+      return { attributed, cumulative: BigInt(payment.cumulativeAmount) };
     } catch (err) {
       this.log(`ignoring the payment on channel ${binding.channel.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`);
-      return 0n;
+      return none;
     }
+  }
+
+  /**
+   * Once a minute at most, while `channel` has signed payments not yet seen
+   * settled, read what the pool contract settled and credited this worker
+   * there, and refuse `buyer` from then on if it credited less than signed.
+   * It runs beside the request, so a slow RPC never delays an answer.
+   */
+  private checkSettlement(channel: string, buyer: string): void {
+    const read = this.opts.poolCredit;
+    const pool = this.seller;
+    if (!read || !pool || !this.payments.awaitsSettlement(channel)) return;
+    const now = Date.now();
+    if ((this.settlementChecks.get(channel) ?? 0) + SETTLEMENT_CHECK_MS > now) return;
+    if (this.settlementChecks.size >= MAX_CACHED_CHANNELS) this.settlementChecks.clear();
+    this.settlementChecks.set(channel, now);
+    read(pool, channel, this.wallet.address).then(({ settled, credited }) => {
+      if (this.payments.reconcile(channel, buyer, settled, credited)) {
+        this.log(`a settlement on channel ${channel.slice(0, 18)}… credited this worker less than buyer ${buyer} signed; refusing that buyer`);
+      }
+    }, (err: unknown) => {
+      this.log(`could not read the pool's credit on channel ${channel.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole, null when it owes nothing. */

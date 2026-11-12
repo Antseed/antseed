@@ -385,8 +385,10 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         return _channelCumulative[_channelKey(channelId)];
     }
 
-    /// @notice Last buyer-attested cumulative amount for `worker` on
-    ///         `channelId` (current channels contract).
+    /// @notice How much of the buyer's attribution to `worker` on `channelId`
+    ///         (current channels contract) settlements have paid. It trails the
+    ///         buyer-signed amount only while a settlement's delta could not
+    ///         cover it; the next settlement pays the rest first.
     function workerCumulative(bytes32 channelId, address worker) external view returns (uint128) {
         return _workerCumulative[_channelKey(channelId)][worker];
     }
@@ -446,13 +448,17 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
                 (address worker, uint128 cumulative) = _readEntry(metadata, base + _ENTRY_BYTES * i);
                 uint128 prev = _workerCumulative[key][worker];
                 if (cumulative <= prev) continue;
-                _workerCumulative[key][worker] = cumulative;
-                emit WorkerCumulativeUpdated(channelId, worker, cumulative);
 
                 uint256 workerDelta = uint256(cumulative) - uint256(prev);
                 if (workerDelta > budget) workerDelta = budget;
+                if (workerDelta == 0) continue;
                 budget -= workerDelta;
-                if (workerDelta == 0 || net == 0) continue;
+                // Only what this settlement covered: attribution clamped by the
+                // channel delta stays owed and counts at the next settlement.
+                uint128 paidCumulative = prev + uint128(workerDelta);
+                _workerCumulative[key][worker] = paidCumulative;
+                emit WorkerCumulativeUpdated(channelId, worker, paidCumulative);
+                if (net == 0) continue;
 
                 uint256 amount = (net * workerDelta) / delta;
                 if (amount == 0) continue;

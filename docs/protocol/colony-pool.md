@@ -450,10 +450,25 @@ workers serve requests it never pays for.
   none it can credit, the request fails before anything is sent, and the next
   one asks the pool for a fresh assignment.
 
-The account is kept in memory: a restarted worker starts every channel
-afresh. Settlement is still the operator's: the pool contract settles only
-for its operators, so a worker holds the buyer's payment but cannot redeem it
-itself.
+- **Kept across restarts.** A worker saves each channel's account (the
+  TypeScript worker next to its key as `<key-file>.payments.json`, the Mac
+  app in its data directory as `payments.json`, both owner-only), so a
+  restart never lets a payment that already paid for answers pay for new
+  ones. Past 10,000 channels a worker forgets the least recently used one
+  with nothing unpaid or unsettled; when such a channel returns, what its
+  payment already attributes counts as paying for answers served before,
+  never for new ones.
+- **Checked against settlement.** A signed attribution is trusted until the
+  channel settles past it. Settlement is the operator's: the pool contract
+  settles only for its operators and credits workers from the auth the pool
+  settles, which may not be the one the buyer showed the worker, so a worker
+  holds the buyer's payment but cannot redeem it itself. While a channel has
+  signed payments not yet seen settled, the worker reads the pool contract's
+  `channelCumulative` and its own `workerCumulative` there, at most once a
+  minute and beside the request it is serving. Once the channel settled past
+  a payment that `workerCumulative` falls short of, the worker refuses that
+  buyer from then on. Until settlement, a worker's exposure is the answers it
+  served on the payments the pool has not settled yet.
 
 ## Hardened Macs
 
@@ -665,8 +680,11 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
    buyer-authenticated and must not move any worker's high-water mark.
    Otherwise parse the worker block. If it is malformed, attribute nothing
    (never revert: a buyer must not be able to block settlement).
-4. For each worker, `workerDelta` = its new cumulative amount minus the last
-   recorded one (0 if lower), clamped so the sum stays ≤ `delta`.
+4. For each worker, `workerDelta` = its new cumulative amount minus the
+   amount already paid to it on this channel (0 if lower), clamped so the sum
+   stays ≤ `delta`. The worker's recorded amount (`workerCumulative`) grows
+   by `workerDelta`, not to the signed amount, so attribution a small delta
+   could not cover stays owed and is paid first from the next settlement.
 5. Credit `net × workerDelta / delta` to each worker. The remainder
    (unattributed requests and rounding) goes to the owner-set
    `remainderRecipient`.

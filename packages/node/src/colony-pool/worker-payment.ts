@@ -22,8 +22,11 @@ export type WorkerPayment = WorkerPaymentProof;
 /** Answers on one channel a worker serves before they are paid, the one being admitted included. */
 export const MAX_UNPAID_ANSWERS = 2;
 
-/** Per-channel state kept by a worker; past this many channels the oldest is dropped. */
-const MAX_TRACKED_CHANNELS = 10_000;
+/** Per-channel accounts a worker keeps; past this many, the least recently used fully paid one is dropped. */
+export const MAX_TRACKED_CHANNELS = 10_000;
+
+/** Signed payments per channel whose settlement a worker has yet to see, kept to compare with what the pool credits. */
+const MAX_CHECKPOINTS = 16;
 
 /** The trusted Channels deployment SpendingAuths are signed for. */
 export interface ChannelsDomain {
@@ -107,38 +110,93 @@ interface ChannelAccount {
   settledCost: bigint;
   /** Requests admitted and still running. */
   running: number;
+  /**
+   * Signed payments not yet seen settled: [the channel's cumulative amount,
+   * what it attributed to this worker], each attributing more than the last.
+   */
+  checkpoints: Array<[bigint, bigint]>;
+}
+
+/** A worker ledger as stored between runs: amounts as decimal strings. */
+export interface WorkerLedgerSnapshot {
+  channels: Record<string, { paid: string; owed: string[]; settledCost: string; checkpoints: Array<[string, string]> }>;
+  /** Buyers a settlement credited less than they had signed to this worker. */
+  refusedBuyers: string[];
+}
+
+/** Where a worker keeps its ledger, so a restart never forgets what earlier payments already paid for. */
+export interface WorkerLedgerStore {
+  load(): WorkerLedgerSnapshot | null;
+  save(snapshot: WorkerLedgerSnapshot): void;
 }
 
 /**
  * A worker's account of what each channel owes it. `admit` before serving,
  * then `served` with the answer's cost, or `released` when no answer was
- * delivered. Kept in memory: a restarted worker starts every channel afresh.
+ * delivered. With a store, every change is saved, so a restarted worker
+ * resumes each channel where it was.
+ *
+ * Signed attribution is trusted until settlement shows otherwise: the pool
+ * contract credits workers from the auth the pool settles, which may not be
+ * the one the buyer showed this worker. `reconcile` compares what was signed
+ * with what the contract credited once the channel settled past it, and a
+ * buyer found short is refused from then on.
  */
 export class WorkerPaymentLedger {
   private readonly accounts = new Map<string, ChannelAccount>();
+  private readonly refusedBuyers = new Set<string>();
+
+  constructor(private readonly store?: WorkerLedgerStore) {
+    const snapshot = store?.load();
+    if (!snapshot) return;
+    for (const [channel, stored] of Object.entries(snapshot.channels)) {
+      this.accounts.set(channel, {
+        paid: BigInt(stored.paid),
+        owed: stored.owed.map(BigInt),
+        settledCost: BigInt(stored.settledCost),
+        running: 0,
+        checkpoints: stored.checkpoints.map(([c, w]) => [BigInt(c), BigInt(w)]),
+      });
+    }
+    for (const buyer of snapshot.refusedBuyers) this.refusedBuyers.add(buyer);
+  }
 
   /**
-   * Admit a request on `channel` whose payment attributes `attributed` to this
-   * worker, or throw when too many of its answers are unpaid.
+   * Admit a request on `channel` whose payment, at the channel's cumulative
+   * amount `cumulative`, attributes `attributed` to this worker; throws when
+   * too many of its answers are unpaid.
    */
-  admit(channel: string, attributed: bigint): void {
+  admit(channel: string, attributed: bigint, cumulative = 0n): void {
     const key = channel.toLowerCase();
     let account = this.accounts.get(key);
-    if (!account) {
-      if (this.accounts.size >= MAX_TRACKED_CHANNELS) this.accounts.delete(this.accounts.keys().next().value!);
-      account = { paid: 0n, owed: [], settledCost: 0n, running: 0 };
-      this.accounts.set(key, account);
+    if (account) {
+      // Most recently used last, so eviction takes the stalest.
+      this.accounts.delete(key);
+    } else {
+      if (this.accounts.size >= MAX_TRACKED_CHANNELS && !this.evictOne()) {
+        throw new Error('This worker is tracking too many unpaid channels to take another');
+      }
+      // A channel this worker no longer remembers: what its payment already
+      // attributes paid for answers served before, never for new ones.
+      account = { paid: attributed, owed: [], settledCost: attributed, running: 0, checkpoints: [] };
     }
-    if (attributed > account.paid) account.paid = attributed;
+    this.accounts.set(key, account);
+    if (attributed > account.paid) {
+      account.paid = attributed;
+      account.checkpoints.push([cumulative, attributed]);
+      if (account.checkpoints.length > MAX_CHECKPOINTS) account.checkpoints.shift();
+    }
     // Answers paid for leave `owed`, oldest first. One whose cost rounds to
     // nothing is owed nothing: the buyer's payment never grows for it.
     while (account.owed.length > 0 && account.settledCost + account.owed[0]! <= account.paid) {
       account.settledCost += account.owed.shift()!;
     }
     if (account.owed.length + account.running + 1 > MAX_UNPAID_ANSWERS) {
+      this.save();
       throw new Error(`Payment for this worker's earlier answers on this channel has not arrived (${account.owed.length} unpaid); retry once it is signed`);
     }
     account.running++;
+    this.save();
   }
 
   /** The admitted request on `channel` delivered an answer costing `cost`. */
@@ -147,11 +205,64 @@ export class WorkerPaymentLedger {
     if (!account) return;
     account.running = Math.max(0, account.running - 1);
     account.owed.push(cost);
+    this.save();
   }
 
   /** The admitted request on `channel` ended without an answer to pay for. */
   released(channel: string): void {
     const account = this.accounts.get(channel.toLowerCase());
     if (account) account.running = Math.max(0, account.running - 1);
+  }
+
+  /** Whether `channel` has signed payments this worker has not yet seen settled. */
+  awaitsSettlement(channel: string): boolean {
+    return (this.accounts.get(channel.toLowerCase())?.checkpoints.length ?? 0) > 0;
+  }
+
+  /**
+   * Compare what `buyer` signed to this worker on `channel` with what the pool
+   * contract credited it there (`credited`), now that the channel settled up
+   * to `settled`. A payment settled past but credited short means the pool
+   * settled an auth that pays this worker less: the buyer is refused from now
+   * on. Returns whether it was.
+   */
+  reconcile(channel: string, buyer: string, settled: bigint, credited: bigint): boolean {
+    const account = this.accounts.get(channel.toLowerCase());
+    if (!account) return false;
+    const short = account.checkpoints.some(([cumulative, attributed]) => cumulative <= settled && attributed > credited);
+    account.checkpoints = account.checkpoints.filter(([cumulative]) => cumulative > settled);
+    if (short) this.refusedBuyers.add(buyer.toLowerCase());
+    this.save();
+    return short;
+  }
+
+  /** Whether a settlement has shown `buyer` paying this worker less than it signed. */
+  refuses(buyer: string): boolean {
+    return this.refusedBuyers.has(buyer.toLowerCase());
+  }
+
+  /** Drop the least recently used account with nothing unpaid, running or unsettled. */
+  private evictOne(): boolean {
+    for (const [key, account] of this.accounts) {
+      if (account.owed.length === 0 && account.running === 0 && account.checkpoints.length === 0) {
+        this.accounts.delete(key);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private save(): void {
+    if (!this.store) return;
+    const channels: WorkerLedgerSnapshot['channels'] = {};
+    for (const [key, account] of this.accounts) {
+      channels[key] = {
+        paid: account.paid.toString(),
+        owed: account.owed.map(String),
+        settledCost: account.settledCost.toString(),
+        checkpoints: account.checkpoints.map(([c, w]) => [c.toString(), w.toString()]),
+      };
+    }
+    this.store.save({ channels, refusedBuyers: [...this.refusedBuyers] });
   }
 }

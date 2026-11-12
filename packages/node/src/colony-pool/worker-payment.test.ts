@@ -10,6 +10,8 @@ import {
   MAX_UNPAID_ANSWERS,
   usageCounts,
   WorkerPaymentLedger,
+  type WorkerLedgerSnapshot,
+  type WorkerLedgerStore,
   type WorkerPayment,
 } from './worker-payment.js';
 
@@ -136,5 +138,55 @@ describe('worker payments', () => {
     ledger.admit(channel, 0n);
     ledger.served(channel, 9_000n);
     expect(() => ledger.admit(channel, 0n)).toThrow(/unpaid/);
+  });
+
+  it('resumes from its store, so a restart never lets an old payment pay for new answers', () => {
+    let saved: WorkerLedgerSnapshot | null = null;
+    const store: WorkerLedgerStore = { load: () => saved && structuredClone(saved), save: (snapshot) => { saved = structuredClone(snapshot); } };
+    const ledger = new WorkerPaymentLedger(store);
+    // Paid 900,000 for 100 answers of 9,000.
+    for (let i = 0; i < 100; i++) {
+      ledger.admit(channel, BigInt(i) * 9_000n, BigInt(i) * 9_000n);
+      ledger.served(channel, 9_000n);
+    }
+    ledger.admit(channel, 900_000n, 900_000n);
+    ledger.served(channel, 9_000n);
+    const restarted = new WorkerPaymentLedger(store);
+    // The same proof again: the answer just served is still owed, so one more and no further.
+    restarted.admit(channel, 900_000n, 900_000n);
+    restarted.served(channel, 9_000n);
+    expect(() => restarted.admit(channel, 900_000n, 900_000n)).toThrow(/2 unpaid/);
+  });
+
+  it('counts what a forgotten channel\'s payment already attributes as paying for earlier answers', () => {
+    const ledger = new WorkerPaymentLedger();
+    // First seen with 900,000 attributed: none of it pays for new answers.
+    ledger.admit(channel, 900_000n, 900_000n);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 900_000n, 900_000n);
+    ledger.served(channel, 9_000n);
+    expect(() => ledger.admit(channel, 900_000n, 900_000n)).toThrow(/unpaid/);
+    // Paying for them both does.
+    ledger.admit(channel, 918_000n, 918_000n);
+  });
+
+  it('refuses a buyer once the channel settled past a payment that credited this worker less', () => {
+    const ledger = new WorkerPaymentLedger();
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 9_000n, 10_000n);
+    expect(ledger.awaitsSettlement(channel)).toBe(true);
+    // Not settled that far yet: nothing to judge.
+    expect(ledger.reconcile(channel, buyer.address, 5_000n, 0n)).toBe(false);
+    expect(ledger.awaitsSettlement(channel)).toBe(true);
+    // Settled past it and credited in full: done with that payment.
+    expect(ledger.reconcile(channel, buyer.address, 10_000n, 9_000n)).toBe(false);
+    expect(ledger.awaitsSettlement(channel)).toBe(false);
+    expect(ledger.refuses(buyer.address)).toBe(false);
+    ledger.served(channel, 9_000n);
+    ledger.admit(channel, 18_000n, 20_000n);
+    // Settled past it with an auth that credits this worker nothing more.
+    expect(ledger.reconcile(channel, buyer.address, 20_000n, 9_000n)).toBe(true);
+    expect(ledger.refuses(buyer.address.toLowerCase())).toBe(true);
   });
 });

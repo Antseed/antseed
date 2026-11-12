@@ -172,38 +172,83 @@ enum WorkerPayment {
 
 /// What each channel owes this worker for its answers, and has paid. `admit`
 /// before serving, then `served` with the answer's cost, or `released` when no
-/// answer reached the buyer. In memory: a restarted app starts every channel afresh.
+/// answer reached the buyer. With a file, every change is saved there, so a
+/// restarted app resumes each channel where it was.
+///
+/// Signed attribution is trusted until settlement shows otherwise: the pool
+/// contract credits workers from the auth the pool settles, which may not be
+/// the one the buyer showed this Mac. `reconcile` compares the two once the
+/// channel settled past a payment, and a buyer found short is refused from then on.
 @MainActor
 final class WorkerPaymentLedger {
-    private struct Account {
+    /// A signed payment not yet seen settled: the channel's cumulative amount and what it attributed to this worker.
+    struct Checkpoint: Codable, Equatable {
+        var cumulative: UInt64
+        var attributed: UInt64
+    }
+
+    struct Account: Codable {
         /// The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it).
         var paid: UInt64 = 0
         /// The cost of each answer served and not yet covered by `paid`, oldest first.
         var owed: [UInt64] = []
         /// Cost of every answer served before `owed`.
         var settledCost: UInt64 = 0
-        /// Requests admitted and still running.
+        /// Signed payments not yet seen settled, each attributing more than the last.
+        var checkpoints: [Checkpoint] = []
+        /// Requests admitted and still running (never saved: none survive a restart).
         var running = 0
+
+        enum CodingKeys: String, CodingKey { case paid, owed, settledCost, checkpoints }
+    }
+
+    private struct Snapshot: Codable {
+        var channels: [String: Account]
+        var order: [String]
+        var refusedBuyers: [String]
     }
 
     private static let maxChannels = 10_000
+    private static let maxCheckpoints = 16
+    private let file: URL?
     private var accounts: [String: Account] = [:]
+    /// Least recently used first.
     private var order: [String] = []
+    /// Buyers a settlement credited less than they had signed to this worker.
+    private var refusedBuyers = Set<String>()
 
-    /// nil when a request on `channel`, whose payment attributes `attributed` to
-    /// this worker, may be served; else why not.
-    func admit(channel: String, attributed: UInt64) -> String? {
+    init(file: URL? = nil) {
+        self.file = file
+        guard let file, let data = try? Data(contentsOf: file),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        accounts = snapshot.channels
+        order = snapshot.order.filter { snapshot.channels[$0] != nil }
+        refusedBuyers = Set(snapshot.refusedBuyers)
+    }
+
+    /// nil when a request on `channel`, whose payment at the channel's cumulative
+    /// amount `cumulative` attributes `attributed` to this worker, may be served; else why not.
+    func admit(channel: String, attributed: UInt64, cumulative: UInt64 = 0) -> String? {
         let key = channel.lowercased()
-        if accounts[key] == nil {
-            if accounts.count >= Self.maxChannels, let oldest = order.first {
-                order.removeFirst()
-                accounts.removeValue(forKey: oldest)
+        var account: Account
+        if let existing = accounts[key] {
+            account = existing
+            order.removeAll { $0 == key }
+        } else {
+            if accounts.count >= Self.maxChannels, !evictOne() {
+                return "This worker is tracking too many unpaid channels to take another"
             }
-            accounts[key] = Account()
-            order.append(key)
+            // A channel this worker no longer remembers: what its payment already
+            // attributes paid for answers served before, never for new ones.
+            account = Account(paid: attributed, settledCost: attributed)
         }
-        var account = accounts[key]!
-        account.paid = max(account.paid, attributed)
+        order.append(key)
+        defer { save() }
+        if attributed > account.paid {
+            account.paid = attributed
+            account.checkpoints.append(Checkpoint(cumulative: cumulative, attributed: attributed))
+            if account.checkpoints.count > Self.maxCheckpoints { account.checkpoints.removeFirst() }
+        }
         // Answers paid for leave `owed`, oldest first. One whose cost rounds to
         // nothing is owed nothing: the buyer's payment never grows for it.
         while let first = account.owed.first {
@@ -228,6 +273,7 @@ final class WorkerPaymentLedger {
         account.running = max(0, account.running - 1)
         account.owed.append(cost)
         accounts[key] = account
+        save()
     }
 
     /// The admitted request on `channel` ended without an answer to pay for.
@@ -236,5 +282,49 @@ final class WorkerPaymentLedger {
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
         accounts[key] = account
+    }
+
+    /// Whether `channel` has signed payments this worker has not yet seen settled.
+    func awaitsSettlement(channel: String) -> Bool {
+        !(accounts[channel.lowercased()]?.checkpoints.isEmpty ?? true)
+    }
+
+    /// Compare what `buyer` signed to this worker on `channel` with what the pool
+    /// contract credited it there, now that the channel settled up to `settled`.
+    /// A payment settled past but credited short refuses the buyer from now on.
+    /// Returns whether it did.
+    @discardableResult
+    func reconcile(channel: String, buyer: String, settled: UInt64, credited: UInt64) -> Bool {
+        let key = channel.lowercased()
+        guard var account = accounts[key] else { return false }
+        let short = account.checkpoints.contains { $0.cumulative <= settled && $0.attributed > credited }
+        account.checkpoints.removeAll { $0.cumulative <= settled }
+        accounts[key] = account
+        if short { refusedBuyers.insert(buyer.lowercased()) }
+        save()
+        return short
+    }
+
+    /// Whether a settlement has shown `buyer` paying this worker less than it signed.
+    func refuses(buyer: String) -> Bool {
+        refusedBuyers.contains(buyer.lowercased())
+    }
+
+    /// Drop the least recently used account with nothing unpaid, running or unsettled.
+    private func evictOne() -> Bool {
+        guard let index = order.firstIndex(where: { key in
+            accounts[key].map { $0.owed.isEmpty && $0.running == 0 && $0.checkpoints.isEmpty } ?? true
+        }) else { return false }
+        accounts.removeValue(forKey: order.remove(at: index))
+        return true
+    }
+
+    private func save() {
+        guard let file else { return }
+        let snapshot = Snapshot(channels: accounts, order: order, refusedBuyers: Array(refusedBuyers))
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

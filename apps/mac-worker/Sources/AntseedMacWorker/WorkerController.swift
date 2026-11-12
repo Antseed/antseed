@@ -96,8 +96,10 @@ final class WorkerController: ObservableObject {
     private var channelDeposits: [String: UInt64] = [:]
     /// What buyers pay for each service, as the pool's welcome declares it.
     private var prices: [String: WorkerPayment.Price] = [:]
-    /// What each channel's buyer owes this Mac for its answers, and has paid.
-    private let payments = WorkerPaymentLedger()
+    /// What each channel's buyer owes this Mac for its answers, and has paid; kept across restarts.
+    private lazy var payments = WorkerPaymentLedger(file: config.dataDirectory.appendingPathComponent("payments.json"))
+    /// When each channel's pool credit was last read.
+    private var settlementChecks: [String: Date] = [:]
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
     /// Its verdicts are for `poolSeller`; a challenge naming another pool starts a fresh one.
     private lazy var channels = makeChannelVerdicts()
@@ -396,15 +398,41 @@ final class WorkerController: ObservableObject {
     /// What the request's payment attributes to this Mac: 0 when it carries
     /// none, or one that does not verify (unsigned by the buyer, for another
     /// Channels contract, or beyond the channel's reserve).
-    private func attributed(_ sealed: WorkerE2E.SealedRequest, channel: String, buyer: String) -> UInt64 {
-        guard let payment = sealed.payment, let chainId = trustedChainId, let channels = trustedChannels else { return 0 }
+    private func attributed(_ sealed: WorkerE2E.SealedRequest, channel: String, buyer: String) -> (attributed: UInt64, cumulative: UInt64) {
+        guard let payment = sealed.payment, let chainId = trustedChainId, let channels = trustedChannels else { return (0, 0) }
         do {
-            return try WorkerPayment.attributed(payment, channel: channel, buyer: buyer, worker: address,
-                                                deposit: channelDeposits[channel.lowercased()] ?? WorkerPayment.saturating(payment.cumulativeAmount),
-                                                chainId: chainId, channels: channels)
+            let amount = try WorkerPayment.attributed(payment, channel: channel, buyer: buyer, worker: address,
+                                                      deposit: channelDeposits[channel.lowercased()] ?? WorkerPayment.saturating(payment.cumulativeAmount),
+                                                      chainId: chainId, channels: channels)
+            return (amount, WorkerPayment.saturating(payment.cumulativeAmount))
         } catch {
             log("ignoring the payment on channel \(channel.prefix(18))…: \(error.localizedDescription)")
-            return 0
+            return (0, 0)
+        }
+    }
+
+    /// Once a minute at most, while `channel` has signed payments not yet seen
+    /// settled, read what the pool contract settled and credited this Mac there,
+    /// and refuse `buyer` from then on if it credited less than signed. It runs
+    /// beside the request, so a slow RPC never delays an answer.
+    private func checkSettlement(channel: String, buyer: String) {
+        let rpcURLs = config.rpcURLs
+        guard !rpcURLs.isEmpty, let pool = poolSeller, payments.awaitsSettlement(channel: channel) else { return }
+        let key = channel.lowercased()
+        if let last = settlementChecks[key], Date().timeIntervalSince(last) < 60 { return }
+        if settlementChecks.count >= 10_000 { settlementChecks.removeAll() }
+        settlementChecks[key] = Date()
+        let worker = address
+        Task { [weak self] in
+            do {
+                let credit = try await Chain(rpcURLs: rpcURLs, timeout: 5).poolCredit(channel: channel, worker: worker, pool: pool)
+                guard let self else { return }
+                if self.payments.reconcile(channel: channel, buyer: buyer, settled: credit.settled, credited: credit.credited) {
+                    self.log("a settlement on channel \(channel.prefix(18))… credited this Mac less than buyer \(buyer) signed; refusing that buyer")
+                }
+            } catch {
+                self?.log("could not read the pool's credit on channel \(channel.prefix(18))…: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -452,10 +480,15 @@ final class WorkerController: ObservableObject {
             guard let channel = sealed.channel, let buyer = sealed.buyer, let price = prices[sealed.model], price.isChargeable else {
                 return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
             }
+            guard !payments.refuses(buyer: buyer) else {
+                return fail(id, "This worker no longer serves this buyer: a settlement credited it less than the buyer signed")
+            }
             // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
-            if let refused = payments.admit(channel: channel, attributed: attributed(sealed, channel: channel, buyer: buyer)) {
+            let paid = attributed(sealed, channel: channel, buyer: buyer)
+            if let refused = payments.admit(channel: channel, attributed: paid.attributed, cumulative: paid.cumulative) {
                 return fail(id, refused)
             }
+            checkSettlement(channel: channel, buyer: buyer)
             if let binding = sealed.binding, let expires = sealed.expires,
                let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
                 payments.released(channel: channel)

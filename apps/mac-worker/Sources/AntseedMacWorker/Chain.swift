@@ -83,6 +83,16 @@ struct Chain {
         return (Self.channelVerdict(result, buyer: buyer, pool: pool), deposit)
     }
 
+    /// What the pool contract settled on `channel`, and how much of the buyer's attribution to `worker` there it paid.
+    func poolCredit(channel: String, worker: String, pool: String) async throws -> (settled: UInt64, credited: UInt64) {
+        let id = try Data(hexString: channel)
+        guard id.count == 32 else { throw Failure.rpc("A channel id is 32 bytes") }
+        let s = try await ethCall(to: pool, data: Self.selector("channelCumulative(bytes32)") + id)
+        let c = try await ethCall(to: pool, data: Self.selector("workerCumulative(bytes32,address)") + id + Self.addressWord(worker))
+        guard s.count == 32, c.count == 32 else { throw Failure.rpc("Malformed pool credit answer") }
+        return (WorkerPayment.saturating([UInt8](s)), WorkerPayment.saturating([UInt8](c)))
+    }
+
     /// The payout wallet the pool records for `worker`; nil when none. Throws on a malformed answer.
     func payoutOf(worker: String, pool: String) async throws -> String? {
         let word = try await ethCall(to: pool, data: Self.selector("payoutOf(address)") + Self.addressWord(worker))

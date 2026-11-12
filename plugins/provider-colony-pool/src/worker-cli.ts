@@ -6,7 +6,8 @@ import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
 import { parseWorkerModels, PoolWorker, queryWorkerStats } from './worker.js';
-import { workerChannelsDomain, workerChannelVerifier } from './worker-chain.js';
+import { workerChannelsDomain, workerChannelVerifier, workerPoolCreditReader } from './worker-chain.js';
+import { fileLedgerStore } from './worker-ledger-store.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -21,7 +22,8 @@ Options:
   --base-url <url>      Local model server (default http://127.0.0.1:8080)
   --concurrency <n>     Requests to run at once (default 1)
   --key-file <path>     Worker key; created on first run (default ~/.antseed-worker/key).
-                        The encryption key is kept next to it as <path>.p256.
+                        The encryption key is kept next to it as <path>.p256, and
+                        what each channel paid this worker as <path>.payments.json.
   --rpc-url <url>       RPC the worker checks each buyer request's channel on
                         (default: the chain's public RPC). Buyer requests whose
                         channel can't be checked are refused.
@@ -101,6 +103,8 @@ async function main(): Promise<void> {
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
     channelVerifier: workerChannelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
     channelsDomain: workerChannelsDomain(values['chain-id']!, values['channels-address']),
+    poolCredit: workerPoolCreditReader(values['chain-id']!, values['rpc-url']),
+    ledgerStore: fileLedgerStore(`${values['key-file']!}.payments.json`),
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });

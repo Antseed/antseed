@@ -1,6 +1,7 @@
 import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
+import { ColonyPoolClient } from '@antseed/node/payments';
 import type { ChannelsDomain } from '@antseed/node/worker-e2e';
-import { trustedChannelVerifier, type ChannelVerifier } from './worker.js';
+import { trustedChannelVerifier, type ChannelVerifier, type PoolCreditReader } from './worker.js';
 
 export interface WorkerChain {
   channelsContractAddress: string;
@@ -55,4 +56,33 @@ export function workerChannelVerifier(
 ): ChannelVerifier {
   const client = workerChannelsClient(chainId, rpcUrl, channelsAddress, chains);
   return trustedChannelVerifier((channel) => client.getSession(channel));
+}
+
+/**
+ * Reads a pool contract's settlement of a channel and its credit to a worker
+ * there, on the same RPC endpoints the worker reads channels with.
+ */
+export function workerPoolCreditReader(
+  chainId: string,
+  rpcUrl?: string,
+  chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
+): PoolCreditReader {
+  const chain = chains[chainId];
+  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
+  const fallbacks = rpcUrl ? [] : chain.fallbackRpcUrls ?? [];
+  const clients = new Map<string, ColonyPoolClient>();
+  return async (pool, channel, worker) => {
+    let client = clients.get(pool.toLowerCase());
+    if (!client) {
+      client = new ColonyPoolClient({
+        rpcUrl: rpcUrl ?? chain.rpcUrl,
+        contractAddress: pool,
+        evmChainId: chain.evmChainId,
+        ...(fallbacks.length > 0 ? { fallbackRpcUrls: fallbacks } : {}),
+      });
+      clients.set(pool.toLowerCase(), client);
+    }
+    const [settled, credited] = await Promise.all([client.channelCumulative(channel), client.workerCumulative(channel, worker)]);
+    return { settled, credited };
+  };
 }

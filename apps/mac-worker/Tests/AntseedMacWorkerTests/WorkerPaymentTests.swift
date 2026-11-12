@@ -150,4 +150,55 @@ final class WorkerPaymentTests: XCTestCase {
         // Other channels are accounted apart.
         XCTAssertNil(ledger.admit(channel: "0x" + String(repeating: "cd", count: 32), attributed: 0))
     }
+
+    @MainActor
+    func testResumesFromItsFileSoARestartNeverLetsAnOldPaymentPayForNewAnswers() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("payments-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let ledger = WorkerPaymentLedger(file: file)
+        // Paid 900,000 for 100 answers of 9,000.
+        for i in 0..<100 {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: UInt64(i) * 9_000, cumulative: UInt64(i) * 9_000))
+            ledger.served(channel: channel, cost: 9_000)
+        }
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 900_000, cumulative: 900_000))
+        ledger.served(channel: channel, cost: 9_000)
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        let restarted = WorkerPaymentLedger(file: file)
+        // The same proof again: the answer just served is still owed, so one more and no further.
+        XCTAssertNil(restarted.admit(channel: channel, attributed: 900_000, cumulative: 900_000))
+        restarted.served(channel: channel, cost: 9_000)
+        XCTAssertNotNil(restarted.admit(channel: channel, attributed: 900_000, cumulative: 900_000))
+    }
+
+    @MainActor
+    func testWhatAForgottenChannelsPaymentAlreadyAttributesPaysOnlyForEarlierAnswers() {
+        let ledger = WorkerPaymentLedger()
+        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: 900_000, cumulative: 900_000))
+            ledger.served(channel: channel, cost: 9_000)
+        }
+        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 900_000, cumulative: 900_000))
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 918_000, cumulative: 918_000))
+    }
+
+    @MainActor
+    func testRefusesABuyerOnceTheChannelSettledPastAPaymentThatCreditedThisWorkerLess() {
+        let ledger = WorkerPaymentLedger()
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+        ledger.served(channel: channel, cost: 9_000)
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 9_000, cumulative: 10_000))
+        XCTAssertTrue(ledger.awaitsSettlement(channel: channel))
+        // Not settled that far yet: nothing to judge.
+        XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 5_000, credited: 0))
+        // Settled past it and credited in full: done with that payment.
+        XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 10_000, credited: 9_000))
+        XCTAssertFalse(ledger.awaitsSettlement(channel: channel))
+        ledger.served(channel: channel, cost: 9_000)
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 18_000, cumulative: 20_000))
+        // Settled past it with an auth that credits this worker nothing more.
+        XCTAssertTrue(ledger.reconcile(channel: channel, buyer: buyer, settled: 20_000, credited: 9_000))
+        XCTAssertTrue(ledger.refuses(buyer: buyer.lowercased()))
+    }
 }

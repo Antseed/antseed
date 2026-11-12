@@ -405,6 +405,35 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
+  it('refuses a buyer once a settlement credits this worker less than the buyer signed it', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    const domain = { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' };
+    const reads: Array<[string, string, string]> = [];
+    start({
+      channelsDomain: domain,
+      channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })),
+      // The pool settled the channel to 18 with an auth that credits this worker nothing.
+      poolCredit: async (pool, channel, address) => { reads.push([pool, channel, address]); return { settled: 18n, credited: 0n }; },
+    });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const pay = (amount: bigint): Promise<WorkerPayment> => signTestWorkerPayment({ signer: buyer, channel: CHANNEL, worker: worker!.address, amount, domain });
+    for (const id of ['k1', 'k2']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    // Shown a payment of 18 for both answers: served, and the pool's credit is read beside it.
+    await request('k3', { payment: await pay(18n) });
+    await waitFor(() => fakePool.ended('k3'));
+    await waitFor(() => reads.length === 1);
+    expect(reads[0]).toEqual([SELLER, CHANNEL.toLowerCase(), worker!.address]);
+    await sleep(20);
+    // Settled past 18 yet credited nothing: the buyer gets no more work, paid or not.
+    await request('k4', { payment: await pay(27n) });
+    await waitFor(() => fakePool.errorFor('k4') !== undefined);
+    expect(fakePool.errorFor('k4')).toMatch(/no longer serves this buyer/);
+    expect(upstream.bodies).toHaveLength(3);
+  });
+
   it('owes nothing for error answers without usage, so a buyer\'s corrected request still reaches the model', async () => {
     let refuse = 2;
     upstream = await startUpstream((_body, res) => {
