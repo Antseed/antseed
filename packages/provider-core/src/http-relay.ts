@@ -31,6 +31,14 @@ export interface RelayConfig {
   stripHeaderPrefixes?: string[];
   /** Optional lowercase map: announced service -> upstream service. */
   serviceRewriteMap?: Record<string, string>;
+  /** Headers set only when the request does not carry them (any case; a blank value counts as missing). */
+  defaultHeaders?: Record<string, string>;
+  /**
+   * Top-level JSON body fields to drop, given the path sent upstream (no query string) and the
+   * model the upstream will see (after alias rewrite and pin). For fields the upstream's own
+   * standard rejects for that model. Runs before `injectJsonFields`.
+   */
+  omitJsonFields?: (request: { path: string; model: string | undefined }) => readonly string[];
   /** Fields to deep-merge into the JSON request body before forwarding upstream. */
   injectJsonFields?: Record<string, unknown>;
   /** If true, retry once with a force-refreshed token on 401. Only meaningful for providers with a refreshable tokenProvider (e.g. OAuth). */
@@ -218,6 +226,7 @@ export class HttpRelay {
   private readonly _upstreams: ResolvedUpstream[];
   /** `${upstreamIndex}:${service}` -> time until which that upstream is tried last for the service. */
   private readonly _cooldownUntil = new Map<string, number>();
+  private readonly _loggedOmissions = new Set<string>();
   private _activeCount = 0;
 
   constructor(config: RelayConfig, callbacks: RelayCallbacks) {
@@ -367,6 +376,18 @@ export class HttpRelay {
     );
   }
 
+  /**
+   * Once per model and field set: a seller should see that it happens, not every request.
+   * The model is the buyer's text, so it is quoted and cut, and the set is capped.
+   */
+  private _logOmittedFields(model: string | undefined, fields: readonly string[]): void {
+    const name = JSON.stringify((model ?? '').slice(0, 80));
+    const key = `${name}:${fields.join(',')}`;
+    if (this._loggedOmissions.has(key) || this._loggedOmissions.size >= 100) return;
+    this._loggedOmissions.add(key);
+    console.warn(`[http-relay] ${name}: dropped ${fields.join(', ')} (the upstream rejects them for this model)`);
+  }
+
   private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
     // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
     const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
@@ -401,6 +422,17 @@ export class HttpRelay {
 
     // Swap auth headers
     let swappedRequest = swapAuthHeader(request, effectiveConfig);
+    if (this._config.defaultHeaders) {
+      const headers = { ...swappedRequest.headers };
+      for (const [name, value] of Object.entries(this._config.defaultHeaders)) {
+        if (getHeader(headers, name).trim().length > 0) continue;
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === name.toLowerCase()) delete headers[key];
+        }
+        headers[name] = value;
+      }
+      swappedRequest = { ...swappedRequest, headers };
+    }
     const pinnedModel = pinnedUpstreamModel(request);
 
     // Normalize the requested service into the upstream model for both JSON
@@ -463,6 +495,14 @@ export class HttpRelay {
               ? transformed.stream_options as Record<string, unknown>
               : {};
             transformed.stream_options = { ...existing, include_usage: true };
+          }
+
+          if (this._config.omitJsonFields) {
+            const upstreamModel = typeof transformed.model === 'string' ? transformed.model : undefined;
+            const dropped = this._config.omitJsonFields({ path: upstreamPath.split('?')[0] ?? upstreamPath, model: upstreamModel })
+              .filter((field) => field in transformed);
+            for (const field of dropped) delete transformed[field];
+            if (dropped.length > 0) this._logOmittedFields(upstreamModel, dropped);
           }
 
           // Body injection targets chat-style APIs. Image and speech APIs

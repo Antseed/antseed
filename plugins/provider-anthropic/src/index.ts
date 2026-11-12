@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider } from '@antseed/node';
-import { BaseProvider, StaticTokenProvider, parseServiceAliasMap, parseNonNegativeNumber, parseServicePricingJson, buildServiceApiProtocols, parseServiceCapabilitiesJson } from '@antseed/provider-core';
+import { BaseProvider, StaticTokenProvider, parseServiceAliasMap, parseNonNegativeNumber, parseServicePricingJson, buildServiceApiProtocols, parseServiceCapabilitiesJson, anthropicMessagesRelay } from '@antseed/provider-core';
 
 const plugin: AntseedProviderPlugin = {
   name: 'anthropic',
@@ -56,6 +56,7 @@ const plugin: AntseedProviderPlugin = {
       ...(serviceApiProtocols ? { serviceApiProtocols } : {}),
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
       relay: {
+        ...anthropicMessagesRelay,
         baseUrl: 'https://api.anthropic.com',
         authHeaderName: 'x-api-key',
         authHeaderValue: '',

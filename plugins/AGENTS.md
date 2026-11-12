@@ -4,6 +4,6 @@ This folder holds one plugin per upstream API. Each is a provider plugin (`Antse
 
 | Rule | Enforced by |
 | --- | --- |
-| The relay keeps the upstream's standard. It may swap auth, rewrite the model id, strip Antseed headers and set the standard's own usage field. Anything else is a declared `injectJsonFields`. | `packages/provider-core/src/http-relay.test.ts` |
+| The relay keeps the upstream's standard. It may swap auth, rewrite the model id, strip Antseed headers and set the standard's own usage field. Anything else is declared in the relay config: `injectJsonFields`, or `omitJsonFields` and `defaultHeaders` for what the upstream's standard rejects or requires. | `packages/provider-core/src/http-relay.test.ts` |
 
 **Ask first:** a new protocol id; a change to the plugin interfaces; a plugin that needs a field inside a standard's body.

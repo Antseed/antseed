@@ -29,6 +29,14 @@ describe('provider-claude-code plugin', () => {
     expect(provider.maxConcurrency).toBe(10);
   });
 
+  it('defaults anthropic-version and drops sampling fields the model rejects', () => {
+    // Read from the relay config: sending a request would read the keychain.
+    const relay = (plugin.createProvider({}) as any)._relay._config;
+    expect(relay.defaultHeaders).toEqual({ 'anthropic-version': '2023-06-01' });
+    expect(relay.omitJsonFields({ path: '/v1/messages', model: 'claude-haiku-5-5' })).toEqual(['temperature', 'top_p', 'top_k']);
+    expect(relay.omitJsonFields({ path: '/v1/messages', model: 'claude-haiku-4-5' })).toEqual([]);
+  });
+
   it('applies custom pricing', () => {
     const provider = plugin.createProvider({
       ANTSEED_INPUT_USD_PER_MILLION: '5',
