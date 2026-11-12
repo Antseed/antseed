@@ -57,18 +57,33 @@ const XHIGH_SINCE: Record<string, Version> = {
   mythos: [0, 0],
 };
 
-/** The oldest major version that takes `enabled` thinking; Claude 3 ids name the version first and do not match. */
-const MIN_THINKING_MAJOR = 4;
+/**
+ * First version of each family that takes `{ type: "enabled", budget_tokens }`.
+ * Claude 3.7 Sonnet was the first model with thinking; the other Claude 3
+ * models have none.
+ */
+const BUDGET_SINCE: Record<string, Version> = {
+  opus: [4, 0],
+  sonnet: [3, 7],
+  haiku: [4, 0],
+  fable: [0, 0],
+  mythos: [0, 0],
+};
 
 // `claude-<family>-<major>[-<minor>]`, with any vendor prefix and any release
 // date or `latest` after it. A date is not read as a version: it has more
 // than two digits. Same shape as the seller-side Anthropic relay's matcher.
 const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?!\d)/;
+// Claude 3 ids name the version first: `claude-3-7-sonnet-20250219`, `claude-3-opus-latest`.
+const VERSION_FIRST_CLAUDE_RE = /claude[-._](\d)(?:[-._](\d))?[-._](opus|sonnet|haiku)(?![a-z])/;
 
 function claudeVersion(modelId: string): { family: string; version: Version } | null {
-  const match = CLAUDE_MODEL_RE.exec(splitPinnedModel(modelId).modelId.trim().toLowerCase());
-  if (!match) return null;
-  return { family: match[1]!, version: [Number(match[2]), Number(match[3] ?? 0)] };
+  const id = splitPinnedModel(modelId).modelId.trim().toLowerCase();
+  const match = CLAUDE_MODEL_RE.exec(id);
+  if (match) return { family: match[1]!, version: [Number(match[2]), Number(match[3] ?? 0)] };
+  const versionFirst = VERSION_FIRST_CLAUDE_RE.exec(id);
+  if (versionFirst) return { family: versionFirst[3]!, version: [Number(versionFirst[1]), Number(versionFirst[2] ?? 0)] };
+  return null;
 }
 
 function atLeast(version: Version, since: Version): boolean {
@@ -77,14 +92,15 @@ function atLeast(version: Version, since: Version): boolean {
 
 /**
  * How this model takes thinking, or null when the id is not a versioned
- * Claude model: an agent's own name, another vendor's model, an unknown
- * release. The chat sends no `thinking` field for those.
+ * Claude model (an agent's own name, another vendor's model, an unknown
+ * release) or names a Claude model without thinking (Claude 3 before 3.7
+ * Sonnet). The chat sends no `thinking` field for those.
  */
 export function anthropicThinkingMode(modelId: string): AnthropicThinkingMode | null {
   const parsed = claudeVersion(modelId);
   if (!parsed) return null;
   if (atLeast(parsed.version, ADAPTIVE_SINCE[parsed.family]!)) return 'adaptive';
-  return parsed.version[0] >= MIN_THINKING_MAJOR ? 'budget' : null;
+  return atLeast(parsed.version, BUDGET_SINCE[parsed.family]!) ? 'budget' : null;
 }
 
 /**

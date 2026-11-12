@@ -61,9 +61,20 @@ test('an older Claude model keeps its thinking budget', async () => {
   }
 });
 
+test('Claude 3.7 Sonnet, named version first, keeps its thinking budget', async () => {
+  for (const modelId of ['claude-3-7-sonnet-20250219', 'claude-3-7-sonnet-latest', `${'ab12'.repeat(10)}@claude-3-7-sonnet-20250219`]) {
+    const body = await chatRequestBody(modelId, { reasoning: true, level: 'medium' });
+    const thinking = body['thinking'] as { type: string; budget_tokens: number };
+    assert.equal(thinking.type, 'enabled', modelId);
+    assert.ok(thinking.budget_tokens >= 1024 && thinking.budget_tokens < Number(body['max_tokens']), modelId);
+    assert.equal('display' in thinking, false, modelId);
+    assert.equal('output_config' in body, false, modelId);
+  }
+});
+
 test('a model the chat cannot place, or thinking off, sends no thinking field rather than one that can 400', async () => {
-  // An agent's own name, another vendor's model, a version-first Claude 3 id.
-  for (const modelId of ['code-helper', 'deepseek-v4-flash', 'claude-3-5-haiku-20241022']) {
+  // An agent's own name, another vendor's model, Claude 3 models without thinking.
+  for (const modelId of ['code-helper', 'deepseek-v4-flash', 'claude-3-5-haiku-20241022', 'claude-3-5-sonnet-latest', 'claude-3-opus-20240229', 'claude-3-haiku-20240307']) {
     const body = await chatRequestBody(modelId, { reasoning: true, level: 'medium' });
     assert.equal('thinking' in body, false, modelId);
   }
@@ -90,7 +101,11 @@ test('the thinking form follows the per-model table', () => {
     ['claude-opus-4-1', 'budget'],
     ['claude-sonnet-4-5@20250929', 'budget'],
     ['claude-haiku-4-5', 'budget'],
-    ['claude-3-7-sonnet-latest', null],
+    ['claude-3-7-sonnet-20250219', 'budget'],
+    ['anthropic.claude-3-7-sonnet-20250219-v1:0', 'budget'],
+    ['claude-3-7-sonnet@20250219', 'budget'],
+    ['claude-3-5-sonnet-20241022', null],
+    ['claude-3-opus-latest', null],
     ['claude-mythos-preview', null],
     ['gpt-5.5', null],
   ];
