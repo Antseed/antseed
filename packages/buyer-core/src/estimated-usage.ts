@@ -1,5 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter';
-import { estimateTokensFromBytesSampled } from './pricing.js';
+import { estimateTokensFromBytes } from './pricing.js';
 import { parseResponseUsage, readStreamEvents, type ResponseUsage } from './response-usage.js';
 
 const encoder = new TextEncoder();
@@ -58,20 +58,21 @@ function chatAnswerText(body: Uint8Array): string | null {
 /** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
 function estimatePromptTokens(requestBody: Uint8Array): number {
   const request = parseJsonObject(requestBody);
-  if (!request) return estimateTokensFromBytesSampled(requestBody);
+  if (!request) return estimateTokensFromBytes(requestBody);
   let attachments = 0;
   const text = JSON.stringify(request, function (this: Record<string, unknown>, key: string, value: unknown) {
     if (!ATTACHMENT_PARTS.has(key) || this.type !== key) return value;
     attachments += 1;
     return undefined;
   });
-  return estimateTokensFromBytesSampled(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
+  return estimateTokensFromBytes(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
 }
 
 /**
  * What a chat answer that arrived with no usage figure is billed as: the
  * prompt's estimated tokens plus the tokens of the text the model wrote,
- * without the JSON or SSE framing around it. Null for a body that is not a
+ * without the JSON or SSE framing around it. Counted in full, not sampled:
+ * the buyer writes the prompt, and a sample reads only windows it can see. Null for a body that is not a
  * chat answer, and for a stream that reports it failed: neither is billed.
  */
 export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: Uint8Array): ResponseUsage | null {
@@ -82,7 +83,7 @@ export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: U
     inputTokens,
     freshInputTokens: inputTokens,
     cachedInputTokens: 0,
-    outputTokens: estimateTokensFromBytesSampled(encoder.encode(text)),
+    outputTokens: estimateTokensFromBytes(encoder.encode(text)),
   };
 }
 

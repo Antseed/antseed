@@ -36,7 +36,7 @@ const SAMPLE_BYTES = 8 * 1024;
  * Estimate token count of a possibly large body with bounded CPU. Bodies over 64 KiB are estimated
  * from evenly spaced 8 KiB samples scaled to the full size: tokenx walks every character, and a seller
  * running it over multi-MB request bodies on the event loop spent about half its CPU there and stopped
- * accepting connections. Used for pre-request checks, and by the seller to bill a chat answer that has no usage figure.
+ * accepting connections. Used for pre-request checks; a chat answer billed by estimate is counted in full.
  */
 export function estimateTokensFromBytesSampled(bytes: Uint8Array): number {
   if (bytes.length <= FULL_ESTIMATE_MAX_BYTES) return estimateTokensFromBytes(bytes);
