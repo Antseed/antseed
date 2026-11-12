@@ -391,7 +391,11 @@ it('charges a multipart request the price of its own service, and nothing for a 
         body: new TextEncoder().encode(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}--\r\n`),
       }),
     });
-    return decodeHttpResponse(decodeFrame(frames.find(frame => decodeFrame(frame)!.message.type === MessageType.HttpResponse && decodeHttpResponse(decodeFrame(frame)!.message.payload).requestId === model)!)!.message.payload).statusCode;
+    return frames
+      .map(frame => decodeFrame(frame)!.message)
+      .filter(message => message.type === MessageType.HttpResponse)
+      .map(message => decodeHttpResponse(message.payload))
+      .find(answer => answer.requestId === model)!.statusCode;
   };
 
   expect(await serve('priced')).toBe(200);

@@ -57,6 +57,17 @@ const multipartRequest = (parts: Array<[string, string]>, headers: Record<string
   '/v1/images/edits',
 );
 
+/** Payment dependencies for a paid seller with no session yet: a paid request is asked to pay first. */
+function paidPayments() {
+  return {
+    channelsClient: {},
+    sellerPaymentManager: {
+      hasSession: () => false,
+      getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
+    },
+  };
+}
+
 async function serve(target: Provider, sent: SerializedHttpRequest, payments?: object) {
   const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
   const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
@@ -72,13 +83,7 @@ const serviceHeaders = (received: SerializedHttpRequest) =>
 
 describe('the seller serves the service it bills', () => {
   it('refuses a request that could read as another service, before the provider and any payment', async () => {
-    const payments = {
-      channelsClient: {},
-      sellerPaymentManager: {
-        hasSession: () => false,
-        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
-      },
-    };
+    const payments = paidPayments();
     const honest = provider(PAID);
     const paid = await serve(honest, jsonRequest({ model: 'billed-model' }), payments);
     expect(paid.response.statusCode).toBe(402);
@@ -110,13 +115,7 @@ describe('the seller serves the service it bills', () => {
     ['multipart fallback list', multipartRequest([['model', 'billed-model'], ['fallbacks', 'other-model']])],
   ])('refuses upstream model selection before payment: %s', async (_name, sent) => {
     const target = provider(PAID);
-    const result = await serve(target, sent, {
-      channelsClient: {},
-      sellerPaymentManager: {
-        hasSession: () => false,
-        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
-      },
-    });
+    const result = await serve(target, sent, paidPayments());
     expect(result.response.statusCode).toBe(400);
     expect(result.error.code).toBe('unsupported_model_selector');
     expect(result.error.message).toMatch(/^Field "(models|fallbacks)" is not accepted/);
@@ -128,13 +127,7 @@ describe('the seller serves the service it bills', () => {
   it.each(['quality', 'n', 'size', 'resolution'])('refuses repeated %s before calling a paid provider', async (name) => {
     const target = provider(PAID);
     const sent = multipartRequest([['model', 'billed-model'], [name, 'first'], [name, 'second']]);
-    const result = await serve(target, sent, {
-      channelsClient: {},
-      sellerPaymentManager: {
-        hasSession: () => false,
-        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
-      },
-    });
+    const result = await serve(target, sent, paidPayments());
     expect(result.response.statusCode).toBe(400);
     expect(result.error).toEqual({ type: 'invalid_request_error', code: 'repeated_field', message: `Field "${name}" must appear once.` });
     expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
@@ -152,13 +145,7 @@ describe('the seller serves the service it bills', () => {
     ['a query naming another model', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/completions?model=other-model' }, 'unsupported_model_selector'],
   ])('answers %s with its own error code, before payment', async (_name, sent, code) => {
     const target = provider(PAID);
-    const result = await serve(target, sent, {
-      channelsClient: {},
-      sellerPaymentManager: {
-        hasSession: () => false,
-        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
-      },
-    });
+    const result = await serve(target, sent, paidPayments());
     expect(result.response.statusCode).toBe(400);
     expect(result.error.code).toBe(code);
     expect(result.error.type).toBe('invalid_request_error');
@@ -286,10 +273,7 @@ describe('the seller serves the service it bills', () => {
       serviceApiProtocols: { video: ['venice-video'] },
       serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1, match: { audio: 'true' } }, { unit: 'video_seconds', priceUsd: 0.05 }] } } },
     });
-    const result = await serve(video, { ...jsonRequest({ model: 'video', prompt: 'x', duration: 5, audio: 'true' }), path: '/api/v1/video/queue' }, {
-      channelsClient: {},
-      sellerPaymentManager: { hasSession: () => false, getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }) },
-    });
+    const result = await serve(video, { ...jsonRequest({ model: 'video', prompt: 'x', duration: 5, audio: 'true' }), path: '/api/v1/video/queue' }, paidPayments());
     expect(result.response.statusCode).toBe(400);
     expect(result.error.code).toBe('invalid_billing_request');
     expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
