@@ -4,6 +4,7 @@
  * chat and the connected apps.
  */
 import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-types.js';
+import { isFreeOffer } from '../../shared/offer-prices.js';
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
 import type { GatewayModelEntry } from './models.js';
@@ -103,9 +104,11 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
   // Free means every token price is $0, cached input included, as the buyer decides it.
-  const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0
-    && peer['outputUsdPerMillion'] === 0
-    && (finiteNumber(peer['cachedInputUsdPerMillion']) ?? 0) === 0;
+  const zeroPriced = (peer: Record<string, unknown>): boolean => isFreeOffer({
+    inputUsdPerMillion: finiteNumber(peer['inputUsdPerMillion']),
+    outputUsdPerMillion: finiteNumber(peer['outputUsdPerMillion']),
+    cachedInputUsdPerMillion: finiteNumber(peer['cachedInputUsdPerMillion']),
+  });
   const isStakersOnlyFree = (peer: Record<string, unknown>): boolean => stakersOnly(peer) && zeroPriced(peer);
   const stakersOnlyFree = peers.filter(isStakersOnlyFree);
   // What anyone can pay: a stakers-only $0 offer would show a paid model as free.

@@ -1007,9 +1007,10 @@ export function initChatModule({
       notifyUiStateChanged();
 
       const convWorkspacePath = conv.workspacePath;
-      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0 && convWorkspacePath !== workspacePathAtOpen) {
+      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0) {
+        // Held: the chat opened last decides, even one in the workspace already current.
         if (draftsCreating > 0) heldWorkspacePath = convWorkspacePath;
-        else void restoreWorkspace(convWorkspacePath);
+        else if (convWorkspacePath !== workspacePathAtOpen) void restoreWorkspace(convWorkspacePath);
       }
     } catch (err) {
       if (!isCurrentOpen()) return;

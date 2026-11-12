@@ -219,6 +219,32 @@ describe('chat controller', () => {
     expect(sends[0]).toMatchObject({ content: 'first' });
   });
 
+  it('a chat opened back in the held workspace replaces a switch deferred for another chat', async () => {
+    const created = deferred<void>();
+    const setWorkspace: string[] = [];
+    const conversations = [conv('conv-a', 'model-a', '/project-a'), conv('conv-b', 'model-b', '/project-b')];
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiSetWorkspace: async (path: string) => { setWorkspace.push(path); return { ok: true, data: { current: path, default: '/default' } }; },
+      chatAiCreateConversation: async (service: string) => {
+        await created.promise;
+        const made = conv(`conv-${conversations.length + 1}`, service, '/project-a');
+        conversations.push(made);
+        return { ok: true, data: made };
+      },
+    });
+    uiState.chatWorkspacePath = '/project-a';
+    await api.refreshChatConversations();
+    api.sendMessage('first');
+    await tick(5);
+    await api.openConversation('conv-b');
+    await api.openConversation('conv-a');
+    created.resolve();
+    await waitFor(() => !uiState.chatWorkspaceLocked);
+    await tick(5);
+    expect(setWorkspace.filter((path) => path !== '/project-a')).toEqual([]);
+    await waitFor(() => sends.length === 1);
+  });
+
   it('a text prompt sent while a chat opens carries that chat\'s history, never the previous chat\'s', async () => {
     const said = (role: 'user' | 'assistant', content: string) => ({ role, content, createdAt: 1 });
     const convA = { ...conv('conv-a', 'model-a'), messages: [said('user', 'from a')] };

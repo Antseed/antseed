@@ -4,6 +4,9 @@
 import type { ChatModel } from '../../types/bridge';
 import { compareDefaultModels } from '../../../shared/chat-model-ranking.js';
 import { normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { isFreeOffer, type OfferPrices } from '../../../shared/offer-prices.js';
+
+export { isFreeOffer };
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
 
@@ -172,7 +175,6 @@ export function formatUsdPerMillion(value: number | null | undefined): string {
   return value < 0.1 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
 }
 
-type OfferPrices = { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion?: number | null };
 
 /**
  * "$0.14 / $0.28 per M" (input / output, per million tokens), or "Free". An
@@ -195,7 +197,3 @@ export function offerPriceLabel(
   return formatPriceRange(offer);
 }
 
-/** Every token price is $0, cached input included (absent counts as $0, as the buyer reads it). */
-export function isFreeOffer(offer: OfferPrices): boolean {
-  return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && (offer.cachedInputUsdPerMillion ?? 0) === 0;
-}
