@@ -147,3 +147,22 @@ describe('unit billing adapters', () => {
     expect(() => estimateUnitRequestCost(completed, imageContext, { units: { completed_requests: 1 } })).toThrow('completed_requests is not supported for openai-images');
   });
 });
+
+describe('streamed image answers', () => {
+  const encoder = new TextEncoder();
+  const capture = (serviceApiProtocol: 'openai-images' | 'openai-chat-completions', path: string, body: unknown) => captureUnitBillingContext({
+    sellerPeerId: 'a'.repeat(40), provider: 'openai', service: 'image', serviceApiProtocol,
+    request: { requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
+  });
+
+  it('refuses before the request an image request that asks for a stream, which it could not count', () => {
+    for (const stream of [true, 'true', 1]) {
+      expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream }), String(stream)).toThrow(/"stream"/);
+    }
+    expect(capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream: false }).context.unitLimits).toEqual({ output_images: 1 });
+  });
+
+  it('leaves a streamed chat request to token billing', () => {
+    expect(capture('openai-chat-completions', '/v1/chat/completions', { model: 'chat', messages: [], stream: true }).requestFacts.kind).toBe('image');
+  });
+});

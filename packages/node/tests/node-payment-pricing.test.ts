@@ -181,6 +181,69 @@ describe('completed-request seller payments', () => {
       lastRequestCost: '80000', billingUsage: { version: 1, units: { output_images: '2' } },
     }));
   });
+  describe('streamed image and speech answers, which unit billing could not count', () => {
+    const encoder = new TextEncoder();
+    function unitHarness() {
+      const harness = setup();
+      harness.provider.services = ['alpha-route', 'image', 'speech'];
+      harness.provider.pricing = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
+      harness.provider.serviceApiProtocols = { ...harness.provider.serviceApiProtocols, image: ['openai-images'], speech: ['openai-audio-speech'] };
+      harness.provider.serviceUnitBillingModels = {
+        ...harness.provider.serviceUnitBillingModels,
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+        speech: { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      };
+      harness.provider.handleRequestStream = undefined;
+      return harness;
+    }
+    /** An answer the upstream streams: delivered, but not in a shape the unit counters read. */
+    const streamed = (events: unknown[]) => async (request: SerializedHttpRequest) => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' },
+      body: encoder.encode(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')),
+    });
+    const imageEvents = [{ type: 'image_generation.completed', b64_json: 'aGVsbG8=' }, { type: 'image_generation.completed', b64_json: 'd29ybGQ=' }];
+    const json = (body: unknown) => encoder.encode(JSON.stringify(body));
+    const headers = { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' };
+    function multipart(fields: Array<[string, string]>) {
+      const parts = fields.map(([name, value]) => `--b0undary\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+      const file = '--b0undary\r\nContent-Disposition: form-data; name="image"; filename="in.png"\r\nContent-Type: image/png\r\n\r\nPNG\r\n';
+      return { body: encoder.encode(`${parts.join('')}${file}--b0undary--\r\n`), headers: { 'content-type': 'multipart/form-data; boundary=b0undary', 'x-antseed-provider': 'alpha' } };
+    }
+    async function expectRefused(harness: ReturnType<typeof unitHarness>, request: Partial<SerializedHttpRequest>) {
+      const response = await harness.send('refused', request);
+      expect({ status: response.statusCode, served: vi.mocked(harness.provider.handleRequest).mock.calls.length }).toEqual({ status: 400, served: 0 });
+      expect(JSON.parse(new TextDecoder().decode(response.body)).error?.code).toBe('invalid_billing_request');
+      expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    }
+
+    it('refuses a streamed image request before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+      await expectRefused(harness, { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', n: 2, stream: true }) });
+    });
+
+    it('refuses a streamed image edit before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+      await expectRefused(harness, { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'true']]) });
+    });
+
+    it('refuses a speech request streamed as events before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed([{ type: 'speech.audio.delta', audio: 'aGVsbG8=' }, { type: 'speech.audio.done' }]));
+      await expectRefused(harness, { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) });
+    });
+
+    it('serves and bills an image request that asks for no stream', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] }),
+      }));
+      const response = await harness.send('served', { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', n: 2, stream: false }) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
+    });
+  });
 });
 
 function makeProvider(inputUsdPerMillion: number, outputUsdPerMillion: number, opts: {
