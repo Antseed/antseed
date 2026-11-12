@@ -5504,8 +5504,12 @@ test('requests with the routed-model alias fail clearly when no default route is
 
   const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
   assert.equal(res.statusCode, 400)
-  const parsed = JSON.parse(res.body) as { error?: { code?: string } }
+  const parsed = JSON.parse(res.body) as { error?: { code?: string; message?: string } }
   assert.equal(parsed.error?.code, 'no_default_route')
+  // The desktop has no model picker for this route any more, so the error
+  // must point at what still sets it.
+  assert.doesNotMatch(parsed.error?.message ?? '', /desktop/i)
+  assert.match(parsed.error?.message ?? '', /POST \/_antseed\/route/)
 })
 
 test('substituteRoutedModelAlias updates content-length when substituting', () => {

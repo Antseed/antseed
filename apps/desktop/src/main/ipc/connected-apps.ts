@@ -54,7 +54,7 @@ export function registerConnectedAppsIpc(): void {
         installed,
         ...(downloadUrl ? { downloadUrl } : {}),
         canRestart: Boolean(launchTarget),
-        needsRestart: connected && launchTarget ? await appTargetNeedsRestart(launchTarget, state.connectedAt) : false,
+        needsRestart: connected && launchTarget ? await appTargetNeedsRestart(launchTarget, state.configChangedAt[profile.name] ?? null) : false,
         toolSlugs: effectiveToolSlugs(profile.name, profile.toolSlugs, profile.label),
         ...(iconDataUri ? { iconDataUri } : {}),
         ...(launchTarget ? { launchAppName: launchTarget.name } : {}),

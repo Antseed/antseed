@@ -37,6 +37,12 @@ export type ChatModel = {
    */
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
+  /**
+   * No trusted seller serves it, as the connected apps judge it, while other
+   * models have one. Pickers list it only while it is the model in use, and
+   * defaults pick it last.
+   */
+  lowTrust?: boolean;
 };
 
 /** A seller for one model under the key's routing policy, as the gateway's route preview reports it. */

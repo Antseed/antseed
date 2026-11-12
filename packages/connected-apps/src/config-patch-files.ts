@@ -7,26 +7,77 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { findModelById } from '@antseed/protocol/model-identity';
 import type { ResolvedTarget } from './config-patch.js';
 
 /**
- * Model alias resolved by the buyer proxy at request time to the route
- * currently selected in Antseed Desktop. Must match
- * ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
+ * Model alias resolved by the buyer proxy at request time to the buyer's
+ * default route (set through its `/_antseed/route` API). Legacy buyer-port
+ * patches select it; gateway patches list the gateway's models instead. Must
+ * match ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed';
 
 export type JsonObject = Record<string, unknown>;
 
+/** A gateway model as a connected app lists it. */
+export type ConfigPatchModel = {
+  readonly id: string;
+  readonly label?: string;
+  /** A seller reports reasoning support: the app's picker offers effort levels for it. */
+  readonly reasoning?: boolean;
+};
+
+/** Effort levels offered for a reasoning model, where an app lets its config name them. */
+export const CONNECTED_APP_REASONING_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
+export const CONNECTED_APP_DEFAULT_REASONING = 'medium';
+
+/** What one tool config lists, and the model it selects. */
+export type ModelPick = {
+  /** The target's models, plus the tool's selection when the gateway serves it without listing it. */
+  readonly models: ReadonlyArray<ConfigPatchModel>;
+  readonly modelIds: readonly string[];
+  /** Undefined when the target serves no models: the selection is left alone. */
+  readonly selected: string | undefined;
+};
+
 /**
- * The model a (re)patch should select: the tool's current selection when it
- * is still one of the target's models (the user picked it in the tool),
- * otherwise the target default. Undefined when the target serves no models,
- * in which case the selection is left alone.
+ * The models a (re)patch writes into one tool config, and the model each of
+ * the tool's selections (`currents`) should be. A selection the user made in
+ * the tool is kept while the gateway still serves that model: under the id
+ * the target lists it by (a selection of an alias moves to it), or, for a
+ * model the target leaves out (`unlistedModels`), listed beside the target's
+ * so the tool still offers it. Any other selection becomes the target
+ * default; undefined when the target serves no models, in which case the
+ * selection is left alone. Each pick is reported to `target.recordPick`.
  */
-export function pickModel(target: ResolvedTarget, current: unknown): string | undefined {
-  if (typeof current === 'string' && target.modelIds.includes(current)) return current;
-  return target.defaultModel ?? target.models[0]?.id;
+export function pickModels(target: ResolvedTarget, currents: readonly unknown[]): { models: ReadonlyArray<ConfigPatchModel>; modelIds: readonly string[]; selected: Array<string | undefined> } {
+  const kept: ConfigPatchModel[] = [];
+  const fallback = target.defaultModel ?? target.models[0]?.id;
+  const defaulted: string[] = [];
+  const useFallback = (): string | undefined => {
+    if (fallback) defaulted.push(fallback);
+    return fallback;
+  };
+  const selected = currents.map((current) => {
+    if (typeof current !== 'string' || current.length === 0) return useFallback();
+    const listed = findModelById(target.models, current) ?? findModelById(kept, current);
+    if (listed) return listed.id;
+    const unlisted = findModelById(target.unlistedModels, current);
+    if (!unlisted) return useFallback();
+    kept.push(unlisted);
+    return unlisted.id;
+  });
+  const models = kept.length > 0 ? [...target.models, ...kept] : target.models;
+  const modelIds = models.map((model) => model.id);
+  target.recordPick?.({ modelIds, defaulted });
+  return { models, modelIds, selected };
+}
+
+/** `pickModels` for a tool with one selection. */
+export function pickModel(target: ResolvedTarget, current: unknown): ModelPick {
+  const { models, modelIds, selected } = pickModels(target, [current]);
+  return { models, modelIds, selected: selected[0] };
 }
 
 export function sha256Hex(value: string): string {

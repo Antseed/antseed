@@ -2,8 +2,8 @@
  * Pure helpers behind the chat's model picker and gateway error notices.
  */
 import type { ChatModel } from '../../types/bridge';
-import { compareDefaultModels } from '../../../shared/chat-model-ranking.js';
-import { normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { compareDefaultModels, listedModels } from '../../../shared/chat-model-ranking.js';
+import { findListedModel, normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { isFreeOffer, type OfferPrices } from '../../../shared/offer-prices.js';
 
 export { isFreeOffer };
@@ -27,17 +27,31 @@ export function saveLastChatModel(modelId: string): void {
   }
 }
 
-/** The listed model for an id; a pinned `peer@model` finds its model. */
+/**
+ * The listed model for an id; a pinned `peer@model` finds its model. An id the
+ * listing now names differently (the same model by the canonical rule) still finds it.
+ */
 export function findChatModel(models: ChatModel[], modelId: string | null | undefined): ChatModel | null {
-  if (!modelId) return null;
-  const { modelId: listedId } = splitPinnedModel(modelId);
-  return models.find((model) => model.id === listedId) ?? null;
+  return findListedModel(models, modelId);
+}
+
+/**
+ * The picker's rows: the models the connected apps list (`listedModels`: a
+ * trusted seller serves them, or one is free while no trusted seller serves a
+ * free text model), plus any of `inUse` (the chat's text and image models), so
+ * a chat or saved default on another model still shows it.
+ */
+export function pickerChatModels(models: ChatModel[], inUse: Array<string | null | undefined>): ChatModel[] {
+  const kept = new Set(inUse.flatMap((id) => findChatModel(models, id) ?? []));
+  const listed = new Set(listedModels(models));
+  return models.filter((model) => listed.has(model) || kept.has(model));
 }
 
 /**
  * The new-chat default: the last model used while the gateway still lists it as
- * text, else one that works without funds (the catalog's order isn't stable, so
- * a first chat could otherwise land on a paid model and fail).
+ * text, else one that works without funds, served by a trusted seller when
+ * one is (the catalog's order isn't stable, so a first chat could otherwise
+ * land on a paid model and fail).
  */
 export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string | null): string | null {
   const last = findChatModel(models, lastModelId);
@@ -60,6 +74,7 @@ export function shouldWaitForFreeModel(
 ): boolean {
   if (options.chosen || options.funded) return false;
   if (selectedId && findChatModel(models, selectedId)?.free) return false;
+  // A default moves to any free text model, low-trust or not, so there is nothing to wait for.
   return !models.some((model) => model.type === 'text' && model.free);
 }
 
@@ -94,15 +109,17 @@ export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | '
 export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: string, hasFunds: boolean): string | null {
   const { modelId: listedId, peerId } = splitPinnedModel(selectedId);
   const text = privateModels.filter((model) => model.type === 'text');
-  const selected = text.find((model) => model.id === listedId);
+  const selected = findChatModel(text, listedId) ?? undefined;
   if (selected && (hasFunds || selected.free)) return peerId ? selected.id : null;
   // A stand-in shouldn't cost much: the user didn't choose it.
   const price = (model: ChatModel) => (model.inputUsdPerMillion ?? Infinity) + (model.outputUsdPerMillion ?? Infinity);
   // Priced $0 for stakers only, a model looks cheapest and then refuses anyone else.
   const payable = hasFunds ? text.filter((model) => !model.freeForStakers && price(model) > 0) : text;
+  // Free (without funds) or paid (with them) first; then, as defaults do, a trusted seller's.
   const ranked = [...(payable.length > 0 ? payable : text)].sort((left, right) => (hasFunds
     ? Number(left.free) - Number(right.free)
     : Number(right.free) - Number(left.free))
+    || Number(left.lowTrust === true) - Number(right.lowTrust === true)
     || Number(right.toolUse) - Number(left.toolUse)
     || (hasFunds ? price(left) - price(right) : 0)
     || right.sellers - left.sellers);

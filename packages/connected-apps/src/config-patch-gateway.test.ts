@@ -291,6 +291,31 @@ test('pi and crush: key, full model list, per-slot selection', async () => {
   });
 });
 
+test('Prime Agent: install-probed pi patch with the key and models, disconnect keeps the user\'s entries', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const modelsPath = path.join(dir, 'models.json');
+    const settingsPath = path.join(dir, 'settings.json');
+    await writeFile(modelsPath, JSON.stringify({ providers: { mine: { baseUrl: 'http://example.test/v1' } } }), 'utf8');
+    await writeFile(settingsPath, JSON.stringify({ theme: 'dark', defaultProvider: 'mine', defaultModel: 'my-model' }), 'utf8');
+    const patch: ConfigPatchDef = {
+      format: 'pi', configPath: modelsPath, settingsPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1',
+      api: 'openai-responses', originator: 'prime-agent', installProbe: 'prime-agent',
+    };
+    // The config dir exists, so the install probe finds Prime Agent here.
+    writeConfigPatch(patch, LOCAL, path.join(dir, 'wsl-targets.json'));
+    const models = await readJson(modelsPath);
+    assert.equal(models['providers']['antseed']['baseUrl'], 'http://localhost:8379/v1');
+    assert.equal(models['providers']['antseed']['apiKey'], KEY);
+    assert.deepEqual(models['providers']['antseed']['models'].map((m: { id: string }) => m.id), MODELS.map((m) => m.id));
+    assert.ok(models['providers']['mine'], 'the user\'s provider stays');
+    assert.equal((await readJson(settingsPath))['defaultProvider'], 'antseed');
+
+    removeConfigPatch(patch, path.join(dir, 'wsl-targets.json'));
+    assert.deepEqual(Object.keys((await readJson(modelsPath))['providers']), ['mine']);
+    assert.deepEqual(await readJson(settingsPath), { theme: 'dark', defaultProvider: 'mine', defaultModel: 'my-model' });
+  });
+});
+
 test('goose: disconnect removes the provider holding the key even after the config was reset', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
@@ -631,6 +656,60 @@ test('goose: an unread model list keeps the pick and the list, and takes the new
   });
 });
 
+test('goose: a written model list turns off dynamic_models, and a kept earlier list keeps it off', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, REMOTE);
+    // Goose would otherwise list the gateway's whole /v1/models instead of ours.
+    assert.equal((await readJson(providerPath))['dynamic_models'], false);
+
+    // Models didn't load: goose keeps the last list, and only that list.
+    writeConfigPatch(patch, { ...REMOTE, models: [] });
+    let provider = await readJson(providerPath);
+    assert.equal(provider['models'].length, MODELS.length);
+    assert.equal(provider['dynamic_models'], false);
+
+    writeConfigPatch(patch, REMOTE);
+    provider = await readJson(providerPath);
+    assert.equal(provider['dynamic_models'], false);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(providerPath), false);
+  });
+});
+
+test('goose: a first connect without a model list never writes dynamic_models', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, { ...REMOTE, models: [] });
+    const provider = await readJson(providerPath);
+    assert.deepEqual(provider['models'], []);
+    // Goose refuses dynamic_models: false with no models listed.
+    assert.equal('dynamic_models' in provider, false);
+  });
+});
+
+test('goose: the user\'s own custom_antseed and its dynamic_models come back on disconnect', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await mkdir(path.dirname(providerPath), { recursive: true });
+    const mine = '{"name":"custom_antseed","description":"mine","base_url":"https://mine.example","models":[],"dynamic_models":true}\n';
+    await writeFile(providerPath, mine, 'utf8');
+    await writeFile(configPath, 'GOOSE_PROVIDER: custom_antseed\nGOOSE_MODEL: my-model\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+
+    writeConfigPatch(patch, REMOTE);
+    assert.equal((await readJson(providerPath))['dynamic_models'], false);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(await readFile(providerPath, 'utf8'), mine);
+  });
+});
+
 test('droid: an unread model list keeps our entries and points them at the new gateway and key', async () => {
   await withDir(async (dir) => {
     const droid = path.join(dir, 'droid.json');
@@ -804,6 +883,46 @@ test('droid: one entry per model with key; pick survives; legacy entry migrated;
 
     assert.equal(removeConfigPatch(patch), true);
     assert.deepEqual(await readJson(configPath), original);
+  });
+});
+
+test('hermes: a written model list turns off discover_models, a kept earlier list keeps it off, disconnect takes it away', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const mine = { api: 'https://mine.example/v1', discover_models: true };
+    await writeFile(configPath, `providers:\n  mine:\n    api: ${mine.api}\n    discover_models: true\n`, 'utf8');
+    const patch: ConfigPatchDef = { format: 'hermes', configPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    const read = async () => parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+
+    writeConfigPatch(patch, REMOTE);
+    // Hermes would otherwise replace the list with the gateway's whole /v1/models.
+    assert.equal((await read())['providers']['antseed']['discover_models'], false);
+
+    // Models didn't load: Hermes keeps the last list, and only that list.
+    writeConfigPatch(patch, { ...REMOTE, models: [] });
+    let ours = (await read())['providers']['antseed'];
+    assert.deepEqual(Object.keys(ours['models']), MODELS.map((m) => m.id));
+    assert.equal(ours['discover_models'], false);
+
+    writeConfigPatch(patch, REMOTE);
+    ours = (await read())['providers']['antseed'];
+    assert.equal(ours['discover_models'], false);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(await read(), { providers: { mine } });
+  });
+});
+
+test('hermes: a first connect without a model list, or the legacy proxy, leaves discover_models out', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const patch: ConfigPatchDef = { format: 'hermes', configPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    const read = async () => parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    writeConfigPatch(patch, { ...REMOTE, models: [] });
+    assert.equal('discover_models' in (await read())['providers']['antseed'], false);
+    // The legacy entry lists only the routed alias.
+    writeConfigPatch(patch, 8377);
+    assert.equal('discover_models' in (await read())['providers']['antseed'], false);
   });
 });
 
@@ -1433,4 +1552,74 @@ test('wsl: a distro whose home moved keeps the row for its old config until disc
   // The same file under the other share root and another case counts as rediscovered.
   writeWslTargets([at('new')], { remembered: [at('old'), at('NEW', '\\\\wsl$')], save: (rows) => { saved = rows as never; }, write: () => {} });
   assert.deepEqual(saved.map((row) => row.configPath), [pathAt('old'), pathAt('new')]);
+});
+
+/** One reasoning model and one plain one, as the desktop passes them from the gateway's list. */
+const REASONING_TARGET: ConfigPatchTarget = {
+  origin: 'http://localhost:8379',
+  apiKey: KEY,
+  models: [{ id: 'deepseek-v3.2', label: 'DeepSeek V3.2', reasoning: true }, { id: 'qwen3-coder' }],
+};
+
+test('reasoning models get effort levels in OpenCode, pi, Crush and Droid; plain ones get none', async () => {
+  await withDir(async (dir) => {
+    const opencodePath = path.join(dir, 'opencode.json');
+    writeConfigPatch({
+      configPath: opencodePath, providerKey: 'antseed', npm: '@ai-sdk/openai-compatible', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1',
+    }, REASONING_TARGET);
+    const opencode = (await readJson(opencodePath))['provider']['antseed']['models'];
+    assert.equal(opencode['deepseek-v3.2']['reasoning'], true);
+    assert.equal('reasoning' in opencode['qwen3-coder'], false);
+
+    const modelsPath = path.join(dir, 'models.json');
+    writeConfigPatch({
+      format: 'pi', configPath: modelsPath, settingsPath: path.join(dir, 'settings.json'), providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions',
+    }, REASONING_TARGET);
+    const [piReasoning, piPlain] = (await readJson(modelsPath))['providers']['antseed']['models'];
+    assert.equal(piReasoning['reasoning'], true);
+    assert.equal('reasoning' in piPlain, false);
+
+    const crushPath = path.join(dir, 'crush.json');
+    writeConfigPatch({ format: 'crush', configPath: crushPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' }, REASONING_TARGET);
+    const [crushReasoning, crushPlain] = (await readJson(crushPath))['providers']['antseed']['models'];
+    assert.equal(crushReasoning['can_reason'], true);
+    assert.deepEqual(crushReasoning['reasoning_levels'], ['low', 'medium', 'high', 'xhigh']);
+    assert.equal(crushReasoning['default_reasoning_effort'], 'medium');
+    for (const key of ['can_reason', 'reasoning_levels', 'default_reasoning_effort']) assert.equal(key in crushPlain, false, key);
+
+    const droidPath = path.join(dir, 'droid.json');
+    writeConfigPatch({
+      format: 'droid', configPath: droidPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', originator: 'droid',
+    }, REASONING_TARGET);
+    const [droidReasoning, droidPlain] = (await readJson(droidPath))['customModels'];
+    assert.equal(droidReasoning['reasoningEffort'], 'high');
+    assert.equal('reasoningEffort' in droidPlain, false);
+  });
+});
+
+test('codex: a reasoning model offers low to xhigh effort in the catalog, a plain one none', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const home = path.join(dir, 'home');
+      await mkdir(home);
+      const patch: ConfigPatchDef = { format: 'codex', configPath: path.join(home, 'config.toml'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+      await patchAndFinish(patch, REASONING_TARGET);
+      const [reasoning, plain] = JSON.parse(await readFile(path.join(home, 'antseed-models.json'), 'utf8')).models;
+      assert.equal(reasoning.default_reasoning_level, 'medium');
+      assert.deepEqual(reasoning.supported_reasoning_levels.map((level: { effort: string }) => level.effort), ['low', 'medium', 'high', 'xhigh']);
+      assert.ok(reasoning.supported_reasoning_levels.every((level: { description: string }) => level.description.length > 0));
+      assert.deepEqual(plain.supported_reasoning_levels, []);
+      assert.equal('default_reasoning_level' in plain, false);
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+  });
 });

@@ -15,6 +15,7 @@ import { homeProgress, useHomeProgress } from '../../../modules/app/home-progres
 import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
 import { modelsForPrivacy } from '../../hooks/usePrivateMode';
+import { pickerChatModels } from '../../../modules/chat/models';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -42,7 +43,7 @@ export function VprHomeView({ onSelectView }: Props) {
     actions.privacyModeChosen(mode, choice);
     setPrivacySwitches((count) => count + 1);
   });
-  const models = modelsForPrivacy(snap.chatModels, privateMode);
+  const models = pickerChatModels(modelsForPrivacy(snap.chatModels, privateMode), [snap.chatSelectedModelId, snap.chatImageModelId]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Someone who chatted before Home tracked progress has sent their first prompt.

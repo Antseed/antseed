@@ -7,10 +7,12 @@ import {
   chooseDefaultChatModel,
   chooseModelForPrivate,
   filterChatModels,
+  findChatModel,
   fundsNoticeAction,
   fundsNoticeFromStopReason,
   isFreeOffer,
   offerPriceLabel,
+  pickerChatModels,
   shouldWaitForFreeModel,
 } from './models';
 
@@ -141,4 +143,81 @@ test('an offer charging for cached input is not free', () => {
   assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.1 }), false);
   assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 }), true);
   assert.equal(isFreeOffer({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }), true);
+});
+
+test('the picker leaves out models no trusted seller serves, but keeps the ones in use', () => {
+  const trusted = { ...model('trusted'), free: true } as ChatModel;
+  const lowTrust = { ...model('low-trust'), free: true, lowTrust: true } as ChatModel;
+  const lowTrustImage = { ...model('low-trust-image', 'image'), lowTrust: true } as ChatModel;
+  const all = [trusted, lowTrust, lowTrustImage];
+  assert.deepEqual(pickerChatModels(all, [null, null]).map((m) => m.id), ['trusted']);
+  // An open chat or saved default on one keeps it, pinned to a seller or not.
+  assert.deepEqual(pickerChatModels(all, ['low-trust', null]).map((m) => m.id), ['trusted', 'low-trust']);
+  assert.deepEqual(pickerChatModels(all, [`${'a'.repeat(40)}@low-trust`, null]).map((m) => m.id), ['trusted', 'low-trust']);
+  assert.deepEqual(pickerChatModels(all, ['trusted', 'low-trust-image']).map((m) => m.id), ['trusted', 'low-trust-image']);
+});
+
+test('while no trusted seller serves a free text model, the picker keeps the low-trust free ones', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, lowTrust: true } as ChatModel;
+  const lowTrustPaid = { ...model('low-trust-paid'), free: false, lowTrust: true } as ChatModel;
+  const lowTrustFreeImage = { ...model('low-trust-free-image', 'image'), free: true, lowTrust: true } as ChatModel;
+  const all = [trustedPaid, lowTrustFree, lowTrustPaid, lowTrustFreeImage];
+  assert.deepEqual(pickerChatModels(all, [null, null]).map((m) => m.id), ['trusted-paid', 'low-trust-free']);
+});
+
+test('defaults rank free and trusted, then free, then paid and trusted, while a saved choice stays', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false, toolUse: true, sellers: 9 } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, toolUse: false, sellers: 1, lowTrust: true } as ChatModel;
+  const trustedFree = { ...model('trusted-free'), free: true, toolUse: false, sellers: 1 } as ChatModel;
+  const lowTrustFreeTools = { ...model('low-trust-free-tools'), free: true, toolUse: true, sellers: 9, lowTrust: true } as ChatModel;
+  // An unfunded user's default answers without funds, even when only low-trust sellers serve it free.
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFree], null), 'low-trust-free');
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFreeTools, lowTrustFree, trustedFree], null), 'trusted-free');
+  assert.equal(chooseDefaultChatModel([trustedPaid, lowTrustFree], 'trusted-paid'), 'trusted-paid', 'the user chose it');
+  // A stand-in without funds is free first, trusted next; with funds, a trusted paid one.
+  assert.equal(chooseModelForPrivate([trustedPaid, lowTrustFree], 'gone', false), 'low-trust-free');
+  assert.equal(chooseModelForPrivate([lowTrustFreeTools, trustedFree, trustedPaid], 'gone', false), 'trusted-free');
+  assert.equal(chooseModelForPrivate([lowTrustFree, trustedPaid], 'gone', true), 'trusted-paid');
+});
+
+test('a first message does not wait while any free text model is listed, low-trust or not', () => {
+  const trustedPaid = { ...model('trusted-paid'), free: false } as ChatModel;
+  const lowTrustFree = { ...model('low-trust-free'), free: true, lowTrust: true } as ChatModel;
+  const fresh = { chosen: false, funded: false };
+  assert.equal(shouldWaitForFreeModel([trustedPaid, lowTrustFree], 'trusted-paid', fresh), false);
+  assert.equal(shouldWaitForFreeModel([trustedPaid], 'trusted-paid', fresh), true);
+});
+
+test('a saved id finds its model after the listing names it by another of its ids', () => {
+  // One read lists `glm-5.3-flash`, the next `z-ai/glm-5.3-flash`: the same model by the canonical rule.
+  const glm = { ...model('z-ai/glm-5.3-flash'), free: true, toolUse: true, sellers: 1 } as ChatModel;
+  const other = { ...model('qwen'), free: true, toolUse: true, sellers: 5 } as ChatModel;
+  const listed = [other, glm];
+  assert.equal(findChatModel(listed, 'glm-5.3-flash'), glm);
+  assert.equal(findChatModel(listed, 'GLM-5.3-Flash'), glm, 'ignoring case');
+  assert.equal(findChatModel(listed, `${'a'.repeat(40)}@glm-5.3-flash`), glm, 'a pinned seller');
+  assert.equal(findChatModel(listed, 'gone'), null);
+  // The saved default stays on it instead of falling back.
+  assert.equal(chooseDefaultChatModel(listed, 'glm-5.3-flash'), 'z-ai/glm-5.3-flash');
+  // A chat on it keeps it in the picker even when its sellers are low-trust.
+  const lowTrustGlm = { ...glm, free: false, lowTrust: true } as ChatModel;
+  assert.deepEqual(pickerChatModels([other, lowTrustGlm], ['glm-5.3-flash', null]).map((m) => m.id), ['qwen', 'z-ai/glm-5.3-flash']);
+  // Private keeps a listed model rather than moving off it.
+  assert.equal(chooseModelForPrivate([other, glm], 'glm-5.3-flash', false), null);
+});
+
+test('an exact id wins over another id for the same model', () => {
+  const exact = model('glm-5.3-flash');
+  const canonical = model('z-ai/glm-5.3-flash');
+  assert.equal(findChatModel([canonical, exact], 'glm-5.3-flash'), exact);
+  assert.equal(findChatModel([canonical, exact], 'z-ai/glm-5.3-flash'), canonical);
+  // Case alone beats a canonical match too.
+  assert.equal(findChatModel([canonical, exact], 'GLM-5.3-FLASH'), exact);
+});
+
+test('a dated variant is another model', () => {
+  const listed = [model('deepseek-v4.1-flash')];
+  assert.equal(findChatModel(listed, 'deepseek-v4-1-flash-1017'), null);
+  assert.equal(findChatModel(listed, 'deepseek-v4-1-flash')?.id, 'deepseek-v4.1-flash');
 });

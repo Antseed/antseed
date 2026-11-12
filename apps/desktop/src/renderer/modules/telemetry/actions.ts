@@ -14,6 +14,7 @@ const VIEW_SURFACES: Record<ViewName, TelemetryActionSurface> = {
   home: 'home',
   tools: 'apps',
   rewards: 'rewards',
+  gateway: 'gateway',
   preferences: 'preferences',
   deposit: 'deposit',
   chat: 'chat',

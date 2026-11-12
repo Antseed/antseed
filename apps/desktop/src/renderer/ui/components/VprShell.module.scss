@@ -167,10 +167,6 @@
   transform: none;
 }
 
-.shellCollapsed .navExternal {
-  display: none;
-}
-
 /* Chat's row carries a new-chat button at its right edge. */
 .navRow {
   flex: 0 0 auto;
@@ -209,12 +205,6 @@
     color: var(--text-primary);
     outline: none;
   }
-}
-
-.navExternal {
-  margin-left: auto;
-  flex: 0 0 auto;
-  color: var(--text-muted);
 }
 
 .navGroup {

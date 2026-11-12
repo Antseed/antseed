@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { BrandIcon, Logo, type BrandKey } from '@antseed/ui';
 import { HomeField } from './vpr/HomeField';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
+import { findChatModel } from '../../modules/chat/models';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import styles from './SetupScreen.module.scss';
 
@@ -91,8 +92,8 @@ export function SetupScreen({ startingGateway = false }: { startingGateway?: boo
       metadataPeerCount,
       modelCount: models.size,
       freeModelCount: freeModels.size,
-      routeModelLabel: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.label ?? null,
-      routeModelFree: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.free === true,
+      routeModelLabel: findChatModel(state.chatModels, state.chatSelectedModelId)?.label ?? null,
+      routeModelFree: findChatModel(state.chatModels, state.chatSelectedModelId)?.free === true,
     };
   }, shallowEqual);
 

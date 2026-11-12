@@ -122,7 +122,7 @@ export function applyCodexProviderToFile(filePath: string, patch: CodexConfigPat
   const ownedSelection = readTomlTopLevelString(lines, 'model_provider') === patch.providerKey
     ? readTomlTopLevelString(lines, 'model')
     : undefined;
-  const selected = pickModel(t, ownedSelection);
+  const { selected } = pickModel(t, ownedSelection);
   if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) {
     const userCatalog = readTomlTopLevelString(lines, 'model_catalog_json');
     // The value as written: TOML also allows forms like 128_000.
@@ -153,8 +153,10 @@ export function applyCodexProviderToFile(filePath: string, patch: CodexConfigPat
     'wire_api = "responses"',
     ...(t.legacy ? [] : [`experimental_bearer_token = ${tomlBasicString(t.apiKey)}`]),
   );
-  // The legacy proxy serves one alias, so a gateway's model catalog no longer applies.
-  if (t.legacy) {
+  // The legacy proxy serves one alias, so a gateway's model catalog no longer
+  // applies; nor does it to a gateway that serves no text models (one that
+  // could not be read keeps the catalog until it can).
+  if (t.legacy || (t.modelsLoaded && !selected)) {
     writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, lines).join('\n')}\n`);
     removeCodexModelCatalog(filePath);
     return;
@@ -177,7 +179,7 @@ export async function finishCodexConfigPatch(
 ): Promise<void> {
   const filePath = expandTilde(patch.configPath);
   // A catalog can only be built by the Codex on this machine, not one inside WSL.
-  if (t.legacy || t.models.length === 0 || filePath.startsWith('\\\\')) return;
+  if (t.legacy || filePath.startsWith('\\\\')) return;
   let written: string;
   try {
     written = readFileSync(filePath, 'utf8');
@@ -187,6 +189,10 @@ export async function finishCodexConfigPatch(
   const lines = written.endsWith('\n') ? written.slice(0, -1).split('\n') : written.split('\n');
   // Only a config this patch points at the gateway (Codex may live only in WSL).
   if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) return;
+  // The catalog lists what the config was written for: a model the user is
+  // on that the gateway serves without listing it, too.
+  const { models } = pickModel(t, readTomlTopLevelString(lines, 'model'));
+  if (models.length === 0) return;
   const fileIs = (expected: string) => {
     try {
       return readFileSync(filePath, 'utf8') === expected;
@@ -194,7 +200,7 @@ export async function finishCodexConfigPatch(
       return false;
     }
   };
-  const catalog = await buildCodexModelCatalog(filePath, t.models);
+  const catalog = await buildCodexModelCatalog(filePath, models);
   // A catalog of the user's under our file name is never overwritten.
   if (!catalog || !isCurrent() || !fileIs(written) || !writeCodexModelCatalog(filePath, catalog)) return;
   const withCatalog = `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`;

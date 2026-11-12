@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,13 +12,16 @@ import {
   CLAUDE_GATEWAY_DEFAULT_PORT,
   applyConfigPatch,
   claudeDesktopPatchTargets,
+  isConfigPatchConnected,
   parseJsoncObject,
   readConfigPatch,
   removeConfigPatch,
   substituteBaseUrlHost,
+  writeConfigPatch,
   type ClaudeDesktopConfigPatchDef,
   type CodexConfigPatchDef,
   type ConfigPatchDef,
+  type ConfigPatchTarget,
   type DroidConfigPatchDef,
   type OpencodeConfigPatchDef,
 } from './config-patch.js';
@@ -291,6 +294,157 @@ test('applyConfigPatch (droid) refuses to replace an existing antseed custom mod
     );
     assert.equal(await readFile(configPath, 'utf8'), original);
     assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+const GATEWAY_KEY = 'antseed_test_0123456789';
+const GATEWAY_MODELS = [{ id: 'deepseek-v3.2', label: 'DeepSeek V3.2' }, { id: 'qwen3-coder' }] as const;
+const LOCAL_GATEWAY: ConfigPatchTarget = { origin: 'http://localhost:8379', apiKey: GATEWAY_KEY, models: GATEWAY_MODELS };
+
+test('writeConfigPatch (droid) takes over its own gateway entries when the restore state is gone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const user = { model: 'my-model', id: 'custom:mine', displayName: 'Mine', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api' };
+    const original = { model: 'gpt-5-codex', customModels: [user] };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    // The same model list writes the same ids as the entries left behind.
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.map((m: { model: string }) => m.model), ['my-model', 'deepseek-v3.2', 'qwen3-coder']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('removeConfigPatch (droid) drops leftover gateway entries and their selection after the restore state is lost', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex' };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] });
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.map((m: { model: string }) => m.model), ['kimi-k2']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = await readFile(configPath, 'utf8');
+    assert.deepEqual(JSON.parse(restored), original);
+    assert.equal(restored.includes(GATEWAY_KEY), false);
+  });
+});
+
+test('writeConfigPatch (droid) taking over leftovers keeps them recognizable when the config write fails', { skip: process.platform === 'win32' }, async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex' };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    // The restore state is written, then the config can't be: the leftovers
+    // (and their selection, and the gateway key) stay on disk.
+    await chmod(configPath, 0o444);
+    assert.throws(() => writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] }), /EACCES|permission/i);
+    await chmod(configPath, 0o600);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), true);
+
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = await readFile(configPath, 'utf8');
+    assert.deepEqual(JSON.parse(restored), original);
+    assert.equal(restored.includes(GATEWAY_KEY), false);
+  });
+});
+
+test('applyConfigPatch (droid) takes over its own routed entry when the restore state is gone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex', sessionDefaultSettings: { reasoningEffort: 'high' } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    applyConfigPatch(patch, PEER_ID, 8377);
+    await rm(`${configPath}.antseed.state.json`);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.map((m: { id: string }) => m.id), ['custom:Antseed-Auto-0']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('writeConfigPatch (droid) without a restore state leaves a user model named like ours alone', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    // Droid derives these ids from the display name; neither carries the
+    // originator header Antseed writes, even the one at the gateway's URL.
+    const remote = { model: 'my-kimi', id: 'custom:Antseed-Kimi-0', displayName: 'Antseed Kimi', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api', apiKey: 'user-key' };
+    const local = { model: 'my-qwen', id: 'custom:Antseed-Local-1', displayName: 'Antseed Local', baseUrl: 'http://localhost:8379/v1', provider: 'generic-chat-completion-api' };
+    const original = { customModels: [remote, local], sessionDefaultSettings: { model: remote.id } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.customModels.slice(0, 2), [remote, local]);
+    assert.deepEqual(patched.customModels.slice(2).map((m: { model: string }) => m.model), ['deepseek-v3.2', 'qwen3-coder']);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('writeConfigPatch (droid) without a restore state refuses to replace a user model under a new entry id', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const mine = { model: 'my-deepseek', id: 'custom:Antseed-DeepSeek-V3.2-0', displayName: 'Antseed DeepSeek V3.2', baseUrl: 'https://example.test/v1', provider: 'generic-chat-completion-api' };
+    const original = `${JSON.stringify({ customModels: [mine] })}\n`;
+    await writeFile(configPath, original, 'utf8');
+
+    assert.throws(() => writeConfigPatch(makeDroidPatch(configPath), LOCAL_GATEWAY), /refusing to overwrite/);
+    assert.equal(await readFile(configPath, 'utf8'), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('writeConfigPatch (droid) clears a leftover selection when the restore state is gone and no models load', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'gpt-5-codex', sessionDefaultSettings: { reasoningEffort: 'high' } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    await rm(`${configPath}.antseed.state.json`);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [] });
+    // The leftover entries are gone, so nothing may still select one.
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+
+    removeConfigPatch(patch);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('removeConfigPatch (droid) keeps an empty customModels list the user had', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = '{\n  "model": "claude-opus",\n  "customModels": []\n}\n';
+    await writeFile(configPath, original, 'utf8');
+    const patch = makeDroidPatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(await readFile(configPath, 'utf8'), original);
   });
 });
 
@@ -763,6 +917,168 @@ test('Claude Code patch removes a settings file it created', async () => {
 });
 
 // --- T3 Code ---
+
+const T3_USER_ANTSEED = {
+  driver: 'claudeAgent',
+  displayName: 'My Antseed',
+  environment: [{ name: 'ANTHROPIC_API_KEY', value: 'mine', sensitive: true }],
+  enabled: false,
+  config: { customModels: ['my-model'] },
+};
+
+test('T3 Code disconnect restores a user-owned antseed provider it replaced', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('T3 Code disconnect removes the antseed provider when the user had none', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { codex: { driver: 'codex' } } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [{ id: 'kimi-k2', label: 'Kimi K2' }] });
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('T3 Code reconnect keeps the original user entry instead of saving our own', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    // No models yet: the user's own list is not ours to carry over.
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [] });
+    const patched = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(patched.providerInstances.antseed.config.customModels, []);
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    writeConfigPatch(patch, { ...LOCAL_GATEWAY, models: [] });
+    assert.deepEqual(
+      JSON.parse(await readFile(configPath, 'utf8')).providerInstances.antseed.config.customModels,
+      GATEWAY_MODELS.map((m) => m.id),
+    );
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code reconnect saves a user entry that replaced ours while connected, and disconnect restores it', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    await writeFile(configPath, JSON.stringify({ theme: 'dark' }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const replaced = { theme: 'dark', providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(replaced), 'utf8');
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    assert.equal(JSON.parse(await readFile(configPath, 'utf8')).providerInstances.antseed.displayName, 'Antseed');
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), replaced);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('T3 Code disconnect from a remote gateway restores the user entry and keeps its saved copy private', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, { origin: 'https://gw.example.com/', apiKey: GATEWAY_KEY, models: GATEWAY_MODELS });
+    const statePath = `${configPath}.antseed.state.json`;
+    if (process.platform !== 'win32') assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+    assert.equal(removeConfigPatch(patch), true);
+
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(statePath), false);
+  });
+});
+
+test('T3 Code treats a user entry pointing at their own local server as theirs', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const local = {
+      driver: 'claudeAgent',
+      displayName: 'My local proxy',
+      environment: [
+        { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:4000', sensitive: false },
+        { name: 'ANTHROPIC_API_KEY', value: 'my-key', sensitive: true },
+      ],
+      enabled: true,
+      config: { customModels: ['my-model'] },
+    };
+    const original = { providerInstances: { antseed: local } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    assert.equal(isConfigPatchConnected(patch), false);
+    assert.equal(removeConfigPatch(patch), false);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('T3 Code still removes an entry from before the source header', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const old = {
+      driver: 'claudeAgent',
+      displayName: 'Antseed',
+      environment: [
+        { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:8377', sensitive: false },
+        { name: 'ANTHROPIC_API_KEY', value: 'antseed', sensitive: false },
+      ],
+      enabled: true,
+      config: { customModels: ['antseed'] },
+    };
+    await writeFile(configPath, JSON.stringify({ theme: 'dark', providerInstances: { antseed: old } }), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    assert.equal(isConfigPatchConnected(patch), true);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { theme: 'dark' });
+  });
+});
+
+test('T3 Code disconnect gives the user their own entry back after they took ours out', async () => {
+  await withTempConfig(async (_dir, configPath) => {
+    const original = { theme: 'dark', providerInstances: { antseed: T3_USER_ANTSEED } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch = makeT3CodePatch(configPath);
+
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    delete config.providerInstances;
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+    // A refresh meanwhile keeps the saved original too.
+    writeConfigPatch(patch, LOCAL_GATEWAY);
+    const again = JSON.parse(await readFile(configPath, 'utf8'));
+    delete again.providerInstances.antseed;
+    await writeFile(configPath, JSON.stringify(again), 'utf8');
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), original);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
 
 test('T3 Code patch adds Antseed Claude provider and preserves existing settings', async () => {
   await withTempConfig(async (_dir, configPath) => {

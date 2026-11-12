@@ -95,7 +95,7 @@ export function ChatModelDropdown({
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');
 
   function renderModel(model: ChatModel) {
-    const active = model.id === selectedListedId;
+    const active = model === selected;
     const meta = [
       model.id !== model.label ? model.id : null,
       model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,

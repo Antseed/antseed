@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { finishConfigPatch, isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchDef, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
+import { finishConfigPatch, isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchDef } from '@antseed/connected-apps/config-patch';
 import { RETIRED_APP_PROFILES } from '@antseed/connected-apps/defaults';
 import { readWslTargets } from '@antseed/connected-apps/wsl';
 import type { AppLaunchTarget } from '../launch-settings.js';
@@ -22,9 +22,9 @@ import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
 import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
 import { createSerialQueue } from '../../serial-queue.js';
-import { oncePerGatewayKey } from './once-per-key.js';
-import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
-import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';
+import { createConfigChangeLog } from './config-changes.js';
+import { fetchGatewayModelEntries } from '../../gateway/models.js';
+import { appModelsReader, patchTarget, type AppModels } from './app-models.js';
 import { getGatewaySettings } from '../../gateway/settings.js';
 import {
   claudeGatewaySlotsPath,
@@ -47,14 +47,14 @@ export type ConnectedAppsState = {
   connected: string[];
   /** App name → last connect error, for apps that failed to (re)connect. */
   errors: Record<string, string>;
-  /** When the last successful connect ran; apps started before it may need a restart. */
-  connectedAt: number | null;
+  /** App name → when Antseed last changed its config; an app started before that may need a restart. */
+  configChangedAt: Record<string, number>;
 };
 
 let injected: ConnectedAppsDeps | null = null;
 let connected: string[] = [];
 let errors: Record<string, string> = {};
-let connectedAt: number | null = null;
+const configChanges = createConfigChangeLog();
 /** Serializes connects so concurrent clicks don't interleave config writes. */
 const queue = createSerialQueue();
 
@@ -154,27 +154,8 @@ async function persist(): Promise<void> {
 }
 
 export function getConnectedAppsState(): ConnectedAppsState {
-  return { connected: [...connected], errors: { ...errors }, connectedAt };
+  return { connected: [...connected], errors: { ...errors }, configChangedAt: configChanges.changedAt() };
 }
-
-/** Text models for the apps, plus the ones worth defaulting to. */
-type AppModels = {
-  models: GatewayModel[];
-  /** Best first: free for everyone, then able to use tools, then the most sellers. */
-  recommended: ChatModel[];
-};
-
-function patchTarget(endpoint: GatewayEndpoint, { models, recommended }: AppModels): ConfigPatchTarget {
-  return {
-    origin: endpoint.origin,
-    apiKey: endpoint.apiKey,
-    models: models.map((model) => ({ id: model.id, label: model.label })),
-    // An app without a model of its own starts on one that works without
-    // funds; a model the user picked inside the app is kept.
-    ...(recommended[0] ? { defaultModel: recommended[0].id } : {}),
-  };
-}
-
 
 /** Null for terminal-only tools, which have nothing to restart. */
 function restartTarget(profileName: string): AppLaunchTarget | null {
@@ -215,7 +196,8 @@ async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => 
   // A failed write keeps the WSL rows: a distro patched before the failure
   // holds the gateway URL and key, and disconnect has to find it.
   const target = patchTarget(endpoint, models);
-  writeConfigPatch(profile.configPatch, target, connectedAppsWslTargetsPath());
+  const written = writeConfigPatch(profile.configPatch, target, connectedAppsWslTargetsPath());
+  configChanges.recordWrite(name, target, written);
   // Codex's model catalog runs Codex itself: awaited here, off the main
   // thread, and dropped if quit starts before it lands.
   await finishConfigPatch(profile.configPatch, target, { isCurrent: () => !shuttingDown });
@@ -234,24 +216,13 @@ async function syncRelays(): Promise<void> {
   await syncWslRelays(hosts, target.port, log, target.upstreamHost);
 }
 
-async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {
-  try {
-    const entries = await fetchGatewayModelEntries(endpoint);
-    const models = entries.map(toGatewayModel).filter((model) => model.type === null || model.type === 'text');
-    return { models, recommended: recommendAppModels(toChatModels(entries)) };
-  } catch (err) {
-    log(`Could not load the gateway's models; apps get the address and key only: ${err instanceof Error ? err.message : String(err)}`);
-    return { models: [], recommended: [] };
-  }
-}
-
 /**
  * Applies `names`. Failures are recorded per app; if `requiredApp` (the one the
  * caller is adding) fails, it is rethrown after the rest are wired, so the
  * click that asked for it sees the error.
  */
-async function applyPatches(names: string[], requiredApp?: string): Promise<void> {
-  const modelsFor = oncePerGatewayKey(textModels);
+async function applyPatches(names: string[], requiredApp?: string, options: { freshModels?: boolean } = {}): Promise<void> {
+  const modelsFor = appModelsReader(options, { fetchEntries: fetchGatewayModelEntries, log });
   let addError: Error | null = null;
   for (const name of names) {
     try {
@@ -265,7 +236,6 @@ async function applyPatches(names: string[], requiredApp?: string): Promise<void
     }
   }
   await syncRelays();
-  connectedAt = Date.now();
   if (addError) throw addError;
 }
 
@@ -324,6 +294,7 @@ export function disconnectApp(name: string): Promise<ConnectedAppsState> {
     }
     connected = connected.filter((entry) => entry !== name);
     delete errors[name];
+    configChanges.forget(name);
     await persist();
     await syncRelays();
     await restartApps([name]);
@@ -332,14 +303,17 @@ export function disconnectApp(name: string): Promise<ConnectedAppsState> {
 }
 
 /**
- * Re-applies every connected app: at launch, and after the gateway, its key
- * or the key mode changed. `restart` bounces running apps so they read the
- * new address or key (not needed for a launch-time restore of the same one).
+ * Re-applies every connected app: at launch, and after the gateway, its key,
+ * the key mode or the privacy mode changed. `restart` bounces running apps so
+ * they read the new address or key (not needed for a launch-time restore of
+ * the same one, or for a new model list on the same key). `freshModels` reads
+ * the model list past its cache, which a read that began under the old
+ * routing policy may have filled.
  */
-export function reconnectAllApps(options: { restart?: boolean } = {}): Promise<ConnectedAppsState> {
+export function reconnectAllApps(options: { restart?: boolean; freshModels?: boolean } = {}): Promise<ConnectedAppsState> {
   return serialized(async () => {
     if (connected.length === 0 || machineWideChangesDisabled()) return getConnectedAppsState();
-    await applyPatches(connected);
+    await applyPatches(connected, undefined, { freshModels: options.freshModels === true });
     await persist();
     if (options.restart) await restartApps(connected);
     return getConnectedAppsState();

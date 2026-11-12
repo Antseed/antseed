@@ -47,7 +47,7 @@ import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
 import type { PiChatEngine } from './engine-types.js';
-import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from '../gateway/catalog.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
@@ -205,9 +205,9 @@ export function registerPiChatHandlers({
     try {
       const entries = await fetchGatewayModelEntries(endpoint);
       lastEntries = entries;
-      // A pinned `peer@model` is described by its model's entry.
-      const { modelId: listedId } = splitPinnedModel(modelId);
-      const entry = entries.find((candidate) => candidate.id === listedId);
+      // A pinned `peer@model` is described by its model's entry, found by
+      // any of its ids since the listed one can change between reads.
+      const entry = findGatewayEntry(entries, modelId) ?? undefined;
       return { model: entry ? toChatModel(entry) : null, offers: entryOffers(entry) };
     } catch (error) {
       appendSystemLog(`Gateway model list unavailable; sending "${modelId}" as a plain chat model: ${asErrorMessage(error)}`);
@@ -217,7 +217,7 @@ export function registerPiChatHandlers({
 
   const modelTelemetryContext = (requested: string): TelemetryEventProperties['model_selected'] => {
     const { modelId, peerId } = splitPinnedModel(requested);
-    const entry = lastEntries.find((candidate) => candidate.id === modelId);
+    const entry = findGatewayEntry(lastEntries, modelId) ?? undefined;
     const pricing = modelPricingSnapshot(entryOffers(entry));
     return {
       public_model_id: publicModelId(modelId, entry !== undefined),
@@ -245,7 +245,9 @@ export function registerPiChatHandlers({
       const endpoint = await getGatewayEndpoint();
       const entries = await fetchGatewayModelEntries(endpoint, { force: payload?.force === true });
       lastEntries = entries;
-      const models: ChatModel[] = toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
+      // Every model, those no trusted seller serves marked: the picker lists
+      // the apps' set and still finds a chat's model among the rest.
+      const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
       return { ok: true, data: models };
     } catch (error) {
       const message = asErrorMessage(error);
@@ -547,7 +549,8 @@ export function registerPiChatHandlers({
       await whenPrivacySettled();
       const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
       lastEntries = entries;
-      return recommendAppModels(toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
+      // Free models first, a trusted seller's before a low-trust one; the rest still resolve a saved pick.
+      return recommendAppModels(toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
     },
   };
 }
