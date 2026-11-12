@@ -510,7 +510,7 @@ describe('charges for requests whose fields every reader reads alike', () => {
     async (path) => {
       const { serve, received, charges } = imageSeller();
       const body = new TextEncoder().encode('{"model":"image-model"}');
-      expect(await serve(path, { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 400, code: 'unsupported_model_selector' });
+      expect(await serve(path, { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 400, code: 'unsupported_path' });
       expect(charges()).toEqual([]);
       expect(received).toEqual([]);
       expect(await serve('/v1/images/generations', { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 200 });

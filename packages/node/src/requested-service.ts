@@ -14,14 +14,15 @@ import type { SerializedHttpRequest } from './types/http.js';
  * every reader of a body the seller wrote finds the fields billing found.
  *
  * What remains is what a rewrite cannot settle: `service` and `model` must agree, a billing input
- * must be spelled exactly (a reader that ignores letter case would take `Size` for `size`), a known
- * upstream model selector is refused, in the body or the path, and a priced image value must be one
- * billing reads. Video and speech billing refuse the values they cannot read themselves.
+ * must be spelled exactly (a reader that ignores letter case would take `Size` for `size`), a priced
+ * image value must be one billing reads, and the path must be plain, since billing matches some paths
+ * exactly. Video and speech billing refuse the values they cannot read themselves.
  *
- * The selector lists are best effort: the node cannot know every field, header or path an upstream
- * reads. Add a selector here when one is found; a plugin whose upstream reads another refuses or
- * removes it itself. Seller-configured aliases and fallback upstreams must serve the advertised service.
- * Routing-protocol requests and video retrieves do not name their service in the body, and pass as sent.
+ * Every check here makes two readers of the same request agree. What an upstream does with a field
+ * every reader reads alike (a fallback list, a deployment in the path, a header) is its plugin's to
+ * refuse or remove: only the plugin knows its upstream. Seller-configured aliases and fallback
+ * upstreams must serve the advertised service. Routing-protocol requests and video retrieves do not
+ * name their service in the body, and pass as sent.
  */
 
 /** Why a seller serves no service for a request body. `code` and `message` are what the buyer is answered. */
@@ -31,8 +32,8 @@ export interface ServiceRefusal {
     | 'model_required'
     /** `service` and `model` disagree, or a service field is spelled another way, `modelId`, or not a short text field. */
     | 'ambiguous_service'
-    /** A top-level field, a path segment or a query parameter selects an upstream model, or the path is not written plainly. */
-    | 'unsupported_model_selector'
+    /** The request path is not written plainly, so billing and the upstream could read it as different endpoints. */
+    | 'unsupported_path'
     /** A service field or billing input appears more than once in a form. */
     | 'repeated_field'
     /** A billing input is spelled another way, or a priced value is not one billing reads. */
@@ -83,18 +84,12 @@ const PRICED_TEXT_FIELDS: readonly string[] = IMAGE_PRICE_ATTRIBUTES;
 const FORM_BILLED_FIELDS = new Set([...SERVICE_FIELDS, 'n', ...PRICED_TEXT_FIELDS]);
 
 
-const SELECTOR_FIELDS = ['models', 'route', 'fallbacks', 'default_fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks',
-  'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id', 'deployment', 'engine', 'model_id'];
-
 /**
- * Top-level fields refused outright. The selectors pick an upstream model beside, or in place of,
- * the billed `model`: `models` and `route` in OpenRouter-style APIs, the fallback and deployment
- * fields in LiteLLM-style proxies. Best effort: a seller cannot know every field every upstream
- * reads, so a plugin whose upstream reads others refuses or removes them itself. `modelId` is
- * written only by plugins, and `_charset_` changes how some form readers decode every other field.
+ * Fields refused outright, since a reader of the same request would read them another way: the
+ * relay takes a buyer's `modelId` for the model (only plugins write it), and `_charset_` changes how
+ * some form readers decode every other field.
  */
 const REFUSED_FIELDS = new Map<string, ServiceRefusal['code']>([
-  ...SELECTOR_FIELDS.map((name): [string, ServiceRefusal['code']] => [name, 'unsupported_model_selector']),
   ['modelid', 'ambiguous_service'],
   ['_charset_', 'unsupported_multipart_body'],
 ]);
@@ -126,36 +121,17 @@ export function billedRequestBody(request: Pick<SerializedHttpRequest, 'headers'
 }
 
 /**
- * Why a request path is refused, if it is: some upstreams and proxies take the model from a path
- * segment (`/openai/deployments/<model>/...`, `/engines/<model>/...`, `/models/<model>:generate...`,
- * `/model/<model>/invoke`)
- * or a query parameter ahead of the body, and the relay forwards the path as it came. Best effort,
- * like the selector fields.
+ * Why a request path is refused, if it is. Billing matches some paths exactly (an image request is
+ * priced by its endpoint), while a URL parser resolves `.` and `..`, a server may fold `//`, decode
+ * `%67` or split at `;`, so a path not already in its plain form could be priced as one endpoint and
+ * served as another.
  */
 export function requestPathRefusal(path: string): ServiceRefusal | undefined {
-  // The query starts at the first `?`; a later `?` is part of it, as URL parsers read it.
   const queryStart = path.indexOf('?');
   const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
-  const query = queryStart === -1 ? '' : path.slice(queryStart + 1);
-  // A server that decodes `%64eployments` or `%2F`, or splits at `;`, would read segments this check does not.
-  if (!/^\/[A-Za-z0-9._~:/-]*$/.test(pathname) || query.includes(';')) {
-    return { code: 'unsupported_model_selector', message: 'Request path must be written plainly: letters, digits and . _ ~ : / - only, and no ";" in the query.' };
-  }
-  const segments = pathname.toLowerCase().split('/');
-  // Billing matches some paths exactly, while a URL parser resolves `.` and `..` and some servers fold `//`,
-  // so a path that is not already in its plain form could be priced as one endpoint and served as another.
-  if (segments.slice(1).some((segment) => segment === '' || segment === '.' || segment === '..')) {
-    return { code: 'unsupported_model_selector', message: 'Request path must be written plainly: no empty, "." or ".." segments.' };
-  }
-  const selector = segments.findIndex((segment, index) => ['deployments', 'engines', 'models', 'model'].includes(segment) && index < segments.length - 1);
-  if (selector !== -1) return { code: 'unsupported_model_selector', message: `Path segment ${quote(segments[selector]!)} selects an upstream model, which this seller does not accept: it serves the one service named in "model".` };
-  for (const name of new URLSearchParams(query).keys()) {
-    const base = baseName(name);
-    if (REFUSED_FIELDS.has(base) || BILLING_FIELDS.has(base)) {
-      return { code: 'unsupported_model_selector', message: `Query parameter ${quote(name)} is not accepted: name the service and billing inputs in the body.` };
-    }
-  }
-  return undefined;
+  const plain = /^\/[A-Za-z0-9._~:/-]*$/.test(pathname)
+    && pathname.split('/').slice(1).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+  return plain ? undefined : { code: 'unsupported_path', message: 'Request path must be written plainly: letters, digits and . _ ~ : - in non-empty segments, with no "." or ".." segment.' };
 }
 
 function billedJson(bytes: Uint8Array): BilledRequestBody {
@@ -222,7 +198,7 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
 function nameRefusal(name: string, seen: Set<string>): Refused | undefined {
   const base = baseName(name);
   const refused = REFUSED_FIELDS.get(base);
-  if (refused) return refuse(refused, `Field ${quote(name)} is not accepted: this seller serves the one service named in "model".`);
+  if (refused) return refuse(refused, `Field ${quote(name)} is not accepted.`);
   if (!BILLING_FIELDS.has(base)) return undefined;
   if (name !== base) {
     return refuse(SERVICE_FIELDS.has(base) ? 'ambiguous_service' : 'invalid_billing_field', `Field ${quote(name)} must be named exactly ${quote(base)}.`);

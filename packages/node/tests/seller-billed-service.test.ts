@@ -109,21 +109,6 @@ describe('the seller serves the service it bills', () => {
     expect(target.received).toEqual([]);
   });
 
-  it.each<[string, SerializedHttpRequest]>([
-    ['JSON model list and route', jsonRequest({ model: 'billed-model', models: ['other-model'], route: 'fallback' })],
-    ['JSON fallback list', jsonRequest({ model: 'billed-model', fallbacks: ['other-model'], mock_testing_fallbacks: true })],
-    ['multipart fallback list', multipartRequest([['model', 'billed-model'], ['fallbacks', 'other-model']])],
-  ])('refuses upstream model selection before payment: %s', async (_name, sent) => {
-    const target = provider(PAID);
-    const result = await serve(target, sent, paidPayments());
-    expect(result.response.statusCode).toBe(400);
-    expect(result.error.code).toBe('unsupported_model_selector');
-    expect(result.error.message).toMatch(/^Field "(models|fallbacks)" is not accepted/);
-    expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
-    expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
-    expect(target.received).toEqual([]);
-  });
-
   it.each(['quality', 'n', 'size', 'resolution'])('refuses repeated %s before calling a paid provider', async (name) => {
     const target = provider(PAID);
     const sent = multipartRequest([['model', 'billed-model'], [name, 'first'], [name, 'second']]);
@@ -141,8 +126,7 @@ describe('the seller serves the service it bills', () => {
     ['a multipart quality in another case', multipartRequest([['model', 'billed-model'], ['QUALITY', 'high']]), 'invalid_billing_field'],
     ['a count billing would not read', jsonRequest({ model: 'billed-model', n: '4abc' }), 'invalid_billing_field'],
     ['a multipart field name a reader could decode', multipartRequest([['model', 'billed-model'], ['m%6Fdel', 'other-model']]), 'unsupported_multipart_body'],
-    ['a path naming another model', { ...jsonRequest({ model: 'billed-model' }), path: '/openai/deployments/other-model/chat/completions' }, 'unsupported_model_selector'],
-    ['a query naming another model', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/completions?model=other-model' }, 'unsupported_model_selector'],
+    ['a path billing would read as another endpoint', { ...jsonRequest({ model: 'billed-model' }), path: '/v1/chat/./completions' }, 'unsupported_path'],
   ])('answers %s with its own error code, before payment', async (_name, sent, code) => {
     const target = provider(PAID);
     const result = await serve(target, sent, paidPayments());

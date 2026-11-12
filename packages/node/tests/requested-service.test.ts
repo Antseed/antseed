@@ -77,6 +77,7 @@ describe('billedRequestBody', () => {
       ['a key written with an escape', '{"\\u006dodel":"svc"}'],
       ['billing inputs spelled plainly and other fields in any case', '{"model":"svc","n":2,"size":"1024x1024","quality":"high","resolution":"2K","duration":5,"aspect_ratio":"16:9","audio":{"voice":"a"},"input":"x","prompt":"x","aspectRatio":"16:9","User":"a","Temperature":1,"stop[]":"x"}'],
       ['other keys that differ only by letter case', '{"model":"svc","user":"a","User":"b"}'],
+      ['fields an upstream may act on, which its plugin refuses or removes', '{"model":"svc","models":["x"],"route":"fallback","fallbacks":["x"],"deployment_id":"x"}'],
     ])('%s', (_name, text) => {
       const { service, request } = written(rawJson(text));
       expect(service).toBe('svc');
@@ -219,20 +220,6 @@ describe('billedRequestBody', () => {
   });
 
   describe('says why it serves no service', () => {
-    const selectors = ['models', 'route', 'fallbacks', 'default_fallbacks', 'context_window_fallbacks', 'content_policy_fallbacks', 'mock_testing_fallbacks', 'model_list', 'model_group', 'deployment_id'];
-
-    it.each(selectors)('refuses the selector %s, in JSON with any value and in a form', (name) => {
-      for (const value of [['other'], { model: 'other' }, 'fallback', false, null, []]) {
-        expect(billedRequestBody(json({ model: 'svc', [name]: value }))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
-      }
-      expect(billedRequestBody(multipart(model, field(name, 'other')))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
-      expect(billedRequestBody(multipart(model, file(name)))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
-    });
-
-    it.each(['MODELS', ' route ', 'fallbacks[]', 'models[0]', 'context_window_fallbacks[svc]', 'model\u017F', 'fallbac\u212As', 'model_id', 'Engine', 'deployment', 'models\u200B'])('refuses a selector spelled %j', (name) => {
-      expect(billedRequestBody(json({ model: 'svc', [name]: ['other'] }))).toMatchObject({ refusal: { code: 'unsupported_model_selector' } });
-    });
-
     it.each(['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio', 'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input'])('refuses the billing input %s spelled another way, and repeated in a form', (name) => {
       for (const spelled of [name.toUpperCase(), `${name}[]`, ` ${name}`, `${name[0]!.toUpperCase()}${name.slice(1)}`]) {
         expect(billedRequestBody(json({ model: 'svc', [spelled]: 'x' })), spelled).toMatchObject({ refusal: { code: 'invalid_billing_field' } });
@@ -385,23 +372,20 @@ describe('billedRequestBody', () => {
     });
   });
 
-  describe('refuses a path or query that selects a model', () => {
+  describe('refuses a path billing and the upstream could read as different endpoints', () => {
     it.each([
-      '/openai/deployments/other/chat/completions', '/engines/other/completions', '/v1/engines/other/chat/completions',
-      '/v1beta/models/other:generateContent', '/v1/models/other/chat', '/v1/chat/completions?model=other', '/v1/chat/completions?api-version=1&Models=x',
-      '/v1/images/generations?quality=high', '/v1/chat/completions?fallbacks[]=other', '/bedrock/model/other/invoke',
-      '/openai/%64eployments/other/chat/completions', '/openai/deployments%2Fother/chat/completions', '/openai/deployments;x/other/chat/completions',
-      '/v1/chat/completions?a=1;model=other', '/v1/chat/completions?%6dodel=other', '/v1//chat/completions\\models/other',
-      '/v1/chat/completions?x=1?&model=other', '/v1/chat/completions?deployment=other', '/v1/completions?engine=other', '/v1/chat/completions?model_id=other',
       '/v1/images/./generations', '/v1/chat/completions/../../images/generations', '//v1/images/generations', '/v1/images/generations/', '/v1/images//generations',
-    ])('%s', (path) => {
-      expect(requestPathRefusal(path)).toMatchObject({ code: 'unsupported_model_selector' });
+      '/v1/images/%67enerations', '/v1/images%2Fgenerations', '/v1/images;x/generations', '/v1//chat/completions\\x', 'v1/chat/completions', '',
+    ])('%j', (path) => {
+      expect(requestPathRefusal(path)).toMatchObject({ code: 'unsupported_path' });
     });
 
+    // What an upstream does with a path or query every reader reads alike is its plugin's to refuse.
     it.each([
       '/v1/chat/completions', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/responses/resp_1', '/v1/images/edits',
       '/v1/routing/models', '/api/v1/video/queue', '/fal/v1/video/queue', '/v1/chat/completions?api-version=2024-10-21',
       '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/systemone', '/v1/routing/rank', '/api/v1/video/retrieve', '/fal/v1/video/retrieve',
+      '/openai/deployments/x/chat/completions', '/v1/chat/completions?model=x&a=1;b', '/v1/images/generations?quality=high',
     ])('serves %s', (path) => {
       expect(requestPathRefusal(path)).toBeUndefined();
     });
