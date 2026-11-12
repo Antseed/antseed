@@ -117,12 +117,32 @@ export function codexModelCatalogOwner(configPath: string): 'none' | 'ours' | 't
   }
 }
 
-/** Writes our catalog; false (nothing written) when a catalog of the user's has that name. */
+/**
+ * Writes our catalog; false (nothing written) when a catalog of the user's has
+ * that name. When its record can't be written, the catalog goes back to what
+ * it was, so the file on disk still matches the record and stays ours.
+ */
 export function writeCodexModelCatalog(configPath: string, catalog: string): boolean {
   if (codexModelCatalogOwner(configPath) === 'theirs') return false;
+  const previous = readIfPresent(catalogPath(configPath));
   writeTextFile(catalogPath(configPath), catalog);
-  writeTextFile(catalogOwnershipPath(configPath), `${JSON.stringify({ version: 1, sha256: sha256Hex(catalog) })}\n`);
+  try {
+    writeTextFile(catalogOwnershipPath(configPath), `${JSON.stringify({ version: 1, sha256: sha256Hex(catalog) })}\n`);
+  } catch (err) {
+    if (previous === null) unlinkIfPresent(catalogPath(configPath));
+    else writeTextFile(catalogPath(configPath), previous);
+    throw err;
+  }
   return true;
+}
+
+function readIfPresent(filePath: string): string | null {
+  try {
+    return readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 /** Whether the catalog on disk is still `catalog` (one a newer refresh replaced is not). */

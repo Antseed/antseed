@@ -1,11 +1,31 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Button } from '@antseed/ui';
 import type { GatewayRewardsSummary } from '../../../types/bridge';
 import { formatCredits } from '../../../core/format';
 import { VprBadge, VprCard, VprSection, VprPage } from '../vpr/VprKit';
+import { watchRewards } from './rewards-watch';
 import styles from './VprRewardsView.module.scss';
 
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+/** The pending amount, or a dash when it can't be shown, or an ellipsis while it's read. */
+export function rewardsValue(rewards: GatewayRewardsSummary | null, error: string | null): string {
+  if (rewards?.remoteChainUnverified) return '—';
+  if (rewards) return formatCredits(rewards.available ? rewards.pendingAnts : '0');
+  return error ? '—' : '…';
+}
+
+/** The line under the amount: what it is, or why there's none. */
+export function rewardsHint(rewards: GatewayRewardsSummary | null, error: string | null): string {
+  if (!rewards) return error ?? 'Reading your rewards…';
+  // A failed refresh keeps the last amount, but says it may be out of date.
+  if (error) return `Couldn't refresh your rewards: ${error}`;
+  if (rewards.remoteChainUnverified) return 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.';
+  if (!rewards.available) return 'Rewards are not live on this network yet.';
+  const epoch = rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : '';
+  return `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${epoch}.`;
 }
 
 /**
@@ -18,34 +38,19 @@ export function VprRewardsView() {
   const [error, setError] = useState<string | null>(null);
   const [consoleError, setConsoleError] = useState<string | null>(null);
 
-  const load = useCallback((force: boolean) => {
-    void window.antseedDesktop?.gatewayGetRewards?.({ force })
-      .then((result) => {
-        if (result.ok && result.data) {
-          setRewards(result.data);
-          setError(null);
-        } else {
-          setError(result.error ?? 'Could not read your rewards');
-        }
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-  }, []);
-
-  // Fresh on entry and when the window regains focus, e.g. after claiming in the console.
-  useEffect(() => {
-    load(true);
-    const onFocus = () => load(true);
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [load]);
+  // Read on entry, on focus (e.g. after claiming in the console) and every
+  // minute; a failed read keeps the last amount and says it couldn't refresh.
+  useEffect(() => watchRewards(
+    () => window.antseedDesktop?.gatewayGetRewards?.(),
+    (summary) => { setRewards(summary); setError(null); },
+    { onError: setError },
+  ), []);
 
   async function openRewards(): Promise<void> {
     setConsoleError(null);
     const result = await window.antseedDesktop?.gatewayOpenConsole?.('/rewards');
     if (result && !result.ok) setConsoleError(result.error ?? 'Could not open your gateway');
   }
-
-  const pending = rewards?.available ? rewards.pendingAnts : '0';
 
   return (
     <section className={`view view-vpr-rewards view-pinned-header ${styles.view}`} role="tabpanel">
@@ -54,16 +59,8 @@ export function VprRewardsView() {
           <VprCard className={styles.heroCard}>
             <div className={styles.heroText}>
               <span className={styles.heroLabel}>Pending $ANTS</span>
-              <span className={styles.heroValue}>{rewards?.remoteChainUnverified ? '—' : rewards ? formatCredits(pending) : error ? '—' : '…'}</span>
-              <span className={styles.heroHint}>
-                {!rewards
-                  ? error ?? 'Reading your rewards…'
-                  : rewards.remoteChainUnverified
-                    ? 'Your gateway doesn\'t report rewards to the app yet: see them in your gateway.'
-                    : rewards.available
-                      ? `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${rewards.currentEpoch !== null ? ` · epoch ${rewards.currentEpoch}` : ''}.`
-                      : 'Rewards are not live on this network yet.'}
-              </span>
+              <span className={styles.heroValue}>{rewardsValue(rewards, error)}</span>
+              <span className={styles.heroHint}>{rewardsHint(rewards, error)}</span>
             </div>
             <div className={styles.heroActions}>
               {rewards?.available && (
@@ -71,9 +68,9 @@ export function VprRewardsView() {
                   {rewards.transfersEnabled ? 'Transfers live' : 'Transfers not enabled yet'}
                 </VprBadge>
               )}
-              <button type="button" className={styles.primaryAction} onClick={() => { void openRewards(); }}>
+              <Button variant="primary" onClick={() => { void openRewards(); }}>
                 View rewards in your gateway ↗
-              </button>
+              </Button>
               {consoleError && <span className={styles.errorNote} role="alert">{consoleError}</span>}
             </div>
           </VprCard>

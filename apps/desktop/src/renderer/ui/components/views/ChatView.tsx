@@ -257,6 +257,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatThinkingPhase: state.chatThinkingPhase,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
+    chatWorkspaceLocked: state.chatWorkspaceLocked,
     chatWorkspacePath: state.chatWorkspacePath,
   }), shallowEqual);
   const actions = useActions();
@@ -1424,7 +1425,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 type="button"
                 className={styles.workspaceButton}
                 onClick={() => void actions.chooseWorkspace()}
-                title={workspacePath || 'Choose workspace'}
+                disabled={snap.chatWorkspaceLocked}
+                title={snap.chatWorkspaceLocked ? 'Available once your message is on its way' : workspacePath || 'Choose workspace'}
               >
                 <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.5} />
                 <span className={styles.workspaceLabel}>{workspaceLabel}</span>

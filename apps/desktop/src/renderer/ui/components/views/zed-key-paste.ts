@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { createLatestReads } from './endpoint-reads';
 
 export const ZED_APP = 'zed';
 const STORAGE_KEY = 'antseed.zedKeyPasted';
@@ -28,27 +29,11 @@ type ZedKey = { apiKey: string; fingerprint: string };
 type ZedKeyRead = ZedKey | { error: string };
 
 /**
- * Reads of Zed's key for its settings dialog. Each read first clears what was
- * shown, so a failed one never leaves a key the console has since revoked or
- * replaced, and an answer a newer read or a close has overtaken is dropped.
+ * Reads of Zed's key for its settings dialog: a failed read never leaves a
+ * key the console has since revoked or replaced.
  */
 export function createZedKeyReads(load: () => Promise<ZedKeyRead>, show: (read: ZedKeyRead | null) => void) {
-  let current = 0;
-  return {
-    /** Reads and shows Zed's key; resolves to it, or null when a newer read or a close overtook this one. */
-    async refresh(): Promise<ZedKeyRead | null> {
-      const id = ++current;
-      show(null);
-      const read = await load();
-      if (id !== current) return null;
-      show(read);
-      return read;
-    },
-    /** Drops any read in flight. */
-    close(): void {
-      current += 1;
-    },
-  };
+  return createLatestReads(load, show);
 }
 
 /** The key to copy, read again at that moment; null when that read failed or was overtaken. */

@@ -42,7 +42,24 @@ export type { AgentSkillStatus };
 
 export type AgentSkillsEndpoint = { origin: string; apiKey: string };
 
-type Options = { home?: string; sourceRoot?: string; keyFile?: string };
+type Options = {
+  home?: string;
+  sourceRoot?: string;
+  keyFile?: string;
+  /** Tests: runs once every copy is staged, before any is put in place. */
+  onStaged?: () => Promise<void>;
+};
+
+// Install, removal and sync each read the agents' folders and the key file,
+// then change them: one at a time, so a removal is never undone by a sync
+// that staged its copies before it.
+let skillsQueue: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const run = skillsQueue.then(task, task);
+  skillsQueue = run.catch(() => undefined);
+  return run;
+}
 
 function homeOf(options: Options): string {
   return options.home ?? homedir();
@@ -243,32 +260,47 @@ async function installAll(skillsDirs: readonly string[], endpoint: AgentSkillsEn
   const staged: StagedInstall[] = [];
   try {
     for (const dir of dirs) staged.push(await stageInstall(dir, endpoint, options));
+    await options.onStaged?.();
     await commitInstalls(staged, endpoint.apiKey, options);
   } finally {
     for (const copy of staged) await copy.discard();
   }
 }
 
-export async function installAgentSkills(id: string, endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  await installAll([skillsDirOf(targetById(id), options)], endpoint, options);
+export function installAgentSkills(id: string, endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
+  return serialized(() => installAll([skillsDirOf(targetById(id), options)], endpoint, options));
 }
 
-export async function removeAgentSkills(id: string, options: Options = {}): Promise<void> {
-  const skillsDir = skillsDirOf(targetById(id), options);
-  for (const name of AGENT_SKILL_NAMES) {
-    const dest = path.join(skillsDir, name);
-    if (existsSync(path.join(dest, MARKER_FILE))) await rm(dest, { recursive: true, force: true });
-  }
-  // The key file goes with the last agent that used it, even partly.
-  if (managedSkillDirs(options).length === 0) {
-    await rm(agentSkillsKeyFile(options), { force: true });
-  }
+export function removeAgentSkills(id: string, options: Options = {}): Promise<void> {
+  return serialized(async () => {
+    const skillsDir = skillsDirOf(targetById(id), options);
+    for (const name of AGENT_SKILL_NAMES) {
+      const dest = path.join(skillsDir, name);
+      if (existsSync(path.join(dest, MARKER_FILE))) await rm(dest, { recursive: true, force: true });
+    }
+    // The key file goes with the last agent that used it, even partly.
+    if (managedSkillDirs(options).length === 0) {
+      await rm(agentSkillsKeyFile(options), { force: true });
+    }
+  });
 }
 
 /** Re-points every installed copy at the current gateway and key (after a key replacement or a gateway switch). */
-export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
+export function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
   // A failure on any agent leaves all of them on the old gateway and key.
-  await installAll([], endpoint, options);
+  return serialized(() => installAll([], endpoint, options));
+}
+
+/**
+ * Re-points the installed copies, asking for the endpoint (and so a key) only
+ * when an agent holds any of the app's skills, a partly removed one too: its
+ * remaining skills still read the shared key file.
+ */
+export function syncManagedAgentSkills(getEndpoint: () => Promise<AgentSkillsEndpoint>, options: Options = {}): Promise<void> {
+  return serialized(async () => {
+    if (managedSkillDirs(options).length === 0) return;
+    await installAll([], await getEndpoint(), options);
+  });
 }
 
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */

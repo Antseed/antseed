@@ -1,13 +1,11 @@
 /**
  * The balance the app spends from, read from its gateway, and the on-chain
- * clients the local deposit and channel flows use.
+ * deposits client the local deposit flows use.
  *
- * The client cache is shared with the other payments modules through the
- * accessors below; `invalidateChainClients()` drops it when chain config
+ * `invalidateChainClients()` drops the cached client when chain config
  * changes under us.
  */
 import {
-  ChannelsClient,
   DepositRelayClient,
   DepositsClient,
   formatUsdc,
@@ -82,9 +80,6 @@ type CryptoConfig = {
 };
 let cachedCryptoConfig: CryptoConfig | null = null;
 
-// Cached on-chain client, invalidated together with cachedCryptoConfig on
-// config updates.
-let cachedChannelsClient: ChannelsClient | null = null;
 // One deposits client for the credits poll and the deposit watcher, reading
 // through the shared chain provider.
 let cachedDepositsClient: Promise<DepositsClient> | null = null;
@@ -212,7 +207,6 @@ export function invalidateChainClients(): void {
   clearChainReads();
   cachedCryptoConfig = null;
   cachedDepositsClient = null;
-  cachedChannelsClient = null;
   depositRules.clear();
   lastCredits.clear();
 }
@@ -229,12 +223,4 @@ export function getDepositsClient(cc: CryptoConfig): Promise<DepositsClient> {
   });
   cachedDepositsClient = withSharedProvider(client, { rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId });
   return cachedDepositsClient;
-}
-
-export function getCachedChannelsClient(): ChannelsClient | null {
-  return cachedChannelsClient;
-}
-
-export function setCachedChannelsClient(client: ChannelsClient): void {
-  cachedChannelsClient = client;
 }

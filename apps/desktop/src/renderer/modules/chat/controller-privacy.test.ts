@@ -179,6 +179,14 @@ describe('privacy at the moment a request leaves', () => {
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(1);
     expect(uiState.chatError).toMatch(/sent in Private/);
+    // Still one to try again: back in Private, Try again sends the same prompt.
+    expect(uiState.chatFundsNotice).not.toBeNull();
+    privacyResource.setData(privacy('private'));
+    api.retryAfterPayment();
+    await tick();
+    expect(chatAiSendStream).toHaveBeenCalledTimes(2);
+    expect(chatAiSendStream.mock.calls[1]?.[1]).toBe('hello');
+    expect(chatAiSendStream.mock.calls[1]?.[5]).toMatchObject({ requirePrivate: true });
   });
 
   it('Try again on an image of a chat sent in Private stays put once Private is off', async () => {
@@ -195,6 +203,13 @@ describe('privacy at the moment a request leaves', () => {
     await tick();
     expect(chatGenerateImage).toHaveBeenCalledTimes(1);
     expect(uiState.chatError).toMatch(/sent in Private/);
+    // Still one to try again: back in Private, Try again makes the same image.
+    expect(uiState.chatFundsNotice).not.toBeNull();
+    privacyResource.setData(privacy('private'));
+    api.retryAfterPayment();
+    await tick();
+    expect(chatGenerateImage).toHaveBeenCalledTimes(2);
+    expect(chatGenerateImage.mock.calls[1]?.[0]).toMatchObject({ prompt: 'a cat', requirePrivate: true });
   });
 
   it('a chat the user chose to keep goes on in Anonymous without requiring Private', async () => {

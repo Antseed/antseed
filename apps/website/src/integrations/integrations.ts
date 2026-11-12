@@ -169,7 +169,7 @@ function gatewayEnv(extraNote?: string): ConfigBlock {
       ANTSEED_API_KEY: GATEWAY_KEY,
     },
     note: [
-      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`, or Agents → Internet-accessible endpoint in the desktop app) for other machines. No gateway yet: see Run Antseed first above.`,
+      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`) for other machines. No gateway yet: see Run Antseed first above.`,
       extraNote,
     ].filter(Boolean).join(' '),
   };
@@ -631,7 +631,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Pi runs on another machine than the buyer',
         fix:
-          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
+          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
       },
       {
         problem: 'An error from the endpoint mid-conversation',
@@ -674,6 +674,12 @@ Deposits reserved:           0 USDC → 1 USDC`,
         note:
           'Verify with `openclaw --version`. OpenClaw has a newer Node.js support policy than Antseed, so use a Node version accepted by the current OpenClaw release. The config file lives at `~/.openclaw/openclaw.json` and is created on first launch.',
       },
+      {
+        label: 'Optional: let the setup script do the rest',
+        command: 'skills/openclaw-antseed/scripts/setup.sh --service deepseek-v4-flash',
+        note:
+          'From a checkout of the Antseed repo. With no gateway, it installs the Antseed CLI if needed, runs `antseed gateway service install` (a background service that starts at login and restarts if it stops, on macOS and Linux, no root), creates a key for OpenClaw and saves it in `~/.antseed/openclaw/api-key`, then writes the `antseed` provider into `openclaw.json` with that one model as the default (`antseed/deepseek-v4-flash`). Both files are readable only by you, and running it again reuses the saved key. To use a gateway you already have, set `ANTSEED_BASE_URL` and `ANTSEED_API_KEY` first. Then run `openclaw gateway restart` and check it with `openclaw models list` and `openclaw agent exec "Say hi" --model "antseed/deepseek-v4-flash"`. The Configure and Test steps below are the by-hand route: they read `ANTSEED_BASE_URL` and `ANTSEED_API_KEY` from your shell and use a gateway preset the script doesn\'t create. A new gateway\'s wallet is empty, so add funds (`antseed gateway console-link`, then Wallet & Funding), or create the free-sellers preset below and add it to `openclaw.json` as a model.',
+      },
     ],
     configure: [
       gatewayEnv(
@@ -685,7 +691,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
         language: 'bash',
         snippet: `antseed gateway preset create --slug openclaw --name OpenClaw \\
   --model deepseek-v4-flash --prefer-free`,
-        note: 'Run it where the gateway runs, or create the preset on the console\'s **Presets** page. OpenClaw then calls it as the model `@preset/openclaw`. With a plain model id, OpenClaw\'s requests can land on a paid seller and get a `402` on an unfunded gateway, even for a model that has a free seller. To never pay, add `--max-input-price 0 --max-output-price 0`: with no free seller available you get a `502` instead of a `402`. Using the local buyer proxy instead? Skip this step: only a gateway resolves presets, and funding the buyer doesn\'t change that. Without funds, run a gateway on the same computer instead (`antseed gateway start`, which serves `http://127.0.0.1:8379/v1`, plus a key from `antseed gateway key create --label openclaw`) and follow the gateway steps.',
+        note: 'Run it where the gateway runs, or create the preset on the console\'s **Presets** page. OpenClaw then calls it as the model `@preset/openclaw`. With a plain model id, OpenClaw\'s requests can land on a paid seller and get a `402` on an unfunded gateway, even for a model that has a free seller. To never pay, add `--max-input-price 0 --max-output-price 0`: with no free seller available you get a `502` instead of a `402`. Using the local buyer proxy instead? Skip this step: only a gateway resolves presets, and funding the buyer doesn\'t change that. Without funds, run a gateway on the same computer instead (`antseed gateway service install`, which keeps it running in the background at `http://127.0.0.1:8379/v1`, plus a key from `antseed gateway key create --label openclaw`) and follow the gateway steps.',
       },
       {
         kind: 'file',
@@ -780,6 +786,10 @@ openclaw gateway restart`,
         fix: 'Set `authHeader: true` on the provider and make sure `ANTSEED_API_KEY` holds a gateway key in the environment OpenClaw starts with.',
       },
       {
+        problem: 'Connection refused at `localhost:8379`',
+        fix: 'The gateway on this computer isn\'t running. `antseed gateway service status` shows whether the service is installed and answering; `antseed gateway service install` starts it again.',
+      },
+      {
         problem: 'OpenClaw lists `antseed/<id>` but every call returns `502 model_not_found`',
         fix:
           'No seller your routing policy allows currently advertises that model. Check `GET $ANTSEED_BASE_URL/models` with the bearer key and update `models[]`, or pick another model. If the error names a 40-character peer id instead of a model, the id was `<peerId>@<service-id>`, which OpenClaw cuts at the `@`; pin with a preset instead (see **Pick a model**).',
@@ -802,7 +812,7 @@ openclaw gateway restart`,
       {
         problem: 'OpenClaw runs remotely and cannot reach `127.0.0.1:8377`',
         fix:
-          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
+          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -817,7 +827,7 @@ openclaw gateway restart`,
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`. Presets work only through a gateway, never the local buyer proxy (funded or not): there, use a concrete model id. Unfunded, pick one with a free seller (the buyer retries a free seller after a 402; CLI 0.1.234 and earlier do not, so on those fund the buyer or run `antseed gateway start` on the same computer and use the preset); a model with no free seller, such as kimi-k2.6, needs a funded buyer. Note: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
+      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. No gateway: `skills/openclaw-antseed/scripts/setup.sh --service <model-id>` installs one on this computer as a background service (`antseed gateway service install`), saves a key to ~/.antseed/openclaw/api-key and writes the provider; never run `antseed gateway start` from an agent session, it stops when the session ends. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`. Presets work only through a gateway, never the local buyer proxy (funded or not): there, use a concrete model id. Unfunded, pick one with a free seller (the buyer retries a free seller after a 402; CLI 0.1.234 and earlier do not, so on those fund the buyer or run `antseed gateway service install` on the same computer and use the preset); a model with no free seller, such as kimi-k2.6, needs a funded buyer. Note: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
   },
   {
     slug: 'hermes',
@@ -832,19 +842,19 @@ openclaw gateway restart`,
     oneLiner: "Nous Research's agent framework - add your Antseed gateway as a provider, or let Hermes set itself up.",
     description: [
       '<strong>What Hermes is.</strong> Hermes Agent is the open-source agent framework from <a href="https://nousresearch.com/">Nous Research</a>. It runs as a long-lived gateway (Telegram, Discord, Slack, …) and reads its model provider from its config.',
-      '<strong>Fastest path: let Hermes do it.</strong> Install the <code>hermes-antseed</code> skill and tell your agent "set yourself up to run on Antseed". It snapshots its config, asks for your gateway URL and key (or checks the local buyer and your balance), tests which models actually answer, adds Antseed next to your current provider, switches only after a passing test, and asks you to send <code>/restart</code>.',
+      '<strong>Fastest path: let Hermes do it.</strong> Install the <code>hermes-antseed</code> skill and tell your agent "set yourself up to run on Antseed". It snapshots its config, uses your gateway or, if you have none, sets one up on this computer as a background service with a key just for Hermes, checks your balance, tests which models actually answer, adds Antseed next to your current provider, switches only after a passing test, and asks you to send <code>/restart</code>.',
       '<strong>Doing it by hand</strong> is the same steps below. Use <code>hermes config set</code> for every change instead of pasting YAML: your <code>config.yaml</code> already has a <code>model:</code> block, and a second one breaks it.',
     ],
     prereqs: [
       'Hermes installed and answering (`hermes -z "hi"` replies).',
-      'An Antseed endpoint. Recommended: a gateway, with its base URL (ending in `/v1`) and an API key from its console, and a funded workspace wallet. It works wherever Hermes runs. Alternative, only when Hermes runs on the same computer: the local buyer proxy (the desktop app, or `antseed buyer start`), funded (`antseed buyer balance` shows Available above 0).',
+      'An Antseed endpoint. Recommended: a gateway, with its base URL (ending in `/v1`) and an API key from its console, and a funded workspace wallet. It works wherever Hermes runs. No gateway yet: the skill (Option A) sets one up on this computer, or see "No gateway yet" in Configure. Alternative, only when Hermes runs on the same computer: the local buyer proxy (the desktop app, or `antseed buyer start`), funded (`antseed buyer balance` shows Available above 0).',
     ],
     install: [
       {
         label: 'Option A: install the skill and let Hermes set itself up',
         command: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
         note:
-          'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." It stops to ask you if the buyer is not running or not funded, and finishes by asking you to send `/restart`. Skip the rest of this page.',
+          'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." Without a gateway, it installs the Antseed CLI and runs `antseed gateway service install`, then creates a key for itself and saves it in `~/.antseed/hermes/api-key`, a file only you can read. It stops to ask you if the wallet needs funds, and finishes by asking you to send `/restart`. Skip the rest of this page.',
       },
       {
         label: 'Option B (by hand): snapshot your config and note your current model',
@@ -853,21 +863,35 @@ openclaw gateway restart`,
       },
     ],
     configure: [
+      {
+        kind: 'code',
+        title: 'No gateway yet: run one on this computer in the background',
+        language: 'bash',
+        snippet: `npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
+antseed gateway service install
+antseed gateway key create --label hermes`,
+        note: 'Installs the gateway, and the buyer it needs, as a background service that starts at login and restarts if it stops: a launchd agent on macOS, a systemd user service on Linux, no root needed. `--allow-scripts` lets recent npm versions build the CLI\'s native modules. Use `http://localhost:8379/v1` as `ANTSEED_BASE_URL` and the printed key as `ANTSEED_API_KEY`. Check it later with `antseed gateway service status`; remove it with `antseed gateway service uninstall`. On a Linux server, run the `loginctl enable-linger` command it prints to keep it running after you log out. With encrypted wallet keys, set `ANTSEED_PASSPHRASE_FILE` before installing: the service can\'t ask for the passphrase.',
+      },
       gatewayEnv(
         'Same computer as the buyer, no gateway: use `http://127.0.0.1:8377/v1` and the placeholder key `antseed-p2p`; the local proxy checks no key. The commands below read both variables, so they work either way.',
       ),
       {
         kind: 'code',
         language: 'bash',
-        snippet: String.raw`try_model() {
+        snippet: String.raw`# Text models on the network right now (ids are case-sensitive):
+curl -s "$ANTSEED_BASE_URL/models?type=text" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq -r '.data[].id'
+
+try_model() {
   curl -s -m 90 "$ANTSEED_BASE_URL/chat/completions" \
     -H 'Content-Type: application/json' -H "Authorization: Bearer $ANTSEED_API_KEY" \
-    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
+    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
   | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
 }
-for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done`,
+# Candidates, strongest first. Replace with ids from the list above:
+models="kimi-k3 kimi-k2.6 glm-5.1 minimax-m2.7 deepseek-v4-flash"
+for m in $models; do try_model "$m"; done`,
         note:
-          'Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller your routing policy allows serves it. A `402` / `insufficient_deposits` means the wallet needs funds: the workspace wallet in the gateway console (Wallet & Funding), or `antseed buyer deposit` for a local buyer. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
+          'Take ids from the list, not from memory: they change over time. `max_tokens` is 64 so reasoning models have room to answer. Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller your routing policy allows serves it. A `402` / `insufficient_deposits` means the wallet needs funds: the workspace wallet in the gateway console (Wallet & Funding), or `antseed buyer deposit` for a local buyer. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
       },
       {
         kind: 'code',
@@ -960,7 +984,15 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: '`401` from the gateway',
-        fix: 'The key is missing, wrong, revoked or expired. Check `hermes config get ANTSEED_API_KEY` against the Keys page in the console, set it again, then `/restart`.',
+        fix: 'The key is missing, wrong, revoked or expired. Check `hermes config get ANTSEED_API_KEY` against the Keys page in the console, set it again, then `/restart`. For a gateway on this computer, `antseed gateway key create --label hermes` makes a new key.',
+      },
+      {
+        problem: '`curl: (7) Failed to connect` to `localhost:8379`',
+        fix: 'The gateway on this computer isn\'t running. `antseed gateway service status` shows whether the service is installed and answering; `antseed gateway service install` starts it again. Don\'t run `antseed gateway start` from Hermes\' terminal tool: it stops when the session ends.',
+      },
+      {
+        problem: '`429` / `free_tier_exhausted`',
+        fix: 'The free sellers for that model are busy. Try another model, or try again in a few minutes.',
       },
       {
         problem: '`Unknown provider \'antseed\'`',
@@ -976,7 +1008,7 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: 'Hermes runs on a remote host and can\'t reach `127.0.0.1:8377`',
-        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
+        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -992,7 +1024,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     ],
     agentSkill: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
     agentSummary:
-      'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; get the endpoint: a gateway (recommended: base URL ending in /v1 + gateway key) or, on the same computer, the local buyer at http://127.0.0.1:8377/v1 with placeholder key antseed-p2p (check `antseed buyer balance` shows Available > 0); export ANTSEED_BASE_URL and ANTSEED_API_KEY; test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` through a gateway or on a CLI-only buyer, never restart your own Hermes gateway: ask the user to send /restart.',
+      'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; get the endpoint: a gateway (recommended: base URL ending in /v1 + gateway key; with no gateway, set one up on this computer with `antseed gateway service install` and `antseed gateway key create --label hermes`, base URL http://localhost:8379/v1, and never run `antseed gateway start` in your own terminal tool) or, on the same computer, the local buyer at http://127.0.0.1:8377/v1 with placeholder key antseed-p2p (check `antseed buyer balance` shows Available > 0); export ANTSEED_BASE_URL and ANTSEED_API_KEY; test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` through a gateway or on a CLI-only buyer, never restart your own Hermes gateway: ask the user to send /restart.',
   },
 
   /* ---------------- (Additional frameworks) ---------------- */

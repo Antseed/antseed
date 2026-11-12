@@ -651,6 +651,7 @@ export function VprToolsView() {
               <AppPickerPane
                 apps={installedApps}
                 error={installedAppsError}
+                onRetry={() => { void installedAppsResource.refresh(); }}
                 search={pickerSearch}
                 onSearch={setPickerSearch}
                 activeName={settingsLaunchName}
@@ -796,9 +797,11 @@ export function VprToolsView() {
 /** Application-list pane the settings modal slides to: a
     searchable list with a "none" row first. The back affordance lives in
     the modal header (title swaps to back + "Choose application"). */
-function AppPickerPane({ apps, error, search, onSearch, activeName, onChoose, noneLabel, noneMeta }: {
+export function AppPickerPane({ apps, error, onRetry, search, onSearch, activeName, onChoose, noneLabel, noneMeta }: {
   apps: InstalledAppEntry[] | null;
   error: string | null;
+  /** Reads the list again after a failed read. */
+  onRetry: () => void;
   search: string;
   onSearch: (value: string) => void;
   /** Currently associated application name, or null when none is set. */
@@ -828,10 +831,13 @@ function AppPickerPane({ apps, error, search, onSearch, activeName, onChoose, no
           </span>
           {activeName === null ? <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} /> : null}
         </button>
-        {apps === null ? (
+        {error ? (
+          <div className={styles.pickerEmpty} role="alert">
+            {error}{' '}
+            <button type="button" className={styles.settingTextLink} onClick={onRetry}>Try again</button>
+          </div>
+        ) : apps === null ? (
           <div className={styles.pickerEmpty}>Loading applications...</div>
-        ) : error ? (
-          <div className={styles.pickerEmpty}>{error}</div>
         ) : filtered.length === 0 ? (
           <div className={styles.pickerEmpty}>No applications match your search</div>
         ) : (

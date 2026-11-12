@@ -1258,6 +1258,36 @@ test('a refresh with no models keeps the way back to the user\'s own default', a
   });
 });
 
+test('codex: a refresh whose ownership record cannot be written keeps the catalog ours', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const configPath = path.join(dir, 'config.toml');
+      const catalogPath = path.join(dir, 'antseed-models.json');
+      const recordPath = `${configPath}.antseed.catalog.json`;
+      const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
+      await patchAndFinish(patch, LOCAL);
+      const original = await readFile(catalogPath, 'utf8');
+      await chmod(recordPath, 0o444);
+      await assert.rejects(patchAndFinish(patch, { ...LOCAL, models: [{ id: 'glm-5' }] }));
+      assert.equal(await readFile(catalogPath, 'utf8'), original, 'the catalog the record names is back');
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
+      removeConfigPatch(patch);
+      assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'), 'disconnect still drops our reference');
+      assert.equal(existsSync(catalogPath), false, 'and our catalog');
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+  });
+});
+
 test('codex: a custom model catalog comes back on disconnect and when ours is rejected', { skip: process.platform === 'win32' }, async () => {
   await withDir(async (dir) => {
     const bin = path.join(dir, 'bin');

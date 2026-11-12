@@ -161,6 +161,10 @@ export function initChatModule({
   let conversationOpenToken = 0;
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
+  // First messages still creating their chat, and the workspace of a chat
+  // opened meanwhile, switched to once they're done.
+  let draftsCreating = 0;
+  let heldWorkspacePath: string | null = null;
   let newChatDraftVersion = 0;
   /**
    * First messages of new chats, before their chats exist. Each submission has
@@ -697,6 +701,17 @@ export function initChatModule({
     return cached ? cached.map(cloneChatMessage) : null;
   }
 
+  /**
+   * The chat's messages as far as this window knows them. While the chat is
+   * still opening, the screen shows the previous chat's messages, so they
+   * never stand in for its own.
+   */
+  function messagesForConversation(convId: string): ChatMessage[] {
+    return getLocalConversationMessages(convId)
+      ?? (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId
+        ? (uiState.chatMessages as ChatMessage[]) : []);
+  }
+
   function setStreamingMessage(message: ChatMessage | null): void {
     uiState.chatStreamingMessage = message ? cloneChatMessage(message) : null;
     notifyUiStateChangedSync();
@@ -891,8 +906,31 @@ export function initChatModule({
     }
   }
 
+  /**
+   * A new chat is made in the current workspace, so it holds still from Send
+   * until the first message's chat exists: the workspace button is disabled,
+   * and a chat opened from another project switches to it afterwards.
+   */
+  function holdWorkspace(): () => void {
+    draftsCreating += 1;
+    uiState.chatWorkspaceLocked = true;
+    notifyUiStateChanged();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      draftsCreating -= 1;
+      if (draftsCreating > 0) return;
+      uiState.chatWorkspaceLocked = false;
+      const held = heldWorkspacePath;
+      heldWorkspacePath = null;
+      notifyUiStateChanged();
+      if (held) void restoreWorkspace(held);
+    };
+  }
+
   async function chooseWorkspace(): Promise<void> {
-    if (!bridge?.pickDirectory || !bridge.chatAiSetWorkspace) return;
+    if (!bridge?.pickDirectory || !bridge.chatAiSetWorkspace || uiState.chatWorkspaceLocked) return;
     try {
       const picked = await bridge.pickDirectory();
       if (!picked.ok || !picked.path) return;
@@ -973,8 +1011,10 @@ export function initChatModule({
       notifyUiStateChanged();
 
       const convWorkspacePath = conv.workspacePath;
-      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0 && convWorkspacePath !== workspacePathAtOpen) {
-        void restoreWorkspace(convWorkspacePath);
+      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0) {
+        // Held: the chat opened last decides, even one in the workspace already current.
+        if (draftsCreating > 0) heldWorkspacePath = convWorkspacePath;
+        else if (convWorkspacePath !== workspacePathAtOpen) void restoreWorkspace(convWorkspacePath);
       }
     } catch (err) {
       if (!isCurrentOpen()) return;
@@ -1188,48 +1228,54 @@ export function initChatModule({
       let submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
       const needsFree = () => (draftVersion === newChatDraftVersion ? needsFreeModel() : needsFreeModel(submitted));
       setDraftSending(true);
+      const releaseWorkspace = holdWorkspace();
       void (async () => {
-        // A new chat keeps its model, and the mode being switched to can move it.
-        if (await holdForPrivacySwitch()) {
+        try {
+          // A new chat keeps its model, and the mode being switched to can move it.
+          if (await holdForPrivacySwitch()) {
+            if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+            const mode = privacyResource.getSnapshot().data?.mode;
+            if (mode) await privacySwitchLanded(mode);
+            if (draftVersion === newChatDraftVersion) {
+              applyDefaultModel();
+              writtenWith = uiState.chatSelectedModelId;
+              submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
+            }
+          }
+          const waited = await waitForFreeModel(stillDraft, needsFree);
           if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-          const mode = privacyResource.getSnapshot().data?.mode;
-          if (mode) await privacySwitchLanded(mode);
-          if (draftVersion === newChatDraftVersion) {
-            applyDefaultModel();
-            writtenWith = uiState.chatSelectedModelId;
-            submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
+          // The draft's model is captured here: the user may switch before the
+          // conversation finishes creating. A wait that found a free model moves to it.
+          let modelId = writtenWith;
+          if (waited) {
+            if (draftVersion === newChatDraftVersion) {
+              applyDefaultModel();
+              modelId = uiState.chatSelectedModelId;
+            } else if (!submitted.chosen && !needsFreeModel(submitted)) {
+              // Left behind: the free model the wait found, never the last model
+              // saved, which another chat may have chosen meanwhile.
+              modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
+            }
           }
-        }
-        const waited = await waitForFreeModel(stillDraft, needsFree);
-        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-        // The draft's model is captured here: the user may switch before the
-        // conversation finishes creating. A wait that found a free model moves to it.
-        let modelId = writtenWith;
-        if (waited) {
-          if (draftVersion === newChatDraftVersion) {
-            applyDefaultModel();
-            modelId = uiState.chatSelectedModelId;
-          } else if (!submitted.chosen && !needsFreeModel(submitted)) {
-            // Left behind: the free model the wait found, never the last model
-            // saved, which another chat may have chosen meanwhile.
-            modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
+          const convId = await createConversationForModel(modelId, { activate: false });
+          releaseWorkspace();
+          // Stopped while the chat was being made: it stays, empty, and nothing is sent.
+          if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+          // The new chat's send is this prompt's from here on, before it opens:
+          // a second submit while it loads finds it busy, and Stop there cancels this.
+          const reserved = convId ? beginSend(convId) : null;
+          // Only the draft on screen owns the composer's sending state.
+          if (shownDraft === draftToken) {
+            shownDraft = 0;
+            if (uiState.chatActiveConversation === null) setDraftSending(false);
           }
+          if (!convId || reserved === null) return;
+          if (draftVersion === newChatDraftVersion) await openConversation(convId);
+          if (!ownsSend(convId, reserved)) return;
+          sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
+        } finally {
+          releaseWorkspace();
         }
-        const convId = await createConversationForModel(modelId, { activate: false });
-        // Stopped while the chat was being made: it stays, empty, and nothing is sent.
-        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
-        // The new chat's send is this prompt's from here on, before it opens:
-        // a second submit while it loads finds it busy, and Stop there cancels this.
-        const reserved = convId ? beginSend(convId) : null;
-        // Only the draft on screen owns the composer's sending state.
-        if (shownDraft === draftToken) {
-          shownDraft = 0;
-          if (uiState.chatActiveConversation === null) setDraftSending(false);
-        }
-        if (!convId || reserved === null) return;
-        if (draftVersion === newChatDraftVersion) await openConversation(convId);
-        if (!ownsSend(convId, reserved)) return;
-        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
       })();
       return;
     }
@@ -1325,8 +1371,9 @@ export function initChatModule({
         showChatError(`${model.label} doesn't accept images. Sending without image input for this turn.`);
       }
 
-      const localMessages = getLocalConversationMessages(convId)
-        ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+      const localMessages = await conversationHistory(convId);
+      // Stopped while the history loaded: nothing is sent.
+      if (!ownsSend(convId, token)) return;
       const nextMessages = [...localMessages, { role: 'user' as const, content: buildUserMessageContent(content, preparedAttachments), createdAt: Date.now() }];
       projectConversationMessages(convId, nextMessages, Date.now());
       notifyUiStateChanged();
@@ -1349,7 +1396,7 @@ export function initChatModule({
   }
 
   /** `token`: the request's ownership of the conversation (see `beginSend`); losing it cancels the request. */
-  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[], privateAtSubmit = false): Promise<void> {
+  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[], privateAtSubmit = false, onRefused?: () => void): Promise<void> {
     if (!bridge?.chatAiSendStream) {
       endSend(convId, token);
       return;
@@ -1361,6 +1408,7 @@ export function initChatModule({
     const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
     if (!privacy) {
       endSend(convId, token);
+      onRefused?.();
       return;
     }
     const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
@@ -1379,17 +1427,22 @@ export function initChatModule({
     const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, { ...privacy, sendId: token });
     try {
       let result = await send();
+      // Stopped or replaced meanwhile: its answer is no send's on screen, and
+      // a stopped message is never sent again.
+      if (!ownsSend(convId, token)) return;
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
         appendSystemLog('Detected stuck in-flight chat request. Aborting and retrying once...');
         await bridge.chatAiAbort(convId).catch(() => undefined);
+        if (!ownsSend(convId, token)) return;
         result = await send();
+        if (!ownsSend(convId, token)) return;
       }
       // The stream-error event already reported failures that reached the stream.
       const streamEnded = (streamCompletedAtByConversation.get(convId) ?? 0) >= requestStartedAt
         || (streamFailedAtByConversation.get(convId) ?? 0) >= requestStartedAt;
       if (!result.ok && !streamEnded) handleSendFailure(convId, result);
     } catch (err) {
-      reportChatError(err, 'Request failed');
+      if (ownsSend(convId, token)) reportChatError(err, 'Request failed');
     } finally {
       // A request still streaming ends with its done event; a follow-up that
       // started meanwhile owns the flag now.
@@ -1446,14 +1499,12 @@ export function initChatModule({
 
   /** A reply in this chat went out under Private (a failed one too: its prompt was sent). */
   function conversationHasPrivateHistory(convId: string): boolean {
-    const messages = getLocalConversationMessages(convId)
-      ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+    const messages = messagesForConversation(convId);
     return hasPrivateHistory(convId, uiState.chatPrivateConversationIds, messages);
   }
 
   function lastUserMessage(convId: string): { content: string; attachments: PreparedChatAttachment[] } | null {
-    const messages = getLocalConversationMessages(convId)
-      ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+    const messages = messagesForConversation(convId);
     const last = [...messages].reverse().find((message) => message.role === 'user');
     if (!last) return null;
     const content = typeof last.content === 'string'
@@ -1474,13 +1525,25 @@ export function initChatModule({
 
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
-    if (!convId || !fundsNoticeByConversation.has(convId) || isConversationSending(convId)) return;
+    const notice = convId ? fundsNoticeByConversation.get(convId) : undefined;
+    if (!convId || !notice || isConversationSending(convId)) return;
     const imageRequest = imageRetryByConversation.get(convId);
+    // Refused by the privacy check (or stopped before it), the request stays
+    // one to try again: its notice comes back, next to the refusal.
+    const keepRetry = () => {
+      if (fundsNoticeByConversation.has(convId)) return;
+      if (imageRequest) imageRetryByConversation.set(convId, imageRequest);
+      fundsNoticeByConversation.set(convId, notice);
+      if (convId === uiState.chatActiveConversation) {
+        uiState.chatFundsNotice = notice;
+        notifyUiStateChanged();
+      }
+    };
     if (imageRequest) {
       imageRetryByConversation.delete(convId);
       fundsNoticeByConversation.delete(convId);
       clearChatNotices();
-      void runImageRequest(convId, imageRequest);
+      void runImageRequest(convId, imageRequest, false, undefined, keepRetry);
       return;
     }
     const last = lastUserMessage(convId);
@@ -1488,7 +1551,7 @@ export function initChatModule({
     fundsNoticeByConversation.delete(convId);
     clearChatNotices();
     const token = beginSend(convId);
-    void dispatchChatRequest(convId, token, last.content, last.attachments.length > 0 ? last.attachments : undefined);
+    void dispatchChatRequest(convId, token, last.content, last.attachments.length > 0 ? last.attachments : undefined, false, keepRetry);
   }
 
   function dismissFundsNotice(): void {
@@ -1528,17 +1591,23 @@ export function initChatModule({
   const imageRetryByConversation = new Map<string, ImageRequest>();
 
   /** The prompt is already in the conversation, from the first attempt. */
-  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number): Promise<void> {
+  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number, onRefused?: () => void): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
     if (reservedToken !== undefined && !ownsSend(convId, reservedToken)) return;
     const token = reservedToken ?? beginSend(convId);
     queueScrollChatToBottom();
     try {
       const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
-      if (!privacy) return;
+      if (!privacy) {
+        onRefused?.();
+        return;
+      }
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
       const result = await bridge.chatGenerateImage({ conversationId: convId, ...request, ...privacy });
+      // Stopped or replaced while the image was made: its result (a reply or
+      // a funds retry) belongs to no send on screen now.
+      if (!ownsSend(convId, token)) return;
       const funds = fundsNoticeFromStopReason(result.stopReason);
       if (funds) {
         imageRetryByConversation.set(convId, request);
@@ -1549,13 +1618,14 @@ export function initChatModule({
         throw new Error(result.error || 'Image generation failed.');
       }
       // The prompt was projected optimistically; append only the reply.
-      const current = getLocalConversationMessages(convId) ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
+      const current = messagesForConversation(convId);
       const messages = [...current, result.assistant as ChatMessage];
       projectConversationMessages(convId, messages, Date.now());
       scheduleChatConversationsRefresh();
       notifyUiStateChanged();
       queueScrollChatToBottom();
     } catch (error) {
+      if (!ownsSend(convId, token)) return;
       const message = asErrorMessage(error, 'Image generation failed');
       if (message !== 'Request aborted') {
         reportChatError(message, 'Image generation failed');
@@ -1567,11 +1637,11 @@ export function initChatModule({
   }
 
   /**
-   * The chat's own history for an image request. While the chat is still
-   * opening, the screen shows the previous chat's messages, so they're never
-   * used for it: the history is read from the chat itself instead.
+   * The chat's own history for a send. While the chat is still opening, the
+   * screen shows the previous chat's messages, so they're never used for it:
+   * the history is read from the chat itself instead.
    */
-  async function imageRequestHistory(convId: string): Promise<ChatMessage[]> {
+  async function conversationHistory(convId: string): Promise<ChatMessage[]> {
     const local = getLocalConversationMessages(convId);
     if (local) return local;
     if (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId) {
@@ -1617,7 +1687,12 @@ export function initChatModule({
         shownDraft = draftToken;
         const stillDraft = () => !stoppedDrafts.has(draftToken);
         setDraftSending(true);
-        convId = await createConversationForModel(textModelId, { activate: false });
+        const releaseWorkspace = holdWorkspace();
+        try {
+          convId = await createConversationForModel(textModelId, { activate: false });
+        } finally {
+          releaseWorkspace();
+        }
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
         if (convId) reserved = beginSend(convId);
         if (shownDraft === draftToken) {
@@ -1651,7 +1726,7 @@ export function initChatModule({
       // This prompt supersedes one waiting on funds.
       fundsNoticeByConversation.delete(convId);
       imageRetryByConversation.delete(convId);
-      const existingBeforeRequest = await imageRequestHistory(convId);
+      const existingBeforeRequest = await conversationHistory(convId);
       // Stopped while the history loaded: nothing is sent.
       if (!ownsSend(convId, reserved)) return;
       // Edit the last generated image when the model takes image input;

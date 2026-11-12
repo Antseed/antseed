@@ -287,6 +287,11 @@ const config: Config = {
             {
               type: 'html',
               value:
+                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
                 '<a class="usecase" href="/privacy"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5l6 2.5v4.5c0 3.6-2.6 6.3-6 7.5-3.4-1.2-6-3.9-6-7.5V5l6-2.5z"/><path d="M7.5 10l1.8 1.8L12.8 8"/></svg></span><span class="usecase__body"><span class="usecase__title">For privacy</span><span class="usecase__desc">No sign-up, runs on your machine</span></span></a>',
             },
           ],

@@ -262,8 +262,7 @@ export function removeCodexProviderFromFile(filePath: string, patch: CodexConfig
   const saved = readSelection(filePath);
   let removeCatalog = false;
   if (isManagedCodexCatalogRef(filePath, readTomlTopLevelString(lines, 'model_catalog_json'))) {
-    lines = removeTomlTopLevelKey(lines, 'model_catalog_json');
-    if (typeof saved['model_catalog_json'] === 'string') lines = setTomlTopLevelString(lines, 'model_catalog_json', saved['model_catalog_json']);
+    lines = withoutManagedCodexCatalog(filePath, lines);
     removeCatalog = true;
     changed = true;
   }

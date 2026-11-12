@@ -34,6 +34,15 @@ export ANTSEED_API_KEY="<your gateway key>"
 
 The gateway expects `Authorization: Bearer $ANTSEED_API_KEY`. See [Gateway API](/docs/gateway/api) for creating keys and the routes it serves.
 
+No gateway yet, and the agent runs on this computer? Run one in the background, so it keeps working after you close the terminal:
+
+```bash
+antseed gateway service install
+antseed gateway key create --label <agent name>
+```
+
+This installs the gateway, and the buyer it needs, as a per-user service that starts at login and restarts if it stops: a launchd agent on macOS, a systemd user service on Linux, with no root. Use `http://localhost:8379/v1` and the printed key. `antseed gateway service status` checks it and `antseed gateway service uninstall` removes it; keys, wallets and settings stay. The Hermes and OpenClaw skills do this for you when you have no gateway. Agents shouldn't run `antseed gateway start` in their own terminal tool: it stops when their session ends.
+
 ## Tunnel endpoint
 
 A tunnel endpoint is a public HTTPS URL for a CLI buyer on your computer, protected by a generated key. Run `antseed tunnel start`. See [Tunnels](/docs/tunnels).
@@ -81,7 +90,7 @@ providers:
 
 For the local buyer proxy on the same computer, use `api: http://127.0.0.1:8377/v1` and `api_key: antseed-p2p` instead.
 
-Use model ids returned by `GET /v1/models`. A bare id uses automatic routing; `<peerId>@kimi-k2.6` pins one seller. The [Hermes skill](https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd and auxiliary models.
+Use model ids returned by `GET /v1/models`. A bare id uses automatic routing; `<peerId>@kimi-k2.6` pins one seller. The [Hermes skill](https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed) sets up a gateway on this computer when you have none, and covers funding and auxiliary models.
 
 ## OpenClaw
 

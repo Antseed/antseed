@@ -12,6 +12,7 @@ import {
   pointSkillAtGateway,
   removeAgentSkills,
   syncAgentSkills,
+  syncManagedAgentSkills,
 } from './agent-skills.js';
 
 function fixture(): { home: string; sourceRoot: string } {
@@ -192,4 +193,41 @@ test('the copy prompt carries the base URL and key', () => {
   assert.ok(prompt.includes('sk-antseed-test'));
   // It tells the agent the key is a secret to store, not print.
   assert.match(prompt, /secret/);
+});
+
+test('the automatic sync re-points an agent whose only install lost a skill, and asks for no key when none is left', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  const skillsDir = path.join(options.home, '.claude', 'skills');
+  rmSync(path.join(skillsDir, AGENT_SKILL_NAMES[0]), { recursive: true, force: true });
+  assert.equal(listAgentSkillTargets(options).some((target) => target.installed), false);
+  const next = { origin: 'https://gw-b.example', apiKey: 'sk-gateway-b' };
+  let asked = 0;
+  await syncManagedAgentSkills(async () => { asked += 1; return next; }, options);
+  assert.equal(asked, 1);
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), next.apiKey);
+  for (const name of AGENT_SKILL_NAMES.slice(1)) {
+    assert.ok(readFileSync(path.join(skillsDir, name, 'SKILL.md'), 'utf8').includes(`\`${next.origin}\``), `${name} names gateway B`);
+  }
+
+  await removeAgentSkills('claude-code', options);
+  await syncManagedAgentSkills(async () => { asked += 1; return next; }, options);
+  assert.equal(asked, 1);
+});
+
+test('a removal requested while a sync is staging its copies stays removed', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  let staged!: () => void;
+  const reachedStaging = new Promise<void>((resolve) => { staged = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const sync = syncAgentSkills({ ...endpoint, apiKey: 'sk-antseed-next' }, { ...options, onStaged: () => { staged(); return held; } });
+  await reachedStaging;
+  const removal = removeAgentSkills('claude-code', options);
+  release();
+  await Promise.all([sync, removal]);
+  const skillsDir = path.join(options.home, '.claude', 'skills');
+  assert.deepEqual(AGENT_SKILL_NAMES.filter((name) => existsSync(path.join(skillsDir, name))), []);
+  assert.equal(existsSync(agentSkillsKeyFile(options)), false);
 });

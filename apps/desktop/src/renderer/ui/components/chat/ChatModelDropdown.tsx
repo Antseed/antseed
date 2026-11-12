@@ -48,6 +48,11 @@ function renderModelPrice(model: ChatModel) {
   return null;
 }
 
+/** The search box sits inside Home's composer form, where Enter would send the draft. */
+export function holdEnterInSearch(event: { key: string; preventDefault: () => void }): void {
+  if (event.key === 'Enter') event.preventDefault();
+}
+
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -163,6 +168,7 @@ export function ChatModelDropdown({
                   className={styles.modelDropdownSearch}
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={holdEnterInSearch}
                   placeholder="Search models…"
                   aria-label="Search models"
                 />
