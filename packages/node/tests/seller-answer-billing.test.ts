@@ -63,7 +63,8 @@ function paymentManager(session: boolean) {
     hasClosingChannel: () => false,
     getChannelByPeer: () => ({ sessionId: CHANNEL, authMax: '0' }),
     waitForPendingAuths: async () => {},
-    getAcceptedCumulative: () => 0n,
+    // The buyer signs every charge: a second request is not held for payment.
+    getAcceptedCumulative: () => spent,
     getCumulativeSpend: () => spent,
     getEffectiveReserveMax: () => 1_000_000_000n,
     isChannelBlocked: () => false,
@@ -75,7 +76,7 @@ function paymentManager(session: boolean) {
 }
 
 /** Serves one request on a paid channel and returns the answer, the spend recorded and the NeedAuth sent. */
-async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY, contentType = 'application/json', session = true }: { path?: string; body?: Uint8Array; contentType?: string; session?: boolean } = {}) {
+async function serve(provider: Provider, { path = '/v1/chat/completions', body = REQUEST_BODY, contentType = 'application/json', session = true, emit = () => false, times = 1 }: { path?: string; body?: Uint8Array; contentType?: string; session?: boolean; emit?: (event: string, ...args: unknown[]) => boolean; times?: number } = {}) {
   const { manager, spent } = paymentManager(session);
   const handler = new SellerRequestHandler({
     identity: identityFromPrivateKeyHex('11'.repeat(32)),
@@ -84,17 +85,19 @@ async function serve(provider: Provider, { path = '/v1/chat/completions', body =
     sessionTracker: null,
     channelsClient: {} as any,
     announcer: null,
-    emit: () => false,
+    emit,
   });
   const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
   const sendNeedAuth = vi.fn();
   const sendPaymentRequired = vi.fn();
   const { mux } = handler.handleConnection(conn as any, BUYER, { sendNeedAuth, sendPaymentRequired } as any, new VerificationMux(conn as any));
-  await mux.handleFrame({
-    type: MessageType.HttpRequest,
-    messageId: 1,
-    payload: encodeHttpRequest({ requestId: 'req-1', method: 'POST', path, headers: { 'content-type': contentType }, body }),
-  });
+  for (let n = 1; n <= times; n++) {
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: n,
+      payload: encodeHttpRequest({ requestId: `req-${n}`, method: 'POST', path, headers: { 'content-type': contentType }, body }),
+    });
+  }
   const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
   return { response: decodeHttpResponse(frame.payload), spent: spent(), needAuth: sendNeedAuth.mock.calls[0]?.[0] as Record<string, string> | undefined, paymentRequired: sendPaymentRequired.mock.calls.length };
 }
@@ -210,6 +213,26 @@ describe('seller billing of an answer without a usage report', () => {
     const unspaced = `data:{"choices":[{"index":0,"delta":{"content":"grow."}}]}\n\n`;
     const { needAuth } = await serve(streamingProvider([multiline, unspaced, DONE]));
     expect(needAuth?.outputTokens).toBe(String(estimateTokensFromText('Seeds grow.')));
+  });
+
+  it('reads a stream written with no blank lines between its events', async () => {
+    const events = ['data: {"choices":[{"index":0,"delta":{"content":"Seeds "}}]}\n', 'data: {"choices":[{"index":0,"delta":{"content":"grow."}}]}\n', 'data: [DONE]\n'];
+    const { spent, needAuth } = await serve(streamingProvider(events));
+    const outputTokens = estimateTokensFromText('Seeds grow.');
+    expect(needAuth).toMatchObject({ outputTokens: String(outputTokens), lastRequestCost: String(REQUEST_TOKENS + outputTokens) });
+    expect(spent).toBe(BigInt(REQUEST_TOKENS + outputTokens));
+  });
+
+  it('tells the operator once per service that its upstream sends no usage figure', async () => {
+    const emit = vi.fn(() => true);
+    await serve(streamingProvider([textDelta('Seeds grow.'), DONE]), { emit, times: 2 });
+    expect(emit.mock.calls.filter(([event]) => event === 'provider:usage-missing')).toEqual([['provider:usage-missing', { provider: 'p', service: 'test-model' }]]);
+  });
+
+  it('does not tell the operator about an upstream that reports usage', async () => {
+    const emit = vi.fn(() => true);
+    await serve(streamingProvider([textDelta('Seeds grow.'), chunk({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }), DONE]), { emit });
+    expect(emit.mock.calls.some(([event]) => event === 'provider:usage-missing')).toBe(false);
   });
 
   it('charges a stream that ends with no finish signal for the prompt and the text that arrived', async () => {

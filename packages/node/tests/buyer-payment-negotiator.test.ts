@@ -9,6 +9,7 @@ import { CHANNEL_ROLE, CHANNEL_STATUS, type ChannelStore, type StoredChannel } f
 import type { Identity } from '../src/p2p/identity.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { PaymentRequiredPayload } from '../src/types/protocol.js';
+import { estimateTokensFromBytesSampled, estimateTokensFromText } from '../src/payments/pricing.js';
 
 const enc = new TextEncoder();
 
@@ -1139,6 +1140,26 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.recordAndPersistTokens).toHaveBeenCalledWith(
         peer.peerId, 100, 50,
       );
+    });
+
+    it('prices a chat answer with no usage figure by the estimate the seller bills, from the same bytes', () => {
+      (bpm.getSessionPricing as ReturnType<typeof vi.fn>).mockReturnValue({ inputUsdPerMillion: 1, outputUsdPerMillion: 1 });
+      const recordDeliveredResponse = vi.fn();
+      (bpm as unknown as { recordDeliveredResponse: typeof recordDeliveredResponse }).recordDeliveredResponse = recordDeliveredResponse;
+      const requestBody = enc.encode(JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'Tell me about seeds.' }], stream: true }));
+      const response: SerializedHttpResponse = {
+        requestId: 'req-no-usage',
+        statusCode: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: enc.encode('data: {"choices":[{"index":0,"delta":{"content":"Seeds grow."}}]}\n\ndata: [DONE]\n\n'),
+      };
+
+      negotiator.estimateCostFromResponse(peer, response, 'm', 'req-no-usage', requestBody);
+
+      const inputTokens = estimateTokensFromBytesSampled(requestBody);
+      const outputTokens = estimateTokensFromText('Seeds grow.');
+      expect(bpm.recordAndPersistTokens).toHaveBeenCalledWith(peer.peerId, inputTokens, outputTokens);
+      expect(recordDeliveredResponse).toHaveBeenCalledWith(peer.peerId, 'req-no-usage', expect.objectContaining({ costUsdc: BigInt(inputTokens + outputTokens) }));
     });
 
     it('estimateCostFromResponse records zero tokens when no usage field (no body.length/4 fallback)', () => {
