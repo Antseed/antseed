@@ -182,6 +182,34 @@ describe('chat controller', () => {
     expect(request.sourceImageAttachmentId).toBe('img-b');
   });
 
+  it('a text prompt sent while a chat opens carries that chat\'s history, never the previous chat\'s', async () => {
+    const said = (role: 'user' | 'assistant', content: string) => ({ role, content, createdAt: 1 });
+    const convA = { ...conv('conv-a', 'model-a'), messages: [said('user', 'from a')] };
+    const convB = { ...conv('conv-b', 'model-b'), messages: [said('user', 'from b')] };
+    const bOpened = deferred<void>();
+    const { api, uiState, sends } = setup([convA, convB], {
+      chatAiGetConversation: async (id: string) => {
+        if (id === 'conv-b') await bOpened.promise;
+        const found = id === 'conv-a' ? convA : id === 'conv-b' ? convB : null;
+        return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+      },
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    // Chat B is opening for the first time; A's messages are still on screen.
+    const opening = api.openConversation('conv-b');
+    api.sendMessage('hello b');
+    await tick(10);
+    bOpened.resolve();
+    await opening;
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toMatchObject({ convId: 'conv-b', content: 'hello b' });
+    const shown = JSON.stringify(uiState.chatMessages);
+    expect(shown).toContain('from b');
+    expect(shown).toContain('hello b');
+    expect(shown).not.toContain('from a');
+  });
+
   it('a second image prompt while the first one\'s history loads is refused, and the first keeps its chat', async () => {
     const convB = { ...conv('conv-b', 'model-b'), messages: [] as unknown[] };
     const historyRead = deferred<void>();

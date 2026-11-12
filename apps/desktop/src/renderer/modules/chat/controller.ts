@@ -693,6 +693,17 @@ export function initChatModule({
     return cached ? cached.map(cloneChatMessage) : null;
   }
 
+  /**
+   * The chat's messages as far as this window knows them. While the chat is
+   * still opening, the screen shows the previous chat's messages, so they
+   * never stand in for its own.
+   */
+  function messagesForConversation(convId: string): ChatMessage[] {
+    return getLocalConversationMessages(convId)
+      ?? (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId
+        ? (uiState.chatMessages as ChatMessage[]) : []);
+  }
+
   function setStreamingMessage(message: ChatMessage | null): void {
     uiState.chatStreamingMessage = message ? cloneChatMessage(message) : null;
     notifyUiStateChangedSync();
@@ -1321,8 +1332,9 @@ export function initChatModule({
         showChatError(`${model.label} doesn't accept images. Sending without image input for this turn.`);
       }
 
-      const localMessages = getLocalConversationMessages(convId)
-        ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+      const localMessages = await conversationHistory(convId);
+      // Stopped while the history loaded: nothing is sent.
+      if (!ownsSend(convId, token)) return;
       const nextMessages = [...localMessages, { role: 'user' as const, content: buildUserMessageContent(content, preparedAttachments), createdAt: Date.now() }];
       projectConversationMessages(convId, nextMessages, Date.now());
       notifyUiStateChanged();
@@ -1447,14 +1459,12 @@ export function initChatModule({
 
   /** A reply in this chat went out under Private (a failed one too: its prompt was sent). */
   function conversationHasPrivateHistory(convId: string): boolean {
-    const messages = getLocalConversationMessages(convId)
-      ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+    const messages = messagesForConversation(convId);
     return hasPrivateHistory(convId, uiState.chatPrivateConversationIds, messages);
   }
 
   function lastUserMessage(convId: string): { content: string; attachments: PreparedChatAttachment[] } | null {
-    const messages = getLocalConversationMessages(convId)
-      ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+    const messages = messagesForConversation(convId);
     const last = [...messages].reverse().find((message) => message.role === 'user');
     if (!last) return null;
     const content = typeof last.content === 'string'
@@ -1553,7 +1563,7 @@ export function initChatModule({
         throw new Error(result.error || 'Image generation failed.');
       }
       // The prompt was projected optimistically; append only the reply.
-      const current = getLocalConversationMessages(convId) ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
+      const current = messagesForConversation(convId);
       const messages = [...current, result.assistant as ChatMessage];
       projectConversationMessages(convId, messages, Date.now());
       scheduleChatConversationsRefresh();
@@ -1572,11 +1582,11 @@ export function initChatModule({
   }
 
   /**
-   * The chat's own history for an image request. While the chat is still
-   * opening, the screen shows the previous chat's messages, so they're never
-   * used for it: the history is read from the chat itself instead.
+   * The chat's own history for a send. While the chat is still opening, the
+   * screen shows the previous chat's messages, so they're never used for it:
+   * the history is read from the chat itself instead.
    */
-  async function imageRequestHistory(convId: string): Promise<ChatMessage[]> {
+  async function conversationHistory(convId: string): Promise<ChatMessage[]> {
     const local = getLocalConversationMessages(convId);
     if (local) return local;
     if (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId) {
@@ -1656,7 +1666,7 @@ export function initChatModule({
       // This prompt supersedes one waiting on funds.
       fundsNoticeByConversation.delete(convId);
       imageRetryByConversation.delete(convId);
-      const existingBeforeRequest = await imageRequestHistory(convId);
+      const existingBeforeRequest = await conversationHistory(convId);
       // Stopped while the history loaded: nothing is sent.
       if (!ownsSend(convId, reserved)) return;
       // Edit the last generated image when the model takes image input;
