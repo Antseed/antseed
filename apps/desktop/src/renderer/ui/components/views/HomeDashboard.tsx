@@ -23,6 +23,7 @@ import { homeProgress, useHomeProgress } from '../../../modules/app/home-progres
 import { daysSince, LOW_BALANCE_USD, pickHomePromo, promoDismissKey } from '../../../modules/app/home-promos';
 import { AppPillIcon } from '../vpr/AppPills';
 import { createEndpointReads, readKeyToCopy } from './endpoint-reads';
+import { watchRewards } from './rewards-watch';
 import styles from './HomeDashboard.module.scss';
 import { usePrivateMode } from '../../hooks/usePrivateMode';
 
@@ -84,16 +85,16 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   // more when copied, so a revoked key is never what lands on the clipboard.
   const endpointReads = useMemo(() => createEndpointReads(() => window.antseedDesktop?.gatewayGetEndpoint?.(), setEndpoint), []);
   useEffect(() => {
-    let cancelled = false;
     const bridge = window.antseedDesktop;
     setRewards(null);
     void endpointReads.refresh();
     const onFocus = () => { void endpointReads.refresh(); };
     window.addEventListener('focus', onFocus);
-    bridge?.gatewayGetRewards?.().then((result) => { if (!cancelled && result.ok && result.data) setRewards(result.data); }).catch(() => {});
+    // Fresh after claiming in the console, and as connected apps earn more.
+    const stopRewards = watchRewards(() => bridge?.gatewayGetRewards?.(), setRewards);
     if (reachable) void savingsResource.refresh();
     return () => {
-      cancelled = true;
+      stopRewards();
       window.removeEventListener('focus', onFocus);
     };
   }, [reachable, origin, endpointReads]);

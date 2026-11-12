@@ -1392,7 +1392,7 @@ export function initChatModule({
   }
 
   /** `token`: the request's ownership of the conversation (see `beginSend`); losing it cancels the request. */
-  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[], privateAtSubmit = false): Promise<void> {
+  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[], privateAtSubmit = false, onRefused?: () => void): Promise<void> {
     if (!bridge?.chatAiSendStream) {
       endSend(convId, token);
       return;
@@ -1404,6 +1404,7 @@ export function initChatModule({
     const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
     if (!privacy) {
       endSend(convId, token);
+      onRefused?.();
       return;
     }
     const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
@@ -1520,13 +1521,25 @@ export function initChatModule({
 
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
-    if (!convId || !fundsNoticeByConversation.has(convId) || isConversationSending(convId)) return;
+    const notice = convId ? fundsNoticeByConversation.get(convId) : undefined;
+    if (!convId || !notice || isConversationSending(convId)) return;
     const imageRequest = imageRetryByConversation.get(convId);
+    // Refused by the privacy check (or stopped before it), the request stays
+    // one to try again: its notice comes back, next to the refusal.
+    const keepRetry = () => {
+      if (fundsNoticeByConversation.has(convId)) return;
+      if (imageRequest) imageRetryByConversation.set(convId, imageRequest);
+      fundsNoticeByConversation.set(convId, notice);
+      if (convId === uiState.chatActiveConversation) {
+        uiState.chatFundsNotice = notice;
+        notifyUiStateChanged();
+      }
+    };
     if (imageRequest) {
       imageRetryByConversation.delete(convId);
       fundsNoticeByConversation.delete(convId);
       clearChatNotices();
-      void runImageRequest(convId, imageRequest);
+      void runImageRequest(convId, imageRequest, false, undefined, keepRetry);
       return;
     }
     const last = lastUserMessage(convId);
@@ -1534,7 +1547,7 @@ export function initChatModule({
     fundsNoticeByConversation.delete(convId);
     clearChatNotices();
     const token = beginSend(convId);
-    void dispatchChatRequest(convId, token, last.content, last.attachments.length > 0 ? last.attachments : undefined);
+    void dispatchChatRequest(convId, token, last.content, last.attachments.length > 0 ? last.attachments : undefined, false, keepRetry);
   }
 
   function dismissFundsNotice(): void {
@@ -1574,14 +1587,17 @@ export function initChatModule({
   const imageRetryByConversation = new Map<string, ImageRequest>();
 
   /** The prompt is already in the conversation, from the first attempt. */
-  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number): Promise<void> {
+  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number, onRefused?: () => void): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
     if (reservedToken !== undefined && !ownsSend(convId, reservedToken)) return;
     const token = reservedToken ?? beginSend(convId);
     queueScrollChatToBottom();
     try {
       const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
-      if (!privacy) return;
+      if (!privacy) {
+        onRefused?.();
+        return;
+      }
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
       const result = await bridge.chatGenerateImage({ conversationId: convId, ...request, ...privacy });
