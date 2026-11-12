@@ -9,6 +9,9 @@ overrides:
   electron: 31.7.6
 
 patchedDependencies:
+  '@sigstore/core@3.2.1':
+    hash: tnaas2ijsddonkavovj2ec6zbm
+    path: patches/@sigstore__core@3.2.1.patch
   cli-highlight:
     hash: mf4jwc77auv24gdfuu3pl4mn5q
     path: patches/cli-highlight.patch
@@ -22155,14 +22158,14 @@ snapshots:
     dependencies:
       '@sigstore/protobuf-specs': 0.5.2
 
-  '@sigstore/core@3.2.1': {}
+  '@sigstore/core@3.2.1(patch_hash=tnaas2ijsddonkavovj2ec6zbm)': {}
 
   '@sigstore/protobuf-specs@0.5.2': {}
 
   '@sigstore/verify@3.1.1':
     dependencies:
       '@sigstore/bundle': 4.0.0
-      '@sigstore/core': 3.2.1
+      '@sigstore/core': 3.2.1(patch_hash=tnaas2ijsddonkavovj2ec6zbm)
       '@sigstore/protobuf-specs': 0.5.2
 
   '@silentbot1/nat-api@0.4.9':
