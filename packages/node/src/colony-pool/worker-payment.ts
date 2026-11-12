@@ -22,7 +22,7 @@ export type WorkerPayment = WorkerPaymentProof;
 /** Answers on one channel a worker serves before they are paid, the one being admitted included. */
 export const MAX_UNPAID_ANSWERS = 2;
 
-/** Per-channel accounts a worker keeps; past this many, the least recently used fully paid one is dropped. */
+/** Per-channel accounts a worker keeps; past this many, the least recently used idle one is dropped. */
 export const MAX_TRACKED_CHANNELS = 10_000;
 
 /** Signed payments per channel whose settlement a worker has yet to see, kept to compare with what the pool credits. */
@@ -174,7 +174,7 @@ export class WorkerPaymentLedger {
       this.accounts.delete(key);
     } else {
       if (this.accounts.size >= MAX_TRACKED_CHANNELS && !this.evictOne()) {
-        throw new Error('This worker is tracking too many unpaid channels to take another');
+        throw new Error('This worker is serving too many channels at once to take another');
       }
       // A channel this worker no longer remembers: what its payment already
       // attributes paid for answers served before, never for new ones.
@@ -240,10 +240,16 @@ export class WorkerPaymentLedger {
     return this.refusedBuyers.has(buyer.toLowerCase());
   }
 
-  /** Drop the least recently used account with nothing unpaid, running or unsettled. */
+  /**
+   * Drop the least recently used account with nothing running. A buyer's last
+   * answer on a channel stays owed until a payment the worker never sees, so
+   * an idle account may still list it; dropping it forgives at most the
+   * answers a channel may run ahead, as a fresh channel would get anyway, and
+   * a forgotten channel's payment never pays for new answers (see admit).
+   */
   private evictOne(): boolean {
     for (const [key, account] of this.accounts) {
-      if (account.owed.length === 0 && account.running === 0 && account.checkpoints.length === 0) {
+      if (account.running === 0) {
         this.accounts.delete(key);
         return true;
       }

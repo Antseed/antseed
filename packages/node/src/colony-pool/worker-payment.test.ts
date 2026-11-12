@@ -7,6 +7,7 @@ import {
   answerCostUsdc,
   attributedPayment,
   isChargeablePrice,
+  MAX_TRACKED_CHANNELS,
   MAX_UNPAID_ANSWERS,
   usageCounts,
   WorkerPaymentLedger,
@@ -206,5 +207,21 @@ describe('worker payments', () => {
     ledger.admit(channel, 0n);
     ledger.served(channel, 9_000n);
     ledger.admit(channel, 0n);
+  });
+
+  it('makes room past its channel limit by forgetting an idle channel, even one whose last answer is owed', () => {
+    const ledger = new WorkerPaymentLedger();
+    const channelAt = (i: number) => `0x${i.toString(16).padStart(64, '0')}`;
+    // Each channel's last answer is paid by an auth this worker never sees: it stays owed.
+    for (let i = 0; i < MAX_TRACKED_CHANNELS; i++) {
+      ledger.admit(channelAt(i), 0n);
+      ledger.served(channelAt(i), 9_000n);
+    }
+    // One more channel still gets served.
+    ledger.admit(channelAt(MAX_TRACKED_CHANNELS), 0n);
+    // The least recently used went: its owed answer is forgiven, as a fresh channel's would be.
+    ledger.admit(channelAt(0), 0n);
+    ledger.served(channelAt(0), 9_000n);
+    ledger.admit(channelAt(0), 0n);
   });
 });

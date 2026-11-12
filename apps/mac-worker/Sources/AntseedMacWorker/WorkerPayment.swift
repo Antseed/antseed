@@ -236,7 +236,7 @@ final class WorkerPaymentLedger {
             order.removeAll { $0 == key }
         } else {
             if accounts.count >= Self.maxChannels, !evictOne() {
-                return "This worker is tracking too many unpaid channels to take another"
+                return "This worker is serving too many channels at once to take another"
             }
             // A channel this worker no longer remembers: what its payment already
             // attributes paid for answers served before, never for new ones.
@@ -312,10 +312,14 @@ final class WorkerPaymentLedger {
         refusedBuyers.contains(buyer.lowercased())
     }
 
-    /// Drop the least recently used account with nothing unpaid, running or unsettled.
+    /// Drop the least recently used account with nothing running. A buyer's last
+    /// answer on a channel stays owed until a payment the worker never sees, so an
+    /// idle account may still list it; dropping it forgives at most the answers a
+    /// channel may run ahead, as a fresh channel would get anyway, and a forgotten
+    /// channel's payment never pays for new answers (see admit).
     private func evictOne() -> Bool {
         guard let index = order.firstIndex(where: { key in
-            accounts[key].map { $0.owed.isEmpty && $0.running == 0 && $0.checkpoints.isEmpty } ?? true
+            accounts[key].map { $0.running == 0 } ?? true
         }) else { return false }
         accounts.removeValue(forKey: order.remove(at: index))
         return true

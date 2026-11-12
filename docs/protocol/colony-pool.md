@@ -464,9 +464,10 @@ workers serve requests it never pays for.
   restart never lets a payment that already paid for answers pay for new
   ones. A worker forgets a channel once the chain shows it closed (it never
   serves it again), and past 10,000 channels the least recently used one with
-  nothing unpaid or unsettled; when such a channel returns, what its payment
-  already attributes counts as paying for answers served before, never for
-  new ones.
+  no request running (its last answer may still be owed: forgiving it costs no
+  more than a fresh channel's allowance); when such a channel returns, what
+  its payment already attributes counts as paying for answers served before,
+  never for new ones.
 - **Checked against settlement.** A signed attribution is trusted until the
   channel settles past it. Settlement is the operator's: the pool contract
   settles only for its operators and credits workers from the auth the pool

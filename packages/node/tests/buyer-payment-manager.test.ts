@@ -800,6 +800,27 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(latest.metadata)).toEqual([{ worker, cumulativeAmount: 200n }]);
   });
 
+  it('keeps every uncounted worker answer when more arrive than the request ledger holds', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool-ledger-cap');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const worker = '0x1000000000000000000000000000000000000001';
+    const usage = { inputTokens: 1n, cachedInputTokens: 0n, outputTokens: 1n };
+    // Past the ledger's 512 records, with ordinary requests mixed in: those go first.
+    for (let i = 0; i < 600; i++) {
+      manager.trackPoolSellerRequest(sellerPeerId, `plain-${i}`);
+      manager.recordDeliveredResponse(sellerPeerId, `plain-${i}`, { costUsdc: 1n });
+      manager.recordWorkerAttribution(sellerPeerId, `req-${i}`, worker);
+      manager.recordDeliveredResponse(sellerPeerId, `req-${i}`, { costUsdc: 10n });
+      manager.recordWorkerDelivery(`req-${i}`, usage);
+    }
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 10n,
+      reportedInputTokens: 1n, reportedOutputTokens: 1n, service: 'qwen', requestId: 'req-599',
+    });
+    expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 6_000n }]);
+  });
+
   it('credits only the recipient whose answer verified when a request is encrypted for several workers', async () => {
     const sellerPeerId = fakePeerId('seller-colony-pool-recipients');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

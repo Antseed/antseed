@@ -1770,7 +1770,17 @@ export class BuyerPaymentManager {
     let ledger = this._requestLedgers.get(sellerPeerId);
     if (!ledger) this._requestLedgers.set(sellerPeerId, ledger = new Map());
     // Bounded like request billing: forgetting a request only ever pays the seller less.
-    if (ledger.size >= MAX_REQUEST_BILLING_ENTRIES && !ledger.has(requestId)) ledger.delete(ledger.keys().next().value!);
+    // A verified worker answer not yet counted is kept, since forgetting it would
+    // also lose its worker's credit; those are bounded by the delivery tracker,
+    // which refuses new worker requests to a seller with too many unpaid.
+    if (ledger.size >= MAX_REQUEST_BILLING_ENTRIES && !ledger.has(requestId)) {
+      for (const [id, record] of ledger) {
+        if (record.cutOff || record.costUsdc <= 0n || !this._workerDeliveries.verifiedWorker(id, sellerPeerId)) {
+          ledger.delete(id);
+          break;
+        }
+      }
+    }
     ledger.set(requestId, delivered);
   }
 

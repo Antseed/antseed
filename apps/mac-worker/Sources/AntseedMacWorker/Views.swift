@@ -28,9 +28,6 @@ struct MenuPanel: View {
     @ObservedObject var worker: WorkerController
     /// ImageRenderer cannot draw AppKit controls; snapshots get drawn stand-ins.
     var snapshot = false
-    @State private var wallet = ""
-    /// The owner chose to link another wallet.
-    @State private var changingPayout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -59,42 +56,7 @@ struct MenuPanel: View {
             }
             .font(.system(size: 11))
             Divider()
-            if let link = worker.pendingLink, !changingPayout {
-                Text("Linking \(short(link.payout))").font(.system(size: 12)).foregroundStyle(.secondary)
-                Text(worker.linkCopied
-                     ? "Link code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
-                     : "Not linked yet: paste the link code in Rewards in the Antseed app or `antseed ants`.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                payoutActions(primary: "Copy code") { worker.copyLinkCode() }
-            } else if let payout = worker.payout, !changingPayout {
-                Text("Pays to \(short(payout))").font(.system(size: 12)).foregroundStyle(.secondary)
-                Text("Earnings and claims: Rewards in the Antseed app or `antseed ants`.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                payoutActions(primary: nil) {}
-            } else {
-                Text("Link the wallet your earnings go to").font(.system(size: 12)).foregroundStyle(.secondary)
-                HStack {
-                    if snapshot {
-                        Text("0x…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 6).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.4)))
-                        Text("Link").font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
-                    } else {
-                        TextField("0x…", text: $wallet).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
-                        Button("Link") {
-                            // The editor stays open, with the error, until a new link is signed.
-                            Task { if await worker.linkPayout(to: wallet) { changingPayout = false } }
-                        }.controlSize(.small)
-                    }
-                }
-                if let error = worker.linkError {
-                    Text(error).font(.system(size: 11)).foregroundStyle(.red)
-                }
-                if changingPayout && !snapshot {
-                    Button("Cancel") { changingPayout = false }.buttonStyle(.link).font(.system(size: 11))
-                }
-            }
+            PayoutLinkView(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
             HStack {
                 Spacer()
                 if snapshot {
@@ -106,6 +68,55 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 280)
+    }
+}
+
+/// The payout wallet: the one the pool pays, a link waiting to be submitted, or a form to link one.
+struct PayoutLinkView: View {
+    @ObservedObject var payouts: WorkerPayoutController
+    let pool: String?
+    var snapshot = false
+    @State private var wallet = ""
+    /// The owner chose to link another wallet.
+    @State private var changingPayout = false
+
+    var body: some View {
+        if let link = payouts.pendingLink, !changingPayout {
+            Text("Linking \(short(link.payout))").font(.system(size: 12)).foregroundStyle(.secondary)
+            Text(payouts.linkCopied
+                 ? "Link code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
+                 : "Not linked yet: paste the link code in Rewards in the Antseed app or `antseed ants`.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            payoutActions(primary: "Copy code") { payouts.copyLinkCode() }
+        } else if let payout = payouts.payout, !changingPayout {
+            Text("Pays to \(short(payout))").font(.system(size: 12)).foregroundStyle(.secondary)
+            Text("Earnings and claims: Rewards in the Antseed app or `antseed ants`.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            payoutActions(primary: nil) {}
+        } else {
+            Text("Link the wallet your earnings go to").font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                if snapshot {
+                    Text("0x…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.4)))
+                    Text("Link").font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
+                } else {
+                    TextField("0x…", text: $wallet).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+                    Button("Link") {
+                        // The editor stays open, with the error, until a new link is signed.
+                        Task { if await payouts.link(to: wallet, pool: pool) { changingPayout = false } }
+                    }.controlSize(.small)
+                }
+            }
+            if let error = payouts.linkError {
+                Text(error).font(.system(size: 11)).foregroundStyle(.red)
+            }
+            if changingPayout && !snapshot {
+                Button("Cancel") { changingPayout = false }.buttonStyle(.link).font(.system(size: 11))
+            }
+        }
     }
 
     /// Text links under the payout line: an optional primary action, then Change.

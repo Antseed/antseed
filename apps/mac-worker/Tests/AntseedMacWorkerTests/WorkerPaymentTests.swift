@@ -220,4 +220,15 @@ final class WorkerPaymentTests: XCTestCase {
         ledger.forget(channel: channel)
         XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
     }
+
+    @MainActor
+    func testMakesRoomPastItsChannelLimitByForgettingAnIdleChannel() {
+        let ledger = WorkerPaymentLedger()
+        let channelAt = { (i: Int) in "0x" + String(repeating: "0", count: 64 - String(i, radix: 16).count) + String(i, radix: 16) }
+        for i in 0..<10_000 {
+            XCTAssertNil(ledger.admit(channel: channelAt(i), attributed: 0))
+            ledger.served(channel: channelAt(i), cost: 9_000)
+        }
+        XCTAssertNil(ledger.admit(channel: channelAt(10_000), attributed: 0))
+    }
 }
