@@ -35,40 +35,30 @@ export type AnthropicThinkingMode = 'adaptive' | 'budget';
 type Version = readonly [major: number, minor: number];
 
 /**
- * First version of each Claude family that takes `{ type: "adaptive" }`.
- * Before it, a model takes only `{ type: "enabled", budget_tokens }` and
- * returns a 400 for adaptive. From Opus 4.7, Sonnet 5 and Haiku 5.5 on,
- * `enabled` returns a 400 (Opus 4.6 and Sonnet 4.6 take both).
+ * The first version of each Claude family that takes each thinking form.
+ *
+ * - `adaptive`: takes `{ type: "adaptive" }`. Before it, a model takes only
+ *   `{ type: "enabled", budget_tokens }` and returns a 400 for adaptive. From
+ *   Opus 4.7, Sonnet 5 and Haiku 5.5 on, `enabled` returns a 400 (Opus 4.6
+ *   and Sonnet 4.6 take both).
+ * - `xhigh`: accepts effort `xhigh`; the adaptive models before it stop at
+ *   `max` without `xhigh`.
+ * - `budget`: takes `{ type: "enabled", budget_tokens }`. Claude 3.7 Sonnet
+ *   was the first model with thinking; the other Claude 3 models have none.
  */
-const ADAPTIVE_SINCE: Record<string, Version> = {
-  opus: [4, 6],
-  sonnet: [4, 6],
-  haiku: [5, 0],
-  fable: [0, 0],
-  mythos: [0, 0],
-};
+const THINKING_THRESHOLDS = {
+  opus: { adaptive: [4, 6], xhigh: [4, 7], budget: [4, 0] },
+  sonnet: { adaptive: [4, 6], xhigh: [5, 0], budget: [3, 7] },
+  haiku: { adaptive: [5, 0], xhigh: [5, 0], budget: [4, 0] },
+  fable: { adaptive: [0, 0], xhigh: [0, 0], budget: [0, 0] },
+  mythos: { adaptive: [0, 0], xhigh: [0, 0], budget: [0, 0] },
+} as const satisfies Record<string, { adaptive: Version; xhigh: Version; budget: Version }>;
 
-/** First version of each family that accepts effort `xhigh`; the adaptive models before it stop at `max` without `xhigh`. */
-const XHIGH_SINCE: Record<string, Version> = {
-  opus: [4, 7],
-  sonnet: [5, 0],
-  haiku: [5, 0],
-  fable: [0, 0],
-  mythos: [0, 0],
-};
+type ClaudeFamily = keyof typeof THINKING_THRESHOLDS;
 
-/**
- * First version of each family that takes `{ type: "enabled", budget_tokens }`.
- * Claude 3.7 Sonnet was the first model with thinking; the other Claude 3
- * models have none.
- */
-const BUDGET_SINCE: Record<string, Version> = {
-  opus: [4, 0],
-  sonnet: [3, 7],
-  haiku: [4, 0],
-  fable: [0, 0],
-  mythos: [0, 0],
-};
+function isClaudeFamily(name: string | undefined): name is ClaudeFamily {
+  return name !== undefined && Object.hasOwn(THINKING_THRESHOLDS, name);
+}
 
 // `claude-<family>-<major>[-<minor>]`, with any vendor prefix and any release
 // date or `latest` after it. A date is not read as a version: it has more
@@ -77,12 +67,14 @@ const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2
 // Claude 3 ids name the version first: `claude-3-7-sonnet-20250219`, `claude-3-opus-latest`.
 const VERSION_FIRST_CLAUDE_RE = /claude[-._](\d)(?:[-._](\d))?[-._](opus|sonnet|haiku)(?![a-z])/;
 
-function claudeVersion(modelId: string): { family: string; version: Version } | null {
+function claudeVersion(modelId: string): { family: ClaudeFamily; version: Version } | null {
   const id = splitPinnedModel(modelId).modelId.trim().toLowerCase();
   const match = CLAUDE_MODEL_RE.exec(id);
-  if (match) return { family: match[1]!, version: [Number(match[2]), Number(match[3] ?? 0)] };
+  if (match && isClaudeFamily(match[1])) return { family: match[1], version: [Number(match[2]), Number(match[3] ?? 0)] };
   const versionFirst = VERSION_FIRST_CLAUDE_RE.exec(id);
-  if (versionFirst) return { family: versionFirst[3]!, version: [Number(versionFirst[1]), Number(versionFirst[2] ?? 0)] };
+  if (versionFirst && isClaudeFamily(versionFirst[3])) {
+    return { family: versionFirst[3], version: [Number(versionFirst[1]), Number(versionFirst[2] ?? 0)] };
+  }
   return null;
 }
 
@@ -99,8 +91,9 @@ function atLeast(version: Version, since: Version): boolean {
 export function anthropicThinkingMode(modelId: string): AnthropicThinkingMode | null {
   const parsed = claudeVersion(modelId);
   if (!parsed) return null;
-  if (atLeast(parsed.version, ADAPTIVE_SINCE[parsed.family]!)) return 'adaptive';
-  return atLeast(parsed.version, BUDGET_SINCE[parsed.family]!) ? 'budget' : null;
+  const thresholds = THINKING_THRESHOLDS[parsed.family];
+  if (atLeast(parsed.version, thresholds.adaptive)) return 'adaptive';
+  return atLeast(parsed.version, thresholds.budget) ? 'budget' : null;
 }
 
 /**
@@ -117,7 +110,7 @@ export function anthropicEffort(level: ThinkingLevel, modelId: string): 'low' | 
       return 'medium';
     case 'xhigh': {
       const parsed = claudeVersion(modelId);
-      return parsed && atLeast(parsed.version, XHIGH_SINCE[parsed.family]!) ? 'xhigh' : 'high';
+      return parsed && atLeast(parsed.version, THINKING_THRESHOLDS[parsed.family].xhigh) ? 'xhigh' : 'high';
     }
     default:
       return 'high';
