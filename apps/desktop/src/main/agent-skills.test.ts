@@ -214,3 +214,20 @@ test('the automatic sync re-points an agent whose only install lost a skill, and
   await syncManagedAgentSkills(async () => { asked += 1; return next; }, options);
   assert.equal(asked, 1);
 });
+
+test('a removal requested while a sync is staging its copies stays removed', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  let staged!: () => void;
+  const reachedStaging = new Promise<void>((resolve) => { staged = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const sync = syncAgentSkills({ ...endpoint, apiKey: 'sk-antseed-next' }, { ...options, onStaged: () => { staged(); return held; } });
+  await reachedStaging;
+  const removal = removeAgentSkills('claude-code', options);
+  release();
+  await Promise.all([sync, removal]);
+  const skillsDir = path.join(options.home, '.claude', 'skills');
+  assert.deepEqual(AGENT_SKILL_NAMES.filter((name) => existsSync(path.join(skillsDir, name))), []);
+  assert.equal(existsSync(agentSkillsKeyFile(options)), false);
+});

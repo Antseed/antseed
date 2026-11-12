@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@antseed/ui';
 import type { GatewayRewardsSummary } from '../../../types/bridge';
 import { formatCredits } from '../../../core/format';
 import { VprBadge, VprCard, VprSection, VprPage } from '../vpr/VprKit';
+import { watchRewards } from './rewards-watch';
 import styles from './VprRewardsView.module.scss';
 
 function shortAddress(address: string): string {
@@ -27,31 +28,6 @@ export function rewardsHint(rewards: GatewayRewardsSummary | null, error: string
   return `Earned by your gateway's wallet ${shortAddress(rewards.address)} from usage${epoch}.`;
 }
 
-type RewardsRead = { ok: boolean; data?: GatewayRewardsSummary; error?: string };
-
-/**
- * One read of the rewards: a summary replaces the last one and clears the
- * error; a failure sets the error and keeps the last summary on screen.
- */
-export async function readRewards(
-  read: (() => Promise<RewardsRead> | undefined) | undefined,
-  setRewards: (rewards: GatewayRewardsSummary) => void,
-  setError: (error: string | null) => void,
-): Promise<void> {
-  try {
-    const result = await read?.();
-    if (!result) return;
-    if (result.ok && result.data) {
-      setRewards(result.data);
-      setError(null);
-    } else {
-      setError(result.error ?? 'Could not read your rewards');
-    }
-  } catch (err: unknown) {
-    setError(err instanceof Error ? err.message : String(err));
-  }
-}
-
 /**
  * A summary of the $ANTS the gateway's wallet earned from usage. Claiming
  * needs the wallet operator's signature, so it happens in the Gateway
@@ -62,16 +38,13 @@ export function VprRewardsView() {
   const [error, setError] = useState<string | null>(null);
   const [consoleError, setConsoleError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    void readRewards(() => window.antseedDesktop?.gatewayGetRewards?.(), setRewards, setError);
-  }, []);
-
-  // Read on entry and when the window regains focus, e.g. after claiming in the console.
-  useEffect(() => {
-    load();
-    window.addEventListener('focus', load);
-    return () => window.removeEventListener('focus', load);
-  }, [load]);
+  // Read on entry, on focus (e.g. after claiming in the console) and every
+  // minute; a failed read keeps the last amount and says it couldn't refresh.
+  useEffect(() => watchRewards(
+    () => window.antseedDesktop?.gatewayGetRewards?.(),
+    (summary) => { setRewards(summary); setError(null); },
+    { onError: setError },
+  ), []);
 
   async function openRewards(): Promise<void> {
     setConsoleError(null);
