@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { BuyerHistory, buyerLifetimeUsage, usageBeforeGateway } from './buyer-history.js';
+import { BuyerHistory, buyerLifetimeUsage, nextHistoryState, usageBeforeGateway } from './buyer-history.js';
 import { parseWalletKeyUsage, withUsageOf, type KeyUsage } from '../gateway/key-info.js';
 
 const WALLET = '0x00000000000000000000000000000000000000aa';
@@ -138,7 +138,8 @@ test('a charge the gateway takes in late is corrected at the next refresh', asyn
   assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => ({ requests: 3, spentUsd: '0.5' })), { requests: 4, spentUsd: '2.5' });
   // Once it has, the charge is the gateway's, not history; the saved figure follows.
   assert.deepEqual(await readAndSettle(history, buyer.port, WALLET, async () => ({ requests: 3, spentUsd: '1' })), HISTORY);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { wallet: WALLET, usage: HISTORY });
+  buyer.failing.value = true;
+  assert.deepEqual(new BuyerHistory(() => file, 60_000).read(buyer.port, WALLET, async () => null), HISTORY, 'saved');
 });
 
 test('a request still in flight is corrected once the buyer counts it', async (t) => {
@@ -193,7 +194,8 @@ test('saved history for another wallet, or a damaged file, is not shown', async 
   const other = new BuyerHistory(() => file, 0);
   assert.equal(other.read(buyer.port, '0x00000000000000000000000000000000000000cc', gatewayUsage), null, 'another wallet');
   await other.settled();
-  for (const damaged of ['not json', JSON.stringify({ wallet: WALLET, usage: { requests: -1, spentUsd: '3' } }), JSON.stringify({ wallet: WALLET, usage: { requests: 4, spentUsd: '3e5' } })]) {
+  const state = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  for (const damaged of ['not json', JSON.stringify({ wallet: WALLET, usage: HISTORY }), JSON.stringify({ ...state, lastGateway: { requests: -1, spentUsd: '3' } }), JSON.stringify({ ...state, wallets: { [WALLET]: { gateway: GATEWAY, history: { requests: 4, spentUsd: '3e5' } } } })]) {
     writeFileSync(file, damaged);
     const fresh = new BuyerHistory(() => file, 0);
     assert.equal(fresh.read(buyer.port, WALLET, gatewayUsage), null, damaged);
@@ -202,7 +204,8 @@ test('saved history for another wallet, or a damaged file, is not shown', async 
 
   buyer.failing.value = false;
   assert.deepEqual(await readAndSettle(new BuyerHistory(() => file, 0), buyer.port, WALLET, gatewayUsage), HISTORY);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { wallet: WALLET, usage: HISTORY }, 'a fresh result replaces it');
+  buyer.failing.value = true;
+  assert.deepEqual(new BuyerHistory(() => file, 60_000).read(buyer.port, WALLET, async () => null), HISTORY, 'a fresh result replaces it');
 });
 
 test('a buyer paying from another wallet gives no history', async (t) => {
@@ -212,4 +215,43 @@ test('a buyer paying from another wallet gives no history', async (t) => {
   assert.equal(await readAndSettle(new BuyerHistory(() => file, 60_000), buyer.port, WALLET, gatewayUsage), null);
   assert.deepEqual(buyer.hits, ['/_antseed/buyer-identities'], 'its channels are never read');
   assert.throws(() => readFileSync(file), 'nothing is saved');
+});
+
+const OLD = '0x00000000000000000000000000000000000000a1';
+const NEW = '0x00000000000000000000000000000000000000b2';
+
+test('after importing another signer, the old wallet\'s gateway usage is not taken from the new wallet\'s history', () => {
+  // The old wallet: 100 requests ($10) through the gateway, nothing before it.
+  let state = nextHistoryState(null, OLD, { requests: 100, spentUsd: '10' }, { requests: 100, spentUsd: '10' });
+  assert.deepEqual(state.wallets[OLD]?.history, { requests: 0, spentUsd: '0' });
+
+  // The imported wallet brings 20 requests ($2) from before the gateway; the gateway's keys and totals stay.
+  state = nextHistoryState(state, NEW, { requests: 20, spentUsd: '2' }, { requests: 100, spentUsd: '10' });
+  assert.deepEqual(state.wallets[NEW]?.history, { requests: 20, spentUsd: '2' });
+
+  // It then sends 5 requests ($0.50) through the gateway: they are its own, not history.
+  state = nextHistoryState(state, NEW, { requests: 25, spentUsd: '2.5' }, { requests: 105, spentUsd: '10.5' });
+  assert.deepEqual(state.wallets[NEW], { gateway: { requests: 5, spentUsd: '0.5' }, history: { requests: 20, spentUsd: '2' } });
+
+  // Switching back: the old wallet's share is still its 100.
+  state = nextHistoryState(state, OLD, { requests: 100, spentUsd: '10' }, { requests: 105, spentUsd: '10.5' });
+  assert.deepEqual(state.wallets[OLD], { gateway: { requests: 100, spentUsd: '10' }, history: { requests: 0, spentUsd: '0' } });
+});
+
+test('requests sent before a signer import are the old wallet\'s, even when counted at the next refresh', () => {
+  let state = nextHistoryState(null, OLD, { requests: 10, spentUsd: '1' }, { requests: 10, spentUsd: '1' });
+  // 3 more gateway requests on the old wallet, then the import, then the next refresh.
+  state = nextHistoryState(state, NEW, { requests: 0, spentUsd: '0' }, { requests: 13, spentUsd: '1.3' });
+  assert.deepEqual(state.wallets[OLD]?.gateway, { requests: 13, spentUsd: '1.3' });
+  assert.deepEqual(state.wallets[NEW]?.gateway, { requests: 0, spentUsd: '0' });
+});
+
+test('a gateway whose data was reset: what it lost shows as history, from the buyer', () => {
+  let state = nextHistoryState(null, OLD, { requests: 50, spentUsd: '5' }, { requests: 30, spentUsd: '3' });
+  assert.deepEqual(state.wallets[OLD]?.history, { requests: 20, spentUsd: '2' });
+  // Reset: the gateway starts again from 2 requests; the buyer still has them all (Home: 2 + 50).
+  state = nextHistoryState(state, OLD, { requests: 52, spentUsd: '5.2' }, { requests: 2, spentUsd: '0.2' });
+  assert.deepEqual(state.wallets[OLD], { gateway: { requests: 2, spentUsd: '0.2' }, history: { requests: 50, spentUsd: '5' } });
+  state = nextHistoryState(state, OLD, { requests: 55, spentUsd: '5.5' }, { requests: 5, spentUsd: '0.5' });
+  assert.deepEqual(state.wallets[OLD], { gateway: { requests: 5, spentUsd: '0.5' }, history: { requests: 50, spentUsd: '5' } });
 });
