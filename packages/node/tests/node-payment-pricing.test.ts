@@ -268,6 +268,31 @@ describe('completed-request seller payments', () => {
       expect(response.statusCode).toBe(200);
       expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
     });
+
+    it('serves and bills an image edit whose form says stream=false, handing the provider the form without it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] }),
+      }));
+      const response = await harness.send('served', { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'false']]) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
+      const forwarded = new TextDecoder().decode(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].body);
+      expect(forwarded).toContain('name="prompt"');
+      expect(forwarded).not.toMatch(/stream/i);
+    });
+
+    it('serves and bills an image edit whose prompt and file only quote a stream field', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }] }),
+      }));
+      const edit = multipart([['model', 'image'], ['prompt', 'A sign reading\r\nContent-Disposition: form-data; name=stream\r\n\r\ntrue']]);
+      const body = new TextDecoder().decode(edit.body).replace('\r\n\r\nPNG\r\n', '\r\n\r\nPNG form-data; name="stream"\r\n');
+      const response = await harness.send('served', { path: '/v1/images/edits', headers: edit.headers, body: encoder.encode(body) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 40_000n);
+    });
   });
 });
 

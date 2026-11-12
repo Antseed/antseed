@@ -157,9 +157,14 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
   if (typeof parts === 'string') return refuse('unsupported_multipart_body', `Multipart request is not a standard form: ${parts}.`);
   const seen = new Set<string>();
   const fields: Record<string, string> = {};
+  const kept: FormPart[] = [];
   for (const part of parts) {
     const refusal = nameRefusal(part.name, seen);
     if (refusal) return refusal;
+    // `stream=false` asks for the default. Not every reader takes the text "false" as false, so
+    // the provider is handed the form without it; image billing refuses any other stream field.
+    if (part.name === 'stream' && part.filename === undefined && utf8(part.content) === 'false') continue;
+    kept.push(part);
     if (!FORM_BILLED_FIELDS.has(part.name)) continue;
     const text = part.filename === undefined && part.content.length <= MAX_MULTIPART_TEXT_FIELD_BYTES ? utf8(part.content) : undefined;
     if (text === undefined) {
@@ -172,7 +177,7 @@ function billedForm(bytes: Uint8Array, contentType: string): BilledRequestBody {
   const priced = pricedValueRefusal(fields);
   if (priced) return priced;
   const boundary = `----FormBoundary${randomBytes(16).toString('hex')}`;
-  return written(service, `multipart/form-data; boundary=${boundary}`, writeForm(parts, boundary), bytes.length);
+  return written(service, `multipart/form-data; boundary=${boundary}`, writeForm(kept, boundary), bytes.length);
 }
 
 /**

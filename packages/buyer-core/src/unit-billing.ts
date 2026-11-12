@@ -12,6 +12,8 @@ import {
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
+  looseFormParts,
+  type LooseFormPart,
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
@@ -137,11 +139,12 @@ const videoBillingAdapter: UnitBillingAdapter = {
 /**
  * A field name the way some parser reads it: compatibility forms (full-width
  * letters), invisible and control characters, letter case (Unicode folds
- * such as the long s), a `[...]` suffix, padding and separators set aside.
+ * such as the long s), a `[...]` suffix (or the brackets around a name that
+ * starts with one), padding and separators set aside.
  */
 function foldFieldName(key: string): string {
-  const folded = key.normalize('NFKC').replace(/[\p{Cf}\p{Cc}]/gu, '').toUpperCase().toLowerCase();
-  const bracket = folded.indexOf('[');
+  const folded = key.normalize('NFKC').replace(/[\p{Cf}\p{Cc}]/gu, '').replace(/^[\s[\]]+/, '').toUpperCase().toLowerCase();
+  const bracket = folded.search(/[[\]]/);
   return (bracket === -1 ? folded : folded.slice(0, bracket)).replace(/[\s_.-]/g, '');
 }
 
@@ -153,27 +156,14 @@ function fieldValues(body: Record<string, unknown> | null | undefined, name: str
 }
 
 /**
- * Every field name a multipart body gives, read as loosely as lenient parsers
- * read it: any `name` parameter on a line naming form-data, quoted, unquoted
- * or RFC 2231-encoded, of text and file parts alike and of any size. Null
- * when the request is not multipart.
+ * Whether a form asks for a streamed answer. Its fields are text, and not every
+ * reader takes "false" as false, so the only stream field it may carry is a
+ * text part named exactly `stream` that says exactly `false`: the default,
+ * which a seller leaves out of the form it hands its provider.
  */
-function looseFormFieldNames(headers: Record<string, string>, body: Uint8Array): string[] | null {
-  if (!Object.entries(headers).some(([key, value]) => key.toLowerCase() === 'content-type' && /multipart\//i.test(value))) return null;
-  const names: string[] = [];
-  for (const line of new TextDecoder('latin1').decode(body).split(/\r\n|\r|\n/)) {
-    if (!/form-data/i.test(line)) continue;
-    for (const match of line.matchAll(/(?:^|[^a-z0-9])name\s*(?:\*[0-9]*\*?)?\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([^;\s]+))/gi)) {
-      let name = (match[1] ?? match[2] ?? match[3] ?? '').replace(/^[^']*'[^']*'/, '');
-      try {
-        name = decodeURIComponent(name);
-      } catch {
-        // Not a valid escape: read as written.
-      }
-      names.push(name);
-    }
-  }
-  return names;
+function formAsksStream(parts: LooseFormPart[]): boolean {
+  return parts.some((part) => part.names.some((name) => foldFieldName(name) === 'stream')
+    && !(part.names.length === 1 && part.names[0] === 'stream' && !part.file && part.value === 'false'));
 }
 
 // Speech is billed by the characters of `input`, and only when audio came back:
@@ -259,12 +249,12 @@ function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
   // This capture also stands in for token-billed protocols (chat), whose streams are billed by tokens.
   // Images are counted in a JSON answer; a streamed one is not read, so it could not be billed.
-  // A form field is text, and not every reader takes "false" as false: a form names no stream at all.
-  if (args.serviceApiProtocol === 'openai-images' && (
-    fieldValues(parsed, 'stream').some((value) => value !== null && value !== false)
-    || Boolean(looseFormFieldNames(args.request.headers, args.request.body)?.some((name) => foldFieldName(name) === 'stream'))
-  )) {
-    throw buyerFault('Image billing requires the answer as JSON: send the request without "stream"', 'invalid-request');
+  if (args.serviceApiProtocol === 'openai-images') {
+    // A body is read both ways, whatever its content type says, as some reader may read it either way.
+    const form = looseFormParts(args.request.headers, args.request.body);
+    const asksStream = (form !== null && formAsksStream(form))
+      || fieldValues(parseJsonObject(args.request.body), 'stream').some((value) => value !== null && value !== false);
+    if (asksStream) throw buyerFault('Image billing requires the answer as JSON: send the request without "stream"', 'invalid-request');
   }
   const image = extractImageRequestFacts({
     path: args.request.path,

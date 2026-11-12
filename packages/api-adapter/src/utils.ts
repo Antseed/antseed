@@ -293,6 +293,101 @@ export function parseMultipartFormFields(
   return fields;
 }
 
+/** One part of a multipart body, read as loosely as lenient form parsers read it. */
+export interface LooseFormPart {
+  /** Every `name` parameter its form-data disposition gives: quoted, unquoted or RFC 2231-encoded. */
+  names: string[];
+  /** Whether that disposition gives a filename. */
+  file: boolean;
+  /** Its content as latin1 text, or null when it is over MAX_MULTIPART_TEXT_FIELD_BYTES. */
+  value: string | null;
+}
+
+const LINE_BREAK = /\r\n|\r|\n/g;
+const MAX_LOOSE_FORM_BOUNDARIES = 4;
+// Blank runs are never next to an optional run that could also match them, so matching stays linear.
+const LOOSE_FORM_NAME = /(?:^|[^a-z0-9])name\s*(?:\*[0-9]*\*?\s*)?=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([^;\s]+))/gi;
+
+/**
+ * The parts of a multipart body as lenient parsers read them, for a check that
+ * must see every field some reader finds; null when the request is not
+ * multipart. Only part headers are read for names, never prompt text or file
+ * bytes. A part starts at every delimiter, at the start of the body or of a
+ * line, of every boundary the content type names; its headers end at the
+ * first empty line (with folded lines joined), and every line ending counts.
+ * A body with no delimiter, or a content type naming more boundaries than a
+ * form needs, is read as one header block, so no field goes unseen.
+ */
+export function looseFormParts(headers: Record<string, string>, body: Uint8Array): LooseFormPart[] | null {
+  const contentTypes = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'content-type').map(([, value]) => value);
+  if (!contentTypes.some((value) => /multipart\//i.test(value))) return null;
+  const boundaries = new Set<string>();
+  for (const value of contentTypes) {
+    for (const match of value.matchAll(/boundary\s*=\s*(?:"([^"]*)"|([^;\s]*))/gi)) {
+      const boundary = (match[1] ?? match[2] ?? '').trim();
+      if (boundary) boundaries.add(`--${boundary}`);
+    }
+  }
+  // latin1 keeps one char per byte, so binary file parts decode without loss.
+  const text = new TextDecoder('latin1').decode(body);
+  const delimiters: Array<{ at: number; end: number }> = [];
+  // Each boundary costs a pass over the body; an honest content type names one.
+  if (boundaries.size <= MAX_LOOSE_FORM_BOUNDARIES) {
+    for (const delimiter of boundaries) {
+      for (let at = text.indexOf(delimiter); at !== -1; at = text.indexOf(delimiter, at + 1)) {
+        if (at === 0 || text[at - 1] === '\n' || text[at - 1] === '\r') delimiters.push({ at, end: at + delimiter.length });
+      }
+    }
+  }
+  if (delimiters.length === 0) return [loosePart(text.split(LINE_BREAK), '')];
+  delimiters.sort((a, b) => a.at - b.at);
+  return delimiters.map(({ end: start }, index) => {
+    const segment = text.slice(start, Math.max(start, delimiters[index + 1]?.at ?? text.length));
+    // The rest of the delimiter line is padding; the headers follow it, up to the first empty line.
+    const lines: string[] = [];
+    let contentStart = segment.length;
+    LINE_BREAK.lastIndex = 0;
+    let previous = LINE_BREAK.exec(segment);
+    while (previous) {
+      const lineStart = previous.index + previous[0].length;
+      const next = LINE_BREAK.exec(segment);
+      const line = segment.slice(lineStart, next ? next.index : segment.length);
+      if (line === '' && next) {
+        contentStart = next.index + next[0].length;
+        break;
+      }
+      lines.push(line);
+      previous = next;
+    }
+    return loosePart(lines, segment.slice(contentStart).replace(/(?:\r\n|\r|\n)$/, ''));
+  });
+}
+
+function loosePart(lines: string[], content: string): LooseFormPart {
+  // A line that starts with white space continues the header before it.
+  const unfolded: string[] = [];
+  for (const line of lines) {
+    if (/^[ \t]/.test(line) && unfolded.length > 0) unfolded[unfolded.length - 1] += line;
+    else unfolded.push(line);
+  }
+  const names: string[] = [];
+  let file = false;
+  for (const line of unfolded) {
+    if (!/form-data/i.test(line)) continue;
+    if (/filename\s*(?:\*\s*)?=/i.test(line)) file = true;
+    for (const match of line.matchAll(LOOSE_FORM_NAME)) {
+      let name = (match[1] ?? match[2] ?? match[3] ?? '').replace(/^[^']*'[^']*'/, '');
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // Not a valid escape: read as written.
+      }
+      names.push(name);
+    }
+  }
+  return { names, file, value: content.length <= MAX_MULTIPART_TEXT_FIELD_BYTES ? content : null };
+}
+
 /**
  * Parse the billing-relevant fields of a request body: JSON objects verbatim,
  * multipart/form-data reduced to its text fields. Returns null for anything
