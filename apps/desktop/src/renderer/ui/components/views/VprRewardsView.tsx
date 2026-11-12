@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button } from '@antseed/ui';
 import type { GatewayRewardsSummary } from '../../../types/bridge';
 import { formatCredits } from '../../../core/format';
 import { VprBadge, VprCard, VprSection, VprPage } from '../vpr/VprKit';
@@ -61,16 +62,15 @@ export function VprRewardsView() {
   const [error, setError] = useState<string | null>(null);
   const [consoleError, setConsoleError] = useState<string | null>(null);
 
-  const load = useCallback((force: boolean) => {
-    void readRewards(() => window.antseedDesktop?.gatewayGetRewards?.({ force }), setRewards, setError);
+  const load = useCallback(() => {
+    void readRewards(() => window.antseedDesktop?.gatewayGetRewards?.(), setRewards, setError);
   }, []);
 
-  // Fresh on entry and when the window regains focus, e.g. after claiming in the console.
+  // Read on entry and when the window regains focus, e.g. after claiming in the console.
   useEffect(() => {
-    load(true);
-    const onFocus = () => load(true);
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    load();
+    window.addEventListener('focus', load);
+    return () => window.removeEventListener('focus', load);
   }, [load]);
 
   async function openRewards(): Promise<void> {
@@ -95,9 +95,9 @@ export function VprRewardsView() {
                   {rewards.transfersEnabled ? 'Transfers live' : 'Transfers not enabled yet'}
                 </VprBadge>
               )}
-              <button type="button" className={styles.primaryAction} onClick={() => { void openRewards(); }}>
+              <Button variant="primary" onClick={() => { void openRewards(); }}>
                 View rewards in your gateway ↗
-              </button>
+              </Button>
               {consoleError && <span className={styles.errorNote} role="alert">{consoleError}</span>}
             </div>
           </VprCard>
