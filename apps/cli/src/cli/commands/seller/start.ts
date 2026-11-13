@@ -53,7 +53,7 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
-import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { redact, redactUrlsIn, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
 import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
@@ -130,6 +130,18 @@ export function isPublicRpcUrl(rpcUrl: string): boolean {
 }
 
 /**
+ * The "Effective seller settings" lines about the Base RPC: its origin only (the rest can hold an
+ * API key) and where it comes from, then a warning when it is public.
+ */
+export function describeBaseRpc(rpcUrl: string, source: 'runtime override' | 'config/default'): string[] {
+  const lines = [chalk.dim(`  Base RPC URL: ${redact(rpcUrl)} (${source})`)]
+  if (isPublicRpcUrl(rpcUrl)) {
+    lines.push(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/buyer-config#base-rpc-url'))
+  }
+  return lines
+}
+
+/**
  * Gate `antseed seller start` on required prerequisites:
  *   1. At least one service is configured for the selected provider.
  *   2. (When payments are enabled) seller is registered on-chain and staked.
@@ -193,7 +205,7 @@ export async function assertSellerPrerequisites(input: {
     // A priced seller must not fall back to serving for free: fail closed.
     failures.push({
       title: 'Base RPC unreachable',
-      detail: `No answer from ${unreachableRpc.urls.join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
+      detail: `No answer from ${unreachableRpc.urls.map(redact).join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
         + `This seller charges for ${unreachableRpc.pricedServiceIds.join(', ')}, so it needs the chain to check registration and gas and to settle payments. `
         + 'Check the network, or set a working RPC with --base-rpc-url or payments.crypto.rpcUrl. To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.',
     })
@@ -218,7 +230,7 @@ export async function assertSellerPrerequisites(input: {
       // silently skipping — that's what broke testnet-together earlier today.
       failures.push({
         title: 'On-chain readiness check failed',
-        detail: `Could not query the configured chain (${(err as Error).message}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
+        detail: `Could not query the configured chain (${redactUrlsIn((err as Error).message)}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
       })
     }
   }
@@ -746,10 +758,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       })
       const paymentsEnabled = rpcProbe.paymentsEnabled
       if (rpcProbe.rpcReachable === false && !paymentsEnabled) {
-        console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${cryptoRpcUrl}`))
+        console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${redact(cryptoRpcUrl ?? '')}`))
         console.log(chalk.dim('Every service is free, so the seller runs without payments. Start your chain node or set ANTSEED_ENABLE_SETTLEMENT=true to force-enable payments.'))
       } else if (rpcProbe.rpcReachable === false && options.skipPrereqCheck) {
-        console.log(chalk.yellow(`RPC node unreachable at ${cryptoRpcUrl}. Payments stay on because this seller charges for ${pricedServiceIds.join(', ')}; paid requests settle once the RPC answers.`))
+        console.log(chalk.yellow(`RPC node unreachable at ${redact(cryptoRpcUrl ?? '')}. Payments stay on because this seller charges for ${pricedServiceIds.join(', ')}; paid requests settle once the RPC answers.`))
         console.log(chalk.dim('To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.'))
       }
 
@@ -830,11 +842,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const minBudgetPerRequest = config.payments.minBudgetPerRequest ?? '10000'
       console.log(chalk.dim(`  min budget per request: ${minBudgetPerRequest} base units`))
       if (paymentConfig?.crypto?.rpcUrl) {
-        const rpcSource = baseRpcUrlOverride ? 'runtime override' : 'config/default'
-        console.log(chalk.dim(`  Base RPC URL: ${paymentConfig.crypto.rpcUrl} (${rpcSource})`))
-        if (isPublicRpcUrl(paymentConfig.crypto.rpcUrl)) {
-          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/buyer-config#base-rpc-url'))
-        }
+        for (const line of describeBaseRpc(paymentConfig.crypto.rpcUrl, baseRpcUrlOverride ? 'runtime override' : 'config/default')) console.log(line)
       }
       // CLI flag (decimal USDC) overrides config JSON (base-unit string).
       const minSettleDeltaFlag = options.minSettleDelta as string | undefined
@@ -1310,6 +1318,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
 
       await writeDaemonState()
+      // Billing by estimate works, but only an upstream that reports usage bills exactly.
+      node.on('provider:usage-missing', ({ provider, service }: { provider: string; service: string }) => {
+        console.log(chalk.yellow(`Upstream ${provider}/${service} sent an answer with no usage figure; such answers are billed by an estimate of their tokens.`))
+      })
       node.on('connection', scheduleDaemonStateWrite)
       node.on('session:updated', scheduleDaemonStateWrite)
       node.on('session:finalized', scheduleDaemonStateWrite)

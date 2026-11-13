@@ -76,6 +76,12 @@ derived from absolute source paths, so identical source would otherwise produce
 different runtime code on different machines. Contracts deployed before that
 setting (the legacy baseline) are not compared.
 
+A history record keeps every contract it deployed, including ones a later
+release replaced. A contract that `current.json` no longer lists at its address,
+or whose source was removed from the repository, cannot match today's build.
+For those, the check compares the on-chain code hash with the record's
+`runtimeCodeHash` instead.
+
 ## Validation
 
 `scripts/validate-contract-deployments.mjs` checks every record in two layers:

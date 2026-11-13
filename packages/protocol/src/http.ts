@@ -1,4 +1,12 @@
 export const ANTSEED_STREAMING_RESPONSE_HEADER = 'x-antseed-streaming';
+/**
+ * After trimming and case-folding, an empty value, `0`, or `false` adds no
+ * requirement; any other value requires TEE sellers: a gateway sends this
+ * request only to them, on top of the key's policy. It can only narrow the policy, so any
+ * key holder may send it. A client that must not lose TEE routing to a policy
+ * change mid-run (the desktop's Private chat) sends it on every request.
+ */
+export const ANTSEED_REQUIRE_TEE_HEADER = 'x-antseed-require-tee';
 export const VIDEO_DOWNLOAD_STREAM_HEADER = 'x-antseed-video-download';
 export const VIDEO_DOWNLOAD_STREAM_VERSION = 'video-stream-v1';
 /** Keep the first native-video download path bounded and predictable. */
