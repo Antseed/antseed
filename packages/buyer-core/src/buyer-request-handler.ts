@@ -587,9 +587,6 @@ export class BuyerRequestHandler {
         `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
         `which it announces as free — refusing instead of negotiating`,
       );
-      // Hold an open channel too: the seller's catch-up NeedAuth would otherwise
-      // be signed from its overdraft window.
-      negotiator.refusePaymentDemand(peer.peerId, response);
       return adaptPeerResponse(paymentNegotiationFailureResponse(response, 'price_mismatch', PRICE_MISMATCH_MESSAGE));
     }
 

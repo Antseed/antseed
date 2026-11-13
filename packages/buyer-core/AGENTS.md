@@ -31,6 +31,7 @@ Published to npm. Every buyer runs it (the CLI buyer, and so the desktop and gat
 - `@antseed/node` pins it, re-exports it from `packages/node/src/payments/*.ts`, wires it to sqlite and `PeerConnection`, and holds most of its tests. `@antseed/web-sdk` wires it to WebRTC and IndexedDB. Buyer behavior goes here, never in one of them.
 - Release: a bump here needs node and web-sdk bumped, then node's pinning dependents (`scripts/npm-publish-plan.mjs`).
 - Kept in sync by hand: the ABI strings in `channels-client.ts` and `deposits-client.ts` with `packages/contracts/payments/*.sol`; the first sentence of `OUT_OF_CREDITS_MESSAGE` with the clients that match it (`apps/cli/src/gateway/server.ts`, `apps/gateway-console/src/pages/Chat.tsx`, telemetry tests, `apps/website/docs/connect/api.md`).
+- Also kept in sync by hand: the wording of the price refusal messages in `buyer-payment-negotiator.ts` (`PRICE_MISMATCH_MESSAGE`, `PRICE_ABOVE_ANNOUNCED_MESSAGE`, `PRICE_UNKNOWN_MESSAGE`, `REFUSED_CLAIM_MESSAGE`) with the `SELLER_PRICE_REFUSED` patterns that read them in `apps/cli/src/proxy/buyer-proxy.ts`, `packages/telemetry/src/failure.ts` and `apps/desktop/src/main/telemetry/classify.ts`.
 - Limit defaults are set by the hosts (`packages/node/src/node.ts`, `apps/cli/src/cli/commands/buyer/start.ts`, `packages/web-sdk/src/client.ts`), not here.
 
 ## Traps

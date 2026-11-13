@@ -3251,8 +3251,7 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
  * response from these, so a default the seller charges but does not announce
  * is a cost the buyer cannot see.
  */
-/** @internal Exported for tests. */
-export function announcedPricing(pricing: ProviderPricing): ProviderPricing {
+function announcedPricing(pricing: ProviderPricing): ProviderPricing {
   const { inputUsdPerMillion, outputUsdPerMillion, cachedInputUsdPerMillion } = pricing.defaults;
   return {
     defaults: {

@@ -38,6 +38,19 @@ test('classifies the real buyer-proxy error strings', () => {
   assert.equal(classifyFailureReason({ kind: 'http_error' }, 'odd', CTX), 'unknown');
 });
 
+test('a refusal of the seller\'s price is not the buyer\'s fault', () => {
+  // The buyer's 409 answers, as a client sees them: flat, and adapted with the buyer's message.
+  const PRICE_REFUSALS = [
+    '409 {"error":"payment_negotiation_failed","reason":"price_unknown","message":"This seller announces no price for this service, so the buyer signed nothing for it. Use another seller."}',
+    '409 {"error":{"type":"payment_negotiation_failed","message":"Oops, peer could not complete the request.","antseed_fault":"peer","peer_message":"This seller asked for a higher price than it announces, so the buyer signed nothing for it."}}',
+    '409 {"error":{"type":"payment_negotiation_failed","antseed_fault":"peer","peer_message":"This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it."}}',
+    '409 {"error":{"type":"payment_negotiation_failed","antseed_fault":"peer","peer_message":"This seller charged more than the prices it announces. The buyer refused that charge."}}',
+  ];
+  for (const message of PRICE_REFUSALS) assert.equal(reason(message), 'request_rejected', message);
+  // Any other payment negotiation failure is still the buyer's own.
+  assert.equal(reason('503 {"error":"payment_negotiation_failed","reason":"catch_up_incomplete"}'), 'local_error');
+});
+
 test('reads only a leading status, not prose', () => {
   assert.equal(leadingHttpStatus(OUT_OF_CREDITS), 402);
   assert.equal(leadingHttpStatus('503 {"x":1}'), 503);

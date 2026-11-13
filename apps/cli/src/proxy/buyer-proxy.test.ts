@@ -6965,6 +6965,31 @@ test('a buyer payment negotiation failure counts like a busy answer, flat or ada
   assert.equal(healthStatusFor({ statusCode: 503, body: Buffer.from('{"error":"overloaded"}') }), 503)
 })
 
+test('a refusal of the seller\'s price counts as the seller\'s fault, flat or adapted to the model API', () => {
+  // The buyer's answers when a seller's price and its announcement disagree, or it announces none.
+  const refusals = [
+    { reason: 'price_mismatch', message: 'This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it. Use another seller, or retry once the seller announces the price it charges.' },
+    { reason: 'price_mismatch', message: 'This seller asked for a higher price than it announces, so the buyer signed nothing for it. Use another seller, or retry once the seller announces the price it charges.' },
+    { reason: 'price_mismatch', message: 'This seller charged more than the prices it announces. The buyer refused that charge and signs nothing more on this payment channel, so the seller no longer serves it. Use another seller, and close the channel to release its reserve.' },
+    { reason: 'price_unknown', message: 'This seller announces no price for this service, so the buyer signed nothing for it. Use another seller.' },
+  ]
+  for (const refusal of refusals) {
+    const answer = {
+      requestId: 'r', statusCode: 409, headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: 'payment_negotiation_failed', ...refusal })),
+    }
+    const bodies = [Buffer.from(answer.body)]
+    for (const protocol of ['openai-chat-completions', 'anthropic-messages'] as const) {
+      bodies.push(Buffer.from(adaptPeerFaultErrorResponse(answer, protocol, { peerId: 'a'.repeat(40) }).body))
+    }
+    for (const responseBody of bodies) {
+      const attempt = classifyFailedAttempt({ done: false, statusCode: 409, responseBody, responseHeaders: {}, errorMessage: null })
+      assert.deepEqual({ sellerOnly: attempt.sellerOnly, weight: attempt.weight }, { sellerOnly: true, weight: 1 }, responseBody.toString())
+      assert.match(attempt.description, /price/)
+    }
+  }
+})
+
 test('speech requests route only to speech services and return the audio unchanged', async () => {
   const chat = makePeer('a', ['openai'])
   chat.reputationScore = 95

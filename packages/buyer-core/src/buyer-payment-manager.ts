@@ -40,7 +40,7 @@ import {
 } from './pricing.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUnitV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { BillingRequestFacts } from './unit-billing.js';
-import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
+import { evaluateUnitBilling, isFreeUnitBillingModel, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
@@ -119,7 +119,6 @@ export interface BuyerPaymentConfig {
   dataDir: string;
 }
 
-/** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
 /**
  * Whether the buyer read usage in a response it received and its own prices
  * put that at zero. A response that shows no usage is not priced at all: the
@@ -132,6 +131,17 @@ function pricedAtZero(record: DeliveredResponse): boolean {
     || Object.values(usage.unitUsage?.units ?? {}).some((count) => (count ?? 0) > 0);
 }
 
+/**
+ * Whether the price the buyer verifies a request by is zero: every token price
+ * and any unit model. A positive price that rounds a small response to 0 is not.
+ */
+function verifiedAtZero(pricing: ServicePricing | null | undefined, unitModel: UnitBillingModelV1 | undefined): boolean {
+  return pricing != null && pricing.inputUsdPerMillion === 0 && pricing.outputUsdPerMillion === 0
+    && (pricing.cachedInputUsdPerMillion ?? 0) === 0
+    && (!unitModel || isFreeUnitBillingModel(unitModel));
+}
+
+/** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
 function hasPositiveCost(cost: string | undefined): boolean {
   try {
     return BigInt(cost ?? '0') > 0n;
@@ -346,14 +356,13 @@ export class BuyerPaymentManager {
    */
   private readonly _coveredRequests = new Map<string, number>();
   /**
-   * sellerPeerId -> the total the seller claimed, on the active channel, for
-   * responses the buyer owes nothing for, or in a payment demand the buyer
-   * refused because of the announced price (refusePaymentDemand). A seller with an entry gets no
-   * overdraft window: the buyer signs only up to verified cost, so the refused
-   * amount is never signed through a later prompt, a 402 retry or a close.
-   * Dropped with the seller's verified cost.
+   * Sellers that claimed, on the active channel, a cost for a response the
+   * buyer owes nothing for. Such a seller gets no overdraft window: the buyer
+   * signs only up to verified cost, so the refused claim is never signed
+   * through a later prompt, a 402 retry or a close. Dropped with the seller's
+   * verified cost.
    */
-  private readonly _refusedClaims = new Map<string, bigint>();
+  private readonly _refusedClaims = new Set<string>();
   /**
    * sellerPeerId -> requestId -> what the seller can still be paid for on the
    * active channel: a response the buyer received and priced, or an attempt it
@@ -728,7 +737,7 @@ export class BuyerPaymentManager {
       // A 402 retry reopens the overdraft window, and this seller has none.
       debugWarn(
         `[BuyerPayment] Not extending the session with ${sellerPeerId.slice(0, 12)}...: ` +
-        `the buyer refused its charge of ${this._refusedClaims.get(sellerPeerId)} on this channel`,
+        `the buyer refused a charge it claimed on this channel`,
       );
       return { sessionId: session.sessionId, topUp: false };
     }
@@ -1995,11 +2004,14 @@ export class BuyerPaymentManager {
       );
       return false;
     }
-    if (record && pricedAtZero(record) && hasPositiveCost(payload.lastRequestCost)) {
-      // The buyer received the response, read its usage and priced that at
-      // zero itself: nothing is owed for it, and nothing is signed for it from
-      // the overdraft window either. The record stays, so a close still
-      // attributes the response's usage.
+    if (
+      record && pricedAtZero(record) && hasPositiveCost(payload.lastRequestCost)
+      && verifiedAtZero(requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService), requestBilling?.unitModel)
+    ) {
+      // The buyer received the response, read its usage and its price for the
+      // request is zero (not a small cost rounded to 0): nothing is owed for
+      // it, and nothing is signed for it from the overdraft window either. The
+      // record stays, so a close still attributes the response's usage.
       debugWarn(
         `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... claiming ${payload.lastRequestCost} for request ` +
         `${payload.requestId}: the buyer's own price for the response it received is 0`,
@@ -2983,37 +2995,16 @@ export class BuyerPaymentManager {
    */
   private _recordRefusedClaim(sellerPeerId: string, payload: NeedAuthPayload): void {
     if (!hasPositiveCost(payload.lastRequestCost)) return;
-    this._refusedClaims.set(sellerPeerId, (this._refusedClaims.get(sellerPeerId) ?? 0n) + BigInt(payload.lastRequestCost!));
+    this._refusedClaims.add(sellerPeerId);
   }
 
   /**
-   * What `sellerPeerId` claimed, on the active channel, for responses the
-   * buyer owes nothing for. Above zero, the buyer signs nothing past verified
-   * cost for this seller, so the channel cannot serve another paid request.
+   * Whether the buyer refused a charge from `sellerPeerId` on the active
+   * channel (see _refusedClaims): it then signs nothing past verified cost for
+   * this seller, so the channel cannot serve another paid request.
    */
-  refusedClaimTotal(sellerPeerId: string): bigint {
-    return this._refusedClaims.get(sellerPeerId) ?? 0n;
-  }
-
-  /** Whether the buyer refused a charge from `sellerPeerId` on the active channel (see _refusedClaims). */
   hasRefusedClaim(sellerPeerId: string): boolean {
     return this._refusedClaims.has(sellerPeerId);
-  }
-
-  /**
-   * The buyer refused a payment demand from `sellerPeerId` on its active
-   * channel because of the announced price: the seller asked to be paid on a
-   * route priced at zero, or for more than the price the request's route was
-   * chosen at. The channel is held like one with a refused claim: what the
-   * seller asked for above the signed cumulative (its 402 target, or nothing
-   * without one) counts as refused, and nothing more is signed on it. With no
-   * active channel there is nothing to hold.
-   */
-  refusePaymentDemand(sellerPeerId: string, targetCumulative: bigint | null): void {
-    if (!this.getActiveSession(sellerPeerId)) return;
-    const signed = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
-    const shortfall = targetCumulative != null && targetCumulative > signed ? targetCumulative - signed : 0n;
-    this._refusedClaims.set(sellerPeerId, (this._refusedClaims.get(sellerPeerId) ?? 0n) + shortfall);
   }
 
   /**

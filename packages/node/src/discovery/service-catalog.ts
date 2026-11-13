@@ -248,9 +248,11 @@ function resolvePricing(peer: NetworkServiceCatalogPeer, provider: string, servi
     ?? defaults?.outputUsdPerMillion
     ?? defaults?.output
     ?? peer.defaultOutputUsdPerMillion;
-  const cachedInputUsdPerMillion = servicePricing?.cachedInputUsdPerMillion
-    ?? defaults?.cachedInputUsdPerMillion
-    ?? peer.defaultCachedInputUsdPerMillion;
+  // A service with its own price bills cached input by that price alone (its
+  // input price when it sets none), as seller and buyer do: never the default.
+  const cachedInputUsdPerMillion = servicePricing
+    ? servicePricing.cachedInputUsdPerMillion
+    : defaults?.cachedInputUsdPerMillion ?? peer.defaultCachedInputUsdPerMillion;
   return { inputUsdPerMillion, outputUsdPerMillion, cachedInputUsdPerMillion };
 }
 

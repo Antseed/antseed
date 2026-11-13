@@ -220,24 +220,6 @@ function priceAboveRoute(
 }
 
 /**
- * The channel a 402 is about and the cumulative it asks to have signed: from
- * the PaymentRequired frame, else from a 402 body that carries the requirements.
- */
-function paymentDemand(
-  buffered: PaymentRequiredPayload | null,
-  body: Record<string, unknown> | null,
-): { channelId: string | null; target: bigint | null } {
-  return {
-    target: buffered?.requiredCumulativeAmount != null
-      ? safeBigInt(buffered.requiredCumulativeAmount)
-      : body?.requiredCumulativeAmount != null
-        ? safeBigInt(String(body.requiredCumulativeAmount))
-        : null,
-    channelId: buffered?.channelId ?? (typeof body?.channelId === 'string' ? body.channelId : null),
-  };
-}
-
-/**
  * The peer's announced default price, or undefined. Known only when it is
  * readable (isReadableTokenPricing): a missing price is unknown, never free.
  * @internal
@@ -900,31 +882,6 @@ export class BuyerPaymentNegotiator {
     return result;
   }
 
-  /**
-   * The buyer refused this 402's payment demand without negotiating it (a
-   * route priced at zero): hold the channel it is about, as _handle402 does.
-   */
-  refusePaymentDemand(peerId: PeerId, response: SerializedHttpResponse): void {
-    const body = parsePaymentRequiredBody(response.body);
-    const bodyHasRequirements = Boolean(body?.minBudgetPerRequest);
-    const { channelId, target } = paymentDemand(
-      bodyHasRequirements ? null : this._bufferedPaymentRequired.get(peerId) ?? null,
-      bodyHasRequirements ? body : null,
-    );
-    this._holdForRefusedDemand(peerId, channelId, target);
-  }
-
-  /**
-   * The seller's catch-up NeedAuth for a refused demand would otherwise be
-   * signed from the open channel's overdraft window. A delayed 402 about a
-   * channel since replaced says nothing about the live one.
-   */
-  private _holdForRefusedDemand(peerId: PeerId, channelId: string | null, target: bigint | null): void {
-    if (channelId == null || channelId.toLowerCase() === this._bpm.getActiveSession(peerId)?.sessionId.toLowerCase()) {
-      this._bpm.refusePaymentDemand(peerId, target);
-    }
-  }
-
   handle402(
     response: SerializedHttpResponse,
     peer: BuyerPeerView,
@@ -1024,18 +981,6 @@ export class BuyerPaymentNegotiator {
       return { action: 'return', response: paymentNegotiationFailureResponse(response, reason, message, statusCode) };
     };
 
-    // Absolute cumulative target the seller needs us to sign to unblock the
-    // channel (sent by the seller in the budget-exhausted branch). When
-    // present we pass it through to extendCurrentSpendingAuth so the buyer
-    // catches up in one step instead of creeping by minBudgetPerRequest and
-    // repeatedly being rejected as underfunded.
-    // Also the channel the 402 is about (see the stale-channel check below).
-    const { target: requiredCumulativeTarget, channelId: paymentChannelId } = paymentDemand(
-      buffered,
-      responseAlreadyHasRequirements ? directPaymentBody : null,
-    );
-    const session = this._bpm.getActiveSession(peer.peerId);
-
     // The seller states what it charges for this request. Above the price the
     // route was chosen at, it would charge more than it announces: refuse
     // before any channel, extension or signature. A one-off (video) 402
@@ -1059,12 +1004,11 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
         `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
       );
-      this._holdForRefusedDemand(peer.peerId, paymentChannelId, requiredCumulativeTarget);
       return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
     }
     // With no price at all the buyer cannot check what it is charged: it opens,
     // extends and signs nothing.
-    if (!routeBilling?.tokenPricing && !routeBilling?.unitModel && !this._negotiatedPricing(peer, service)) {
+    if (!routePricing && !routeBilling?.unitModel) {
       return returnNegotiationFailure('price_unknown', PRICE_UNKNOWN_MESSAGE);
     }
 
@@ -1121,6 +1065,17 @@ export class BuyerPaymentNegotiator {
         ? BigInt(String(directPaymentBody.minBudgetPerRequest))
         : null;
 
+    // Absolute cumulative target the seller needs us to sign to unblock the
+    // channel (sent by the seller in the budget-exhausted branch). When
+    // present we pass it through to extendCurrentSpendingAuth so the buyer
+    // catches up in one step instead of creeping by minBudgetPerRequest and
+    // repeatedly being rejected as underfunded.
+    const requiredCumulativeTarget = buffered?.requiredCumulativeAmount != null
+      ? safeBigInt(buffered.requiredCumulativeAmount)
+      : responseAlreadyHasRequirements && directPaymentBody?.requiredCumulativeAmount != null
+        ? safeBigInt(String(directPaymentBody.requiredCumulativeAmount))
+        : null;
+
     // On-chain reserve ceiling the seller is willing to accept. Used to detect
     // permanently exhausted channels (where requiredCumulativeAmount > reserveMaxAmount)
     // so the buyer doesn't loop signing higher cumulatives the seller will reject.
@@ -1138,6 +1093,9 @@ export class BuyerPaymentNegotiator {
     // Retiring on it would ghost the replacement (with requests in parallel,
     // an exhausted 402 for the old channel often lands after another request
     // replaced it): wait for the replacement's negotiation and retry on it.
+    const paymentChannelId = buffered?.channelId
+      ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
+    const session = this._bpm.getActiveSession(peer.peerId);
     if (session && paymentChannelId != null && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase()) {
       debugLog(
         `[BuyerNegotiator] ${channelExhausted ? 'Exhausted ' : ''}402 from ${peer.peerId.slice(0, 12)}... is about channel ` +

@@ -12,7 +12,7 @@ import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
-import { estimateCostFromBytes } from '../src/payments/pricing.js';
+import { computeCostUsdc, estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
 import { decodeSpendingAuthMetadata, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
@@ -298,13 +298,8 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
   });
 
-  describe('an open channel whose seller states more than the route price', () => {
-    const conn = () => ({ state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() }) as never;
-    const routedPeer = (sellerPeerId: string) => ({
-      peerId: toPeerId(sellerPeerId),
-      providers: ['openai'],
-      providerPricing: { openai: { defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 } } },
-    });
+  describe('a 402 the buyer refuses on an open channel', () => {
+    const conn = () => ({ state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() });
     const chat = (requestId: string) => ({
       requestId,
       method: 'POST',
@@ -312,9 +307,12 @@ describe('BuyerPaymentManager', () => {
       headers: { 'content-type': 'application/json' },
       body: enc.encode(JSON.stringify({ model: 'k3', messages: [{ role: 'user', content: 'hi' }] })),
     });
-    const paymentRequired = (requestId: string, body: Record<string, unknown>) => ({
+    const catchUp = (requestId: string, channelId: string, prices: Record<string, number> = {}) => ({
       requestId, statusCode: 402, headers: { 'content-type': 'application/json' },
-      body: enc.encode(JSON.stringify({ error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000', ...body })),
+      body: enc.encode(JSON.stringify({
+        error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000',
+        requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId, ...prices,
+      })),
     });
     const lastSigned = () => (mux.sentSpendingAuths.at(-1) as Record<string, unknown> | undefined)?.cumulativeAmount;
 
@@ -340,164 +338,65 @@ describe('BuyerPaymentManager', () => {
         requiredCumulativeAmount: '20010', lastRequestCost: '20010', inputTokens: '0', outputTokens: '1334',
       }, mux);
       expect(lastSigned()).toBe('20010');
-      expect(manager.getActiveSession(sellerPeerId)).not.toBeNull();
       return { sellerPeerId, negotiator, channelId };
     }
 
-    async function underQuoted(negotiator: BuyerPaymentNegotiator, sellerPeerId: string, requestId: string, target: Record<string, unknown>) {
-      const peer = routedPeer(sellerPeerId);
-      const request = chat(requestId);
+    it('refuses a higher stated price and signs nothing for it, without holding the channel', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-open');
+      const peer = {
+        peerId: toPeerId(sellerPeerId),
+        providers: ['openai'],
+        providerPricing: { openai: { defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 } } },
+      };
+      const request = chat('under-quoted-open');
       negotiator.trackRequestBillingContext(request, 'k3', selectBillingRoute(peer, request, 'k3'));
-      return negotiator.handle402(paymentRequired(requestId, { ...target, inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn(), request);
-    }
+      const connection = conn();
 
-    /** Another request on the channel, tracked at its route, whose 402 states no price. */
-    async function laterRequest(negotiator: BuyerPaymentNegotiator, sellerPeerId: string, channelId: string) {
-      const peer = routedPeer(sellerPeerId);
-      const request = chat('later');
-      negotiator.trackRequestBillingContext(request, 'k3', selectBillingRoute(peer, request, 'k3'));
-      return negotiator.handle402(
-        paymentRequired('later', { requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId }),
-        peer, conn(), request,
-      );
-    }
+      const result = await negotiator.handle402(catchUp(request.requestId, channelId, { inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, connection as never, request);
 
-    function expectPriceMismatch(result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>>, message: string) {
       expect(result.action).toBe('return');
       const answer = (result as { response: { statusCode: number; body: Uint8Array } }).response;
       expect(answer.statusCode).toBe(409);
       expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
-        error: 'payment_negotiation_failed', reason: 'price_mismatch', message: expect.stringContaining(message),
+        error: 'payment_negotiation_failed', reason: 'price_mismatch', message: expect.stringContaining('asked for a higher price than it announces'),
       });
-    }
-
-    it('signs nothing more on the channel: not its catch-up NeedAuth, not a 402 retry, until a new channel', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-open');
-      const signedBefore = mux.sentSpendingAuths.length;
-
-      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'under-quoted-open', {
-        requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId,
-      }), 'asked for a higher price than it announces');
-
-      // The catch-up NeedAuth the seller sends with its budget-exhausted 402.
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requestId: 'under-quoted-open', requiredCumulativeAmount: '95000',
-      }, mux);
-      // The buyer's own 402 retry.
-      await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 95_000n, 'under-quoted-open');
-      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
+      expect(connection.send).not.toHaveBeenCalled();
       expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_010n);
-      // What the seller asked for above what is signed.
-      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(74_990n);
-
-      // A later 402 on the channel, stating no price, is refused too.
-      expectPriceMismatch(await laterRequest(negotiator, sellerPeerId, channelId), 'charged more than the prices it announces');
-
-      // A new channel with the seller has a window again.
-      manager.cleanupSession(sellerPeerId);
-      const replacement = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId: replacement, currentAcceptedCumulative: '0', deposit: '1000000', requiredCumulativeAmount: '50000',
-      }, mux);
-      expect(lastSigned()).toBe('50000');
-    });
-
-    it('holds the channel the same way when the 402 names no amount', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-no-target');
-      const signedBefore = mux.sentSpendingAuths.length;
-
-      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'no-target', {}), 'asked for a higher price than it announces');
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '95000',
-      }, mux);
-      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
-      // The seller asked for nothing above what is signed.
-      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(0n);
-      expectPriceMismatch(await laterRequest(negotiator, sellerPeerId, channelId), 'charged more than the prices it announces');
-    });
-
-    it('holds the live channel only, not for a delayed 402 about a channel it replaced', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-old-channel');
-      const oldChannelId = `0x${'ab'.repeat(32)}`;
-      expect(oldChannelId).not.toBe(channelId);
-
-      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'old-channel', {
-        requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId: oldChannelId,
-      }), 'asked for a higher price than it announces');
-
+      // An honest seller that raised its price keeps its channel.
       expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '50000',
-      }, mux);
-      expect(lastSigned()).toBe('50000');
     });
 
-    /** A real request handler whose seller answers every request with a 402 naming `channelId`. */
-    function zeroRouteHandler(negotiator: BuyerPaymentNegotiator, channelId: string) {
-      const connection = { state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() };
-      return new BuyerRequestHandler({}, {
+    it('refuses a payment demand on a route priced at zero and signs nothing for it, without holding the channel', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-open');
+      const connection = conn();
+      const handler = new BuyerRequestHandler({}, {
         localPeerId: identity.peerId,
         negotiator,
         verificationStorage: null,
         verificationSampler: null,
         getConnection: async () => connection as never,
         getMux: () => ({
-          sendProxyRequest: (request: { requestId: string }, onResponse: (value: unknown, metadata: { streamingStart: boolean }) => void) =>
-            onResponse(paymentRequired(request.requestId, {
-              requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId,
-            }), { streamingStart: false }),
+          sendProxyRequest: (sent: { requestId: string }, onResponse: (value: unknown, metadata: { streamingStart: boolean }) => void) =>
+            onResponse(catchUp(sent.requestId, channelId), { streamingStart: false }),
           cancelProxyRequest: vi.fn(),
           activeRequestCount: () => 1,
         }) as never,
         getVerificationMux: () => ({}) as never,
         registerPaymentMux: vi.fn(),
       });
-    }
-    const zeroPricedPeer = (sellerPeerId: string) => ({
-      peerId: toPeerId(sellerPeerId),
-      providers: ['openai'],
-      providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
-    });
+      const freePeer = {
+        peerId: toPeerId(sellerPeerId),
+        providers: ['openai'],
+        providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+      };
 
-    it('holds the live channel only, not for a delayed $0-route 402 about a channel it replaced', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-old-channel');
-      const answer = await zeroRouteHandler(negotiator, `0x${'ab'.repeat(32)}`).sendRequest(zeroPricedPeer(sellerPeerId), chat('zero-route-old'));
-      expect(answer.statusCode).toBe(409);
-      expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '50000',
-      }, mux);
-      expect(lastSigned()).toBe('50000');
-    });
+      const answer = await handler.sendRequest(freePeer, chat('zero-route-open'));
 
-    it('holds the channel when the seller asks for payment on a route priced at zero', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-open');
-      const signedBefore = mux.sentSpendingAuths.length;
-
-      const answer = await zeroRouteHandler(negotiator, channelId).sendRequest(zeroPricedPeer(sellerPeerId), chat('zero-route-open'));
       expect(answer.statusCode).toBe(409);
       expect(Buffer.from(answer.body).toString()).toContain('announces as free');
-      // What the seller asked for above what is signed.
-      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(74_990n);
-
-      // The catch-up NeedAuth the seller sends with its 402, naming no request.
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '95000',
-      }, mux);
-      await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 95_000n, 'zero-route-open');
-      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
+      expect(connection.send).not.toHaveBeenCalled();
       expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_010n);
-    });
-
-    it('records nothing when there is no channel to hold', async () => {
-      const sellerPeerId = fakePeerId('seller-under-quoted-no-channel');
-      const negotiator = new BuyerPaymentNegotiator(identity, manager, null, null, store, {}, { emit: () => true });
-      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'no-channel', {}), 'asked for a higher price than it announces');
-      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId, currentAcceptedCumulative: '0', deposit: '1000000', requiredCumulativeAmount: '50000',
-      }, mux);
-      expect(lastSigned()).toBe('50000');
+      expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
     });
   });
 
@@ -1244,14 +1143,15 @@ describe('BuyerPaymentManager', () => {
     expect((await manager.buildCloseChannelRequest(sellerPeerId)).cumulativeAmount).toBe('20010');
 
     // A new channel with the seller starts with a window again.
-    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(75_000n);
+    expect(manager.hasRefusedClaim(sellerPeerId)).toBe(true);
     manager.cleanupSession(sellerPeerId);
-    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(0n);
+    expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
   });
 
   it('refuses a cost claimed for a response whose usage the buyer read and priced at zero, and signs it from no window', async () => {
     const sellerPeerId = fakePeerId('seller-zero-priced-claim');
-    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    // A seller whose price for the service is zero.
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, { inputUsdPerMillion: 0, outputUsdPerMillion: 0 });
     mux.sentSpendingAuths.length = 0;
     const frame = { channelId, currentAcceptedCumulative: '0', deposit: '1000000' };
     const claim = { lastRequestCost: '75000', inputTokens: '100010', cachedInputTokens: '100000', outputTokens: '8' };
@@ -1264,7 +1164,7 @@ describe('BuyerPaymentManager', () => {
 
     expect(mux.sentSpendingAuths).toHaveLength(0);
     expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
-    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(75_000n);
+    expect(manager.hasRefusedClaim(sellerPeerId)).toBe(true);
 
     // A response that shows no usage is not priced at zero: the buyer cannot price it, and its
     // cost is still signed from the overdraft window.
@@ -1276,7 +1176,28 @@ describe('BuyerPaymentManager', () => {
     });
     await manager.handleNeedAuth(otherSellerPeerId, { ...frame, ...claim, channelId: otherChannelId, requestId: 'no-usage', requiredCumulativeAmount: '75000' }, mux);
     expect(manager.getCumulativeAmount(otherSellerPeerId)).toBe(75_000n);
-    expect(manager.refusedClaimTotal(otherSellerPeerId)).toBe(0n);
+    expect(manager.hasRefusedClaim(otherSellerPeerId)).toBe(false);
+  });
+
+  it('does not refuse a claim the buyer prices at 0 only because a small cost rounds down', async () => {
+    const sellerPeerId = fakePeerId('seller-rounded-claim');
+    // The buyer prices at the f32 rounding of the announced 0.02; the seller at its exact 0.02.
+    const announced = { inputUsdPerMillion: Math.fround(0.02), outputUsdPerMillion: Math.fround(0.02) };
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, announced);
+    mux.sentSpendingAuths.length = 0;
+    const buyerCost = computeCostUsdc(25, 0, announced);
+    expect(buyerCost).toBe(0n); // 0.4999... base units; the seller's 0.5 rounds to 1
+    manager.recordDeliveredResponse(sellerPeerId, 'small', {
+      costUsdc: buyerCost, service: 'gpt-test', usage: { inputTokens: 25n, cachedInputTokens: 0n, outputTokens: 0n },
+    });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, currentAcceptedCumulative: '0', deposit: '1000000', requestId: 'small',
+      requiredCumulativeAmount: '1', lastRequestCost: '1', inputTokens: '25', outputTokens: '0',
+    }, mux);
+
+    expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(1n);
   });
 
   it('handleNeedAuth propagates durable persistence failures without transmitting', async () => {

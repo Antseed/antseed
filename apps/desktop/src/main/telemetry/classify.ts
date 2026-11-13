@@ -144,6 +144,8 @@ export type ChatFailureReasonContext = {
 };
 
 const BUYER_SIDE_FAULT = /antseed_buyer_fault|buyer_request_failed|buyer_payments_inactive|payments_inactive|payment_negotiation_failed/i;
+/** The buyer refused the seller's price (it disagrees with its announcement, or there is none): the seller's fault. */
+const SELLER_PRICE_REFUSED = /\bprice_(?:mismatch|unknown)\b|announces (?:as free|no price)|higher price than it announces|more than the prices it announces/i;
 const PAYMENT_SIGNAL = /payment_required|insufficient_deposits|out of antseed credits/i;
 const NO_SELLER_SIGNAL = /model_not_found|no policy-allowed peer|not served by this peer|model .* not (?:served|available)|no verified peer currently serves/i;
 const NO_PEERS_SIGNAL = /no peers discovered/i;
@@ -175,7 +177,7 @@ export function classifyChatFailureReason(
       ? 'model_needs_paid'
       : 'out_of_credits';
   }
-  if (BUYER_SIDE_FAULT.test(rawMessage)) return 'local_error';
+  if (BUYER_SIDE_FAULT.test(rawMessage) && !SELLER_PRICE_REFUSED.test(rawMessage)) return 'local_error';
   if (NO_SELLER_SIGNAL.test(rawMessage) || NO_PEERS_SIGNAL.test(rawMessage)) {
     return context.peersDiscoveredAtSend && !NO_PEERS_SIGNAL.test(rawMessage)
       ? 'no_seller_available'

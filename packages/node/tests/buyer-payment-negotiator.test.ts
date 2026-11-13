@@ -52,8 +52,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
-    refusedClaimTotal: vi.fn().mockReturnValue(0n),
-    refusePaymentDemand: vi.fn(),
+    hasRefusedClaim: vi.fn().mockReturnValue(false),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     replayReserveAmount: vi.fn().mockReturnValue(100_000n),
@@ -70,8 +69,6 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
-  // Like the manager: a seller has a refused claim while its total is recorded.
-  bpm.hasRefusedClaim = vi.fn((peerId: string) => (bpm.refusedClaimTotal as (id: string) => bigint)(peerId) > 0n);
   // Like the manager: the higher of the in-memory and the stored cumulative.
   bpm.getHighestSignedAmount = vi.fn((channel: StoredChannel) => {
     const inMemory = bpm.getCumulativeAmount(channel.peerId);
@@ -473,7 +470,7 @@ describe('BuyerPaymentNegotiator', () => {
 
       it('signs nothing and opens no replacement when the seller is short of a cost the buyer refused', async () => {
         setSigned(5_000_000n);
-        (bpm.refusedClaimTotal as ReturnType<typeof vi.fn>).mockReturnValue(75_000n);
+        (bpm.hasRefusedClaim as ReturnType<typeof vi.fn>).mockReturnValue(true);
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
 
         expect(result.action).toBe('return');
@@ -780,9 +777,9 @@ describe('BuyerPaymentNegotiator', () => {
       });
       const readChain = channelsClient.getSession as ReturnType<typeof vi.fn>;
       const onChain = await readChain();
-      // A parallel request's 402 holds the channel while this one reads the chain.
+      // A parallel request's NeedAuth claim is refused, holding the channel, while this one reads the chain.
       readChain.mockImplementation(async () => {
-        (bpm.refusedClaimTotal as ReturnType<typeof vi.fn>).mockReturnValue(75_000n);
+        (bpm.hasRefusedClaim as ReturnType<typeof vi.fn>).mockReturnValue(true);
         return onChain;
       });
 
@@ -1029,8 +1026,6 @@ describe('BuyerPaymentNegotiator', () => {
           inputUsdPerMillion: 3,
           outputUsdPerMillion: 15,
         }), peer, conn, makeRequest()));
-        // The channel is held, so the catch-up NeedAuth for the same target is not signed either.
-        expect(bpm.refusePaymentDemand).toHaveBeenCalledWith(peer.peerId, 85119n);
       });
 
       it('refuses a 402 that states no cached price for a route with a cached discount: the seller bills cached input at its input price', async () => {
@@ -1055,10 +1050,9 @@ describe('BuyerPaymentNegotiator', () => {
           routeChosenAt(ROUTE);
         });
 
-        it('refuses and holds the channel when the frame for this request states a higher price', async () => {
+        it('refuses when the frame for this request states a higher price', async () => {
           frameFor('req-1');
           expectRefused(await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest()));
-          expect(bpm.refusePaymentDemand).toHaveBeenCalledWith(peer.peerId, 85119n);
         });
 
         it('still negotiates when the higher price is in a frame for another request', async () => {
@@ -1069,7 +1063,6 @@ describe('BuyerPaymentNegotiator', () => {
           });
           const result = await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest());
           expect(result.action).toBe('retry');
-          expect(bpm.refusePaymentDemand).not.toHaveBeenCalled();
           expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalled();
         });
       });
