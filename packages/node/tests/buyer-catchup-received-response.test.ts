@@ -348,7 +348,7 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     expect(verified()).toBe(2_600_000n);
   });
 
-  it('counts received responses up to the catch-up target in order, and the next catch-up counts the rest', async () => {
+  it('counts received responses up to the catch-up target in ledger order, and later catch-ups count the rest', async () => {
     const reserve = 5_000_000n;
     await openChannel(reserve);
     send('a');
@@ -367,26 +367,30 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     expect(verified()).toBe(840_000n);
     expect(signed()).toBe(840_000n + WINDOW);
 
-    // The next catch-up counts b, up to the seller's target.
+    // The next catch-up counts b up to the seller's target; the rest of b's price stays owed.
     send('next-2');
     await catchUp(2_500_000n, 'next-2');
     manager.endPaidRequest(sellerPeerId, 'next-2', true);
     expect(verified()).toBe(2_500_000n);
     expect(signed()).toBe(2_500_000n);
 
-    // Nothing more counts: later catch-ups sign one window at most, and the signing before a close nothing.
+    // A later catch-up that asks for more counts the rest of b's price within
+    // the tolerance (340,000 at 1.4x: 476,000). Then nothing more counts:
+    // catch-ups sign one window at most, and the signing before a close nothing.
     for (let round = 0; round < ROUNDS; round += 1) {
       const requestId = `answered-402-${round}`;
       send(requestId);
       await catchUp(signed() + WINDOW, requestId);
       manager.endPaidRequest(sellerPeerId, requestId, true);
-      expect(signed(), `round ${round}: signed past verified cost plus one window`).toBeLessThanOrEqual(2_500_000n + WINDOW);
+      expect(signed(), `round ${round}: signed past verified cost plus one window`).toBeLessThanOrEqual(2_976_000n + WINDOW);
+      expect(verified(), `round ${round}: verified past what a and b can count`).toBeLessThanOrEqual(2_976_000n);
     }
-    expect(signed()).toBe(2_500_000n + WINDOW);
+    expect(verified()).toBe(2_976_000n);
+    expect(signed()).toBe(2_976_000n + WINDOW);
     await signAtClose('a', 600_000n);
     await signAtClose('b', 2_000_000n);
-    expect(signed()).toBe(2_500_000n + WINDOW);
-    expect(verified()).toBe(2_500_000n);
+    expect(signed()).toBe(2_976_000n + WINDOW);
+    expect(verified()).toBe(2_976_000n);
   });
 
   it('counts every received response a catch-up for the seller\'s exact spend covers, and pays none again at close', async () => {
@@ -412,6 +416,54 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     for (const [id, cost] of responses) await signAtClose(id, cost);
     expect(signed()).toBe(spend);
     expect(verified()).toBe(spend);
+  });
+
+  it('keeps the rest of a response a catch-up counts only in part owed, and pays it on a later catch-up', async () => {
+    const reserve = 5_000_000n;
+    await openChannel(reserve);
+    send('large');
+    send('small');
+    // Both are delivered and priced; neither cost frame arrives. A seller prompt fills the window.
+    deliver('large', 2_000_000n);
+    deliver('small', 600_000n);
+    await prompt(2_600_000n);
+    expect(signed()).toBe(WINDOW);
+    expect(verified()).toBe(0n);
+
+    // A 402 the seller sent before it served the rest asks for 600,000: it counts part of the first response.
+    send('next-1');
+    await catchUp(600_000n, 'next-1');
+    manager.endPaidRequest(sellerPeerId, 'next-1', true);
+    expect(verified()).toBe(600_000n);
+    expect(signed()).toBe(600_000n);
+
+    // The window is open again: the next 402 signs up to it.
+    send('next-2');
+    await catchUp(2_600_000n, 'next-2');
+    manager.endPaidRequest(sellerPeerId, 'next-2', true);
+    expect(verified()).toBe(600_000n);
+    expect(signed()).toBe(600_000n + WINDOW);
+
+    // The one after counts the rest of the first response and all of the second.
+    send('next-3');
+    await catchUp(2_600_000n, 'next-3');
+    manager.endPaidRequest(sellerPeerId, 'next-3', true);
+    expect(verified(), 'the rest of the partly counted response was not paid').toBe(2_600_000n);
+    expect(signed()).toBe(2_600_000n);
+
+    // Nothing more counts: later catch-ups sign one window at most, and the signing before a close nothing.
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const requestId = `answered-402-${round}`;
+      send(requestId);
+      await catchUp(signed() + WINDOW, requestId);
+      manager.endPaidRequest(sellerPeerId, requestId, true);
+      expect(signed(), `round ${round}: signed past verified cost plus one window`).toBeLessThanOrEqual(2_600_000n + WINDOW);
+    }
+    expect(signed()).toBe(2_600_000n + WINDOW);
+    await signAtClose('large', 2_000_000n);
+    await signAtClose('small', 600_000n);
+    expect(signed()).toBe(2_600_000n + WINDOW);
+    expect(verified()).toBe(2_600_000n);
   });
 
   it('allows one window per request in flight for catch-ups with nothing received, however many follow', async () => {
