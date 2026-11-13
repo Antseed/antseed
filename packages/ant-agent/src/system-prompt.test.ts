@@ -132,6 +132,27 @@ describe('injectSystemPrompt', () => {
     expect(messages[0].content).toContain('<client-context>\nBuyer system prompt\n</client-context>');
   });
 
+  it('wraps OpenAI system message with array content as client context', () => {
+    const body = {
+      messages: [
+        {
+          role: 'system',
+          content: [{ type: 'text', text: 'Buyer system prompt', cache_control: { type: 'ephemeral' } }],
+        },
+        { role: 'user', content: 'Hello' },
+      ],
+    };
+    const result = injectSystemPrompt(body, systemContent, 'openai');
+    const messages = result.messages as { role: string; content: unknown }[];
+    expect(messages).toHaveLength(2);
+    expect(JSON.stringify(messages[0].content)).not.toContain('[object Object]');
+    const parts = messages[0].content as { type: string; text: string; cache_control?: unknown }[];
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toEqual({ type: 'text', text: systemContent });
+    expect(parts[1].text).toContain('<client-context>\nBuyer system prompt\n</client-context>');
+    expect(parts[1].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
   it('adds system message when none exists (OpenAI)', () => {
     const body = { messages: [{ role: 'user', content: 'Hello' }] };
     const result = injectSystemPrompt(body, systemContent, 'openai');
@@ -159,6 +180,17 @@ describe('injectSystemPrompt', () => {
     const body = {
       messages: [
         { role: 'system', content: `${systemContent}\n\nBuyer prompt` },
+        { role: 'user', content: 'Hello' },
+      ],
+    };
+    const result = injectSystemPrompt(body, systemContent, 'openai');
+    expect(result).toBe(body);
+  });
+
+  it('skips injection if already present in OpenAI array content', () => {
+    const body = {
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: systemContent }] },
         { role: 'user', content: 'Hello' },
       ],
     };
