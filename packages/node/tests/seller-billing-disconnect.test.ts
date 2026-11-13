@@ -338,7 +338,9 @@ const paymentBody = (response: SerializedHttpResponse): Record<string, unknown> 
 describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a disconnect, %s answer', (kind) => {
   it.each([
     { name: 'nothing signed', config: {}, signed: 0n },
+    { name: 'nothing signed, settle-on-disconnect off', config: { settleOnDisconnect: false }, signed: 0n },
     { name: 'already signed, settle-on-disconnect off', config: { settleOnDisconnect: false }, signed: COST },
+    { name: 'already signed', config: {}, signed: COST },
   ])('records an answer that ends after the buyer left and asks for it before serving more ($name)', async ({ config, signed }) => {
     const h = await setup(kind, config);
     expect(await h.openChannel(CHANNEL_A)).toBe('reserved');
