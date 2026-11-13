@@ -227,6 +227,8 @@ const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
 const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** How long a request at the reserve ceiling waits for a running top-up before a retryable answer. */
 const TOP_UP_WAIT_MS = 15_000;
+/** After a top-up lands, how long a request waits for the auths parked behind it to apply. */
+const PARKED_AUTH_GRACE_MS = 1_000;
 /** A request's buyer-limit reservation, its estimated size, and the tokens it is finished with. */
 interface BuyerUsageHold {
   reservation: BuyerUsageReservation | null;
@@ -766,12 +768,29 @@ export class SellerRequestHandler {
             // Other requests can finish while this one is parked: re-read the
             // spend after each catch-up and keep waiting, within one budget,
             // so an auth for the earlier spend never releases newer unpaid work.
-            const deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            let deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
+            let ceiling = reserveMax;
             let caughtUp = true;
             while (caughtUp && spent > accepted) {
               caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, Math.max(0, deadline - Date.now()));
               accepted = spm.getAcceptedCumulative(session.sessionId);
               spent = spm.getCumulativeSpend(session.sessionId);
+              // Auths above the ceiling are parked until a top-up lands, and on
+              // a slow chain that can take the whole wait. Wait for a running
+              // one (bounded); once the ceiling has risen, give the parked auths
+              // a moment to apply instead of a 402 for spend the buyer signed.
+              if (!caughtUp && spent > accepted && spent > ceiling && Date.now() < topUpDeadline) {
+                if (spm.isTopUpRunning(session.sessionId)) {
+                  await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()), spent);
+                }
+                const raised = spm.getEffectiveReserveMax(session.sessionId);
+                if (raised > ceiling) {
+                  ceiling = raised;
+                  deadline = Date.now() + PARKED_AUTH_GRACE_MS;
+                  caughtUp = true;
+                }
+              }
             }
             // A channel closed or evicted while parked has its counters reset
             // to zero, which would read as caught up: renegotiate instead.
