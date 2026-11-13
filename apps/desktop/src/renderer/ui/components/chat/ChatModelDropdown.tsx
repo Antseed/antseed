@@ -89,9 +89,17 @@ export function initialPickerTab(selected: ChatModel | null | undefined, tabs: r
 
 /** Each tab's rows. Free narrows Text and Image only: a router's pick is priced alone, and Auto has no Free toggle. */
 export function pickerLists(models: ChatModel[], query: string, freeOnly: boolean): Record<PickerTab, ChatModel[]> {
-  const { routers } = filterChatModels(models, query, null);
-  const { text, image } = filterChatModels(models, query, freeOnly ? 'free' : null);
-  return { auto: routers, text, image };
+  const { routers, text, image } = filterChatModels(models, query, null);
+  return {
+    auto: routers,
+    text: freeOnly ? text.filter((model) => model.free) : text,
+    image: freeOnly ? image.filter((model) => model.free) : image,
+  };
+}
+
+/** Whether the detail card fits beside a menu at `menuLeft`..`menuRight` in a window `windowWidth` wide. */
+export function cardFits(menuLeft: number, menuRight: number, windowWidth: number): boolean {
+  return menuRight + CARD_GAP + CARD_WIDTH <= windowWidth - CARD_GAP || menuLeft - CARD_GAP - CARD_WIDTH >= CARD_GAP;
 }
 
 /** What a row's detail card shows, for screen readers, which skip the card. */
@@ -105,6 +113,17 @@ export function modelSummary(model: ChatModel): string {
     model.router?.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
     !model.router && model.sellers > 0 ? `${model.sellers} seller${model.sellers === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join('. ');
+}
+
+/** The short line a row shows when the card has no room: what the row's tags don't already say. */
+export function modelInlineDetails(model: ChatModel): string {
+  const price = modelPrice(model);
+  return [
+    model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
+    price && price.tag !== 'free' ? price.text : null,
+    model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
+    model.router?.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 /** The lab whose mark a row shows, or null for a model no known lab makes. */
@@ -168,6 +187,8 @@ export function ChatModelDropdown({
   const [freeOnly, setFreeOnly] = useState(false);
   const [tab, setTab] = useState<PickerTab>('text');
   const [hovered, setHovered] = useState<Hovered | null>(null);
+  // No room for the card beside the menu (a narrow window, Home's full-width menu): rows carry the details.
+  const [cardRoom, setCardRoom] = useState(true);
   const lists = useMemo(() => pickerLists(models, query, freeOnly), [models, query, freeOnly]);
   // Tabs for the kinds the gateway lists at all, so a filter can't hide a tab.
   const tabs = useMemo(() => {
@@ -189,6 +210,19 @@ export function ChatModelDropdown({
     // Open on the tab of the model in use.
     setTab(initialPickerTab(selected, tabs.map(([key]) => key)));
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- only when it opens
+
+  // The list can change while the menu is open: never stay on a tab that's gone.
+  useEffect(() => {
+    const keys = tabs.map(([key]) => key);
+    if (open && keys.length > 0 && !keys.includes(tab)) setTab(initialPickerTab(selected, keys));
+  }, [open, tabs, tab, selected]);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!open || !menu) return;
+    const rect = menu.getBoundingClientRect();
+    setCardRoom(cardFits(rect.left, rect.right, window.innerWidth));
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -216,9 +250,13 @@ export function ChatModelDropdown({
     const menu = menuRef.current;
     if (!menu) return;
     const menuRect = menu.getBoundingClientRect();
+    if (!cardFits(menuRect.left, menuRect.right, window.innerWidth)) {
+      setHovered(null);
+      return;
+    }
     const right = menuRect.right + CARD_GAP;
     const left = right + CARD_WIDTH <= window.innerWidth - CARD_GAP ? right : menuRect.left - CARD_GAP - CARD_WIDTH;
-    setHovered(left >= CARD_GAP ? { model, top: row.getBoundingClientRect().top, left } : null);
+    setHovered({ model, top: row.getBoundingClientRect().top, left });
   }
 
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');
@@ -229,7 +267,7 @@ export function ChatModelDropdown({
       <button
         key={model.id}
         type="button"
-        className={`${styles.pickerRow}${active ? ` ${styles.active}` : ''}`}
+        className={`${styles.pickerRow}${cardRoom ? '' : ` ${styles.pickerRowTall}`}${active ? ` ${styles.active}` : ''}`}
         role="option"
         aria-selected={active}
         aria-label={`${model.label}. ${modelSummary(model)}`}
@@ -241,7 +279,12 @@ export function ChatModelDropdown({
         }}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        <span className={styles.pickerName}>{model.label}</span>
+        {cardRoom ? <span className={styles.pickerName}>{model.label}</span> : (
+          <span className={styles.pickerNameGroup}>
+            <span className={styles.pickerName}>{model.label}</span>
+            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
+          </span>
+        )}
         <span className={styles.pickerTags}>
           {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
           {model.tee && <span className={`${styles.tag} ${styles.tagTee}`}>{model.teeEndToEnd ? 'TEE end to end' : 'TEE'}</span>}

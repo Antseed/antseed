@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../../types/bridge';
-import { centeredScrollTop, holdEnterInSearch, initialPickerTab, modelLab, modelSummary, pickerLists, pickerTabFor } from './ChatModelDropdown';
+import { cardFits, centeredScrollTop, holdEnterInSearch, initialPickerTab, modelInlineDetails, modelLab, modelSummary, pickerLists, pickerTabFor } from './ChatModelDropdown';
 
 test('Enter in the model search does not submit the composer form around it', () => {
   const pressed = (key: string) => {
@@ -69,4 +69,20 @@ test('a row tells screen readers what its detail card shows', () => {
   for (const part of ['Moonshot', 'TEE', 'Vision', 'per M', '256k context', '6 sellers']) assert.ok(summary.includes(part), part);
   const router = model({ id: 'r', label: 'Router', router: { sellerName: 'Example Seller', priceUsdPerRequest: 0, models: 4 } });
   assert.equal(modelSummary(router), 'by Example Seller. Router. Free picks. picks from 4 models');
+});
+
+test('the card shows beside the menu only where it fits, else rows carry the details', () => {
+  // A 400px menu at the left of a wide window: room on its right.
+  assert.equal(cardFits(40, 440, 1280), true);
+  // At the right edge: room on its left.
+  assert.equal(cardFits(840, 1240, 1280), true);
+  // Home's full-width menu in a 920px window: no room either side.
+  assert.equal(cardFits(120, 860, 920), false);
+});
+
+test('without room for the card, a row\'s second line adds only what its tags don\'t say', () => {
+  const glm = model({ id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash', free: true, contextWindow: 200000 });
+  assert.equal(modelInlineDetails(glm), 'Z.ai · 200k context');
+  const kimi = model({ id: 'moonshotai/kimi-k3', label: 'Kimi K3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 });
+  assert.match(modelInlineDetails(kimi), /^Moonshot · from \$0\.60/);
 });

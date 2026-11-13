@@ -583,3 +583,25 @@
 .picker-card-price {
   grid-column: 1 / -1;
 }
+
+/* Without room for the card, a second line carries what it would show. */
+.picker-row-tall {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.picker-name-group {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.picker-inline-details {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
