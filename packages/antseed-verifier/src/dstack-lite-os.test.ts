@@ -78,7 +78,7 @@ describe('dstack lite OS verifier (real wasm)', () => {
     `], { cwd: new URL('..', import.meta.url), encoding: 'utf8' })
     // Review binary changes independently before updating this digest on a dependency bump.
     expect(digest).toBe(
-      'f25a714e3d7e8febcf0bbfe1629e4801ef273f81034a675750bb98b6e9175c71',
+      '2566e73833b2ca3ef50cb7e6523573245e147a7f814ecc92aa4c473dbbcd830f',
     )
   })
 

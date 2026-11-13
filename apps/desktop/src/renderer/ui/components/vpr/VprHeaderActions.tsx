@@ -2,7 +2,6 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { HelpCircleIcon, Key01Icon } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../../types';
 import styles from './VprHeaderActions.module.scss';
-import { openGatewayConsole } from '../../../modules/app/console-launch';
 
 type Props = {
   onSelectView?: (view: ViewName) => void;
@@ -24,9 +23,9 @@ export function VprHeaderActions({ onSelectView, className }: Props) {
       <button
         type="button"
         className={styles.keysButton}
-        title="Manage API keys in your gateway"
+        title="Your gateway and its API keys"
         aria-label="API keys"
-        onClick={() => { void openGatewayConsole('/keys'); }}
+        onClick={() => onSelectView?.('gateway')}
       >
         <HugeiconsIcon icon={Key01Icon} size={15} strokeWidth={1.8} />
         API keys
