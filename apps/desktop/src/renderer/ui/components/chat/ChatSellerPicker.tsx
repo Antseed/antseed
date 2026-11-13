@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, ShuffleIcon } from '@hugeicons/core-free-icons';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge';
-import { findChatModel, offerPriceLabel } from '../../../modules/chat/models';
+import { findChatModel, offerPriceLabel, sellerImagePriceLabel } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
@@ -84,7 +84,10 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
     : findChatModel(state.chatModels, listedId)?.freeSellerId ?? null));
 
   const stakersOnlyFreeIds = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.stakersOnlyFreeSellerIds);
+  // An image model charges per image; its token prices read $0.
+  const imagePrices = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.imageUsdBySeller);
   const priceTag = (offer: ChatRouteCandidate) => {
+    if (imagePrices) return sellerImagePriceLabel(imagePrices, offer.peerId);
     const label = offerPriceLabel(offer, stakersOnlyFreeIds?.includes(offer.peerId) ?? false);
     if (label === 'Free') return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
     return label === 'Free for stakers' ? <span className={styles.tag}>{label}</span> : label;

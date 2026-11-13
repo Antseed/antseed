@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findGatewayEntry, recommendAppModels, toTrustedChatModels } from './catalog.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels } from './catalog.js';
 import type { GatewayModelEntry } from './models.js';
 
 const seller = (n: string, fields: Record<string, unknown>) => ({ peerId: n.repeat(40), ...fields });
@@ -69,4 +69,18 @@ test('an exact entry id beats a canonical match, and a dated variant is another 
   assert.equal(findGatewayEntry(entries, 'glm-5.3-flash')?.id, 'glm-5.3-flash');
   assert.equal(findGatewayEntry(entries, 'z-ai/glm-5.3-flash')?.id, 'z-ai/glm-5.3-flash');
   assert.equal(findGatewayEntry(entries, 'deepseek-v4-1-flash-1017'), null);
+});
+
+test('an image model keeps each seller\'s price per image for the seller picker', () => {
+  const model = toChatModel({
+    id: 'flux-2-pro',
+    type: 'image',
+    peers: [
+      { peerId: '0xAB12CD34', minImageUsdPerImage: 0.04 },
+      { peerId: 'ef56ab78', minImageUsdPerImage: 0.05 },
+      { peerId: 'cd90ef12' },
+    ],
+  } as unknown as GatewayModelEntry);
+  assert.deepEqual(model.imageUsdBySeller, { ab12cd34: 0.04, ef56ab78: 0.05 });
+  assert.equal(toChatModel({ id: 'glm-5.3-flash', peers: [{ peerId: 'ab12cd34', inputUsdPerMillion: 0.3 }] } as unknown as GatewayModelEntry).imageUsdBySeller, undefined);
 });

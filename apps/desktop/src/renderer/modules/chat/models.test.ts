@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../types/bridge';
 import {
+  sellerImagePriceLabel,
   selectionIsFree,
   buildCumulativeImagePrompt,
   chooseDefaultChatModel,
@@ -243,4 +244,10 @@ test('a dated variant is another model', () => {
   const listed = [model('deepseek-v4.1-flash')];
   assert.equal(findChatModel(listed, 'deepseek-v4-1-flash-1017'), null);
   assert.equal(findChatModel(listed, 'deepseek-v4-1-flash')?.id, 'deepseek-v4.1-flash');
+});
+
+test('the seller picker prices an image model\'s sellers per image', () => {
+  const prices = { ab12cd34: 0.04 };
+  assert.equal(sellerImagePriceLabel(prices, '0xAB12CD34'), '$0.04 per image');
+  assert.equal(sellerImagePriceLabel(prices, 'ef56ab78'), null);
 });
