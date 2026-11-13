@@ -1033,6 +1033,47 @@ describe('BuyerPaymentNegotiator', () => {
         expect(bpm.refusePaymentDemand).toHaveBeenCalledWith(peer.peerId, 85119n);
       });
 
+      it('refuses a 402 that states no cached price for a route with a cached discount: the seller bills cached input at its input price', async () => {
+        routeChosenAt({ inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.75 });
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest()));
+      });
+
+      describe('with a complete 402 body and a PaymentRequired frame buffered for the seller', () => {
+        const catchUpWithoutPrices = { requiredCumulativeAmount: '85119', currentSpent: '85119', currentAcceptedCumulative: '56218' };
+        function frameFor(requestId: string) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, {
+            ...paymentRequiredPayload, ...catchUpWithoutPrices, requestId, inputUsdPerMillion: 3, outputUsdPerMillion: 15,
+          });
+        }
+
+        beforeEach(async () => {
+          await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+          (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+          routeChosenAt(ROUTE);
+        });
+
+        it('refuses and holds the channel when the frame for this request states a higher price', async () => {
+          frameFor('req-1');
+          expectRefused(await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest()));
+          expect(bpm.refusePaymentDemand).toHaveBeenCalledWith(peer.peerId, 85119n);
+        });
+
+        it('still negotiates when the higher price is in a frame for another request', async () => {
+          frameFor('req-expensive');
+          (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValueOnce(56218n).mockReturnValueOnce(85119n);
+          (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+            (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+          });
+          const result = await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.refusePaymentDemand).not.toHaveBeenCalled();
+          expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalled();
+        });
+      });
+
       it('refuses a cached-input price above the input price when the route announces no cached price', async () => {
         routeChosenAt(ROUTE);
         confirmLocks();
@@ -1043,6 +1084,10 @@ describe('BuyerPaymentNegotiator', () => {
         // The announcement carries prices as f32, so the route holds the rounding of the price the seller states.
         ['the price it announces, before f32 rounding', { inputUsdPerMillion: Math.fround(0.7), outputUsdPerMillion: Math.fround(0.1), cachedInputUsdPerMillion: Math.fround(0.35) }, { inputUsdPerMillion: 0.7, outputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.35 }],
         ['a lower price', ROUTE, { inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.6, cachedInputUsdPerMillion: 0.1 }],
+        ['no cached price, for a route with none', ROUTE, ROUTE],
+        ['the cached discount the route has', { ...ROUTE, cachedInputUsdPerMillion: 0.15 }, { ...ROUTE, cachedInputUsdPerMillion: 0.15 }],
+        // A cached price of 0 travels as no cached price, so the route has none.
+        ['a cached price of 0, for a route with none', ROUTE, { ...ROUTE, cachedInputUsdPerMillion: 0 }],
       ])('still negotiates when the seller states %s', async (_label, route, stated) => {
         routeChosenAt(route);
         confirmLocks();

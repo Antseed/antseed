@@ -588,8 +588,8 @@ export class BuyerRequestHandler {
         `which it announces as free — refusing instead of negotiating`,
       );
       // Hold an open channel too: the seller's catch-up NeedAuth would otherwise
-      // be signed from its overdraft window. The 402's target is not read here.
-      negotiator.bpm?.refusePaymentDemand(peer.peerId, null);
+      // be signed from its overdraft window.
+      negotiator.refusePaymentDemand(peer.peerId, response);
       return adaptPeerResponse(paymentNegotiationFailureResponse(response, 'price_mismatch', PRICE_MISMATCH_MESSAGE));
     }
 

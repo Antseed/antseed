@@ -432,16 +432,10 @@ describe('BuyerPaymentManager', () => {
       expect(lastSigned()).toBe('50000');
     });
 
-    it('holds the channel when the seller asks for payment on a route priced at zero', async () => {
-      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-open');
-      const signedBefore = mux.sentSpendingAuths.length;
-      const freePeer = {
-        peerId: toPeerId(sellerPeerId),
-        providers: ['openai'],
-        providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
-      };
+    /** A real request handler whose seller answers every request with a 402 naming `channelId`. */
+    function zeroRouteHandler(negotiator: BuyerPaymentNegotiator, channelId: string) {
       const connection = { state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() };
-      const handler = new BuyerRequestHandler({}, {
+      return new BuyerRequestHandler({}, {
         localPeerId: identity.peerId,
         negotiator,
         verificationStorage: null,
@@ -458,10 +452,33 @@ describe('BuyerPaymentManager', () => {
         getVerificationMux: () => ({}) as never,
         registerPaymentMux: vi.fn(),
       });
+    }
+    const zeroPricedPeer = (sellerPeerId: string) => ({
+      peerId: toPeerId(sellerPeerId),
+      providers: ['openai'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    });
 
-      const answer = await handler.sendRequest(freePeer, chat('zero-route-open'));
+    it('holds the live channel only, not for a delayed $0-route 402 about a channel it replaced', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-old-channel');
+      const answer = await zeroRouteHandler(negotiator, `0x${'ab'.repeat(32)}`).sendRequest(zeroPricedPeer(sellerPeerId), chat('zero-route-old'));
+      expect(answer.statusCode).toBe(409);
+      expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '50000',
+      }, mux);
+      expect(lastSigned()).toBe('50000');
+    });
+
+    it('holds the channel when the seller asks for payment on a route priced at zero', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-open');
+      const signedBefore = mux.sentSpendingAuths.length;
+
+      const answer = await zeroRouteHandler(negotiator, channelId).sendRequest(zeroPricedPeer(sellerPeerId), chat('zero-route-open'));
       expect(answer.statusCode).toBe(409);
       expect(Buffer.from(answer.body).toString()).toContain('announces as free');
+      // What the seller asked for above what is signed.
+      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(74_990n);
 
       // The catch-up NeedAuth the seller sends with its 402, naming no request.
       await manager.handleNeedAuth(sellerPeerId, {

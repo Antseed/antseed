@@ -66,7 +66,8 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     trackFreeUsageRequestService: vi.fn(),
     prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn(), refusePaymentDemand: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
+    refusePaymentDemand: vi.fn(),
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -332,7 +333,7 @@ describe('BuyerRequestHandler route priced at zero', () => {
     expect(handle402).not.toHaveBeenCalled();
     expect(sendProxyRequest).toHaveBeenCalledOnce();
     // An open channel is held, so the seller's catch-up NeedAuth is not signed either.
-    expect(negotiator.bpm.refusePaymentDemand).toHaveBeenCalledWith(freePeer.peerId, null);
+    expect(negotiator.refusePaymentDemand).toHaveBeenCalledWith(freePeer.peerId, expect.objectContaining({ statusCode: 402 }));
     expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith(freePeer.peerId, 'zero-route-request');
     expect(negotiator.bpm.releaseRequestCoverage.mock.invocationCallOrder[0])
       .toBeLessThan(negotiator.bpm.markRequestCovered.mock.invocationCallOrder[0]!);

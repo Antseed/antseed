@@ -207,8 +207,9 @@ function priceAboveRoute(
   const components: Array<[string, number | undefined, number]> = [
     ['input', stated.inputUsdPerMillion, route.inputUsdPerMillion],
     ['output', stated.outputUsdPerMillion, route.outputUsdPerMillion],
-    // What the buyer bills cached input at (computeCostUsdc).
-    ['cached input', stated.cachedInputUsdPerMillion, route.cachedInputUsdPerMillion ?? route.inputUsdPerMillion],
+    // Both sides bill cached input at the input price when no cached price is
+    // set (computeCostUsdc; the seller's 402 then states none).
+    ['cached input', stated.cachedInputUsdPerMillion ?? stated.inputUsdPerMillion, route.cachedInputUsdPerMillion ?? route.inputUsdPerMillion],
   ];
   for (const [component, statedPrice, routePrice] of components) {
     if (statedPrice != null && statedPrice > routePrice * (1 + ANNOUNCED_PRICE_TOLERANCE)) {
@@ -216,6 +217,24 @@ function priceAboveRoute(
     }
   }
   return null;
+}
+
+/**
+ * The channel a 402 is about and the cumulative it asks to have signed: from
+ * the PaymentRequired frame, else from a 402 body that carries the requirements.
+ */
+function paymentDemand(
+  buffered: PaymentRequiredPayload | null,
+  body: Record<string, unknown> | null,
+): { channelId: string | null; target: bigint | null } {
+  return {
+    target: buffered?.requiredCumulativeAmount != null
+      ? safeBigInt(buffered.requiredCumulativeAmount)
+      : body?.requiredCumulativeAmount != null
+        ? safeBigInt(String(body.requiredCumulativeAmount))
+        : null,
+    channelId: buffered?.channelId ?? (typeof body?.channelId === 'string' ? body.channelId : null),
+  };
 }
 
 /**
@@ -881,6 +900,31 @@ export class BuyerPaymentNegotiator {
     return result;
   }
 
+  /**
+   * The buyer refused this 402's payment demand without negotiating it (a
+   * route priced at zero): hold the channel it is about, as _handle402 does.
+   */
+  refusePaymentDemand(peerId: PeerId, response: SerializedHttpResponse): void {
+    const body = parsePaymentRequiredBody(response.body);
+    const bodyHasRequirements = Boolean(body?.minBudgetPerRequest);
+    const { channelId, target } = paymentDemand(
+      bodyHasRequirements ? null : this._bufferedPaymentRequired.get(peerId) ?? null,
+      bodyHasRequirements ? body : null,
+    );
+    this._holdForRefusedDemand(peerId, channelId, target);
+  }
+
+  /**
+   * The seller's catch-up NeedAuth for a refused demand would otherwise be
+   * signed from the open channel's overdraft window. A delayed 402 about a
+   * channel since replaced says nothing about the live one.
+   */
+  private _holdForRefusedDemand(peerId: PeerId, channelId: string | null, target: bigint | null): void {
+    if (channelId == null || channelId.toLowerCase() === this._bpm.getActiveSession(peerId)?.sessionId.toLowerCase()) {
+      this._bpm.refusePaymentDemand(peerId, target);
+    }
+  }
+
   handle402(
     response: SerializedHttpResponse,
     peer: BuyerPeerView,
@@ -985,15 +1029,11 @@ export class BuyerPaymentNegotiator {
     // present we pass it through to extendCurrentSpendingAuth so the buyer
     // catches up in one step instead of creeping by minBudgetPerRequest and
     // repeatedly being rejected as underfunded.
-    const requiredCumulativeTarget = buffered?.requiredCumulativeAmount != null
-      ? safeBigInt(buffered.requiredCumulativeAmount)
-      : responseAlreadyHasRequirements && directPaymentBody?.requiredCumulativeAmount != null
-        ? safeBigInt(String(directPaymentBody.requiredCumulativeAmount))
-        : null;
-
-    // The channel the 402 is about, and the live one (see the stale-channel check below).
-    const paymentChannelId = buffered?.channelId
-      ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
+    // Also the channel the 402 is about (see the stale-channel check below).
+    const { target: requiredCumulativeTarget, channelId: paymentChannelId } = paymentDemand(
+      buffered,
+      responseAlreadyHasRequirements ? directPaymentBody : null,
+    );
     const session = this._bpm.getActiveSession(peer.peerId);
 
     // The seller states what it charges for this request. Above the price the
@@ -1002,27 +1042,24 @@ export class BuyerPaymentNegotiator {
     // states no token price, and a lower one is fine: the buyer verifies cost
     // at its own route price either way.
     // Only prices stated for this request: the 402 body always is, while a
-    // buffered frame is kept per seller and can be another request's.
-    const statedForRequest = buffered ? (buffered.requestId === req.requestId ? buffered : null) : bodyRequirements;
+    // frame is kept per seller and can be another request's. A frame for this
+    // request already buffered next to a complete body is compared too.
+    const frame = buffered ?? this._bufferedPaymentRequired.get(peer.peerId) ?? null;
+    const statedForRequest = [bodyRequirements, frame?.requestId === req.requestId ? frame : null];
     const routeBilling = this._bpm.getRequestBilling(req.requestId);
     const service = routeBilling ? routeBilling.context.service : this._bpm.getRequestService(req.requestId);
     // A request with no billing route is verified at the session pricing this
     // negotiation stores, so it is held to that price.
     const routePricing = routeBilling ? routeBilling.tokenPricing : this._negotiatedPricing(peer, service);
-    const aboveRoute = statedForRequest && routePricing
-      ? priceAboveRoute(statedForRequest, routePricing)
+    const aboveRoute = routePricing
+      ? statedForRequest.map((stated) => stated && priceAboveRoute(stated, routePricing)).find((above) => above != null) ?? null
       : null;
     if (aboveRoute) {
       debugWarn(
         `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
         `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
       );
-      // The seller's catch-up NeedAuth for the same target would otherwise be
-      // signed from the open channel's overdraft window. A delayed 402 about a
-      // channel since replaced says nothing about the live one.
-      if (paymentChannelId == null || paymentChannelId.toLowerCase() === session?.sessionId.toLowerCase()) {
-        this._bpm.refusePaymentDemand(peer.peerId, requiredCumulativeTarget);
-      }
+      this._holdForRefusedDemand(peer.peerId, paymentChannelId, requiredCumulativeTarget);
       return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
     }
     // With no price at all the buyer cannot check what it is charged: it opens,
