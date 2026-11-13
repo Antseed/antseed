@@ -7,7 +7,7 @@ import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { selectHasFunds } from '../../../core/balance';
-import { useUiSelector } from '../../hooks/useUiSelector';
+import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import styles from './ChatModelDropdown.module.scss';
 import { usePrivateMode } from '../../hooks/usePrivateMode';
 
@@ -83,11 +83,16 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
     ? null
     : findChatModel(state.chatModels, listedId)?.freeSellerId ?? null));
 
-  const stakersOnlyFreeIds = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.stakersOnlyFreeSellerIds);
-  // An image model charges per image; its token prices read $0.
-  const imagePrices = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.imageUsdBySeller);
-  // The model's retail reference price, for each seller's saving against it.
-  const referencePrice = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.referencePrice);
+  // One lookup for the pricing fields; field-level comparison keeps re-renders to real changes.
+  // An image model charges per image (its token prices read $0); the retail reference price gives each seller's saving.
+  const { stakersOnlyFreeIds, imagePrices, referencePrice } = useUiSelector((state) => {
+    const model = findChatModel(state.chatModels, listedId);
+    return {
+      stakersOnlyFreeIds: model?.stakersOnlyFreeSellerIds,
+      imagePrices: model?.imageUsdBySeller,
+      referencePrice: model?.referencePrice,
+    };
+  }, shallowEqual);
   const priceTag = (offer: ChatRouteCandidate) => {
     const label = imagePrices
       ? sellerImagePriceLabel(imagePrices, offer.peerId)
