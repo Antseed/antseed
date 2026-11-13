@@ -215,6 +215,13 @@ export function formatPriceRange(offer: OfferPrices): string {
 }
 
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
+/** A seller's price per image ("$0.04 per image", "Free"), or null when the listing has none for it. */
+export function sellerImagePriceLabel(prices: Record<string, number>, peerId: string): string | null {
+  const price = prices[normalizeSellerId(peerId)];
+  if (price === undefined) return null;
+  return price === 0 ? 'Free' : `$${price} per image`;
+}
+
 export function offerPriceLabel(
   offer: OfferPrices,
   stakersOnly: boolean,
