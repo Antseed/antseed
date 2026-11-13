@@ -977,7 +977,7 @@ export class BuyerPaymentManager {
 
     const cap = targetCumulative != null && targetCumulative > currentCumulative ? targetCumulative : currentCumulative;
     let remaining = cap - verifiedCost;
-    const toleranceRoom: bigint[] = [];
+    let toleranceRoom = 0n;
     for (const [requestId, record] of this._requestLedgers.get(sellerPeerId) ?? []) {
       if (remaining <= 0n) break;
       if (record.costCounted || record.costUsdc <= 0n) continue;
@@ -985,14 +985,11 @@ export class BuyerPaymentManager {
       const taken = record.costUsdc < remaining ? record.costUsdc : remaining;
       remaining -= taken;
       const tolerated = BigInt(Math.ceil(Number(record.costUsdc) * this._costToleranceFor(this.getRequestBilling(requestId))));
-      toleranceRoom.push(tolerated > record.costUsdc ? tolerated - record.costUsdc : 0n);
+      toleranceRoom += tolerated > record.costUsdc ? tolerated - record.costUsdc : 0n;
       counted.push([requestId, record, record.costUsdc - taken]);
     }
     if (counted.length === 0) return { maxSignable, verifiedCost, counted };
-    for (const room of toleranceRoom) {
-      if (remaining <= 0n) break;
-      remaining -= room < remaining ? room : remaining;
-    }
+    remaining -= toleranceRoom < remaining ? toleranceRoom : remaining;
     const nextVerifiedCost = cap - remaining;
     const reopened = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     debugLog(
