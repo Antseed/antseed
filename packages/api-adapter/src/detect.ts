@@ -1,5 +1,6 @@
 import type { SerializedHttpRequest, ServiceApiProtocol } from './types.js';
 import { detectNativeVideoProtocol } from './native-video.js';
+import { DATA_SERVICE_PATH_PREFIX } from './data-service.js';
 
 const ANTHROPIC_PROVIDER_NAMES = new Set(['anthropic', 'claude-code', 'claude-oauth']);
 const OPENAI_CHAT_PROVIDER_NAMES = new Set(['openai', 'local-llm']);
@@ -45,6 +46,9 @@ export function detectRequestServiceApiProtocol(
   }
   if (normalizedPath.startsWith('/v1/systemone')) {
     return 'typesafe-systemone';
+  }
+  if (normalizedPath.startsWith(DATA_SERVICE_PATH_PREFIX)) {
+    return 'openapi-data';
   }
   const pathOnly = normalizedPath.split('?')[0];
   // Inference Routing Protocol suggest-only mode (see @antseed/protocol/irp).

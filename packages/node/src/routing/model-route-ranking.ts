@@ -26,6 +26,8 @@ export type ModelRouteCandidate = {
   minImageUsdPerImage?: number | null;
   /** Speech routes: USD per `input` character; 0 when free, null when not advertised. */
   speechUsdPerCharacter?: number | null;
+  /** Data routes: USD per completed request; 0 when free, null when not advertised. */
+  dataUsdPerRequest?: number | null;
   peerCooldownUntil?: number | null;
   peerFailureStreak?: number | null;
 };
@@ -56,6 +58,10 @@ export function modelRouteReputationScore(route: ModelRouteCandidate): number | 
 }
 
 export function modelRouteTotalPrice(route: ModelRouteCandidate): number | null {
+  const requestPrice = route.dataUsdPerRequest;
+  if (typeof requestPrice === 'number' && Number.isFinite(requestPrice) && requestPrice >= 0) {
+    return requestPrice;
+  }
   const characterPrice = route.speechUsdPerCharacter;
   if (typeof characterPrice === 'number' && Number.isFinite(characterPrice) && characterPrice >= 0) {
     return characterPrice;

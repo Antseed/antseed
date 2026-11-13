@@ -2,12 +2,14 @@
 // The adapter source now lives in packages/api-adapter.
 export {
   createStreamingAdapter,
+  dataServiceRoute,
   detectRequestServiceApiProtocol,
   inferProviderDefaultServiceApiProtocols,
   renderRequestBodyAsOpenAIChat,
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,
+  type DataServiceRoute,
   type TargetProtocolSelection,
   type ServiceApiRequestTransformOptions,
   type ServiceApiRequestTransformResult,

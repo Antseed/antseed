@@ -1,5 +1,5 @@
 import { isRouterOptions, shouldEmitDebugLine, type PeerInfo, type RouterOptions, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
-import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
+import { dataServiceRoute, extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService, withDataService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
@@ -42,6 +42,9 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
 }
 
 export function extractRequestedService(request: SerializedHttpRequest): string | null {
+  // A data request names its service in the path; its body is the operation's own.
+  const dataRoute = dataServiceRoute(request)
+  if (dataRoute) return dataRoute.service
   if (nativeVideoRoute(request)) return requestService(request) ?? null
   const contentType = getHeader(request.headers, 'content-type').toLowerCase()
   if (!contentType.includes('application/json') && !contentType.startsWith('multipart/form-data')) {
@@ -413,6 +416,17 @@ function rewritePeerPinnedMultipartModel(
     index = next + 2
   }
   return unchanged
+}
+
+/**
+ * A data request that names `<peerId>@<service>` in its path: the same request
+ * with the bare service, and the seller it pins. The body is never touched.
+ */
+export function rewritePeerPinnedDataService(request: SerializedHttpRequest): { request: SerializedHttpRequest; pinnedPeerId: string | null } {
+  const route = dataServiceRoute(request)
+  const pin = route ? parsePeerPinnedService(route.service) : null
+  if (!pin) return { request, pinnedPeerId: null }
+  return { request: withDataService(request, pin.service) ?? request, pinnedPeerId: pin.peerId }
 }
 
 export function rewritePeerPinnedServiceInBody(

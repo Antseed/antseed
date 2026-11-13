@@ -17,6 +17,7 @@ import {
   adaptPeerFaultErrorResponse,
   buyerFault,
   computeTrustScore,
+  modelRouteTotalPrice,
   requestBodyService,
   type ModelRoutingPreferences,
   type RouteSelectionContext,
@@ -3442,6 +3443,344 @@ test('POST /v1/systemone routes only to peers advertising typesafe-systemone', a
 
   assert.equal(res.statusCode, 200)
   assert.deepEqual(attempts, [decision.peerId])
+})
+
+/** A seller of the `flights` data service at half a cent a call. */
+function makeDataPeer(seed: string, reputation = 80): PeerInfo {
+  const peer = makePeer(seed, ['openapi'])
+  peer.reputationScore = reputation
+  peer.providerServiceApiProtocols = { openapi: { services: { flights: ['openapi-data'] } } }
+  peer.providerServiceUnitBillingModels = {
+    openapi: { services: { flights: { 'openapi-data': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.005 }] } } } },
+  }
+  return peer
+}
+
+test('a data request routes only to peers advertising openapi-data, with its path and body unchanged', async () => {
+  const chatOnly = makePeer('a', ['openai'])
+  chatOnly.reputationScore = 95
+  chatOnly.providerServiceApiProtocols = { openai: { services: { flights: ['openai-chat-completions'] } } }
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([chatOnly, data], [chatOnly, data], permissiveRouter())
+  const sent: Array<{ peerId: string; method: string; path: string; body: string }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; method: string; path: string; body: Uint8Array }) => {
+    sent.push({ peerId: peer.peerId, method: request.method, path: request.path, body: Buffer.from(request.body).toString() })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ flights: [] })) }
+  }
+
+  // The body is the operation's own: `model` and `service` fields in it name nothing on Antseed.
+  const body = { from: 'TLV', to: 'LIS', model: 'economy', service: 'direct' }
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search?limit=5', body }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(sent.map((entry) => entry.peerId), [data.peerId])
+  assert.equal(sent[0]!.path, '/v1/data/flights/search?limit=5')
+  assert.deepEqual(JSON.parse(sent[0]!.body), body)
+})
+
+test('a data request reads a `<peerId>@<service>` pin from its path and sends the bare service', async () => {
+  const cheaper = makeDataPeer('a', 95)
+  const pinned = makeDataPeer('b', 10)
+  const proxy = makeBuyerProxyWithPeers([cheaper, pinned], [cheaper, pinned], permissiveRouter())
+  const sent: Array<{ peerId: string; path: string }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string }) => {
+    sent.push({ peerId: peer.peerId, path: request.path })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: `/v1/data/${pinned.peerId}@flights/search`, body: { from: 'TLV' } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(sent, [{ peerId: pinned.peerId, path: '/v1/data/flights/search' }])
+})
+
+test('a data request honours the x-antseed-pin-peer header and never forwards it', async () => {
+  const preferred = makeDataPeer('a', 95)
+  const pinned = makeDataPeer('b', 10)
+  const proxy = makeBuyerProxyWithPeers([preferred, pinned], [preferred, pinned], permissiveRouter())
+  const sent: Array<{ peerId: string; path: string; pinHeader: string | undefined }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string; headers: Record<string, string> }) => {
+    sent.push({ peerId: peer.peerId, path: request.path, pinHeader: request.headers['x-antseed-pin-peer'] })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV' }, headers: { 'x-antseed-pin-peer': pinned.peerId } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(sent, [{ peerId: pinned.peerId, path: '/v1/data/flights/search', pinHeader: undefined }])
+})
+
+test('a data service description is fetched with a GET through the proxy', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const sent: Array<{ method: string; path: string }> = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; method: string; path: string }) => {
+    sent.push({ method: request.method, path: request.path })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"openapi":"3.1.0","paths":{}}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/data/flights/openapi.json', rawBody: '' }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(sent, [{ method: 'GET', path: '/v1/data/flights/openapi.json' }])
+})
+
+test('a data request body is passed on byte for byte, whatever its `model`, `service` or content type', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const sent: Array<{ body: Buffer; contentType: string | undefined }> = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string>; body: Uint8Array }) => {
+    sent.push({ body: Buffer.from(request.body), contentType: request.headers['content-type'] })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  // `antseed` is the routed-model alias on inference requests. In a data call it is the operation's own value.
+  const aliasBody = '{ "model" : "antseed", "service":"ANTSEED",\n  "from": "TLV" }'
+  const alias = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', rawBody: aliasBody }))
+  const form = 'from=TLV&to=LIS&model=antseed'
+  const formRes = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/data/flights/search',
+    rawBody: form,
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  }))
+
+  assert.equal(alias.statusCode, 200)
+  assert.equal(formRes.statusCode, 200)
+  assert.deepEqual(sent.map((entry) => entry.body.toString()), [aliasBody, form])
+  assert.equal(sent[1]!.contentType, 'application/x-www-form-urlencoded')
+})
+
+test('a data request with `stream: true` in its body is sent as one buffered request', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  let buffered = 0
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => {
+    buffered += 1
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+  ;(proxy as any)._node.sendRequestStream = async () => { throw new Error('a data call must not take the streaming path') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV', stream: true } }))
+  const sse = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV' }, headers: { accept: 'text/event-stream' } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(sse.statusCode, 200)
+  assert.equal(buffered, 2)
+})
+
+test('a data request follows the session pin', async () => {
+  const preferred = makeDataPeer('a', 95)
+  const pinned = makeDataPeer('b', 10)
+  const proxy = makeBuyerProxyWithPeers([preferred, pinned], [preferred, pinned], permissiveRouter())
+  ;(proxy as any)._pinnedPeer = pinned.peerId.toLowerCase()
+  const sent: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    sent.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV' } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(sent, [pinned.peerId])
+})
+
+test('data services are listed under /v1/models?type=data and left out of the text list', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+
+  const models = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=data' }))
+  const text = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=text' }))
+
+  assert.equal(models.statusCode, 200)
+  assert.deepEqual(JSON.parse(models.body).data.map((model: { id: string; type: string }) => [model.id, model.type]), [['flights', 'data']])
+  assert.deepEqual(JSON.parse(text.body).data, [])
+})
+
+test('a chat request to a data service is told the protocol it is served on', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/chat/completions', body: { model: 'flights', messages: [{ role: 'user', content: 'hi' }] } }))
+
+  assert.equal(res.statusCode, 400)
+  const body = JSON.parse(res.body) as { error: { code: string; supported_protocols?: string[] } }
+  assert.equal(body.error.code, 'unsupported_protocol')
+  assert.deepEqual(body.error.supported_protocols, ['openapi-data'])
+})
+
+/** A seller of the free `flights` data service. */
+function makeFreeDataPeer(seed: string, reputation = 80): PeerInfo {
+  const peer = makeDataPeer(seed, reputation)
+  peer.providerServiceUnitBillingModels = { openapi: { services: { flights: { 'openapi-data': { version: 1, components: [] } } } } }
+  return peer
+}
+
+for (const failure of ['502', 'transport'] as const) {
+  test(`a data POST is not sent to another seller after a ${failure} failure, since it may already have run`, async () => {
+    const first = makeDataPeer('a', 95)
+    const second = makeDataPeer('b', 80)
+    const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.peerId)
+      if (failure === 'transport') throw new Error('Connection closed after dispatch')
+      return { requestId: request.requestId, statusCode: 502, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":"upstream"}') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+    assert.notEqual(res.statusCode, 200)
+    assert.deepEqual(attempts, [first.peerId])
+  })
+}
+
+test("a data POST whose provider answers model_not_found is not sent to another seller", async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return {
+      requestId: request.requestId, statusCode: 404,
+      headers: { 'content-type': 'application/json', 'x-antseed-data-response': 'provider' },
+      body: Buffer.from('{"error":{"code":"model_not_found","message":"no such fare model"}}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
+test('a data POST answered 429 by the provider is returned, not sent again to any seller', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' }, body: Buffer.from('{"error":"quota"}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 429)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
+test('a data GET whose answer looks like an empty chat answer is a delivered answer, sent once', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  const body = '{"type":"message","content":[]}'
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/data/flights/messages', rawBody: '' }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body, body)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
+test("a data provider's own payment_required 402 comes back byte for byte", async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const body = '{"error":"payment_required","code":"their_card_declined"}'
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => ({
+    requestId: request.requestId, statusCode: 402,
+    headers: { 'content-type': 'application/json', 'content-length': String(body.length), 'x-antseed-data-response': 'provider' },
+    body: Buffer.from(body),
+  })
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 402)
+  assert.equal(res.body, body)
+})
+
+test("a data provider's own 413 comes back byte for byte", async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const body = '{"error":{"code":"payload_too_large","max_rows":1000}}'
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => (
+    { requestId: request.requestId, statusCode: 413, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) }
+  )
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/import', body: { rows: [] } }))
+
+  assert.equal(res.statusCode, 413)
+  assert.equal(res.body, body)
+})
+
+test('a data GET fails over to another seller like any read', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    const statusCode = peer.peerId === first.peerId ? 502 : 200
+    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/data/flights/search?from=TLV', rawBody: '' }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [first.peerId, second.peerId])
+})
+
+test('a data POST moves on to a free data seller when a paid one cannot be funded', async () => {
+  const paid = makeDataPeer('a', 95)
+  const free = makeFreeDataPeer('e', 70)
+  const proxy = makeBuyerProxyWithPeers([paid, free], [paid, free], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    if (peer.peerId === free.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV' } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [paid.peerId, free.peerId])
+})
+
+test('a data route candidate carries its per-request price, and a free data seller is priced 0', () => {
+  const paid = makeDataPeer('a', 95)
+  const free = makeFreeDataPeer('e', 70)
+  const proxy = makeBuyerProxyWithPeers([paid, free], [paid, free], permissiveRouter())
+  const serialized = { requestId: 'r', method: 'POST', path: '/v1/data/flights/search', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"from":"TLV"}') }
+  const selection = selectCandidatePeersForRouting([paid, free], 'openapi-data', 'flights', null, 'strict')
+  const plan = (proxy as any)._planModelRoutes({
+    modelPeers: selection.candidatePeers,
+    modelPlans: selection.routePlanByPeerId,
+    request: serialized,
+    requestProtocol: 'openapi-data',
+    requestedService: 'flights',
+    explicitProvider: null,
+    requiredParameters: [],
+    requestPolicy: null,
+    preferredPeerId: null,
+    affinityKey: null,
+  })
+  const prices = Object.fromEntries(plan.candidates.map((candidate: { peerId: string }) => [candidate.peerId, modelRouteTotalPrice(candidate as never)]))
+  assert.equal(prices[paid.peerId], 0.005)
+  assert.equal(prices[free.peerId], 0)
 })
 
 test('a model whose every seller reports it failing gets a self health error, not model_not_found', async () => {

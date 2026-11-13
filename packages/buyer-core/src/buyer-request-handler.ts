@@ -1,4 +1,4 @@
-import { nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
+import { dataServiceRoute, isDataProviderResponse, nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -224,6 +224,7 @@ export class BuyerRequestHandler {
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
     const videoRoute = nativeVideoRoute(req);
+    const dataRoute = dataServiceRoute(req);
     if (videoRoute && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
@@ -508,12 +509,14 @@ export class BuyerRequestHandler {
     const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
     // A control-plane call is never charged, so it is not named to the payment manager.
     const paidRequestId = negotiator ? req.requestId : undefined;
-    // Provider video APIs may use HTTP 402 for their own errors; only start
-    // Antseed payment negotiation when the response is our payment contract.
+    // Provider video and data APIs may use HTTP 402 for their own errors; only
+    // start Antseed payment negotiation when the response is our payment contract.
+    // A data provider's own answer, as the seller marked it, never is.
     const startsPaymentNegotiation = (answer: SerializedHttpResponse): boolean => answer.statusCode === 402
       && Boolean(negotiator)
       && !externalSpendingAuth
-      && (!videoRoute || isPaymentRequired402(answer));
+      && !(dataRoute && isDataProviderResponse(answer))
+      && ((!videoRoute && !dataRoute) || isPaymentRequired402(answer));
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
       let answered = false;
@@ -545,6 +548,7 @@ export class BuyerRequestHandler {
       && !options?.controlPlane
       && !externalSpendingAuth
       && isPaymentRequired402(response)
+      && !isDataProviderResponse(response)
     ) {
       debugWarn(
         `[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... requires payment but payments are not running on this buyer — returning buyer-fault error`,
@@ -566,6 +570,9 @@ export class BuyerRequestHandler {
         }
         startTime = Date.now();
         retriedResponse = await executeCountedRequest();
+        // A data provider's own answer, as the seller marked it, is the operation's result:
+        // never another payment step.
+        if (dataRoute && isDataProviderResponse(retriedResponse)) break;
         const previous = catchUpState(paymentResponse);
         const current = catchUpState(retriedResponse);
         if (current == null || previous == null) break;
@@ -744,14 +751,16 @@ export class BuyerRequestHandler {
 
 /**
  * The requested service: on a routing protocol whose paths name no service, the peer's single
- * service of that protocol; else `service`/`model` from a JSON or multipart body.
+ * service of that protocol; on a data request, the service in its path; else `service`/`model`
+ * from a JSON or multipart body.
  */
 function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
   const routingProtocol = routingProtocolForPath(request.path);
   if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
     return findRoutingService(peer.providerServiceApiProtocols, routingProtocol)?.serviceId;
   }
-  if (nativeVideoRoute(request)) return requestService(request);
+  // Video routes and data requests name their service outside the body.
+  if (nativeVideoRoute(request) || dataServiceRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;
@@ -788,11 +797,25 @@ function selectProviderForService(
   request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
+  const videoRoute = nativeVideoRoute(request);
+  // Video and data requests need a provider that serves the service on their protocol.
+  const routeProtocol = videoRoute?.protocol ?? dataServiceRoute(request)?.protocol;
+  const protocolsOf = (provider: string) => peer.providerServiceApiProtocols?.[provider]?.services[service];
+  // Any other request never goes to a provider that serves the service on data alone.
+  const dataOnly = (provider: string): boolean => {
+    const protocols = protocolsOf(provider);
+    return Boolean(protocols?.length) && protocols!.every((protocol) => protocol === 'openapi-data');
+  };
+  const isEligible = (provider: string): boolean => providerOffersService(peer, provider, service)
+    && (routeProtocol ? Boolean(protocolsOf(provider)?.includes(routeProtocol)) : !dataOnly(provider));
   const named = requestedProvider
     ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
     : undefined;
   if (named) {
-    return providerOffersService(peer, named, service) ? named : null;
+    if (isEligible(named)) return named;
+    // A named provider that cannot serve this request: the seller's matchProvider falls back to
+    // another eligible provider, except for video, whose jobs live with the named one.
+    if (videoRoute) return providerOffersService(peer, named, service) ? named : null;
   }
   // No provider named, or one the peer does not announce (a pin from before
   // sellers announced provider IDs, or a plugin name): choose one.
@@ -801,11 +824,7 @@ function selectProviderForService(
   // provider serving its protocol, and takes the first one, so a job's
   // retrieves reach the provider that accepted it whatever its health is now.
   // Other requests prefer a provider whose self health check is not failing.
-  const videoRoute = nativeVideoRoute(request);
-  const eligible = providers.filter((provider) =>
-    providerOffersService(peer, provider, service)
-    && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
-  );
+  const eligible = providers.filter(isEligible);
   const healthy = videoRoute ? undefined : eligible.find((provider) =>
     !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
   );

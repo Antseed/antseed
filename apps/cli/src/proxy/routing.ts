@@ -13,6 +13,7 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   extractRequestBodyFields,
   inferProviderDefaultServiceApiProtocols,
+  isDataServiceProtocol,
   isNativeVideoProtocol,
   selectTargetProtocolForRequest,
   type ServiceApiProtocol,
@@ -300,6 +301,7 @@ function selectAdvertisedServiceByProtocol(
         || protocol === 'openai-audio-speech'
         || protocol === 'typesafe-systemone'
         || isNativeVideoProtocol(protocol)
+        || isDataServiceProtocol(protocol)
       ))
     } else if (offer.protocol) {
       supportedProtocols = [offer.protocol]

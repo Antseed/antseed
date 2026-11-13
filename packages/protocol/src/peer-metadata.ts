@@ -16,7 +16,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 17;
+export const METADATA_VERSION = 18;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -53,6 +53,11 @@ export const VIDEO_OPTION_PRICING_METADATA_VERSION = 16;
  * such services out.
  */
 export const REFERENCE_VIDEO_PRICING_METADATA_VERSION = 17;
+/**
+ * First version that may carry data services: the `openapi-data` protocol.
+ * Older documents leave such services out (see each version's vocabulary).
+ */
+export const DATA_SERVICES_METADATA_VERSION = 18;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",

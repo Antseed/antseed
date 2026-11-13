@@ -100,6 +100,126 @@ describe('BuyerRequestHandler TEE connection binding', () => {
   });
 });
 
+function makeDataPeer(): BuyerPeerView {
+  return {
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openapi'],
+    providerServiceApiProtocols: { openapi: { services: { flights: ['openapi-data'] } } },
+    providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': {
+      version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.005 }],
+    } } } } },
+  };
+}
+
+function makeDataRequest(): SerializedHttpRequest {
+  return {
+    requestId: 'video-request',
+    method: 'POST',
+    path: '/v1/data/flights/book',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ flight: 'LY1' })),
+  };
+}
+
+describe('BuyerRequestHandler data service 402', () => {
+  it("returns a data provider's own 402 unchanged, without negotiation or a second call", async () => {
+    const providerRefusal = response(402, { error: { message: 'card declined', code: 'payment_declined' } });
+    const { handler, handle402, sendProxyRequest } = makeHandler([providerRefusal, ACCEPTED]);
+
+    const result = await handler.sendRequest(makeDataPeer(), makeDataRequest());
+
+    expect(result.statusCode).toBe(402);
+    expect(JSON.parse(Buffer.from(result.body).toString())).toEqual({ error: { message: 'card declined', code: 'payment_declined' } });
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it("never negotiates a payment_required body the seller marked as the data provider's own", async () => {
+    const providerContract = { ...response(402, { error: 'payment_required', minBudgetPerRequest: '10000', channelId: 'their-own-channel' }) };
+    providerContract.headers = { ...providerContract.headers, 'x-antseed-data-response': 'provider' };
+    const { handler, handle402, sendProxyRequest } = makeHandler([providerContract, ACCEPTED]);
+
+    expect((await handler.sendRequest(makeDataPeer(), makeDataRequest())).statusCode).toBe(402);
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('bills a data call under the provider that serves it on openapi-data', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['chat-only', 'openapi'],
+      providerPricing: { 'chat-only': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } },
+      providerServiceApiProtocols: {
+        'chat-only': { services: { flights: ['openai-chat-completions'] } },
+        openapi: { services: { flights: ['openapi-data'] } },
+      },
+      providerServiceUnitBillingModels: makeDataPeer().providerServiceUnitBillingModels,
+    };
+    expect(selectBillingRoute(peer, makeDataRequest(), 'flights')?.provider).toBe('openapi');
+  });
+
+  it('bills a data call naming a chat-only provider under the data provider the seller will use', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['chat-only', 'openapi'],
+      providerPricing: { 'chat-only': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } },
+      providerServiceApiProtocols: {
+        'chat-only': { services: { flights: ['openai-chat-completions'] } },
+        openapi: { services: { flights: ['openapi-data'] } },
+      },
+      providerServiceUnitBillingModels: makeDataPeer().providerServiceUnitBillingModels,
+    };
+    const named = { ...makeDataRequest(), headers: { 'content-type': 'application/json', 'x-antseed-provider': 'chat-only' } };
+    expect(selectBillingRoute(peer, named, 'flights')?.provider).toBe('openapi');
+  });
+
+  it('bills a chat call under the chat provider, never a data-only one of the same name', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['openapi', 'chat-only'],
+      providerPricing: { 'chat-only': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } },
+      providerServiceApiProtocols: {
+        openapi: { services: { flights: ['openapi-data'] } },
+        'chat-only': { services: { flights: ['openai-chat-completions'] } },
+      },
+      providerServiceUnitBillingModels: makeDataPeer().providerServiceUnitBillingModels,
+    };
+    const chat: SerializedHttpRequest = {
+      requestId: 'chat', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ model: 'flights', messages: [] })),
+    };
+    expect(selectBillingRoute(peer, chat, 'flights')?.provider).toBe('chat-only');
+  });
+
+  it("ends a payment catch-up at a data provider's own answer, without negotiating it again", async () => {
+    const sellerCatchUp = response(402, {
+      error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000',
+      requiredCumulativeAmount: '500000', currentAcceptedCumulative: '100000', reserveMaxAmount: '1000000',
+    });
+    const providerAnswer = response(402, {
+      error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000',
+      requiredCumulativeAmount: '500000', currentAcceptedCumulative: '400000', reserveMaxAmount: '1000000',
+    });
+    providerAnswer.headers = { ...providerAnswer.headers, 'x-antseed-data-response': 'provider' };
+    const { handler, handle402, sendProxyRequest } = makeHandler([sellerCatchUp, providerAnswer, ACCEPTED]);
+
+    const result = await handler.sendRequest(makeDataPeer(), makeDataRequest());
+
+    expect(result.statusCode).toBe(402);
+    expect(JSON.parse(Buffer.from(result.body).toString()).currentAcceptedCumulative).toBe('400000');
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('still negotiates the seller payment contract on a data call', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+
+    expect((await handler.sendRequest(makeDataPeer(), makeDataRequest())).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('BuyerRequestHandler payment negotiation', () => {
   it.each([400, 409, 500, 503])('returns a non-payment response without negotiation (%s)', async (statusCode) => {
     const { handler, handle402, sendProxyRequest } = makeHandler([response(statusCode, { error: 'rejected' })]);

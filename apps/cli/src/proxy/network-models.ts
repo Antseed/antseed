@@ -249,6 +249,7 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   if (value === 'image' || value === 'images') return 'image'
   if (value === 'video' || value === 'videos') return 'video'
   if (value === 'speech' || value === 'tts') return 'speech'
+  if (value === 'data') return 'data'
   if (value === 'text') return 'text'
   if (value === 'decision' || value === 'decisions') return 'decision'
   if (value === 'router' || value === 'routers') return 'router'
