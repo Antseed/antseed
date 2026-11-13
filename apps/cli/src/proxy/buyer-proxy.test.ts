@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
+import { invokeProxy, makeProxyRequest, makeProxyResponse } from './proxy-test-support.js'
 import test, { type TestContext } from 'node:test'
 import localPlugin from '@antseed/router-local'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
@@ -1934,77 +1934,6 @@ test('existing required CLI verification rejects a failed pin without payment/in
   assert.deepEqual(dispatches, [accepted.peerId, accepted.peerId])
 });
 
-function makeProxyRequest(options: {
-  method?: string
-  path?: string
-  headers?: Record<string, string>
-  body?: Record<string, unknown>
-  rawBody?: string
-}): Readable {
-  const body = options.rawBody ?? JSON.stringify(options.body ?? { model: 'gpt-4o', messages: [] })
-  const req = Readable.from([Buffer.from(body)]) as Readable & {
-    method: string
-    url: string
-    headers: Record<string, string>
-    complete: boolean
-  }
-  req.method = options.method ?? 'POST'
-  req.url = options.path ?? '/v1/chat/completions'
-  req.headers = {
-    'content-type': 'application/json',
-    ...(options.headers ?? {}),
-  }
-  req.complete = true
-  return req
-}
-
-function makeProxyResponse(): {
-  statusCode: number
-  headers: Record<string, string>
-  body: string
-  headersSent: boolean
-  writableEnded: boolean
-  writeHead: (statusCode: number, headers: Record<string, string>) => unknown
-  setHeader: (name: string, value: string) => unknown
-  write: (chunk: string | Buffer | Uint8Array) => unknown
-  end: (chunk?: string | Buffer | Uint8Array) => unknown
-  once: () => unknown
-} {
-  // Headers set before writeHead merge into it, as on a Node ServerResponse.
-  const pending: Record<string, string> = {}
-  return {
-    statusCode: 0,
-    headers: {},
-    body: '',
-    headersSent: false,
-    writableEnded: false,
-    writeHead(statusCode: number, headers: Record<string, string>) {
-      this.statusCode = statusCode
-      this.headers = { ...pending, ...headers }
-      this.headersSent = true
-      return this
-    },
-    setHeader(name: string, value: string) {
-      pending[name.toLowerCase()] = value
-      return this
-    },
-    write(chunk: string | Buffer | Uint8Array) {
-      this.body += Buffer.from(chunk).toString('utf8')
-      return true
-    },
-    end(chunk?: string | Buffer | Uint8Array) {
-      if (chunk !== undefined) {
-        this.body += Buffer.from(chunk).toString('utf8')
-      }
-      this.writableEnded = true
-      return this
-    },
-    once() {
-      return this
-    },
-  }
-}
-
 const TEST_ROUTER_MODELS = ['model-a', 'model-b', 'gpt-4o']
 
 function listModelsWith(models = TEST_ROUTER_MODELS): ModelRoutingClientApi['listModels'] {
@@ -2079,12 +2008,6 @@ async function failRepeatedly(
 
 function healthOf(proxy: BuyerProxy, peer: PeerInfo) {
   return (proxy as any)._peerHealth.get(peer.peerId)
-}
-
-async function invokeProxy(proxy: BuyerProxy, req: Readable): Promise<ReturnType<typeof makeProxyResponse>> {
-  const res = makeProxyResponse()
-  await (proxy as any)._handleRequest(req, res)
-  return res
 }
 
 test('BuyerProxy defaults to the configured 5 min background refresh interval', () => {

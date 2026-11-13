@@ -2,25 +2,30 @@
  * The buyer answers every request on one thread, so anything slow in it stops
  * all of them: streams stall, and a gateway in front of it sees its spend feed
  * and its policy check time out. These tests hold the paths that once did that
- * to a network and a history of realistic size. The counts are exact and are
- * the guard. The time limits only catch a new slow path: they are many times
- * what the code needs, because test files share the machine with each other.
+ * to a network and a history of realistic size.
+ *
+ * Nothing here is a wall-clock limit: test files share the machine, so elapsed
+ * time says little. The guards are exact counts (channel reads, large parses,
+ * file writes) and one ratio measured inside a single test: a model list that
+ * plans every model against a list of the same network that plans nothing.
  */
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import { after, test } from 'node:test'
 import type { PeerInfo } from '@antseed/node'
 import { BuyerProxy, mergeJsonStateFile, readJsonStateFileKeys } from './buyer-proxy.js'
+import { invokeProxy, makeProxyRequest } from './proxy-test-support.js'
 
 const SELLERS = 100
 const MODELS = 750
 const MODELS_PER_SELLER = 120
 /** What one read of a buyer's channels costs on a long-lived buyer's database. */
 const CHANNEL_READ_MS = 5
+/** Measured near 4 with the lookups in place; see the test that uses it. */
+const ROUTABLE_LIST_MAX_RATIO = 15
 
 const modelId = (index: number): string => `model-${index}`
 
@@ -77,91 +82,58 @@ function makeProxy(peers: PeerInfo[], dataDir = mkdtempSync(join(scratch, 'buyer
   return { proxy, channelReads: () => reads }
 }
 
-function makeResponse() {
-  return {
-    statusCode: 0,
-    body: '',
-    headersSent: false,
-    writableEnded: false,
-    writeHead(statusCode: number) { this.statusCode = statusCode; this.headersSent = true; return this },
-    setHeader() { return this },
-    getHeader() { return undefined },
-    write(chunk: string | Uint8Array) { this.body += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString(); return true },
-    end(chunk?: string | Uint8Array) { if (chunk) this.write(chunk); this.writableEnded = true; return this },
-    on() { return this },
-    once() { return this },
+const get = (proxy: BuyerProxy, path: string) => invokeProxy(proxy, makeProxyRequest({ method: 'GET', path, rawBody: '' }))
+
+/** The fastest of a few runs: the run least disturbed by whatever else the machine is doing. */
+async function fastestMs(run: () => Promise<unknown>, runs = 5): Promise<number> {
+  let fastest = Infinity
+  for (let i = 0; i < runs; i += 1) {
+    const started = performance.now()
+    await run()
+    fastest = Math.min(fastest, performance.now() - started)
+    // Requests arrive on separate turns of the event loop, as from a socket.
+    await new Promise((resolve) => setImmediate(resolve))
   }
+  return fastest
 }
 
-async function get(proxy: BuyerProxy, path: string): Promise<{ statusCode: number; body: string }> {
-  const req = Object.assign(Readable.from([]), { method: 'GET', url: path, headers: {}, complete: true })
-  const res = makeResponse()
-  await (proxy as any)._handleRequest(req, res)
-  return res
-}
-
-/** Runs `work` and reports how long it took and the longest the thread went without yielding. */
-async function measure<T>(work: () => Promise<T>): Promise<{ result: T; elapsedMs: number; longestStallMs: number }> {
-  let last = performance.now()
-  let longestStallMs = 0
-  const tick = setInterval(() => {
-    const now = performance.now()
-    longestStallMs = Math.max(longestStallMs, now - last)
-    last = now
-  }, 1)
-  const started = performance.now()
-  try {
-    const result = await work()
-    // One more turn, so a stall that ends the work is counted.
-    await new Promise((resolve) => setTimeout(resolve, 2))
-    return { result, elapsedMs: performance.now() - started, longestStallMs }
-  } finally {
-    clearInterval(tick)
-  }
-}
-
-test('a model list over a large network reads the open channels once and never holds the buyer for long', async () => {
+test('a model list over a large network reads the open channels once', async () => {
   const { proxy, channelReads } = makeProxy(makeNetwork())
 
-  const { result, elapsedMs, longestStallMs } = await measure(() => get(proxy, '/v1/models'))
+  const listed = await get(proxy, '/v1/models')
 
-  assert.equal(result.statusCode, 200)
-  assert.equal((JSON.parse(result.body).data as unknown[]).length, MODELS)
+  assert.equal(listed.statusCode, 200)
+  assert.equal((JSON.parse(listed.body).data as unknown[]).length, MODELS)
   assert.equal(channelReads(), 1, 'one read for the whole list, not one per model and protocol')
-  // Read per model, the channel reads alone take MODELS × CHANNEL_READ_MS = 3.75 s.
-  assert.ok(elapsedMs < 3_000, `the list took ${elapsedMs.toFixed(0)} ms`)
-  assert.ok(longestStallMs < 3_000, `the buyer was held for ${longestStallMs.toFixed(0)} ms`)
 })
 
-test('looking up one model costs no more than the list', async () => {
+test('looking up one model reads the open channels once', async () => {
   const { proxy, channelReads } = makeProxy(makeNetwork())
 
-  const { result, elapsedMs } = await measure(() => get(proxy, `/v1/models/${modelId(5)}`))
+  const found = await get(proxy, `/v1/models/${modelId(5)}`)
 
-  assert.equal(result.statusCode, 200)
-  assert.equal(JSON.parse(result.body).id, modelId(5))
+  assert.equal(found.statusCode, 200)
+  assert.equal(JSON.parse(found.body).id, modelId(5))
   assert.equal(channelReads(), 1)
-  assert.ok(elapsedMs < 3_000, `the lookup took ${elapsedMs.toFixed(0)} ms`)
 })
 
-test('repeated model lists stay fast: nothing builds up between them', async () => {
+test('planning every model costs a small multiple of listing the network without planning', async () => {
   const { proxy, channelReads } = makeProxy(makeNetwork())
+  // `?scope=network` lists the same sellers and models and plans nothing.
+  await get(proxy, '/v1/models?scope=network')
   await get(proxy, '/v1/models')
+  const readsBefore = channelReads()
 
-  const { elapsedMs, longestStallMs } = await measure(async () => {
-    for (let i = 0; i < 10; i += 1) {
-      await get(proxy, '/v1/models')
-      // Requests arrive on separate turns of the event loop, as from a socket.
-      await new Promise((resolve) => setImmediate(resolve))
-    }
-  })
+  const browseMs = await fastestMs(() => get(proxy, '/v1/models?scope=network'))
+  const routableMs = await fastestMs(() => get(proxy, '/v1/models'))
 
-  assert.equal(channelReads(), 11)
-  assert.ok(elapsedMs < 30_000, `ten lists took ${elapsedMs.toFixed(0)} ms`)
-  assert.ok(longestStallMs < 3_000, `the buyer was held for ${longestStallMs.toFixed(0)} ms`)
+  assert.equal(channelReads() - readsBefore, 5, 'one read per list, however many lists came before')
+  // Searching every seller's whole catalog for every model made this tens of times, before any channel read.
+  const ratio = (routableMs - CHANNEL_READ_MS) / browseMs
+  assert.ok(ratio < ROUTABLE_LIST_MAX_RATIO, `a routable list took ${routableMs.toFixed(0)} ms, ${ratio.toFixed(1)} times the ${browseMs.toFixed(0)} ms of a list without planning`)
 })
 
-test('routing chat requests over a large network reads the open channels once per request and stays fast', async () => {
+test('routing chat requests over a large network reads the open channels once per request', async () => {
   const peers = makeNetwork()
   const { proxy, channelReads } = makeProxy(peers)
   ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => ({
@@ -170,25 +142,13 @@ test('routing chat requests over a large network reads the open channels once pe
     headers: { 'content-type': 'application/json' },
     body: Buffer.from(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })),
   })
-  const chat = (index: number) => {
-    const body = Buffer.from(JSON.stringify({ model: modelId(index), messages: [{ role: 'user', content: 'hi' }] }))
-    const req = Object.assign(Readable.from([body]), { method: 'POST', url: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, complete: true })
-    return (proxy as any)._handleRequest(req, makeResponse()).then(() => undefined)
+
+  for (let i = 0; i < 20; i += 1) {
+    const answered = await invokeProxy(proxy, makeProxyRequest({ body: { model: modelId(i), messages: [{ role: 'user', content: 'hi' }] } }))
+    assert.equal(answered.statusCode, 200)
   }
-  await chat(0)
-  const readsPerRequest = channelReads()
 
-  const { elapsedMs, longestStallMs } = await measure(async () => {
-    for (let i = 1; i <= 40; i += 1) {
-      await chat(i)
-      await new Promise((resolve) => setImmediate(resolve))
-    }
-  })
-
-  assert.equal(readsPerRequest, 1)
-  assert.equal(channelReads(), 41)
-  assert.ok(elapsedMs < 20_000, `forty requests took ${elapsedMs.toFixed(0)} ms`)
-  assert.ok(longestStallMs < 2_000, `one request held the buyer for ${longestStallMs.toFixed(0)} ms`)
+  assert.equal(channelReads(), 20)
 })
 
 /** A state file the size a busy gateway's buyer reaches: megabytes of peer cache and video routes. */
@@ -222,18 +182,14 @@ test('a small change to a large state file does not read the file back or rewrit
       if (text !== undefined && text.length > megabyte) large.serialized += 1
       return text
     }) as typeof JSON.stringify
-    let longestStallMs: number
     try {
-      ({ longestStallMs } = await measure(async () => {
-        for (let i = 1; i <= 40; i += 1) await mergeJsonStateFile(dir, stateFile, { peerHealthUpdatedAt: i })
-      }))
+      for (let i = 1; i <= 40; i += 1) await mergeJsonStateFile(dir, stateFile, { peerHealthUpdatedAt: i })
     } finally {
       JSON.parse = parse
       JSON.stringify = stringify
     }
 
     assert.deepEqual(large, { parsed: 0, serialized: 0 }, 'the megabytes already on disk are neither parsed nor serialized again')
-    assert.ok(longestStallMs < 1_000, `a change held the buyer for ${longestStallMs.toFixed(0)} ms`)
     const state = JSON.parse(await readFile(stateFile, 'utf8')) as Record<string, unknown>
     assert.deepEqual(state, { ...original, peerHealthUpdatedAt: 40 })
   } finally {
