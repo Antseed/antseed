@@ -4,6 +4,8 @@ import { buyerFetch } from './buyer-control.js'
 const BUYER_POLICY_PROBE_MODEL = '__probe__'
 const RETRY_MS = 5_000
 const RECHECK_MS = 60_000
+/** How long a buyer that confirmed support keeps it while probes get no answer. */
+const UNANSWERED_GRACE_MS = 120_000
 
 /**
  * What the gateway knows about whether its buyer applies routing policies:
@@ -20,6 +22,8 @@ export interface BuyerPolicyProbeOptions {
   onLog?: (message: string) => void
   /** Injectable for tests; defaults to `buyerFetch`. */
   fetchPreview?: () => Promise<Response>
+  /** Injectable for tests; defaults to `Date.now`. */
+  now?: () => number
 }
 
 /** One authenticated `GET /_antseed/route-preview`; never throws. */
@@ -47,6 +51,11 @@ export async function probeBuyerPolicySupport(options: BuyerPolicyProbeOptions):
  * `policyUnsupported()` is what the server consults: true unless the buyer
  * has confirmed it applies policies, so a key whose policy restricts sellers
  * is refused rather than silently routed unrestricted by an older buyer.
+ *
+ * A probe that gets no answer (a busy buyer timing out, a restart) does not
+ * take back a confirmation for two minutes: the buyer is re-probed every 5 s
+ * and only an answer that refuses the preview, or two minutes of silence,
+ * makes it unsupported again. One slow probe must not refuse every key.
  */
 export class BuyerPolicyProbe {
   private _state: BuyerPolicySupport = 'unknown'
@@ -54,6 +63,7 @@ export class BuyerPolicyProbe {
   private _stopped = false
   private _warned = false
   private _checked = false
+  private _confirmedAt: number | null = null
 
   constructor(private readonly _options: BuyerPolicyProbeOptions) {}
 
@@ -72,8 +82,15 @@ export class BuyerPolicyProbe {
   }
 
   async check(): Promise<void> {
-    const next = await probeBuyerPolicySupport(this._options)
+    const probed = await probeBuyerPolicySupport(this._options)
     if (this._stopped) return
+    const now = (this._options.now ?? Date.now)()
+    if (probed === 'supported') this._confirmedAt = now
+    else if (probed === 'unsupported') this._confirmedAt = null
+    const unanswered = probed === 'unknown'
+    const next = unanswered && this._confirmedAt !== null && now - this._confirmedAt < UNANSWERED_GRACE_MS
+      ? 'supported'
+      : probed
     const previous = this._state
     this._state = next
     const first = !this._checked
@@ -95,7 +112,7 @@ export class BuyerPolicyProbe {
         log?.('The buyer now applies routing policies.')
       }
     }
-    this._schedule(next === 'unknown' ? RETRY_MS : RECHECK_MS)
+    this._schedule(unanswered ? RETRY_MS : RECHECK_MS)
   }
 
   stop(): void {
