@@ -170,7 +170,7 @@ final class EngineChatTests: XCTestCase {
     }
 
     func testModelMustPinAFullRevision() {
-        XCTAssertTrue(WorkerConfig.isPinned(WorkerConfig().modelId), "the default is pinned")
+        XCTAssertTrue(WorkerConfig.isPinned(ModelChoice.fallback.model), "the built-in model is pinned")
         XCTAssertTrue(WorkerConfig.isPinned("mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3"))
         XCTAssertFalse(WorkerConfig.isPinned("mlx-community/Qwen3.5-2B-MLX-4bit"))
         XCTAssertFalse(WorkerConfig.isPinned("mlx-community/Qwen3.5-2B-MLX-4bit@main"))
