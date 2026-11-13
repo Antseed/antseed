@@ -56,7 +56,10 @@ export function modelPrice(model: ChatModel): { text: string; tag?: 'free' | 'pl
     return price ? { text: `$${price} per pick` } : null;
   }
   if (model.free) return { text: 'Free', tag: 'free' };
-  if (model.minVideoUsdPerSecond !== undefined) return { text: `from ${formatUsdPerUnit(model.minVideoUsdPerSecond)} per second` };
+  if (model.videoPrice) {
+    const { perSecondUsd, perVideoUsd } = model.videoPrice;
+    return { text: `from ${formatUsdPerUnit(perSecondUsd)} per second${perVideoUsd > 0 ? ` + ${formatUsdPerUnit(perVideoUsd)} per video` : ''}` };
+  }
   if (model.minImageUsd) return { text: `from $${model.minImageUsd} per image` };
   // Not free to everyone, so a $0 price here is a stakers-only offer (the only sellers it has).
   if (isFreeOffer(model)) return model.stakersOnlyFreeSellerIds?.length ? { text: 'Free for stakers', tag: 'plain' } : null;
@@ -73,15 +76,29 @@ export function modelPrice(model: ChatModel): { text: string; tag?: 'free' | 'pl
 /** A price per unit, short: "$0.17", "$0.103", "$0.005", "$1.25". */
 export function formatUsdPerUnit(value: number): string {
   if (value >= 1) return `$${value.toFixed(2)}`;
+  // A positive price never reads as $0: below a tenth of a cent, two significant digits.
+  if (value > 0 && value < 0.001) return `$${Number(value.toPrecision(2))}`;
   const text = value.toFixed(3).replace(/0+$/, '');
   return (text.split('.')[1] ?? '').length < 2 ? `$${value.toFixed(2)}` : `$${text}`;
 }
 
 export function rowPriceChips(model: ChatModel): Array<{ label: string; price: string }> {
-  if (model.router || model.free) return [];
-  if (model.minVideoUsdPerSecond !== undefined) return [{ label: 'from', price: `${formatUsdPerUnit(model.minVideoUsdPerSecond)}/s` }];
-  if (isFreeOffer(model)) return [];
+  if (model.router) {
+    const fee = model.router.priceUsdPerRequest;
+    // Only the pick is priced here; the model it picks may charge too.
+    return fee === null ? [] : [{ label: '', price: fee === 0 ? 'Free picks' : `${formatUsdPerUnit(fee)}/pick` }];
+  }
+  if (model.free) return [];
+  if (model.videoPrice) {
+    const { perSecondUsd, perVideoUsd } = model.videoPrice;
+    return [
+      { label: 'from', price: `${formatUsdPerUnit(perSecondUsd)}/s` },
+      ...(perVideoUsd > 0 ? [{ label: '+', price: `${formatUsdPerUnit(perVideoUsd)}/video` }] : []),
+    ];
+  }
+  // Before the token check: image sellers list $0 token prices beside their price per image.
   if (model.minImageUsd) return [{ label: 'from', price: `$${model.minImageUsd}/image` }];
+  if (isFreeOffer(model)) return [];
   if (model.inputUsdPerMillion === null && model.outputUsdPerMillion === null) return [];
   return [
     { label: 'in', price: `${formatUsdPerMillion(model.inputUsdPerMillion)}/M` },
@@ -95,8 +112,8 @@ function renderRowPriceChips(model: ChatModel) {
   return (
     <span className={styles.pickerPrices}>
       {chips.map((chip) => (
-        <span key={chip.label} className={styles.pickerPriceChip}>
-          <span className={styles.pickerPriceLabel}>{chip.label}</span>
+        <span key={chip.label || chip.price} className={styles.pickerPriceChip}>
+          {chip.label && <span className={styles.pickerPriceLabel}>{chip.label}</span>}
           {chip.price}
         </span>
       ))}
@@ -193,7 +210,7 @@ export function modelInlineDetails(model: ChatModel): string {
   const context = contextValue(model);
   const picks = routerModelCount(model);
   // Free and the TEE tag are on the row already.
-  const onRow = new Set(['Router', 'Free', teeTag(model)?.label]);
+  const onRow = new Set(['Router', 'Free', 'Free for stakers', teeTag(model)?.label]);
   const tags = modelTags(model).filter((tag) => !onRow.has(tag.label)).map((tag) => tag.label);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
@@ -345,6 +362,8 @@ export function ChatModelDropdown({
         role="option"
         aria-selected={active}
         aria-label={`${model.label}. ${modelSummary(model)}`}
+        // The details a card used to show (lab, context, capabilities, sellers), without one.
+        title={modelSummary(model)}
         onClick={() => {
           setOpen(false);
           if (!active) onSelect(model.id);
@@ -365,6 +384,7 @@ export function ChatModelDropdown({
         <span className={styles.pickerTags}>
           {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
           {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
+          {model.freeForStakers && !model.free && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
           {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
         </span>
       </button>

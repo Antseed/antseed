@@ -21,8 +21,11 @@ export type ChatModel = {
   minImageUsd: number | null;
   /** An image model's price per image, by seller (lowercase, no 0x): what the seller picker shows. */
   imageUsdBySeller?: Record<string, number>;
-  /** A video model's lowest price per second of video across its sellers (any resolution); absent when none lists one. */
-  minVideoUsdPerSecond?: number;
+  /**
+   * A video model's cheapest price across its sellers: per second of video at
+   * the cheapest resolution, plus any fixed charge per video. Absent when none lists one.
+   */
+  videoPrice?: { perSecondUsd: number; perVideoUsd: number };
   /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */

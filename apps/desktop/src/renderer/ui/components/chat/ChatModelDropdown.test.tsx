@@ -81,21 +81,29 @@ test('without room for the card, a row\'s second line adds only what its tags do
   assert.equal(modelInlineDetails(glm), 'Z.ai · 200k context');
   const kimi = model({ id: 'moonshotai/kimi-k3', label: 'Kimi K3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 });
   assert.match(modelInlineDetails(kimi), /^Moonshot · from \$0\.60/);
-  // Capabilities stay visible too; Free and TEE are the row's own tags.
+  // Capabilities stay visible too; Free, Free for stakers and TEE are the row's own tags.
   const qwen = model({ id: 'qwen-4-235b', label: 'Qwen 4 235B', tee: true, supportsImages: true, reasoning: true, toolUse: true, freeForStakers: true });
-  assert.equal(modelInlineDetails(qwen), 'Qwen · Free for stakers · Vision · Reasoning · Tools');
+  assert.equal(modelInlineDetails(qwen), 'Qwen · Vision · Reasoning · Tools');
 });
 
-test('a row shows input and output price chips side by side, or the price per image; none for free models or routers', () => {
+test('a row shows input and output price chips side by side, the price per image or per second, or a router\'s fee; none for free models', () => {
   const kimi = model({ id: 'moonshotai/kimi-k3', label: 'Kimi K3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 });
   assert.deepEqual(rowPriceChips(kimi), [{ label: 'in', price: '$0.60/M' }, { label: 'out', price: '$2.50/M' }]);
   const image = model({ id: 'wan-2-7-text-to-image', label: 'Wan 2.7', type: 'image', minImageUsd: 0.02 });
   assert.deepEqual(rowPriceChips(image), [{ label: 'from', price: '$0.02/image' }]);
-  const video = model({ id: 'flux-3-image-to-video', label: 'Flux 3 Image To Video', type: 'video', minVideoUsdPerSecond: 0.10285, inputUsdPerMillion: 0, outputUsdPerMillion: 0 });
+  // Image sellers list $0 token prices beside their price per image: still priced.
+  const pricedImage = model({ id: 'flux-2-pro', label: 'Flux 2 Pro', type: 'image', minImageUsd: 0.0165, inputUsdPerMillion: 0, outputUsdPerMillion: 0 });
+  assert.deepEqual(rowPriceChips(pricedImage), [{ label: 'from', price: '$0.0165/image' }]);
+  const video = model({ id: 'flux-3-image-to-video', label: 'Flux 3 Image To Video', type: 'video', videoPrice: { perSecondUsd: 0.10285, perVideoUsd: 0 }, inputUsdPerMillion: 0, outputUsdPerMillion: 0 });
   assert.deepEqual(rowPriceChips(video), [{ label: 'from', price: '$0.103/s' }]);
-  assert.deepEqual([0.17, 0.005, 1.25, 0.1].map(formatUsdPerUnit), ['$0.17', '$0.005', '$1.25', '$0.10']);
+  const withFee = model({ id: 'example-video', label: 'Example Video', type: 'video', videoPrice: { perSecondUsd: 0.3, perVideoUsd: 0.05 } });
+  assert.deepEqual(rowPriceChips(withFee), [{ label: 'from', price: '$0.30/s' }, { label: '+', price: '$0.05/video' }]);
+  // A positive price never reads as $0.
+  assert.deepEqual([0.17, 0.005, 1.25, 0.1, 0.0001, 0.00042].map(formatUsdPerUnit), ['$0.17', '$0.005', '$1.25', '$0.10', '$0.0001', '$0.00042']);
   assert.deepEqual(rowPriceChips(model({ id: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash', free: true })), []);
-  assert.deepEqual(rowPriceChips(model({ id: 'auto', label: 'Auto', router: { priceUsdPerRequest: 0.001 } as ChatModel['router'] })), []);
+  // A router shows its fee per pick, so it stays visible without a card.
+  assert.deepEqual(rowPriceChips(model({ id: 'auto', label: 'Auto', router: { priceUsdPerRequest: 0.001 } as ChatModel['router'] })), [{ label: '', price: '$0.001/pick' }]);
+  assert.deepEqual(rowPriceChips(model({ id: 'auto', label: 'Auto', router: { priceUsdPerRequest: 0 } as ChatModel['router'] })), [{ label: '', price: 'Free picks' }]);
 });
 
 test('video and decision models get tabs of their own, searched like the rest', () => {

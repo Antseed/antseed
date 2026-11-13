@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, minVideoUsdPerSecond } from './catalog.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, minVideoPrice } from './catalog.js';
 import type { GatewayModelEntry } from './models.js';
 
 const seller = (n: string, fields: Record<string, unknown>) => ({ peerId: n.repeat(40), ...fields });
@@ -103,18 +103,26 @@ test('a text model keeps the retail reference price the gateway lists; any other
   assert.equal('referencePrice' in listed({ type: 'image', reference_price: { input_usd_per_million: 1, output_usd_per_million: 4 } }), false);
 });
 
-test('a video model reads its lowest price per second of video from its sellers\' unit billing models', () => {
+test('a video model is priced as billing adds up its components: per resolution, unconditional parts and fixed charges included', () => {
   const peers = [
     { peerId: 'aaaa', unitBillingModels: { 'fal-video': { version: 1, components: [
       { unit: 'video_seconds', priceUsd: 0.17, match: { resolution: '720p' } },
       { unit: 'video_seconds', priceUsd: 0.29, match: { resolution: '1080p' } },
     ] } } },
+    // An unconditional $0.10/s plus $0.20/s at 720p charges $0.30/s, never $0.10/s, plus $0.05 per video.
     { peerId: 'bbbb', unitBillingModels: { 'venice-video': { version: 1, components: [
-      { unit: 'video_seconds', priceUsd: 0.10285, match: { resolution: '720p' } },
-      { unit: 'images', priceUsd: 0.01 },
+      { unit: 'video_seconds', priceUsd: 0.1 },
+      { unit: 'video_seconds', priceUsd: 0.2, match: { resolution: '720p' } },
+      { unit: 'video_generations', priceUsd: 0.05 },
     ] } } },
   ];
-  assert.equal(minVideoUsdPerSecond(peers), 0.10285);
-  assert.equal(minVideoUsdPerSecond([{ peerId: 'cccc' }]), null);
-  assert.equal(toChatModel({ id: 'example-video', type: 'video', peers }).minVideoUsdPerSecond, 0.10285);
+  assert.deepEqual(minVideoPrice(peers), { perSecondUsd: 0.17, perVideoUsd: 0 });
+  assert.deepEqual(minVideoPrice([peers[1]!]), { perSecondUsd: 0.30000000000000004, perVideoUsd: 0.05 });
+  // A part that needs another option (audio) doesn't apply to the plain create.
+  assert.deepEqual(minVideoPrice([{ peerId: 'cccc', unitBillingModels: { 'fal-video': { version: 1, components: [
+    { unit: 'video_seconds', priceUsd: 0.12, match: { resolution: '720p' } },
+    { unit: 'video_seconds', priceUsd: 0.05, match: { resolution: '720p', audio: 'true' } },
+  ] } } }]), { perSecondUsd: 0.12, perVideoUsd: 0 });
+  assert.equal(minVideoPrice([{ peerId: 'dddd' }]), null);
+  assert.deepEqual(toChatModel({ id: 'example-video', type: 'video', peers }).videoPrice, { perSecondUsd: 0.17, perVideoUsd: 0 });
 });

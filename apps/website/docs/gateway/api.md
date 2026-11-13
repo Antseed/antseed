@@ -258,7 +258,7 @@ curl https://gateway.example.com/v1/key/savings -H "Authorization: Bearer $ANTSE
 { "id": "<model>", "reference_price": { "input_usd_per_million": 1.25, "output_usd_per_million": 5, "cached_input_usd_per_million": 0.125 }, "peers": [] }
 ```
 
-It is a price to compare with, not one a seller charges: what each seller charges is under `peers[]`. A side the price list doesn't price is left out, and so is the whole field for a model it doesn't name, for image, video and speech models and routers, and when retail prices can't be read.
+It is a price to compare with, not one a seller charges: what each seller charges is under `peers[]`. A side the price list doesn't price is left out, and so is the whole field for a model it doesn't name, and for image, video and speech models and routers. The buyer reads the price list in the background when it starts and every 10 minutes after that, so a listing never waits for it: until the first read finishes, or when no price list is set, no model has the field. A read that fails keeps the prices from the last one that worked, and is retried after a minute.
 
 `limits` are the key's own limits (the lower of the admins' and the owner's). Member and workspace budgets can stop a request first; see [Budgets and spend limits](/docs/gateway/budgets).
 

@@ -105,21 +105,39 @@ function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string,
 }
 
 /**
- * A video model's lowest price per second of video across its sellers, from
- * the `video_seconds` components of their unit billing models
- * (`unitBillingModels`); null when none lists one.
+ * A video model's cheapest price across its sellers, from their unit billing
+ * models (`unitBillingModels`). Billing adds up every component that matches
+ * a request, so each seller is priced per resolution it lists: the
+ * `video_seconds` components that apply to it (unconditional ones included),
+ * plus any fixed `video_generations` charge, for a create sending only that
+ * resolution. Null when no seller lists a price per second.
  */
-export function minVideoUsdPerSecond(peers: Array<Record<string, unknown>>): number | null {
-  let lowest: number | null = null;
+export function minVideoPrice(peers: Array<Record<string, unknown>>): ChatModel['videoPrice'] | null {
+  let best: { perSecondUsd: number; perVideoUsd: number } | null = null;
   for (const peer of peers) {
     for (const billing of Object.values(record(peer['unitBillingModels']))) {
-      for (const component of records(record(billing)['components'])) {
+      const components = records(record(billing)['components']).flatMap((component) => {
         const price = finiteNumber(component['priceUsd']);
-        if (component['unit'] === 'video_seconds' && price !== null && price >= 0 && (lowest === null || price < lowest)) lowest = price;
+        const unit = component['unit'];
+        if (price === null || price < 0 || (unit !== 'video_seconds' && unit !== 'video_generations')) return [];
+        return [{ unit, price, match: record(component['match']) }];
+      });
+      const resolutions = [...new Set(components.flatMap(({ match }) => (typeof match['resolution'] === 'string' ? [match['resolution']] : [])))];
+      for (const resolution of resolutions.length > 0 ? resolutions : [null]) {
+        const attributes: Record<string, unknown> = resolution === null ? {} : { resolution };
+        // As billing matches: every key a component names must equal the request's.
+        const applies = (match: Record<string, unknown>) => Object.entries(match).every(([key, value]) => attributes[key] === value);
+        const sum = (unit: string) => components
+          .filter((component) => component.unit === unit && applies(component.match))
+          .reduce((total, component) => total + component.price, 0);
+        const quote = { perSecondUsd: sum('video_seconds'), perVideoUsd: sum('video_generations') };
+        if (!(quote.perSecondUsd > 0)) continue;
+        if (!best || quote.perSecondUsd < best.perSecondUsd
+          || (quote.perSecondUsd === best.perSecondUsd && quote.perVideoUsd < best.perVideoUsd)) best = quote;
       }
     }
   }
-  return lowest;
+  return best;
 }
 
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
@@ -205,7 +223,7 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
   const contextWindow = entryContextWindow(entry);
   const imageSellers = imageInputSellerIds(peers);
   const imagePrices = type === 'image' ? imageUsdBySeller(peers) : {};
-  const videoPerSecond = type === 'video' ? minVideoUsdPerSecond(peers) : null;
+  const videoPrice = type === 'video' ? minVideoPrice(peers) : null;
   const referencePrice = entryReferencePrice(entry, type);
   return {
     id: entry.id,
@@ -216,7 +234,7 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(Object.keys(imagePrices).length > 0 ? { imageUsdBySeller: imagePrices } : {}),
-    ...(videoPerSecond !== null ? { minVideoUsdPerSecond: videoPerSecond } : {}),
+    ...(videoPrice ? { videoPrice } : {}),
     ...entryOfferSummary(entry, peers, options),
     ...(referencePrice ? { referencePrice } : {}),
   };

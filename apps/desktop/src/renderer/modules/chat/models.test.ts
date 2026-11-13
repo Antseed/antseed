@@ -259,6 +259,8 @@ test('a model priced under retail on input and output shows how far, rounded dow
   const discount = retailDiscount({ ...priced, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } });
   // 37.5% below on output reads as 37%, never 38%.
   assert.deepEqual(discount, { input: 40, output: 37 });
+  // Whole percentages stay whole, though float division lands just under them.
+  assert.deepEqual(retailDiscount({ inputUsdPerMillion: 0.8, outputUsdPerMillion: 0.55, free: false, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } }), { input: 20, output: 45 });
 });
 
 test('no discount shows without a retail price for both sides, or when a side is not cheaper', () => {

@@ -224,8 +224,9 @@ export function retailDiscount(
   model: Pick<ChatModel, 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'referencePrice' | 'free' | 'router'>,
 ): { input: number; output: number } | null {
   if (model.router || model.free || isFreeOffer(model)) return null;
+  // The epsilon keeps $0.80 against $1.00 at 20%, where float division lands just under it.
   const below = (price: number | null, retail: number | null | undefined): number => (
-    price === null || !retail || !(retail > 0) ? 0 : Math.floor((1 - price / retail) * 100)
+    price === null || !retail || !(retail > 0) ? 0 : Math.floor((1 - price / retail) * 100 + 1e-9)
   );
   const input = below(model.inputUsdPerMillion, model.referencePrice?.inputUsdPerMillion);
   const output = below(model.outputUsdPerMillion, model.referencePrice?.outputUsdPerMillion);
