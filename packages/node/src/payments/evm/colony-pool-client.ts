@@ -78,10 +78,19 @@ export class ColonyPoolClient extends BaseEvmClient {
     return this.read().getFunction('epochWeight')(epoch, account);
   }
 
-  /** What this pool settled on the channel and paid `worker` there, from one read. */
-  async workerCredit(channelId: string, worker: string): Promise<{ settled: bigint; credited: bigint }> {
-    const [settled, credited] = await this.read().getFunction('workerCredit')(channelId, worker) as [bigint, bigint];
-    return { settled, credited };
+  /**
+   * What this pool settled on the channel and paid `worker` there, from one
+   * read. null when no contract is deployed at the address: a seller that pays
+   * its workers from its own address, with no credit on-chain to read.
+   */
+  async workerCredit(channelId: string, worker: string): Promise<{ settled: bigint; credited: bigint } | null> {
+    try {
+      const [settled, credited] = await this.read().getFunction('workerCredit')(channelId, worker) as [bigint, bigint];
+      return { settled, credited };
+    } catch (err) {
+      if (await this._provider.getCode(this._contractAddress) === '0x') return null;
+      throw err;
+    }
   }
 
   async payoutOf(worker: string): Promise<string> {

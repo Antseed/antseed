@@ -882,6 +882,27 @@ describe('BuyerPaymentManager', () => {
       expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
     });
 
+    it('credits the worker from signed headroom when the answer\'s NeedAuth asks for no more than is signed', async () => {
+      const { needAuth, sellerPeerId, answered } = await setup('seller-pool-covered');
+      // A seller prompt signs ahead, before the answer: no worker to credit yet.
+      await manager.handleNeedAuth(sellerPeerId, { channelId: manager.getActiveSession(sellerPeerId)!.sessionId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000' }, mux);
+      const signed = manager.latestSpendingAuth(sellerPeerId)!;
+      expect(BigInt(signed.cumulativeAmount)).toBeGreaterThanOrEqual(19_000n);
+      expect(decodeWorkerTail(signed.metadata)).toBeNull();
+      // The answer's NeedAuth asks for 19000, already signed: the same amount is signed again with the worker in its tail.
+      answered();
+      mux.sentSpendingAuths.length = 0;
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+      const sent = mux.sentSpendingAuths[0] as { cumulativeAmount: string; metadata: string };
+      expect(sent.cumulativeAmount).toBe(signed.cumulativeAmount);
+      expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
+      // Counted once: the same frame again signs nothing.
+      mux.sentSpendingAuths.length = 0;
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
     it('lets concurrent requests credit no more workers than a channel holds, counting ones still in flight', async () => {
       const sellerPeerId = fakePeerId('seller-pool-slots');
       const w = (i: number) => `0x${i.toString(16).padStart(40, '0')}`;

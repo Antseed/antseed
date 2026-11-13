@@ -59,6 +59,13 @@ struct Chain {
         return try Data(hexString: result as? String ?? "0x")
     }
 
+    /// Whether a contract is deployed at `address`.
+    func hasCode(_ address: String) async throws -> Bool {
+        let code = try await call("eth_getCode", [address, "latest"])
+        let bytes = try Data(hexString: code as? String ?? "0x")
+        return !bytes.isEmpty
+    }
+
     func chainId() async throws -> UInt64 {
         let hex = (try await call("eth_chainId", []) as? String ?? "0x0").dropFirst(2)
         return UInt64(hex, radix: 16) ?? 0
@@ -87,10 +94,16 @@ struct Chain {
 
     /// What the pool contract settled on `channel`, and how much of the buyer's attribution to `worker`
     /// there it paid: one call (`workerCredit`), so both come from the same block.
-    func poolCredit(channel: String, worker: String, pool: String) async throws -> (settled: UInt64, credited: UInt64) {
+    /// nil when no contract is deployed at `pool`: a seller paying its workers
+    /// from its own address, with no credit on-chain to read.
+    func poolCredit(channel: String, worker: String, pool: String) async throws -> (settled: UInt64, credited: UInt64)? {
         let id = try Data(hexString: channel)
         guard id.count == 32 else { throw Failure.rpc("A channel id is 32 bytes") }
         let words = [UInt8](try await ethCall(to: pool, data: Self.selector("workerCredit(bytes32,address)") + id + Self.addressWord(worker)))
+        if words.isEmpty {
+            let deployed = try await hasCode(pool)
+            if !deployed { return nil }
+        }
         guard words.count == 64 else { throw Failure.rpc("Malformed workerCredit answer") }
         return (WorkerPayment.saturating(Array(words[0..<32])), WorkerPayment.saturating(Array(words[32..<64])))
     }

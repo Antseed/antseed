@@ -36,6 +36,11 @@ extension Data {
 }
 
 /// EIP-191 personal_sign digest of a message.
+/// A UInt64 as one 32-byte ABI word (24 zero bytes, then 8 big-endian bytes).
+func abiWord(_ value: UInt64) -> [UInt8] {
+    [UInt8](repeating: 0, count: 24) + withUnsafeBytes(of: value.bigEndian) { Array($0) }
+}
+
 func personalMessageDigest(_ message: [UInt8]) -> [UInt8] {
     keccak256(Array("\u{19}Ethereum Signed Message:\n\(message.count)".utf8) + message)
 }

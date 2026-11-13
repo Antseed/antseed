@@ -94,6 +94,20 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Local AI',
+      className: 'sidebar-icon sidebar-icon--local-ai',
+      collapsible: true,
+      collapsed: true,
+      items: [
+        'local-ai/overview',
+        'local-ai/mac-app',
+        'local-ai/worker',
+        'local-ai/run-a-pool',
+        'local-ai/privacy',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Model Verification',
       className: 'sidebar-icon sidebar-icon--verify',
       collapsible: true,

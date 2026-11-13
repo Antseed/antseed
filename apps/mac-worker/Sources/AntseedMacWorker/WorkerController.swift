@@ -411,17 +411,21 @@ final class WorkerController: ObservableObject {
     /// adds since the last settlement is credit nothing funds. Read with the
     /// settlement (one call): once the channel settled past a payment the buyer
     /// showed this Mac yet paid it less, the buyer is refused from then on. When
-    /// the read fails, the signed attribution stands and the next request checks again.
-    private func redeemable(channel: String, buyer: String, paid: (attributed: UInt64, cumulative: UInt64)) async -> (attributed: UInt64, cumulative: UInt64) {
+    /// the read fails it returns nil and the request is refused (retryable):
+    /// attribution the pool may never pay must not clear this Mac's unpaid
+    /// answers. A pool that is no contract (a seller paying workers from its own
+    /// address) has nothing on-chain to check, so the signed attribution stands.
+    private func redeemable(channel: String, buyer: String, paid: (attributed: UInt64, cumulative: UInt64)) async -> (attributed: UInt64, cumulative: UInt64)? {
         let rpcURLs = config.rpcURLs
         guard !rpcURLs.isEmpty, let pool = poolSeller else { return paid }
-        let credit: (settled: UInt64, credited: UInt64)
+        let read: (settled: UInt64, credited: UInt64)?
         do {
-            credit = try await Chain(rpcURLs: rpcURLs, timeout: 2).poolCredit(channel: channel, worker: address, pool: pool)
+            read = try await Chain(rpcURLs: rpcURLs, timeout: 2).poolCredit(channel: channel, worker: address, pool: pool)
         } catch {
             log("could not read the pool's credit on channel \(channel.prefix(18))…: \(error.localizedDescription)")
-            return paid
+            return nil
         }
+        guard let credit = read else { return paid }
         if payments.reconcile(channel: channel, buyer: buyer, settled: credit.settled, credited: credit.credited) {
             log("a settlement on channel \(channel.prefix(18))… paid this Mac less than buyer \(buyer) signed; refusing that buyer")
         }
@@ -475,7 +479,9 @@ final class WorkerController: ObservableObject {
                 return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
             }
             // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
-            let paid = await redeemable(channel: channel, buyer: buyer, paid: attributed(sealed, channel: channel, buyer: buyer))
+            guard let paid = await redeemable(channel: channel, buyer: buyer, paid: attributed(sealed, channel: channel, buyer: buyer)) else {
+                return fail(id, "Could not read the pool's settlement for this channel; retry shortly")
+            }
             guard !payments.refuses(buyer: buyer) else {
                 return fail(id, "This worker no longer serves this buyer: a settlement credited it less than the buyer signed")
             }
@@ -523,37 +529,10 @@ final class WorkerController: ObservableObject {
         send(["t": "accepted", "id": id])
 
         let maxTokens = full ? generation.maxTokens : min(generation.maxTokens, checkLimit)
-        let stream = generation.stream
-        let temperature = generation.temperature
-        let response = EngineChat.Response(id: "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())",
-                                           created: Int(Date().timeIntervalSince1970), model: config.service)
-        let sealer = opened.sealer
-
-        defer { startedStreams.remove(id) }
         do {
-            let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
-                guard stream else { return }
-                await self?.startStream(id)
-                guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
-                await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
-            }
-            let usage = EngineChat.Response.usage(result)
-            let sent: Bool
-            if stream {
-                startStream(id)
-                var tail = try sealer.sealEvent("data: " + jsonString(response.finish(result)))
-                tail += try sealer.sealEvent("data: " + jsonString(EngineChat.Response.usageEvent(usage)), usage: usage)
-                tail += try sealer.sealEvent("data: [DONE]")
-                tail += try sealer.finish()
-                sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
-            } else {
-                let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
-                sent = await sendBufferedBody(sealed, id: id, status: 200)
-            }
-            let ended = await sendConfirmed(["t": "response-end", "id": id])
-            // Only an answer the pool took whole, on the connection the request came in on, can reach the
-            // buyer and be paid: one that failed to send is not owed, so it never holds the channel's credit.
-            guard sent, ended, socket === connection else {
+            guard let result = try await generateAndSend(id: id, chat: chat, maxTokens: maxTokens, promptLimit: promptLimit,
+                                                         temperature: generation.temperature, stream: generation.stream,
+                                                         sealer: opened.sealer, connection: connection) else {
                 log("the answer could not be sent to the pool; it is not owed")
                 return
             }
@@ -564,6 +543,45 @@ final class WorkerController: ObservableObject {
         } catch {
             fail(id, Task.isCancelled ? "cancelled" : error.localizedDescription)
         }
+    }
+
+    /// Runs the model and sends its answer, sealed for the buyer, streamed or whole. Returns the result
+    /// only when the pool took the answer whole on the connection the request came in on: an answer
+    /// that failed to send can't reach the buyer, so it is not owed and never holds the channel's credit.
+    private func generateAndSend(
+        id: String,
+        chat: [String: Any],
+        maxTokens: Int,
+        promptLimit: Int?,
+        temperature: Float,
+        stream: Bool,
+        sealer: ResponseSealer,
+        connection: URLSessionWebSocketTask?
+    ) async throws -> LocalModel.Result? {
+        let response = EngineChat.Response(id: "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())",
+                                           created: Int(Date().timeIntervalSince1970), model: config.service)
+        defer { startedStreams.remove(id) }
+        let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
+            guard stream else { return }
+            await self?.startStream(id)
+            guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
+            await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+        }
+        let usage = EngineChat.Response.usage(result)
+        let sent: Bool
+        if stream {
+            startStream(id)
+            var tail = try sealer.sealEvent("data: " + jsonString(response.finish(result)))
+            tail += try sealer.sealEvent("data: " + jsonString(EngineChat.Response.usageEvent(usage)), usage: usage)
+            tail += try sealer.sealEvent("data: [DONE]")
+            tail += try sealer.finish()
+            sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
+        } else {
+            let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
+            sent = await sendBufferedBody(sealed, id: id, status: 200)
+        }
+        let ended = await sendConfirmed(["t": "response-end", "id": id])
+        return sent && ended && socket === connection ? result : nil
     }
 
     /// Answers a request the worker can't serve as asked (a part or role the model

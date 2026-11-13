@@ -80,8 +80,12 @@ export interface VerifiedChannel {
  */
 export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<VerifiedChannel | boolean | 'closed' | null>;
 
-/** What a pool contract settled on a channel (`settled`) and credited a worker there (`credited`). */
-export type PoolCreditReader = (pool: string, channel: string, worker: string) => Promise<{ settled: bigint; credited: bigint }>;
+/**
+ * What a pool contract settled on a channel (`settled`) and credited a worker
+ * there (`credited`); null when the pool is no contract (a seller paying
+ * workers from its own address).
+ */
+export type PoolCreditReader = (pool: string, channel: string, worker: string) => Promise<{ settled: bigint; credited: bigint } | null>;
 
 /** A channel check's outcome: verified (with its reserve, when known), refused, or not on-chain within the wait. */
 type ChannelVerdict = { deposit: bigint | null } | false | null;
@@ -539,20 +543,24 @@ export class PoolWorker {
    * the payment adds since the last settlement is credit nothing funds. Read
    * with the settlement (one call, one block): once the channel settled past a
    * payment the buyer showed this worker yet paid it less, the buyer is
-   * refused from then on. Without a reader, or when the read fails, the signed
-   * attribution stands and the next request checks again.
+   * refused from then on. When the read fails the request is refused (retryable):
+   * attribution the pool may never pay must not clear this worker's unpaid
+   * answers. Without a reader, or when the pool is no contract (a seller paying
+   * workers from its own address), there is nothing on-chain to check and the
+   * signed attribution stands.
    */
   private async redeemable(channel: string, buyer: string, paid: { attributed: bigint; cumulative: bigint }): Promise<{ attributed: bigint; cumulative: bigint }> {
     const read = this.opts.poolCredit;
     const pool = this.seller;
     if (!read || !pool) return paid;
-    let credit: { settled: bigint; credited: bigint };
+    let credit: { settled: bigint; credited: bigint } | null;
     try {
       credit = await withTimeout(read(pool, channel, this.wallet.address), this.opts.channelWaitMs ?? DEFAULT_CHANNEL_WAIT_MS);
     } catch (err) {
       this.log(`could not read the pool's credit on channel ${channel.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`);
-      return paid;
+      throw new Error("Could not read the pool's settlement for this channel; retry shortly");
     }
+    if (!credit) return paid;
     if (this.payments.reconcile(channel, buyer, credit.settled, credit.credited)) {
       this.log(`a settlement on channel ${channel.slice(0, 18)}… paid this worker less than buyer ${buyer} signed; refusing that buyer`);
     }

@@ -440,6 +440,33 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
+  it('refuses a request when the pool credit read fails, and trusts the signed payment only for a pool with no contract', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    const domain = { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' };
+    let read: () => Promise<{ settled: bigint; credited: bigint } | null> = async () => { throw new Error('rpc down'); };
+    start({
+      channelsDomain: domain,
+      channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })),
+      poolCredit: () => read(),
+    });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const pay = (amount: bigint): Promise<WorkerPayment> =>
+      signTestWorkerPayment({ signer: buyer, channel: CHANNEL, worker: worker!.address, amount, domain });
+    await request('f1', { payment: await pay(18n) });
+    await waitFor(() => fakePool.errorFor('f1') !== undefined);
+    expect(fakePool.errorFor('f1')).toMatch(/Could not read the pool's settlement/);
+    expect(upstream.bodies).toHaveLength(0);
+    // A seller paying workers from its own address: nothing on-chain to check, so the signed payment counts.
+    read = async () => null;
+    for (const id of ['f2', 'f3']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    await request('f4', { payment: await pay(18n) });
+    await waitFor(() => fakePool.ended('f4'));
+    expect(upstream.bodies).toHaveLength(3);
+  });
+
   it('owes nothing for error answers without usage, so a buyer\'s corrected request still reaches the model', async () => {
     let refuse = 2;
     upstream = await startUpstream((_body, res) => {

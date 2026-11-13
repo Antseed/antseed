@@ -2282,8 +2282,12 @@ export class BuyerPaymentManager {
       record = undefined;
     }
 
+    // A verified worker answer whose cost the buyer already signed ahead of
+    // (headroom from a seller prompt or a top-up): nothing new to sign, but it
+    // is counted below and its worker credited from that headroom.
+    const coveredByHeadroom = requiredCumulativeAmount <= currentCumulative && record !== undefined && workerDelivery !== undefined;
     // Reject stale/lower NeedAuth (monotonicity guard)
-    if (requiredCumulativeAmount <= currentCumulative) {
+    if (requiredCumulativeAmount <= currentCumulative && !coveredByHeadroom) {
       // A catch-up prompt (no response cost) for what is already signed but
       // not accepted (lost on the wire, or the seller restarted): resend the
       // same authorization, no higher. A post-response NeedAuth is not
@@ -2461,20 +2465,35 @@ export class BuyerPaymentManager {
     // still counts, once, toward verified cost. The seller's next prompt, or
     // the buyer's own signing before a close, signs up to it. The record stays,
     // counted at no cost, so that close still attributes the response's usage.
-    const countUnsigned = (): void => {
+    // Its worker is credited from signed headroom when there is some (the auth
+    // is re-signed at the same amount with the worker in its tail), otherwise
+    // from a later signed advance.
+    const countUnsigned = async (): Promise<void> => {
       if (!record) return;
+      const counted = [[payload.requestId!, verifiedCostDelta] as const];
+      const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
+      const credit = this._creditWorkers(sellerPeerId, metadata, 0n, counted, currentCumulative);
+      if (credit.metadata !== metadata) {
+        const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, currentCumulative, credit.metadata);
+        if (typeof spendingAuth === 'string') return;
+        this._metadata.set(sellerPeerId, credit.metadata);
+        paymentMux.sendSpendingAuth(spendingAuth);
+      }
       ledger!.set(payload.requestId!, { ...record, costUsdc: 0n, costCounted: true });
       this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
-      // Its worker is credited from a later signed advance.
-      const counted = [[payload.requestId!, verifiedCostDelta] as const];
-      this._commitWorkerCredit(sellerPeerId, this._creditWorkers(sellerPeerId, this._sanitizeMetadata(this._metadata.get(sellerPeerId)), 0n, counted).due, counted);
+      this._commitWorkerCredit(sellerPeerId, credit.due, counted);
     };
+    if (coveredByHeadroom) {
+      await countUnsigned();
+      debugLog(`[BuyerPayment] NeedAuth: request ${payload.requestId} is covered by signed headroom (required=${requiredCumulativeAmount} <= current=${currentCumulative})`);
+      return false;
+    }
     // A NeedAuth never reopens a used-up overdraft window: the seller could
     // repeat the frame and have the buyer sign one more window each time,
     // with no work to show for it. Only the buyer's own 402 retry reopens it
     // (extendCurrentSpendingAuth).
     if (maxSignable <= currentCumulative && !needsTopUp) {
-      countUnsigned();
+      await countUnsigned();
       debugWarn(
         `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
       );
@@ -2503,7 +2522,7 @@ export class BuyerPaymentManager {
     }
     if (effectiveAmount <= currentCumulative) {
       // Nothing to sign; a top-up still extends the ceiling for the next round.
-      countUnsigned();
+      await countUnsigned();
       debugWarn(
         `[BuyerPayment] NeedAuth: effectiveAmount=${effectiveAmount} <= currentCumulative=${currentCumulative} — cannot advance`,
       );

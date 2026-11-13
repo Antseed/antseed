@@ -481,8 +481,11 @@ workers serve requests it never pays for.
   channel settled past a payment the buyer showed the worker yet paid it
   less, the worker refuses that buyer from then on. Until settlement, a
   worker's exposure is the answers it served on payments the pool has not
-  settled yet. When the read fails, the signed attribution stands and the
-  next request reads again.
+  settled yet. When the read fails, the worker refuses the request with a
+  retryable error rather than count attribution the pool may never pay. A
+  pool address with no contract (a seller paying workers from its own
+  address) has no credit on-chain to read, so there the signed attribution
+  stands.
 
 ## Hardened Macs
 

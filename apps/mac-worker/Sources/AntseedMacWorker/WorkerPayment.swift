@@ -99,7 +99,7 @@ enum WorkerPayment {
     /// The EIP-712 digest AntseedChannels verifies a SpendingAuth against.
     static func spendingAuthDigest(channel: Data, cumulativeAmount: [UInt8], metadata: Data, chainId: UInt64, channels: Data) -> [UInt8] {
         let domain = keccak256(domainTypeHash + domainNameHash + domainVersionHash
-            + word(chainId) + [UInt8](repeating: 0, count: 12) + Array(channels))
+            + abiWord(chainId) + [UInt8](repeating: 0, count: 12) + Array(channels))
         let auth = keccak256(spendingAuthTypeHash + Array(channel) + cumulativeAmount + keccak256(metadata))
         return keccak256([0x19, 0x01] + domain + auth)
     }
@@ -163,10 +163,6 @@ enum WorkerPayment {
         let significant = bigEndian.drop { $0 == 0 }
         guard significant.count <= 8 else { return .max }
         return significant.reduce(0) { ($0 << 8) | UInt64($1) }
-    }
-
-    private static func word(_ value: UInt64) -> [UInt8] {
-        [UInt8](repeating: 0, count: 24) + (0..<8).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
     }
 }
 
