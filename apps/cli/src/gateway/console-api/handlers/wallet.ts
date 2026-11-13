@@ -23,7 +23,7 @@ import { usdcToDecimalString } from '../../money.js'
 import { ReceiptUnavailableError, verifyDeposit, type DepositChain, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
-import { applyChannelChainState, chainInfo, channelChainHints, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
+import { applyChannelChainState, chainInfo, channelChainHints, channelChainStates, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
 import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerFreeTierRoutes } from './free-tier.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
@@ -404,15 +404,22 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)
     const all = request.query.get('all') === '1'
-    const body = await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity))
+    // After a close request or withdrawal the browser asks for a re-read rather than wait out the cache.
+    const fresh = request.query.get('fresh') === '1'
+    // Every row, retired ones included: the buyer retires a row when it gives
+    // up on a session, which leaves the channel open with its reserve locked.
+    const body = await buyerJson(buyer, withIdentity(`/_antseed/channels?all=1${fresh ? '&fresh=1' : ''}`, ws.buyerIdentity))
     const channels = mapChannels(body)
     const { deadlines, sellers } = channelChainHints(body)
     // The buyer's store can call a channel active long after a seller settled
-    // it, and reports its configured maximum as the reserve; the chain decides both.
-    const ids = channels.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status)).map((channel) => channel.channelId).sort()
-    let states = new Map<string, ChannelChainState>()
-    // After a close request or withdrawal the browser asks for a re-read rather than wait out the cache.
-    if (request.query.get('fresh') === '1') chainCache.invalidate('channels')
+    // it, call one retired that is still open, and reports its configured
+    // maximum as the reserve; the chain decides. The buyer reports the chain's
+    // record with each row; one that predates that is read here, for the rows
+    // it calls open.
+    const reported = channelChainStates(body)
+    const ids = reported ? [] : channels.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status)).map((channel) => channel.channelId).sort()
+    let states = reported ?? new Map<string, ChannelChainState>()
+    if (fresh) chainCache.invalidate('channels')
     if (ids.length > 0) {
       try {
         states = (await chainCache.read(`channels:${createHash('sha256').update(ids.join(',')).digest('hex')}`, { ttlMs: CHANNELS_TTL_MS },

@@ -5,10 +5,9 @@
  * read here: they come from the buyer's cached `GET /_antseed/balances`.
  */
 import { AntsContext, rewards, type AntsChainConfig, type RewardsView } from '@antseed/ants'
-import { multicallRead } from '@antseed/node/payments'
-import { Interface, ZeroAddress, type AbstractProvider } from 'ethers'
+import { ZeroAddress, type AbstractProvider } from 'ethers'
+import { readChannelStatesAt, type ChannelChainState } from '../../../proxy/channel-chain.js'
 import { sharedChainProvider, type ChainRpcProvider } from '../../../proxy/chain-rpc.js'
-import type { ChannelChainState } from './wallet-mapping.js'
 
 /** Rewards move once per epoch; five minutes keeps a page refresh from re-reading them. */
 export const REWARDS_TTL_MS = 5 * 60_000
@@ -63,31 +62,9 @@ export function createRewardsReader(): (chain: AntsChainConfig, address: string)
   }
 }
 
-const CHANNELS_READ_IFACE = new Interface([
-  'function channels(bytes32 channelId) view returns (address buyer, address seller, uint128 deposit, uint128 settled, bytes32 metadataHash, uint256 deadline, uint256 settledAt, uint256 closeRequestedAt, uint8 status)',
-])
-
-const SELLER_FACADE_IFACE = new Interface(['function channelsAddress() view returns (address)'])
-
-async function readChannelsAt(provider: AbstractProvider, address: string, channelIds: string[], states: Map<string, ChannelChainState>): Promise<void> {
-  const results = await multicallRead(provider, channelIds.map((channelId) => ({
-    target: address,
-    iface: CHANNELS_READ_IFACE,
-    method: 'channels',
-    args: [channelId],
-  })))
-  results.forEach((result, index) => {
-    if (!result) return
-    states.set(channelIds[index]!, { deposit: result[2] as bigint, settled: result[3] as bigint, closeRequestedAt: result[7] as bigint, status: Number(result[8]) })
-  })
-}
-
 /**
- * On-chain records for `channelIds` in one Multicall3 read; ids it could not
- * read are left out. A channel with no record on the configured contract may
- * live behind its seller's facade (`sellers`: channel id → seller address),
- * on the contract the facade names, as the desktop resolves it. When that
- * cannot be checked, the id is left out rather than reported as missing.
+ * On-chain records for `channelIds`, for a buyer that does not report them
+ * itself (see `readChannelStatesAt`); ids that could not be read are left out.
  */
 export async function readChannelStates(
   chain: AntsChainConfig,
@@ -95,31 +72,5 @@ export async function readChannelStates(
   sellers: ReadonlyMap<string, string> = new Map(),
   provider: AbstractProvider = gatewayChainProvider(chain),
 ): Promise<Map<string, ChannelChainState>> {
-  const states = new Map<string, ChannelChainState>()
-  const canonical = chain.channelsContractAddress
-  if (!canonical || channelIds.length === 0) return states
-  await readChannelsAt(provider, canonical, channelIds, states)
-  const bySeller = new Map<string, string[]>()
-  for (const channelId of channelIds) {
-    const seller = sellers.get(channelId)?.toLowerCase()
-    if (states.get(channelId)?.status !== 0 || !seller || !/^0x[0-9a-f]{40}$/.test(seller)) continue
-    bySeller.set(seller, [...(bySeller.get(seller) ?? []), channelId])
-  }
-  if (bySeller.size === 0) return states
-  const facadeSellers = [...bySeller.keys()]
-  try {
-    // A seller that is not a facade reverts or returns nothing: null here.
-    const probes = await multicallRead(provider, facadeSellers.map((seller) => ({ target: seller, iface: SELLER_FACADE_IFACE, method: 'channelsAddress' })))
-    for (const [index, seller] of facadeSellers.entries()) {
-      const underlying = probes[index]?.[0]
-      if (typeof underlying !== 'string' || underlying === ZeroAddress || underlying.toLowerCase() === canonical.toLowerCase()) continue
-      // The canonical miss says nothing for a facade's channel: only its own contract's answer counts.
-      const facadeChannelIds = bySeller.get(seller)!
-      for (const channelId of facadeChannelIds) states.delete(channelId)
-      await readChannelsAt(provider, underlying, facadeChannelIds, states)
-    }
-  } catch {
-    for (const channelIds of bySeller.values()) for (const channelId of channelIds) states.delete(channelId)
-  }
-  return states
+  return readChannelStatesAt(provider, chain.channelsContractAddress ?? '', channelIds, sellers)
 }

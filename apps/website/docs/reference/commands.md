@@ -288,8 +288,8 @@ Fund the buyer and manage payment channels. Guides: [Gateway funding](/docs/gate
 | `antseed buyer free-tier remove <staker>` | Stop sending a staker's delegation | `--identity <name>` |
 | `antseed buyer channels [list]` | List payment channels from the local store, after checking active ones on-chain | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
 | `antseed buyer channels close <channelId>` | Ask the seller to close a channel now | `--no-auth` |
-| `antseed buyer channels request-close <channelId>` | Start a timeout close so reserved funds can be withdrawn after the grace period | |
-| `antseed buyer channels withdraw <channelId>` | Release reserved funds after the grace period | |
+| `antseed buyer channels request-close <channelId>` | Start a timeout close so reserved funds can be withdrawn after the grace period. Takes a listed channel, or the full id of one the local store has no row for | |
+| `antseed buyer channels withdraw <channelId>` | Release reserved funds after the grace period. Takes a listed channel, or the full id of one the local store has no row for | |
 | `antseed payments` | Print the commands that replaced the retired payments portal | |
 
 </CommandTable>

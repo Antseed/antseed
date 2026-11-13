@@ -15,6 +15,27 @@
  * The gateway reports pending with the deposits (`GET /v1/key`).
  */
 
+/** The shape this module needs from a channel row. */
+export type ChannelSpendRow = {
+  status: string;
+  /** Cumulative amount the buyer has signed for on this channel (base units). */
+  cumulativeSigned: string;
+  /** Amount already settled on-chain for this channel (base units). */
+  onChainSettled: string;
+  /** True once the chain was read for this channel; then onChainDeposit is its reserve. */
+  onChainStateKnown?: boolean;
+  /** Amount the channel locks on-chain (base units): the most a seller can settle on it now. */
+  onChainDeposit?: string;
+  /** Deadline (unix seconds) of the latest ReserveAuth the buyer signed for it; 0 when unknown. */
+  deadline?: number;
+};
+
+/**
+ * A top-up can land until its ReserveAuth's deadline; this much later, a local
+ * clock running ahead of the chain's cannot have cut it short.
+ */
+const TOP_UP_DEADLINE_GRACE_SECS = 60 * 60;
+
 export type CreditsBalanceComponents = {
   available: bigint;
   reserved: bigint;
@@ -27,6 +48,52 @@ export type CreditsBalanceTotals = CreditsBalanceComponents & {
   spendable: bigint;
   totalOwned: bigint;
 };
+
+/** Statuses where the seller can still settle against the buyer's signatures. */
+export function isOpenChannelStatus(status: string): boolean {
+  return status === 'active' || status === 'open' || status === 'pending'
+    || status === 'closing' || status === 'close_requested' || status === 'withdrawable';
+}
+
+/**
+ * Signed but not yet settled on one channel, in USDC base units. settle()
+ * refuses more than the deposit, so once no top-up the buyer signed can raise
+ * it (a close was requested, or its deadline passed) only that much counts.
+ */
+export function unsettledSpend(row: ChannelSpendRow, nowSeconds = Math.floor(Date.now() / 1000)): bigint {
+  try {
+    const signed = BigInt(row.cumulativeSigned || '0');
+    const settled = BigInt(row.onChainSettled || '0');
+    const closing = row.status === 'closing' || row.status === 'withdrawable';
+    const toppedUpBefore = row.deadline ? row.deadline + TOP_UP_DEADLINE_GRACE_SECS : Infinity;
+    let claimable = signed;
+    if (row.onChainStateKnown && (closing || nowSeconds > toppedUpBefore)) {
+      const deposit = BigInt(row.onChainDeposit || '0');
+      if (deposit < signed) claimable = deposit;
+    }
+    return claimable > settled ? claimable - settled : 0n;
+  } catch {
+    // Malformed row — skip it rather than poison the total.
+    return 0n;
+  }
+}
+
+/**
+ * Total spend the buyer has authorized but not yet paid out, across every
+ * channel a seller can still settle against.
+ *
+ * Rows that were never checked against the chain read as settled=0, which
+ * overstates pending rather than understating it — the balance shown is then
+ * conservative, never optimistic.
+ */
+export function pendingSpendFromChannels(channels: readonly ChannelSpendRow[]): bigint {
+  let total = 0n;
+  for (const row of channels) {
+    if (!isOpenChannelStatus(row.status)) continue;
+    total += unsettledSpend(row);
+  }
+  return total;
+}
 
 /**
  * What the buyer actually still owns. Clamped at zero: pending is measured

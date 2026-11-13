@@ -11,10 +11,28 @@ export function isFundedCurrentChannel(row: {
   onChainStateKnown: boolean;
   onChainDeposit: string;
   onChainSettled: string;
-  cumulativeSigned: string;
 }): boolean {
   if (!isCurrentChannelStatus(row.status)) return false;
-  return !row.onChainStateKnown || channelRecoverableBaseUnits(row) > 0n;
+  return !row.onChainStateKnown || channelHeldBaseUnits(row) > 0n;
+}
+
+/**
+ * What the chain still locks for the channel: the reserve minus what the
+ * seller has settled. It stays locked until the channel closes, and a
+ * withdraw() returns whatever the seller has not settled by then, even spend
+ * the buyer signed for.
+ */
+export function channelHeldBaseUnits(row: {
+  onChainDeposit: string;
+  onChainSettled: string;
+}): bigint {
+  try {
+    const reserved = BigInt(row.onChainDeposit || '0');
+    const settled = BigInt(row.onChainSettled || '0');
+    return reserved > settled ? reserved - settled : 0n;
+  } catch {
+    return 0n;
+  }
 }
 
 /**
@@ -40,6 +58,13 @@ export function channelRecoverableBaseUnits(row: {
   }
 }
 
+function formatUsdBaseUnits(baseUnits: bigint): string {
+  if (baseUnits < 10_000n) return '<$0.01';
+  const whole = baseUnits / 1_000_000n;
+  const cents = (baseUnits % 1_000_000n) / 10_000n;
+  return `$${whole}.${cents.toString().padStart(2, '0')}`;
+}
+
 export function formatChannelLockedAmount(row: {
   onChainStateKnown: boolean;
   onChainDeposit: string;
@@ -48,11 +73,25 @@ export function formatChannelLockedAmount(row: {
 }): string {
   if (!row.onChainStateKnown) return 'Locked amount unavailable';
   const locked = channelRecoverableBaseUnits(row);
-  if (locked === 0n) return 'No funds locked';
-  if (locked < 10_000n) return '<$0.01 locked';
-  const whole = locked / 1_000_000n;
-  const cents = (locked % 1_000_000n) / 10_000n;
-  return `$${whole}.${cents.toString().padStart(2, '0')} locked`;
+  if (locked > 0n) return `${formatUsdBaseUnits(locked)} locked`;
+  // Signed away in full but not settled: the seller can still claim it, and
+  // whatever it does not claim comes back when the channel closes.
+  const held = channelHeldBaseUnits(row);
+  return held > 0n ? `${formatUsdBaseUnits(held)} unsettled` : 'No funds locked';
+}
+
+/**
+ * One calm line for an on-chain reserve no listed channel accounts for (the
+ * buyer reports it: a session opened from another data directory, or whose
+ * row was lost). Null when there is none, or the buyer did not judge it.
+ */
+export function unaccountedReserveLine(baseUnits: string | null | undefined): string | null {
+  try {
+    const amount = BigInt(baseUnits || '0');
+    return amount > 0n ? `${formatUsdBaseUnits(amount)} is held by a session this app has no record of.` : null;
+  } catch {
+    return null;
+  }
 }
 
 export function compareChannelsByLockedAmount(

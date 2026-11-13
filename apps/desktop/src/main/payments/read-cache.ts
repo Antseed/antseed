@@ -25,6 +25,7 @@ export const CHANNELS_FRESH_MS = 20_000;const client = new QueryClient({
 export const readKeys = {
   credits: (address: string) => ['credits', address.toLowerCase()] as const,
   channelStatus: (channelSetHash: string) => ['channels', channelSetHash] as const,
+  pendingSpend: (address: string) => ['pending-spend', address.toLowerCase()] as const,
   rewards: (address: string, chain: string) => ['rewards', address.toLowerCase(), chain] as const,
 };
 

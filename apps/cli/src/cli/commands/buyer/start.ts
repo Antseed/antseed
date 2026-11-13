@@ -22,6 +22,7 @@ import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type D
 import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
+import { BuyerChannelChainView, createChannelChainReader } from '../../../proxy/channel-chain.js'
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
@@ -493,6 +494,15 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             usdcAddress: chainConfig.usdcContractAddress,
           })
         : null
+      const channelChain = paymentsConfig?.enabled
+        ? new BuyerChannelChainView({
+            read: createChannelChainReader({
+              provider: sharedChainProvider(chainConfig),
+              channelsAddress: chainConfig.channelsContractAddress,
+              depositsAddress: chainConfig.depositsContractAddress,
+            }),
+          })
+        : null
       const newDepositsClient = (): DepositsClient => new DepositsClient({
         rpcUrl: chainConfig.rpcUrl,
         ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
@@ -617,6 +627,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),
+        ...(channelChain ? { channelChain } : {}),
         ...(isSupervisedProcess()
           ? {
               onRestartRequested: async () => {
