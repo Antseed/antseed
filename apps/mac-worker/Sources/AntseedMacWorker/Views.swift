@@ -107,10 +107,24 @@ struct ShareSwitch: View {
             }
             .animation(.easeOut(duration: 0.15), value: isOn)
             .contentShape(Capsule())
-            .onTapGesture { isOn.toggle() }
-            .accessibilityLabel("Share this Mac")
+            .clickable("Share this Mac") { isOn.toggle() }
             .accessibilityValue(isOn ? "On" : "Off")
+    }
+}
+
+extension View {
+    /// A drawn control that acts like a button: the pointing hand on hover, and a named button for
+    /// VoiceOver and automation (a tap gesture alone is neither).
+    func clickable(_ label: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        self
+            .onTapGesture { if enabled { action() } }
+            .onHover { inside in
+                (inside && enabled ? NSCursor.pointingHand : NSCursor.arrow).set()
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
             .accessibilityAddTraits(.isButton)
+            .accessibilityAction { if enabled { action() } }
     }
 }
 
@@ -128,8 +142,7 @@ struct PillButton: View {
             .background(Capsule().fill(primary ? Theme.accent : Color.clear))
             .overlay(Capsule().stroke(primary ? Color.clear : Theme.border))
             .contentShape(Capsule())
-            .onTapGesture(perform: action)
-            .accessibilityAddTraits(.isButton)
+            .clickable(title, action: action)
     }
 }
 
@@ -141,8 +154,7 @@ struct TextLink: View {
     var body: some View {
         Text(title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.accent)
             .contentShape(Rectangle())
-            .onTapGesture(perform: action)
-            .accessibilityAddTraits(.isButton)
+            .clickable(title, action: action)
     }
 }
 
@@ -376,12 +388,11 @@ struct ModelRow: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(current ? Theme.accent.opacity(0.5) : Color.clear))
         .opacity(fits ? 1 : 0.55)
         .contentShape(Rectangle())
-        .onTapGesture {
-            guard fits, !snapshot else { return }
+        .clickable("Run \(offer.displayName) for \(offer.service)", enabled: fits && !current) {
+            guard !snapshot else { return }
             picking = false
             worker.choose(offer)
         }
-        .accessibilityAddTraits(.isButton)
     }
 }
 
