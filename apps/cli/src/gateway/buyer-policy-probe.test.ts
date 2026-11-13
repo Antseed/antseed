@@ -78,6 +78,51 @@ test('the probe logs loudly while policies are unsupported and notices recovery'
   }
 })
 
+test('a confirmed buyer keeps policy support through probes that get no answer, for two minutes', async () => {
+  const logs: string[] = []
+  let now = 1_000_000
+  let answer: 'ok' | 'silent' | 'refuse' = 'ok'
+  const probe = new BuyerPolicyProbe({
+    buyerPort: 1,
+    secret: 'x',
+    now: () => now,
+    onLog: (message) => logs.push(message),
+    fetchPreview: async () => {
+      if (answer === 'silent') throw new Error('timeout')
+      return answer === 'ok'
+        ? new Response(JSON.stringify({ candidates: [] }), { status: 200 })
+        : new Response('{}', { status: 404 })
+    },
+  })
+  try {
+    assert.equal(await probe.start(), 'supported')
+    answer = 'silent'
+    now += 60_000
+    await probe.check()
+    assert.equal(probe.policyUnsupported(), false, 'one unanswered probe does not refuse keys')
+    assert.deepEqual(logs, [])
+    now += 59_000
+    await probe.check()
+    assert.equal(probe.policyUnsupported(), false)
+    now += 1_000
+    await probe.check()
+    assert.equal(probe.policyUnsupported(), true, 'two minutes of silence does')
+    assert.match(logs.at(-1)!, /^WARNING: cannot reach the buyer/)
+
+    answer = 'ok'
+    await probe.check()
+    assert.equal(probe.policyUnsupported(), false)
+    answer = 'refuse'
+    await probe.check()
+    assert.equal(probe.policyUnsupported(), true, 'a refusing answer takes effect at once')
+    answer = 'silent'
+    await probe.check()
+    assert.equal(probe.state, 'unknown', 'no grace after a refusal')
+  } finally {
+    probe.stop()
+  }
+})
+
 test('the server refuses paid requests from seller-restricting keys while the buyer cannot apply policies', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'antseed-gw-probe-'))
   const store = new GatewayStore(dir)
