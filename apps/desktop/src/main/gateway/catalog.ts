@@ -7,8 +7,6 @@ import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-t
 import { isFreeOffer } from '../../shared/offer-prices.js';
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
-import { evaluateUnitBilling, type UnitBillingContext, type UnitBillingModelV1 } from '@antseed/node';
-import { nativeVideoAttributes, type NativeVideoPricedOptions } from '@antseed/api-adapter';
 import { entryReasons, trustedAppEntries, type GatewayModelEntry } from './models.js';
 import { finiteNumber, record } from './response-fields.js';
 import { findListedModel, normalizeSellerId } from '../../shared/pinned-model.js';
@@ -107,52 +105,18 @@ function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string,
 }
 
 /**
- * A video model's cheapest price across its sellers, priced as billing prices
- * a plain create (no reference video): each seller's unit billing models
- * (`unitBillingModels`) evaluated by `evaluateUnitBilling` with the attributes
- * `nativeVideoAttributes` builds from its service, protocol and announced
- * video options, at each resolution it prices. That is the per-second rate
- * plus any fixed charge per video. A combination billing would refuse is
- * skipped; null when no seller has a price per second.
+ * A video model's cheapest price across its sellers, as the listing prices
+ * each video offer (`videoUsdPerSecond`, plus `videoUsdPerVideo` for a fixed
+ * charge per video). Null when no seller lists one.
  */
 export function minVideoPrice(peers: Array<Record<string, unknown>>): ChatModel['videoPrice'] | null {
   let best: { perSecondUsd: number; perVideoUsd: number } | null = null;
   for (const peer of peers) {
-    const service = typeof peer['serviceId'] === 'string' ? peer['serviceId'] : '';
-    const options = record(record(peer['capabilities'])['video']) as NativeVideoPricedOptions;
-    for (const [protocol, billing] of Object.entries(record(peer['unitBillingModels']))) {
-      if (protocol !== 'venice-video' && protocol !== 'fal-video') continue;
-      const model = record(billing) as unknown as UnitBillingModelV1;
-      const components = records(record(billing)['components']);
-      const has = (unit: string) => components.some((component) => component['unit'] === unit);
-      if (!has('video_seconds')) continue;
-      const resolutions = [...new Set(components.flatMap((component) => {
-        const resolution = record(component['match'])['resolution'];
-        return typeof resolution === 'string' ? [resolution] : [];
-      }))];
-      for (const resolution of resolutions.length > 0 ? resolutions : [undefined]) {
-        const context: UnitBillingContext = {
-          sellerPeerId: typeof peer['peerId'] === 'string' ? peer['peerId'] : '',
-          provider: typeof peer['provider'] === 'string' ? peer['provider'] : '',
-          service,
-          serviceApiProtocol: protocol,
-          attributes: nativeVideoAttributes(service, { protocol, action: 'create', referenceVideo: false, ...(resolution ? { resolution } : {}) }, options),
-        };
-        // Billing throws for a combination it would refuse (no component matches a unit used).
-        const usd = (unit: 'video_seconds' | 'video_generations') => {
-          try {
-            return Number(evaluateUnitBilling(model, context, { units: { [unit]: 1 } })) / 1_000_000;
-          } catch {
-            return null;
-          }
-        };
-        const perSecondUsd = usd('video_seconds');
-        const perVideoUsd = has('video_generations') ? usd('video_generations') : 0;
-        if (perSecondUsd === null || !(perSecondUsd > 0) || perVideoUsd === null) continue;
-        if (!best || perSecondUsd < best.perSecondUsd || (perSecondUsd === best.perSecondUsd && perVideoUsd < best.perVideoUsd)) {
-          best = { perSecondUsd, perVideoUsd };
-        }
-      }
+    const perSecondUsd = finiteNumber(peer['videoUsdPerSecond']);
+    if (perSecondUsd === null || !(perSecondUsd > 0)) continue;
+    const perVideoUsd = finiteNumber(peer['videoUsdPerVideo']) ?? 0;
+    if (!best || perSecondUsd < best.perSecondUsd || (perSecondUsd === best.perSecondUsd && perVideoUsd < best.perVideoUsd)) {
+      best = { perSecondUsd, perVideoUsd };
     }
   }
   return best;

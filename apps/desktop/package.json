@@ -43,9 +43,7 @@
     "release:linux": "npm run build && npm run prepare-dist && electron-builder --config electron-builder.linux.cjs --linux --publish always"
   },
   "dependencies": {
-    "@antseed/ants": "workspace:*",
     "@antseed/antseed-verifier": "workspace:*",
-    "@antseed/api-adapter": "workspace:*",
     "@antseed/connected-apps": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
@@ -58,7 +56,8 @@
     "fflate": "0.8.2",
     "node-datachannel": "^0.7.0",
     "officeparser": "6.1.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "@antseed/ants": "workspace:*"
   },
   "devDependencies": {
     "@antseed/ui": "workspace:*",

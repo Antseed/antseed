@@ -26,6 +26,7 @@ import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antsee
 import type { RouterOptionSpec } from '@antseed/router-core'
 import type { RetailPrice, RetailPriceMap } from '@antseed/node/retail-prices'
 import { TEE_VERIFIER_ID, type TeeScope } from '@antseed/node/tee-status'
+import { videoOfferPrice } from './video-price.js'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
@@ -53,6 +54,10 @@ export type NetworkModelPeerOffer = {
   cachedInputUsdPerMillion?: number
   minImageUsdPerImage?: number
   maxImageUsdPerImage?: number
+  /** A video offer's cheapest price per second of video for a plain create, as its billing prices it (`video-price.ts`). */
+  videoUsdPerSecond?: number
+  /** A fixed charge per video on top of `videoUsdPerSecond`, when its billing has one. */
+  videoUsdPerVideo?: number
   /**
    * The seller's free-tier program for this offer: on a free offer its limit,
    * on a priced one the free allowance before the listed price applies.
@@ -356,6 +361,7 @@ export function buildNetworkModels(
       unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
     })
     const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
+    const video = offer.type === 'video' ? videoOfferPrice(offer) : null
     entry.peers.push({
       ...teeFields(offer, peer, options.teeScope),
       peerId: offer.peerId,
@@ -376,6 +382,7 @@ export function buildNetworkModels(
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(video ? { videoUsdPerSecond: video.perSecondUsd, ...(video.perVideoUsd > 0 ? { videoUsdPerVideo: video.perVideoUsd } : {}) } : {}),
       ...(freeTier ? { freeTier } : {}),
       ...(offer.health ? { health: offer.health } : {}),
       ...(offer.performance ? { performance: offer.performance } : {}),

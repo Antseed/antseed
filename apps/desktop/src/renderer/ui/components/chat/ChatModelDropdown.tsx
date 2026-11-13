@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, Route01Icon, Search01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
+import { Badge, BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
 import type { ChatModel } from '../../../types/bridge';
 import { filterChatModels, findChatModel, formatPriceRange, formatUsdPerMillion, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
@@ -112,10 +112,10 @@ function renderRowPriceChips(model: ChatModel) {
   return (
     <span className={styles.pickerPrices}>
       {chips.map((chip) => (
-        <span key={chip.label || chip.price} className={styles.pickerPriceChip}>
+        <Badge key={chip.label || chip.price} variant="soft">
           {chip.label && <span className={styles.pickerPriceLabel}>{chip.label}</span>}
           {chip.price}
-        </span>
+        </Badge>
       ))}
     </span>
   );

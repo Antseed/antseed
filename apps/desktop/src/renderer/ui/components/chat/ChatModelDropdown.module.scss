@@ -493,29 +493,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Price chips beside the name: light, fully rounded, quiet; not buttons. */
+/* Price chips beside the name (soft `Badge`s from @antseed/ui): only their layout and label colour here. */
 .picker-prices {
   display: flex;
   flex: none;
   gap: 6px;
 }
 
-.picker-price-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-
 .picker-price-label {
   color: var(--text-muted);
+  font-weight: 400;
 }
 
 .picker-tags {

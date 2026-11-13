@@ -657,6 +657,15 @@ body {
 .as-badge--danger { color: var(--as-danger); background: var(--as-danger-dim); border-color: var(--as-danger-border); }
 .as-badge--info { color: var(--as-info); background: var(--as-info-dim); border-color: color-mix(in srgb, var(--as-info) 35%, transparent); }
 
+/* Soft: a quiet filled pill for values (prices), not a status tag. */
+.as-badge--soft {
+  padding: 0.125rem 0.5625rem;
+  border-color: transparent;
+  background: var(--as-bg-hover);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Switch */
 .as-switch {
   display: flex;
