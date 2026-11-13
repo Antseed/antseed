@@ -592,6 +592,7 @@ function mergeBuyerRoutingPreferences(
   const preferFreePeers = value['preferFreePeers'];
   const maxInputUsdPerMillion = value['maxInputUsdPerMillion'];
   const minTrustScore = value['minTrustScore'];
+  const trustPreference = value['trustPreference'];
   return {
     preferFreePeers: preferFreePeers === undefined
       ? fallback.preferFreePeers
@@ -602,6 +603,9 @@ function mergeBuyerRoutingPreferences(
     minTrustScore: minTrustScore === undefined
       ? fallback.minTrustScore
       : toFiniteOrNaN(minTrustScore),
+    trustPreference: trustPreference === undefined
+      ? fallback.trustPreference
+      : toFiniteOrNaN(trustPreference),
     allowedPeerIds: normalizeRoutingPeerIds(value['allowedPeerIds'], fallback.allowedPeerIds),
     blockedPeerIds: normalizeRoutingPeerIds(value['blockedPeerIds'], fallback.blockedPeerIds),
   };

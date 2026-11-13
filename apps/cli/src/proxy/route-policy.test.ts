@@ -69,7 +69,7 @@ test('a halved trust score says why, and sub-cent prices keep their digits', () 
     policyExclusionReasons({ minTrustScore: 50 }, facts({ trustScore: 40, trustPenalty: penalty })),
     [`trust 40 (${penalty}) below 50`],
   )
-  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 50, allowedPeerIds: [], blockedPeerIds: [] }
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 50, trustPreference: 0, allowedPeerIds: [], blockedPeerIds: [] }
   assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 40, penalty), [`trust 40 (${penalty}) below buyer minimum 50`])
   assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 40), ['trust 40 below buyer minimum 50'])
   assert.deepEqual(
@@ -84,7 +84,7 @@ test('a halved trust score says why, and sub-cent prices keep their digits', () 
 
 test('a DIFF-penalized trust score names the verification verdict', () => {
   const penalty = 'cut to 10% from 90: live DIFF verification verdict'
-  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, trustPreference: 0, allowedPeerIds: [], blockedPeerIds: [] }
   assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 9, penalty), [`trust 9 (${penalty}) below buyer minimum 60`])
 })
 
@@ -100,8 +100,8 @@ test('buyer hard limits narrow a gateway policy; routing preferences are not par
 })
 
 test('ranking preferences exclude nobody and let the policy decide preferFree', () => {
-  const prefs = { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [id('a')], blockedPeerIds: [id('b')] }
-  assert.deepEqual(rankingPreferences(prefs, {}), { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 0, allowedPeerIds: [], blockedPeerIds: [] })
+  const prefs = { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 60, trustPreference: 0, allowedPeerIds: [id('a')], blockedPeerIds: [id('b')] }
+  assert.deepEqual(rankingPreferences(prefs, {}), { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 0, trustPreference: 0, allowedPeerIds: [], blockedPeerIds: [] })
   assert.equal(rankingPreferences(prefs, { preferFreePeers: false }).preferFreePeers, false)
 })
 

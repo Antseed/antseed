@@ -448,6 +448,7 @@ export {
   isModelRoutePeerAllowed,
   modelRouteReputationScore,
   modelRouteTotalPrice,
+  isModelRouteOverPriceLimit,
   rankModelRoutes,
   scoreModelRoute,
   type ModelRouteCandidate,

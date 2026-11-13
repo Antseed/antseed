@@ -262,7 +262,7 @@ export function seed() {
       proxyPort: 8377,
       maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null },
       minPeerReputation: 0,
-      routingPreferences: { minTrustScore: 60, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: false },
+      routingPreferences: { minTrustScore: 60, trustPreference: 0, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: false },
       verifier: { enabled: true, prefer: [], require: false },
       requireVerifier: false,
       payments: { autoSweep: true, maxPerRequestUsdc: 0.3, maxReserveUsdc: 1, rpcUrl: 'https://base-mainnet.example.com/…', fallbackRpcUrls: [] },

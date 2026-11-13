@@ -209,7 +209,7 @@ export const faqLd = {
       "name": "How does Antseed choose the provider for each request?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "For a request that names only a model, your buyer picks the cheapest provider that passes your minimum trust score (60 by default) and price caps; trust only breaks ties, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put <peerId>@<model> in the model field. See Routing and catalog."
+        "text": "For a request that names only a model, your buyer picks among the providers that pass your minimum trust score (60 by default) and price caps, by the expected cost of a good answer, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put <peerId>@<model> in the model field. See Routing and catalog."
       }
     },
     {
@@ -425,7 +425,7 @@ Through a gateway, yes: each tool uses a gateway API key, which carries its budg
 
 ### How does Antseed choose the provider for each request?
 
-For a request that names only a model, your buyer picks the cheapest provider that passes your minimum trust score (60 by default) and price caps; trust only breaks ties, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put `<peerId>@<model>` in the model field. See [Routing and catalog](/docs/api/routing) and, for the exact ranking, the [router plugin API](/docs/router-api).
+For a request that names only a model, your buyer picks among the providers that pass your minimum trust score (60 by default) and price caps, by the expected cost of a good answer, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put `<peerId>@<model>` in the model field. See [Routing and catalog](/docs/api/routing) and, for the exact ranking, the [router plugin API](/docs/router-api).
 
 ## Providers and economics
 

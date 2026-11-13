@@ -23,6 +23,8 @@ The app creates an API key named **Desktop** on the gateway and gives it to the 
 
 In **Settings → Gateway**, choose **Remote gateway** and enter the gateway's URL and an API key that gateway issued. The URL must use `https://`, except for an address on your own machine or private network. The app checks the gateway with that key before switching. Nothing runs locally then: the chat and connected apps use the remote gateway, and funding and keys are managed in that gateway's console.
 
+Seller routing is managed in the Gateway Console. In its **Settings → Buyer**, **Price or trust** sets how much a seller's trust counts in automatic routing; at the far left it counts only for the minimum. The soft input price limit tries sellers above that input price only after those within it. See [Routing policies](/docs/gateway/routing).
+
 ### API keys
 
 In **Settings → Gateway**:

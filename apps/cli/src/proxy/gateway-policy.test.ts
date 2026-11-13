@@ -841,7 +841,7 @@ test('the buyer\'s own limits are judged once, by its router, not again by a gat
 // automatic routing: a gateway policy narrows them and never loosens them.
 // Pins are judged by the gateway policy and the hard limits only, as without
 // a gateway.
-const prefs60 = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+const prefs60 = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, trustPreference: 0, allowedPeerIds: [], blockedPeerIds: [] }
 const trust58 = makePeer('d', { input: 1, output: 1, trust: 58 })
 
 test('a pin through a gateway default with an unrelated model route ignores the buyer trust preference', async (t) => {

@@ -281,7 +281,7 @@ test('sorts /models peers with the configured Price + Trust preferences', () => 
     routingPreferences: {
       preferFreePeers: false,
       maxInputUsdPerMillion: 25,
-      minTrustScore: 60,
+      minTrustScore: 60, trustPreference: 0,
       allowedPeerIds: [],
       blockedPeerIds: [],
     },
@@ -312,7 +312,7 @@ test('configured /models sorting puts cooling peers after healthy routes', () =>
     routingPreferences: {
       preferFreePeers: false,
       maxInputUsdPerMillion: 25,
-      minTrustScore: 60,
+      minTrustScore: 60, trustPreference: 0,
       allowedPeerIds: [],
       blockedPeerIds: [],
     },

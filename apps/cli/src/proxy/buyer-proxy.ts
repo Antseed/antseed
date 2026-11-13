@@ -37,6 +37,7 @@ import {
   peerSupportsCooperativeClose,
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
+  isModelRouteOverPriceLimit,
   rankModelRoutes,
   SellerHealthBook,
   orderAdaptiveRoutes,
@@ -1992,6 +1993,8 @@ export class BuyerProxy {
     // seen them do: expected cost of a successful answer, spread across the
     // sellers close to the best. An explicit gateway sort or route chain
     // reorders afterwards, but still tries unhealthy sellers late.
+    const overPriceLimit = (candidate: (typeof ranked)[number]): boolean =>
+      routingPreferences !== null && isModelRouteOverPriceLimit(candidate, routingPreferences)
     const adaptive = orderAdaptiveRoutes(candidates, (candidate) => ({
       peerId: candidate.peerId,
       serviceId: this._healthServiceKey(candidate.serviceId),
@@ -2004,10 +2007,13 @@ export class BuyerProxy {
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
         && (this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0) >= candidate.peer.maxConcurrency,
+      overPriceLimit: overPriceLimit(candidate),
+      trustScore: modelRouteReputationScore(candidate),
       reported: candidate.offer.performance ?? null,
     }), this._sellerHealth, requestShape(request), {
       now,
       affinityKey: input.affinityKey ?? null,
+      trustPreference: routingPreferences?.trustPreference ?? 0,
       ...this._adaptiveRouting,
       // The preview keeps the real sharing pool (so it can show who shares the
       // traffic) but always draws its first seller and never probes.
@@ -2050,6 +2056,9 @@ export class BuyerProxy {
         candidate.peer.peerId.toLowerCase() === preferredPeerId
         && !isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now)
         && !healthOf(candidate).unhealthy
+        // Keep a conversation's seller for its prompt cache, but not past the
+        // price limit while a seller within it can take over.
+        && (!overPriceLimit(candidate) || overPriceLimit(candidates[0]!))
       ))
       if (preferredIndex > 0) {
         const [preferred] = candidates.splice(preferredIndex, 1)
@@ -2063,7 +2072,7 @@ export class BuyerProxy {
     const selectionOrdering: RouteSelection['ordering'] = policySort ?? (routingPreferences ? 'expected-cost' : 'trust')
     const spreads = selectionOrdering === 'expected-cost' && !chainPosition?.size
     const pool = spreads ? adaptive.pool : []
-    const poolWeight = (candidate: (typeof ranked)[number]): number => 1 / Math.max(healthOf(candidate).score, 1e-9) ** 2
+    const poolWeight = (candidate: (typeof ranked)[number]): number => 1 / Math.max(healthOf(candidate).rankScore, 1e-9) ** 2
     const poolTotal = pool.reduce((sum, candidate) => sum + poolWeight(candidate), 0)
     const selections = new Map<(typeof ranked)[number], RouteSelection>()
     candidates.forEach((candidate, index) => {
@@ -2076,6 +2085,7 @@ export class BuyerProxy {
       const health = healthOf(candidate)
       if (isCooling(candidate)) verdict.reasons.push('cooling down (tried last)')
       else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
+      if (overPriceLimit(candidate)) verdict.reasons.push('above your input price limit (tried after sellers within it)')
       if (pool.length > 1 && pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
       const reported = candidate.offer.performance
@@ -2688,7 +2698,7 @@ export class BuyerProxy {
       // plugin enforces it with the value it started with, so it applies on
       // restart only, and the proxy keeps the same value to stay in step.
       log(
-        `Routing preferences reloaded: minTrust=${next.minTrustScore} maxInput=${next.maxInputUsdPerMillion} `
+        `Routing preferences reloaded: minTrust=${next.minTrustScore} trustPreference=${next.trustPreference} maxInput=${next.maxInputUsdPerMillion} `
         + `preferFree=${next.preferFreePeers} allow=${next.allowedPeerIds.length} block=${next.blockedPeerIds.length}`,
       )
     } catch (err) {

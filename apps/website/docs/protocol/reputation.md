@@ -50,7 +50,7 @@ These stay separate router rules or display-only figures and never change the nu
 
 ## How routing uses the score
 
-The buyer proxy (which the gateway and the desktop app run) uses the trust score as a gate: automatic routing picks the cheapest seller at or above the buyer's minimum trust score, and trust only breaks price ties. The minimum trust score, routing defaults, and the router weight tables are documented in one place: the [router plugin API](/docs/router-api).
+The buyer proxy (which the gateway and the desktop app run) uses the trust score as a gate: automatic routing ranks the sellers at or above the buyer's minimum trust score by expected cost. Trust affects that order only when the buyer sets `trustPreference`. The minimum trust score, routing defaults, and the router weight tables are documented in one place: the [router plugin API](/docs/router-api).
 
 ## On-chain stats
 

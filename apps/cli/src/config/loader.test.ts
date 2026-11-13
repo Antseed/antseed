@@ -84,9 +84,19 @@ test('createDefaultConfig includes shared model routing preferences', () => {
     preferFreePeers: false,
     maxInputUsdPerMillion: 25,
     minTrustScore: 60,
+    trustPreference: 0,
     allowedPeerIds: [],
     blockedPeerIds: [],
   });
+});
+
+test('loadConfig keeps a configured trust preference', async () => {
+  await withTempConfig(
+    JSON.stringify({ buyer: { routingPreferences: { trustPreference: 40 } } }),
+    async (configPath) => {
+      assert.equal((await loadConfig(configPath)).buyer.routingPreferences.trustPreference, 40);
+    },
+  );
 });
 
 test('loadConfig merges partial model routing preferences with defaults', async () => {
@@ -105,6 +115,7 @@ test('loadConfig merges partial model routing preferences with defaults', async 
         preferFreePeers: true,
         maxInputUsdPerMillion: 25,
         minTrustScore: 60,
+        trustPreference: 0,
         allowedPeerIds: ['0x' + 'a'.repeat(40)],
         blockedPeerIds: [],
       });

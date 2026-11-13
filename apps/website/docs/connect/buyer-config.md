@@ -61,6 +61,7 @@ Some buyer start flags override these for one run, for example `--port`, `--max-
       "preferFreePeers": false,
       "maxInputUsdPerMillion": 25,
       "minTrustScore": 60,
+      "trustPreference": 0,
       "allowedPeerIds": [],
       "blockedPeerIds": []
     }
@@ -69,7 +70,8 @@ Some buyer start flags override these for one run, for example `--port`, `--max-
 ```
 
 - `minTrustScore` excludes sellers below this [trust score](/docs/reputation), and sellers without one. Set `0` to turn the gate off.
-- `maxInputUsdPerMillion` is a soft preference: pricier sellers rank lower but are not excluded.
+- `trustPreference`, from `0` to `100`, sets how much trust counts against expected cost. `0` ignores trust above the minimum. At `100`, a seller at trust 50 has to cost half as much as one at trust 100 to rank level.
+- `maxInputUsdPerMillion` is a soft limit: pricier sellers are tried only after those within it, but are not excluded.
 - `preferFreePeers` gives free sellers a strong ranking advantage.
 - `allowedPeerIds` limits automatic routing to these sellers when non-empty. `blockedPeerIds` always excludes its sellers. Ids may include or omit `0x`.
 

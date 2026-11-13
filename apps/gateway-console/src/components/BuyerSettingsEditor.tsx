@@ -30,6 +30,7 @@ interface Draft {
   allowedPeerIds: string[]
   blockedPeerIds: string[]
   minTrustScore: string
+  trustPreference: string
   minReputation: string
   preferFree: boolean
   softInputCap: string
@@ -61,6 +62,7 @@ function draftOf(buyer: Buyer): Draft {
     allowedPeerIds: [...prefs.allowedPeerIds],
     blockedPeerIds: [...prefs.blockedPeerIds],
     minTrustScore: String(prefs.minTrustScore),
+    trustPreference: String(prefs.trustPreference),
     minReputation: String(buyer.minPeerReputation),
     preferFree: prefs.preferFreePeers,
     softInputCap: String(prefs.maxInputUsdPerMillion),
@@ -115,6 +117,7 @@ function patchOf(draft: Draft): BuyerSettingsInput {
   return {
     routingPreferences: {
       minTrustScore: Number(draft.minTrustScore),
+      trustPreference: Number(draft.trustPreference),
       maxInputUsdPerMillion: Number(draft.softInputCap),
       preferFreePeers: draft.preferFree,
       allowedPeerIds: draft.allowMode === 'only' ? draft.allowedPeerIds : [],
@@ -136,7 +139,7 @@ function patchOf(draft: Draft): BuyerSettingsInput {
 }
 
 /** Draft keys the buyer reloads by itself; changing anything else restarts it. */
-const LIVE_KEYS: ReadonlyArray<keyof Draft> = ['allowMode', 'allowedPeerIds', 'blockedPeerIds', 'minTrustScore', 'preferFree', 'softInputCap']
+const LIVE_KEYS: ReadonlyArray<keyof Draft> = ['allowMode', 'allowedPeerIds', 'blockedPeerIds', 'minTrustScore', 'trustPreference', 'preferFree', 'softInputCap']
 
 function changedKeys(before: Draft, after: Draft): Array<keyof Draft> {
   return (Object.keys(after) as Array<keyof Draft>).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
@@ -256,7 +259,9 @@ export function BuyerSettingsEditor({ buyer }: { buyer: Buyer }) {
             <div className="gc-policy__switches">
               <Switch checked={draft.preferFree} onChange={(next) => set('preferFree', next)} label="Free sellers first" />
             </div>
-            {field('softInputCap', 'Soft input price limit $/M', { hint: 'Pricier sellers rank lower; none is excluded.', className: 'gc-num gc-num--wide' })}
+            <Slider label="Price or trust" clearable={false} value={draft.trustPreference} onChange={(next) => set('trustPreference', next)}
+              hint="0 ranks on price, speed and reliability alone. Higher pays more for sellers with higher trust." />
+            {field('softInputCap', 'Soft input price limit $/M', { hint: 'Pricier sellers are used only after those within it; none is excluded.', className: 'gc-num gc-num--wide' })}
           </section>
         </div>
 
