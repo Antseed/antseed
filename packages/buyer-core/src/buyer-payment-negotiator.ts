@@ -1152,7 +1152,7 @@ export class BuyerPaymentNegotiator {
       if (recovered) {
         return { action: 'retry' };
       }
-      // Held while it recovered (a parallel request's 402): never retire or replace it.
+      // Held while it recovered (a charge refused on a parallel request): never retire or replace it.
       if (this._bpm.hasRefusedClaim(peer.peerId)) {
         return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
       }
