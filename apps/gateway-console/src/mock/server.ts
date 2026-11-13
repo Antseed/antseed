@@ -455,7 +455,7 @@ function preview(query: URLSearchParams): RoutePreview {
       return {
         peerId: peer.peerId, displayName: peer.name, rank: null, eligible,
         reasons: eligible ? [] : [`buyer config: trust ${Math.round(peer.reputation ?? 0)} below ${minTrust}`],
-        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation, selection: null as RouteSelection | null,
+        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, cachedInputUsdPerMillion: null, trustScore: peer.reputation, selection: null as RouteSelection | null,
       }
     })
     const ready = chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
@@ -480,7 +480,7 @@ function preview(query: URLSearchParams): RoutePreview {
       reasons.push(`buyer config: trust ${Math.round(peer.trustScore * 0.1)} (cut to 10% from ${Math.round(peer.trustScore)}: live DIFF verification verdict) below buyer minimum ${buyerMinTrust}`)
     }
     if (service.health?.status === 'failing') reasons.push(`self health check failing${service.health.reason ? ` (${service.health.reason})` : ''}`)
-    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null, ...(service.health ? { health: service.health } : {}) }
+    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion ?? null, trustScore: peer.trustScore, selection: null as RouteSelection | null, ...(service.health ? { health: service.health } : {}) }
   })
   const ready = candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
   ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })

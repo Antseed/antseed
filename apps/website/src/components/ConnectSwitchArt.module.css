@@ -11,7 +11,7 @@
   font-family: var(--as-font-app);
 }
 
-/* ---- AI VPN panel ---- */
+/* ---- Antseed Desktop panel ---- */
 .vpn,
 .app {
   background: #fff;
@@ -280,7 +280,7 @@
 
 .connected .route { opacity: 1; }
 
-/* stacked: AI VPN panel above the Codex window (narrow columns) */
+/* stacked: Antseed Desktop panel above the Codex window (narrow columns) */
 .stack {
   grid-template-columns: 1fr;
   grid-template-rows: auto auto auto;

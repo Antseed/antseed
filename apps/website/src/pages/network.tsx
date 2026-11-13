@@ -292,7 +292,7 @@ export default function NetworkPage() {
             <Reveal className={styles.moneyCol}>
               <h3>USDC pays for the work.</h3>
               <ul>
-                <li>You top up by card in the AI VPN, or with USDC from the CLI.</li>
+                <li>You top up by card in Antseed Desktop, or with USDC from the CLI.</li>
                 <li>Before the first request, a budget is reserved. After each response, you sign the running total.</li>
                 <li>The provider settles on Base and the unused budget returns to you.</li>
               </ul>
