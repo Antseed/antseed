@@ -42,7 +42,7 @@ const STEPS = [
   {n: '4', title: 'You claim', body: 'The pool contract splits each settlement between its workers. Claim your USDC and ANTS to your own wallet.'},
 ];
 
-const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/colony-v0.2.0/Antseed-Colony-0.2.0.dmg';
+const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/colony-latest/Antseed-Colony.dmg';
 
 const INSTALL = [
   {title: 'Install', body: 'Open the DMG and drag Antseed Colony to Applications. It runs in the menu bar.'},

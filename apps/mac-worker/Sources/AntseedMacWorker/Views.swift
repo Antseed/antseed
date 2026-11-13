@@ -96,6 +96,7 @@ let menuBarMark: NSImage? = {
 /// The desktop's toggle: accent when on.
 struct ShareSwitch: View {
     @Binding var isOn: Bool
+    var label = "Share this Mac"
 
     var body: some View {
         Capsule()
@@ -107,7 +108,7 @@ struct ShareSwitch: View {
             }
             .animation(.easeOut(duration: 0.15), value: isOn)
             .contentShape(Capsule())
-            .clickable("Share this Mac") { isOn.toggle() }
+            .clickable(label) { isOn.toggle() }
             .accessibilityValue(isOn ? "On" : "Off")
     }
 }
@@ -249,6 +250,7 @@ struct MenuPanel: View {
                 Divider().overlay(Theme.border)
                 PoolRow(worker: worker, snapshot: snapshot)
             }
+            ThisMacCard(mac: worker.mac, updates: worker.updates)
             ProtectionNotice(protection: worker.protection)
             footer
         }
@@ -295,6 +297,49 @@ struct MenuPanel: View {
             TextLink(title: "Help") { if !snapshot { NSWorkspace.shared.open(URL(string: "https://antseed.com/docs/local-ai/mac")!) } }
             TextLink(title: "Quit") { if !snapshot { NSApp.terminate(nil) } }
                 .padding(.leading, 10)
+        }
+    }
+}
+
+/// Starting at login, staying awake while sharing, and updates.
+struct ThisMacCard: View {
+    @ObservedObject var mac: MacSettings
+    @ObservedObject var updates: Updates
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                toggleRow("Open at login", detail: "Keeps earning after a restart",
+                          isOn: Binding(get: { mac.openAtLogin }, set: { mac.setOpenAtLogin($0) }))
+                if let error = mac.loginError {
+                    Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true)
+                }
+                toggleRow("Keep awake while sharing", detail: mac.holdingAwake ? "Holding this Mac awake now" : "The display can still sleep",
+                          isOn: $mac.keepAwake)
+                if mac.keepAwake {
+                    toggleRow("Only when plugged in", detail: "Never drains the battery", isOn: $mac.onlyOnPower)
+                }
+                if updates.available {
+                    Divider().overlay(Theme.border)
+                    HStack {
+                        Text("Updates").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text)
+                        Spacer()
+                        TextLink(title: "Check for updates") { updates.check() }
+                    }
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    private func toggleRow(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text)
+                Text(detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            }
+            Spacer(minLength: 8)
+            ShareSwitch(isOn: isOn, label: title).scaleEffect(0.85)
         }
     }
 }

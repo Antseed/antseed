@@ -6,6 +6,7 @@
 #                                                         Secure Enclave keys to this app (needed to attest hardened)
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
 #   NOTARY_KEY=AuthKey.p8 NOTARY_KEY_ID=… NOTARY_ISSUER=…  or notarize with an App Store Connect API key (CI)
+#   UPDATES=1                                              point Sparkle at the release appcast (release builds only)
 #   REQUIRE_PAY_PAGE=1                                     fail without the payments page build (CI, releases)
 #   DMG=1                                                  also package build/Antseed-Colony-<version>.dmg,
 #                                                          signed and notarized like the app
@@ -20,6 +21,10 @@ cd "$(dirname "$0")/.."
 BUNDLE_ID=com.antseed.macworker
 VERSION=$(tr -d '[:space:]' < VERSION)
 BUILD_NUMBER=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
+# Automatic updates (Sparkle): the feed every release refreshes, and the public half of the key
+# its updates are signed with (the private half is the SPARKLE_ED_PRIVATE_KEY release secret).
+SPARKLE_FEED=https://github.com/Antseed/antseed/releases/download/colony-latest/appcast.xml
+SPARKLE_PUBLIC_KEY=TKOtrTgOdmDTXXUn4sRqsdAdfg6kIbNCql7NJ8xahzo=
 APP="${OUT:-build/Antseed Colony.app}"
 # The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
 TENSORFOLD_VERSION=1.2.6
@@ -40,8 +45,11 @@ tar -xzf "build/$TENSORFOLD.tar.gz" -C build
 
 rm -rf "$APP"
 ENGINE="$APP/Contents/Helpers/tensorfold"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/tensorfold-licenses" "$ENGINE"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/tensorfold-licenses" "$APP/Contents/Frameworks" "$ENGINE"
 cp "$PRODUCTS/AntseedMacWorker" "$APP/Contents/MacOS/"
+# Sparkle, linked dynamically: embedded in Contents/Frameworks, found through the executable's rpath.
+cp -R "$PRODUCTS/Sparkle.framework" "$APP/Contents/Frameworks/"
+install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/AntseedMacWorker"
 # Dependencies' resource bundles (CryptoSwift's privacy manifest), when the build made any.
 shopt -s nullglob
 BUNDLES=("$PRODUCTS"/*.bundle)
@@ -62,6 +70,13 @@ else
   echo "warning: no payments page (pnpm --filter @antseed/payments run build:web): Link wallet and Claim won't open" >&2
 fi
 cp -R "build/$TENSORFOLD/LICENSE" "build/$TENSORFOLD/NOTICE" "build/$TENSORFOLD/THIRD_PARTY_NOTICES.md" "build/$TENSORFOLD/LICENSES" "$APP/Contents/Resources/tensorfold-licenses/"
+SPARKLE_PLIST=""
+if [ -n "${UPDATES:-}" ]; then
+  SPARKLE_PLIST="<key>SUFeedURL</key><string>$SPARKLE_FEED</string>
+<key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUScheduledCheckInterval</key><integer>86400</integer>"
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -75,6 +90,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
+$SPARKLE_PLIST
 <key>NSLocalNetworkUsageDescription</key><string>Connects to your Antseed pool to serve encrypted requests.</string>
 </dict></plist>
 PLIST
@@ -82,6 +98,7 @@ PLIST
 if [ -z "${SIGN_IDENTITY:-}" ]; then
   codesign --force --sign - "$ENGINE/lib/libtfgrammar.dylib"
   codesign --force --sign - "$ENGINE/bin/tensorfold-native"
+  codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
   codesign --force --sign - "$APP"
   echo "Built $APP (ad-hoc: not hardened)"
   exit 0
@@ -108,6 +125,13 @@ fi
 # Hardened runtime, no get-task-allow: macOS refuses debuggers and code injection while SIP is on.
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/lib/libtfgrammar.dylib"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/bin/tensorfold-native"
+# Sparkle's helpers inside out, as Sparkle documents for apps not built with Xcode.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+for helper in "$SPARKLE/Versions/B/XPCServices/Installer.xpc" "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app"; do
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$helper"
+done
+codesign --force --options runtime --timestamp --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE"
 codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP"
 rm -f "$ENTITLEMENTS"
 codesign --verify --strict --verbose=2 "$APP"

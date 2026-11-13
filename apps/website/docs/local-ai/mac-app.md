@@ -18,7 +18,7 @@ Antseed Colony is a menu bar app that joins a [colony pool](/docs/local-ai) and 
 
 ## Install
 
-1. [Download Antseed Colony](https://github.com/Antseed/antseed/releases/download/colony-v0.2.0/Antseed-Colony-0.2.0.dmg) (`Antseed-Colony-0.2.0.dmg`). It is signed with Antseed's Developer ID and notarized by Apple.
+1. [Download Antseed Colony](https://github.com/Antseed/antseed/releases/download/colony-latest/Antseed-Colony.dmg) (`Antseed-Colony.dmg`, always the latest version). It is signed with Antseed's Developer ID and notarized by Apple.
 2. Open the DMG and drag **Antseed Colony** to **Applications**.
 3. Open **Antseed Colony**. It runs in the menu bar (the ant icon), not the Dock.
 
@@ -35,6 +35,14 @@ Once joined, the app lists the models the pool runs: each service it sells, the 
 The app keeps your choice for later launches. **Change model** switches to another of the pool's models; the app stops serving while the new one downloads. A pool that pins no models gets the built-in one, `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX).
 
 The panel shows the app's status, today's estimated earnings, the model and what protects the prompts it serves. The switch at the top pauses sharing without leaving the pool.
+
+## Keep it earning
+
+Under **This Mac** in the panel:
+
+- **Open at login** (on from the first launch): the app starts again after a restart, so the Mac keeps earning.
+- **Keep awake while sharing** (on): the Mac doesn't go to sleep while it shares with its pool; the display still can. **Only when plugged in** (on) lets a laptop sleep as usual on battery.
+- **Check for updates**: the app also checks for new versions once a day and installs them, signed by Antseed, when you agree.
 
 ## Command-line options
 

@@ -49,7 +49,19 @@ enum WorkerStatus: Equatable {
 /// requests with the local model, and tracks what this Mac earned.
 @MainActor
 final class WorkerController: ObservableObject {
-    @Published private(set) var status: WorkerStatus = .starting
+    @Published private(set) var status: WorkerStatus = .starting {
+        didSet { if oldValue != status { mac.refreshAwake() } }
+    }
+    /// Automatic updates (release builds only).
+    let updates = Updates()
+    /// Start at login and staying awake while sharing.
+    lazy var mac = MacSettings { [weak self] in
+        guard let self, self.sharing else { return false }
+        switch self.status {
+        case .starting, .loadingModel, .connecting, .serving: return true
+        case .paused, .needsPool, .choosingModel, .failed: return false
+        }
+    }
     @Published private(set) var stats = PoolStats()
     @Published private(set) var poolShareBps = 0
     @Published private(set) var poolSeller: String?
@@ -68,7 +80,7 @@ final class WorkerController: ObservableObject {
     /// What keeps this Mac's owner out of the prompts it serves, re-checked on every attestation.
     @Published private(set) var protection: Protection.Report
     @Published var sharing = true {
-        didSet { if oldValue != sharing { announceServices() } }
+        didSet { if oldValue != sharing { announceServices(); mac.refreshAwake() } }
     }
 
     let config: WorkerConfig
@@ -181,6 +193,7 @@ final class WorkerController: ObservableObject {
         terminationSignal.setEventHandler { NSApplication.shared.terminate(nil) }
         terminationSignal.resume()
         log("Antseed Colony \(config.name) · payout address \(address)")
+        mac.start()
         startPolling()
         Task {
             // Without a model yet, it joins to learn which models the pool runs, and serves once one is picked.

@@ -10,6 +10,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1", exact: "0.24.0"),
         .package(url: "https://github.com/krzyzanowskim/CryptoSwift", exact: "1.10.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         .executableTarget(
@@ -17,6 +18,7 @@ let package = Package(
             dependencies: [
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "CryptoSwift", package: "CryptoSwift"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

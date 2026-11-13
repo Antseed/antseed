@@ -13,6 +13,10 @@ name: Release Antseed Colony
 #
 # Secrets (shared with release-desktop.yml): MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD,
 # APPLE_API_KEY_P8, APPLE_API_KEY_ID, APPLE_API_ISSUER.
+# Updates: SPARKLE_ED_PRIVATE_KEY (base64 ed25519 key whose public half is SPARKLE_PUBLIC_KEY in
+# apps/mac-worker/scripts/build-app.sh). Every release signs its DMG with it and refreshes the
+# `colony-latest` release: appcast.xml (the app's update feed) and Antseed-Colony.dmg (a fixed
+# download link for the website).
 # Optional: MAC_WORKER_PROVISIONING_PROFILE (base64 of a Developer ID
 # provisioning profile for com.antseed.macworker), which binds the app's
 # Secure Enclave keys to the signed app.
@@ -106,6 +110,7 @@ jobs:
         working-directory: apps/mac-worker
         env:
           REQUIRE_PAY_PAGE: '1'
+          UPDATES: '1'
           NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           BUILD_NUMBER: ${{ github.run_number }}
@@ -126,6 +131,43 @@ jobs:
           path: apps/mac-worker/build/Antseed-Colony-${{ steps.version.outputs.version }}.dmg
           if-no-files-found: error
 
+      - name: Sign the update and write the appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then echo "SPARKLE_ED_PRIVATE_KEY is not set: installed apps could not update" >&2; exit 1; fi
+          tools="$RUNNER_TEMP/sparkle"
+          mkdir -p "$tools"
+          gh release download 2.10.1 --repo sparkle-project/Sparkle --pattern 'Sparkle-2.10.1.tar.xz' --dir "$tools"
+          tar -xf "$tools/Sparkle-2.10.1.tar.xz" -C "$tools"
+          key="$RUNNER_TEMP/signing/sparkle.key"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          dmg="apps/mac-worker/build/Antseed-Colony-${VERSION}.dmg"
+          attributes=$("$tools/bin/sign_update" "$dmg" --ed-key-file "$key")
+          rm -f "$key"
+          cat > apps/mac-worker/build/appcast.xml <<XML
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Antseed Colony</title>
+              <item>
+                <title>Antseed Colony ${VERSION}</title>
+                <pubDate>$(date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
+                <sparkle:version>${BUILD_NUMBER}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <sparkle:releaseNotesLink>https://github.com/Antseed/antseed/releases/tag/colony-v${VERSION}</sparkle:releaseNotesLink>
+                <enclosure url="https://github.com/Antseed/antseed/releases/download/colony-v${VERSION}/Antseed-Colony-${VERSION}.dmg" type="application/octet-stream" ${attributes}/>
+              </item>
+            </channel>
+          </rss>
+          XML
+
       - name: Publish GitHub release
         if: github.event_name == 'push' || inputs.dry_run == false
         env:
@@ -141,6 +183,16 @@ jobs:
           else
             gh release create "$tag" "$dmg" --target "$GITHUB_SHA" --title "Antseed Colony ${VERSION}" --notes "$notes" --latest=false
           fi
+          # The fixed links: the update feed installed apps check, and the website's download.
+          latest="apps/mac-worker/build/latest"
+          mkdir -p "$latest"
+          cp apps/mac-worker/build/appcast.xml "$latest/appcast.xml"
+          cp "$dmg" "$latest/Antseed-Colony.dmg"
+          if ! gh release view colony-latest >/dev/null 2>&1; then
+            gh release create colony-latest --target "$GITHUB_SHA" --title "Antseed Colony (latest)" --prerelease --latest=false \
+              --notes "Always the newest Antseed Colony: Antseed-Colony.dmg, and appcast.xml, the feed installed apps update from."
+          fi
+          gh release upload colony-latest "$latest/appcast.xml" "$latest/Antseed-Colony.dmg" --clobber
 
       - name: Remove signing material
         if: always()
