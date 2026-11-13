@@ -96,6 +96,8 @@ final class WorkerController: ObservableObject {
     private var active: [String: Task<Void, Never>] = [:]
     /// Streamed answers that have sent response-start.
     private var startedStreams = Set<String>()
+    /// Requests some of whose answer was sent to the pool, with how many streamed outputs it carried.
+    private var sentOutput: [String: Int] = [:]
     private let gate = RequestGate()
     /// The Channels contract channels are checked on, once the RPC's chain id is known.
     private var trustedChannels: String?
@@ -205,8 +207,25 @@ final class WorkerController: ObservableObject {
         }
     }
 
-    /// Download (first time), hash and start the chosen checkpoint. False when it failed to load.
+    /// The model load in progress, if any: a newer pick cancels it and waits for it to stop.
+    private var loadTask: Task<Bool, Never>?
+
+    /// Download (first time), hash and start the chosen checkpoint. False when it failed to load,
+    /// or a newer pick replaced it. Loads run one at a time: a newer one cancels the one before and
+    /// waits until its download or engine stopped, so the superseded load can't stop the new engine.
     private func load(_ choice: ModelChoice) async -> Bool {
+        let previous = loadTask
+        previous?.cancel()
+        let task = Task { [weak self] () -> Bool in
+            _ = await previous?.value
+            guard let self, !Task.isCancelled else { return false }
+            return await self.loadNow(choice)
+        }
+        loadTask = task
+        return await task.value
+    }
+
+    private func loadNow(_ choice: ModelChoice) async -> Bool {
         let local = LocalModel(modelId: choice.model, engine: config.engineURL, directory: config.dataDirectory)
         model = local
         checkpoint = nil
@@ -216,12 +235,16 @@ final class WorkerController: ObservableObject {
             let loaded = try await local.load { progress in
                 Task { @MainActor in self.status = .loadingModel(progress) }
             }
-            guard model === local else { return false } // another pick replaced it meanwhile
+            guard model === local, !Task.isCancelled else {
+                // Another pick replaced it meanwhile: stop the engine this load started.
+                await local.stop()
+                return false
+            }
             checkpoint = loaded
             log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
             return true
         } catch {
-            if model === local { status = .failed("Model failed to load: \(error.localizedDescription)") }
+            if model === local, !Task.isCancelled { status = .failed("Model failed to load: \(error.localizedDescription)") }
             return false
         }
     }
@@ -611,12 +634,13 @@ final class WorkerController: ObservableObject {
     /// so attribution beyond what it already paid this Mac plus what the payment
     /// adds since the last settlement is credit nothing funds. Read with the
     /// settlement (one call): once the channel settled past a payment the buyer
-    /// showed this Mac yet paid it less, the buyer is refused from then on. When
+    /// showed this Mac yet credited it less, the answers that payment covered are
+    /// owed again (WorkerPaymentLedger.reconcile). When
     /// the read fails it returns nil and the request is refused (retryable):
     /// attribution the pool may never pay must not clear this Mac's unpaid
     /// answers. A pool that is no contract (a seller paying workers from its own
     /// address) has nothing on-chain to check, so the signed attribution stands.
-    private func redeemable(channel: String, buyer: String, paid: (attributed: UInt64, cumulative: UInt64)) async -> (attributed: UInt64, cumulative: UInt64)? {
+    private func redeemable(channel: String, paid: (attributed: UInt64, cumulative: UInt64)) async -> (attributed: UInt64, cumulative: UInt64)? {
         let rpcURLs = config.rpcURLs
         guard !rpcURLs.isEmpty, let pool = poolSeller else { return paid }
         let read: (settled: UInt64, credited: UInt64)?
@@ -627,8 +651,8 @@ final class WorkerController: ObservableObject {
             return nil
         }
         guard let credit = read else { return paid }
-        if payments.reconcile(channel: channel, buyer: buyer, settled: credit.settled, credited: credit.credited) {
-            log("a settlement on channel \(channel.prefix(18))… paid this Mac less than buyer \(buyer) signed; refusing that buyer")
+        if payments.reconcile(channel: channel, settled: credit.settled, credited: credit.credited) {
+            log("a settlement on channel \(channel.prefix(18))… credited this Mac less than the buyer signed; those answers are owed again")
         }
         let unsettled = paid.cumulative > credit.settled ? paid.cumulative - credit.settled : 0
         let (cap, overflow) = credit.credited.addingReportingOverflow(unsettled)
@@ -664,10 +688,17 @@ final class WorkerController: ObservableObject {
         var owed: (channel: String, price: WorkerPayment.Price)?
         var answered: (promptTokens: Int, completionTokens: Int)?
         defer {
+            let outputs = sentOutput.removeValue(forKey: id)
             if let owed {
                 if let answered {
                     payments.served(channel: owed.channel, cost: WorkerPayment.cost(promptTokens: answered.promptTokens, completionTokens: answered.completionTokens, price: owed.price))
+                } else if let outputs {
+                    // Output sent and then cut off (cancelled, failed, or the pool connection
+                    // dropped): the buyer may hold most of an answer, so it stays owed. Otherwise
+                    // a buyer could take answer after answer and cancel each before it completes.
+                    payments.served(channel: owed.channel, cost: WorkerPayment.partialCost(outputs: outputs, price: owed.price))
                 } else {
+                    // Nothing reached the pool: nothing to pay for.
                     payments.released(channel: owed.channel)
                 }
             }
@@ -682,11 +713,8 @@ final class WorkerController: ObservableObject {
                 return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
             }
             // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
-            guard let paid = await redeemable(channel: channel, buyer: buyer, paid: attributed(sealed, channel: channel, buyer: buyer)) else {
+            guard let paid = await redeemable(channel: channel, paid: attributed(sealed, channel: channel, buyer: buyer)) else {
                 return fail(id, "Could not read the pool's settlement for this channel; retry shortly")
-            }
-            guard !payments.refuses(buyer: buyer) else {
-                return fail(id, "This worker no longer serves this buyer: a settlement credited it less than the buyer signed")
             }
             if let refused = payments.admit(channel: channel, attributed: paid.attributed, cumulative: paid.cumulative) {
                 return fail(id, refused)
@@ -736,7 +764,9 @@ final class WorkerController: ObservableObject {
             guard let result = try await generateAndSend(id: id, model: model, service: service, chat: chat, maxTokens: maxTokens, promptLimit: promptLimit,
                                                          temperature: generation.temperature, stream: generation.stream,
                                                          sealer: opened.sealer, connection: connection) else {
-                log("the answer could not be sent to the pool; it is not owed")
+                log(sentOutput[id] != nil
+                    ? "the answer was cut off on its way to the pool; what was sent stays owed"
+                    : "the answer could not be sent to the pool; it is not owed")
                 return
             }
             answered = (result.promptTokens, result.completionTokens)
@@ -749,8 +779,8 @@ final class WorkerController: ObservableObject {
     }
 
     /// Runs the model and sends its answer, sealed for the buyer, streamed or whole. Returns the result
-    /// only when the pool took the answer whole on the connection the request came in on: an answer
-    /// that failed to send can't reach the buyer, so it is not owed and never holds the channel's credit.
+    /// only when the pool took the answer whole on the connection the request came in on. Any of the
+    /// answer sent before that is recorded in `sentOutput`, so a cut-off answer stays owed.
     private func generateAndSend(
         id: String,
         model: LocalModel,
@@ -770,7 +800,7 @@ final class WorkerController: ObservableObject {
             guard stream else { return }
             await self?.startStream(id)
             guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
-            await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+            await self?.sendOutput(id, sealed)
         }
         let usage = EngineChat.Response.usage(result)
         let sent: Bool
@@ -781,9 +811,11 @@ final class WorkerController: ObservableObject {
             tail += try sealer.sealEvent("data: [DONE]")
             tail += try sealer.finish()
             sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
+            if sent { sentOutput[id, default: 0] += 1 }
         } else {
             let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
             sent = await sendBufferedBody(sealed, id: id, status: 200)
+            if sent { sentOutput[id, default: 0] += result.completionTokens }
         }
         let ended = await sendConfirmed(["t": "response-end", "id": id])
         return sent && ended && socket === connection ? result : nil
@@ -807,6 +839,12 @@ final class WorkerController: ObservableObject {
     private func sendBufferedBody(_ sealed: Data, id: String, status: Int) async -> Bool {
         let started = await sendConfirmed(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
         return await sendConfirmed(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()]) && started
+    }
+
+    /// Sends one streamed output of `id`'s answer, recording that the buyer may now hold it.
+    private func sendOutput(_ id: String, _ sealed: Data) {
+        sentOutput[id, default: 0] += 1
+        send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
     }
 
     /// Starts a streamed answer once, at its first generated output: the pool keeps its first-byte deadline

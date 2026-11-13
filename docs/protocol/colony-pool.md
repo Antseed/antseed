@@ -444,8 +444,11 @@ workers serve requests it never pays for.
   requests still running there, number fewer than 2. An answer whose price
   rounds to nothing is owed nothing and never waits in the unpaid queue. A buyer
   that never pays gets two answers per channel, and every channel is an
-  on-chain reserve. Answers that did not reach the buyer whole are not owed,
-  and neither are ones the worker could not send to the pool.
+  on-chain reserve. An answer none of which reached the pool is not owed. One
+  cut off after some of it was sent (the buyer cancelled, the model failed,
+  the pool connection dropped) stays owed, at the usage it had reported and
+  never at nothing, since the buyer may hold most of it: cancelling each
+  answer before it completes never gets more than the two unpaid answers.
 - **No free allowance.** A seller's free allowance on a priced service never
   covers a colony pool's requests: the buyer never signs a payment for an
   answer an allowance covered, so its worker would wait for one forever. Each
@@ -486,8 +489,14 @@ workers serve requests it never pays for.
   in one call). It counts the payment's attribution only up to what the pool
   already paid it plus what the payment adds since that settlement, since
   the contract pays workers only from what later settlements add. Once the
-  channel settled past a payment the buyer showed the worker yet paid it
-  less, the worker refuses that buyer from then on. Until settlement, a
+  channel settled past a payment the buyer showed the worker yet credited it
+  less, that payment counts only as far as the contract can still pay it
+  (what it credited, plus what each newer payment adds beyond the
+  settlement), and the answers it no longer covers are owed again: the buyer
+  gets no further work there until a later payment, or a later settlement,
+  pays for them. This is no misconduct, and no buyer is refused for it: the
+  pool may have settled an older auth at the same amount, and the contract
+  pays what a settlement could not cover from the next one. Until settlement, a
   worker's exposure is the answers it served on payments the pool has not
   settled yet. When the read fails, the worker refuses the request with a
   retryable error rather than count attribution the pool may never pay. A

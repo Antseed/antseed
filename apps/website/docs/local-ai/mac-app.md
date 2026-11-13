@@ -88,13 +88,18 @@ The Antseed desktop app's **Rewards** and the ANTS dashboard (`antseed ants`) al
 
 ## Build from source
 
-Developers can build the app from the [Antseed repository](https://github.com/Antseed/antseed) with Xcode's command-line tools:
+Developers can build the app from the [Antseed repository](https://github.com/Antseed/antseed) with Xcode's command-line tools, Node.js 24 and pnpm. The app bundles the payments page that **Link wallet** and **Claim** open, so build that first:
 
 ```bash
 git clone https://github.com/Antseed/antseed.git
-cd antseed/apps/mac-worker
-scripts/build-app.sh
+cd antseed
+pnpm install
+pnpm --filter @antseed/payments run build:web
+cd apps/mac-worker
+REQUIRE_PAY_PAGE=1 scripts/build-app.sh
 open "build/Antseed Colony.app"
 ```
+
+`REQUIRE_PAY_PAGE=1` stops the build when the payments page is missing, instead of packaging an app whose wallet steps can't open.
 
 Without a Developer ID the build is signed ad hoc, which is enough to run it on your own Mac.

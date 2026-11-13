@@ -184,20 +184,56 @@ final class WorkerPaymentTests: XCTestCase {
     }
 
     @MainActor
-    func testRefusesABuyerOnceTheChannelSettledPastAPaymentThatCreditedThisWorkerLess() {
+    func testOwesAgainWhatASettlementLeftUncreditedUntilALaterPaymentCoversIt() {
         let ledger = WorkerPaymentLedger()
         XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
         ledger.served(channel: channel, cost: 9_000)
         XCTAssertNil(ledger.admit(channel: channel, attributed: 9_000, cumulative: 10_000))
         // Not settled that far yet: nothing to judge.
-        XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 5_000, credited: 0))
+        XCTAssertFalse(ledger.reconcile(channel: channel, settled: 5_000, credited: 0))
         // Settled past it and credited in full: done with that payment.
-        XCTAssertFalse(ledger.reconcile(channel: channel, buyer: buyer, settled: 10_000, credited: 9_000))
+        XCTAssertFalse(ledger.reconcile(channel: channel, settled: 10_000, credited: 9_000))
         ledger.served(channel: channel, cost: 9_000)
         XCTAssertNil(ledger.admit(channel: channel, attributed: 18_000, cumulative: 20_000))
-        // Settled past it with an auth that credits this worker nothing more.
-        XCTAssertTrue(ledger.reconcile(channel: channel, buyer: buyer, settled: 20_000, credited: 9_000))
-        XCTAssertTrue(ledger.refuses(buyer: buyer.lowercased()))
+        ledger.served(channel: channel, cost: 9_000)
+        // Settled past it with an auth that credits this worker nothing more: those 9,000 are owed again.
+        XCTAssertTrue(ledger.reconcile(channel: channel, settled: 20_000, credited: 9_000))
+        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 9_000, cumulative: 20_000))
+        // The buyer is not refused: a payment that covers both answers is served.
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 27_000, cumulative: 40_000))
+    }
+
+    @MainActor
+    func testAnOlderSameAmountSettlementNeverRefusesABuyerWhoseNewerAuthAttributesMore() {
+        let ledger = WorkerPaymentLedger()
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0, cumulative: 100_000))
+        ledger.served(channel: channel, cost: 10_000)
+        // The buyer re-signs the same cumulative amount, now attributing 10,000 to this worker.
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 10_000, cumulative: 100_000))
+        ledger.served(channel: channel, cost: 10_000)
+        // The pool had already snapshotted the older auth, and settles it: nothing credited.
+        XCTAssertTrue(ledger.reconcile(channel: channel, settled: 100_000, credited: 0))
+        // Both answers are owed again, so no third runs on that payment...
+        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 0, cumulative: 100_000))
+        // ...but a newer payment, which a later settlement can still fund, pays for them.
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 20_000, cumulative: 120_000))
+        ledger.served(channel: channel, cost: 10_000)
+        // That settlement catches the worker up: nothing short, nothing owed again.
+        XCTAssertFalse(ledger.reconcile(channel: channel, settled: 120_000, credited: 20_000))
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 30_000, cumulative: 130_000))
+    }
+
+    @MainActor
+    func testACutOffAnswerStaysOwedSoCancellingNeverBuysFreeAnswers() {
+        let price = WorkerPayment.Price(input: 1, output: 4)
+        XCTAssertEqual(WorkerPayment.partialCost(outputs: 100, price: price), 400)
+        XCTAssertEqual(WorkerPayment.partialCost(outputs: 0, price: price), 1)
+        let ledger = WorkerPaymentLedger()
+        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+            ledger.served(channel: channel, cost: WorkerPayment.partialCost(outputs: 3, price: price))
+        }
+        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 0))
     }
 
     @MainActor

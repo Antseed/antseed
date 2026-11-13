@@ -39,6 +39,11 @@ struct Chain {
     }
 
     private func call(_ url: URL, _ body: Data) async throws -> Any {
+        guard let object = try await post(url, body) as? [String: Any] else { throw Failure.rpc("Malformed RPC answer") }
+        return try Self.result(of: object)
+    }
+
+    private func post(_ url: URL, _ body: Data) async throws -> Any {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         if let timeout { request.timeoutInterval = timeout }
@@ -48,7 +53,10 @@ struct Chain {
         if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) {
             throw Failure.rpc("RPC answered HTTP \(status)")
         }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.rpc("Malformed RPC answer") }
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func result(of object: [String: Any]) throws -> Any {
         if let error = object["error"] as? [String: Any] { throw Failure.rpc(error["message"] as? String ?? "RPC error") }
         guard let result = object["result"] else { throw Failure.rpc("Malformed RPC answer") }
         return result
@@ -57,6 +65,65 @@ struct Chain {
     func ethCall(to: String, data: Data) async throws -> Data {
         let result = try await call("eth_call", [["to": to, "data": data.prefixedHex], "latest"])
         return try Data(hexString: result as? String ?? "0x")
+    }
+
+    /// A read `batchEthCall` sends: the contract and its calldata.
+    struct Read: Sendable {
+        let to: String
+        let data: Data
+    }
+
+    /// The answers to `reads`, in order, sent as JSON-RPC batches of `batchSize`, each tried on the
+    /// endpoints in order. An endpoint that answers a batch with anything but a list (batches
+    /// unsupported) gets the reads one by one, eight at a time. Any read that fails fails the whole
+    /// call: a missing value must never read as zero.
+    func batchEthCall(_ reads: [Read], batchSize: Int = 50) async throws -> [Data] {
+        var answers: [Data] = []
+        answers.reserveCapacity(reads.count)
+        for start in stride(from: 0, to: reads.count, by: batchSize) {
+            answers += try await batch(Array(reads[start..<min(start + batchSize, reads.count)]))
+        }
+        return answers
+    }
+
+    private func batch(_ reads: [Read]) async throws -> [Data] {
+        let requests: [[String: Any]] = reads.enumerated().map { id, read in
+            ["jsonrpc": "2.0", "id": id, "method": "eth_call", "params": [["to": read.to, "data": read.data.prefixedHex], "latest"]]
+        }
+        let body = try JSONSerialization.data(withJSONObject: requests)
+        var lastError: Error = Failure.rpc("No RPC endpoint")
+        for url in rpcURLs {
+            try Task.checkCancellation()
+            do {
+                guard let answers = try await post(url, body) as? [[String: Any]] else { return try await oneByOne(reads) }
+                var byID: [Int: Data] = [:]
+                for answer in answers {
+                    guard let id = answer["id"] as? Int, reads.indices.contains(id) else { throw Failure.rpc("Malformed RPC answer") }
+                    byID[id] = try Data(hexString: try Self.result(of: answer) as? String ?? "0x")
+                }
+                return try reads.indices.map { id in
+                    guard let data = byID[id] else { throw Failure.rpc("The RPC left a read unanswered") }
+                    return data
+                }
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private func oneByOne(_ reads: [Read]) async throws -> [Data] {
+        var answers = [Data?](repeating: nil, count: reads.count)
+        for start in stride(from: 0, to: reads.count, by: 8) {
+            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                for index in start..<min(start + 8, reads.count) {
+                    let read = reads[index]
+                    group.addTask { (index, try await self.ethCall(to: read.to, data: read.data)) }
+                }
+                for try await (index, data) in group { answers[index] = data }
+            }
+        }
+        return answers.map { $0 ?? Data() }
     }
 
     /// Whether a contract is deployed at `address`.

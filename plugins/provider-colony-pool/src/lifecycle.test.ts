@@ -405,7 +405,7 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
-  it('counts only attribution the pool can still pay, and refuses a buyer once a settlement paid this worker less than signed', async () => {
+  it('counts only attribution the pool can still pay, and owes again what a settlement left uncredited', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     const domain = { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' };
     const reads: Array<[string, string, string]> = [];
@@ -432,11 +432,51 @@ describe('worker lifecycle', () => {
     await request('k4', { payment: await pay(18n, 36n) });
     await waitFor(() => fakePool.ended('k4'));
     expect(reads.at(-1)).toEqual([SELLER, CHANNEL.toLowerCase(), worker!.address]);
-    // Then the pool settles past that payment and pays this worker nothing: the buyer gets no more work.
+    // Then the pool settles past that payment and pays this worker nothing: all three answers are owed again.
     credit = { settled: 36n, credited: 0n };
     await request('k5', { payment: await pay(27n, 45n) });
     await waitFor(() => fakePool.errorFor('k5') !== undefined);
-    expect(fakePool.errorFor('k5')).toMatch(/no longer serves this buyer/);
+    expect(fakePool.errorFor('k5')).toMatch(/has not arrived/);
+    expect(upstream.bodies).toHaveLength(3);
+    // The buyer is not refused: a payment a later settlement can fund pays for them.
+    await request('k6', { payment: await pay(27n, 72n) });
+    await waitFor(() => fakePool.ended('k6'));
+    expect(upstream.bodies).toHaveLength(4);
+  });
+
+  it('keeps an answer cut off after its output was sent owed, so cancelling never buys free answers', async () => {
+    upstream = await startUpstream((_body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'most of an answer' } }] })}\n\n`);
+    });
+    start({ channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const chunked = (id: string): boolean => fakePool.frames.some((f) => f['t'] === 'response-chunk' && f['id'] === id);
+    // The buyer takes output, then cancels before the answer completes, twice.
+    for (const id of ['x1', 'x2']) {
+      await request(id, { stream: true });
+      await waitFor(() => chunked(id));
+      fakePool.send({ t: 'cancel', id });
+      await waitFor(() => fakePool.errorFor(id) !== undefined);
+    }
+    // Both stay owed: a third request is refused before it reaches the model.
+    await request('x3', { stream: true });
+    await waitFor(() => fakePool.errorFor('x3') !== undefined);
+    expect(fakePool.errorFor('x3')).toMatch(/2 unpaid/);
+    expect(upstream.bodies).toHaveLength(2);
+  });
+
+  it('releases a request cancelled before any of its answer was sent', async () => {
+    upstream = await startUpstream(() => { /* never answers */ });
+    start({ channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    for (const id of ['y1', 'y2', 'y3']) {
+      await request(id);
+      await waitFor(() => upstream!.active === 1);
+      fakePool.send({ t: 'cancel', id });
+      await waitFor(() => fakePool.errorFor(id) !== undefined);
+      await waitFor(() => upstream!.active === 0);
+    }
     expect(upstream.bodies).toHaveLength(3);
   });
 

@@ -60,23 +60,23 @@ extension Chain {
         let account = try Self.addressWord(account)
 
         let usdc = abiDecimal(try await ethCall(to: pool, data: Self.selector("usdcBalance(address)") + account))
-        let weights = try await each(epochs) { epoch in
-            try await self.ethCall(to: pool, data: Self.selector("epochWeight(uint256,address)") + Data(abiWord(UInt64(epoch))) + account)
+        let weights = try await reads(epochs) { epoch in
+            Read(to: pool, data: Self.selector("epochWeight(uint256,address)") + Data(abiWord(UInt64(epoch))) + account)
         }
         let weighted = epochs.filter { abiDecimal(weights[$0] ?? Data()) > 0 }
         // A one-epoch uint256[]: its offset, length and element after the address.
         func oneEpoch(_ epoch: Int) -> Data { Data(abiWord(0x40) + abiWord(1) + abiWord(UInt64(epoch))) }
-        let owed = try await each(weighted) { epoch in
-            try await self.ethCall(to: pool, data: Self.selector("pendingAnts(address,uint256[])") + account + oneEpoch(epoch))
+        let owed = try await reads(weighted) { epoch in
+            Read(to: pool, data: Self.selector("pendingAnts(address,uint256[])") + account + oneEpoch(epoch))
         }
-        let funded = try await each(weighted) { epoch in
-            try await self.ethCall(to: pool, data: Self.selector("epochAnts(uint256)") + Data(abiWord(UInt64(epoch))))
+        let funded = try await reads(weighted) { epoch in
+            Read(to: pool, data: Self.selector("epochAnts(uint256)") + Data(abiWord(UInt64(epoch))))
         }
         let unfunded = weighted.filter { abiDecimal(funded[$0] ?? Data()) == 0 }
         // Only an epoch the emissions contract would pay the pool for is worth a pull.
         let poolWord = try Self.addressWord(pool)
-        let pullable = try await each(unfunded) { epoch in
-            try await self.ethCall(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
+        let pullable = try await reads(unfunded) { epoch in
+            Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
         }
         let antsEpochs = weighted.filter { abiDecimal(owed[$0] ?? Data()) > 0 }
         return ColonyRewards(
@@ -93,17 +93,9 @@ extension Chain {
         return Data(word.prefix(32).suffix(20)).prefixedHex
     }
 
-    /// One read per item, eight at a time; any failure fails the whole read (a missing value must never show as nothing owed).
-    private func each(_ items: [Int], _ read: @escaping @Sendable (Int) async throws -> Data) async throws -> [Int: Data] {
-        var results: [Int: Data] = [:]
-        for start in stride(from: 0, to: items.count, by: 8) {
-            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                for item in items[start..<min(start + 8, items.count)] {
-                    group.addTask { (item, try await read(item)) }
-                }
-                for try await (item, data) in group { results[item] = data }
-            }
-        }
-        return results
+    /// One read per epoch, batched (batchEthCall); any failure fails the whole read (a missing value must never show as nothing owed).
+    private func reads(_ epochs: [Int], _ read: (Int) -> Read) async throws -> [Int: Data] {
+        let answers = try await batchEthCall(epochs.map(read))
+        return Dictionary(uniqueKeysWithValues: zip(epochs, answers))
     }
 }

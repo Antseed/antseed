@@ -2,6 +2,7 @@ import { Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
   answerCostUsdc,
+  partialCostUsdc,
   attributedPayment,
   type ChannelsDomain,
   decryptRequest,
@@ -496,19 +497,24 @@ export class PoolWorker {
       if (!isChargeablePrice(price)) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
       const channel = bound.channel.toLowerCase();
       // Paid before served: the buyer's signed payments must cover this worker's earlier answers on the channel.
-      const paid = await abortable(this.redeemable(channel, bound.buyer, this.attributed(inspected, verdict.deposit)), signal);
-      if (this.payments.refuses(bound.buyer)) throw new Error('This worker no longer serves this buyer: a settlement credited it less than the buyer signed');
+      const paid = await abortable(this.redeemable(channel, this.attributed(inspected, verdict.deposit)), signal);
       this.payments.admit(channel, paid.attributed, paid.cumulative);
       owed = { channel, price };
     }
     let answered: UsageLike | null = null;
+    const progress: ServeProgress = { output: false, whole: false, usage: null };
     try {
       if (bound) this.claimOnce(bound.hash, bound.expires);
-      answered = await this.serveOpened(frame, inspected, bound, signal, send);
+      answered = await this.serveOpened(frame, inspected, bound, signal, send, progress);
     } finally {
       if (owed) {
-        // Only an answer that reached the buyer whole is owed; a failed one is never paid.
         if (answered) this.payments.served(owed.channel, answerCostUsdc(usageCounts(answered), owed.price));
+        // Output sent and then cut off (cancelled, failed, or the pool connection
+        // dropped): the buyer may hold most of an answer, so it stays owed, at
+        // what was measured, and never less than something. Otherwise a buyer
+        // could take answer after answer and cancel each before it completes.
+        else if (progress.output && !progress.whole) this.payments.served(owed.channel, partialCostUsdc(progress.usage, owed.price));
+        // Nothing reached the pool: nothing to pay for.
         else this.payments.released(owed.channel);
       }
     }
@@ -537,19 +543,19 @@ export class PoolWorker {
   }
 
   /**
-   * What of `paid` the pool can still pay this worker, and a settlement check.
-   * The pool contract pays a worker from what later settlements add to the
-   * channel, so attribution beyond what it already paid this worker plus what
-   * the payment adds since the last settlement is credit nothing funds. Read
-   * with the settlement (one call, one block): once the channel settled past a
-   * payment the buyer showed this worker yet paid it less, the buyer is
-   * refused from then on. When the read fails the request is refused (retryable):
+   * What of `paid` the pool can still pay this worker. The pool contract pays
+   * a worker from what later settlements add to the channel, so attribution
+   * beyond what it already paid this worker plus what the payment adds since
+   * the last settlement is credit nothing funds. Read with the settlement (one
+   * call, one block): once the channel settled past a payment the buyer showed
+   * this worker yet credited it less, the answers that payment covered are owed
+   * again (WorkerPaymentLedger.reconcile). When the read fails the request is refused (retryable):
    * attribution the pool may never pay must not clear this worker's unpaid
    * answers. Without a reader, or when the pool is no contract (a seller paying
    * workers from its own address), there is nothing on-chain to check and the
    * signed attribution stands.
    */
-  private async redeemable(channel: string, buyer: string, paid: { attributed: bigint; cumulative: bigint }): Promise<{ attributed: bigint; cumulative: bigint }> {
+  private async redeemable(channel: string, paid: { attributed: bigint; cumulative: bigint }): Promise<{ attributed: bigint; cumulative: bigint }> {
     const read = this.opts.poolCredit;
     const pool = this.seller;
     if (!read || !pool) return paid;
@@ -561,21 +567,26 @@ export class PoolWorker {
       throw new Error("Could not read the pool's settlement for this channel; retry shortly");
     }
     if (!credit) return paid;
-    if (this.payments.reconcile(channel, buyer, credit.settled, credit.credited)) {
-      this.log(`a settlement on channel ${channel.slice(0, 18)}… paid this worker less than buyer ${buyer} signed; refusing that buyer`);
+    if (this.payments.reconcile(channel, credit.settled, credit.credited)) {
+      this.log(`a settlement on channel ${channel.slice(0, 18)}… credited this worker less than the buyer signed; those answers are owed again`);
     }
     const unsettled = paid.cumulative > credit.settled ? paid.cumulative - credit.settled : 0n;
     const cap = credit.credited + unsettled;
     return { attributed: paid.attributed < cap ? paid.attributed : cap, cumulative: paid.cumulative };
   }
 
-  /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole, null when it owes nothing. */
+  /**
+   * Decrypt an admitted request and serve it; returns the answer's usage once
+   * it was sent whole, null when it owes nothing. `progress` records how far
+   * the answer got, for an answer cut off before it was sent whole.
+   */
   private async serveOpened(
     frame: RequestFrame,
     inspected: InspectedRequest,
     bound: InspectedRequest['binding'],
     signal: AbortSignal,
     send: (out: WorkerFrame) => boolean,
+    progress: ServeProgress,
   ): Promise<UsageLike | null> {
     let opened: OpenedRequest;
     let body: Record<string, unknown>;
@@ -608,11 +619,22 @@ export class PoolWorker {
       : `serving a pool check for ${opened.model}`);
     // Only an answer the pool took whole, on the connection the request came in on, can reach the buyer and be paid.
     let delivered = true;
-    const status = await this.forwardUpstream(frame, body, opened.sealer, signal, (out) => (delivered = send(out) && delivered));
+    const status = await this.forwardUpstream(frame, body, opened.sealer, signal, (out) => {
+      const sent = send(out);
+      delivered = sent && delivered;
+      if (sent && out.t === 'response-chunk') {
+        progress.output = true;
+        progress.usage = opened.sealer.usage;
+      }
+      return sent;
+    });
     if (!delivered) {
-      this.log('the answer could not be sent to the pool; it is not owed');
+      this.log(progress.output
+        ? 'the answer was cut off on its way to the pool; what was sent stays owed'
+        : 'the answer could not be sent to the pool; it is not owed');
       return null;
     }
+    progress.whole = true;
     // An error answer with no usage (the model refused the request) owes nothing.
     return opened.sealer.usage ?? (status < 400 ? {} : null);
   }
@@ -688,6 +710,16 @@ export class PoolWorker {
   private log(line: string): void {
     this.opts.log?.(`[worker] ${line}`);
   }
+}
+
+/** How far a request's answer got, for one cut off before it was sent whole. */
+interface ServeProgress {
+  /** Some of the answer reached the pool, so the buyer may hold it. */
+  output: boolean;
+  /** The pool took the whole answer. */
+  whole: boolean;
+  /** The usage the answer had reported when its last chunk was sent. */
+  usage: UsageLike | null;
 }
 
 /** `value`, or a rejection once `signal` aborts. */

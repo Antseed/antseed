@@ -143,7 +143,9 @@ jobs:
           tools="$RUNNER_TEMP/sparkle"
           mkdir -p "$tools"
           gh release download 2.10.1 --repo sparkle-project/Sparkle --pattern 'Sparkle-2.10.1.tar.xz' --dir "$tools"
-          tar -xf "$tools/Sparkle-2.10.1.tar.xz" -C "$tools"
+          # The tool is handed the update signing key: run only the archive this workflow pinned.
+          shasum -a 256 -c <<<"1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27  $tools/Sparkle-2.10.1.tar.xz"
+          tar -xf "$tools/Sparkle-2.10.1.tar.xz" -C "$tools" ./bin/sign_update
           key="$RUNNER_TEMP/signing/sparkle.key"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$key"
           chmod 600 "$key"

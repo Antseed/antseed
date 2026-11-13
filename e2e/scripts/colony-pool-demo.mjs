@@ -188,12 +188,23 @@ async function main() {
 
   // ── chain ──
   await step('Start a local chain and deploy the Antseed protocol');
+  const provider = new JsonRpcProvider(RPC_URL, CHAIN_ID, { staticNetwork: true, pollingInterval: 250 });
+  // The demo deploys and mints on its chain: never on another one already listening there.
+  if (await provider.getBlockNumber().then(() => true, () => false)) {
+    throw new Error(`Something already answers on ${RPC_URL}; stop it (another anvil?) so the demo can start its own chain`);
+  }
   const anvil = spawn('anvil', ['--host', BIND, '--port', '8545', '--chain-id', String(CHAIN_ID)], { stdio: ['ignore', 'pipe', 'pipe'] });
   cleanup.push(() => anvil.kill('SIGTERM'));
   anvil.stdout.on('data', () => {});
-  anvil.stderr.on('data', () => {});
-  const provider = new JsonRpcProvider(RPC_URL, CHAIN_ID, { staticNetwork: true, pollingInterval: 250 });
-  await waitFor(() => provider.getBlockNumber().then(() => true), 'anvil');
+  anvil.stderr.on('data', (chunk) => logTo('chain', chunk.toString().trimEnd()));
+  // Deploy only while the anvil this demo started is alive: one that failed to start must not leave the demo to another chain.
+  let anvilExit = null;
+  const anvilEnded = new Promise((_, reject) => {
+    anvil.once('error', (err) => { anvilExit = err; reject(new Error(`anvil could not start: ${err.message}`)); });
+    anvil.once('exit', (code, signal) => { anvilExit = code ?? signal; reject(new Error(`anvil exited (${code ?? signal}) before the demo finished; see ${logDir}`)); });
+  });
+  anvilEnded.catch(() => {});
+  await Promise.race([waitFor(() => provider.getBlockNumber().then(() => anvilExit === null), 'anvil'), anvilEnded]);
   const contractsDir = join(repoRoot, 'packages', 'contracts');
   const deployOut = run('forge', ['script', 'script/Deploy.s.sol', '--rpc-url', RPC_URL, '--broadcast', '--slow', '--skip', 'test'], contractsDir);
   const addr = (label) => deployOut.match(new RegExp(`${label}:\\s+(0x[0-9a-fA-F]{40})`))[1];

@@ -142,6 +142,12 @@ enum WorkerPayment {
         return units > 0 ? (units >= Double(UInt64.max) ? .max : UInt64(units)) : 0
     }
 
+    /// What an answer cut off after `outputs` streamed outputs (about a token each) were sent stays
+    /// owed at: never nothing, so it holds one of the channel's unpaid answers until a payment covers it.
+    static func partialCost(outputs: Int, price: Price) -> UInt64 {
+        max(1, cost(promptTokens: 0, completionTokens: outputs, price: price))
+    }
+
     /// A decimal string as a big-endian uint256; nil when it isn't one.
     static func uint256(decimal: String) -> [UInt8]? {
         guard !decimal.isEmpty, decimal.count <= 78, decimal.allSatisfy(\.isASCII), decimal.allSatisfy(\.isNumber) else { return nil }
@@ -173,8 +179,10 @@ enum WorkerPayment {
 ///
 /// Signed attribution is trusted until settlement shows otherwise: the pool
 /// contract credits workers from the auth the pool settles, which may not be
-/// the one the buyer showed this Mac. `reconcile` compares the two once the
-/// channel settled past a payment, and a buyer found short is refused from then on.
+/// the one the buyer showed this Mac (an older one at the same amount, or one
+/// whose attribution the settlement could not yet cover). `reconcile` compares
+/// the two once the channel settled past a payment; what it left unpaid is owed
+/// again, for the buyer's later payments and the pool's later settlements to cover.
 @MainActor
 final class WorkerPaymentLedger {
     /// A signed payment not yet seen settled: the channel's cumulative amount and what it attributed to this worker.
@@ -201,7 +209,6 @@ final class WorkerPaymentLedger {
     private struct Snapshot: Codable {
         var channels: [String: Account]
         var order: [String]
-        var refusedBuyers: [String]
     }
 
     private static let maxChannels = 10_000
@@ -210,8 +217,6 @@ final class WorkerPaymentLedger {
     private var accounts: [String: Account] = [:]
     /// Least recently used first.
     private var order: [String] = []
-    /// Buyers a settlement credited less than they had signed to this worker.
-    private var refusedBuyers = Set<String>()
 
     init(file: URL? = nil) {
         self.file = file
@@ -219,7 +224,6 @@ final class WorkerPaymentLedger {
               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
         accounts = snapshot.channels
         order = snapshot.order.filter { snapshot.channels[$0] != nil }
-        refusedBuyers = Set(snapshot.refusedBuyers)
     }
 
     /// nil when a request on `channel`, whose payment at the channel's cumulative
@@ -287,25 +291,39 @@ final class WorkerPaymentLedger {
         accounts[key] = account
     }
 
-    /// Compare what `buyer` signed to this worker on `channel` with what the pool
-    /// contract credited it there, now that the channel settled up to `settled`.
-    /// A payment settled past but credited short refuses the buyer from now on.
-    /// Returns whether it did.
+    /// Compare what the buyer signed to this worker on `channel` with what the pool
+    /// contract credited it there, now that the channel settled up to `settled`. A
+    /// payment settled past but credited short counts only as far as the contract
+    /// can still pay it: what it credited, plus what each newer payment adds beyond
+    /// the settlement. Answers it no longer covers are owed again, so the buyer gets
+    /// no further work until a later payment, or a later settlement, pays for them.
+    /// That is no misconduct: the pool may have settled an older auth at the same
+    /// amount, and the contract pays what a settlement could not cover from the next
+    /// one. Returns whether any was short.
     @discardableResult
-    func reconcile(channel: String, buyer: String, settled: UInt64, credited: UInt64) -> Bool {
+    func reconcile(channel: String, settled: UInt64, credited: UInt64) -> Bool {
         let key = channel.lowercased()
         guard var account = accounts[key] else { return false }
         let short = account.checkpoints.contains { $0.cumulative <= settled && $0.attributed > credited }
         account.checkpoints.removeAll { $0.cumulative <= settled }
+        if short {
+            var redeemable = credited
+            for checkpoint in account.checkpoints {
+                let (cap, overflow) = credited.addingReportingOverflow(checkpoint.cumulative - settled)
+                redeemable = max(redeemable, overflow ? checkpoint.attributed : min(checkpoint.attributed, cap))
+            }
+            if redeemable < account.paid {
+                account.paid = redeemable
+                // Answers counted paid beyond it are owed again, ahead of the rest.
+                if account.settledCost > redeemable {
+                    account.owed.insert(account.settledCost - redeemable, at: 0)
+                    account.settledCost = redeemable
+                }
+            }
+        }
         accounts[key] = account
-        if short { refusedBuyers.insert(buyer.lowercased()) }
         save()
         return short
-    }
-
-    /// Whether a settlement has shown `buyer` paying this worker less than it signed.
-    func refuses(buyer: String) -> Bool {
-        refusedBuyers.contains(buyer.lowercased())
     }
 
     /// Drop the least recently used account with nothing running. A buyer's last
@@ -323,7 +341,7 @@ final class WorkerPaymentLedger {
 
     private func save() {
         guard let file else { return }
-        let snapshot = Snapshot(channels: accounts, order: order, refusedBuyers: Array(refusedBuyers))
+        let snapshot = Snapshot(channels: accounts, order: order)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file, options: [.atomic])

@@ -63,12 +63,16 @@ actor LocalModel {
     }
 
     /// Download (first run), hash the pinned snapshot's files and start the engine on that snapshot.
+    /// Cancelling it stops its download or engine and never starts one afterwards, so a superseded
+    /// load can't stop the engine a newer one started.
     func load(progress: @escaping @Sendable (Double) -> Void) async throws -> Checkpoint {
         guard FileManager.default.isExecutableFile(atPath: engine.path) else { throw EngineError.missing(engine) }
+        try Task.checkCancellation()
         Self.stopEngine(in: directory, engine: engine)
         let snapshot = Self.snapshotDirectory(modelId)
         if (try? String(contentsOf: pulledMarker, encoding: .utf8)) != modelId || !FileManager.default.fileExists(atPath: snapshot.path) {
             try await pull(progress: progress)
+            try Task.checkCancellation()
             try modelId.write(to: pulledMarker, atomically: true, encoding: .utf8)
         }
         guard FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("config.json").path) else {
@@ -76,8 +80,25 @@ actor LocalModel {
         }
         let digest = try Self.filesDigest(of: snapshot)
         self.snapshot = snapshot
+        try Task.checkCancellation()
         try await startServer()
         return Checkpoint(model: modelId, sha256: digest)
+    }
+
+    /// Stop the engine this instance started, if it still runs; one another instance started is left alone.
+    func stop() {
+        guard let server else { return }
+        self.server = nil
+        if server.isRunning { server.terminate() }
+        Self.removePIDFile(in: directory, ifItIs: server.processIdentifier)
+        if let old = socket?.path { unlink(old) }
+        socket = nil
+    }
+
+    private static func removePIDFile(in directory: URL, ifItIs pid: pid_t) {
+        let file = directory.appendingPathComponent(pidFile)
+        guard let text = try? String(contentsOf: file, encoding: .utf8), pid_t(text) == pid else { return }
+        try? FileManager.default.removeItem(at: file)
     }
 
     /// The Hugging Face cache directory the engine pulls into: HF_HUB_CACHE, else HF_HOME/hub, else ~/.cache/huggingface/hub.
@@ -217,17 +238,23 @@ actor LocalModel {
         process.standardError = pipe
         try process.run()
         // Recorded like the server's, so quitting mid-download stops it too.
-        let pidURL = directory.appendingPathComponent(Self.pidFile)
-        try String(process.processIdentifier).write(to: pidURL, atomically: true, encoding: .utf8)
+        let pid = process.processIdentifier
+        try String(pid).write(to: directory.appendingPathComponent(Self.pidFile), atomically: true, encoding: .utf8)
         defer {
             if process.isRunning { process.terminate() }
-            try? FileManager.default.removeItem(at: pidURL)
+            Self.removePIDFile(in: directory, ifItIs: pid)
         }
         var last = ""
-        for try await line in pipe.fileHandleForReading.bytes.lines {
-            last = line
-            if let fraction = Self.pullFraction(line) { progress(fraction) }
+        // Cancelled (another model was picked): stop the download, which ends its output.
+        try await withTaskCancellationHandler {
+            for try await line in pipe.fileHandleForReading.bytes.lines {
+                last = line
+                if let fraction = Self.pullFraction(line) { progress(fraction) }
+            }
+        } onCancel: {
+            kill(pid, SIGTERM)
         }
+        try Task.checkCancellation()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw EngineError.failed("Model download failed: \(last)") }
     }
@@ -270,21 +297,26 @@ actor LocalModel {
         try String(process.processIdentifier).write(to: directory.appendingPathComponent(Self.pidFile), atomically: true, encoding: .utf8)
         let candidate = EngineSocket(path: socketPath, enginePID: process.processIdentifier, apiKey: apiKey)
 
-        for _ in 0..<600 {
-            guard process.isRunning else { break }
-            var probe = candidate
-            probe.timeout = 2
-            if let reply = try? await probe.send("GET", "/v1/models") {
-                reply.close()
-                if reply.status == 200 {
-                    socket = candidate
-                    return
+        do {
+            for _ in 0..<600 {
+                guard process.isRunning else { break }
+                var probe = candidate
+                probe.timeout = 2
+                if let reply = try? await probe.send("GET", "/v1/models") {
+                    reply.close()
+                    if reply.status == 200 {
+                        socket = candidate
+                        return
+                    }
                 }
+                // Throws once cancelled: the engine this load started is stopped below.
+                try await Task.sleep(nanoseconds: 200_000_000)
             }
-            try await Task.sleep(nanoseconds: 200_000_000)
+            throw EngineError.failed("The engine did not start (see \(logFile.path))")
+        } catch {
+            stop()
+            throw error
         }
-        process.terminate()
-        throw EngineError.failed("The engine did not start (see \(logFile.path))")
     }
 
     private func countTokens(_ chat: [String: Any]) async throws -> Int {

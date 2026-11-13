@@ -101,6 +101,16 @@ export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: 
   return computeCostUsdc(Number(fresh), Number(usage.outputTokens), price, Number(usage.cachedInputTokens));
 }
 
+/**
+ * What an answer cut off after some of it was sent stays owed at: its measured
+ * usage when the stream reported any, and never nothing, so it holds one of the
+ * channel's unpaid answers until a payment covers it.
+ */
+export function partialCostUsdc(usage: Record<string, unknown> | null, price: ServicePricing): bigint {
+  const cost = answerCostUsdc(usageCounts(usage), price);
+  return cost > 0n ? cost : 1n;
+}
+
 interface ChannelAccount {
   /** The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it). */
   paid: bigint;
@@ -120,8 +130,6 @@ interface ChannelAccount {
 /** A worker ledger as stored between runs: amounts as decimal strings. */
 export interface WorkerLedgerSnapshot {
   channels: Record<string, { paid: string; owed: string[]; settledCost: string; checkpoints: Array<[string, string]> }>;
-  /** Buyers a settlement credited less than they had signed to this worker. */
-  refusedBuyers: string[];
 }
 
 /** Where a worker keeps its ledger, so a restart never forgets what earlier payments already paid for. */
@@ -138,13 +146,14 @@ export interface WorkerLedgerStore {
  *
  * Signed attribution is trusted until settlement shows otherwise: the pool
  * contract credits workers from the auth the pool settles, which may not be
- * the one the buyer showed this worker. `reconcile` compares what was signed
- * with what the contract credited once the channel settled past it, and a
- * buyer found short is refused from then on.
+ * the one the buyer showed this worker (an older one at the same amount, or
+ * one whose attribution the settlement could not yet cover). `reconcile`
+ * compares what was signed with what the contract credited once the channel
+ * settled past it; what it left unpaid is owed again, for the buyer's later
+ * payments and the pool's later settlements to cover.
  */
 export class WorkerPaymentLedger {
   private readonly accounts = new Map<string, ChannelAccount>();
-  private readonly refusedBuyers = new Set<string>();
 
   constructor(private readonly store?: WorkerLedgerStore) {
     const snapshot = store?.load();
@@ -158,7 +167,6 @@ export class WorkerPaymentLedger {
         checkpoints: stored.checkpoints.map(([c, w]) => [BigInt(c), BigInt(w)]),
       });
     }
-    for (const buyer of snapshot.refusedBuyers) this.refusedBuyers.add(buyer);
   }
 
   /**
@@ -219,25 +227,39 @@ export class WorkerPaymentLedger {
   }
 
   /**
-   * Compare what `buyer` signed to this worker on `channel` with what the pool
-   * contract credited it there (`credited`), now that the channel settled up
-   * to `settled`. A payment settled past but credited short means the pool
-   * settled an auth that pays this worker less: the buyer is refused from now
-   * on. Returns whether it was.
+   * Compare what the buyer signed to this worker on `channel` with what the
+   * pool contract credited it there (`credited`), now that the channel settled
+   * up to `settled`. A payment settled past but credited short counts only as
+   * far as the contract can still pay it: what it credited, plus what each
+   * newer payment adds beyond the settlement. Answers it no longer covers are
+   * owed again, so the buyer gets no further work until a later payment, or a
+   * later settlement, pays for them. That is no misconduct: the pool may have
+   * settled an older auth at the same amount, and the contract pays what a
+   * settlement could not cover from the next one. Returns whether any was short.
    */
-  reconcile(channel: string, buyer: string, settled: bigint, credited: bigint): boolean {
+  reconcile(channel: string, settled: bigint, credited: bigint): boolean {
     const account = this.accounts.get(channel.toLowerCase());
     if (!account) return false;
     const short = account.checkpoints.some(([cumulative, attributed]) => cumulative <= settled && attributed > credited);
     account.checkpoints = account.checkpoints.filter(([cumulative]) => cumulative > settled);
-    if (short) this.refusedBuyers.add(buyer.toLowerCase());
+    if (short) {
+      let redeemable = credited;
+      for (const [cumulative, attributed] of account.checkpoints) {
+        const cap = credited + (cumulative - settled);
+        const counted = attributed < cap ? attributed : cap;
+        if (counted > redeemable) redeemable = counted;
+      }
+      if (redeemable < account.paid) {
+        account.paid = redeemable;
+        // Answers counted paid beyond it are owed again, ahead of the rest.
+        if (account.settledCost > redeemable) {
+          account.owed.unshift(account.settledCost - redeemable);
+          account.settledCost = redeemable;
+        }
+      }
+    }
     this.save();
     return short;
-  }
-
-  /** Whether a settlement has shown `buyer` paying this worker less than it signed. */
-  refuses(buyer: string): boolean {
-    return this.refusedBuyers.has(buyer.toLowerCase());
   }
 
   /**
@@ -268,6 +290,6 @@ export class WorkerPaymentLedger {
         checkpoints: account.checkpoints.map(([c, w]) => [c.toString(), w.toString()]),
       };
     }
-    this.store.save({ channels, refusedBuyers: [...this.refusedBuyers] });
+    this.store.save({ channels });
   }
 }

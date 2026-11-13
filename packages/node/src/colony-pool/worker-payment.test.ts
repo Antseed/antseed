@@ -9,6 +9,7 @@ import {
   isChargeablePrice,
   MAX_TRACKED_CHANNELS,
   MAX_UNPAID_ANSWERS,
+  partialCostUsdc,
   usageCounts,
   WorkerPaymentLedger,
   type WorkerLedgerSnapshot,
@@ -171,21 +172,48 @@ describe('worker payments', () => {
     ledger.admit(channel, 918_000n, 918_000n);
   });
 
-  it('refuses a buyer once the channel settled past a payment that credited this worker less', () => {
+  it('owes again what a settlement left uncredited, until a later payment covers it', () => {
     const ledger = new WorkerPaymentLedger();
     ledger.admit(channel, 0n);
     ledger.served(channel, 9_000n);
     ledger.admit(channel, 9_000n, 10_000n);
     // Not settled that far yet: nothing to judge.
-    expect(ledger.reconcile(channel, buyer.address, 5_000n, 0n)).toBe(false);
+    expect(ledger.reconcile(channel, 5_000n, 0n)).toBe(false);
     // Settled past it and credited in full: done with that payment.
-    expect(ledger.reconcile(channel, buyer.address, 10_000n, 9_000n)).toBe(false);
-    expect(ledger.refuses(buyer.address)).toBe(false);
+    expect(ledger.reconcile(channel, 10_000n, 9_000n)).toBe(false);
     ledger.served(channel, 9_000n);
     ledger.admit(channel, 18_000n, 20_000n);
-    // Settled past it with an auth that credits this worker nothing more.
-    expect(ledger.reconcile(channel, buyer.address, 20_000n, 9_000n)).toBe(true);
-    expect(ledger.refuses(buyer.address.toLowerCase())).toBe(true);
+    ledger.served(channel, 9_000n);
+    // Settled past it with an auth that credits this worker nothing more: those 9,000 are owed again.
+    expect(ledger.reconcile(channel, 20_000n, 9_000n)).toBe(true);
+    expect(() => ledger.admit(channel, 9_000n, 20_000n)).toThrow(/2 unpaid/);
+    // The buyer is not refused: a payment that covers both answers is served.
+    ledger.admit(channel, 27_000n, 40_000n);
+  });
+
+  it('keeps an older same-amount settlement from refusing a buyer whose newer auth attributes more', () => {
+    const ledger = new WorkerPaymentLedger();
+    ledger.admit(channel, 0n, 100_000n);
+    ledger.served(channel, 10_000n);
+    // The buyer re-signs the same cumulative amount, now attributing 10,000 to this worker.
+    ledger.admit(channel, 10_000n, 100_000n);
+    ledger.served(channel, 10_000n);
+    // The pool had already snapshotted the older auth, and settles it: nothing credited.
+    expect(ledger.reconcile(channel, 100_000n, 0n)).toBe(true);
+    // Both answers are owed again, so no third runs on that payment...
+    expect(() => ledger.admit(channel, 0n, 100_000n)).toThrow(/2 unpaid/);
+    // ...but a newer payment, which a later settlement can still fund, pays for them.
+    ledger.admit(channel, 20_000n, 120_000n);
+    ledger.served(channel, 10_000n);
+    // That settlement catches the worker up: nothing short, nothing owed again.
+    expect(ledger.reconcile(channel, 120_000n, 20_000n)).toBe(false);
+    ledger.admit(channel, 30_000n, 130_000n);
+  });
+
+  it('owes a cut-off answer at its measured usage, and never at nothing', () => {
+    const price = { inputUsdPerMillion: 1, outputUsdPerMillion: 4 };
+    expect(partialCostUsdc({ prompt_tokens: 1000, completion_tokens: 100 }, price)).toBe(1_400n);
+    expect(partialCostUsdc(null, price)).toBe(1n);
   });
 
   it('never queues an answer that costs nothing, even behind an unpaid one', () => {
