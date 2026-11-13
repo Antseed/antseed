@@ -136,6 +136,15 @@ describe('closed-position rewards', () => {
     expect(poolRewards.restakeStakerRewardsBatch).toHaveBeenCalledWith({}, [7], 4);
   });
 
+  it('splits restakes into batches that fit the per-transaction gas cap', async () => {
+    const { ctx, poolRewards } = fixture(false);
+    const ids = Array.from({ length: 30 }, (_, index) => 10 + index);
+    expect(await restake(ctx, { positionIds: ids, epochs: 4 })).toMatchObject({ positionIds: ids });
+    const batches = poolRewards.restakeStakerRewardsBatch.mock.calls.map((call: unknown[]) => call[1] as number[]);
+    expect(batches.map(batch => batch.length)).toEqual([12, 12, 6]);
+    expect(batches.flat()).toEqual(ids);
+  });
+
   it('loads explicitly requested closed IDs even without an indexer', async () => {
     const { ctx, pools } = fixture(false);
     expect(await restake(ctx, { positionIds: [7], epochs: 4 })).toMatchObject({ positionIds: [7] });

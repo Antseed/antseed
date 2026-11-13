@@ -80,8 +80,18 @@ const SCOPE_PATTERN = /^m[0-9a-f]{8}$/;
 
 /** Capability scope of a service's own program: `m` + the first 8 hex of keccak256(serviceId). */
 export function freeTierServiceScope(serviceId: string): string {
-  return `m${id(serviceId).slice(2, 10)}`;
+  let scope = serviceScopes.get(serviceId);
+  if (scope === undefined) {
+    scope = `m${id(serviceId).slice(2, 10)}`;
+    // Routing asks for the same few hundred services on every request and list; the hash is the cost.
+    if (serviceScopes.size >= MAX_REMEMBERED_SERVICE_SCOPES) serviceScopes.clear();
+    serviceScopes.set(serviceId, scope);
+  }
+  return scope;
 }
+
+const MAX_REMEMBERED_SERVICE_SCOPES = 10_000;
+const serviceScopes = new Map<string, string>();
 
 /** Throws when `tiers` is not a valid program: increasing power, increasing multipliers, unlimited last. */
 export function validateFreeTierStakeTiers(tiers: readonly FreeTierStakeTier[], label = 'freeTier.stakeTiers'): void {

@@ -3,13 +3,12 @@ import { shortAddress } from '../../../core/format';
 import type { FreeTierSharing } from '../../../types/bridge';
 import { freeTierTrendLine } from '../../../modules/catalog/free-tier';
 import { refreshFreeTierStake, useFreeTierStake } from '../../hooks/useFreeTierStake';
-import { useUiSelector } from '../../hooks/useUiSelector';
 import { VprCard } from '../vpr/VprKit';
-import styles from './VprRewardsView.module.scss';
+import styles from './VprFreeTierCard.module.scss';
 
 /**
- * Staked free tier: a staker creates a code for this buyer in the staking
- * dashboard (My positions → Share free tier) and the buyer pastes it here.
+ * Staked free tier: a staker creates a code for this buyer (staking
+ * dashboard → My positions → Share free tier) and the buyer pastes it here.
  * Sellers with a staked free tier then count that stake toward this buyer.
  * Below the stakers, the stake each seller counts and how it shrinks.
  */
@@ -21,11 +20,7 @@ export function VprFreeTierCard() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const stake = useFreeTierStake();
-  const rows = useUiSelector((state) => state.discoverRows);
-  const sellerName = (agentId: number) => {
-    const row = rows.find((entry) => entry.agentId === agentId);
-    return row?.peerDisplayName || row?.peerLabel || `Seller #${agentId}`;
-  };
+  const sellerName = (agentId: number) => `Seller #${agentId}`;
 
   const apply = useCallback(async (call: Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }> | undefined) => {
     if (!call) return false;

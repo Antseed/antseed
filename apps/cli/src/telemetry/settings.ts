@@ -19,7 +19,7 @@ import {
 import { BAKED_POSTHOG_HOST, BAKED_POSTHOG_PROJECT_API_KEY } from '../generated/baked-defaults.js'
 import { patchConfigFile } from '../config/patch.js'
 
-export const TELEMETRY_DOCS_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/telemetry.md'
+export const TELEMETRY_DOCS_URL = 'https://github.com/Antseed/antseed/blob/main/docs/telemetry.md'
 const STATE_FILE = 'telemetry.json'
 
 export function posthogConfig(env: NodeJS.ProcessEnv = process.env): PostHogConfig | null {

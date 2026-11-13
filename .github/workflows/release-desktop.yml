@@ -1,11 +1,12 @@
 name: Release Desktop
 
-# Builds and publishes the AntSeed Desktop Electron app for macOS,
+# Builds and publishes the Antseed Desktop Electron app for macOS,
 # Windows, and Linux in parallel, attaching artifacts to the same GitHub
 # Release (tagged v<version>, read from apps/desktop/package.json).
 #
 # macOS: DMG + zip, arm64 + x64, code-signed with Developer ID and
-#        notarized via Apple App Store Connect API key.
+#        notarized via Apple App Store Connect API key, plus bridge zips
+#        for installs from before the bundle rename (scripts/release-mac.mjs).
 # Windows: NSIS installer, x64 + arm64. Optional code signing via the
 #          CA's cloud signing API if the WIN_SIGN_* secrets are set
 #          (see apps/desktop/scripts/win-sign.cjs).
@@ -179,7 +180,10 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.blockmap
-            apps/desktop/release/latest*.yml
+            apps/desktop/release/desktop-mac.yml
+            apps/desktop/release-bridge/*.zip
+            apps/desktop/release-bridge/*.blockmap
+            apps/desktop/release-bridge/latest-mac.yml
           if-no-files-found: warn
           retention-days: 14
 

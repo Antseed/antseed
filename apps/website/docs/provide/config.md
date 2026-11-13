@@ -114,6 +114,7 @@ After an upstream fails for a service, the seller tries it last for that service
 |---|---|
 | `upstreamModel` | Model ID sent upstream. Defaults to the service ID. |
 | `imageEditModel` | Venice image services only: the native edit model that serves `/v1/images/edits` for this service. See [Venice image edits](/docs/provide/media#venice-image-edits). |
+| `extraProtocols` | `openai` text services only: add `openai-responses` and/or `anthropic-messages` alongside Chat Completions. The upstream and fallbacks must already support those APIs; no protocol translation is performed. |
 | `pricing` | `inputUsdPerMillion`, `outputUsdPerMillion` and optional `cachedInputUsdPerMillion`, in USD per million tokens. Overrides the provider's `defaults`. |
 | `categories` | Tags announced in discovery. Lowercase letters, digits and hyphens. Buyers can filter on any tag; `privacy`, `legal`, `uncensored`, `coding`, `finance` and `tee` are the well-known ones shown in `antseed network browse --tag`. |
 | `capabilities` | Hints about the model. See below. |
@@ -179,7 +180,7 @@ antseed config seller remove-service inference kimi-k2.6
 antseed config seller remove-provider inference
 ```
 
-`config seller set` splits the key on dots, so it can't address a service whose ID contains a dot, such as `kimi-k2.6`. Use `add-service` again, which updates an existing service, or edit the file. `set` accepts keys that already exist in the file, any key under `providers`, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below; add other blocks, such as `healthCheck`, by editing the file.
+`config seller set` works with service IDs that contain a dot, such as `kimi-k2.6`, once the service exists: `providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion`. Add a new service with `add-service`. `set` accepts keys that already exist in the file, the provider and service fields on this page, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below. It refuses any other key, and a provider or service that doesn't exist, with an error and a non-zero exit code; add other blocks, such as `healthCheck`, by editing the file.
 
 `antseed seller setup` builds the capabilities object with one question per field, tailored to the service: image services are asked about input modalities and supported parameters, text services about context window, modalities, reasoning, tool use and structured output. You can paste a JSON object at the capabilities prompt instead.
 
@@ -195,7 +196,10 @@ Credentials always come from environment variables, never from `config.json`.
 | `typesafe` | System One decision models (`POST /v1/systemone`) | `TYPESAFE_API_KEY` |
 | `venice-video` | Video models behind the Venice video API | `VENICE_VIDEO_API_KEY` |
 | `fal-video` | fal.ai video models | `FAL_VIDEO_API_KEY` |
+| `fal-image` | fal.ai image models through the OpenAI Images API | `FAL_IMAGE_API_KEY` |
 | `alibaba-video` | Alibaba Cloud Model Studio video models (Wan, HappyHorse) | `ALIBABA_VIDEO_API_KEY` |
+| `irp-router` | Any Inference Routing Protocol router, as an `irp-suggest` routing service (`--base-url`) | `IRP_ROUTER_API_KEY`, optional |
+| `free-model-router` | An `irp-suggest` routing service that ranks free models among a buyer's candidates | None |
 | `claude-code`, `claude-oauth`, `openai-responses` | Subscription credentials, for testing only | Local keychain, OAuth token or Codex auth file |
 
 Any other npm package that exports a provider plugin works too. See [Provider plugin API](/docs/provider-api).
@@ -207,6 +211,9 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.publicAddress` | empty | `host:port` buyers should dial. Needed when the address the DHT sees isn't the one buyers can reach, such as behind a load balancer. Check it with `antseed seller doctor`. |
 | `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
+| `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
+| `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
+| `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel or a free usage session open. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
 | `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
 | `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
 | `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
@@ -288,7 +295,7 @@ Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to 
 }
 ```
 
-Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, the desktop app and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
+Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, gateways and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
 
 #### Per-model programs
 
@@ -339,7 +346,7 @@ This config gives a free model 100 requests a day, raised for stakers, and makes
 
 Each model's program is advertised under a short hash of its id, as `free-tier.v1.m<hash>.*`. A program that uses the same tiers as `seller.freeTier` takes one capability string; one with its own tiers takes one string plus one per tier. Peer metadata allows 16 capability strings, and the node always uses 4 or 5 of them. A program that doesn't fit is still enforced, but not advertised, and the node logs a warning.
 
-A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. `config seller set` can't address a service id with a dot, so add these programs by editing the file.
+A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. To add a program from the CLI, pass the whole object: `antseed config seller set providers.my-provider.services.glm-5.3-flash.freeTier '{"maxRequestsPerAddress":100}'`.
 
 ### Restricted countries
 
@@ -420,7 +427,7 @@ An ant agent wraps your service with a persona, guardrails, on-demand knowledge 
 }
 ```
 
-Relative paths resolve from the config file's directory. See [Provider plugin API](/docs/provider-api#ant-agent) and the [`@antseed/ant-agent` README](https://github.com/AntSeed/antseed/tree/main/packages/ant-agent) for the manifest format.
+Relative paths resolve from the config file's directory. See [Provider plugin API](/docs/provider-api#ant-agent) and the [`@antseed/ant-agent` README](https://github.com/Antseed/antseed/tree/main/packages/ant-agent) for the manifest format.
 
 ## Payment settings
 

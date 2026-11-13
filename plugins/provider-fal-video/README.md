@@ -5,9 +5,11 @@ Relays video generation requests to fal.ai model endpoints through fal's [queue 
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-fal-video
 export FAL_VIDEO_API_KEY=<seller-fal-key>
+antseed config seller add-provider video --plugin fal-video
 ```
+
+`add-provider` installs the plugin.
 
 - `FAL_VIDEO_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_VIDEO_BASE_URL`: optional, defaults to `https://queue.fal.run`
@@ -33,14 +35,18 @@ The service ID is the fal endpoint ID; aliases are not supported.
 
 Buyers send fal's model input as JSON, with the endpoint ID as `model`:
 
-| AntSeed path | fal call |
+| Antseed path | fal call |
 | --- | --- |
 | `POST /fal/v1/video/queue` | `POST {base}/{model}` with the body minus `model`/`service`; returns `{model, request_id, status}` |
 | `POST /fal/v1/video/retrieve` with `{model, request_id}` | `GET {base}/{owner}/{alias}/requests/{id}/status`, then the result's `video.url` |
 
 Retrieve returns fal's `IN_QUEUE` / `IN_PROGRESS` status as JSON, `{"status":"FAILED"}` when fal reports an error, and streams the finished MP4 through the seller once fal reports `COMPLETED`. fal's `status_url`/`response_url` are not passed to buyers: they need the seller's key. Media is fetched from the `https` URL in the result without the seller key. Cancel and webhooks are not relayed.
 
-The body is passed to fal unchanged, so field names are fal's own and differ by model (for example `start_image_url` for Kling V3, `image_url` for Seedance). At startup the seller reads each endpoint's input schema from `https://fal.ai/api/openapi/queue/openapi.json` (without the seller key) and announces its field names as `supportedParameters`, so buyers can name fields the way the model expects. A service that already sets `supportedParameters` in `ANTSEED_SERVICE_CAPABILITIES_JSON` keeps them. If the schema cannot be read, the service is announced without them. When a service announces `video.inputs` and its fields include a frame field (`image_url`, `start_image_url`, `end_image_url`, `tail_image_url`, ...), the matching `first_frame` or `last_frame` is added to `video.inputs`, so buyers can pick it for first-plus-last-frame videos.
+The body is passed to fal unchanged apart from the reference names below, so field names are fal's own and differ by model (for example `start_image_url` for Kling V3, `image_url` for Seedance). At startup the seller reads each endpoint's input schema from `https://fal.ai/api/openapi/queue/openapi.json` (without the seller key) and announces its field names as `supportedParameters`, so buyers can name fields the way the model expects. A service that already sets `supportedParameters` in `ANTSEED_SERVICE_CAPABILITIES_JSON` keeps them. If the schema cannot be read, the service is announced without them. When a service announces `video.inputs` and its fields include a frame field (`image_url`, `start_image_url`, `end_image_url`, `tail_image_url`, ...), the matching `first_frame` or `last_frame` is added to `video.inputs`, so buyers can pick it for first-plus-last-frame videos, and an endpoint with `video_urls` gets `reference_video`.
+
+Reference-to-video endpoints such as Seedance 2.5 name their reference media `image_urls`, `audio_urls` and `video_urls`. The seller also announces the common names other sellers use (`reference_image_urls`, `reference_audio_urls`, `reference_video_urls`) for each one the schema has, and renames them to fal's before the request goes to fal, so one request works on Venice and fal sellers alike. A create that sends both names for the same media is answered `400 invalid_video_request`.
+
+fal bills reference videos by their length on top of the output (Seedance 2.5: tokens = width × height × (input + output seconds) × 24 / 1024, × 0.6 when videos are sent; up to 30.2 s of reference video in total). A create that sends `video_urls` or `reference_video_urls` is priced with `reference_video: "true"` (metadata v17); without a `reference_video: "true"` component that matches the whole create (its resolution too), the create is answered `400 unsupported_video_input` before payment. See **Reference videos** in the media selling docs for the pricing pattern.
 
 ### Video edits
 
@@ -66,4 +72,4 @@ Otherwise the seller does not check the source; fal does, and reports a refused 
 
 `video_seconds` pricing uses the request's `duration` (`5`, `"5"` or `"5s"`); use `video_generations` for models without a numeric duration.
 
-Check that fal's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
+Check that fal's terms allow your offering. Antseed sellers must add value rather than resell raw API access.

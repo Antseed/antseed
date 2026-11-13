@@ -2,7 +2,9 @@ import { isHexString } from 'ethers';
 import type { BuyerIdentity } from './interfaces.js';
 import type { BuyerConnection } from './interfaces.js';
 import { PaymentMux } from './payment-mux.js';
+import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { PeerId } from '@antseed/protocol/peer-id';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { BuyerPeerView } from './interfaces.js';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
@@ -35,7 +37,8 @@ import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import { SellerAuthorizationError } from './seller-address-resolver.js';
 import { parseResponseUsage } from './response-usage.js';
-import { computeCostUsdc, type ServicePricing } from './pricing.js';
+import { usageForBilling } from './estimated-usage.js';
+import { computeCostUsdc, estimateTokensFromBytesSampled, type ServicePricing } from './pricing.js';
 import { formatUsdc } from './usdc-utils.js';
 import { parseJsonObject, tryParseJsonObject } from '@antseed/protocol/json-codec';
 import { nativeVideoAcceptance, nativeVideoRoute } from '@antseed/api-adapter';
@@ -88,6 +91,14 @@ const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
 const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
 /** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
 const MAX_STALE_SESSION_CHECKS = 5;
+/**
+ * The message of the buyer's 402 `insufficient_deposits` answer. Clients
+ * match its first sentence, so keep it. A gateway rewrites the rest to name
+ * the workspace and its funding path.
+ */
+export const OUT_OF_CREDITS_MESSAGE =
+  'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" ' +
+  'in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
   emit(event: string, ...args: unknown[]): boolean;
@@ -120,6 +131,18 @@ export interface SelectedBillingRoute {
   serviceApiProtocol: ServiceApiProtocol;
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
+  /** The service's announced video options, for pricing an omitted aspect ratio or audio setting. */
+  videoOptions?: VideoOptions;
+}
+
+/** The output limit a chat, messages or responses request sets for itself, or 0. */
+function requestedMaxOutputTokens(body: Uint8Array): number {
+  const parsed = tryParseJsonObject(body);
+  for (const field of ['max_completion_tokens', 'max_tokens', 'max_output_tokens']) {
+    const value = parsed?.[field];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  }
+  return 0;
 }
 
 function parsePaymentRequiredBody(body: Uint8Array): Record<string, unknown> | null {
@@ -255,7 +278,13 @@ export class BuyerPaymentNegotiator {
 
   getOrCreatePaymentMux(peerId: PeerId, conn: BuyerConnection): PaymentMux {
     const existing = this._muxes.get(peerId);
-    if (existing) return existing;
+    // Payment work still finishing on a connection that has since closed can
+    // set the mux up on it again: every frame it sends would go into the dead
+    // connection. A live connection to the peer replaces it.
+    const connDead = conn.state === ConnectionState.Closing || conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+    if (existing && (existing.sendsOver(conn) || connDead)) {
+      return existing;
+    }
 
     const pmux = new PaymentMux(conn);
     this._muxes.set(peerId, pmux);
@@ -344,6 +373,7 @@ export class BuyerPaymentNegotiator {
           service: route.service,
           serviceApiProtocol: route.serviceApiProtocol,
           request,
+          ...(route.videoOptions ? { videoOptions: route.videoOptions } : {}),
         });
         if (isVideo && captured.requestFacts.kind === 'video' && route.unitModel) {
           estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
@@ -837,7 +867,7 @@ export class BuyerPaymentNegotiator {
         // What this seller's session would lock from available deposits —
         // suggestedAmount clamped to the buyer's reserve cap.
         ...(requestedReserveAmount != null ? { requiredReserve: requestedReserveAmount.toString() } : {}),
-        message: 'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.',
+        message: OUT_OF_CREDITS_MESSAGE,
       });
       return {
         action: 'return',
@@ -1090,11 +1120,40 @@ export class BuyerPaymentNegotiator {
     }
   }
 
+  /**
+   * The caller aborted a paid attempt after it was sent. The seller is not
+   * told, so it may finish the generation and bill it. Record the most it can
+   * honestly bill: the prompt plus the output the request allows or, without
+   * an output limit, what had arrived. Unit-billed and video requests are
+   * priced only on delivery.
+   */
+  estimateCostFromPartialResponse(
+    peer: BuyerPeerView,
+    request: { requestId: string; body: Uint8Array },
+    partial: SerializedHttpResponse,
+    service?: string,
+  ): void {
+    const billingEntry = this._bpm.getRequestBilling(request.requestId);
+    const pricing = billingEntry?.tokenPricing
+      ?? this._bpm.getSessionPricing(peer.peerId, service)
+        ?? this._peerDefaultPricing(peer);
+    if (partial.statusCode >= 400 || !pricing || billingEntry?.unitModel || billingEntry?.requestFacts?.kind === 'video') return;
+    const outputTokens = Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body));
+    const costUsdc = computeCostUsdc(estimateTokensFromBytesSampled(request.body), outputTokens, pricing);
+    debugLog(
+      `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... may bill up to ${costUsdc} for ${request.requestId.slice(0, 8)}, ` +
+      `cut off after ${partial.body.length}b`,
+    );
+    this._bpm.recordDeliveredResponse(peer.peerId, request.requestId, { costUsdc, cutOff: true });
+  }
+
   estimateCostFromResponse(
     peer: BuyerPeerView,
     response: SerializedHttpResponse,
     service?: string,
     requestId?: string,
+    /** The body the request was sent with: a chat answer with no usage figure is priced by the same estimate the seller bills. */
+    requestBody?: Uint8Array,
   ): void {
     // Post-response cost estimation feeds the next SpendingAuth. Token pricing
     // stays on computeCostUsdc; image unit billing is an optional surcharge.
@@ -1143,7 +1202,8 @@ export class BuyerPaymentNegotiator {
     if (unitBilling && requestId) {
       this._bpm.recordObservedUnitUsage(requestId, unitBilling.usage);
     }
-    const usage = unitBilling?.tokenUsage ?? parseResponseUsage(response.body);
+    const usage = unitBilling?.tokenUsage
+      ?? (requestBody ? usageForBilling(requestBody, response).usage : parseResponseUsage(response.body));
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
         ?? this._peerDefaultPricing(peer);
@@ -1154,7 +1214,20 @@ export class BuyerPaymentNegotiator {
     const costUsdc = tokenCostUsdc + unitCostUsdc;
     if (costUsdc <= 0n && !pricing && !unitBilling) return;
 
-    this._lastResponseCost.set(peer.peerId, {
+    // What the seller may charge for this response, with its NeedAuth or
+    // through the buyer's own signing before a close. An error answer is not a
+    // delivered response: nothing is owed for it, either way.
+    if (requestId && response.statusCode < 400) this._bpm.recordDeliveredResponse(peer.peerId, requestId, {
+      costUsdc,
+      service,
+      usage: {
+        inputTokens: BigInt(usage.inputTokens),
+        cachedInputTokens: BigInt(usage.cachedInputTokens),
+        outputTokens: BigInt(usage.outputTokens),
+        ...(unitBilling ? { unitUsage: unitBilling.usage } : {}),
+      },
+    });
+    if (response.statusCode < 400) this._lastResponseCost.set(peer.peerId, {
       costUsdc,
       inputTokens: BigInt(usage.inputTokens),
       outputTokens: BigInt(usage.outputTokens),
@@ -1700,6 +1773,17 @@ export class BuyerPaymentNegotiator {
 
     if (!onChain.exists) {
       if (this._bpm.canReplayReserveAuth(peer.peerId)) {
+        // The seller's reserve() locks the replayed ceiling from the buyer's
+        // deposits. Without enough there it reverts, no AuthAck comes, and the
+        // request would wait out the lock timeout instead of answering 402.
+        // The channel never locked anything on-chain, so it can simply go.
+        const cannotCover = await this._depositsCannotCover(this._bpm.replayReserveAmount(peer.peerId));
+        // A parallel request may have replaced the channel during the read.
+        this._assertLiveChannel(peer.peerId, session.sessionId);
+        if (cannotCover) {
+          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+          return false;
+        }
         const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
         await this._bpm.resendReserveAuth(peer.peerId, pmux);
         await this._waitForLockConfirmation(peer.peerId, {
@@ -1792,14 +1876,20 @@ export class BuyerPaymentNegotiator {
       }
       this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now() });
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
-    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+    } else if (
+      !requireFreshAck && targetCumulative != null && targetCumulative > 0n
+      && minBudgetPerRequest != null && minBudgetPerRequest > 0n
+    ) {
+      // Catch up only to spend the seller says it delivered. Without one (a
+      // target of 0) the current authorization is resent below unchanged:
+      // signing past it would pay for work the seller does not claim.
       this._resentForTarget.delete(peer.peerId);
       const cumulativeBefore = signedCumulative;
       const extend = (): Promise<string> => this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
         pmux,
-        targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
+        targetCumulative,
         requestId,
         inFlightRequests,
       );
@@ -1837,6 +1927,23 @@ export class BuyerPaymentNegotiator {
     });
     this._lockedPeers.add(peer.peerId);
     return true;
+  }
+
+  /**
+   * Whether the buyer's available deposits are known to be below `amount`.
+   * Best-effort like the pre-negotiation balance check: an unreachable chain
+   * or a failed read answers false, leaving the seller to decide.
+   */
+  private async _depositsCannotCover(amount: bigint): Promise<boolean> {
+    if (!this._depositsClient || (this._isChainReachable && !this._isChainReachable())) return false;
+    try {
+      const balance = await this._depositsClient.getBuyerBalance(this._identity.wallet.address);
+      return balance.available <= 0n || balance.available < amount;
+    } catch (err) {
+      debugWarn(`[BuyerNegotiator] Failed to check buyer balance before replaying a reserve: ${err instanceof Error ? err.message : err}`);
+      this._onChainReadFailure?.();
+      return false;
+    }
   }
 
   /**
@@ -1981,12 +2088,12 @@ export class BuyerPaymentNegotiator {
         `- Deposits may be below the reserve ceiling the seller will lock ` +
         `(${formatUsdc(reserve)} USDC). The seller's on-chain reserve() reverts ` +
         `with InsufficientBalance before AuthAck. ` +
-        `Check with "antseed buyer status"; top up with "antseed buyer deposit <amount>".`,
+        `Check with "antseed buyer status"; add funds with "antseed buyer deposit".`,
       );
     } else if (min != null && min > 0n) {
       lines.push(
         `- Deposits may be below seller minBudgetPerRequest (${formatUsdc(min)} USDC). ` +
-        `Check with "antseed buyer status"; top up with "antseed buyer deposit <amount>".`,
+        `Check with "antseed buyer status"; add funds with "antseed buyer deposit".`,
       );
     }
     lines.push('- Seller may be overloaded or gated on subscription (try another peer).');

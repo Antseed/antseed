@@ -3,8 +3,8 @@
  *
  * A profile's launch target is the user's explicit "Open with" pick when they
  * made one, and otherwise a default discovered from the installed-app list.
- * Both the system-proxy handlers and the tray read through here so the answer
- * is the same everywhere.
+ * The connected-apps handlers read through here so the answer is the same
+ * everywhere.
  */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -20,7 +20,6 @@ import {
 import { installedAppIcon, listInstalledApplications } from './installed.js';
 import { cachedInstalledApplications } from './launcher.js';
 import { isAppsFolderTarget } from './windows-start-menu.js';
-import { fetchCustomAppSiteMetadata, loadCustomApps, saveCustomApps } from './custom.js';
 
 /** Known tools with a desktop app (OpenCode, Codex) get a launch target by
     default when the app is installed — no manual "Open with" pick needed.
@@ -83,34 +82,6 @@ export function launchTargetIcon(targetPath: string): Promise<string | null> {
     launchIconCache.set(targetPath, cached);
   }
   return cached;
-}
-
-/**
- * A custom app entry is identified by its picked application, so choosing one
- * renames the record (name + icon); clearing the pick reverts to the API
- * host's site metadata. Packaged profiles keep their own names — they have no
- * custom record to update.
- */
-export async function syncCustomAppDisplay(profileName: string, target: AppLaunchTarget | null): Promise<void> {
-  const dataDir = resolveConnectDataDir();
-  const records = loadCustomApps(dataDir);
-  const record = records.find((entry) => entry.name === profileName);
-  if (!record) return;
-  let displayName: string;
-  let iconDataUri: string | undefined;
-  if (target) {
-    displayName = target.name;
-    iconDataUri = (await installedAppIcon(target.path)) ?? undefined;
-  } else {
-    const metadata = await fetchCustomAppSiteMetadata(record.host);
-    displayName = metadata.title ?? record.host;
-    iconDataUri = metadata.iconDataUri;
-  }
-  saveCustomApps(dataDir, records.map((entry) => {
-    if (entry.name !== profileName) return entry;
-    const { iconDataUri: _dropped, ...rest } = entry;
-    return { ...rest, displayName, ...(iconDataUri ? { iconDataUri } : {}) };
-  }));
 }
 
 /** Validate a renderer-passed installed-app reference (name + launcher path). */

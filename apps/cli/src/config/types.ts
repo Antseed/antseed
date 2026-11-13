@@ -49,6 +49,8 @@ export interface SellerServiceConfig {
   upstreamModel?: string;
   /** Native image-edit model paired with this advertised generation service. */
   imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -286,6 +288,21 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Announce each provider by an ID instead of its plugin name, so buyers don't see which
+   * plugin (and upstream) serves a model. Default: false while older buyers, which refuse a
+   * pinned request naming a provider the peer doesn't announce, are still in use.
+   */
+  announceProviderIds?: boolean;
+  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
    * default). Chosen in `antseed seller setup`; overridden at launch by
@@ -420,6 +437,8 @@ export interface PaymentsCLIConfig {
   maxReserveAmountUsdc?: string;
   /** Most the buyer pays for one video in base units; a gateway reserves up to this while a video is priced. Default: "5000000" ($5.00). */
   maxVideoRequestUsdc?: string;
+  /** Validity in seconds of the auths the node signs. Default: the node's (900 for a ReserveAuth). */
+  defaultAuthDurationSecs?: number;
   /**
    * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via
@@ -505,6 +524,20 @@ export interface RelayerCLIConfig {
 export interface NetworkCLIConfig {
   /** Additional bootstrap nodes for DHT discovery (host:port pairs) */
   bootstrapNodes: string[];
+  /** UDP port for the DHT; 0 lets the OS choose. Default: 6881 for a seller, OS-assigned for a buyer. `--dht-port` wins. */
+  dhtPort?: number;
+  /** TCP port for seller signaling; 0 lets the OS choose. Default: 6882. `--signaling-port` wins. */
+  signalingPort?: number;
+  /** Local address the DHT and signaling sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. */
+  natTraversal?: boolean;
+  /** Use only `bootstrapNodes` and never contact the official DHT nodes. Default: false. */
+  noOfficialBootstrap?: boolean;
+  /** Accept private and loopback addresses in DHT lookups. Default: true for a buyer, false for a seller. */
+  allowPrivateIPs?: boolean;
+  /** Timeout of one DHT operation in ms. Default: the node's. */
+  dhtOperationTimeoutMs?: number;
 }
 
 /**

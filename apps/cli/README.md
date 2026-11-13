@@ -1,8 +1,8 @@
 # Antseed CLI + Dashboard
 
-Command-line interface and web dashboard for the AntSeed Network — a P2P network for AI services.
+Command-line interface and web dashboard for the Antseed Network — a P2P network for AI services.
 
-> **Important:** AntSeed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Subscription-based plugins (`provider-claude-code`, `provider-claude-oauth`) are for testing and development only.
+> **Important:** Antseed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Subscription-based plugins (`provider-claude-code`, `provider-claude-oauth`) are for testing and development only.
 
 ## Commands
 
@@ -46,9 +46,9 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer set-authorized-wallet [--self]` | Authorize an external wallet in the browser, or authorize the buyer wallet itself |
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
-| `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
-| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
-| `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
+| `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Prime Agent, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
+| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (`POST /_antseed/route`); connect warns when none is set |
+| `antseed apps disconnect <app>` | Remove only what Antseed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
 | `antseed buyer connection get` | Show current session state (pinned service, peer) |
 | `antseed buyer connection set` | Update service/peer overrides on a running proxy |
@@ -58,12 +58,11 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer status` | Show buyer status |
 | `antseed config` | Manage configuration |
 | `antseed profile` | Manage your peer profile |
-| `antseed peer <peerId>` | Show a peer's profile (lightweight) |
+| `antseed peer <peerId>` | Not implemented yet; use `antseed network peer <peerId>` |
 | `antseed network peer <peerId>` | Show full peer details (providers, services, on-chain stats) |
 | `antseed dashboard` | Start the web dashboard |
 | `antseed metrics serve` | Serve Prometheus metrics for buyers and sellers |
 | `antseed buyer channels` | List payment channels |
-| `antseed dev` | Run seller + buyer locally for testing |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node |
 
 ## Configuration Workflow
@@ -593,13 +592,13 @@ antseed buyer set-authorized-wallet --self
 antseed --data-dir ~/.antseed-buyer --config ~/.antseed-buyer/config.json buyer set-authorized-wallet
 ```
 
-By default, the command opens the same **Set authorized wallet** browser flow used by AI VPN. The local buyer identity signs the deposits contract's EIP-712 authorization, then the connected external wallet submits `setOperator` and pays ETH gas. The CLI prints the localhost URL as a fallback and waits for confirmation before shutting down the local server. Use `--no-open` to print the URL without launching the browser.
+By default, the command opens the same **Set authorized wallet** browser flow used by Antseed Desktop. The local buyer identity signs the deposits contract's EIP-712 authorization, then the connected external wallet submits `setOperator` and pays ETH gas. The CLI prints the localhost URL as a fallback and waits for confirmation before shutting down the local server. Use `--no-open` to print the URL without launching the browser.
 
 With `--self`, the CLI makes the buyer hot wallet its own authorized wallet. The buyer signs and submits the transaction, so it must have ETH on the configured chain. Both modes respect the selected data directory, identity environment override, and payment chain/contract configuration. The command does not accept an arbitrary address: connect an external wallet to prove control, or explicitly choose the buyer wallet with `--self`.
 
 **The authorized wallet gains control of withdrawals and future authorization transfers.** Choose a wallet you control. Initial authorization is only possible when no authorized wallet is set. Self-authorization sends no transaction when the buyer wallet is already authorized and rejects replacement of a different existing wallet. Changing it later requires an operator-transfer transaction from the current authorized wallet, not the buyer identity.
 
-`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet through AI VPN's payments UI (for the same buyer identity) or the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
+`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet on the gateway console's **Wallet & Funding** page (for the workspace that uses this buyer identity) or through the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
 
 
 ### Configuration
@@ -627,7 +626,7 @@ Use `base-sepolia` for testing with MockUSDC.
 - `ANTSEED_DEFAULT_DEPOSIT_USDC=1` — default lock amount per session
 - `ANTSEED_IDENTITY_HEX=<hex>` — inject identity via env (supports 0x prefix)
 
-Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
+Provider-specific options are configured via each plugin's config schema (see the plugin's README). `antseed config seller add-provider <name> --plugin <plugin>` installs the plugin.
 
 ## Assigned Model Audits
 
@@ -914,6 +913,10 @@ The service limits actual checks to eight and cached entries to 512, evicting
 settled entries rather than pending checks. Timer-based garbage collection is
 disabled; the entry bound and buyer lifecycle own cleanup instead. There is no
 disk persistence and no per-inference-response proof in this cache.
+
+## fal image services
+
+Use `@antseed/provider-fal-image` to sell fal.ai image models through the OpenAI Images API (`/v1/images/generations` and `/v1/images/edits`), billed per output image. See the [plugin README](../../plugins/provider-fal-image/README.md).
 
 ## Native video services
 

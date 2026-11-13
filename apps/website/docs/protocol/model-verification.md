@@ -150,8 +150,7 @@ seller):
 
 Buyers read each seller service's recorded result from `AntseedVerificationResults`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
-skips it under the default minimum trust score, and the desktop app explains the cut
-in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
+skips it under the default minimum trust score. Only a recorded DIFF counts: a DIFF from one auditor
 that is still waiting for the second changes nothing, and the service keeps its earlier
 result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
 penalty lifts on its own when the DIFF expires or a later result replaces it (one auditor's
@@ -183,8 +182,8 @@ Anthropic-compatible endpoint, paying for the questions themselves:
 
 - `antseed verifier check <model>` in the [CLI](/docs/commands) finds the latest
   on-chain audit and runs it, through your buyer proxy or against any URL.
-- [`@antseed/model-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/model-verifier)
+- [`@antseed/model-verifier`](https://github.com/Antseed/antseed/tree/main/packages/model-verifier)
   (its `antseed-verify` command) does the same without the rest of Antseed.
-- The [`antseed-verify-model` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model)
+- The [`antseed-verify-model` agent skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-verify-model)
   asks for an endpoint, has you set its API key, runs the check and explains the
   result.

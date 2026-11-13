@@ -44,8 +44,8 @@ function speechMetadata(): PeerMetadata {
 
 describe('speech services in peer metadata', () => {
   it('is v15, served to buyers that ask for it', () => {
+    expect(METADATA_VERSION).toBeGreaterThanOrEqual(15);
     expect(SPEECH_METADATA_VERSION).toBe(15);
-    expect(METADATA_VERSION).toBeGreaterThanOrEqual(SPEECH_METADATA_VERSION);
     expect(SERVED_METADATA_VERSIONS).toContain(15);
     expect(negotiateMetadataVersion(15)).toBe(15);
     expect(negotiateMetadataVersion(14)).toBe(14);

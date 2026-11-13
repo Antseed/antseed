@@ -3,6 +3,7 @@ import {
   nativeVideoRoute,
   nativeVideoAcceptance,
   nativeVideoFacts,
+  referenceVideoPriceProblem,
   requestService,
   detectRequestServiceApiProtocol,
   selectTargetProtocolForRequest,
@@ -25,7 +26,7 @@ describe('native video API contracts', () => {
     const req = request('/api/v1/video/queue', { model: 'video', image_url: 'https://media.example/image.png', duration: '8s' });
     expect(nativeVideoRoute(req)).toEqual({ protocol: 'venice-video', action: 'create' });
     expect(detectRequestServiceApiProtocol(req)).toBe('venice-video');
-    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', duration: 8 });
+    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', duration: 8, referenceVideo: false });
   });
 
   it('recognizes native paths without translating them into chat', () => {
@@ -67,13 +68,26 @@ describe('native video API contracts', () => {
     expect(() => nativeVideoFacts(request('/api/v1/video/queue', { model: 'video', duration: 'soon' }))).toThrow(/duration/);
   });
 
+  it('refuses priced video options it would read as absent', () => {
+    for (const [path, fields] of [
+      ['/api/v1/video/queue', { audio: 'true' }],
+      ['/fal/v1/video/queue', { generate_audio: 1 }],
+      ['/api/v1/video/queue', { resolution: ['1080p'] }],
+      ['/fal/v1/video/queue', { aspect_ratio: { width: 16 } }],
+    ] as const) {
+      expect(() => nativeVideoFacts(request(path, { model: 'video', ...fields }))).toThrow(/must be/);
+    }
+    expect(nativeVideoFacts(request('/api/v1/video/queue', { model: 'video', audio: true, resolution: '1080p', aspect_ratio: '16:9' }))).toMatchObject({ audio: true, resolution: '1080p', aspectRatio: '16:9' });
+    expect(nativeVideoFacts(request('/fal/v1/video/queue', { model: 'video', generate_audio: null }))).not.toHaveProperty('audio');
+  });
+
   it('routes fal video with the endpoint ID as the service', () => {
     const model = 'fal-ai/kling-video/v2.1/standard/text-to-video';
     const create = request('/fal/v1/video/queue', { model, prompt: 'cat', duration: '5' });
     expect(nativeVideoRoute(create)).toEqual({ protocol: 'fal-video', action: 'create' });
     expect(detectRequestServiceApiProtocol(create)).toBe('fal-video');
     expect(requestService(create)).toBe(model);
-    expect(nativeVideoFacts(create)).toEqual({ protocol: 'fal-video', action: 'create', duration: 5 });
+    expect(nativeVideoFacts(create)).toEqual({ protocol: 'fal-video', action: 'create', duration: 5, referenceVideo: false });
     expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 8 }))?.duration).toBe(8);
     expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: '6s' }))?.duration).toBe(6);
     expect(() => nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 'auto' }))).toThrow(/duration/);
@@ -95,4 +109,37 @@ describe('native video API contracts', () => {
     expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual([]);
   });
 
+});
+
+describe('reference videos in a video create', () => {
+  const create = (path: string, body: object) => ({
+    requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)),
+  });
+  it('marks a create that sends reference videos', () => {
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: ['v'] }))?.referenceVideo).toBe(true);
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: [] }))?.referenceVideo).toBe(false);
+    expect(nativeVideoFacts(create('/fal/v1/video/queue', { model: 'm', duration: '5', video_urls: ['v'] }))?.referenceVideo).toBe(true);
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', video_urls: ['v'] }))?.referenceVideo).toBe(false);
+  });
+
+  it('refuses reference videos unless a reference_video component matches the whole create', () => {
+    const venice = (body: object) => create('/api/v1/video/queue', { model: 'm', duration: '5s', ...body });
+    const surcharge720 = [
+      { match: { resolution: '480p' } },
+      { match: { resolution: '720p' } },
+      {},
+      { match: { resolution: '720p', reference_video: 'true' } },
+    ];
+    const refused = 'This service does not take reference videos at these options';
+    expect(referenceVideoPriceProblem(venice({ resolution: '720p', reference_video_urls: ['v'] }), 'm', surcharge720)).toBeNull();
+    // A 720p surcharge does not cover a 480p create.
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p', reference_video_urls: ['v'] }), 'm', surcharge720)).toBe(refused);
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p', reference_video_urls: ['v'] }), 'm', undefined)).toBe(refused);
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p' }), 'm', [{}])).toBeNull();
+    // Venice creates are matched with the announced defaults the buyer prices them by.
+    const byAspect = [{ match: { aspect_ratio: '16:9', reference_video: 'true' } }];
+    expect(referenceVideoPriceProblem(venice({ reference_video_urls: ['v'] }), 'm', byAspect, { aspectRatios: ['16:9'] })).toBeNull();
+    expect(referenceVideoPriceProblem(venice({ reference_video_urls: ['v'] }), 'm', byAspect, { aspectRatios: ['21:9'] })).toBe(refused);
+    expect(referenceVideoPriceProblem(create('/fal/v1/video/queue', { model: 'm', duration: '5', image_urls: ['i'] }), 'm', [{}])).toBeNull();
+  });
 });
