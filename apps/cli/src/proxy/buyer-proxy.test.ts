@@ -45,6 +45,7 @@ import {
   selectCandidatePeersForRouting,
   substituteRoutedModelAlias,
   sweepStaleStateTmpFiles,
+  type BuyerProxyConfig,
 } from './buyer-proxy.js'
 import {
   extractRequestedService,
@@ -1948,6 +1949,7 @@ function makeBuyerProxyWithPeers(
   now?: () => number,
   routingPreferences?: ModelRoutingPreferences,
   modelRoutingClient?: ModelRoutingClientApi,
+  options: Pick<BuyerProxyConfig, 'referencePrices'> = {},
 ): BuyerProxy {
   const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
@@ -1958,6 +1960,7 @@ function makeBuyerProxyWithPeers(
     } as any,
     ...(now ? { now } : {}),
     ...(routingPreferences ? { routingPreferences } : {}),
+    ...options,
   })
   ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) =>
     options?.forceRefresh ? refreshedPeers : initialPeers
@@ -3169,9 +3172,8 @@ test('/v1/models lists the reference price the proxy holds, in the list and for 
   const seller = makePeer('a', ['openai'])
   seller.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0.9, outputUsdPerMillion: 2.7 } } }
   seller.providerServiceApiProtocols = { openai: { services: { 'kimi-k3': ['openai-chat-completions'] } } }
-  const proxy = makeBuyerProxyWithPeers([seller], [seller], permissiveRouter())
   let held: ReturnType<typeof parseRetailPrices> = null
-  ;(proxy as any)._referencePrices = { current: () => held }
+  const proxy = makeBuyerProxyWithPeers([seller], [seller], permissiveRouter(), undefined, undefined, undefined, { referencePrices: { current: () => held } })
   const listed = async (path: string) => JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path }))).body)
 
   // Before the price list is read the listing answers without it.

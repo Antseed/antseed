@@ -103,26 +103,35 @@ test('a text model keeps the retail reference price the gateway lists; any other
   assert.equal('referencePrice' in listed({ type: 'image', reference_price: { input_usd_per_million: 1, output_usd_per_million: 4 } }), false);
 });
 
-test('a video model is priced as billing adds up its components: per resolution, unconditional parts and fixed charges included', () => {
-  const peers = [
-    { peerId: 'aaaa', unitBillingModels: { 'fal-video': { version: 1, components: [
-      { unit: 'video_seconds', priceUsd: 0.17, match: { resolution: '720p' } },
-      { unit: 'video_seconds', priceUsd: 0.29, match: { resolution: '1080p' } },
-    ] } } },
-    // An unconditional $0.10/s plus $0.20/s at 720p charges $0.30/s, never $0.10/s, plus $0.05 per video.
-    { peerId: 'bbbb', unitBillingModels: { 'venice-video': { version: 1, components: [
-      { unit: 'video_seconds', priceUsd: 0.1 },
-      { unit: 'video_seconds', priceUsd: 0.2, match: { resolution: '720p' } },
-      { unit: 'video_generations', priceUsd: 0.05 },
-    ] } } },
-  ];
-  assert.deepEqual(minVideoPrice(peers), { perSecondUsd: 0.17, perVideoUsd: 0 });
-  assert.deepEqual(minVideoPrice([peers[1]!]), { perSecondUsd: 0.30000000000000004, perVideoUsd: 0.05 });
-  // A part that needs another option (audio) doesn't apply to the plain create.
-  assert.deepEqual(minVideoPrice([{ peerId: 'cccc', unitBillingModels: { 'fal-video': { version: 1, components: [
-    { unit: 'video_seconds', priceUsd: 0.12, match: { resolution: '720p' } },
-    { unit: 'video_seconds', priceUsd: 0.05, match: { resolution: '720p', audio: 'true' } },
-  ] } } }]), { perSecondUsd: 0.12, perVideoUsd: 0 });
-  assert.equal(minVideoPrice([{ peerId: 'dddd' }]), null);
-  assert.deepEqual(toChatModel({ id: 'example-video', type: 'video', peers }).videoPrice, { perSecondUsd: 0.17, perVideoUsd: 0 });
+test('a video model is priced as billing prices a plain create: per resolution, with every component that applies', () => {
+  const seller = (peerId: string, protocol: string, components: unknown[], video: Record<string, unknown> = {}) => ({
+    peerId, provider: 'example', serviceId: 'example-video', capabilities: { video },
+    unitBillingModels: { [protocol]: { version: 1, components } },
+  });
+  const tiers = seller('aaaa', 'fal-video', [
+    { unit: 'video_seconds', priceUsd: 0.17, match: { resolution: '720p' } },
+    { unit: 'video_seconds', priceUsd: 0.29, match: { resolution: '1080p' } },
+  ]);
+  assert.deepEqual(minVideoPrice([tiers]), { perSecondUsd: 0.17, perVideoUsd: 0 });
+  // A part matching the service's model applies to every create: $0.10 + $0.20 per second, plus $0.05 per video.
+  const byModel = seller('bbbb', 'fal-video', [
+    { unit: 'video_seconds', priceUsd: 0.1 },
+    { unit: 'video_seconds', priceUsd: 0.2, match: { model: 'example-video' } },
+    { unit: 'video_generations', priceUsd: 0.05 },
+  ]);
+  assert.deepEqual(minVideoPrice([byModel]), { perSecondUsd: 0.3, perVideoUsd: 0.05 });
+  // A plain create sends no reference video, so its "false" part applies and the "true" surcharge doesn't.
+  const reference = seller('cccc', 'fal-video', [
+    { unit: 'video_seconds', priceUsd: 0.1 },
+    { unit: 'video_seconds', priceUsd: 0.04, match: { reference_video: 'false' } },
+    { unit: 'video_seconds', priceUsd: 0.5, match: { reference_video: 'true' } },
+  ]);
+  assert.deepEqual(minVideoPrice([reference]), { perSecondUsd: 0.14, perVideoUsd: 0 });
+  // Venice prices a create at the announced aspect ratio and audio when it names none; other protocols don't.
+  const options = [{ unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '720p', aspect_ratio: '16:9', audio: 'true' } }];
+  assert.deepEqual(minVideoPrice([seller('dddd', 'venice-video', options, { aspectRatios: ['16:9', '9:16'], audio: true })]), { perSecondUsd: 0.1, perVideoUsd: 0 });
+  assert.equal(minVideoPrice([seller('eeee', 'fal-video', options, { aspectRatios: ['16:9'], audio: true })]), null);
+  // The cheapest seller wins; one without a price per second is skipped.
+  assert.deepEqual(minVideoPrice([tiers, byModel, { peerId: 'ffff' }]), { perSecondUsd: 0.17, perVideoUsd: 0 });
+  assert.deepEqual(toChatModel({ id: 'example-video', type: 'video', peers: [tiers, byModel] }).videoPrice, { perSecondUsd: 0.17, perVideoUsd: 0 });
 });

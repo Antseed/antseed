@@ -7,6 +7,8 @@ import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-t
 import { isFreeOffer } from '../../shared/offer-prices.js';
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
+import { evaluateUnitBilling, type UnitBillingContext, type UnitBillingModelV1 } from '@antseed/node';
+import { nativeVideoAttributes, type NativeVideoPricedOptions } from '@antseed/api-adapter';
 import { entryReasons, trustedAppEntries, type GatewayModelEntry } from './models.js';
 import { finiteNumber, record } from './response-fields.js';
 import { findListedModel, normalizeSellerId } from '../../shared/pinned-model.js';
@@ -105,35 +107,51 @@ function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string,
 }
 
 /**
- * A video model's cheapest price across its sellers, from their unit billing
- * models (`unitBillingModels`). Billing adds up every component that matches
- * a request, so each seller is priced per resolution it lists: the
- * `video_seconds` components that apply to it (unconditional ones included),
- * plus any fixed `video_generations` charge, for a create sending only that
- * resolution. Null when no seller lists a price per second.
+ * A video model's cheapest price across its sellers, priced as billing prices
+ * a plain create (no reference video): each seller's unit billing models
+ * (`unitBillingModels`) evaluated by `evaluateUnitBilling` with the attributes
+ * `nativeVideoAttributes` builds from its service, protocol and announced
+ * video options, at each resolution it prices. That is the per-second rate
+ * plus any fixed charge per video. A combination billing would refuse is
+ * skipped; null when no seller has a price per second.
  */
 export function minVideoPrice(peers: Array<Record<string, unknown>>): ChatModel['videoPrice'] | null {
   let best: { perSecondUsd: number; perVideoUsd: number } | null = null;
   for (const peer of peers) {
-    for (const billing of Object.values(record(peer['unitBillingModels']))) {
-      const components = records(record(billing)['components']).flatMap((component) => {
-        const price = finiteNumber(component['priceUsd']);
-        const unit = component['unit'];
-        if (price === null || price < 0 || (unit !== 'video_seconds' && unit !== 'video_generations')) return [];
-        return [{ unit, price, match: record(component['match']) }];
-      });
-      const resolutions = [...new Set(components.flatMap(({ match }) => (typeof match['resolution'] === 'string' ? [match['resolution']] : [])))];
-      for (const resolution of resolutions.length > 0 ? resolutions : [null]) {
-        const attributes: Record<string, unknown> = resolution === null ? {} : { resolution };
-        // As billing matches: every key a component names must equal the request's.
-        const applies = (match: Record<string, unknown>) => Object.entries(match).every(([key, value]) => attributes[key] === value);
-        const sum = (unit: string) => components
-          .filter((component) => component.unit === unit && applies(component.match))
-          .reduce((total, component) => total + component.price, 0);
-        const quote = { perSecondUsd: sum('video_seconds'), perVideoUsd: sum('video_generations') };
-        if (!(quote.perSecondUsd > 0)) continue;
-        if (!best || quote.perSecondUsd < best.perSecondUsd
-          || (quote.perSecondUsd === best.perSecondUsd && quote.perVideoUsd < best.perVideoUsd)) best = quote;
+    const service = typeof peer['serviceId'] === 'string' ? peer['serviceId'] : '';
+    const options = record(record(peer['capabilities'])['video']) as NativeVideoPricedOptions;
+    for (const [protocol, billing] of Object.entries(record(peer['unitBillingModels']))) {
+      if (protocol !== 'venice-video' && protocol !== 'fal-video') continue;
+      const model = record(billing) as unknown as UnitBillingModelV1;
+      const components = records(record(billing)['components']);
+      const has = (unit: string) => components.some((component) => component['unit'] === unit);
+      if (!has('video_seconds')) continue;
+      const resolutions = [...new Set(components.flatMap((component) => {
+        const resolution = record(component['match'])['resolution'];
+        return typeof resolution === 'string' ? [resolution] : [];
+      }))];
+      for (const resolution of resolutions.length > 0 ? resolutions : [undefined]) {
+        const context: UnitBillingContext = {
+          sellerPeerId: typeof peer['peerId'] === 'string' ? peer['peerId'] : '',
+          provider: typeof peer['provider'] === 'string' ? peer['provider'] : '',
+          service,
+          serviceApiProtocol: protocol,
+          attributes: nativeVideoAttributes(service, { protocol, action: 'create', referenceVideo: false, ...(resolution ? { resolution } : {}) }, options),
+        };
+        // Billing throws for a combination it would refuse (no component matches a unit used).
+        const usd = (unit: 'video_seconds' | 'video_generations') => {
+          try {
+            return Number(evaluateUnitBilling(model, context, { units: { [unit]: 1 } })) / 1_000_000;
+          } catch {
+            return null;
+          }
+        };
+        const perSecondUsd = usd('video_seconds');
+        const perVideoUsd = has('video_generations') ? usd('video_generations') : 0;
+        if (perSecondUsd === null || !(perSecondUsd > 0) || perVideoUsd === null) continue;
+        if (!best || perSecondUsd < best.perSecondUsd || (perSecondUsd === best.perSecondUsd && perVideoUsd < best.perVideoUsd)) {
+          best = { perSecondUsd, perVideoUsd };
+        }
       }
     }
   }
