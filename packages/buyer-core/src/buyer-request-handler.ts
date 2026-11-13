@@ -16,7 +16,13 @@ import type { ProxyMux } from './proxy-mux.js';
 import { PaymentMux } from './payment-mux.js';
 import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { BuyerPaymentNegotiator, SelectedBillingRoute } from './buyer-payment-negotiator.js';
-import { announcedDefaultPricing, paymentNegotiationFailureResponse, PRICE_MISMATCH_MESSAGE } from './buyer-payment-negotiator.js';
+import {
+  announcedDefaultPricing,
+  isReadableTokenPricing,
+  paymentNegotiationFailureResponse,
+  PRICE_MISMATCH_MESSAGE,
+  PRICE_UNKNOWN_MESSAGE,
+} from './buyer-payment-negotiator.js';
 import { debugLog, debugWarn } from './debug.js';
 import type { VerificationMux } from './verification-mux.js';
 import type { ResponseAuthSink } from './interfaces.js';
@@ -70,9 +76,6 @@ export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
  */
 export const VIDEO_DELIVERED_HEADER = 'x-antseed-video-delivered';
 export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
-
-/** What the caller reads when the buyer cannot read a price for the request's route. */
-const PRICE_UNKNOWN_MESSAGE = 'This seller announces no price for this service, so the buyer did not send the request. Use another seller.';
 
 /** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
@@ -884,7 +887,8 @@ function selectTokenPricing(
 ): SelectedBillingRoute["tokenPricing"] {
   const providerPricing = peer.providerPricing?.[provider];
   const pricing = providerPricing?.services?.[service] ?? providerPricing?.defaults;
-  if (pricing) return pricing;
+  // An unreadable price is unknown: never billed by, never read as free.
+  if (pricing) return isReadableTokenPricing(pricing) ? pricing : undefined;
   return announcedDefaultPricing(peer);
 }
 
@@ -1064,7 +1068,7 @@ function findPeerServicePricing(peer: BuyerPeerView, service: string): {
 } | null {
   for (const providerPricing of Object.values(peer.providerPricing ?? {})) {
     const servicePricing = providerPricing.services?.[service];
-    if (servicePricing) return servicePricing;
+    if (servicePricing) return isReadableTokenPricing(servicePricing) ? servicePricing : null;
   }
   return announcedDefaultPricing(peer) ?? null;
 }

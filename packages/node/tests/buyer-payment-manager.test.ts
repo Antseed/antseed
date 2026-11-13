@@ -297,6 +297,136 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
   });
 
+  describe('an open channel whose seller states more than the route price', () => {
+    const conn = () => ({ state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() }) as never;
+    const routedPeer = (sellerPeerId: string) => ({
+      peerId: toPeerId(sellerPeerId),
+      providers: ['openai'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 } } },
+    });
+    const chat = (requestId: string) => ({
+      requestId,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: enc.encode(JSON.stringify({ model: 'k3', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    const paymentRequired = (requestId: string, body: Record<string, unknown>) => ({
+      requestId, statusCode: 402, headers: { 'content-type': 'application/json' },
+      body: enc.encode(JSON.stringify({ error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000', ...body })),
+    });
+    const lastSigned = () => (mux.sentSpendingAuths.at(-1) as Record<string, unknown> | undefined)?.cumulativeAmount;
+
+    /** A real negotiator on an acknowledged channel with one priced response signed: signed = verified = 20_010. */
+    async function openWithVerifiedResponse(label: string) {
+      const sellerPeerId = fakePeerId(label);
+      const negotiator = new BuyerPaymentNegotiator(
+        identity,
+        manager,
+        { getBuyerBalance: vi.fn().mockResolvedValue({ available: 10_000_000n, reserved: 0n, lastActivityAt: 0n }) } as never,
+        null,
+        store,
+        {},
+        { emit: () => true },
+      );
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      manager.recordDeliveredResponse(sellerPeerId, 'paid-request', {
+        costUsdc: 20_010n, service: 'gpt-test', usage: { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 1334n },
+      });
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '0', deposit: '1000000', requestId: 'paid-request',
+        requiredCumulativeAmount: '20010', lastRequestCost: '20010', inputTokens: '0', outputTokens: '1334',
+      }, mux);
+      expect(lastSigned()).toBe('20010');
+      expect(manager.getActiveSession(sellerPeerId)).not.toBeNull();
+      return { sellerPeerId, negotiator, channelId };
+    }
+
+    async function underQuoted(negotiator: BuyerPaymentNegotiator, sellerPeerId: string, requestId: string, target: Record<string, unknown>) {
+      const peer = routedPeer(sellerPeerId);
+      const request = chat(requestId);
+      negotiator.trackRequestBillingContext(request, 'k3', selectBillingRoute(peer, request, 'k3'));
+      return negotiator.handle402(paymentRequired(requestId, { ...target, inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn(), request);
+    }
+
+    /** Another request on the channel, tracked at its route, whose 402 states no price. */
+    async function laterRequest(negotiator: BuyerPaymentNegotiator, sellerPeerId: string, channelId: string) {
+      const peer = routedPeer(sellerPeerId);
+      const request = chat('later');
+      negotiator.trackRequestBillingContext(request, 'k3', selectBillingRoute(peer, request, 'k3'));
+      return negotiator.handle402(
+        paymentRequired('later', { requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId }),
+        peer, conn(), request,
+      );
+    }
+
+    function expectPriceMismatch(result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>>, message: string) {
+      expect(result.action).toBe('return');
+      const answer = (result as { response: { statusCode: number; body: Uint8Array } }).response;
+      expect(answer.statusCode).toBe(409);
+      expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
+        error: 'payment_negotiation_failed', reason: 'price_mismatch', message: expect.stringContaining(message),
+      });
+    }
+
+    it('signs nothing more on the channel: not its catch-up NeedAuth, not a 402 retry, until a new channel', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-open');
+      const signedBefore = mux.sentSpendingAuths.length;
+
+      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'under-quoted-open', {
+        requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId,
+      }), 'asked for a higher price than it announces');
+
+      // The catch-up NeedAuth the seller sends with its budget-exhausted 402.
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requestId: 'under-quoted-open', requiredCumulativeAmount: '95000',
+      }, mux);
+      // The buyer's own 402 retry.
+      await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 95_000n, 'under-quoted-open');
+      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_010n);
+      // What the seller asked for above what is signed.
+      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(74_990n);
+
+      // A later 402 on the channel, stating no price, is refused too.
+      expectPriceMismatch(await laterRequest(negotiator, sellerPeerId, channelId), 'charged more than the prices it announces');
+
+      // A new channel with the seller has a window again.
+      manager.cleanupSession(sellerPeerId);
+      const replacement = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId: replacement, currentAcceptedCumulative: '0', deposit: '1000000', requiredCumulativeAmount: '50000',
+      }, mux);
+      expect(lastSigned()).toBe('50000');
+    });
+
+    it('holds the channel the same way when the 402 names no amount', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-no-target');
+      const signedBefore = mux.sentSpendingAuths.length;
+
+      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'no-target', {}), 'asked for a higher price than it announces');
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '95000',
+      }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
+      // The seller asked for nothing above what is signed.
+      expect(manager.refusedClaimTotal(sellerPeerId)).toBe(0n);
+      expectPriceMismatch(await laterRequest(negotiator, sellerPeerId, channelId), 'charged more than the prices it announces');
+    });
+
+    it('records nothing when there is no channel to hold', async () => {
+      const sellerPeerId = fakePeerId('seller-under-quoted-no-channel');
+      const negotiator = new BuyerPaymentNegotiator(identity, manager, null, null, store, {}, { emit: () => true });
+      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'no-channel', {}), 'asked for a higher price than it announces');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '0', deposit: '1000000', requiredCumulativeAmount: '50000',
+      }, mux);
+      expect(lastSigned()).toBe('50000');
+    });
+  });
+
   // ── AuthAck ────────────────────────────────────────────────────
 
   it('handleAuthAck marks session as confirmed', async () => {

@@ -418,6 +418,26 @@ describe('BuyerRequestHandler route with no announced price', () => {
     }
   });
 
+  it('refuses a route whose announced price it cannot read, instead of billing by it or reading it as free', async () => {
+    for (const providerPricing of [
+      { openai: { defaults: { inputUsdPerMillion: 0 } } },
+      { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { k3: { inputUsdPerMillion: 1, outputUsdPerMillion: Number.NaN } } } },
+      { openai: { defaults: { inputUsdPerMillion: -1, outputUsdPerMillion: 2 } } },
+      { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: Number.POSITIVE_INFINITY } } },
+    ]) {
+      const handled = makeHandler([response(200, { ok: true })]);
+      const unreadable = peer({ providerPricing } as Partial<BuyerPeerView>);
+      expectRefusedBeforeSending(await handled.handler.sendRequest(unreadable, chat()), handled);
+    }
+  });
+
+  it('still sends a request priced by a readable provider price', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, { ok: true })]);
+    const priced = peer({ providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.5 } } } });
+    expect((await handler.sendRequest(priced, chat())).statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
   it('still sends a request whose route has a unit model but no token price', async () => {
     const perImage = peer({
       providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },

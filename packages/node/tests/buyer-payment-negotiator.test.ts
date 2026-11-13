@@ -53,6 +53,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
     refusedClaimTotal: vi.fn().mockReturnValue(0n),
+    refusePriceAboveAnnounced: vi.fn(),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     replayReserveAmount: vi.fn().mockReturnValue(100_000n),
@@ -69,6 +70,8 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
+  // Like the manager: a seller has a refused claim while its total is recorded.
+  bpm.hasRefusedClaim = vi.fn((peerId: string) => (bpm.refusedClaimTotal as (id: string) => bigint)(peerId) > 0n);
   // Like the manager: the higher of the in-memory and the stored cumulative.
   bpm.getHighestSignedAmount = vi.fn((channel: StoredChannel) => {
     const inMemory = bpm.getCumulativeAmount(channel.peerId);
@@ -1045,11 +1048,31 @@ describe('BuyerPaymentNegotiator', () => {
           expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
         });
 
-        it('compares nothing when the buyer has no price for the request', async () => {
-          serviceTracked('k3');
+        it.each([
+          ['a service', 'k3'],
+          ['no service (a request with no model)', undefined],
+        ])('refuses to negotiate when the buyer has no price for a request naming %s', async (_label, service) => {
+          serviceTracked(service);
           confirmLocks();
           const unpriced = { peerId: peer.peerId, lastSeen: peer.lastSeen, providers: [] } as PeerInfo;
           const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), unpriced, conn, makeRequest());
+          expect(result.action).toBe('return');
+          const answer = (result as { response: SerializedHttpResponse }).response;
+          expect(answer.statusCode).toBe(409);
+          expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
+            error: 'payment_negotiation_failed',
+            reason: 'price_unknown',
+            message: expect.stringContaining('announces no price for this service'),
+          });
+          for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.resendReserveAuth, bpm.retireSession]) {
+            expect(fn).not.toHaveBeenCalled();
+          }
+        });
+
+        it('still negotiates a request with no model to a peer that announces default prices', async () => {
+          serviceTracked(undefined);
+          confirmLocks();
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest());
           expect(result.action).toBe('retry');
           expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
         });

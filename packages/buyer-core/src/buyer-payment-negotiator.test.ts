@@ -124,6 +124,8 @@ describe('BuyerPaymentNegotiator', () => {
           context: { sellerPeerId: peer.peerId },
           requestFacts: { kind: 'video', video: { action: 'create' } },
           estimatedCostUsdc: 4_200_000n,
+          // A video create is tracked with the unit model it is priced by.
+          unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
         })),
         getOneOffChannelForRequest: vi.fn(() => existing),
         isOneOffChannelConfirmed: vi.fn(() => false),

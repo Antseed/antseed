@@ -347,7 +347,8 @@ export class BuyerPaymentManager {
   private readonly _coveredRequests = new Map<string, number>();
   /**
    * sellerPeerId -> the total the seller claimed, on the active channel, for
-   * responses the buyer owes nothing for. A seller with an entry gets no
+   * responses the buyer owes nothing for, or asked for after stating a price
+   * above the one a request's route was chosen at. A seller with an entry gets no
    * overdraft window: the buyer signs only up to verified cost, so the refused
    * amount is never signed through a later prompt, a 402 retry or a close.
    * Dropped with the seller's verified cost.
@@ -727,7 +728,7 @@ export class BuyerPaymentManager {
       // A 402 retry reopens the overdraft window, and this seller has none.
       debugWarn(
         `[BuyerPayment] Not extending the session with ${sellerPeerId.slice(0, 12)}...: ` +
-        `it claimed ${this._refusedClaims.get(sellerPeerId)} for responses the buyer owes nothing for`,
+        `the buyer refused its charge of ${this._refusedClaims.get(sellerPeerId)} on this channel`,
       );
       return { sessionId: session.sessionId, topUp: false };
     }
@@ -2992,6 +2993,25 @@ export class BuyerPaymentManager {
    */
   refusedClaimTotal(sellerPeerId: string): bigint {
     return this._refusedClaims.get(sellerPeerId) ?? 0n;
+  }
+
+  /** Whether the buyer refused a charge from `sellerPeerId` on the active channel (see _refusedClaims). */
+  hasRefusedClaim(sellerPeerId: string): boolean {
+    return this._refusedClaims.has(sellerPeerId);
+  }
+
+  /**
+   * `sellerPeerId` asked, on its active channel, for more than the price the
+   * request's route was chosen at. The channel is held like one with a refused
+   * claim: what the seller asked for above the signed cumulative (its 402
+   * target, or nothing without one) counts as refused, and nothing more is
+   * signed on it. With no active channel there is nothing to hold.
+   */
+  refusePriceAboveAnnounced(sellerPeerId: string, targetCumulative: bigint | null): void {
+    if (!this.getActiveSession(sellerPeerId)) return;
+    const signed = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+    const shortfall = targetCumulative != null && targetCumulative > signed ? targetCumulative - signed : 0n;
+    this._refusedClaims.set(sellerPeerId, (this._refusedClaims.get(sellerPeerId) ?? 0n) + shortfall);
   }
 
   /**

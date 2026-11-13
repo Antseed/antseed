@@ -186,6 +186,9 @@ class SessionReplacedError extends AntseedRequestError {}
 export const PRICE_MISMATCH_MESSAGE = 'This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it. '
   + 'Use another seller, or retry once the seller announces the price it charges.';
 
+/** What the caller reads when the buyer cannot read a price for the request. */
+export const PRICE_UNKNOWN_MESSAGE = 'This seller announces no price for this service, so the buyer signed nothing for it. Use another seller.';
+
 /** What the caller reads when a seller asks for more than the price the request's route was chosen at. */
 const PRICE_ABOVE_ANNOUNCED_MESSAGE = 'This seller asked for a higher price than it announces, so the buyer signed nothing for it. '
   + 'Use another seller, or retry once the seller announces the price it charges.';
@@ -216,21 +219,32 @@ function priceAboveRoute(
 }
 
 /**
- * The peer's announced default price, or undefined. Known only when both
- * input and output are present: a missing price is unknown, never free.
+ * The peer's announced default price, or undefined. Known only when it is
+ * readable (isReadableTokenPricing): a missing price is unknown, never free.
  * @internal
  */
 export function announcedDefaultPricing(peer: BuyerPeerView): ServicePricing | undefined {
-  if (peer.defaultInputUsdPerMillion == null || peer.defaultOutputUsdPerMillion == null) return undefined;
-  return {
+  const pricing = {
     inputUsdPerMillion: peer.defaultInputUsdPerMillion,
     outputUsdPerMillion: peer.defaultOutputUsdPerMillion,
     cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
   };
+  return isReadableTokenPricing(pricing) ? pricing : undefined;
+}
+
+/**
+ * Whether the buyer can bill by `pricing`: input and output finite and not
+ * negative, and cached input too when present. Anything else is unknown.
+ * @internal
+ */
+export function isReadableTokenPricing(pricing: Partial<ServicePricing> | undefined): pricing is ServicePricing {
+  const readable = (price: unknown): boolean => typeof price === 'number' && Number.isFinite(price) && price >= 0;
+  return pricing != null && readable(pricing.inputUsdPerMillion) && readable(pricing.outputUsdPerMillion)
+    && (pricing.cachedInputUsdPerMillion == null || readable(pricing.cachedInputUsdPerMillion));
 }
 
 /** What the caller reads when the seller is short of a cost the buyer refused on the open channel. */
-const REFUSED_CLAIM_MESSAGE = 'This seller charged for a response that is free at the prices it announces. The buyer refused that charge '
+const REFUSED_CLAIM_MESSAGE = 'This seller charged more than the prices it announces. The buyer refused that charge '
   + 'and signs nothing more on this payment channel, so the seller no longer serves it. Use another seller, and close the channel to release its reserve.';
 
 /** A buyer-authored answer for a payment negotiation that was not completed. */
@@ -966,6 +980,17 @@ export class BuyerPaymentNegotiator {
       return { action: 'return', response: paymentNegotiationFailureResponse(response, reason, message, statusCode) };
     };
 
+    // Absolute cumulative target the seller needs us to sign to unblock the
+    // channel (sent by the seller in the budget-exhausted branch). When
+    // present we pass it through to extendCurrentSpendingAuth so the buyer
+    // catches up in one step instead of creeping by minBudgetPerRequest and
+    // repeatedly being rejected as underfunded.
+    const requiredCumulativeTarget = buffered?.requiredCumulativeAmount != null
+      ? safeBigInt(buffered.requiredCumulativeAmount)
+      : responseAlreadyHasRequirements && directPaymentBody?.requiredCumulativeAmount != null
+        ? safeBigInt(String(directPaymentBody.requiredCumulativeAmount))
+        : null;
+
     // The seller states what it charges for this request. Above the price the
     // route was chosen at, it would charge more than it announces: refuse
     // before any channel, extension or signature. A one-off (video) 402
@@ -987,7 +1012,15 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
         `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
       );
+      // The seller's catch-up NeedAuth for the same target would otherwise be
+      // signed from the open channel's overdraft window.
+      this._bpm.refusePriceAboveAnnounced(peer.peerId, requiredCumulativeTarget);
       return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
+    }
+    // With no price at all the buyer cannot check what it is charged: it opens,
+    // extends and signs nothing.
+    if (!routeBilling?.tokenPricing && !routeBilling?.unitModel && !this._negotiatedPricing(peer, service)) {
+      return returnNegotiationFailure('price_unknown', PRICE_UNKNOWN_MESSAGE);
     }
 
     const oneOffPlan = directPaymentBody?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
@@ -1043,17 +1076,6 @@ export class BuyerPaymentNegotiator {
         ? BigInt(String(directPaymentBody.minBudgetPerRequest))
         : null;
 
-    // Absolute cumulative target the seller needs us to sign to unblock the
-    // channel (sent by the seller in the budget-exhausted branch). When
-    // present we pass it through to extendCurrentSpendingAuth so the buyer
-    // catches up in one step instead of creeping by minBudgetPerRequest and
-    // repeatedly being rejected as underfunded.
-    const requiredCumulativeTarget = buffered?.requiredCumulativeAmount != null
-      ? safeBigInt(buffered.requiredCumulativeAmount)
-      : responseAlreadyHasRequirements && directPaymentBody?.requiredCumulativeAmount != null
-        ? safeBigInt(String(directPaymentBody.requiredCumulativeAmount))
-        : null;
-
     // On-chain reserve ceiling the seller is willing to accept. Used to detect
     // permanently exhausted channels (where requiredCumulativeAmount > reserveMaxAmount)
     // so the buyer doesn't loop signing higher cumulatives the seller will reject.
@@ -1088,7 +1110,7 @@ export class BuyerPaymentNegotiator {
     // The seller wants more signed, and what it is short of includes a cost
     // the buyer refused. Signing its target would pay that cost, and a fresh
     // channel would give the same seller a new overdraft window.
-    if (hasActiveSession && this._bpm.refusedClaimTotal(peer.peerId) > 0n) {
+    if (hasActiveSession && this._bpm.hasRefusedClaim(peer.peerId)) {
       return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
     }
 
@@ -1612,6 +1634,8 @@ export class BuyerPaymentNegotiator {
       for (const entry of Object.values(peer.providerPricing)) {
         if (entry.services) {
           for (const [serviceName, sp] of Object.entries(entry.services)) {
+            // An unreadable price is unknown: it never becomes what the buyer verifies by.
+            if (!isReadableTokenPricing(sp)) continue;
             services[serviceName] = {
               inputUsdPerMillion: sp.inputUsdPerMillion,
               outputUsdPerMillion: sp.outputUsdPerMillion,
