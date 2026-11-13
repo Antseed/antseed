@@ -5,6 +5,11 @@
 #   PROVISIONING_PROFILE=path/to/profile.provisionprofile  embed it and the keychain entitlement that binds the
 #                                                         Secure Enclave keys to this app (needed to attest hardened)
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
+#   NOTARY_KEY=AuthKey.p8 NOTARY_KEY_ID=… NOTARY_ISSUER=…  or notarize with an App Store Connect API key (CI)
+#   DMG=1                                                  also package build/Antseed-Worker-<version>.dmg,
+#                                                          signed and notarized like the app
+#
+# The version comes from ../VERSION; BUILD_NUMBER (default: the commit count) is CFBundleVersion.
 #
 # Without SIGN_IDENTITY the app is ad-hoc signed. Every build attests not hardened for now:
 # decrypted prompts leave the app for the bundled TensorFold engine (docs/protocol/colony-pool.md).
@@ -12,6 +17,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BUNDLE_ID=com.antseed.macworker
+VERSION=$(tr -d '[:space:]' < VERSION)
+BUILD_NUMBER=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
 APP="${OUT:-build/Antseed Worker.app}"
 # The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
 TENSORFOLD_VERSION=1.2.6
@@ -49,8 +56,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleExecutable</key><string>AntseedMacWorker</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
+<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>Connects to your Antseed pool to serve encrypted requests.</string>
@@ -90,10 +97,37 @@ codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --
 rm -f "$ENTITLEMENTS"
 codesign --verify --strict --verbose=2 "$APP"
 
+NOTARY=()
 if [ -n "${NOTARY_PROFILE:-}" ]; then
+  NOTARY=(--keychain-profile "$NOTARY_PROFILE")
+elif [ -n "${NOTARY_KEY:-}" ]; then
+  NOTARY=(--key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+fi
+notarize() {
+  ((${#NOTARY[@]})) || return 0
+  xcrun notarytool submit "$1" "${NOTARY[@]}" --wait --timeout 30m
+}
+
+if ((${#NOTARY[@]})); then
   ZIP=$(mktemp -d)/AntseedWorker.zip
   ditto -c -k --keepParent "$APP" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  notarize "$ZIP"
   xcrun stapler staple "$APP"
 fi
-echo "Built $APP (team $TEAM)"
+
+if [ -n "${DMG:-}" ]; then
+  DMG_PATH="build/Antseed-Worker-$VERSION.dmg"
+  STAGE=$(mktemp -d)
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  rm -f "$DMG_PATH"
+  hdiutil create -volname "Antseed Worker" -srcfolder "$STAGE" -format UDZO -ov "$DMG_PATH"
+  rm -rf "$STAGE"
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+  if ((${#NOTARY[@]})); then
+    notarize "$DMG_PATH"
+    xcrun stapler staple "$DMG_PATH"
+  fi
+  echo "Packaged $DMG_PATH"
+fi
+echo "Built $APP $VERSION ($BUILD_NUMBER, team $TEAM)"

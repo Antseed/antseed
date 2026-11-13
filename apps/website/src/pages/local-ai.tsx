@@ -4,7 +4,7 @@ import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import shared from './agents.module.css';
 import styles from './local-ai.module.css';
-import {ArrowRight, Button, Faq, FinalCta, PageHero, Reveal, Section, SectionHeader, Terminal} from '../components/ui';
+import {ArrowRight, Button, Faq, FinalCta, PageHero, Reveal, Section, SectionHeader} from '../components/ui';
 import {faqJsonLd} from '../lib/faqJsonLd';
 
 const TITLE = 'Earn From Local AI on Your Mac | Antseed';
@@ -16,7 +16,7 @@ const DESCRIPTION =
 const PATHS = [
   {
     title: 'Join a pool with your Mac',
-    body: 'Run the Antseed Mac app. It joins a colony pool, answers encrypted requests on a local model, and pays your share to your wallet. No open ports, no staking.',
+    body: 'Download the Antseed Mac app. It joins a colony pool, answers encrypted requests on a local model, and pays your share to your wallet. No open ports, no staking.',
     cta: 'Earn with your Mac',
     to: '/docs/local-ai/mac',
   },
@@ -40,6 +40,14 @@ const STEPS = [
   {n: '2', title: 'Your Mac answers', body: 'The app checks the buyer’s channel on-chain, runs the model, and seals the answer for the buyer.'},
   {n: '3', title: 'The buyer signs', body: 'Every payment the buyer signs names what it has paid your Mac. Your Mac stops serving a buyer who falls behind.'},
   {n: '4', title: 'You claim', body: 'The pool contract splits each settlement between its workers. Claim your USDC and ANTS to your own wallet.'},
+];
+
+const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/mac-worker-v0.2.0/Antseed-Worker-0.2.0.dmg';
+
+const INSTALL = [
+  {title: 'Install', body: 'Open the DMG and drag Antseed Worker to Applications. It runs in the menu bar.'},
+  {title: 'Join a pool', body: 'Paste the pool’s wss:// address and choose Join. The app downloads its model and starts serving.'},
+  {title: 'Link your wallet', body: 'Enter your wallet, copy the link code, and paste it under Rewards → Link a Mac.'},
 ];
 
 const PRIVACY = [
@@ -88,7 +96,7 @@ export default function LocalAiPage(): JSX.Element {
         title={<>Put your Mac to work</>}
         lead="Serve Antseed buyers from a model running on your own machine, and earn USDC and ANTS for every answer it gives."
         animatedDots>
-        <Button to="/docs/local-ai/mac" size="lg" arrow>Earn with your Mac</Button>
+        <Button href={MAC_APP_DOWNLOAD} size="lg" arrow>Download for Mac</Button>
         <Button to="/docs/local-ai" size="lg" variant="ghost">How it works</Button>
       </PageHero>
 
@@ -127,20 +135,27 @@ export default function LocalAiPage(): JSX.Element {
       <Section>
         <div className={styles.split}>
           <Reveal>
-            <SectionHeader title="Build it, then join" lead="Build the Mac app from the Antseed repository and point it at a pool. It downloads its model and joins." />
-            <Link to="/docs/local-ai/mac" className={shared.setupLink}>
-              Read the Mac guide <ArrowRight size={16} />
-            </Link>
+            <SectionHeader title="Up and running in minutes" lead="Download the app, paste the pool address its operator gave you, and link the wallet your earnings go to." />
+            <div className={styles.downloadRow}>
+              <Button href={MAC_APP_DOWNLOAD} size="lg" arrow>Download for Mac</Button>
+              <Link to="/docs/local-ai/mac" className={shared.setupLink}>
+                Read the Mac guide <ArrowRight size={16} />
+              </Link>
+            </div>
+            <p className={styles.downloadNote}>Apple silicon, macOS 14 or later. Signed and notarized.</p>
           </Reveal>
           <Reveal delay={90}>
-            <Terminal title="Terminal">
-              <span className={styles.comment}># Build the app (Apple silicon, macOS 14+)</span>{'\n'}
-              cd antseed/apps/mac-worker{'\n'}
-              scripts/build-app.sh{'\n\n'}
-              <span className={styles.comment}># Join a pool</span>{'\n'}
-              open "build/Antseed Worker.app" \{'\n'}
-              {'  '}--args --pool wss://pool.example.com:8790
-            </Terminal>
+            <ol className={styles.installSteps}>
+              {INSTALL.map((step, i) => (
+                <li key={step.title}>
+                  <span className={styles.stepNumber} aria-hidden="true">{i + 1}</span>
+                  <div>
+                    <h3>{step.title}</h3>
+                    <p>{step.body}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
           </Reveal>
         </div>
       </Section>
@@ -169,7 +184,7 @@ export default function LocalAiPage(): JSX.Element {
       </Section>
 
       <FinalCta title="Your Mac, earning while it idles">
-        <Button to="/docs/local-ai/mac" size="lg" variant="white" arrow>Earn with your Mac</Button>
+        <Button href={MAC_APP_DOWNLOAD} size="lg" variant="white" arrow>Download for Mac</Button>
       </FinalCta>
     </Layout>
   );

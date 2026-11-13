@@ -1,0 +1,134 @@
+name: Release Mac app
+
+# Builds the Antseed Mac app (apps/mac-worker, "Antseed Worker.app"), signs it
+# with the same Developer ID and notarizes it with the same App Store Connect
+# API key as the desktop release, and publishes a DMG on a GitHub release
+# tagged mac-worker-v<version> (version from apps/mac-worker/VERSION). The
+# release is never marked Latest, so the desktop app's update checks and
+# download links keep pointing at the desktop release.
+#
+# Triggers:
+#   - Push of a `mac-worker-v*` tag (must match apps/mac-worker/VERSION).
+#   - Manual dispatch from the Actions tab; dry_run builds without publishing.
+#
+# Secrets (shared with release-desktop.yml): MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD,
+# APPLE_API_KEY_P8, APPLE_API_KEY_ID, APPLE_API_ISSUER.
+# Optional: MAC_WORKER_PROVISIONING_PROFILE (base64 of a Developer ID
+# provisioning profile for com.antseed.macworker), which binds the app's
+# Secure Enclave keys to the signed app.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only, do not publish a GitHub release'
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'mac-worker-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mac-worker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    name: Build, sign, notarize and publish
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < apps/mac-worker/VERSION)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "mac-worker-v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match apps/mac-worker/VERSION (${version})" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          PROFILE_B64: ${{ secrets.MAC_WORKER_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          secrets_dir="$RUNNER_TEMP/signing"
+          mkdir -p "$secrets_dir"
+          keychain="$secrets_dir/signing.keychain-db"
+          keychain_password=$(uuidgen)
+          printf '%s' "$MAC_CSC_LINK" | base64 --decode > "$secrets_dir/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$secrets_dir/cert.p12" -k "$keychain" -P "$MAC_CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$secrets_dir/cert.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -nE 's/.*"(Developer ID Application: .*)"/\1/p' | head -n1)
+          if [ -z "$identity" ]; then echo "No Developer ID Application identity in MAC_CSC_LINK" >&2; exit 1; fi
+          printf '%s' "$APPLE_API_KEY_P8" > "$secrets_dir/AuthKey.p8"
+          chmod 600 "$secrets_dir/AuthKey.p8"
+          {
+            echo "SIGNING_KEYCHAIN=$keychain"
+            echo "SIGN_IDENTITY=$identity"
+            echo "NOTARY_KEY=$secrets_dir/AuthKey.p8"
+          } >> "$GITHUB_ENV"
+          if [ -n "$PROFILE_B64" ]; then
+            printf '%s' "$PROFILE_B64" | base64 --decode > "$secrets_dir/worker.provisionprofile"
+            echo "PROVISIONING_PROFILE=$secrets_dir/worker.provisionprofile" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build, sign and notarize
+        working-directory: apps/mac-worker
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          DMG: '1'
+        run: scripts/build-app.sh
+
+      - name: Check Gatekeeper accepts it
+        working-directory: apps/mac-worker
+        run: |
+          set -euo pipefail
+          spctl --assess --type execute --verbose "build/Antseed Worker.app"
+          spctl --assess --type open --context context:primary-signature --verbose "build/Antseed-Worker-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Upload the DMG as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antseed-worker-${{ steps.version.outputs.version }}
+          path: apps/mac-worker/build/Antseed-Worker-${{ steps.version.outputs.version }}.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="mac-worker-v${VERSION}"
+          dmg="apps/mac-worker/build/Antseed-Worker-${VERSION}.dmg"
+          notes="Antseed Mac app ${VERSION}: serve a colony pool's encrypted requests on a local model and earn from them. Apple silicon, macOS 14 or later. Signed with Developer ID and notarized. Guide: https://antseed.com/docs/local-ai/mac"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$dmg" --clobber
+          else
+            gh release create "$tag" "$dmg" --target "$GITHUB_SHA" --title "Antseed Mac app ${VERSION}" --notes "$notes" --latest=false
+          fi
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$SIGNING_KEYCHAIN" || true; fi
+          rm -rf "$RUNNER_TEMP/signing"

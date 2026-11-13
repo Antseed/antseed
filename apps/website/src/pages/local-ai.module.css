@@ -75,8 +75,55 @@
   align-items: center;
 }
 
-.comment {
-  opacity: 0.6;
+.downloadRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.downloadNote {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--as-text-2);
+}
+
+.installSteps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.installSteps li {
+  display: flex;
+  gap: 16px;
+  padding: 20px 24px;
+  border: 1px solid var(--as-line);
+  border-radius: 18px;
+  background: var(--as-soil-2);
+}
+
+.installSteps .stepNumber {
+  flex: none;
+  margin-bottom: 0;
+}
+
+.installSteps h3 {
+  margin: 2px 0 4px;
+  font-family: var(--as-font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--as-heading);
+}
+
+.installSteps p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--as-text-2);
 }
 
 @media (max-width: 996px) {

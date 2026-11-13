@@ -16,31 +16,31 @@ The Antseed Mac app is a menu bar app that joins a [colony pool](/docs/local-ai)
 - The address of a pool to join (`wss://…`), from its operator.
 - A wallet on Base for your earnings.
 
-## Build the app
+## Install
 
-The app builds from the [Antseed repository](https://github.com/Antseed/antseed) with Xcode's command-line tools:
+1. [Download the Antseed Mac app](https://github.com/Antseed/antseed/releases/download/mac-worker-v0.2.0/Antseed-Worker-0.2.0.dmg) (`Antseed-Worker-0.2.0.dmg`). It is signed with Antseed's Developer ID and notarized by Apple.
+2. Open the DMG and drag **Antseed Worker** to **Applications**.
+3. Open **Antseed Worker**. It runs in the menu bar (the ant icon), not the Dock.
 
-```bash
-git clone https://github.com/Antseed/antseed.git
-cd antseed/apps/mac-worker
-scripts/build-app.sh
-```
-
-This writes `build/Antseed Worker.app`, with the [TensorFold](https://github.com/ashhart/TensorFold) inference engine bundled and checked by its hash. Without a Developer ID the app is signed ad hoc, which is enough to run it on your own Mac.
+On first launch the app creates its keys and downloads its model. It serves `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX), pinned to one Hugging Face revision, with the bundled [TensorFold](https://github.com/ashhart/TensorFold) engine.
 
 ## Join a pool
 
-Start the app with the pool's address:
+Click the ant icon, enter the pool's address from its operator (`wss://…`) under **Pool address**, and choose **Join**. The app keeps the address for later launches; **Change pool** switches to another one.
+
+The panel shows the app's status, today's estimated earnings, the model and what protects the prompts it serves. The switch at the top pauses sharing without leaving the pool.
+
+## Command-line options
+
+You don't need these to earn. They are for pool operators and for running a Mac with no one at the screen:
 
 ```bash
-open "build/Antseed Worker.app" --args --pool wss://pool.example.com:8790
+open -a "Antseed Worker" --args --pool wss://pool.example.com:8790 --name studio-mac
 ```
-
-On first launch the app creates its keys, downloads its model and joins. It serves `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX), pinned to one Hugging Face revision, by default. The menu bar shows its status, the requests it served and today's estimate.
 
 | Option | What it does |
 |---|---|
-| `--pool <url>` | The pool to join (default `ws://127.0.0.1:8790`) |
+| `--pool <url>` | The pool to join, instead of the one saved in the app |
 | `--service <id>` | The service name the pool sells (default `qwen3.5-2b`) |
 | `--model <repo@commit>` | The model that serves it, pinned to a full 40-character commit. The app refuses an unpinned model, since it could change under the service name |
 | `--name <text>` | The name the pool's operator sees (default: your Mac's name) |
@@ -70,3 +70,16 @@ The **Mac earnings** card on **Rewards** shows the USDC and ANTS each linked poo
 - It serves OpenAI chat completions with tool calls. It refuses input it can't read (images, audio, files) and options it can't honor with a `400` before inference, so a buyer is never billed for a different answer than the one asked for.
 - It keeps its decryption and attestation keys in the Secure Enclave, refuses debuggers, and proves its model files by hash to the pool at every launch. See [Privacy and verification](/docs/local-ai/privacy) for what that does and doesn't protect.
 - It keeps each channel's account in `payments.json` in its data directory, readable only by you, so a restart never lets an old payment pay for new answers.
+
+## Build from source
+
+Developers can build the app from the [Antseed repository](https://github.com/Antseed/antseed) with Xcode's command-line tools:
+
+```bash
+git clone https://github.com/Antseed/antseed.git
+cd antseed/apps/mac-worker
+scripts/build-app.sh
+open "build/Antseed Worker.app"
+```
+
+Without a Developer ID the build is signed ad hoc, which is enough to run it on your own Mac.

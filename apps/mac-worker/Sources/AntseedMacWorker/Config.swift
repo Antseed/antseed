@@ -5,7 +5,8 @@ import Security
 /// Settings from the command line (or defaults), e.g.
 /// `AntseedMacWorker --pool wss://pool.example:8790 --rpc https://… --channels 0x…`.
 struct WorkerConfig {
-    var poolURL = URL(string: "ws://127.0.0.1:8790")!
+    /// The pool to join: `--pool`, else the one the owner entered in the app; nil until there is one.
+    var poolURL: URL?
     /// Service name the pool sells.
     var service = "qwen3.5-2b"
     /// Hugging Face checkpoint that serves it, pinned to a revision the engine was checked with.
@@ -51,7 +52,7 @@ struct WorkerConfig {
         while let flag = iterator.next() {
             guard let value = iterator.next() else { break }
             switch flag {
-            case "--pool": config.poolURL = URL(string: value) ?? config.poolURL
+            case "--pool": config.poolURL = URL(string: value)
             case "--service": config.service = value
             case "--model": config.modelId = value
             case "--engine": config.engineURL = URL(fileURLWithPath: value)
@@ -65,7 +66,37 @@ struct WorkerConfig {
             default: break
             }
         }
+        if config.poolURL == nil { config.poolURL = PoolAddress.saved(in: config.dataDirectory) }
         return config
+    }
+}
+
+/// The pool address the owner enters in the app, kept in the data directory.
+enum PoolAddress {
+    static let fileName = "pool"
+
+    /// A pool the app may join from what the owner typed: `wss://`, or `ws://` only to this Mac
+    /// (a pool on the same machine). Without a scheme, `wss://` is assumed. nil when it isn't one.
+    static func parse(_ text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withScheme = trimmed.contains("://") ? trimmed : "wss://" + trimmed
+        guard let url = URL(string: withScheme), let host = url.host, !host.isEmpty else { return nil }
+        switch url.scheme?.lowercased() {
+        case "wss": return url
+        case "ws": return ["127.0.0.1", "localhost", "::1"].contains(host.lowercased()) ? url : nil
+        default: return nil
+        }
+    }
+
+    static func saved(in directory: URL) -> URL? {
+        guard let text = try? String(contentsOf: directory.appendingPathComponent(fileName), encoding: .utf8) else { return nil }
+        return parse(text)
+    }
+
+    static func save(_ url: URL, in directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(url.absoluteString.utf8).write(to: directory.appendingPathComponent(fileName), options: .atomic)
     }
 }
 

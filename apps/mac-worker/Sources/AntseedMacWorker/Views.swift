@@ -56,6 +56,8 @@ struct MenuPanel: View {
             }
             .font(.system(size: 11))
             Divider()
+            PoolView(worker: worker, snapshot: snapshot)
+            Divider()
             PayoutLinkView(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
             HStack {
                 Spacer()
@@ -68,6 +70,57 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 280)
+    }
+}
+
+/// The pool this Mac joins, and a form to enter or change it.
+struct PoolView: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    @State private var address = ""
+    @State private var editing = false
+    @State private var error: String?
+
+    var body: some View {
+        if let pool = worker.poolURL, !editing {
+            HStack {
+                Text("Pool").foregroundStyle(.secondary)
+                Spacer()
+                Text(pool.host ?? pool.absoluteString).lineLimit(1).truncationMode(.middle)
+            }
+            .font(.system(size: 12))
+            if snapshot {
+                Text("Change pool").font(.system(size: 11)).foregroundStyle(Color.accentColor)
+            } else {
+                Button("Change pool") { address = pool.absoluteString; editing = true }.buttonStyle(.link).font(.system(size: 11))
+            }
+        } else {
+            Text("Pool address, from its operator").font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                if snapshot {
+                    Text("wss://…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.4)))
+                    Text("Join").font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
+                } else {
+                    TextField("wss://…", text: $address).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+                        .onSubmit(join)
+                    Button("Join", action: join).controlSize(.small)
+                }
+            }
+            if let error {
+                Text(error).font(.system(size: 11)).foregroundStyle(.red)
+            }
+            if editing && !snapshot {
+                Button("Cancel") { editing = false; error = nil }.buttonStyle(.link).font(.system(size: 11))
+            }
+        }
+    }
+
+    private func join() {
+        error = worker.join(pool: address)
+        if error == nil { editing = false }
     }
 }
 

@@ -17,6 +17,7 @@ struct PoolStats: Equatable {
 enum WorkerStatus: Equatable {
     case starting
     case loadingModel(Double)
+    case needsPool
     case connecting
     case serving
     case paused
@@ -26,6 +27,7 @@ enum WorkerStatus: Equatable {
         switch self {
         case .starting: "Starting"
         case .loadingModel(let p): p > 0 && p < 1 ? "Downloading model \(Int(p * 100))%" : "Loading model"
+        case .needsPool: "Enter a pool to join"
         case .connecting: "Connecting to pool"
         case .serving: "Sharing this Mac"
         case .paused: "Paused"
@@ -58,6 +60,8 @@ final class WorkerController: ObservableObject {
     @Published private(set) var stats = PoolStats()
     @Published private(set) var poolShareBps = 0
     @Published private(set) var poolSeller: String?
+    /// The pool this Mac joins; nil until the owner enters one.
+    @Published private(set) var poolURL: URL?
     /// When the pool connection last showed signs of life.
     private var liveness = PoolLiveness()
     /// The owner's payout wallet and the link that sets it.
@@ -138,6 +142,7 @@ final class WorkerController: ObservableObject {
 
     init(config: WorkerConfig) throws {
         self.config = config
+        self.poolURL = config.poolURL
         let keys = try WorkerKeys.loadOrCreate(in: config.dataDirectory)
         self.keys = keys
         self.model = LocalModel(modelId: config.modelId, engine: config.engineURL, directory: config.dataDirectory)
@@ -185,8 +190,8 @@ final class WorkerController: ObservableObject {
                     Task { @MainActor in self.status = .loadingModel(progress) }
                 }
                 log("model ready on TensorFold (Apple GPU) · files sha256 \(checkpoint?.sha256 ?? "")")
-                connect()
                 startPolling()
+                if poolURL == nil { status = .needsPool } else { connect() }
             } catch {
                 status = .failed("Model failed to load: \(error.localizedDescription)")
             }
@@ -200,9 +205,43 @@ final class WorkerController: ObservableObject {
 
     // MARK: pool connection
 
+    /// Join the pool the owner entered (saved for later launches), leaving the current one.
+    /// Returns why it can't, or nil once it is joining.
+    func join(pool text: String) -> String? {
+        guard let url = PoolAddress.parse(text) else {
+            return "Enter the pool's wss:// address from its operator"
+        }
+        do {
+            try PoolAddress.save(url, in: config.dataDirectory)
+        } catch {
+            return "Could not save the pool: \(error.localizedDescription)"
+        }
+        log("joining pool \(url.host ?? "")")
+        poolURL = url
+        guard checkpoint != nil else { return nil } // connects once the model is ready
+        disconnect()
+        backoff = 1
+        connect()
+        return nil
+    }
+
+    /// Leave the current pool connection, cancelling its requests.
+    private func disconnect() {
+        for task in active.values { task.cancel() }
+        active.removeAll()
+        let previous = socket
+        socket = nil
+        previous?.cancel(with: .goingAway, reason: nil)
+        poolSeller = nil
+    }
+
     private func connect() {
+        guard let poolURL else {
+            status = .needsPool
+            return
+        }
         status = .connecting
-        let task = URLSession.shared.webSocketTask(with: config.poolURL)
+        let task = URLSession.shared.webSocketTask(with: poolURL)
         task.maximumMessageSize = 16 * 1024 * 1024
         socket = task
         liveness = PoolLiveness()
@@ -331,7 +370,7 @@ final class WorkerController: ObservableObject {
             poolShareBps = frame["workerShareBps"] as? Int ?? 0
             prices = ((frame["prices"] as? [String: Any]) ?? [:]).compactMapValues { WorkerPayment.Price($0) }
             status = .joined(sharing: sharing, service: config.service, rejected: frame["rejected"] as? [String] ?? [])
-            log("joined pool \(config.poolURL.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
+            log("joined pool \(poolURL?.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
             payouts.joined(pool: poolSeller)
         case "request":
