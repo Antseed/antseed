@@ -9,6 +9,11 @@ import path from 'node:path';
 
 const ENCRYPTED_SETTINGS_PATH = path.join(homedir(), '.antseed', 'telegram.enc');
 
+/** For the rename migration: the whole file is one encrypted blob. */
+export function telegramSettingsPath(): string {
+  return ENCRYPTED_SETTINGS_PATH;
+}
+
 export type TelegramSettings = {
   botToken: string;
   botId: number;
@@ -20,6 +25,8 @@ export type TelegramSettings = {
   pairingCode: string | null;
   /** Conversation new Telegram messages append to; /new rotates it. */
   activeConversationId: string | null;
+  /** Model picked with /model; null until then. */
+  model: string | null;
   /** Last acknowledged getUpdates id, so restarts don't replay messages. */
   lastUpdateId: number | null;
 };
@@ -46,6 +53,7 @@ function normalizeSettings(value: unknown): TelegramSettings | null {
     ownerName: typeof raw.ownerName === 'string' ? raw.ownerName : null,
     pairingCode: typeof raw.pairingCode === 'string' ? raw.pairingCode : null,
     activeConversationId: typeof raw.activeConversationId === 'string' ? raw.activeConversationId : null,
+    model: typeof raw.model === 'string' ? raw.model : null,
     lastUpdateId: typeof raw.lastUpdateId === 'number' ? raw.lastUpdateId : null,
   };
 }

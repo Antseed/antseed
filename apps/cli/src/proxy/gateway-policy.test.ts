@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
@@ -20,7 +21,7 @@ import {
 
 const SECRET = 'f'.repeat(64)
 
-function makePeer(seed: string, opts: { input: number; output: number; trust: number; capabilities?: string[] }): PeerInfo {
+function makePeer(seed: string, opts: { input: number; output: number; trust: number; cached?: number; capabilities?: string[] }): PeerInfo {
   return {
     peerId: seed.repeat(40) as PeerInfo['peerId'],
     lastSeen: Date.now(),
@@ -28,7 +29,10 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
     onChainReputationScore: opts.trust,
     displayName: `Test seller ${seed}`,
     ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
-    providerPricing: { openai: { defaults: { inputUsdPerMillion: opts.input, outputUsdPerMillion: opts.output } } },
+    providerPricing: { openai: { defaults: {
+      inputUsdPerMillion: opts.input, outputUsdPerMillion: opts.output,
+      ...(opts.cached !== undefined ? { cachedInputUsdPerMillion: opts.cached } : {}),
+    } } },
     providerServiceApiProtocols: { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } },
   }
 }
@@ -242,7 +246,7 @@ test('strict and non-strict model routes on the automatic path', async (t) => {
 })
 
 test('route-preview shares routing logic and explains ineligible sellers', async (t) => {
-  const tee = makePeer('c', { input: 0.5, output: 0.5, trust: 40 })
+  const tee = makePeer('c', { input: 0.5, output: 0.5, trust: 40, cached: 0.05 })
   const h = await startHarness(t, [cheap, pricey, tee])
   ;(h.proxy as any)._peerHealth.set(cheap.peerId, { failureStreak: 3, cooldownUntil: Date.now() + 60_000, lastFailureAt: Date.now(), lastReason: 'seller-5xx', windowStartedAt: 0, episodeStartedAt: 0, lastSuccessAt: 0 })
 
@@ -257,8 +261,11 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
+    'cachedInputUsdPerMillion', 'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
+  // Each seller's cache-read price, so a seller charging only for those isn't shown as free.
+  assert.equal(byId.get(tee.peerId)?.['cachedInputUsdPerMillion'], 0.05)
+  assert.equal(byId.get(cheap.peerId)?.['cachedInputUsdPerMillion'], null)
   // Only eligible sellers carry the numbers routing ranked them by.
   assert.equal(byId.get(pricey.peerId)?.['selection'], null)
   assert.equal((byId.get(cheap.peerId)?.['selection'] as { coolingDown?: boolean } | null)?.coolingDown, true)
@@ -1303,6 +1310,31 @@ test('spend on a pinned router, ranking and inference, is attributed to the gate
   const events = feed.page(0).events as Array<{ tag: string; sellerPeerId: string; amountUsdc: string }>
   assert.deepEqual(events.map((event) => [event.tag, event.sellerPeerId, event.amountUsdc]),
     [['gw_key1', router.peerId, '1000'], ['gw_key1', cheap.peerId, '25000']])
+})
+
+test('/v1/models under a gateway policy leaves out sellers below the buyer\'s minimum trust', async (t) => {
+  const low = makePeer('c', { input: 1, output: 1, trust: 20 })
+  const high = makePeer('d', { input: 1, output: 1, trust: 90 })
+  const h = await startHarness(t, [low, high], { routingPreferences: { ...DEFAULT_MODEL_ROUTING_PREFERENCES, minTrustScore: 60 } })
+  const listed = async (path: string) => {
+    const body = await (await fetch(`${h.url}${path}`)).json() as { data: Array<{ peers: Array<{ peerId: string }> }> }
+    return body.data.flatMap((model) => model.peers.map((peer) => peer.peerId)).sort()
+  }
+  assert.deepEqual(await listed('/v1/models'), [high.peerId])
+  assert.deepEqual(await listed('/v1/models?scope=network'), [low.peerId, high.peerId].sort())
+})
+
+test('/v1/models leaves out sellers the router refuses, like one over the buyer\'s price cap', async (t) => {
+  const cheap = makePeer('c', { input: 1, output: 1, trust: 90 })
+  const pricey = makePeer('d', { input: 50, output: 50, trust: 90 })
+  const h = await startHarness(t, [cheap, pricey])
+  ;(h.proxy as any)._node.router = { allowsPeerForPolicy: (_req: unknown, peer: PeerInfo) => peer.peerId === cheap.peerId, onResult: () => {} }
+  const listed = async (path: string) => {
+    const body = await (await fetch(`${h.url}${path}`)).json() as { data: Array<{ peers: Array<{ peerId: string }> }> }
+    return body.data.flatMap((model) => model.peers.map((peer) => peer.peerId)).sort()
+  }
+  assert.deepEqual(await listed('/v1/models'), [cheap.peerId])
+  assert.deepEqual(await listed('/v1/models?scope=network'), [cheap.peerId, pricey.peerId].sort())
 })
 
 test('/v1/models?type=router lists only routers the key policy allows, with only its allowed models', async (t) => {

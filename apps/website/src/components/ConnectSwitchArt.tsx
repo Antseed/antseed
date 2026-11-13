@@ -3,10 +3,10 @@ import {OpenAI} from '@lobehub/icons';
 import styles from './ConnectSwitchArt.module.css';
 
 /**
- * "Connect your favorite coding app" animation. Left: the AI VPN's
+ * "Connect your favorite coding app" animation. Left: Antseed Desktop's
  * Connected apps list, where the Codex toggle flips on. Right: the Codex
  * window, whose provider footer switches from OpenAI to Antseed as the
- * AI VPN connects it (apps/desktop connected-apps, kind: config-patch). Loops.
+ * Antseed Desktop connects it (apps/desktop connected-apps, kind: config-patch). Loops.
  */
 
 type Phase = 'native' | 'patching' | 'connected';
@@ -33,8 +33,8 @@ export function ConnectSwitchArt({layout = 'row'}: {layout?: 'row' | 'stack'}) {
   const connected = phase === 'connected';
 
   return (
-    <div className={`${styles.wrap} ${layout === 'stack' ? styles.stack : ''} ${reduced ? styles.reduced : ''} ${on ? styles.on : ''} ${connected ? styles.connected : ''}`} role="img" aria-label="Turning on Codex in the AI VPN switches its model provider to Antseed">
-      {/* AI VPN — Connected apps */}
+    <div className={`${styles.wrap} ${layout === 'stack' ? styles.stack : ''} ${reduced ? styles.reduced : ''} ${on ? styles.on : ''} ${connected ? styles.connected : ''}`} role="img" aria-label="Turning on Codex in Antseed Desktop switches its model provider to Antseed">
+      {/* Antseed Desktop — Connected apps */}
       <div className={styles.vpn}>
         <div className={styles.vpnHead}>
           <img src="/logo.svg" alt="" />

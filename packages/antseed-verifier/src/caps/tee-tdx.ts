@@ -7,6 +7,7 @@ import { composeHashFromEventLog, parseDstackEventLog, rtmr3Events, type DstackE
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
 import type { ApprovedDstackOs, ApprovedNodeBuilds } from '../approved-node-measurements.js'
+import { verifyTdxLiteOs } from '../dstack-lite-os.js'
 import { checkAppCompose, type CheckedAppCompose } from '../dstack-app-compose.js'
 import type { JWTPayload } from 'jose'
 import {
@@ -100,6 +101,10 @@ export interface ParsedTdxQuote {
   binding?: ReportDataBinding
   /** dstack RTMR3 event log, if the evidence carried one. */
   eventLog?: DstackEvent[]
+  /** Full GetQuote event log string, if the evidence carried one. */
+  rawEventLog?: string
+  /** GetQuote vm_config string, if the evidence carried one. */
+  vmConfig?: string
   /** dstack app-compose.json, if the evidence carried one. */
   appCompose?: string
   /** Claims of a verified Google Confidential Space token, when the evidence was one instead of a quote. */
@@ -131,6 +136,8 @@ interface TeeTdxEvidence {
   collateral?: unknown
   binding?: ReportDataBinding
   eventLog?: DstackEvent[]
+  rawEventLog?: string
+  vmConfig?: string
   appCompose?: string
   imageBuild?: unknown
   /**
@@ -145,13 +152,15 @@ export function encodeTeeTdxEvidence(
   quote: Uint8Array,
   collateral?: unknown,
   binding?: ReportDataBinding,
-  extra?: { eventLog?: DstackEvent[]; appCompose?: string; imageBuild?: unknown; origin?: string },
+  extra?: { eventLog?: DstackEvent[]; rawEventLog?: string; vmConfig?: string; appCompose?: string; imageBuild?: unknown; origin?: string },
 ): Uint8Array {
   const blob: TeeTdxEvidence = {
     quote: Buffer.from(quote).toString('base64'),
     ...(collateral !== undefined ? { collateral } : {}),
     ...(binding !== undefined ? { binding } : {}),
     ...(extra?.eventLog !== undefined ? { eventLog: extra.eventLog } : {}),
+    ...(extra?.rawEventLog !== undefined ? { rawEventLog: extra.rawEventLog } : {}),
+    ...(extra?.vmConfig !== undefined ? { vmConfig: extra.vmConfig } : {}),
     ...(extra?.appCompose !== undefined ? { appCompose: extra.appCompose } : {}),
     ...(extra?.imageBuild !== undefined ? { imageBuild: extra.imageBuild } : {}),
     ...(extra?.origin !== undefined ? { origin: extra.origin } : {}),
@@ -183,6 +192,12 @@ function decodeTeeTdxEnvelope(envelope: unknown): Omit<TeeTdxEvidence, 'quote'> 
       throw new Error('tee-tdx evidence "eventLog" is not a dstack event log')
     }
   }
+  if (parsed.rawEventLog !== undefined && typeof parsed.rawEventLog !== 'string') {
+    throw new Error('tee-tdx evidence "rawEventLog" is not a string')
+  }
+  if (parsed.vmConfig !== undefined && typeof parsed.vmConfig !== 'string') {
+    throw new Error('tee-tdx evidence "vmConfig" is not a string')
+  }
   if (parsed.appCompose !== undefined && typeof parsed.appCompose !== 'string') {
     throw new Error('tee-tdx evidence "appCompose" is not a string')
   }
@@ -194,6 +209,8 @@ function decodeTeeTdxEnvelope(envelope: unknown): Omit<TeeTdxEvidence, 'quote'> 
     ...(parsed.collateral !== undefined ? { collateral: parsed.collateral } : {}),
     ...(parsed.binding !== undefined ? { binding: parsed.binding } : {}),
     ...(eventLog !== undefined ? { eventLog } : {}),
+    ...(parsed.rawEventLog !== undefined ? { rawEventLog: parsed.rawEventLog } : {}),
+    ...(parsed.vmConfig !== undefined ? { vmConfig: parsed.vmConfig } : {}),
     ...(parsed.appCompose !== undefined ? { appCompose: parsed.appCompose } : {}),
     ...(parsed.imageBuild !== undefined ? { imageBuild: parsed.imageBuild } : {}),
     ...(parsed.origin !== undefined ? { origin: parsed.origin } : {}),
@@ -268,10 +285,12 @@ export async function verifyTdxEvidence(
   let binding: ReportDataBinding | undefined
   let eventLog: DstackEvent[] | undefined
   let appCompose: string | undefined
+  let rawEventLog: string | undefined
+  let vmConfig: string | undefined
   let imageBuild: unknown
   let origin: string | undefined
   try {
-    ;({ quote, collateral, binding, eventLog, appCompose, imageBuild, origin } = decodeTeeTdxEnvelope(envelope))
+    ;({ quote, collateral, binding, eventLog, appCompose, rawEventLog, vmConfig, imageBuild, origin } = decodeTeeTdxEnvelope(envelope))
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
   }
@@ -280,6 +299,7 @@ export async function verifyTdxEvidence(
     return {
       quoteEvidence: evidence, status: raw.status, td: raw.td,
       ...(binding ? { binding } : {}), ...(eventLog !== undefined ? { eventLog } : {}), ...(appCompose !== undefined ? { appCompose } : {}),
+      ...(rawEventLog !== undefined ? { rawEventLog } : {}), ...(vmConfig !== undefined ? { vmConfig } : {}),
       ...(origin !== undefined ? { origin } : {}), ...(await verifiedImageBuild(imageBuild)),
     }
   } catch (err) {
@@ -309,26 +329,52 @@ function withBuildRecord(error: string, p: ParsedTdxQuote): string {
 }
 
 /**
+ * Approve the CVM OS: an exact (MRTD, RTMR0-2) match in the measurement table, or a local lite
+ * check of the seller's GetQuote vm_config and full event log against this quote's measurements
+ * that returns an approved OS image hash. The table path does not need the lite verifier.
+ */
+function approvedOs(
+  approved: Pick<ApprovedNodeBuilds, 'os' | 'osImages'>,
+  td: TdMeasurements,
+  rawEventLog: string | undefined,
+  vmConfig: string | undefined,
+): { os: ApprovedDstackOs } | { error: string } {
+  const base = [td.mrTd, td.rtMr0, td.rtMr1, td.rtMr2].map(hex)
+  const os = (approved.os ?? []).find((m) => [m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2].every((v, i) => v.toLowerCase() === base[i]))
+  if (os) return { os }
+  if (!rawEventLog || !vmConfig) {
+    return { error: `the CVM OS (MRTD ${base[0]!.slice(0, 16)}…) is not an approved dstack release` }
+  }
+  const lite = verifyTdxLiteOs({ mrtd: base[0]!, rtmr0: base[1]!, rtmr1: base[2]!, rtmr2: base[3]!, eventLog: rawEventLog, vmConfig })
+  if (!lite.ok) return { error: `dstack lite OS check failed${lite.reason ? `: ${lite.reason}` : ''}` }
+  const hash = lite.osImageHash?.toLowerCase()
+  const image = typeof hash === 'string' ? (approved.osImages ?? []).find((item) => item.hash === hash) : undefined
+  if (!image) return { error: 'the CVM OS image hash is not an approved dstack release' }
+  return { os: { name: image.name, mrtd: base[0]!, rtmr0: base[1]!, rtmr1: base[2]!, rtmr2: base[3]! } }
+}
+
+/**
  * The approved build this quote runs: MRTD and RTMR0-2 must be an approved dstack OS, and the app
  * compose measured into RTMR3 (replayed from the event log) must run an approved seller image under
  * the compose rules. Returns the OS, image and upstreams, or why the build is not approved.
  */
 function approvedBuild(
-  approved: Pick<ApprovedNodeBuilds, 'os'>,
+  approved: Pick<ApprovedNodeBuilds, 'os' | 'osImages'>,
   images: readonly ApprovedSellerImage[],
   td: TdMeasurements,
   eventLog: DstackEvent[] | undefined,
   appCompose: string | undefined,
+  rawEventLog: string | undefined,
+  vmConfig: string | undefined,
 ): ({ os: ApprovedDstackOs } & CheckedAppCompose) | { error: string } {
-  const base = [td.mrTd, td.rtMr0, td.rtMr1, td.rtMr2].map(hex)
-  const os = approved.os.find((m) => [m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2].every((v, i) => v.toLowerCase() === base[i]))
-  if (!os) return { error: `the CVM OS (MRTD ${base[0]!.slice(0, 16)}…) is not an approved dstack release` }
+  const os = approvedOs(approved, td, rawEventLog, vmConfig)
+  if ('error' in os) return os
   if (eventLog === undefined) return { error: 'seller sent no dstack event log' }
   const replay = composeHashFromEventLog(eventLog, td.rtMr3)
   if ('error' in replay) return replay
   if (appCompose === undefined) return { error: 'seller sent no app compose' }
   const app = checkAppCompose(appCompose, replay.composeHash, images)
-  return 'error' in app ? app : { os, ...app }
+  return 'error' in app ? app : { os: os.os, ...app }
 }
 
 /** Record a verified seller node for the caps verified after it; returns its upstream origins. */
@@ -415,7 +461,7 @@ export function makeTdxCap(
           return { claim, ok: false, detail: 'no connection binding: TEE attestation needs an encrypted TCP connection to the seller' }
         }
         const policy = input.policy as ApprovedNodeBuilds | undefined
-        const match = approvedBuild(policy ?? { os: [] }, acceptedImages(policy, p), p.td, p.eventLog, p.appCompose)
+        const match = approvedBuild(policy ?? { os: [], osImages: [] }, acceptedImages(policy, p), p.td, p.eventLog, p.appCompose, p.rawEventLog, p.vmConfig)
         if ('error' in match) {
           return { claim, ok: false, detail: `genuine Intel TDX hardware, but not an approved TEE seller build: ${withBuildRecord(match.error, p)}` }
         }
@@ -462,11 +508,12 @@ export function makeTdxCap(
       }
       if (source === 'dstack') {
         const socket = input.config[tdxConfigKey(id, 'dstack.socket')] || undefined
-        const { quote, eventLog, appCompose } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
+        const { quote, eventLog, vmConfig, appCompose } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
         // Only the RTMR3 events: the buyer replays them to the app's compose hash, then checks the compose.
         const imageBuild = appCompose ? await imageBuildRecord(composeImageDigest(appCompose)) : undefined
         return encodeTeeTdxEvidence(quote, undefined, undefined, {
-          ...(eventLog ? { eventLog: rtmr3Events(eventLog) } : {}),
+          ...(eventLog ? { eventLog: rtmr3Events(eventLog), rawEventLog: eventLog } : {}),
+          ...(vmConfig ? { vmConfig } : {}),
           ...(appCompose ? { appCompose } : {}),
           ...(imageBuild !== undefined ? { imageBuild } : {}),
         })

@@ -12,6 +12,7 @@
  *
  * So the honest headline is deposited - pending: reserving money must not make
  * the balance appear to drop, and authorizing spend must not let it linger.
+ * The gateway reports pending with the deposits (`GET /v1/key`).
  */
 
 /** The shape this module needs from a channel row. */
@@ -107,14 +108,6 @@ export function spendableBalance(deposited: bigint, pending: bigint): bigint {
 /** Everything the buyer still owns, including USDC waiting in its wallet. */
 export function totalOwnedBalance(spendable: bigint, wallet: bigint): bigint {
   return spendable + wallet;
-}
-
-/** Merge only successful component reads into the last-known-good snapshot. */
-export function updateCreditsBalanceComponents(
-  current: CreditsBalanceComponents,
-  updates: Partial<CreditsBalanceComponents>,
-): CreditsBalanceComponents {
-  return { ...current, ...updates };
 }
 
 /** Derive every displayed total from one internally consistent snapshot. */

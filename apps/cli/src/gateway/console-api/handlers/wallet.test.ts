@@ -200,7 +200,7 @@ test('POST card-link validates input and access', async () => {
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', outsider, { amountUsd: 10, provider: 'crossmint' }), 403)
   const noKey = setup({ loadWallet: async () => null })
   await rejectsWith(call(noKey, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10, provider: 'crossmint' }), 409, 'wallet_unavailable')
-  const locked = setup({ loadWallet: async () => { throw new Error('encrypted by the AI VPN') } })
+  const locked = setup({ loadWallet: async () => { throw new Error('encrypted by Antseed Desktop') } })
   await rejectsWith(call(locked, 'POST', '/workspaces/ws_default/wallet/card-link', member, { amountUsd: 10, provider: 'crossmint' }), 409, 'wallet_unavailable')
 })
 

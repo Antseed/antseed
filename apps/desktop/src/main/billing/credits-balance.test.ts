@@ -2,13 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  creditsBalanceTotals,
   isOpenChannelStatus,
   pendingSpendFromChannels,
   spendableBalance,
   totalOwnedBalance,
   unsettledSpend,
-  updateCreditsBalanceComponents,
 } from './credits-balance.js';
 
 test('unsettledSpend is what the seller can still claim on a channel', () => {
@@ -88,42 +86,4 @@ test('spendable clamps at zero when pending briefly outruns the on-chain total',
 test('total owned includes USDC waiting in the buyer wallet', () => {
   assert.equal(totalOwnedBalance(39_110_000n, 10_000_000n), 49_110_000n);
   assert.equal(totalOwnedBalance(39_110_000n, 0n), 39_110_000n);
-});
-
-test('component updates retain last-known-good values for failed reads', () => {
-  const previous = {
-    available: 33_000_000n,
-    reserved: 10_000_000n,
-    pending: 1_000_000n,
-    wallet: 59_000_000n,
-  };
-
-  const next = updateCreditsBalanceComponents(previous, {
-    available: 32_000_000n,
-    reserved: 11_000_000n,
-  });
-
-  assert.deepEqual(next, {
-    available: 32_000_000n,
-    reserved: 11_000_000n,
-    pending: 1_000_000n,
-    wallet: 59_000_000n,
-  });
-  assert.equal(creditsBalanceTotals(next).totalOwned, 101_000_000n);
-});
-
-test('successful zero component reads replace older non-zero values', () => {
-  const next = updateCreditsBalanceComponents({
-    available: 33_000_000n,
-    reserved: 10_000_000n,
-    pending: 1_000_000n,
-    wallet: 59_000_000n,
-  }, {
-    pending: 0n,
-    wallet: 0n,
-  });
-
-  assert.equal(next.pending, 0n);
-  assert.equal(next.wallet, 0n);
-  assert.equal(creditsBalanceTotals(next).totalOwned, 43_000_000n);
 });

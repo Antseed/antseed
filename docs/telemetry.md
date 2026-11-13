@@ -5,7 +5,7 @@ sent to one PostHog project:
 
 | `product` | What it is | Default |
 | --- | --- | --- |
-| `desktop` | The AI VPN desktop app: its own screens and funnel | Off; turn on in Preferences → Privacy |
+| `desktop` | Antseed Desktop: its own screens and funnel | Off; turn on in Preferences → Privacy |
 | `gateway` | The API-key gateway: only its setup funnel (`gateway_step`) | Off; turn on in the console's Settings → Privacy; a one-time notice in the server log once on |
 | `buyer` | The buyer proxy, whoever runs it: the desktop, the gateway, or `antseed buyer start` on its own | Off; follows its host's switch, or `antseed telemetry enable` |
 
