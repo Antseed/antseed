@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatModel, ChatModelPeer, RoutePreview } from '../api/types'
-import { autoPick, pickModels, pickPeers, verdictsFrom } from './chat-pick'
+import { autoPick, isFreeOffer, pickModels, pickPeers, verdictsFrom } from './chat-pick'
 
 const peer = (peerId: string, input: number, output: number, reputation: number, extra: Partial<ChatModelPeer> = {}): ChatModelPeer => ({
   peerId, name: peerId, toolUse: true, reasoning: false, vision: false, tee: false, inputUsdPerMillion: input, outputUsdPerMillion: output, cachedInputUsdPerMillion: null, reputation, freeTier: null, ...extra,
@@ -22,9 +22,9 @@ describe('chat pickers', () => {
     const preview: RoutePreview = {
       model: 'm', policy: {}, sources: [], modelAllowed: true,
       candidates: [
-        { peerId: 'AA', displayName: null, rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0.06, outputUsdPerMillion: 0.19, trustScore: 74, selection: null },
-        { peerId: 'bb', displayName: null, rank: null, eligible: false, reasons: ['buyer config: trust 58 below 60'], inputUsdPerMillion: 0, outputUsdPerMillion: 0, trustScore: 58, selection: null },
-        { peerId: 'cc', displayName: null, rank: 1, eligible: true, reasons: [], inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1, trustScore: 70, selection: null },
+        { peerId: 'AA', displayName: null, rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0.06, outputUsdPerMillion: 0.19, cachedInputUsdPerMillion: null, trustScore: 74, selection: null },
+        { peerId: 'bb', displayName: null, rank: null, eligible: false, reasons: ['buyer config: trust 58 below 60'], inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, trustScore: 58, selection: null },
+        { peerId: 'cc', displayName: null, rank: 1, eligible: true, reasons: [], inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1, cachedInputUsdPerMillion: null, trustScore: 70, selection: null },
       ],
     }
     const verdicts = verdictsFrom(preview)
@@ -33,5 +33,13 @@ describe('chat pickers', () => {
     expect(pickPeers(peers, new Set(), 'price', verdicts).map((p) => p.peerId)).toEqual(['bb', 'cc', 'aa'])
     expect(autoPick(preview)?.peerId).toBe('cc')
     expect(autoPick({ ...preview, modelAllowed: false })).toBeNull()
+  })
+})
+
+describe('isFreeOffer', () => {
+  it('is not free when only cached input is charged', () => {
+    expect(isFreeOffer(peer('a', 0, 0, 1, { cachedInputUsdPerMillion: 0.1 }))).toBe(false)
+    expect(isFreeOffer(peer('b', 0, 0, 1, { cachedInputUsdPerMillion: 0 }))).toBe(true)
+    expect(isFreeOffer(peer('c', 0, 0, 1))).toBe(true)
   })
 })

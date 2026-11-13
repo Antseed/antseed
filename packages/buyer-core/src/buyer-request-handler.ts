@@ -691,7 +691,7 @@ export class BuyerRequestHandler {
           // for it is the next frame, travels on another mux, and is judged
           // against this. A 402 the buyer retries leaves nothing to charge.
           if (negotiator && !isFreeService && !startsPaymentNegotiation(answer)) {
-            this._estimatePaidCost(negotiator, peer, answer, requestedService, plainReq.requestId);
+            this._estimatePaidCost(negotiator, peer, plainReq, answer, requestedService);
           }
         } finally {
           // Only after it is priced: a NeedAuth waiting on the verification must find what is owed for it.
@@ -809,16 +809,17 @@ export class BuyerRequestHandler {
   private _estimatePaidCost(
     negotiator: BuyerPaymentNegotiator,
     peer: BuyerPeerView,
+    request: SerializedHttpRequest,
     response: SerializedHttpResponse,
     service: string | undefined,
-    requestId: string,
   ): void {
+    const { requestId } = request;
     if (isCoveredByFreeAllowance(response)) {
       debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
       negotiator.bpm.markRequestCovered(peer.peerId, requestId);
       return;
     }
-    negotiator.estimateCostFromResponse(peer, response, service, requestId);
+    negotiator.estimateCostFromResponse(peer, response, service, requestId, request.body);
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection, freeTierDelegations: string | null): void {

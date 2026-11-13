@@ -214,7 +214,7 @@ const config: Config = {
           'Reputation-based provider scoring',
           'TEE attestation for privacy-preserving inference',
           'AI agents with on-demand knowledge and custom tools',
-          'Desktop app (AI VPN)',
+          'Antseed Desktop',
           'Agent-to-agent commerce support',
         ],
         downloadUrl: 'https://github.com/Antseed/antseed/releases',

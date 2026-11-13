@@ -100,8 +100,10 @@ export interface PolicyPeerFacts {
   imageUsdPerImage: number | null
   /** Null when the seller passes or can be verified; otherwise why it cannot. */
   unverifiedReason: string | null
-  /** Whether the seller advertises the TEE verifier capability. */
+  /** Whether the seller advertises the TEE verifier capability and has not failed its attestation. */
   teeCapable: boolean
+  /** Why its TEE attestation failed, when it advertises one that did. */
+  teeFailure?: string
 }
 
 /** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
@@ -145,7 +147,7 @@ export function policyExclusionReasons(policy: RoutingPolicy, facts: PolicyPeerF
     reasons.push(...priceCapReasons('cached input', facts.cachedInputUsdPerMillion, policy.maxCachedInputUsdPerMillion, false))
   }
   if (policy.requireVerified && facts.unverifiedReason) reasons.push(facts.unverifiedReason)
-  if (policy.requireTee && !facts.teeCapable) reasons.push('no TEE')
+  if (policy.requireTee && !facts.teeCapable) reasons.push(facts.teeFailure ? `TEE attestation failed: ${facts.teeFailure}` : 'no TEE')
   return reasons
 }
 

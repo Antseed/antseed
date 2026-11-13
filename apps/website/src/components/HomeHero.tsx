@@ -422,8 +422,8 @@ export function DownloadCta({
         <>
           <div className={styles.ctaRow}>
             <Button href={download.href} osIcons size={size} className="vprBtn" onClick={onGetStarted}>
-              <span className="vprLabelDesktop">Download the AI VPN</span>
-              <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
+              <span className="vprLabelDesktop">Download Antseed Desktop</span>
+              <span className="vprLabelMobile">Get Antseed Desktop<ArrowRight /></span>
             </Button>
             <AllVersionsLink />
           </div>
@@ -432,7 +432,7 @@ export function DownloadCta({
       ) : (
         <>
           <Button href={download.href} osIcons size={size} className="vprBtn" onClick={onGetStarted}>
-            <span className="vprLabelDesktop">Download AI VPN</span>
+            <span className="vprLabelDesktop">Download Antseed Desktop</span>
             <span className="vprLabelMobile">Get Started<ArrowRight /></span>
           </Button>
           {versionsLink && <AllVersionsLink />}
@@ -450,7 +450,7 @@ export function DownloadCta({
 export type HeroUse = 'app' | 'cli' | 'agent';
 
 const HERO_USES: {id: HeroUse; label: string}[] = [
-  {id: 'app', label: 'Download AI VPN'},
+  {id: 'app', label: 'Download Antseed Desktop'},
   {id: 'cli', label: 'Setup API Gateway'},
   {id: 'agent', label: 'Install Skill'},
 ];

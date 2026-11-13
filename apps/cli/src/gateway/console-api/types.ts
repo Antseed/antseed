@@ -1033,6 +1033,8 @@ export interface RoutePreview {
     reasons: string[]
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
+    /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+    cachedInputUsdPerMillion: number | null
     /** Trust for this model, as routing judges it: cut to 10% by a live DIFF model check. */
     trustScore: number | null
     /** The seller's trust before that cut; present only when one applies. */

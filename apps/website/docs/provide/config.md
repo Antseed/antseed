@@ -295,7 +295,7 @@ Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to 
 }
 ```
 
-Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, the desktop app and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
+Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, gateways and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
 
 #### Per-model programs
 

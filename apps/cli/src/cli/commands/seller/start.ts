@@ -1319,6 +1319,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
 
       await writeDaemonState()
+      // Billing by estimate works, but only an upstream that reports usage bills exactly.
+      node.on('provider:usage-missing', ({ provider, service }: { provider: string; service: string }) => {
+        console.log(chalk.yellow(`Upstream ${provider}/${service} sent an answer with no usage figure; such answers are billed by an estimate of their tokens.`))
+      })
       node.on('connection', scheduleDaemonStateWrite)
       node.on('session:updated', scheduleDaemonStateWrite)
       node.on('session:finalized', scheduleDaemonStateWrite)
