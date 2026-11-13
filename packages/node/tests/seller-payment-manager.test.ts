@@ -3171,6 +3171,46 @@ describe('SellerPaymentManager', () => {
         expect(stored.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
         expect(stored.authMax).toBe('400000');
       });
+
+      it('stores an adopted buyer close auth as one amount, signature and metadata', async () => {
+        const channelId = makeChannelId(155);
+        const held = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 600_000n });
+        seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+          authMax: held.cumulativeAmount, tokensDelivered: '600000',
+          latestBuyerSig: held.spendingAuthSig, latestSpendingAuthSig: held.spendingAuthSig, latestMetadata: held.metadata,
+        });
+        const mgr = makeFreshManager();
+        // The chain has settled more than the held auth, so startup drops that auth from memory.
+        vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 800_000n }));
+        const close = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+        await mgr.validateHydratedChannels();
+        expect(settleParams(mgr, channelId).amount).toBe(0n);
+
+        const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+          cumulativeAmount: 400_000n, cumulativeInputTokens: 7n,
+        });
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const pending = mgr.handleCloseChannelRequest(buyerIdentity.peerId, {
+            version: 1,
+            channelId,
+            cumulativeAmount: auth.cumulativeAmount,
+            metadataHash: auth.metadataHash,
+            metadata: auth.metadata,
+            spendingAuthSig: auth.spendingAuthSig,
+          }, mux);
+          await vi.advanceTimersByTimeAsync(5_000);
+          // The settled 800000 is more than either auth covers: the seller asks for the rest instead of closing.
+          expect(await pending).toMatchObject({ status: 'rejected', code: 'pending_auth', requiredCumulativeAmount: '800000' });
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(close).not.toHaveBeenCalled();
+
+        const stored = store.getChannel(channelId)!;
+        expect({ authMax: stored.authMax, sig: stored.latestSpendingAuthSig, metadata: stored.latestMetadata })
+          .toEqual({ authMax: '400000', sig: auth.spendingAuthSig, metadata: auth.metadata });
+      });
     });
   });
 

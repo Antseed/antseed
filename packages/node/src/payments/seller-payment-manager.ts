@@ -2997,8 +2997,8 @@ export class SellerPaymentManager {
 
   /**
    * Take the buyer-supplied auth as our latest when it authorizes strictly more
-   * than what we already hold. Persisted so a crash between here and close()
-   * doesn't lose the higher claim.
+   * than the latest auth in memory. Persisted, its amount with its signature and
+   * metadata, so a crash between here and close() doesn't lose the higher claim.
    */
   private _adoptBuyerCloseAuth(channelId: string, buyerAuth: LatestAuth): void {
     const current = this._latestAuth.get(channelId);
@@ -3015,8 +3015,7 @@ export class SellerPaymentManager {
 
     const stored = this._channelStore.getChannel(channelId);
     if (stored) {
-      const storedSigned = stored.latestSpendingAuthSig ? BigInt(stored.authMax || '0') : 0n;
-      stored.authMax = (buyerAuth.cumulativeAmount > storedSigned ? buyerAuth.cumulativeAmount : storedSigned).toString();
+      stored.authMax = buyerAuth.cumulativeAmount.toString();
       stored.latestBuyerSig = buyerAuth.spendingAuthSig;
       stored.latestSpendingAuthSig = buyerAuth.spendingAuthSig;
       stored.latestMetadata = buyerAuth.metadata;
