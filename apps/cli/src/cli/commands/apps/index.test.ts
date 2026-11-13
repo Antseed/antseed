@@ -60,7 +60,7 @@ function homePath(ws: Workspace, tildePath: string): string {
  * A pre-existing user config per app, so disconnect must restore it exactly.
  * Droid and Claude Code replace user values and restore them from their
  * `.antseed.state.json` sidecar, so their originals collide with managed keys
- * on purpose. The other formats remove only what AntSeed added — a value they
+ * on purpose. The other formats remove only what Antseed added — a value they
  * overwrite (e.g. a top-level codex `model`) is not put back except via the
  * `.antseed.bak` backup, and JSONC comments are not preserved — so their
  * originals avoid managed keys. That is the desktop's existing behaviour.
@@ -75,6 +75,10 @@ const ORIGINAL_CONFIGS: Record<string, { path: string; content: string }[]> = {
   pi: [
     { path: '~/.pi/agent/models.json', content: '{\n  "providers": {}\n}\n' },
     { path: '~/.pi/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
+  ],
+  'prime-agent': [
+    { path: '~/.prime/agent/models.json', content: '{\n  "providers": {}\n}\n' },
+    { path: '~/.prime/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
   ],
   crush: [{ path: '~/.config/crush/crush.json', content: '{\n  "options": {},\n  "providers": {}\n}\n' }],
   goose: [{ path: '~/.config/goose/config.yaml', content: 'GOOSE_TEMPERATURE: 0.5\n' }],
@@ -197,7 +201,7 @@ test('apps connect defaults the port from buyer config, then 8377', async () => 
   }
 })
 
-test('apps connect creates a missing config and disconnect leaves no AntSeed entry', async () => {
+test('apps connect creates a missing config and disconnect leaves no Antseed entry', async () => {
   const ws = await createWorkspace()
   try {
     // Claude Code with no settings.json yet: the .claude dir is the install signal.
@@ -225,4 +229,12 @@ test('apps connect warns when the buyer has no default route', async () => {
   } finally {
     await rm(ws.home, { recursive: true, force: true })
   }
+})
+
+test('the missing default route warning gives a command, not the desktop chat model', async () => {
+  const { noDefaultRouteWarning } = await import('./index.js')
+  const warning = noDefaultRouteWarning(8377)
+  // Antseed Desktop's chat sends its model with each request and no longer sets the buyer's default route.
+  assert.doesNotMatch(warning, /desktop/i)
+  assert.match(warning, /POST http:\/\/localhost:8377\/_antseed\/route/)
 })

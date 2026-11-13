@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZeroAddress } from 'ethers';
 import { multicallRead, type MulticallRequest } from '@antseed/node/payments';
 import type { AntsContext } from './context.js';
 import type { RewardPositions } from './position-feed.js';
@@ -54,7 +55,7 @@ function fixture() {
     moveStake: vi.fn(),
   };
   const rewards = { previewStakerRewards: vi.fn(async (ids: number[]) => ids.map(() => 15n)), stakerEpochBudget: vi.fn(async () => 100n) };
-  const accounting = { totalWeightedPoolPointsByEpoch: vi.fn(async () => 20n) };
+  const accounting = { totalWeightedPoolPointsByEpoch: vi.fn(async () => 20n), poolWeightPolicy: vi.fn(async () => ZeroAddress) };
   const ctx = {
     address: owner, chain: { evmChainId: 8453, sellerPoolsAddress: owner, sellerPoolsRewardsAddress: owner, usageAccountingAddress: owner, sellerRegistryAddress: owner, emissionsGateAddress: owner, usageRewardsAddress: owner },
     stack: async () => stack, indexer: () => indexer, requirePools: () => pools, poolRewards: () => rewards,
@@ -253,7 +254,7 @@ describe('indexed display / live financial read boundary', () => {
     const { ctx, snapshot, requests, pools, rewards, stack, indexer } = fixture();
     snapshot.pools[1]!.settled = settled;
     const result = await poolsView(ctx);
-    expect(result.pools[0]?.yield).toEqual({ ...poolYield(settled ? 10n : 20n, 100n, 21, stack.epochDuration, stack.genesis, settled), reward: settled ? '10' : '20', power: '200', minLockEpochs: 1, maxLockEpochs: 104 });
+    expect(result.pools[0]?.yield).toEqual({ ...poolYield(settled ? 10n : 20n, 100n, 21, stack.epochDuration, stack.genesis, settled), reward: settled ? '10' : '20', power: '200', budget: '100', minLockEpochs: 1, maxLockEpochs: 104 });
     expect(requests.map(row => row.method)).toEqual(['minStakeEpochs', 'MAX_STAKE_EPOCHS']);
     expect(pools.allStakerPositionIds).not.toHaveBeenCalled();
     expect(pools.totalPowerWeightAtEpoch).not.toHaveBeenCalled();
@@ -262,6 +263,25 @@ describe('indexed display / live financial read boundary', () => {
     expect(result.totalActiveStake).toBe('1000');
     expect((await singlePool(ctx, 1))).toMatchObject({ stakers: 2, openPositions: 3 });
     expect(indexer.pool).toHaveBeenCalledWith(1, 16);
+  });
+
+  it('prices the epoch in progress from the snapshot pool row and snapshot network totals', async () => {
+    const { ctx, stack } = fixture();
+    const result = await poolsView(ctx);
+    const startsAt = stack.genesis + 22 * stack.epochDuration;
+    expect(result.pools[0]?.liveYield).toEqual({
+      epoch: 22, startsAt, endsAt: startsAt + stack.epochDuration, apr: null, apy: null, status: 'estimated',
+      reward: '20', power: '200', budget: '100', minLockEpochs: 1, maxLockEpochs: 104,
+    });
+  });
+
+  it.each(['pool', 'network'])('publishes no live yield when the snapshot lacks the current %s row', async missing => {
+    const { ctx, snapshot } = fixture();
+    if (missing === 'pool') snapshot.pools = snapshot.pools.filter(row => row.epoch !== 22);
+    // Network totals then come from the indexer or chain, not the snapshot the pool row came from.
+    else snapshot.epochs = snapshot.epochs.filter(row => row.epoch !== 22);
+    const result = await poolsView(ctx);
+    expect(result.pools[0]?.liveYield).toBeUndefined();
   });
 
   it('uses combined-feed pool summaries without another wallet enumeration', async () => {

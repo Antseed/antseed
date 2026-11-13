@@ -16,7 +16,7 @@ pattern = "download.antseed.com"
 custom_domain = true
 
 [vars]
-GITHUB_REPO = "AntSeed/antseed"
+GITHUB_REPO = "Antseed/antseed"
 # GA4 Measurement ID of the antseed.com web property (not a secret). Leave
 # empty to disable GA4 reporting — events are still logged to the console
 # (visible via `wrangler tail` / Workers Logs).

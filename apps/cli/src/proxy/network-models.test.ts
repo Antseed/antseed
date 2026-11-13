@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
 import { buildNetworkModels, parseModelTypeFilter } from './network-models.js'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { findAdvertisedServiceOffer } from './routing.js'
 
 const NOW_MS = 1_700_000_000_000
@@ -18,8 +19,81 @@ test('network model offers preserve advertised verifiers without inferring suppo
   assert.ok(model)
   assert.deepEqual(model.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, ['antseed-verifier'])
   assert.deepEqual(model.peers.find((peer) => peer.peerId === legacyPeer.peerId)?.advertisedVerifierIds, [])
+  // A buyer that checks attestations lists the TEE verifier only for sellers that passed.
+  const unproven = buildNetworkModels(peers, NOW_MS, { teeScope: () => null })[0]
+  assert.deepEqual(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, [])
+  assert.equal(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.teeScope, undefined)
+  const proven = buildNetworkModels(peers, NOW_MS, { teeScope: (peer) => (peer.peerId === teePeer.peerId ? 'seller-node' : null) })[0]
+  const provenPeer = proven?.peers.find((peer) => peer.peerId === teePeer.peerId)
+  assert.deepEqual(provenPeer?.advertisedVerifierIds, ['antseed-verifier'])
+  assert.equal(provenPeer?.teeScope, 'seller-node')
   teePeer.capabilities = []
   assert.deepEqual(buildNetworkModels(peers, NOW_MS)[0]?.peers[0]?.advertisedVerifierIds, [])
+})
+
+test('network model offers carry the free-tier program they are served under', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'kimi-k3')]
+  const providerPricing = {
+    openai: {
+      defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      services: { 'kimi-k3': { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 }, 'paid-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, 'free-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+    },
+  }
+  const models = buildNetworkModels([makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing, capabilities })], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.deepEqual(offer('kimi-k3')?.freeTier, allowance)
+  // The seller-wide program covers free models only.
+  assert.deepEqual(offer('free-model')?.freeTier, sellerWide)
+  assert.equal(offer('paid-model')?.freeTier, undefined)
+})
+
+test('network model offers carry the seller\'s last self health check and leave out failing ones', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const healthy = makePeer({
+    peerId: 'a'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' } } } },
+  })
+  const failing = makePeer({
+    peerId: 'b'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } },
+  })
+  const silent = makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing })
+  const [model] = buildNetworkModels([healthy, failing, silent], NOW_MS)
+  assert.deepEqual(model?.peers.map((offer) => offer.peerId).sort(), [healthy.peerId, silent.peerId])
+  assert.deepEqual(model?.peers.find((offer) => offer.peerId === healthy.peerId)?.health, { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' })
+  assert.equal(model?.peers.find((offer) => offer.peerId === silent.peerId)?.health, undefined)
+})
+
+test('network model offers carry the performance the seller measured', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, firstTokenMsP90: 1250, tokensPerSecondP50: 78 }
+  const seller = makePeer({ peerId: 'a'.repeat(40), providers: ['openai'], providerPricing, providerServicePerformance: { openai: { services: { 'gpt-test': performance } } } })
+  assert.deepEqual(buildNetworkModels([seller], NOW_MS)[0]?.peers[0]?.performance, performance)
+})
+
+test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'paid-video')]
+  const images = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.01 }] }
+  const video = { version: 1 as const, components: [{ unit: 'video_generations' as const, priceUsd: 0.4 }] }
+  const peer = makePeer({
+    peerId: 'd'.repeat(40),
+    providers: ['fal'],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'paid-video': ['fal-video'] } } },
+    providerServiceUnitBillingModels: { fal: { services: { 'paid-image': { 'openai-images': images }, 'paid-video': { 'fal-video': video } } } },
+    capabilities,
+  })
+  const models = buildNetworkModels([peer], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.ok(offer('paid-image'))
+  assert.equal(offer('paid-image')?.freeTier, undefined)
+  // Video is paid through one-off channels, so even its own allowance is never honoured.
+  assert.ok(offer('paid-video'))
+  assert.equal(offer('paid-video')?.freeTier, undefined)
 })
 
 function makePeer(overrides: Omit<Partial<PeerInfo>, 'peerId'> & { peerId: string }): PeerInfo {
@@ -99,6 +173,26 @@ test('parseModelTypeFilter maps query values', () => {
   assert.equal(parseModelTypeFilter('Image'), 'image')
   assert.equal(parseModelTypeFilter('text'), 'text')
   assert.equal(parseModelTypeFilter('audio'), 'invalid')
+  assert.equal(parseModelTypeFilter('speech'), 'speech')
+  assert.equal(parseModelTypeFilter('TTS'), 'speech')
+})
+
+test('lists speech models with the voices every offer accepts', () => {
+  const speechSeller = (peerId: string, voices: string[]): PeerInfo => ({
+    peerId,
+    lastSeen: NOW_MS,
+    providers: ['openai'],
+    providerServiceApiProtocols: { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } },
+    providerServiceCapabilities: { openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } } },
+    providerServiceUnitBillingModels: { openai: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000035 }] } } } } },
+  } as unknown as PeerInfo)
+  const [model] = buildNetworkModels([speechSeller('a'.repeat(40), ['af_sky', 'am_adam']), speechSeller('b'.repeat(40), ['af_sky'])], NOW_MS)
+  assert.ok(model)
+  assert.equal(model.type, 'speech')
+  assert.deepEqual(model.supported_protocols, ['openai-audio-speech'])
+  assert.deepEqual(model.voices, ['af_sky'])
+  assert.deepEqual(model.peers.map((peer) => peer.capabilities?.speech?.voices), [['af_sky', 'am_adam'], ['af_sky']])
+  assert.equal(model.peers[0]!.inputUsdPerMillion, undefined)
 })
 
 test('aggregates one entry per model id across peers, case-insensitively', () => {
@@ -386,6 +480,62 @@ test('keeps reputation ordering when no offer reports cached-input pricing', () 
     model?.peers.map((peer) => peer.effectiveReputationScore),
     [normalizedModelReputationScore(higher), normalizedModelReputationScore(lower)],
   )
+})
+
+test('a live DIFF verdict cuts the service reputation to 10% even without cached-input pricing', () => {
+  const pricing = (services: string[]) => ({
+    openai: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      services: Object.fromEntries(services.map((service) => [service, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }])),
+    },
+  })
+  const flagged = makePeer({
+    peerId: '7'.repeat(40),
+    onChainReputationScore: 90,
+    onChainDiffServices: ['diff-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
+    providerPricing: pricing(['diff-model', 'other-model']),
+  })
+  const clean = makePeer({
+    peerId: '8'.repeat(40),
+    onChainReputationScore: 40,
+    providerPricing: pricing(['diff-model']),
+  })
+
+  const models = buildNetworkModels([flagged, clean], NOW_MS)
+  const diffModel = models.find((model) => model.id === 'diff-model')
+  assert.deepEqual(diffModel?.peers.map((peer) => peer.peerId), [clean.peerId, flagged.peerId])
+  assert.ok(Math.abs((diffModel?.peers[1]?.effectiveReputationScore ?? 0) - 9) < 1e-9)
+  // The raw score is unchanged; only the effective one is cut.
+  assert.equal(diffModel?.peers[1]?.reputationScore, 90)
+  // Per service: the seller's other service keeps its full reputation.
+  assert.equal(models.find((model) => model.id === 'other-model')?.peers[0]?.effectiveReputationScore, 90)
+  // A DIFF list from a read 15 minutes old or more (the contract has been unreadable since) no longer cuts.
+  const stale = buildNetworkModels([flagged, clean], NOW_MS + 15 * 60_000)
+  assert.equal(stale.find((model) => model.id === 'diff-model')?.peers.find((peer) => peer.peerId === flagged.peerId)?.effectiveReputationScore, 90)
+})
+
+test('a live DIFF verdict compounds with the missing cached-input penalty', () => {
+  const flagged = makePeer({
+    peerId: '9'.repeat(40),
+    onChainReputationScore: 100,
+    onChainDiffServices: ['cache-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+    },
+  })
+  const cached = makePeer({
+    peerId: 'a'.repeat(40),
+    onChainReputationScore: 50,
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 }, services: { 'cache-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2 } } },
+    },
+  })
+
+  const model = buildNetworkModels([flagged, cached], NOW_MS)[0]
+  const offer = model?.peers.find((peer) => peer.peerId === flagged.peerId)
+  assert.ok(Math.abs((offer?.effectiveReputationScore ?? 0) - 5) < 1e-9)
 })
 
 test('merges conservative family aliases while preserving advertised service ids', () => {

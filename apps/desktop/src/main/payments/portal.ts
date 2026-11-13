@@ -15,6 +15,7 @@ import { LOCALHOST, LOCALHOST_URL } from '../constants.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ensureSecureIdentity, secureIdentityEnv } from '../identity.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 import { getMainWindow } from '../ui/window.js';
 import { invalidateCreditsCache } from './credits.js';
 import { asRecord, asString } from '../utils.js';
@@ -40,15 +41,13 @@ export async function startPaymentsPortal(): Promise<void> {
       port: PAYMENTS_PORT,
       identityHex,
       configPath: ACTIVE_CONFIG_PATH,
-      onOpenRewards: async () => {
-        const { stakingSessions } = await import('../staking/portal.js');
-        await stakingSessions.open('rewards');
-      },
       onPaymentCompleted: () => {
         // The payment landed in the browser — pull the app back up and let
         // the renderer refresh balances/channels/rewards immediately.
         focusMainWindow();
         invalidateCreditsCache();
+        // Counts only when this launch opened a withdraw.
+        void getTelemetryService()?.recordWithdrawCompleted();
         getMainWindow()?.webContents.send('payments:completed');
       },
     });
@@ -70,8 +69,8 @@ export async function stopPaymentsPortal(): Promise<void> {
   paymentsServer = null;
 }
 
-export type PayPageKind = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel';
-export const PAY_PAGE_KINDS: readonly PayPageKind[] = ['deposit', 'withdraw', 'authorize', 'claim', 'close-channel'];
+export type PayPageKind = 'deposit' | 'withdraw' | 'authorize';
+export const PAY_PAGE_KINDS: readonly PayPageKind[] = ['deposit', 'withdraw', 'authorize'];
 
 export let paymentsPopup: BrowserWindow | null = null;
 

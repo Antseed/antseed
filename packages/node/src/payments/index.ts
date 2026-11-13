@@ -36,6 +36,10 @@ export type { IdentityClientConfig } from './evm/identity-client.js';
 export { StakingClient } from './evm/staking-client.js';
 export type { StakingClientConfig } from './evm/staking-client.js';
 
+// USDC → ETH swaps for seller gas refuels (Base mainnet, Uniswap v3)
+export { UsdcEthSwapClient, usdcEthSwapDeployment } from './evm/usdc-eth-swap-client.js';
+export type { UsdcEthSwapClientConfig } from './evm/usdc-eth-swap-client.js';
+
 // Verifier network client
 export {
   VerifierClient,
@@ -45,6 +49,10 @@ export {
   verifierVerdict,
   VERIFIER_VERDICT,
   MAX_RESULTS_PER_MODEL_AUDIT,
+  MAX_AUDITOR_PROFILE_NAME_BYTES,
+  MAX_AUDITOR_PROFILE_URI_BYTES,
+  VERIFICATION_REWARDS_OFF,
+  validateAuditorProfile,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -58,7 +66,10 @@ export type {
   SubmitModelAuditInput,
   ServiceAuditedEvent,
   ModelAuditedEvent,
+  AuditorSetEvent,
   AuditorCredits,
+  AuditorProfile,
+  RequiredReports,
   VerifierServiceStatus,
   VerifierVerdict,
   VerifierVerdictName,
@@ -80,6 +91,7 @@ export {
   SET_OPERATOR_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,
@@ -169,7 +181,47 @@ export type { BuyerFreeUsageConfig } from './buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './seller-buyer-limiter.js';
+export {
+  DEFAULT_FREE_TIER_STAKE_TIERS,
+  FREE_TIER_EPOCHS_PER_YEAR,
+  MAX_FREE_TIER_STAKE_TIERS,
+  encodeFreeTierCapabilities,
+  freeTierServiceScope,
+  parseServiceFreeTierProgram,
+  freeTierProgramForService,
+  isPricedService,
+  FREE_TIER_SERVED_HEADER,
+  FREE_TIER_SERVED_COVERED,
+  freeTierStakeTierForPower,
+  normalizeFreeTierProgram,
+  parseFreeTierProgram,
+  powerToAntsEpochs,
+  validateFreeTierStakeTiers,
+} from './free-tier-program.js';
+export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './free-tier-program.js';
+export {
+  DEFAULT_FREE_TIER_DELEGATION_DAYS,
+  FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_CODE_PREFIX,
+  FREE_TIER_DELEGATION_TYPES,
+  MAX_FREE_TIER_DELEGATIONS,
+  acceptFreeTierDelegationCode,
+  decodeFreeTierDelegationCode,
+  decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationCode,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+  verifyFreeTierDelegations,
+  withFreeTierDelegation,
+} from './free-tier-delegation.js';
+export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './free-tier-delegation.js';
+export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './free-tier-stake-resolver.js';
+export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
 
 // Buyer payment negotiator (402 handling, SpendingAuth flow, cost tracking)
 export { BuyerPaymentNegotiator } from './buyer-payment-negotiator.js';
@@ -184,6 +236,7 @@ export {
   computeCostUsdc,
   estimateCostFromBytes,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   isFreeUnitBillingModel,
   validateUnitBillingModelV1,
 } from './pricing.js';

@@ -8,7 +8,7 @@ import { bundleDigest, claimId, normalizePeerId, parseEvidenceConfigKey, sellerB
 /**
  * Capability 'seller-bound': turns provider verification into seller verification. The
  * seller signs the seller-bound preimage (keccak256 over nonce ‖ bundleDigest ‖ peerId)
- * with its AntSeed identity key, where bundleDigest covers every other cap's evidence
+ * with its Antseed identity key, where bundleDigest covers every other cap's evidence
  * (the node quote and the provider quote together). The buyer recovers the signer's EVM
  * address and requires it to equal the peer id. Freshness (nonce) and identity (peerId)
  * live here, independent of what any quote's own report_data binds. One seller signature

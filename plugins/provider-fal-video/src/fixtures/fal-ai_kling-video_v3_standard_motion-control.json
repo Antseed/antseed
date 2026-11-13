@@ -1,0 +1,138 @@
+{
+  "paths": {
+    "/fal-ai/kling-video/v3/standard/motion-control": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KlingVideoV3StandardMotionControlInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "KlingVideoV3StandardMotionControlInput": {
+        "type": "object",
+        "properties": {
+          "enable_safety_checker": {
+            "type": "boolean",
+            "default": true,
+            "title": "Enable Safety Checker",
+            "description": "Disabling safety checks requires account authorization; unauthorized requests are always checked."
+          },
+          "keep_original_sound": {
+            "type": "boolean",
+            "default": true,
+            "title": "Keep Original Sound",
+            "description": "Whether to keep the original sound from the reference video."
+          },
+          "video_url": {
+            "type": "string",
+            "x-fal": {
+              "min_height": 340,
+              "max_width": 3850,
+              "max_file_size": 104857600,
+              "max_duration": 30.05,
+              "timeout": 30,
+              "min_duration": 3,
+              "max_height": 3850,
+              "min_width": 340
+            },
+            "title": "Video Url",
+            "limit_description": "Max file size: 100.0MB, Min width: 340px, Min height: 340px, Max width: 3850px, Max height: 3850px, Min duration: 3.0s, Max duration: 30.05s, Timeout: 30.0s",
+            "description": "Reference video URL. The character actions in the generated video will be consistent with this reference video. Should contain a realistic style character with entire body or upper body visible, including head, without obstruction. Duration limit depends on character_orientation: 10s max for 'image', 30s max for 'video'.",
+            "examples": [
+              "https://v3b.fal.media/files/b/0a90edae/3nvl30ic9g2otKRcOV5nO_output.mp4"
+            ],
+            "_fal_ui_field": "video"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "examples": [
+              "An man dancing"
+            ]
+          },
+          "image_url": {
+            "type": "string",
+            "x-fal": {
+              "min_width": 340,
+              "min_height": 340,
+              "max_aspect_ratio": 2.5,
+              "max_width": 3850,
+              "max_file_size": 10485760,
+              "timeout": 20,
+              "max_height": 3850,
+              "min_aspect_ratio": 0.4
+            },
+            "title": "Image Url",
+            "limit_description": "Max file size: 10.0MB, Min width: 340px, Min height: 340px, Max width: 3850px, Max height: 3850px, Min aspect ratio: 0.40, Max aspect ratio: 2.50, Timeout: 20.0s",
+            "description": "Reference image URL. The characters, backgrounds, and other elements in the generated video are based on this reference image. Characters should have clear body proportions, avoid occlusion, and occupy more than 5% of the image area.",
+            "examples": [
+              "https://v3b.fal.media/files/b/0a90ee31/VHtWK5BZMa-XoT6gahJKS_077.png"
+            ],
+            "_fal_ui_field": "image"
+          },
+          "elements": {
+            "title": "Elements",
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/KlingV3ImageElementInput"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional element for facial consistency binding. Upload a facial element to enhance identity preservation in the generated video. Only 1 element is supported. Reference in prompt as @Element1. Element binding is only supported when character_orientation is 'video'.",
+            "examples": [
+              null
+            ]
+          },
+          "character_orientation": {
+            "enum": [
+              "image",
+              "video"
+            ],
+            "type": "string",
+            "title": "Character Orientation",
+            "description": "Controls whether the output character's orientation matches the reference image or video. 'video': orientation matches reference video - better for complex motions (max 30s). 'image': orientation matches reference image - better for following camera movements (max 10s).",
+            "examples": [
+              "video"
+            ]
+          }
+        },
+        "x-fal-order-properties": [
+          "enable_safety_checker",
+          "prompt",
+          "image_url",
+          "video_url",
+          "keep_original_sound",
+          "character_orientation",
+          "elements"
+        ],
+        "required": [
+          "image_url",
+          "video_url",
+          "character_orientation"
+        ],
+        "title": "MotionControlV3StandardRequest"
+      }
+    }
+  }
+}

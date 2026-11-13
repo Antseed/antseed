@@ -32,8 +32,11 @@ Every routing protocol shares:
 
 ### Adding a routing protocol
 
-1. Append the protocol to `ROUTING_PROTOCOLS` in `@antseed/protocol/service-api`
-   (billing metadata encodes protocols by list position, so append only).
+1. Add the protocol in `@antseed/protocol/service-api` without moving any existing id.
+   Billing metadata writes each protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`,
+   and that list spreads `ROUTING_PROTOCOLS` before `AUDIO_SPEECH_PROTOCOLS`, so appending
+   to `ROUTING_PROTOCOLS` alone shifts the speech id. The new id must land at the very end
+   of the combined list. Also update the copy in `packages/api-adapter/src/types.ts`.
 2. Add its wire binding (`RoutingWireProtocol`: which requests are the free catalog
    and the billed ranking, how to read candidate IDs and judge a ranking billable,
    and its error format) to `ROUTING_WIRES` in `@antseed/protocol/routing`.
@@ -46,7 +49,7 @@ The rest of this page specifies `irp-suggest`.
 ## `irp-suggest`: IRP suggest-only mode
 
 The wire format is IRP **suggest-only mode**: plain IRP paths and bodies, with no
-AntSeed headers. The one AntSeed addition is the optional `max_pricing` member on
+Antseed headers. The one Antseed addition is the optional `max_pricing` member on
 model-list entries (see [Models](#models)); IRP clients ignore unknown members, so
 the wire format stays compatible. Seller identity stays on the buyer.
 
@@ -84,7 +87,7 @@ seconds and ignore members they do not recognise. Sellers and routers often spel
 the same model differently (`claude-opus-5` and `anthropic/claude-opus-5`), so a
 seller's service ID matches a listed model exactly or, failing that, by its
 canonical model key, the same matching the savings baselines use. If several listed
-models share a key, the first one listed wins. AntSeed routers run in
+models share a key, the first one listed wins. Antseed routers run in
 suggest-only mode, so entries carry no `candidates`.
 
 A router that scores whatever it is sent lists the wildcard `*`:

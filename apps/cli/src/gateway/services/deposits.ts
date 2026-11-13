@@ -18,8 +18,14 @@
 import { Interface, getAddress, type Log, type TransactionReceipt } from 'ethers'
 import type { DepositKind, DepositSource } from '../store.js'
 
-/** Public RPCs cap log queries at about 1000 blocks; on Base that is the half hour before the sweep. */
+/** Public RPCs cap log queries at about 1000 blocks; on Base that is the minutes before the sweep. */
 export const SOURCE_LOOKBACK_BLOCKS = 999
+/**
+ * Some public RPCs cap a log query far lower (50 blocks on a free plan). When
+ * the RPC refuses the whole lookback in one query, it is read in windows this
+ * size, newest first, until the transfers found cover the sweep.
+ */
+export const SOURCE_LOOKBACK_WINDOW_BLOCKS = 50
 
 const DEPOSITS_ABI = new Interface(['event Deposited(address indexed buyer, uint256 amount)'])
 const RELAY_ABI = new Interface(['event SweepExecuted(address indexed buyer, address indexed relayer, uint256 deposited, uint256 fee, bytes32 authNonce)'])
@@ -164,22 +170,36 @@ async function transferIn(provider: DepositChainProvider, chain: DepositChain, r
 async function incomingTransfers(provider: DepositChainProvider, chain: DepositChain, wallet: string, sweepBlock: number, sweepTx: string, swept: bigint): Promise<DepositSource[]> {
   const transfer = USDC_ABI.getEvent('Transfer')!.topicHash
   const to = `0x${wallet.toLowerCase().replace(/^0x/, '').padStart(64, '0')}`
-  const logs = await provider.getLogs({
-    address: chain.usdcContractAddress,
-    topics: [transfer, null, to],
-    fromBlock: Math.max(0, sweepBlock - SOURCE_LOOKBACK_BLOCKS),
-    toBlock: sweepBlock,
-  })
+  const lowest = Math.max(0, sweepBlock - SOURCE_LOOKBACK_BLOCKS)
+  const query = (fromBlock: number, toBlock: number) => provider.getLogs({ address: chain.usdcContractAddress, topics: [transfer, null, to], fromBlock, toBlock })
   const sources: DepositSource[] = []
   let covered = 0n
-  for (const log of [...logs].reverse()) {
-    if (same(log.transactionHash, sweepTx)) continue
-    const event = parse(USDC_ABI, log)
-    if (!event) continue
-    const amount = event.args[2] as bigint
-    sources.push({ from: getAddress(event.args[0] as string), amountUsdc: Number(amount), txHash: log.transactionHash.toLowerCase() })
-    covered += amount
-    if (covered >= swept) break
+  /** Takes `logs` (oldest first) newest first; true once they cover the sweep. */
+  const take = (logs: readonly Log[]): boolean => {
+    for (const log of [...logs].reverse()) {
+      if (same(log.transactionHash, sweepTx)) continue
+      const event = parse(USDC_ABI, log)
+      if (!event) continue
+      const amount = event.args[2] as bigint
+      sources.push({ from: getAddress(event.args[0] as string), amountUsdc: Number(amount), txHash: log.transactionHash.toLowerCase() })
+      covered += amount
+      if (covered >= swept) return true
+    }
+    return false
+  }
+  let whole: Log[] | null = null
+  try {
+    whole = await query(lowest, sweepBlock)
+  } catch {
+    // Refused (range too large for this RPC): read it in small windows below.
+  }
+  if (whole) {
+    take(whole)
+  } else {
+    // A window that fails throws, so the caller retries the sweep rather than store it naming no transfer.
+    for (let toBlock = sweepBlock; toBlock >= lowest; toBlock -= SOURCE_LOOKBACK_WINDOW_BLOCKS) {
+      if (take(await query(Math.max(lowest, toBlock - SOURCE_LOOKBACK_WINDOW_BLOCKS + 1), toBlock))) break
+    }
   }
   return sources.reverse()
 }

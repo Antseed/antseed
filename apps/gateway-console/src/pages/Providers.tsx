@@ -16,6 +16,7 @@ import { useConsole } from '../app/context'
 import { SellerListsButton } from '../components/PeerLists'
 import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
+import { diffRoutingNote, offerTrust } from '../lib/model-check'
 import { hasReputationData } from '../lib/policy-match'
 import { modelsFromPeers, qk, usePeers } from '../lib/queries'
 import { routingPlaces, type RoutingPlace } from '../lib/selection'
@@ -39,11 +40,33 @@ function score(value: number | null): string {
   return value === null ? '—' : String(Math.round(value))
 }
 
+/**
+ * The trust routing ranks a provider by: for a picked model, its trust for that model (cut to
+ * 10% by a live DIFF model check); across all models, its trust score.
+ */
+function providerTrust(peer: Peer, model: string): number | null {
+  if (!model) return peer.trustScore
+  const service = peer.services.find((entry) => entry.service.trim().toLowerCase() === model.trim().toLowerCase())
+  return offerTrust(peer.trustScore, service?.modelCheck)
+}
+
+function TrustCell({ peer, model }: { peer: Peer; model: string }) {
+  const trust = providerTrust(peer, model)
+  const cut = trust !== peer.trustScore && peer.trustScore !== null
+  const diffs = peer.diffServices?.length ?? 0
+  return (
+    <span className="gc-nowrap gc-trust-cell" title={cut ? `Cut from ${Math.round(peer.trustScore!)}: a DIFF model check on ${model}` : diffs > 0 ? diffRoutingNote(peer) ?? undefined : undefined}>
+      {!model && diffs > 0 && <span className="gc-attention" aria-hidden="true" />}
+      {score(trust)}
+    </span>
+  )
+}
+
 function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
   return (
     <div className="gc-badges">
-      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} upstreams={peer.teeUpstreams} />
       {isFreePeer(peer, model) && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
@@ -115,7 +138,7 @@ export default function Providers() {
                 { key: 'models', header: 'Models', secondary: true, optional: true, render: (peer) => <span className="gc-muted">{peer.services.length}</span> },
                 { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'inputUsdPerMillion', filter.model)) },
                 { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'outputUsdPerMillion', filter.model)) },
-                { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => peer.trustScore, render: (peer) => score(peer.trustScore) },
+                { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => providerTrust(peer, filter.model), render: (peer) => <TrustCell peer={peer} model={filter.model} /> },
                 ...(showReputation ? [{ key: 'reputation', header: 'Reputation', align: 'right' as const, secondary: true, optional: true, sortValue: (peer: Peer) => peer.reputationScore, render: (peer: Peer) => score(peer.reputationScore) }] : []),
                 { key: 'firstToken', header: 'First token', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.firstTokenMsP50, render: (peer) => formatLatency(peer.firstTokenMsP50) },
                 { key: 'speed', header: 'Speed', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.tokensPerSecondP50, render: (peer) => formatSpeed(peer.tokensPerSecondP50) },

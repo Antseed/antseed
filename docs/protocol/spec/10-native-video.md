@@ -1,6 +1,6 @@
 # Native video API integration
 
-AntSeed relays native video requests to seller-operated APIs in two formats: the Venice video API (`venice-video`) and fal.ai's queue API (`fal-video`). Other vendors' native APIs are not supported. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
+Antseed relays native video requests to seller-operated APIs in two formats: the Venice video API (`venice-video`) and fal.ai's queue API (`fal-video`). Other vendors' native APIs are not supported. Sellers own execution, storage, and refund policy. Antseed does not cache artifacts.
 
 Finished videos are streamed through the original seller; its API key never leaves the seller. Other providers and seller-hosted result URLs remain unchanged and must be accessible to buyers without seller credentials.
 
@@ -17,11 +17,15 @@ Venice uses the body `model` as the service. Retrieve carries `queue_id` in the 
 
 ### fal
 
-fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which AntSeed cannot route on. AntSeed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
+fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which Antseed cannot route on. Antseed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
+
+### Alibaba Cloud Model Studio
+
+The `alibaba-video` plugin serves the `fal-video` paths and translates them to Model Studio's task API, so no separate protocol or buyer change is needed. The seller maps the request fields to `input.media` and `parameters`, returns the task ID as `request_id`, and streams the finished file itself. It requires `duration` and refuses video and audio inputs before payment, because Model Studio bills an input video on top of the output.
 
 ## Image-to-video and video inputs
 
-The create endpoints are not text-only. AntSeed forwards the native JSON fields, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or AntSeed upload service is needed.
+The create endpoints are not text-only. Antseed forwards the native JSON fields, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or Antseed upload service is needed.
 
 Choose an upstream model that supports the requested input and advertise that exact model in the seller's allowed services and pricing. Upstream model-specific media constraints still apply. A text-only Venice model does not become image-capable just because `image_url` is present.
 
@@ -43,12 +47,41 @@ Send this body to `POST /api/v1/video/queue`, replacing the model with an image-
 
 ### Media access and verification
 
-- URLs must be reachable by the upstream provider. A buyer's local file path, `localhost` URL, or private AntSeed download URL is not an upstream-accessible input. Use inline media or an upstream-accessible URL; AntSeed does not fetch arbitrary input URLs or upload local files for you.
+- URLs must be reachable by the upstream provider. A buyer's local file path, `localhost` URL, or private Antseed download URL is not an upstream-accessible input. Use inline media or an upstream-accessible URL; Antseed does not fetch arbitrary input URLs or upload local files for you.
 - Requests containing inline images automatically use chunked P2P uploads when needed. The seller's default upload-body limit is 64 MiB, counting the whole JSON body and base64 overhead; this is separate from the output-video download limit.
 - Existing seller-account-scoped media references are not automatically resolved or routed to their original seller. Download the media and supply an eligible inline input or accessible URL instead, subject to upstream restrictions.
-- Image-to-video has mocked buyer → seller → upstream → result-download tests for Venice, including large inline PNGs, WebRTC uploads, unchanged media fields, and free follow-ups. These tests do not validate a real upstream model's image quality or acceptance. Video-input fields have forwarding tests, not a live video-editing guarantee.
+- Image-to-video has mocked buyer → seller → upstream → result-download tests for Venice, including large inline PNGs, WebRTC uploads, unchanged media fields, and free follow-ups. These tests do not validate a real upstream model's image quality or acceptance. Video edits have mocked tests for both fal and Venice (inline sources over TCP and WebRTC, and one charge for the source length); they do not validate a real upstream model's output.
+
+## Video edits (video-to-video)
+
+A video edit model takes a source video (`video_url`) and changes part of it (a character from an image, a style, or a text instruction) while keeping the source's motion and timing. The seller announces it with `video` in `capabilities.video.inputs` and `video_url` in `supportedParameters`. The buyer's automatic routing treats a create that carries `video_url` (or `reference_video_urls`) as if it required that parameter, as it does with `image` for image edits: it goes only to sellers that list the field, and when none does the buyer answers `422 required_capability_unavailable`. A pinned seller is not filtered.
+
+**Duration is the source length.** Many edit models (MiniMax H3 Max Recast, Kling V3 motion control) make an output exactly as long as the source and take no `duration`, and Venice lists only `Auto` for them. The buyer sends `duration = floor(source seconds)`, at least 1, and both peers price it with the existing `video_seconds` rule, so the delivery check and the charge are unchanged. A model that takes a `duration` (Kling v4 edit, Wan 2.7 edit) gets the same value: it cuts the output to the source, so a longer one would be delivered short and never charged, and fal bills Kling v4 edit for the source as well as the output. The upstream bills every edit for at least the whole source, so the seller checks the price: it measures the inline source's longest video track (its played length from the edit list or sample table, not headers; a malformed or fragmented MP4 is refused) and answers `422 invalid_video_duration` unless `duration` is that length rounded down. Such edits take the source inline as a `data:video/...;base64` URL. The fal seller then removes `duration` before submitting to an endpoint whose schema has none; Venice wants it, so it is passed through.
+
+**Refused before payment.** The plugins run this check through the optional `Provider.checkRequest(request)` hook, which the seller calls right after matching the service and before pricing, the one-off channel plan, or any other payment step. A refusal (`{ statusCode, code, message }`) is sent as `{ "error": { "code", "message" } }`, so a refused create opens no channel and costs the buyer nothing. The plugins check again when the create reaches them.
+
+**No seller precheck.** Apart from that length, sellers do not check the source or the fields; the upstream does, after the payment channel opened. Buyers check the source before pricing against the limits the provider publishes. The `antseed-videos` skill reads them live: fal's OpenAPI schema (`x-fal` on `video_url`: `min_duration`, `max_duration`, `max_file_size`, `min/max_width`, `min/max_height`, `min/max_aspect_ratio`, `min/max_fps`; required fields; the `duration` range), and for Venice models Venice's model list, then the same model's fal schema, then Venice's docs.
+
+**Failed jobs.** A job the upstream rejects (a retrieve answering `FAILED`; the Venice plugin turns Venice's JSON `400`/`422` refusal into `FAILED` with the reason) ends it. Any other error answer to a retrieve, including a `400` or `422`, keeps the job and its channel. The seller closes the job's one-off channel at what the buyer signed: the opening fee for a price above the first-sign cap, otherwise nothing. The buyer forgets the job but keeps the channel stored as open, so it can still request-close it if the seller's close never lands. `429` and `5xx` answers keep the job. Neither fal nor Venice bills the seller for a failed job.
+
+**Announced options.** The fal plugin reads each endpoint's schema at start and announces its inputs, required inputs and resolutions. For an endpoint without a `duration` field, it also announces the whole-second `durationsSeconds` between `x-fal`'s `min_duration` and `max_duration`. The Venice plugin reads `/api/v1/models`, announces `video_url` and `image_url` for each edit model, and asks Venice, with a free invalid create, whether the model requires reference images.
+
+**Size.** Inline sources share the 64 MiB upload limit (base64 included, about 47 MB of raw video). The buyer sends the body twice when a one-off channel must open first, so a large inline source uploads twice.
 
 Native field references: [Venice queue](https://docs.venice.ai/api-reference/endpoint/video/queue), [BytePlus create task](https://docs.byteplus.com/en/docs/ModelArk/1520757) and [BytePlus ModelArk](https://docs.byteplus.com/en/docs/ModelArk).
+
+## Talking avatars (audio-driven length)
+
+Some models animate a face image (`image_url`) to an audio file (`audio_url`) and make a video exactly as long as the audio, with no `duration` field (fal's Kling AI Avatar v2, `fal-ai/kling-video/ai-avatar/v2/pro` and `/standard`). The upstream bills them per second of that video, so a buyer that could choose its own `duration` would pay for less than it gets, and one that sends none could not be priced.
+
+The fal plugin marks such an endpoint from its schema: `audio_url` is required, there is no `video_url`, and no field sets the length (`duration`, `num_frames`). It announces `first_frame` and `audio` in `capabilities.video.inputs` and `requiredInputs`, and no `durationsSeconds`. Without the schema, a create with `audio_url` and no `video_url` is treated the same way unless the service's configured `supportedParameters` include `duration` or `num_frames`.
+
+**Duration is the audio length.** The buyer sends `duration = floor(audio seconds)`, at least 1, priced with the existing `video_seconds` rule. The seller measures the inline audio (`data:audio/...;base64`; the bytes decide the format, not the media type) and answers `422 invalid_video_duration` before payment (`Provider.checkRequest`) unless `duration` is that length:
+
+- **MP3:** every whole MPEG audio frame after the leading ID3v2 tags, summing each frame's samples over its sample rate; a first Xing/Info/VBRI header frame is not audio. Bytes between frames are skipped the way a decoder resyncs (at the next two whole frames in a row), so audio after a gap is counted too. Bytes before the first frame that are not an ID3v2 tag make the file unmeasurable.
+- **WAV:** RIFF/WAVE with a PCM or float `fmt ` chunk (plain or extensible) before the first `data` chunk, whose `blockAlign` is channels × sample width; the length is the bytes of every `data` chunk over `sampleRate × blockAlign`. A `data` size of 0, 0xFFFFFFFF, or past the end counts to the end. Bytes after a chunk that are not another chunk (a FourCC of printable ASCII) make the file unmeasurable.
+
+Anything else (a URL, AAC, M4A, Ogg, FLAC, compressed WAV) is refused. The seller then removes `duration` and uploads the inline audio to fal's file storage before submitting, because some endpoints take `audio_url` only as a URL. The output is about as long as the audio, so the delivery check (at least 90% of `duration`) is unchanged.
 
 ## Model options
 
@@ -69,13 +102,13 @@ Sellers can advertise what each video model accepts in `capabilities.video` (pee
 }
 ```
 
-Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional. The Venice Video plugin does not fetch or enforce these options; sellers configure them through `ANTSEED_SERVICE_CAPABILITIES_JSON`, and Venice remains the source of truth for request validation.
+Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional. Sellers configure them through `ANTSEED_SERVICE_CAPABILITIES_JSON`; options a seller configures always win. For video edit models, the fal and Venice plugins fill in `inputs`, `requiredInputs`, `resolutions` (exact case, from fal's `resolution` enum or Venice's model list) and, on fal, source-length `durationsSeconds`, as read from the upstream ([Video edits](#video-edits-video-to-video)). The upstream remains the source of truth for other request validation.
 
 ## Billing
 
 Discovery billing entries use the protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`; `venice-video` is ID `6` and `fal-video` is ID `7`.
 
-A video is charged when it is delivered: the first retrieve that returns the finished video (a streamed download that passes the delivery check below) charges the video price once per job. The create itself is not charged; the seller stores the price and the job's one-off channel with the accepted `queue_id` (`resource_charges` in the metering database) and charges it on the first delivery. Later downloads of the same job are free. A job that is never delivered (provider failure, moderation rejection, expired file, or never downloaded) is not charged beyond the serious fee described below. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
+A video is charged when it is delivered: the first retrieve that returns the finished video (a streamed download that passes the delivery check below) charges the video price once per job. The create itself is not charged; the seller stores the price and the job's one-off channel with the accepted `queue_id` (`resource_charges` in the metering database) and charges it on the first delivery. Later downloads of the same job are free. A job that is never delivered (provider failure, moderation rejection, expired file, or never downloaded) is not charged beyond the serious fee described below. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Components can match the create's `model`, `resolution`, `aspect_ratio` and `audio` (`"true"`/`"false"`; fal reads `generate_audio`, then `audio`). For `venice-video`, both peers price an omitted `aspect_ratio` as the service's first announced `video.aspectRatios` entry and an omitted `audio` as its announced `video.audio` (`videoAttributes` in `@antseed/buyer-core`), and the seller must send the upstream those values. For `fal-video` an omitted option stays out of the attributes, so a create that leaves out an option every component requires matches none and is refused. `aspect_ratio` and `audio` need metadata v16. Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
 
 ### Delivery check
 
@@ -131,6 +164,8 @@ A one-off channel is closed as soon as its outcome is known:
 - **Not accepted, provider error, ownership store failure, or a free video:** the seller closes immediately at the amount already settled (the serious fee, or `0`).
 - **Generation failed:** when retrieve reports `FAILED`, `ERROR` or `CANCELLED`, the seller closes at the serious fee.
 - **Abandoned:** the seller closes a channel whose create never started after 10 minutes, and any unpaid channel after 24 hours.
+
+**Channels that earn nothing.** The seller pays for `reserve()` before its provider sees the create, and for `close()` however it ends, so it limits how many channels one buyer can cost it for nothing. It counts the buyer's one-off channels that ended in the last 24 hours, after the buyer's last fully paid video, having earned less than a fixed floor of $0.01, plus channels reserved whose create has not been accepted and plans the buyer has not answered. A failure on the seller's side counts too, since the gas is spent either way. Running jobs do not count, so a buyer can still run any number at once. At 16, the seller answers a new create HTTP 429 `one_off_channel_backoff` with `Retry-After` instead of a plan. When only creates still being decided put a buyer there, `Retry-After` is 5 seconds. Otherwise the seller offers one more channel 60 seconds after the last one ended, waiting twice as long for each further one, up to an hour.
 
 If the seller disappears, the buyer can still `requestClose()` and `withdraw()` the channel after the 15-minute grace period like any other channel.
 

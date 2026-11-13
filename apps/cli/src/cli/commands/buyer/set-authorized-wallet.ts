@@ -35,6 +35,8 @@ interface BrowserAuthorizationInput {
     onPaymentCompleted: () => void;
   }) => Promise<AuthorizationServer>;
   log?: (message: string) => void;
+  /** Pay-page action to open. Default: `authorize`. */
+  action?: string;
 }
 
 interface SetAuthorizedWalletOptions {
@@ -60,8 +62,8 @@ export async function loadAuthorizingIdentity(dataDir: string, name: string | un
   return { wallet: identity.wallet, address: identity.wallet.address, identityHex: identity.wallet.privateKey.replace(/^0x/, '') };
 }
 
-export function buildAuthorizedWalletUrl(port: number, token: string): string {
-  const params = new URLSearchParams({ token, page: 'pay', action: 'authorize' });
+export function buildAuthorizedWalletUrl(port: number, token: string, action = 'authorize'): string {
+  const params = new URLSearchParams({ token, page: 'pay', action });
   return `http://127.0.0.1:${port}?${params.toString()}`;
 }
 
@@ -84,8 +86,8 @@ export async function runBrowserWalletAuthorization(input: BrowserAuthorizationI
     if (!bound || typeof bound === 'string') throw new Error('Wallet authorization server is not listening.');
     if (!server.bearerToken) throw new Error('Wallet authorization server did not provide a session token.');
 
-    const url = buildAuthorizedWalletUrl(bound.port, server.bearerToken);
-    log(`Open this secure local page to connect the authorized wallet:\n${url}`);
+    const url = buildAuthorizedWalletUrl(bound.port, server.bearerToken, input.action);
+    log(`Open this secure local page to connect ${input.action && input.action !== 'authorize' ? 'your wallet' : 'the authorized wallet'}:\n${url}`);
     if (input.openBrowser) {
       try {
         await input.openBrowser(url);
@@ -119,7 +121,7 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
     .option('--self', 'authorize the buyer hot wallet itself (requires ETH for gas)', false)
     .option('--no-open', 'print the secure local URL without opening a browser')
     .option('--identity <name>', 'authorize for this buyer identity\'s wallet (e.g. a gateway workspace\'s) instead of the default one')
-    .addHelpText('after', '\nBy default, opens the AI VPN wallet flow so the connected external wallet submits the transaction and pays gas. --self instead makes the buyer hot wallet its own authorized wallet. The authorized wallet controls withdrawals and future authorization transfers.')
+    .addHelpText('after', '\nBy default, opens the Antseed Desktop wallet flow so the connected external wallet submits the transaction and pays gas. --self instead makes the buyer hot wallet its own authorized wallet. The authorized wallet controls withdrawals and future authorization transfers.')
     .action(async (options: SetAuthorizedWalletOptions) => {
       let spinner: ReturnType<typeof ora> | undefined;
       try {

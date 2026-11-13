@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ChannelStore } from '@antseed/node';
 import type { StoredChannel } from '@antseed/node';
+import { registerBuyerMeteringCommand } from './metering.js';
+import { buyerChannel, buyerCommandHarness, onChain } from './test-helpers.js';
 
 function seedChannel(store: ChannelStore, overrides: Partial<StoredChannel> = {}): StoredChannel {
   const now = Date.now();
@@ -123,4 +125,16 @@ test('metering shows settled channels when no active ones exist', () => {
     store.close();
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('buyer metering lists no channel the seller settled on-chain', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const channelId = '0x' + 'dd'.repeat(32);
+  harness.seed(buyerChannel(channelId, harness.buyer));
+
+  const { stdout } = await harness.run(registerBuyerMeteringCommand, ['metering', '--json'], {
+    [channelId]: onChain(harness.buyer, 2, 400_000n),
+  });
+
+  assert.match(stdout, /No active payment channels\./);
 });

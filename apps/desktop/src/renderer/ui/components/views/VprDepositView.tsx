@@ -14,14 +14,19 @@ import {
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
+import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
 import { formatUsd, shortfallBaseUnits, sweepAmountNeeded, usdcToBaseUnits } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
-import { recordUserAction } from '../../../modules/telemetry/actions';
+import { recordDepositStep, recordUserAction } from '../../../modules/telemetry/actions';
+import type { TelemetryDepositMethod } from '../../../../shared/telemetry';
 
 const PEER_PAY_LOGO = new URL('../../../assets/peer-pay.webp', import.meta.url).href;
 const VENMO_LOGO = new URL('../../../assets/venmo.svg', import.meta.url).href;
@@ -30,6 +35,23 @@ const REVOLUT_LOGO = new URL('../../../assets/revolut.png', import.meta.url).hre
 const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
 
 const AMOUNT_PRESETS = ['5', '10', '25'];
+
+/**
+ * Funding method family per chooser option, for the deposit funnel. Meridian
+ * takes USDC from any chain, so it counts as a crypto wallet; Peer Pay is a
+ * payment app (Venmo, PayPal and similar).
+ */
+const PROVIDER_DEPOSIT_METHODS: Record<string, TelemetryDepositMethod> = {
+  'antseed-pay': 'card',
+  'antseed-pay-stripe': 'card',
+  meridian: 'crypto_wallet',
+  'peer-pay': 'payment_app',
+};
+
+function enteredAmountUsdc(amount: string): number | undefined {
+  const value = Number(amount);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 type Stage = 'choose' | 'crypto' | 'peer';
@@ -337,7 +359,34 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
-export function VprDepositView({ onSelectView }: Props) {
+/**
+ * Add funds for this computer's gateway. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't reach it: the page sends
+ * the user to that gateway's console, and nothing local (deposit watcher,
+ * checkout, address) starts until the gateway is known to be local.
+ */
+export function VprDepositView(props: Props) {
+  const mode = useCachedResource(gatewayResource).data?.status.mode;
+  if (mode === 'local') return <LocalDepositView {...props} />;
+  return (
+    <section className={`view view-vpr-deposit view-pinned-header ${styles.view}`} role="tabpanel">
+      <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+        {mode === 'remote' ? (
+          <VprCard>
+            <div className={styles.stack}>
+              <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+              <div>
+                <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+              </div>
+            </div>
+          </VprCard>
+        ) : null}
+      </VprPage>
+    </section>
+  );
+}
+
+function LocalDepositView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
     total: state.creditsTotalUsdc,
@@ -401,7 +450,7 @@ export function VprDepositView({ onSelectView }: Props) {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let cancelled = false;
-    void bridge?.depositsWatchStart?.().then((result) => {
+    void bridge?.depositsWatchStart?.()?.then((result) => {
       if (cancelled) return;
       if (result.ok && result.data) {
         setWatchInfo({ address: result.data.address, usdcAddress: result.data.usdcAddress, chainId: result.data.chainId });
@@ -438,8 +487,37 @@ export function VprDepositView({ onSelectView }: Props) {
 
   const [payPageNotice, setPayPageNotice] = useState<string | null>(null);
 
+  // Deposit funnel: the chooser was shown, a checkout opened, and whether
+  // it was credited before the view went away.
+  const checkoutOpenedRef = useRef(false);
+  const creditedRef = useRef(false);
+  const lastMethodRef = useRef<TelemetryDepositMethod>('unknown');
+  useEffect(() => {
+    recordDepositStep({ step: 'method_shown' });
+    return () => {
+      if (checkoutOpenedRef.current && !creditedRef.current) {
+        recordDepositStep({ step: 'checkout_abandoned', method: lastMethodRef.current });
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (watchStatus?.phase === 'credited') creditedRef.current = true;
+  }, [watchStatus]);
+  const chooseMethod = useCallback((method: TelemetryDepositMethod) => {
+    lastMethodRef.current = method;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'method_chosen', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+  const noteCheckoutOpened = useCallback((method: TelemetryDepositMethod) => {
+    checkoutOpenedRef.current = true;
+    creditedRef.current = false;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'checkout_opened', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+
   const openBrowserWallet = useCallback(() => {
     recordUserAction('deposit_start', 'deposit');
+    chooseMethod('crypto_wallet');
     setPayPageNotice(null);
     const call = window.antseedDesktop?.paymentsOpenPayPage?.({ kind: 'deposit', amountUsdc: amount });
     if (!call) {
@@ -448,20 +526,28 @@ export function VprDepositView({ onSelectView }: Props) {
     }
     void call.then((result) => {
       if (!result.ok) setPayPageNotice(result.error ?? 'Could not open the payment window.');
+      else noteCheckoutOpened('crypto_wallet');
     }).catch((err: unknown) => {
       setPayPageNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const openCardProvider = useCallback((providerId: string) => {
     recordUserAction('deposit_start', 'deposit');
+    const method = PROVIDER_DEPOSIT_METHODS[providerId] ?? 'unknown';
+    // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
+    if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
-    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
+    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount })?.then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
+      } else {
+        noteCheckoutOpened(method);
       }
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
   const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
@@ -573,11 +659,11 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add credits" backFallback="credits">
-        <div className={styles.stack}>
+        <VprPage title="Add funds" backFallback="home" subtitle="Add to your balance with a card, a payment app or USDC.">
+        <div className={`${styles.stack} ${styles.chooseStack}`}>
           <BalanceSummaryCard
             values={balanceValues}
-            notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
           />
 
           <div className={styles.primaryMethods}>
@@ -602,6 +688,8 @@ export function VprDepositView({ onSelectView }: Props) {
               </span>
             </button>
             {payPageNotice && <div className={styles.cardNotice} role="alert">{payPageNotice}</div>}
+            {/* Every method funds through the watcher: when it can't start, say why here too. */}
+            {watchError && <div className={styles.cardNotice} role="alert">{watchError}</div>}
 
             <div className={styles.methodGroup}>
               <button
@@ -609,6 +697,9 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('crypto_wallet');
+                  // The QR address is this method's checkout.
+                  noteCheckoutOpened('crypto_wallet');
                   goToStage('crypto');
                 }}
               >
@@ -637,6 +728,7 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('payment_app');
                   setCardNotice(null);
                   goToStage('peer');
                 }}
@@ -734,7 +826,7 @@ export function VprDepositView({ onSelectView }: Props) {
 
     if (current === 'peer') {
       return (
-        <VprPage title="Deposit using Peer" onBack={() => goToStage('choose')}>
+        <VprPage title="Deposit using Peer" subtitle="Add to your balance from a bank or payment app." onBack={() => goToStage('choose')}>
           <div className={styles.stack}>
 
             {amountForm}
@@ -762,7 +854,7 @@ export function VprDepositView({ onSelectView }: Props) {
     }
 
     return (
-      <VprPage title="Pay with USDC on Base" onBack={() => goToStage('choose')}>
+      <VprPage title="Pay with USDC on Base" subtitle="Scan the code or copy the address. Credits update automatically." onBack={() => goToStage('choose')}>
         <div className={styles.stack}>
 
           {amountForm}

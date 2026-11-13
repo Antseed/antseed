@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AnthropicMessagesEndpoint } from '../src/endpoints/anthropic-messages.js'
 import { OpenAIChatEndpoint } from '../src/endpoints/openai-chat.js'
 
-const request = { model: 'm', system: 's', user: 'u', temperature: 0, topP: 1, maxTokens: 160 }
+const request = { model: 'm', system: 's', user: 'u', temperature: 0, maxTokens: 160 }
 
 function fakeFetch(status: number, body: unknown, seen: Array<{ url: string; init: RequestInit }>): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
@@ -26,7 +26,8 @@ describe('OpenAIChatEndpoint', () => {
     expect(seen[0]!.url).toBe('https://example.test/v1/chat/completions')
     expect((seen[0]!.init.headers as Record<string, string>).authorization).toBe('Bearer secret')
     const body = JSON.parse(new TextDecoder().decode(seen[0]!.init.body as Uint8Array)) as Record<string, unknown>
-    expect(body).toMatchObject({ model: 'm', temperature: 0, top_p: 1, max_tokens: 160 })
+    expect(body).toMatchObject({ model: 'm', temperature: 0, max_tokens: 160 })
+    expect('top_p' in body).toBe(false)
     expect(result).toMatchObject({ ok: true, text: '(1) 42', finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 3 } })
   })
 

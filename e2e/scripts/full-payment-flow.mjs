@@ -282,6 +282,8 @@ async function main() {
       [
         "script",
         "script/Deploy.s.sol",
+        // The deploy needs none of the contract tests, which are most of the compile.
+        "--skip", "test",
         "--rpc-url", RPC_URL,
         "--broadcast",
       ],

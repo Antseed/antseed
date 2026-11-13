@@ -21,6 +21,16 @@ export interface RecognizedUsageDeployment {
   };
 }
 
+/** The Uniswap v3 deployment a seller swaps USDC for ETH through (gas auto-refuel). */
+export interface UsdcEthSwapDeployment {
+  swapRouter02: string;
+  quoterV2: string;
+  /** Wrapped native token, unwrapped to ETH after the swap. */
+  weth: string;
+  /** USDC/WETH pool fee tier, in hundredths of a basis point (500 = 0.05%). */
+  poolFee: number;
+}
+
 export interface ChainConfig {
   chainId: ChainId;
   evmChainId: number;
@@ -55,6 +65,8 @@ export interface ChainConfig {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  /** AntseedVerificationPointsPolicy: scales seller and buyer points by the seller's model-verification verdicts. */
+  verificationPointsPolicyAddress?: string;
   recognizedUsage?: RecognizedUsageDeployment;
   /** Block when Channels contract was deployed. Floor for event log scans. */
   channelsDeployBlock?: number;
@@ -66,12 +78,22 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
-  /** AntseedVerification contract address. */
+  /**
+   * The contract auditors submit KBF audits to: `AntseedKbfAudits` (M003), which also holds the
+   * approved auditors. The results layer is discovered from it unless overridden below.
+   *
+   * Base mainnet defaults to the M003 deployment (release `003-verification-split`); the earlier
+   * `AntseedKbfVerification` it replaces has an ABI the split client cannot read.
+   */
   verificationContractAddress?: string;
-  /** Block when the verification contract was deployed. Floor for verifier event scans. */
+  /** `AntseedVerificationResults` (verdicts and verification rewards); read from `kbf.results()` when absent. */
+  verificationResultsAddress?: string;
+  /** Block when the KBF audits contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
+  /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
+  usdcEthSwap?: UsdcEthSwapDeployment;
 }
 
 /**
@@ -102,6 +124,13 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     ],
     networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
+    // Uniswap v3: the deep USDC/WETH 0.05% pool.
+    usdcEthSwap: {
+      swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
+      quoterV2: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+      weth: '0x4200000000000000000000000000000000000006',
+      poolFee: 500,
+    },
   },
   'base-sepolia': {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],
@@ -113,15 +142,37 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     chainId: 'base-local',
     evmChainId: 31337,
     rpcUrl: 'http://127.0.0.1:8545',
-    // Nonce sequence: 0=USDC, 1=Registry, 2=ANTSToken, 3=AntseedRegistry, 4=Staking, 5=Deposits, 6=Channels, 7=Stats, 8=Emissions, 9=DepositRelay
+    // A fresh Anvil, deployed by anvil account 0. script/Deploy.s.sol, deployer nonces 0-9: 0=MockUSDC,
+    // 1=MockERC8004Registry, 2=ANTSToken, 3=AntseedRegistry, 4=Staking, 5=Deposits, 6=Channels, 7=Stats,
+    // 8=Emissions (V1), 9=DepositRelay. staking/emissions keep naming those legacy contracts.
     usdcContractAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
     identityRegistryAddress: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
-    registryContractAddress: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
+    registryContractAddress: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
     stakingContractAddress: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
     depositsContractAddress: '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707',
     channelsContractAddress: '0x0165878A594ca255338adfa4d48449f69242Eb8F',
+    statsContractAddress: '0xa513E6E4b8f2a923D98304ec87F64353C4D5C853',
     emissionsContractAddress: '0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6',
     depositRelayAddress: '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318',
+    // The rest of the production stack, as the worktree testbench's `--chain local` lays it out by default
+    // (e2e/testbench/lib/local-deploy.mjs: script/DeployLocalFull.s.sol, M001 Cutover.s.sol, DeployFreeUsage.s.sol,
+    // M003 Deploy.s.sol). After the cutover the registry's staking/emissions are SellerRegistry/UsageAccounting.
+    // ANTS sits at Base's address because AntseedEmissionsGate hardcodes it. A chain with only Deploy.s.sol on it
+    // has no code at these addresses; the node then resolves the legacy stack (payments/contract-stack.ts).
+    antsTokenAddress: '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263',
+    washTradingRegistryAddress: '0xc5a5C42992dECbae36851359345FE25997F5C42d',
+    emissionsGateAddress: '0x67d269191c92Caf3cD7723F116c85e6E9bf55933',
+    sellerPoolsAddress: '0xE6E340D132b5f46d1e472DebcD681B2aBc16e57E',
+    sellerRegistryAddress: '0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690',
+    positionInitAddress: '0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9',
+    usageAccountingAddress: '0x1613beB3B2C4f22Ee086B2b38C1476A3cE7f78E8',
+    pointsPolicyRegistryAddress: '0x851356ae760d987E095750cCeb3bC6014560891C',
+    sellerPoolsRewardsAddress: '0x70e0bA845a1A0F2DA3359C97E0285013525FFC49',
+    usageRewardsAddress: '0x4826533B4897376654Bb4d4AD88B7faFD0C98528',
+    legacyEmissionsEscrowAddress: '0x9d4454B023096f34B160D6B654540c56A1F81688',
+    freeUsageContractAddress: '0xFD471836031dc5108809D173A067e8486B9047A3',
+    verificationResultsAddress: '0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f',
+    verificationContractAddress: '0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07',
   },
 };
 
@@ -182,6 +233,7 @@ export function resolveChainConfig(overrides?: {
   legacyEmissionsV1ContractAddress?: string;
   antsTokenAddress?: string;
   verificationContractAddress?: string;
+  verificationResultsAddress?: string;
   emissionsGateAddress?: string;
   sellerPoolsAddress?: string;
   sellerRegistryAddress?: string;
@@ -192,6 +244,7 @@ export function resolveChainConfig(overrides?: {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  verificationPointsPolicyAddress?: string;
   depositRelayAddress?: string;
 }): ChainConfig {
   const base = getChainConfig(overrides?.chainId);
@@ -201,8 +254,16 @@ export function resolveChainConfig(overrides?: {
   const rpcOverridden = !!overrides?.rpcUrl;
   const resolvedFallbacks = overrides?.fallbackRpcUrls
     ?? (rpcOverridden ? [] : base.fallbackRpcUrls);
+  // The results address belongs to the KBF deployment it came with. A caller that points at another
+  // KBF contract without naming its results contract gets none, so readers discover it through
+  // `kbf.results()` instead of reading verdicts from an unrelated default deployment.
+  const kbfOverridden = !!overrides?.verificationContractAddress
+    && overrides.verificationContractAddress.toLowerCase() !== base.verificationContractAddress?.toLowerCase();
+  const { verificationResultsAddress: defaultResultsAddress, ...baseWithoutResults } = base;
+  const inheritedResults = kbfOverridden || !defaultResultsAddress ? {} : { verificationResultsAddress: defaultResultsAddress };
   return {
-    ...base,
+    ...baseWithoutResults,
+    ...inheritedResults,
     ...(overrides?.rpcUrl ? { rpcUrl: overrides.rpcUrl } : {}),
     ...(resolvedFallbacks !== undefined ? { fallbackRpcUrls: resolvedFallbacks } : {}),
     ...(overrides?.depositsContractAddress ? { depositsContractAddress: overrides.depositsContractAddress } : {}),
@@ -220,6 +281,9 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.verificationContractAddress
       ? { verificationContractAddress: overrides.verificationContractAddress }
       : {}),
+    ...(overrides?.verificationResultsAddress
+      ? { verificationResultsAddress: overrides.verificationResultsAddress }
+      : {}),
     ...(overrides?.emissionsGateAddress ? { emissionsGateAddress: overrides.emissionsGateAddress } : {}),
     ...(overrides?.sellerPoolsAddress ? { sellerPoolsAddress: overrides.sellerPoolsAddress } : {}),
     ...(overrides?.sellerRegistryAddress ? { sellerRegistryAddress: overrides.sellerRegistryAddress } : {}),
@@ -230,6 +294,7 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.legacyEmissionsEscrowAddress ? { legacyEmissionsEscrowAddress: overrides.legacyEmissionsEscrowAddress } : {}),
     ...(overrides?.washTradingRegistryAddress ? { washTradingRegistryAddress: overrides.washTradingRegistryAddress } : {}),
     ...(overrides?.pointsPolicyRegistryAddress ? { pointsPolicyRegistryAddress: overrides.pointsPolicyRegistryAddress } : {}),
+    ...(overrides?.verificationPointsPolicyAddress ? { verificationPointsPolicyAddress: overrides.verificationPointsPolicyAddress } : {}),
     ...(overrides?.depositRelayAddress ? { depositRelayAddress: overrides.depositRelayAddress } : {}),
   };
 }

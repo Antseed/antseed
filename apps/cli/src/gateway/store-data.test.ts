@@ -66,7 +66,7 @@ test('eighteen processes opening a v2 database at once migrate it exactly once',
     const store = new GatewayStore(dir)
     try {
       assert.equal(store.database.pragma('user_version', { simple: true }), MIGRATIONS.length)
-      assert.equal(MIGRATIONS.length, 14, 'the console schema, chat history, free-seller requests, deposits, pinned-model splitting, response speed, video jobs, video commitments, routed requests, favorite models, route selections and transfer deposits are twelve migrations on top of the two that shipped')
+      assert.equal(MIGRATIONS.length, 16, 'the console schema, chat history, free-seller requests, deposits, pinned-model splitting, response speed, video jobs, video commitments, routed requests, favorite models, route selections, transfer deposits, purchase statements and billing notes are fourteen migrations on top of the two that shipped')
       assert.equal(store.spendByPeriod({ keyId: 'key_team' }).total, 250_000, 'rollups were backfilled once')
       assert.deepEqual(store.listWorkspaces().map((ws) => ws.buyerIdentity), ['default', 'team-a'])
       assert.equal((store.database.prepare('SELECT COUNT(*) AS n FROM auth_schema_version').get() as { n: number }).n, 1)
@@ -229,6 +229,32 @@ test('requests still in flight are not failures; pruning in chunks keeps request
     assert.deepEqual(summaries.get(key.id), { requests: 7, spentUsdc: 500, spentSinceUsdc: 200 })
     assert.deepEqual(summaries.get(idle.id), { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 })
     assert.equal(store.usageReport({ keyIds: [] }, null).totals.requests, 0, 'rollups honour the visibility scope')
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
+test('a key\'s request count leaves out reads that call no model, before and after pruning', async () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const { key } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const base = Date.UTC(2026, 0, 5, 10)
+    // An app polling the model list, then one prompt.
+    for (let index = 0; index < 5; index += 1) {
+      store.startRequest({ tag: `gw_list_${index}`, keyId: key.id, buyerIdentity: 'default', method: 'GET', path: '/v1/models', model: null, startedAt: base + index, endUser: null })
+      store.finishRequest(`gw_list_${index}`, { status: 200, buyerRequestId: null })
+    }
+    assert.equal(store.usageStats(key.id).requests, 0, 'model listings alone are no usage')
+    assert.equal(store.keyUsageSummaries([key.id], 0).get(key.id)?.requests, 0)
+    start(store, 'gw_prompt', key.id, base + 100)
+    store.finishRequest('gw_prompt', { status: 200, buyerRequestId: null })
+    assert.equal(store.usageStats(key.id).requests, 1)
+    assert.equal(store.listRequests({}).length, 6, 'the request log keeps every call')
+    assert.equal(await store.pruneRequests(base + 10_000, 4), 6)
+    assert.equal(store.usageStats(key.id).requests, 1, 'rolled-up listings stay out too')
+    assert.equal(store.keyUsageSummaries([key.id], 0).get(key.id)?.requests, 1)
   } finally {
     store.close()
     cleanup()

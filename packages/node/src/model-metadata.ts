@@ -21,6 +21,7 @@ if (modelMetadataRegistry.version !== 2) {
 }
 
 const metadataByCanonicalKey = new Map<string, ModelMetadata>();
+const registeredIdByCanonicalKey = new Map<string, string>();
 for (const [registeredId, metadata] of Object.entries(modelMetadataRegistry.models)) {
   for (const candidate of [registeredId, ...(metadata.aliases ?? [])]) {
     const key = canonicalModelKey(candidate);
@@ -30,12 +31,23 @@ for (const [registeredId, metadata] of Object.entries(modelMetadataRegistry.mode
       throw new Error(`Duplicate canonical model metadata id: ${candidate}`);
     }
     metadataByCanonicalKey.set(key, metadata);
+    registeredIdByCanonicalKey.set(key, registeredId);
   }
 }
 
 /** Release-owned model metadata that cannot be expanded by a seller. */
 export function modelMetadataFor(serviceId: string): ModelMetadata | null {
   return metadataByCanonicalKey.get(canonicalModelKey(serviceId)) ?? null;
+}
+
+/**
+ * The reviewed registry id of a model, whatever spelling it was asked for
+ * under (vendor path, alias, version punctuation, `-latest`, a release date):
+ * `anthropic/claude-opus-4-6` and `claude-opus-4.6` are both `claude-opus-4.6`.
+ * Null for a model the registry does not list.
+ */
+export function registeredModelIdFor(serviceId: string): string | null {
+  return registeredIdByCanonicalKey.get(canonicalModelKey(serviceId)) ?? null;
 }
 
 /** Tags the model pickers do not offer as filters. */

@@ -5,9 +5,11 @@ Relays video generation requests to fal.ai model endpoints through fal's [queue 
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-fal-video
 export FAL_VIDEO_API_KEY=<seller-fal-key>
+antseed config seller add-provider video --plugin fal-video
 ```
+
+`add-provider` installs the plugin.
 
 - `FAL_VIDEO_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_VIDEO_BASE_URL`: optional, defaults to `https://queue.fal.run`
@@ -33,15 +35,41 @@ The service ID is the fal endpoint ID; aliases are not supported.
 
 Buyers send fal's model input as JSON, with the endpoint ID as `model`:
 
-| AntSeed path | fal call |
+| Antseed path | fal call |
 | --- | --- |
 | `POST /fal/v1/video/queue` | `POST {base}/{model}` with the body minus `model`/`service`; returns `{model, request_id, status}` |
 | `POST /fal/v1/video/retrieve` with `{model, request_id}` | `GET {base}/{owner}/{alias}/requests/{id}/status`, then the result's `video.url` |
 
 Retrieve returns fal's `IN_QUEUE` / `IN_PROGRESS` status as JSON, `{"status":"FAILED"}` when fal reports an error, and streams the finished MP4 through the seller once fal reports `COMPLETED`. fal's `status_url`/`response_url` are not passed to buyers: they need the seller's key. Media is fetched from the `https` URL in the result without the seller key. Cancel and webhooks are not relayed.
 
-The body is passed to fal unchanged, so field names are fal's own and differ by model (for example `start_image_url` for Kling V3, `image_url` for Seedance). At startup the seller reads each endpoint's input schema from `https://fal.ai/api/openapi/queue/openapi.json` (without the seller key) and announces its field names as `supportedParameters`, so buyers can name fields the way the model expects. A service that already sets `supportedParameters` in `ANTSEED_SERVICE_CAPABILITIES_JSON` keeps them. If the schema cannot be read, the service is announced without them. When a service announces `video.inputs` and its fields include a frame field (`image_url`, `start_image_url`, `end_image_url`, `tail_image_url`, ...), the matching `first_frame` or `last_frame` is added to `video.inputs`, so buyers can pick it for first-plus-last-frame videos.
+The body is passed to fal unchanged apart from the reference names below, so field names are fal's own and differ by model (for example `start_image_url` for Kling V3, `image_url` for Seedance). At startup the seller reads each endpoint's input schema from `https://fal.ai/api/openapi/queue/openapi.json` (without the seller key) and announces its field names as `supportedParameters`, so buyers can name fields the way the model expects. A service that already sets `supportedParameters` in `ANTSEED_SERVICE_CAPABILITIES_JSON` keeps them. If the schema cannot be read, the service is announced without them. When a service announces `video.inputs` and its fields include a frame field (`image_url`, `start_image_url`, `end_image_url`, `tail_image_url`, ...), the matching `first_frame` or `last_frame` is added to `video.inputs`, so buyers can pick it for first-plus-last-frame videos, and an endpoint with `video_urls` gets `reference_video`.
+
+Reference-to-video endpoints such as Seedance 2.5 name their reference media `image_urls`, `audio_urls` and `video_urls`. The seller also announces the common names other sellers use (`reference_image_urls`, `reference_audio_urls`, `reference_video_urls`) for each one the schema has, and renames them to fal's before the request goes to fal, so one request works on Venice and fal sellers alike. A create that sends both names for the same media is answered `400 invalid_video_request`.
+
+fal bills reference videos by their length on top of the output (Seedance 2.5: tokens = width × height × (input + output seconds) × 24 / 1024, × 0.6 when videos are sent; up to 30.2 s of reference video in total). A create that sends `video_urls` or `reference_video_urls` is priced with `reference_video: "true"` (metadata v17); without a `reference_video: "true"` component that matches the whole create (its resolution too), the create is answered `400 unsupported_video_input` before payment. See **Reference videos** in the media selling docs for the pricing pattern.
+
+### Video edits
+
+An endpoint with a `video_url` field is a video edit (video-to-video) endpoint, for example `minimax/h3-max/recast`, `kling/v4/video-to-video/edit` or `fal-ai/kling-video/v3/standard/motion-control`. From its schema the seller also reads the required fields and the `resolution` values. It announces `video` and the character image as `video.inputs` and `video.requiredInputs`, and the resolutions as `video.resolutions`. Options set in `ANTSEED_SERVICE_CAPABILITIES_JSON` win.
+
+The buyer pays for `duration`, which must be the source length in whole seconds, rounded down. fal bills every edit for at least the whole source, and an endpoint that takes a `duration` (Kling v4 edit, Wan 2.7 edit) cuts the output to the source, so a longer `duration` would be delivered short and never charged. The seller therefore measures the inline source and answers `422 invalid_video_duration`, without calling fal, unless `duration` is that length; the source must be inline (`data:video/mp4;base64,...`). An endpoint with no `duration` field (Recast, motion control) makes an output as long as the source, and the seller removes `duration` before submitting to fal. The seller uploads an inline `video_url` to fal's file storage (kept for one day) and gives fal that URL, because some endpoints, such as Kling motion control, take only a URL. When fal's `x-fal` metadata on `video_url` gives a `min_duration` and `max_duration`, the seller announces the whole seconds between them as `video.durationsSeconds`.
+
+### Talking avatars
+
+An endpoint that requires `audio_url`, has no `video_url`, and no field that sets the length (`duration`, `num_frames`) makes a video as long as its audio, for example `fal-ai/kling-video/ai-avatar/v2/pro` and `/standard`. fal bills it per second of that video. The seller announces `first_frame` (the face, `image_url`) and `audio` as `video.inputs` and `video.requiredInputs`.
+
+The buyer pays for `duration`, which must be the audio's length in whole seconds, rounded down. The seller measures the inline audio (an MP3 or PCM WAV `data:audio/...;base64` URL; the bytes decide the format) and answers `422 invalid_video_duration`, without calling fal, unless `duration` is that length. A URL or another audio format is refused the same way. It then removes `duration` and uploads the audio to fal's file storage (kept for one day), because some of these endpoints take `audio_url` only as a URL. If fal's schema can't be read at startup, a request with `audio_url` and no `video_url` is checked the same way, unless the service's configured `supportedParameters` include `duration` or `num_frames`.
+
+```bash
+antseed config seller add-service fal fal-ai/kling-video/ai-avatar/v2/pro \
+  --capabilities '{"video":{"audio":true}}' \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.13}]}}'
+```
+
+Both length checks (edits and talking avatars) also run before payment, through the provider's `checkRequest`, so a refused create opens no payment channel.
+
+Otherwise the seller does not check the source; fal does, and reports a refused job as `FAILED` with fal's reason, so the job's payment channel closes at once. A create fal does not answer in time (60 s plus 1 s per 256 KB, at most 10 minutes) is answered `504 upstream_upload_timeout`.
 
 `video_seconds` pricing uses the request's `duration` (`5`, `"5"` or `"5s"`); use `video_generations` for models without a numeric duration.
 
-Check that fal's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
+Check that fal's terms allow your offering. Antseed sellers must add value rather than resell raw API access.

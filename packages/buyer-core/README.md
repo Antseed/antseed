@@ -22,3 +22,15 @@ The environment plugs in through small structural interfaces
   — identity, peer knowledge, and optional verification persistence.
 
 Implementations don't import this package; compatibility is structural.
+
+**Keeping stored channels honest.** The store can lag the chain: a seller may
+close a channel this buyer stopped using. `reconcileStoredChannels({ store,
+channels, buyerEvmAddr })` reads every active row of one buyer on-chain and
+retires the ones that can never move money again. A closed channel becomes
+`settled` and a withdrawn one `timeout`, each with the contract's settled
+amount, and a reserve that never landed and whose every ReserveAuth has
+expired becomes `ghost`. Unreadable rows and unknown statuses stay active, as
+do rows whose reserve can still land. It never leaves a seller with a different
+active channel than it had. A process with live buyer sessions calls
+`negotiator.reconcileChannelsWithChain()` instead, which also leaves alone a
+seller with payment work in flight and drops retired sessions from memory.

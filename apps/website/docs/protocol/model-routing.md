@@ -15,7 +15,7 @@ Routing is a service category, not one API. Each routing API is its own service 
 | --- | --- | --- |
 | `irp-suggest` | [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md) (IRP) suggest-only mode | `irp-router` (any IRP router), `free-model-router` |
 
-Router settings are sent in the terms of the router's protocol. `GET /v1/models?type=router` lists each router's `protocol` and the `options` it accepts. The rest of this page describes `irp-suggest`, which uses IRP without AntSeed-specific headers or fields. Seller identity stays with the buyer.
+Router settings are sent in the terms of the router's protocol. `GET /v1/models?type=router` lists each router's `protocol` and the `options` it accepts. The rest of this page describes `irp-suggest`, which uses IRP without Antseed-specific headers or fields. Seller identity stays with the buyer.
 
 :::note Routing service vs. router plugin
 A [router plugin](/docs/router-api) is local buyer policy. A routing service is a paid service offered by another peer on the network. Buyers use the built-in `ModelRoutingClient` in `@antseed/router-core`, which picks an adapter by the router's protocol; no router plugin is required.
@@ -113,7 +113,7 @@ Routers use IRP problem details (`application/problem+json`).
 
 ## Buyer flow
 
-A buyer uses a routing service by sending `"model": "<routerPeerId>@<routerServiceId>"` to its local `/v1` API, or by selecting it in the desktop app. See [Use a routing service](/docs/api/routing#use-a-routing-service).
+A buyer uses a routing service by sending `"model": "<routerPeerId>@<routerServiceId>"` to its local `/v1` API. See [Use a routing service](/docs/api/routing#use-a-routing-service).
 
 1. Fetch the routing service's model list.
 2. Build candidates from eligible sellers whose models the router lists.

@@ -1,10 +1,8 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { Lexer } from 'marked';
-import type { ChatMessage } from './chat-shared';
 import { isToolResultOnlyMessage as isToolResultOnlyMessageShared } from './chat-shared';
 import {
-  formatArtifactLabel,
   segmentSensitiveChatText,
 } from './chat-safety';
 import type { SensitiveChatArtifact } from './chat-safety';
@@ -116,15 +114,9 @@ function isSafeHref(rawHref: string): boolean {
   }
 }
 
-function firstArtifactFromText(value: string): SensitiveChatArtifact | null {
-  const segment = segmentSensitiveChatText(value).find((part) => part.type === 'artifact');
-  return segment?.type === 'artifact' ? segment.artifact : null;
-}
-
 function HiddenWalletAddress({ artifact }: { artifact: SensitiveChatArtifact }) {
   const [revealed, setRevealed] = useState(false);
   const value = artifact.value;
-  const label = formatArtifactLabel(artifact);
 
   const handleReveal = (): void => {
     setRevealed(true);

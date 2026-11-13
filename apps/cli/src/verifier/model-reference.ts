@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
+  KBF_LOW_COVERAGE_RETRIES,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_REFERENCE_VERSION,
@@ -12,14 +13,20 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  isKbfTokenLimitFinishReason,
+  isLowCoverageKbfBatch,
   computeReferenceId,
   createReferenceQueryProfile,
+  KBF_THINKING_PREFILL,
   type ReferenceEndpointRequestV1,
+  type ReferenceReasoningStrategy,
+  referenceEndpointRequest as recordedReferenceEndpointRequest,
   type ReferenceContrastDetectionV1,
   type ReferenceContrastV1,
   computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
+  rescoreKbfReference,
   sha256Hex,
   validateKbfReferenceV1,
   type KbfProbe,
@@ -35,20 +42,33 @@ import type {
 import {
   REFERENCE_MINIMUM_MISMATCH_DELTA,
   REFERENCE_POWER_ALPHA,
+  REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
   REFERENCE_POWER_CONFIDENCE,
   isReferenceProbeCountAllowed,
   resolveReferenceSizingPolicy,
 } from './reference-sizing.js'
 import { probeBankCompatibilityHash } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
-import { resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
+import { auditedVerifierModels, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
 import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter-catalog.js'
+import {
+  THINKING_DISCOVERY_PROBES,
+  THINKING_DISCOVERY_TIMEOUT_MS,
+  THINKING_FALLBACK_MAX_TOKENS,
+  ThinkingDiscoveryError,
+  discoverThinkingSuppression,
+  thinkingStrategyRequest,
+  type ThinkingDiscoveryAttemptV1,
+  type ThinkingDiscoveryProbe,
+  type ThinkingDiscoveryStrategy,
+} from './thinking-suppression.js'
 import {
   CANONICAL_KBF_DOMAINS,
   canonicalKbfTolerance,
   createCanonicalKbfProbe,
 } from './canonical-kbf-domains.js'
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
+import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 
@@ -58,7 +78,20 @@ const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
 const DEFAULT_BATCH_RETRY_COUNT = 3
 const DEFAULT_RETRY_BASE_DELAY_MS = 500
+/**
+ * First wait after a 429 that gives no Retry-After, doubling per attempt up to
+ * `REFERENCE_THROTTLE_MAX_DELAY_MS`. An upstream provider's rate limit (OpenRouter's "Provider
+ * returned error" 429) outlasts the half-second backoff of other errors, so quick retries all hit
+ * it and the enrollment fails.
+ */
+const REFERENCE_THROTTLE_BASE_DELAY_MS = 10_000
+const REFERENCE_THROTTLE_MAX_DELAY_MS = 60_000
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
+/** Layout-filter passes for a new bank, as `generate_probes.py --layout-filter 1` in the KBF reference code. */
+const DEFAULT_LAYOUT_FILTER_PASSES = 1
+// Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
+// they get more time than the measured requests, whose timeout is part of the bank settings.
+const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
 const DEFAULT_MAX_CONCURRENT_REQUESTS = 4
 const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 3
 const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
@@ -72,7 +105,8 @@ const BARE_REASONING_STRATEGY = 'bare' as const
 const DISABLED_REASONING_REQUEST_OVERRIDES = { reasoning_effort: 'none' } as const
 const CONTRAST_EMPTY_BATCH_RETRIES = 2
 const CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES = 3
-const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal'])
+// `sensitive` is how Z.ai (GLM) reports its content filter through OpenRouter, with finish reason `stop`.
+const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal', 'sensitive'])
 const REASONING_EFFORT_ASCENDING: readonly VerifierReasoningEffort[] = [
   'minimal',
   'low',
@@ -111,11 +145,15 @@ interface ReferenceCachedResponseBaseV1 {
   inputUsdPerMillion: number
   outputUsdPerMillion: number
   costUsdMicros: string
+  /** Hidden reasoning tokens the endpoint reported (thinking discovery only). */
+  reasoningTokens?: number
 }
 
 interface ReferenceCachedSuccessV1 extends ReferenceCachedResponseBaseV1 {
   outcome?: 'success'
   content: string
+  /** Kept for thinking-discovery responses, so a replayed reply cut off at the token limit stays rejected. */
+  finishReason?: string | null
 }
 
 interface ReferenceCachedTerminalEmptyV1 extends ReferenceCachedResponseBaseV1 {
@@ -138,7 +176,7 @@ export interface ReferenceBuildCostModelV1 {
 }
 
 export interface ReferenceBuildCostPurposeV1 extends ReferenceBuildCostModelV1 {
-  purpose: 'candidate-generation' | 'target-model' | 'contrast-model' | 'self-test'
+  purpose: 'candidate-generation' | 'target-model' | 'contrast-model' | 'self-test' | 'thinking-discovery'
 }
 
 export interface ReferenceBuildCostV1 {
@@ -168,9 +206,19 @@ export function createReferenceRequestLimiter(
   )
 }
 
-type ReferenceQuery = ((model: string, body: Record<string, unknown>) => Promise<string>) & {
+interface ReferenceQueryOptions {
+  /** Sends this one request with another thinking setting (candidate writing fallback only). */
+  thinkingStrategy?: ThinkingDiscoveryStrategy
+  /** Called with the answer's output tokens, whether fresh or replayed from the checkpoint. */
+  onUsage?: (usage: { outputTokens: number }) => void
+}
+
+type ReferenceQuery = ((model: string, body: Record<string, unknown>, options?: ReferenceQueryOptions) => Promise<string>) & {
   invalidate?: (model: string, body: Record<string, unknown>) => Promise<void>
   costSummary?: () => ReferenceBuildCostV1
+  consumedResponses?: () => ReferenceCachedResponseV1[]
+  /** One thinking-discovery request on an explicit route; see `discoverThinkingSuppression`. */
+  probeThinking?: (model: string, route: ReferenceRequestRoute, maxTokens: number) => ReturnType<ThinkingDiscoveryProbe>
   /** Upstream providers that served this build's responses for a model, in first-seen order. */
   servedProviders?: (model: string) => string[]
 }
@@ -198,6 +246,12 @@ interface ReferenceRequestRoute {
   upstream?: { name: string; type: ReferenceUpstreamType }
   /** Absent means OpenAI Chat Completions. */
   protocol?: 'anthropic-messages'
+  /** Thinking suppression found by discovery (or recorded by the bank being extended). */
+  reasoningStrategy?: ReferenceReasoningStrategy
+  /** Assistant message appended to every request (`prefill` strategy, Chat Completions only). */
+  assistantPrefill?: string
+  /** Token budget floor for every request (`bare-expanded` strategy). */
+  minMaxTokens?: number
 }
 
 /**
@@ -212,7 +266,7 @@ export interface ReferenceUpstreamProvenanceV1 {
   baseUrl: string
   model: string
   protocol: ReferenceUpstreamProtocol
-  request: { overrides: Record<string, unknown>; omissions: string[] }
+  request: { overrides: Record<string, unknown>; omissions: string[]; assistantPrefill?: string; minMaxTokens?: number }
   providerPin: string[] | null
   peerId?: string
 }
@@ -267,10 +321,11 @@ export async function loadModelReference(input: {
   }
   try {
     const sizing = resolveReferenceSizingPolicy(input.config)
-    const reference = validateKbfReferenceV1(JSON.parse(raw), {
+    // References built before unscoreable answers were left out are re-scored on load.
+    const reference = rescoreKbfReference(validateKbfReferenceV1(JSON.parse(raw), {
       trustImported: true,
       minimumStatisticalPower: Number.EPSILON,
-    })
+    }))
     if (!reference.serviceAliases.some((alias) => normalized(alias) === normalized(input.model))) {
       throw new Error(`reference does not include service alias ${input.model}`)
     }
@@ -323,6 +378,18 @@ export async function buildModelReference(input: {
   seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
   /** Probe ids already banked; generation never returns them, so every selected probe is new. */
   excludedProbeIds?: ReadonlySet<string>
+  /**
+   * The bank's enrollment, used only for its recorded request settings (thinking suppression,
+   * prefill, token limit) when building fresh probes for an existing bank. Its probes are not
+   * reused. Without it a fresh build re-discovers the settings, and a bank enrolled with other
+   * settings rejects the result as incompatible.
+   */
+  settingsReference?: KbfReferenceV1
+  /**
+   * New requests this call may make, on top of what the build's checkpoint already used in earlier
+   * runs; the build's total stays capped by `referenceMaxRequestsPerBuild`. Unset: only the total.
+   */
+  maxNewRequests?: number
 }): Promise<{
   reference: KbfReferenceV1
   path: string
@@ -338,6 +405,33 @@ export async function buildModelReference(input: {
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, input.catalog)
   const pricingByModel = referencePricingByModel(input.config, modelConfig, input.catalog ?? null)
   const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
+  const sizing = resolveReferenceSizingPolicy(input.config)
+  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
+  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
+  const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
+    minimumStatisticalPower: Number.EPSILON,
+  })
+  if (initial && input.settingsReference) throw new Error('initialReference already carries the bank settings')
+  // Where this build's request settings come from: the enrollment it extends, or the bank it adds
+  // fresh probes to. Either way new probes are measured exactly like the banked ones.
+  const settings = initial ?? (input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
+    minimumStatisticalPower: Number.EPSILON,
+  }))
+  // The provider pin: the verifier's own, else the one the bank being extended was built with (so
+  // its measurements stay comparable), else the built-in pin for a new bank.
+  const recordedPin = settings
+    ? (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
+    : undefined
+  const targetReferenceProvider = modelConfig.referenceProvider
+    ?? (settings
+      ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
+      : modelConfig.defaultReferenceProvider)
+  // KBF layout filter (`generate_probes.py --layout-filter`): a bank keeps the setting it was built
+  // with; a new bank uses the config (default one pass).
+  const layoutFilterPasses = settings
+    ? recordedLayoutFilterPasses(settings)
+    : input.config?.referenceLayoutFilterPasses ?? DEFAULT_LAYOUT_FILTER_PASSES
+  assertNonNegativeInteger(layoutFilterPasses, 'referenceLayoutFilterPasses')
   const routesByModel = new Map(
     [modelConfig.upstreamModel, ...modelConfig.contrastModels].map((model) => {
       const isTarget = normalized(model) === normalized(modelConfig.upstreamModel)
@@ -347,7 +441,7 @@ export async function buildModelReference(input: {
         apiKey,
         catalog: input.catalog ?? null,
         referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
-        referenceProvider: isTarget ? modelConfig.referenceProvider : undefined,
+        referenceProvider: isTarget ? targetReferenceProvider : undefined,
         upstream: isTarget && modelConfig.upstream ? {
           name: modelConfig.upstream.name,
           model: modelConfig.upstream.model,
@@ -357,49 +451,144 @@ export async function buildModelReference(input: {
       })] as const
     }),
   )
+  // The request timeout is part of the measurement (it decides which slow answers count), so a
+  // bank keeps the one it was enrolled with.
+  const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
+  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
+  if (input.maxNewRequests !== undefined) assertPositiveInteger(input.maxNewRequests, 'maxNewRequests')
+  // Shared by the discovery and build queries: both count toward this call's new requests.
+  const runBudget: RunRequestBudget | null = input.maxNewRequests === undefined ? null : { limit: input.maxNewRequests, used: 0 }
+  const pricingForModel = (model: string): VerifierModelPricingConfig => {
+    const pricing = pricingByModel.get(normalized(model))
+    if (!pricing) throw new Error(`no reference pricing is available for ${model}`)
+    return pricing
+  }
+  // Thinking suppression, as in the KBF reference code: discovered per route on a
+  // fixed test batch. A bank enrolled before discovery keeps the settings it recorded,
+  // so new probes are measured exactly like the banked ones.
+  const recordedEndpointRequest = settings ? recordedReferenceEndpointRequest(settings) : null
+  const initialDiscovery = settings?.generator.params.thinkingDiscovery as ReferenceThinkingDiscoveryRecordV1 | undefined
+  const discover = !settings
+  if (settings && recordedEndpointRequest) {
+    const target = routesByModel.get(normalized(modelConfig.upstreamModel))!
+    routesByModel.set(normalized(modelConfig.upstreamModel), withRecordedEndpointRequest(target, recordedEndpointRequest, settings))
+  }
+  for (const entry of Object.values(initialDiscovery?.contrasts ?? {})) {
+    const key = normalized(entry.model)
+    const route = routesByModel.get(key)
+    if (route && route.type !== 'antseed') routesByModel.set(key, routeWithThinkingStrategy(route, entry.strategy))
+  }
+  const discoveryCheckpointPath = join(input.referencesDir, '.checkpoints', `${safeServiceSlug(input.model)}.thinking.json`)
+  const discoveryCheckpoint = discover ? await ReferenceBuildCheckpoint.open(discoveryCheckpointPath, canonicalHashBytes32({
+    version: 1,
+    model: normalized(input.model),
+    routesByModel: [...routesByModel.entries()],
+  })) : null
+  const discoveryUsedBefore = discoveryCheckpoint?.requestsUsed ?? 0
+  if (discoveryUsedBefore > 0) {
+    input.log?.(`thinking discovery continues from its checkpoint: ${discoveryUsedBefore} requests already used in earlier runs`)
+  }
+  const discoveryQuery = discoveryCheckpoint ? createReferenceQuery({
+    timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+    fetchFn: input.fetchFn ?? fetch,
+    checkpoint: discoveryCheckpoint,
+    limiter,
+    runBudget,
+    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
+    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
+    pricingForModel,
+    routeForModel: (model) => routesByModel.get(normalized(model))!,
+    log: input.log,
+  }) : null
+  let thinkingDiscovery: ReferenceThinkingDiscoveryRecordV1 | undefined
+  if (discoveryQuery) {
+    const targetKey = normalized(modelConfig.upstreamModel)
+    const modelNames = new Map([modelConfig.upstreamModel, ...modelConfig.contrastModels].map((model) => [normalized(model), model]))
+    const discovered = await allSettledOrThrow([...routesByModel.entries()].map(async ([key, route]) => {
+      const isTarget = key === targetKey
+      const model = modelNames.get(key) ?? route.model
+      if (route.type === 'antseed') return [key, route, null] as const
+      try {
+        const result = await discoverThinkingSuppression({
+          model: route.model,
+          label: route.baseUrl,
+          supportsPrefill: route.protocol !== 'anthropic-messages',
+          probe: (attempt) => discoveryQuery.probeThinking!(model, routeWithThinkingStrategy(route, attempt.strategy), attempt.maxTokens),
+          log: input.log,
+        })
+        return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
+      } catch (error) {
+        // Out of requests is not a finding about the route: stop, and the next run continues.
+        if (error instanceof ReferenceRequestBudgetError) throw error
+        if (isTarget && !(input.config?.referenceAllowThinking === true && error instanceof ThinkingDiscoveryError
+          && !asError(error).message.includes('refused every request'))) {
+          throw error
+        }
+        input.log?.(`${asError(error).message}; continuing with 'bare' and ${THINKING_FALLBACK_MAX_TOKENS} tokens per request`)
+        const attempts = error instanceof ThinkingDiscoveryError ? error.attempts : []
+        return [key, routeWithThinkingStrategy(route, 'bare-expanded'), { strategy: 'bare-expanded' as const, ...thinkingStrategyRequest('bare-expanded'), attempts }] as const
+      }
+    }))
+    const contrasts: Record<string, ReferenceThinkingDiscoveryEntryV1> = {}
+    let target: ReferenceThinkingDiscoveryEntryV1 | undefined
+    for (const [key, route, result] of discovered) {
+      routesByModel.set(key, route)
+      if (!result) continue
+      const model = modelNames.get(key) ?? route.model
+      const entry = { model, strategy: result.strategy, attempts: result.attempts }
+      if (key === targetKey) target = entry
+      else contrasts[model] = entry
+    }
+    thinkingDiscovery = {
+      version: 1,
+      method: 'kbf-reference-code-2026-09-30',
+      ...(target ? { target } : {}),
+      contrasts,
+    }
+  }
   const targetRoute = routesByModel.get(normalized(modelConfig.upstreamModel))!
   const targetRequestOverrides = targetRoute.requestOverrides
   const targetReasoningStrategy = referenceReasoningStrategy(targetRoute)
   const upstreamProvenance = referenceUpstreamProvenance(endpoint, targetRoute)
-  const timeoutMs = input.config?.probeRequestTimeoutMs ?? 120_000
-  const sizing = resolveReferenceSizingPolicy(input.config)
   const queryProfile = createReferenceQueryProfile({
     upstreamModel: targetRoute.model,
-    maxTokensPerRequest: MAX_TOKENS,
+    maxTokensPerRequest: Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0),
     requestTimeoutMs: timeoutMs,
   })
-  // Endpoint quirks stay out of the query profile: they apply only to requests
-  // sent to the reference endpoint, never to target audits.
+  // The reference endpoint's request settings stay out of the query profile. Audits
+  // send targets only the thinking suppression from them (as the KBF reference code
+  // does for every endpoint), never omissions or provider pins.
   const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
     reasoningStrategy: targetReasoningStrategy,
     requestOverrides: targetRequestOverrides,
     requestOmissions: targetRoute.requestOmissions,
+    ...(targetRoute.assistantPrefill ? { assistantPrefill: KBF_THINKING_PREFILL } : {}),
   }
-  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
-  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
-  const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
-    minimumStatisticalPower: Number.EPSILON,
-  })
-  if (initial) {
+  if (settings) {
     const expected = {
-      ...initial,
+      ...settings,
       referenceModel: input.model,
-      serviceAliases: [input.model, ...(modelConfig.serviceAliases ?? [])],
+      // Aliases don't change how answers are measured, so a changed alias list never blocks a bank.
+      serviceAliases: settings.serviceAliases,
       queryProfile,
       minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
       generator: {
         name: 'antseed-simple-reference-builder', version: REFERENCE_BUILDER_VERSION, verifierKind: 'kbf',
-        params: { enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest },
+        params: {
+          enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest,
+          ...(layoutFilterPasses > 0 ? { layoutFilterPasses } : {}),
+        },
       },
       provenance: { sourceId: referenceSourceId(endpoint, targetRoute), trust: endpoint.trust },
     }
-    if (probeBankCompatibilityHash(input.model, initial) !== probeBankCompatibilityHash(input.model, expected)
-      || initial.generator.params.selfTestRuns !== selfTestRuns
-      || initial.statisticalPowerEvidence.alpha !== REFERENCE_POWER_ALPHA
-      || initial.statisticalPowerEvidence.clopperPearsonConfidence !== REFERENCE_POWER_CONFIDENCE
-      || canonicalHashBytes32(initial.contrasts.map((entry) => normalized(entry.model)).sort())
+    if (probeBankCompatibilityHash(input.model, settings) !== probeBankCompatibilityHash(input.model, expected)
+      || settings.generator.params.selfTestRuns !== selfTestRuns
+      || settings.statisticalPowerEvidence.alpha !== REFERENCE_POWER_ALPHA
+      || settings.statisticalPowerEvidence.clopperPearsonConfidence !== REFERENCE_POWER_CONFIDENCE
+      || canonicalHashBytes32(settings.contrasts.map((entry) => normalized(entry.model)).sort())
         !== canonicalHashBytes32(modelConfig.contrastModels.map(normalized).sort())
-      || canonicalHashBytes32((initial.generator.params.referenceProvider as { pinned?: unknown } | undefined)?.pinned ?? null)
+      || canonicalHashBytes32((settings.generator.params.referenceProvider as { pinned?: unknown } | undefined)?.pinned ?? null)
         !== canonicalHashBytes32(targetRoute.providerRouting
           ? { order: targetRoute.providerRouting.order, allowFallbacks: false } : null)) {
       throw new Error('existing bank enrollment is incompatible with this build; do not mix measurements')
@@ -407,7 +596,7 @@ export async function buildModelReference(input: {
   }
   const checkpointPath = join(input.referencesDir, '.checkpoints', `${safeServiceSlug(input.model)}.json`)
   const compatibilityHash = canonicalHashBytes32({
-    version: 3,
+    version: 4,
     model: normalized(input.model),
     endpoint: {
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
@@ -430,6 +619,7 @@ export async function buildModelReference(input: {
     enrollmentBatchingVersion: 2,
     enrollmentStabilityVersion: 2,
     enrollmentEvidenceVersion: 1,
+    layoutFilterPasses,
     timeoutMs,
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
@@ -441,25 +631,31 @@ export async function buildModelReference(input: {
     } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
+  const usedBefore = checkpoint.requestsUsed + discoveryUsedBefore
+  if (usedBefore > 0) {
+    input.log?.(
+      `continuing from the checkpoint: ${usedBefore} of ${input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD} `
+      + 'requests for this build already used in earlier runs',
+    )
+  }
   const exchangesPath = referenceExchangesPath(input.referencesDir, input.model)
-  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
   const query = createReferenceQuery({
     timeoutMs,
     fetchFn: input.fetchFn ?? fetch,
     checkpoint,
     limiter,
-    maxRequests: input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD,
+    runBudget,
+    // Discovery requests count toward the same per-build budget.
+    maxRequests: Math.max(1, (input.config?.referenceMaxRequestsPerBuild ?? DEFAULT_MAX_REQUESTS_PER_BUILD)
+      - (discoveryCheckpoint?.requestsUsed ?? 0)),
     retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
     retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
-    pricingForModel: (model) => {
-      const pricing = pricingByModel.get(normalized(model))
-      if (!pricing) throw new Error(`no reference pricing is available for ${model}`)
-      return pricing
-    },
+    pricingForModel,
     routeForModel: (model) => routesByModel.get(normalized(model))
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
     log: input.log,
   })
+  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
   const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
   const retained = initial?.probes.filter((probe) => !excludedDomains.has(probe.domain)) ?? []
   const selfById = new Map(initial?.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]) ?? [])
@@ -512,11 +708,13 @@ export async function buildModelReference(input: {
     contrastDetection: ReferenceContrastDetectionV1[]
   } | null = null
   let undetectedContrasts: string[] = []
+  const layoutCheckedProbeIds = new Set<string>()
+  const layoutFilterStats = { checkedProbeCount: 0, droppedProbeCount: 0 }
   try {
     for (let targetCount = sizing.minimumProbeCount;
       targetCount <= sizing.maximumProbeCount;
       targetCount += sizing.probeStep) {
-      collected = await collectReferenceProbes({
+      const collect = (initialState: CollectedReferenceProbes | undefined) => collectReferenceProbes({
         model: modelConfig.upstreamModel,
         contrastModels: modelConfig.contrastModels,
         excludedDomains: modelConfig.excludedDomains,
@@ -525,10 +723,34 @@ export async function buildModelReference(input: {
         maxNoProgressRounds: input.config?.referenceMaxNoProgressRounds ?? DEFAULT_MAX_NO_PROGRESS_ROUNDS,
         query,
         log: input.log,
-        initial: collected,
+        initial: initialState,
         preferredContrastModels: undetectedContrasts,
         excludedProbeIds: input.excludedProbeIds,
+        candidateWriting,
       })
+      collected = await collect(collected)
+      // Layout filter: ask every new probe once more the way audits do (fresh domain shuffle, a
+      // rotating prompt variant, temperature 0) and drop the ones whose answer moves, then refill.
+      // The self-test below runs on the survivors only, as separate requests, so the error limit is
+      // measured independently of the answers that chose them.
+      while (layoutFilterPasses > 0) {
+        const pending = collected.probes.slice(selfOutcomes.length, targetCount)
+          .filter((probe) => !layoutCheckedProbeIds.has(probe.id))
+        if (pending.length === 0) break
+        const moved = await layoutFilterMovedProbeIds(
+          modelConfig.upstreamModel, pending, layoutFilterPasses, query, input.log,
+        )
+        for (const probe of pending) layoutCheckedProbeIds.add(probe.id)
+        layoutFilterStats.checkedProbeCount += pending.length
+        layoutFilterStats.droppedProbeCount += moved.size
+        input.log?.(
+          `layout filter: ${moved.size}/${pending.length} new probes changed answer under audit layout; `
+          + `${layoutFilterStats.droppedProbeCount}/${layoutFilterStats.checkedProbeCount} dropped so far`,
+        )
+        if (moved.size === 0) break
+        removeCollectedProbes(collected, moved)
+        collected = await collect(collected)
+      }
       const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
         input.log?.(
@@ -576,7 +798,8 @@ export async function buildModelReference(input: {
           ? `, contrasts detected ${contrastDetection.length - undetectedContrasts.length}/${contrastDetection.length}`
           : ''),
       )
-      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower
+      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
+        && power.power >= sizing.minimumStatisticalPower
         && undetectedContrasts.length === 0) {
         selected = { probes, selfTest, power, contrasts, contrastDetection }
         break
@@ -600,9 +823,9 @@ export async function buildModelReference(input: {
     await checkpoint.remove()
     throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
   }
-  if (selfTest.errorRate > 0.35) {
+  if (selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE) {
     await checkpoint.remove()
-    throw new Error(`self-test error rate ${selfTest.errorRate.toFixed(3)} exceeds 0.35`)
+    throw new Error(`self-test error rate ${selfTest.errorRate.toFixed(3)} exceeds ${REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE}`)
   }
   const servedTargetProviders = query.servedProviders?.(modelConfig.upstreamModel) ?? []
   if (!targetRoute.providerRouting && servedTargetProviders.length > 1) {
@@ -615,7 +838,7 @@ export async function buildModelReference(input: {
     path: exchangesPath,
     model: input.model,
     upstream: upstreamProvenance,
-    checkpoint,
+    checkpoints: discoveryCheckpoint ? [discoveryCheckpoint, checkpoint] : [checkpoint],
   })
   const reference: KbfReferenceV1 = {
     version: KBF_REFERENCE_VERSION,
@@ -649,6 +872,17 @@ export async function buildModelReference(input: {
         enrollmentEvidenceVersion: 1,
         selfTestRuns,
         referenceEndpointRequest,
+        ...(layoutFilterPasses > 0 ? {
+          layoutFilterPasses,
+          layoutFilter: {
+            version: 1,
+            method: 'kbf-layout-filter-audit-variants-v1',
+            passes: layoutFilterPasses,
+            ...layoutFilterStats,
+          },
+        } : {}),
+        ...(thinkingDiscovery ?? initialDiscovery ? { thinkingDiscovery: thinkingDiscovery ?? initialDiscovery } : {}),
+        ...(candidateWriting.summary() ? { candidateWriting: candidateWriting.summary() } : {}),
         ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
         ...(input.seedProbes ? {
           seededStableProbes: { ...input.seedProbes.source, offeredProbeCount: input.seedProbes.probes.length, acceptedProbeCount: seededProbeCount },
@@ -695,7 +929,10 @@ export async function buildModelReference(input: {
   })
   const path = referencePath(input.referencesDir, input.model)
   await writeJsonAtomic(path, validated)
-  const cost = query.costSummary?.() ?? summarizeReferenceCosts([])
+  const cost = summarizeReferenceCosts([
+    ...(discoveryQuery?.consumedResponses?.() ?? []),
+    ...(query.consumedResponses?.() ?? []),
+  ])
   const answeredContrastModelsByProbeId = new Map(validated.probes.map((probe) => [
     probe.id,
     [...(collected.answeredContrastModelsByProbeId?.get(probe.id) ?? modelConfig.contrastModels)],
@@ -706,7 +943,10 @@ export async function buildModelReference(input: {
     exchanges,
     cost,
     answeredContrastModelsByProbeId,
-    finalize: () => checkpoint.remove(),
+    finalize: async () => {
+      await checkpoint.remove()
+      await discoveryCheckpoint?.remove()
+    },
   }
 }
 
@@ -747,6 +987,8 @@ export async function collectReferenceProbes(input: {
   preferredContrastModels?: readonly string[]
   shuffle?: <T>(values: readonly T[]) => T[]
   excludedProbeIds?: ReadonlySet<string>
+  /** Question-writing fallback for answers that ran out of tokens; absent means none. */
+  candidateWriting?: CandidateWritingPolicy
 }): Promise<CollectedReferenceProbes> {
   assertPositiveInteger(input.targetCount, 'targetCount')
   const candidateCountPerRound = input.candidateCountPerRound ?? Math.max(CANDIDATE_COUNT, input.targetCount * 3)
@@ -787,6 +1029,7 @@ export async function collectReferenceProbes(input: {
       input.query,
       input.excludedDomains,
       input.log,
+      input.candidateWriting,
     )
     const candidates = generated.filter((probe) => {
       if (state.generatedProbeIds.has(probe.id) || input.excludedProbeIds?.has(probe.id)) return false
@@ -835,6 +1078,49 @@ export async function collectReferenceProbes(input: {
   }
 
   return state
+}
+
+/**
+ * KBF layout filter (`layout_filter` in the reference code's `generate_probes.py`). Stability passes
+ * ask a candidate next to its own generation round's candidates; audits ask it next to other probes
+ * and, here, with a rotating prompt variant. A probe that agrees under the first layout but not the
+ * second only inflates the self-test error (and so the DIFF limit) without telling models apart.
+ * Each pass asks every probe once at temperature 0 in a fresh domain shuffle with a seeded prompt
+ * variant, as an audit would; any probe whose answer misses its consensus (or is missing) moved.
+ */
+async function layoutFilterMovedProbeIds(
+  model: string,
+  probes: readonly KbfProbe[],
+  passes: number,
+  query: ReferenceQuery,
+  log?: (message: string) => void,
+): Promise<Set<string>> {
+  const moved = new Set<string>()
+  for (let pass = 0; pass < passes; pass += 1) {
+    const seed = `layout-filter-${pass}`
+    const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, deterministicShuffle(seed))
+    await allSettledOrThrow(batches.map(async (batch) => {
+      const variantId = seededPromptVariantId(seed, batch.probes)
+      const answers = await querySelfTestBatch(model, batch.probes, query, log, seed, variantId)
+      const matches = computeMatchVector(answers, [...batch.probes])
+      for (const [index, probe] of batch.probes.entries()) {
+        if (matches[index] !== 1) moved.add(probe.id)
+      }
+    }))
+  }
+  return moved
+}
+
+function removeCollectedProbes(collected: CollectedReferenceProbes, probeIds: ReadonlySet<string>): void {
+  collected.probes = collected.probes.filter((probe) => !probeIds.has(probe.id))
+  for (const [model, ids] of collected.distinguishingProbeIdsByModel) {
+    collected.distinguishingProbeIdsByModel.set(model, ids.filter((id) => !probeIds.has(id)))
+  }
+}
+
+function recordedLayoutFilterPasses(reference: KbfReferenceV1): number {
+  const passes = reference.generator.params.layoutFilterPasses
+  return typeof passes === 'number' && Number.isInteger(passes) && passes > 0 ? passes : 0
 }
 
 async function certifyStableProbes(
@@ -1014,6 +1300,7 @@ async function generateCandidates(
   query: ReferenceQuery,
   excludedDomains: readonly string[] = [],
   log?: (message: string) => void,
+  writing?: CandidateWritingPolicy,
 ): Promise<KbfProbe[]> {
   const excluded = new Set(excludedDomains)
   const activeDomains = CANONICAL_KBF_DOMAINS.filter((definition) => !excluded.has(definition.key))
@@ -1041,10 +1328,17 @@ async function generateCandidates(
       }
       let content: string
       try {
-        content = await query(model, body)
+        content = await writeCandidateBatch(model, body, batchSize, definition, query, writing, log)
       } catch (error) {
-        if (!(error instanceof EmptyReferenceResponseError)) throw error
-        log?.(`skipping empty candidate batch for ${definition.key}: ${error.message}`)
+        // A candidate batch only proposes questions; nothing is measured from it. A batch that
+        // stays empty, or keeps timing out or failing upstream after its retries, is skipped and
+        // the next generation round makes up the shortfall (bounded by the no-progress limit).
+        if (error instanceof EmptyReferenceResponseError) {
+          log?.(`skipping empty candidate batch for ${definition.key}: ${error.message}`)
+          continue
+        }
+        if (!isRetryableReferenceError(error)) throw error
+        log?.(`skipping failed candidate batch for ${definition.key} after retries: ${asError(error).message}`)
         continue
       }
       for (const fact of parseCanonicalFacts(content, definition.range)) {
@@ -1076,6 +1370,72 @@ async function generateCandidates(
     if (!added) break
   }
   return probes
+}
+
+/**
+ * One question-writing request. With a writing policy, an answer that ran out of tokens without a
+ * list is asked again with a little thinking allowed (see `candidate-writing.ts`). Without one,
+ * this is exactly the single request it always was.
+ */
+async function writeCandidateBatch(
+  model: string,
+  body: Record<string, unknown> & { max_tokens: number },
+  requestedCount: number,
+  definition: (typeof CANONICAL_KBF_DOMAINS)[number],
+  query: ReferenceQuery,
+  writing: CandidateWritingPolicy | undefined,
+  log?: (message: string) => void,
+): Promise<string> {
+  if (!writing) return query(model, body)
+  const askWithFallback = async (strategy: ThinkingDiscoveryStrategy): Promise<string | null> => {
+    try {
+      const content = await query(model, body, { thinkingStrategy: strategy })
+      writing.observeFallbackAnswer(parseCanonicalFacts(content, definition.range).length * 2 >= requestedCount)
+      return content
+    } catch (error) {
+      if (error instanceof ReferenceEndpointError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+        writing.refuseFallback(`HTTP ${error.status}`)
+        return null
+      }
+      if (error instanceof EmptyReferenceResponseError) {
+        writing.observeFallbackAnswer(false)
+        return null
+      }
+      throw error
+    }
+  }
+  const batch = await writing.beginBatch()
+  try {
+    if (batch.strategy) {
+      const content = await askWithFallback(batch.strategy)
+      if (content !== null) return content
+    }
+    let outputTokens = 0
+    let content: string | null
+    let emptyError: EmptyReferenceResponseError | null = null
+    try {
+      content = await query(model, body, { onUsage: (usage) => { outputTokens = usage.outputTokens } })
+    } catch (error) {
+      // Thinking that filled every token can also come back as no text at all.
+      if (!(error instanceof EmptyReferenceResponseError) || normalized(error.finishReason ?? '') !== 'length') throw error
+      emptyError = error
+      content = null
+      outputTokens = error.outputTokens
+    }
+    const factCount = content === null ? 0 : parseCanonicalFacts(content, definition.range).length
+    const retry = writing.observeRecordedAnswer(isRamblingCandidateAnswer({
+      factCount, requestedCount, outputTokens, maxTokens: body.max_tokens,
+    }), batch.trial)
+    if (retry) {
+      log?.(`candidate batch for ${definition.key} ran out of tokens with ${factCount}/${requestedCount} facts; asking again with '${retry}'`)
+      const recovered = await askWithFallback(retry)
+      if (recovered !== null) return recovered
+    }
+    if (content === null) throw emptyError!
+    return content
+  } finally {
+    if (batch.trial) writing.endTrialBatch()
+  }
 }
 
 function canonicalCandidatePrompt(
@@ -1139,12 +1499,26 @@ function parseCanonicalFacts(text: string, range: readonly [number, number]): Ar
   return facts
 }
 
+/** A build ran out of requests, for this run or in total; never a finding about a route or model. */
+export class ReferenceRequestBudgetError extends Error {
+  override name = 'ReferenceRequestBudgetError'
+}
+
+/** New requests one build call may make; `used` counts them across the call's queries. */
+interface RunRequestBudget {
+  limit: number
+  used: number
+}
+
 function createReferenceQuery(input: {
   timeoutMs: number
   fetchFn: typeof fetch
   checkpoint: ReferenceBuildCheckpoint
     limiter: ReferenceRequestLimiter
+  /** The build's total, including the checkpoint's earlier runs. */
   maxRequests: number
+  /** New requests this call may make, shared by the build's queries; null: only the total applies. */
+  runBudget?: RunRequestBudget | null
   retryCount: number
   retryBaseDelayMs: number
   pricingForModel: (model: string) => VerifierModelPricingConfig
@@ -1155,6 +1529,19 @@ function createReferenceQuery(input: {
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  // Every physical request counts toward this call's new requests and the build's total.
+  const reserve = async (): Promise<void> => {
+    if (input.runBudget) {
+      if (input.runBudget.used >= input.runBudget.limit) {
+        throw new ReferenceRequestBudgetError(
+          `reference build request budget exhausted for this run (${input.runBudget.limit} new requests); `
+          + 'the next run continues from the checkpoint',
+        )
+      }
+      input.runBudget.used += 1
+    }
+    await input.checkpoint.reserveRequest(input.maxRequests)
+  }
   const providersByModel = new Map<string, string[]>()
   const recordProvider = (model: string, provider: string | null | undefined): void => {
     if (!provider) return
@@ -1169,9 +1556,10 @@ function createReferenceQuery(input: {
     seen.push(provider)
     providersByModel.set(key, seen)
   }
-  const query = (async (model: string, body: Record<string, unknown>) => {
+  const query = (async (model: string, body: Record<string, unknown>, options?: ReferenceQueryOptions) => {
     const { __antseedReferenceCacheDomain, ...requestBody } = body
-    const route = input.routeForModel(model)
+    const baseRoute = input.routeForModel(model)
+    const route = options?.thinkingStrategy ? routeWithThinkingStrategy(baseRoute, options.thinkingStrategy) : baseRoute
     const cacheKey = canonicalHashBytes32({
       model,
       cacheDomain: __antseedReferenceCacheDomain ?? null,
@@ -1191,17 +1579,20 @@ function createReferenceQuery(input: {
           cached.outputTokens,
         )
       }
+      options?.onUsage?.({ outputTokens: cached.outputTokens })
       return cached.content
     }
     let attempt = 0
     for (;;) {
       attempt += 1
-      await input.checkpoint.reserveRequest(input.maxRequests)
+      await reserve()
       try {
         const response = await input.limiter.run(model, () => postChatCompletion(
           route,
           requestBody,
-          input.timeoutMs,
+          referenceRequestPurpose(__antseedReferenceCacheDomain) === 'candidate-generation'
+            ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
+            : input.timeoutMs,
           input.fetchFn,
         ))
         const pricing = input.pricingForModel(model)
@@ -1231,6 +1622,7 @@ function createReferenceQuery(input: {
         consumed.set(cacheKey, cachedResponse)
         recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
+        options?.onUsage?.({ outputTokens: response.outputTokens })
         return response.content
       } catch (error) {
         if (isTerminalEmptyReferenceError(error)) {
@@ -1283,6 +1675,97 @@ function createReferenceQuery(input: {
     await input.checkpoint.delete(cacheKey)
   }
   query.costSummary = () => summarizeReferenceCosts([...consumed.values()])
+  query.consumedResponses = () => [...consumed.values()]
+  query.probeThinking = async (model, route, maxTokens) => {
+    const body = {
+      ...buildKbfChatRequestBody(model, THINKING_DISCOVERY_PROBES, { maxTokens }),
+      temperature: 0,
+    }
+    const cacheKey = canonicalHashBytes32({ model, cacheDomain: 'thinking-discovery', body, route })
+    const cached = input.checkpoint.get(cacheKey)
+    if (cached !== undefined) {
+      const replayed = replayedThinkingDiscovery(cached)
+      if (replayed) {
+        consumed.set(cacheKey, cached)
+        return replayed
+      }
+      await input.checkpoint.delete(cacheKey)
+    }
+    // As in the reference code: 429 waits, 5xx and network errors retry up to three
+    // times, and any other 4xx means this strategy is refused.
+    let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await reserve()
+      try {
+        const response = await input.limiter.run(model, () => postChatCompletion(route, body, input.timeoutMs, input.fetchFn))
+        const success: ReferenceCachedSuccessV1 = {
+          outcome: 'success',
+          ...cachedCost(model, 'thinking-discovery', response.inputTokens, response.outputTokens),
+          content: response.content,
+          reasoningTokens: response.reasoningTokens ?? 0,
+          finishReason: response.finishReason ?? null,
+          ...(response.provider ? { provider: response.provider } : {}),
+        }
+        await input.checkpoint.appendExchange({
+          cacheKey, model, purpose: 'thinking-discovery', ...response.exchange, receivedAt: new Date().toISOString(),
+        })
+        await input.checkpoint.set(cacheKey, success)
+        consumed.set(cacheKey, success)
+        return {
+          ok: true,
+          content: response.content,
+          reasoningTokens: response.reasoningTokens ?? 0,
+          truncated: isKbfTokenLimitFinishReason(response.finishReason),
+        }
+      } catch (error) {
+        if (error instanceof EmptyReferenceResponseError) {
+          const empty: ReferenceCachedTerminalEmptyV1 = {
+            outcome: 'terminal-empty',
+            ...cachedCost(model, 'thinking-discovery', error.inputTokens, error.outputTokens),
+            finishReason: error.finishReason,
+            nativeFinishReason: error.nativeFinishReason,
+            detail: error.detail,
+            reasoningTokens: error.reasoningTokens ?? 0,
+          }
+          if (error.exchange) {
+            await input.checkpoint.appendExchange({
+              cacheKey, model, purpose: 'thinking-discovery', ...error.exchange, receivedAt: new Date().toISOString(),
+            })
+          }
+          await input.checkpoint.set(cacheKey, empty)
+          consumed.set(cacheKey, empty)
+          return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? 0 }
+        }
+        if (error instanceof ReferenceEndpointError) {
+          failure = { status: error.status, failure: error.detail }
+          if (error.status !== 429 && error.status < 500) return { ok: false, ...failure }
+        } else {
+          failure = { status: null, failure: asError(error).message }
+        }
+        if (attempt < 3) {
+          await sleep(isThrottleError(error) ? retryDelayMs(error, 5_000 * attempt, 1) : Math.min(30_000, input.retryBaseDelayMs * 3 * attempt))
+        }
+      }
+    }
+    return { ok: false, ...failure }
+  }
+  const cachedCost = (
+    model: string,
+    purpose: ReferenceBuildCostPurposeV1['purpose'],
+    inputTokens: number,
+    outputTokens: number,
+  ): ReferenceCachedResponseBaseV1 => {
+    const pricing = input.pricingForModel(model)
+    return {
+      model,
+      purpose,
+      inputTokens,
+      outputTokens,
+      inputUsdPerMillion: pricing.inputUsdPerMillion,
+      outputUsdPerMillion: pricing.outputUsdPerMillion,
+      costUsdMicros: String(Math.ceil(inputTokens * pricing.inputUsdPerMillion + outputTokens * pricing.outputUsdPerMillion)),
+    }
+  }
   query.servedProviders = (model) => [...(providersByModel.get(normalized(model)) ?? [])]
   return query
 }
@@ -1340,7 +1823,10 @@ export class ReferenceBuildCheckpoint {
   async reserveRequest(maxRequests: number): Promise<void> {
     await this.enqueue(async () => {
       if (this.value.requestsUsed >= maxRequests) {
-        throw new Error(`reference build request budget exhausted (${maxRequests})`)
+        throw new ReferenceRequestBudgetError(
+          `reference build request budget exhausted (${maxRequests}): the build's total, including earlier runs; `
+          + 'raise verifier.referenceMaxRequestsPerBuild to continue it',
+        )
       }
       this.value.requestsUsed += 1
       await writeJsonAtomic(this.path, this.value)
@@ -1550,8 +2036,8 @@ async function queryProbeAnswers(
     const batch = probes.slice(offset, offset + KBF_PROBES_PER_REQUEST)
     const body = {
       ...buildKbfChatRequestBody(model, batch, { maxTokens: MAX_TOKENS, variantId: options.variantId }),
+      // No top_p, matching audits and the KBF reference code.
       temperature,
-      top_p: 1,
       __antseedReferenceCacheDomain: cacheDomain,
     }
     try {
@@ -1576,8 +2062,9 @@ async function queryProbeAnswers(
  * variant, so the honest-error baseline includes order and wording effects
  * that audits see. Shuffles and variant picks are seeded per run so a resumed
  * build reuses its checkpointed responses. Answers are scored like target
- * answers (missing or refused = 0); transport failures abort the build, so
- * no self-test match is null.
+ * answers: a missing, refused, or unreadable answer is unscored (null), as in
+ * the KBF paper (v3) and its reference code. A batch with more than half its
+ * answers unscored is asked again (up to twice) and the best attempt is kept.
  */
 async function querySelfTestOutcomes(
   model: string,
@@ -1592,7 +2079,7 @@ async function querySelfTestOutcomes(
     const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, deterministicShuffle(seed))
     for (const batch of batches) {
       const variantId = seededPromptVariantId(seed, batch.probes)
-      const batchAnswers = await querySelfTestBatch(model, batch.probes, query, log, seed, variantId)
+      const batchAnswers = await querySelfTestBatchWithRetries(model, batch.probes, query, log, seed, variantId)
       for (const [batchIndex, originalIndex] of batch.indexes.entries()) {
         answers[originalIndex] = batchAnswers[batchIndex] ?? null
       }
@@ -1625,6 +2112,34 @@ function deterministicShuffle(seed: string): <T>(values: readonly T[]) => T[] {
     }
     return shuffled
   }
+}
+
+async function querySelfTestBatchWithRetries(
+  model: string,
+  probes: readonly KbfProbe[],
+  query: ReferenceQuery,
+  log: ((message: string) => void) | undefined,
+  seed: string,
+  variantId: string,
+): Promise<Array<number | null>> {
+  let best: Array<number | null> | null = null
+  let bestScored = -1
+  for (let attempt = 0; attempt <= KBF_LOW_COVERAGE_RETRIES; attempt += 1) {
+    // The first attempt keeps the original cache domain, so checkpointed builds resume unchanged.
+    const cacheDomain = attempt === 0 ? seed : `${seed}-low-coverage-retry-${attempt}`
+    const answers = await querySelfTestBatch(model, probes, query, log, cacheDomain, variantId)
+    const matches = computeMatchVector(answers, [...probes])
+    const scored = matches.filter((match) => match !== null).length
+    if (scored > bestScored) {
+      best = answers
+      bestScored = scored
+    }
+    if (!isLowCoverageKbfBatch(matches)) break
+    if (attempt < KBF_LOW_COVERAGE_RETRIES) {
+      log?.(`self-test batch for ${model} had ${probes.length - scored}/${probes.length} unscoreable answers; asking again`)
+    }
+  }
+  return best!
 }
 
 async function querySelfTestBatch(
@@ -1663,7 +2178,11 @@ interface ReferenceCompletion {
   content: string
   inputTokens: number
   outputTokens: number
+  /** Hidden reasoning tokens the endpoint reported; null when it reports none. */
+  reasoningTokens: number | null
   provider: string | null
+  /** `length` when the reply stopped at the token limit (Anthropic `max_tokens` is mapped to it). */
+  finishReason?: string | null
   exchange: ReferenceRawExchange
 }
 
@@ -1722,7 +2241,18 @@ async function postChatCompletion(
       status: response.status,
       responseBody,
     }
-    const parsed = parseCompletion(anthropic, responseBody)
+    let parsed: ReturnType<typeof parseCompletion>
+    try {
+      parsed = parseCompletion(anthropic, responseBody)
+    } catch (error) {
+      // A 200 whose body is not JSON, such as OpenRouter's whitespace keep-alive padding left
+      // alone when the upstream drops, is a broken gateway response: retry it like a 502.
+      throw new ReferenceEndpointError(
+        502,
+        null,
+        `HTTP ${response.status} body (${responseBody.length} bytes) was not valid JSON: ${asError(error).message}`,
+      )
+    }
     assertPinnedProvider(route, parsed.provider)
     if (parsed.content === null) {
       throw new EmptyReferenceResponseError(
@@ -1732,6 +2262,7 @@ async function postChatCompletion(
         parsed.inputTokens ?? 0,
         parsed.outputTokens ?? 0,
         exchange,
+        parsed.reasoningTokens,
       )
     }
     if (parsed.inputTokens === null || parsed.outputTokens === null) {
@@ -1741,7 +2272,9 @@ async function postChatCompletion(
       content: parsed.content,
       inputTokens: parsed.inputTokens,
       outputTokens: parsed.outputTokens,
+      reasoningTokens: parsed.reasoningTokens,
       provider: parsed.provider,
+      finishReason: parsed.finishReason,
       exchange,
     }
   } finally {
@@ -1754,6 +2287,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   inputTokens: number | null
   outputTokens: number | null
   provider: string | null
+  reasoningTokens: number | null
   finishReason: string | null
   nativeFinishReason: string | null
   emptyDetail: string
@@ -1776,6 +2310,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
       inputTokens: nonNegativeInteger(parsed.usage?.input_tokens),
       outputTokens,
       provider: null,
+      reasoningTokens: null,
       finishReason,
       nativeFinishReason: stopReason,
       emptyDetail: JSON.stringify({ finishReason, nativeFinishReason: stopReason, completionTokens: outputTokens }),
@@ -1798,6 +2333,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
     inputTokens: nonNegativeInteger(parsed.usage?.prompt_tokens),
     outputTokens: nonNegativeInteger(parsed.usage?.completion_tokens),
     provider: optionalString(parsed.provider),
+    reasoningTokens: nonNegativeInteger(parsed.usage?.completion_tokens_details?.reasoning_tokens),
     finishReason,
     nativeFinishReason,
     emptyDetail: JSON.stringify({
@@ -1826,10 +2362,21 @@ function toAnthropicMessagesBody(body: Record<string, unknown>): Record<string, 
   }
 }
 
+/**
+ * OpenRouter pins a provider by endpoint tag (`alibaba/prime`, `amazon-bedrock`) and enforces the
+ * pin itself (`allow_fallbacks: false`), but reports only the provider name (`Alibaba`, `Amazon
+ * Bedrock`). So the served name matches a pin when it equals the tag or the tag's provider part.
+ */
+function providerKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 function assertPinnedProvider(route: ReferenceRequestRoute, provider: string | null): void {
   if (!route.providerRouting || provider === null) return
-  const pinned = route.providerRouting.order.map(normalized)
-  if (!pinned.includes(normalized(provider))) {
+  const served = providerKey(provider)
+  const matches = route.providerRouting.order.some((pin) => providerKey(pin) === served
+    || providerKey(pin.split('/')[0] ?? '') === served)
+  if (!matches) {
     throw new Error(
       `reference endpoint served ${route.model} from provider ${provider}, `
       + `outside the pinned providers ${route.providerRouting.order.join(', ')}`,
@@ -1861,7 +2408,7 @@ export function resolveReferenceRequestOverrides(
   return { reasoning: { effort, exclude: true } }
 }
 
-class ReferenceEndpointError extends Error {
+export class ReferenceEndpointError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMs: number | null,
@@ -1879,6 +2426,7 @@ class EmptyReferenceResponseError extends Error {
     readonly inputTokens = 0,
     readonly outputTokens = 0,
     readonly exchange?: ReferenceRawExchange,
+    readonly reasoningTokens: number | null = null,
   ) {
     super(`reference endpoint returned no text content${detail ? `: ${detail}` : ''}`)
   }
@@ -1936,6 +2484,7 @@ function referenceRequestPurpose(value: unknown): ReferenceBuildCostPurposeV1['p
   if (typeof value === 'string' && value.startsWith('self-test')) return 'self-test'
   if (typeof value === 'string' && value.startsWith('contrast-')) return 'contrast-model'
   if (typeof value === 'string' && value.startsWith('stability-')) return 'target-model'
+  if (typeof value === 'string' && value.startsWith('layout-filter-')) return 'target-model'
   return 'candidate-generation'
 }
 
@@ -1954,8 +2503,8 @@ function referencePricingByModel(
     const catalogPricing = catalog?.get(normalized(contrastModel))?.pricing
     const configuredPricing = Object.values(config?.referenceEndpoint?.contrastModelBank ?? {})
       .find((candidate) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.pricing
-    const auditedPricing = Object.values(config?.referenceEndpoint?.models ?? {})
-      .find((candidate) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.pricing
+    const auditedPricing = auditedVerifierModels(config)
+      .find(([, candidate]) => normalized(candidate.upstreamModel) === normalized(contrastModel))?.[1].pricing
     const pricing = catalogPricing ?? configuredPricing ?? auditedPricing
     if (!pricing) throw new Error(`no reference pricing is available for ${contrastModel}`)
     prices.set(normalized(contrastModel), pricing)
@@ -2048,7 +2597,85 @@ function applyReferenceRouteToBody(
     model: route.model,
   }
   for (const field of route.requestOmissions) delete routed[field]
+  if (route.assistantPrefill && route.protocol !== 'anthropic-messages' && Array.isArray(routed.messages)) {
+    routed.messages = [...routed.messages as unknown[], { role: 'assistant', content: route.assistantPrefill }]
+  }
+  if (route.minMaxTokens && typeof routed.max_tokens === 'number' && routed.max_tokens < route.minMaxTokens) {
+    routed.max_tokens = route.minMaxTokens
+  }
   return routed
+}
+
+export interface ReferenceThinkingDiscoveryEntryV1 {
+  model: string
+  strategy: ThinkingDiscoveryStrategy
+  attempts: ThinkingDiscoveryAttemptV1[]
+}
+
+/** Recorded in `generator.params.thinkingDiscovery` of references built with discovery. */
+export interface ReferenceThinkingDiscoveryRecordV1 {
+  version: 1
+  method: 'kbf-reference-code-2026-09-30'
+  target?: ReferenceThinkingDiscoveryEntryV1
+  contrasts: Record<string, ReferenceThinkingDiscoveryEntryV1>
+}
+
+/** The route with exactly one thinking strategy applied, replacing catalog-based reasoning fields. */
+function routeWithThinkingStrategy(route: ReferenceRequestRoute, strategy: ThinkingDiscoveryStrategy): ReferenceRequestRoute {
+  const request = thinkingStrategyRequest(strategy)
+  const {
+    assistantPrefill: _prefill,
+    minMaxTokens: _minMaxTokens,
+    reasoningStrategy: _strategy,
+    ...base
+  } = route
+  return {
+    ...base,
+    requestOverrides: request.overrides,
+    reasoningStrategy: strategy,
+    ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
+    ...(request.maxTokens ? { minMaxTokens: request.maxTokens } : {}),
+  }
+}
+
+/** Applies the request settings a bank recorded, so a top-up measures probes the same way. */
+function withRecordedEndpointRequest(
+  route: ReferenceRequestRoute,
+  recorded: ReferenceEndpointRequestV1,
+  initial: KbfReferenceV1,
+): ReferenceRequestRoute {
+  if (route.type === 'antseed') return route
+  const {
+    assistantPrefill: _prefill,
+    minMaxTokens: _minMaxTokens,
+    reasoningStrategy: _strategy,
+    ...base
+  } = route
+  return {
+    ...base,
+    requestOverrides: recorded.requestOverrides ?? route.requestOverrides,
+    requestOmissions: recorded.requestOmissions ?? route.requestOmissions,
+    ...(recorded.reasoningStrategy ? { reasoningStrategy: recorded.reasoningStrategy } : {}),
+    ...(recorded.assistantPrefill ? { assistantPrefill: recorded.assistantPrefill } : {}),
+    ...(initial.queryProfile.maxTokensPerRequest > MAX_TOKENS ? { minMaxTokens: initial.queryProfile.maxTokensPerRequest } : {}),
+  }
+}
+
+/**
+ * A checkpointed thinking-discovery reply as the discovery saw it first, including whether it
+ * stopped at the token limit. Null for a reply cached before its finish reason was kept: it can't
+ * say whether it was cut off, so it is asked again instead of being replayed as a clean reply.
+ */
+export function replayedThinkingDiscovery(
+  cached: ReferenceCachedResponseV1,
+): { ok: true; content: string | null; reasoningTokens: number; truncated: boolean } | null {
+  if (cached.outcome !== 'terminal-empty' && cached.finishReason === undefined) return null
+  return {
+    ok: true,
+    content: cached.outcome === 'terminal-empty' ? null : cached.content,
+    reasoningTokens: cached.reasoningTokens ?? 0,
+    truncated: isKbfTokenLimitFinishReason(cached.finishReason),
+  }
 }
 
 function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResponseV1 {
@@ -2056,7 +2683,8 @@ function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResp
   const response = value as Record<string, unknown>
   const common = typeof response.model === 'string'
     && typeof response.purpose === 'string'
-    && ['candidate-generation', 'target-model', 'contrast-model', 'self-test'].includes(response.purpose)
+    && ['candidate-generation', 'target-model', 'contrast-model', 'self-test', 'thinking-discovery'].includes(response.purpose)
+    && (response.reasoningTokens === undefined || nonNegativeInteger(response.reasoningTokens) !== null)
     && nonNegativeInteger(response.inputTokens) !== null
     && nonNegativeInteger(response.outputTokens) !== null
     && typeof response.inputUsdPerMillion === 'number'
@@ -2075,6 +2703,7 @@ function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResp
   }
   return (response.outcome === undefined || response.outcome === 'success')
     && typeof response.content === 'string'
+    && (response.finishReason === undefined || response.finishReason === null || typeof response.finishReason === 'string')
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -2119,10 +2748,13 @@ function isNewAccountRateLimit(error: unknown): boolean {
     && normalized(error.detail).includes('new-account-rpm')
 }
 
-function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
+/** How long to wait before retry `attempt` (1-based) of a reference request that failed with `error`. */
+export function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
   if (error instanceof ReferenceEndpointError && error.retryAfterMs !== null) return error.retryAfterMs
   if (isNewAccountRateLimit(error)) return NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS
-  return Math.min(30_000, baseDelayMs * 2 ** Math.max(0, attempt - 1))
+  const doubling = 2 ** Math.max(0, attempt - 1)
+  if (isThrottleError(error)) return Math.min(REFERENCE_THROTTLE_MAX_DELAY_MS, REFERENCE_THROTTLE_BASE_DELAY_MS * doubling)
+  return Math.min(30_000, baseDelayMs * doubling)
 }
 
 function parseRetryAfterMs(value: string | null): number | null {
@@ -2161,6 +2793,7 @@ function referenceExchangesPath(referencesDir: string, model: string): string {
 }
 
 function referenceReasoningStrategy(route: ReferenceRequestRoute): ReferenceEndpointRequestV1['reasoningStrategy'] {
+  if (route.reasoningStrategy) return route.reasoningStrategy
   if (route.type === 'antseed') return BARE_REASONING_STRATEGY
   if ('reasoning' in route.requestOverrides) return MINIMUM_SUPPORTED_REASONING_STRATEGY
   if ('reasoning_effort' in route.requestOverrides) return DISABLED_REASONING_STRATEGY
@@ -2187,7 +2820,12 @@ function referenceUpstreamProvenance(
     baseUrl: route.baseUrl,
     model: route.model,
     protocol: route.protocol ?? 'openai-chat-completions',
-    request: { overrides: route.requestOverrides, omissions: [...route.requestOmissions] },
+    request: {
+      overrides: route.requestOverrides,
+      omissions: [...route.requestOmissions],
+      ...(route.assistantPrefill ? { assistantPrefill: route.assistantPrefill } : {}),
+      ...(route.minMaxTokens ? { minMaxTokens: route.minMaxTokens } : {}),
+    },
     providerPin: route.providerRouting ? [...route.providerRouting.order] : null,
     ...(route.peerId ? { peerId: route.peerId } : {}),
   }
@@ -2197,15 +2835,16 @@ async function writeReferenceExchanges(input: {
   path: string
   model: string
   upstream: ReferenceUpstreamProvenanceV1
-  checkpoint: ReferenceBuildCheckpoint
+  checkpoints: readonly ReferenceBuildCheckpoint[]
 }): Promise<ReferenceExchangesFileV1> {
-  const exchanges = await input.checkpoint.readExchanges()
+  const exchanges = (await Promise.all(input.checkpoints.map((checkpoint) => checkpoint.readExchanges()))).flat()
+  const requestCount = input.checkpoints.reduce((total, checkpoint) => total + checkpoint.requestsUsed, 0)
   const document: ReferenceExchangesV1 = {
     version: 1,
     kind: 'antseed-reference-exchanges',
     model: input.model,
     upstream: input.upstream,
-    requestCount: input.checkpoint.requestsUsed,
+    requestCount,
     exchangeCount: exchanges.length,
     exchanges,
   }
@@ -2216,7 +2855,7 @@ async function writeReferenceExchanges(input: {
     sha256: `sha256:${sha256Hex(bytes)}`,
     upstream: input.upstream,
     exchangeCount: exchanges.length,
-    requestCount: input.checkpoint.requestsUsed,
+    requestCount,
   }
 }
 

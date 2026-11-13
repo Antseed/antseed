@@ -1,17 +1,17 @@
-import { randomBytes } from 'node:crypto'
-import { chmod, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
-import { configFromObject, loadConfig } from '../../config/loader.js'
+import { configFromObject, loadConfig, resolveConfigPath } from '../../config/loader.js'
 import type { AntseedConfig } from '../../config/types.js'
 import { redact } from '../../proxy/chain-rpc.js'
 import { optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../console-api/router.js'
 import { asObject, badRequest } from '../console-api/serialize.js'
-import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings } from '../console-api/types.js'
+import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings, TelemetrySettings } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
+import { resolveCliConsent, writeConfiguredTelemetry } from '../../telemetry/settings.js'
 import { OBSERVABILITY_SETTING, observabilitySettings } from '../observability.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
+import { patchConfigFile } from '../../config/patch.js'
+
+export { patchConfigFile }
 
 const MAX_OTLP_HEADERS = 20
 /** What header values look like to callers who may not read them. */
@@ -27,10 +27,6 @@ export interface SettingsContext extends ServiceContext {
   authConfig?: () => Promise<AuthConfig> | AuthConfig
 }
 
-function resolveConfigPath(configPath: string): string {
-  return configPath.startsWith('~') ? resolve(homedir(), configPath.slice(2)) : resolve(configPath)
-}
-
 type JsonObject = Record<string, unknown>
 
 function childObject(parent: JsonObject, key: string): JsonObject {
@@ -39,78 +35,6 @@ function childObject(parent: JsonObject, key: string): JsonObject {
   const created: JsonObject = {}
   parent[key] = created
   return created
-}
-
-/** Config edits in flight, per file: each waits for the previous one so concurrent PATCHes never lose an update. */
-const configLocks = new Map<string, Promise<void>>()
-
-async function withConfigLock<T>(path: string, task: () => Promise<T>): Promise<T> {
-  const previous = configLocks.get(path) ?? Promise.resolve()
-  const run = previous.then(task, task)
-  const settled = run.then(() => undefined, () => undefined)
-  configLocks.set(path, settled)
-  try {
-    return await run
-  } finally {
-    if (configLocks.get(path) === settled) configLocks.delete(path)
-  }
-}
-
-/** The file a (possibly symlinked) config path points at, so the edit replaces the target rather than the link. */
-async function configTarget(path: string): Promise<string> {
-  try {
-    return await realpath(path)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path
-    throw error
-  }
-}
-
-/**
- * Edits the config file in place: reads the raw JSON, lets `mutate` touch
- * only the fields it changes (so everything else, defaults left implicit
- * included, stays as the operator wrote it), and replaces the file
- * atomically with the same mode. A file that does not parse is never
- * overwritten; a missing one is created with just the changed fields.
- * Edits are serialized in-process, and a symlinked config is written
- * through to its target.
- */
-export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void): Promise<void> {
-  const target = await configTarget(resolveConfigPath(configPath))
-  await withConfigLock(target, () => patchConfigTarget(target, mutate))
-}
-
-async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void): Promise<void> {
-  let raw: string | null = null
-  try {
-    raw = await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  let config: JsonObject = {}
-  if (raw !== null && raw.trim() !== '') {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      throw new ConsoleError(409, 'config_unreadable', `The config file ${path} is not valid JSON; fix it before changing settings here`)
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new ConsoleError(409, 'config_unreadable', `The config file ${path} is not a JSON object`)
-    }
-    config = parsed as JsonObject
-  }
-  mutate(config)
-  const mode = raw === null ? 0o600 : (await stat(path)).mode & 0o777
-  const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
-  try {
-    await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode })
-    await chmod(temp, mode)
-    await rename(temp, path)
-  } catch (error) {
-    await rm(temp, { force: true })
-    throw error
-  }
 }
 
 async function authConfig(deps: SettingsContext): Promise<AuthConfig> {
@@ -217,6 +141,7 @@ export async function readSettings(
     observability: options.revealSecrets
       ? observability
       : { ...observability, otlpHeaders: Object.fromEntries(Object.keys(observability.otlpHeaders).map((name) => [name, REDACTED])) },
+    telemetry: telemetrySettings(deps.configPath),
     auth: await authConfig(deps),
   }
 }
@@ -573,4 +498,30 @@ export function setObservabilitySettings(
   })
   ctx.log(`console: observability settings changed (export ${settings.otlpEndpoint ? 'on' : 'off'}, content logging ${settings.logContent ? 'on' : 'off'})`)
   return settings
+}
+
+/** The gateway's telemetry switch, as the desktop reports its own. */
+export function telemetrySettings(configPath: string, env: NodeJS.ProcessEnv = process.env): TelemetrySettings {
+  const decision = resolveCliConsent(resolveConfigPath(configPath), env)
+  // Off by the user or by default (never turned on): either way the switch can turn it on.
+  const userDisabled = !decision.enabled && (decision.reason === 'user_disabled' || decision.reason === 'not_enabled')
+  return { available: decision.enabled || userDisabled, enabled: decision.enabled, userDisabled }
+}
+
+/**
+ * Turns anonymous telemetry on or off: `telemetry.enabled` in the config
+ * file, the same switch as `antseed telemetry` and the desktop's Privacy
+ * toggle. The gateway reads it live and its buyer reloads it, so there is no
+ * restart.
+ */
+export async function setTelemetrySettings(ctx: SettingsContext, actor: Actor, body: unknown): Promise<TelemetrySettings> {
+  const enabled = asObject(body)['enabled']
+  if (typeof enabled !== 'boolean') throw badRequest('enabled must be true or false')
+  const previous = telemetrySettings(ctx.configPath)
+  await writeConfiguredTelemetry(ctx.configPath, enabled)
+  recordAudit(ctx, actor, 'settings.telemetry.update', { kind: 'settings', id: 'telemetry', label: 'Product telemetry' }, {
+    previousEnabled: previous.enabled, enabled,
+  })
+  ctx.log(`console: product telemetry turned ${enabled ? 'on' : 'off'}`)
+  return telemetrySettings(ctx.configPath)
 }

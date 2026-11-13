@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
 import { computeTrustScore } from './reputation/trust-score.js';
 import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-signals-client.js';
+import { VerificationSignalsClient, type ServiceVerdicts } from './payments/evm/verification-signals-client.js';
+import { VERIFICATION_STATUS_STALE_MAX_MS, verificationServiceKey } from './reputation/model-reputation.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
-import type { PeerInfo, PeerVerificationResults, TokenPricingUsdPerMillion } from "./types/peer.js";
+import type { PeerInfo, PeerVerificationResults } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
-import type { ServiceUnitBillingModelsV1 } from "./types/billing.js";
+import { isPricedProviderService } from "./billing/priced-service.js";
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -36,15 +38,18 @@ import {
 } from "./p2p/connection-manager.js";
 import {
   PeerAnnouncer,
+  builtinPeerCapabilities,
   type AnnouncerConfig,
   type SellerContractConfig,
 } from "./discovery/announcer.js";
-import type { PeerVerifications } from "./discovery/peer-metadata.js";
+import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata.js";
+import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
+  preferFreshestResultPerPeer,
   type LookupConfig,
   type LookupResult,
 } from "./discovery/peer-lookup.js";
@@ -68,6 +73,7 @@ import { VerificationSampler } from "./verification/samples.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
+import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
@@ -89,6 +95,8 @@ import {
   SellerFreeUsageManager,
   SellerFreeTierLimiter,
   type SellerFreeTierConfig,
+  SellerBuyerLimiter,
+  type SellerBuyerLimitsConfig,
   StakingClient,
   ChannelStore,
   CHANNEL_KIND,
@@ -98,15 +106,21 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
+import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
 import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
-import { Contract as EthersContract } from "ethers";
+import { SellerPoolsClient } from "./payments/evm/seller-pools-client.js";
+import { FreeTierStakeResolver } from "./payments/free-tier-stake-resolver.js";
+import { encodeFreeTierDelegationsHeader, type FreeTierDelegation } from "./payments/free-tier-delegation.js";
+import { Contract as EthersContract, type AbstractProvider } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
-import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
+import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
+import { ServicePerformanceTracker } from "./health/service-performance.js";
+import { announcedProviderName, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -141,6 +155,30 @@ export const ON_CHAIN_STATS_TTL_MS = 120_000;
  */
 export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+/** How long a verification read of a seller's services is reused before it is read again. */
+export const VERIFICATION_STATUS_TTL_MS = 120_000;
+/**
+ * How long the last good verification read stands in for failed refreshes.
+ * Past this, the buyer fails open: no DIFF penalty until a read succeeds.
+ * `hasLiveDiffVerdict` applies the same bound to carried or saved copies.
+ */
+export { VERIFICATION_STATUS_STALE_MAX_MS };
+
+/** Every service name the peer advertises, as verification keys. */
+function advertisedVerificationKeys(p: PeerInfo): string[] {
+  const keys = new Set<string>();
+  const add = (service: string): void => {
+    const key = verificationServiceKey(service);
+    if (key.length > 0) keys.add(key);
+  };
+  for (const announcement of p.metadata?.providers ?? []) {
+    for (const service of announcement.services ?? []) add(service);
+  }
+  for (const entry of Object.values(p.providerPricing ?? {})) {
+    for (const service of Object.keys(entry.services ?? {})) add(service);
+  }
+  return [...keys].sort();
+}
 
 function sellerContractOf(p: PeerInfo): string | null {
   return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
@@ -221,6 +259,12 @@ export interface NodePaymentsConfig {
   rpcUrl?: string;
   /** Additional RPC endpoints for transparent failover via ethers FallbackProvider (quorum=1). */
   fallbackRpcUrls?: string[];
+  /**
+   * A provider the host shares for read-only chain calls (discovery's on-chain
+   * peer enrichment): e.g. one that batches into Multicall3 and backs off on
+   * 429s. Transactions always use the payment clients' own providers.
+   */
+  readProvider?: AbstractProvider;
   /** Deployed AntseedDeposits contract address */
   depositsAddress?: string;
   /** Deployed AntseedChannels contract address */
@@ -239,6 +283,12 @@ export interface NodePaymentsConfig {
   usageAccountingAddress?: string;
   /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
   washTradingRegistryAddress?: string;
+  /** AntseedKbfAudits contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
+  verificationContractAddress?: string;
+  /** AntseedVerificationResults address; discovered from the KBF contract when absent. */
+  verificationResultsAddress?: string;
+  /** AntseedVerificationPointsPolicy address (buyer trust: a seller's points multiplier below 100% cuts its trust). */
+  verificationPointsPolicyAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -289,7 +339,7 @@ export interface NodeVerificationConfig {
 export interface NodeConfig {
   role: 'seller' | 'buyer';
   displayName?: string;
-  /** Publicly reachable seller address override ("host:port") announced in metadata. */
+  /** Seller address ("host:port") announced in metadata; its port is announced alongside the listening port in the DHT. */
   publicAddress?: string;
   /** External ownership claims announced in signed peer metadata. */
   verifications?: PeerVerifications;
@@ -299,9 +349,30 @@ export interface NodeConfig {
   requireSecureTransport?: boolean;
   /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
   acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /** Seller only: inbound buyer connections held at once; past it new buyers are refused. Metadata requests never count. Default 2048. */
+  maxInboundConnections?: number;
+  /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Seller only: announce each provider by an ID (see announcedProviderId)
+   * instead of its plugin name, so buyers do not learn the plugin. Off by
+   * default while buyers that predate it are in use: they refuse a pinned
+   * request naming a provider the peer does not announce.
+   */
+  announceProviderIds?: boolean;
+  /**
+   * Seller only: close a buyer's connection after this long with no traffic,
+   * unless the buyer has a paid channel or a free usage session open. 0 keeps
+   * idle connections. Default 30 minutes.
+   */
+  inboundIdleTimeoutMs?: number;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
+  /** Local address the DHT (UDP) and seller signaling (TCP) sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. Disable for isolated local testing. */
+  natTraversal?: boolean;
   bootstrapNodes?: Array<{ host: string; port: number }>;
   requestTimeoutMs?: number;  // Default: 300000
   /** Timeout in ms for each HTTP metadata fetch during peer discovery. Default: 1500 */
@@ -326,8 +397,23 @@ export interface NodeConfig {
   dhtOperationTimeoutMs?: number;
   /** Optional seller-side payment runtime wiring. */
   payments?: NodePaymentsConfig;
+  /**
+   * Buyer only: run the channel reconcile pass on its own (at start, when the
+   * chain RPC recovers, when a buyer identity is added, and every 5 minutes).
+   * Default true. Turn it off for a short-lived node that only looks peers up:
+   * it shares the data dir, and so the channel store, of the buyer that owns it.
+   */
+  autoReconcileBuyerChannels?: boolean;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /** Optional per-buyer token limits per provider, tighter for buyers new to this seller. */
+  buyerLimits?: SellerBuyerLimitsConfig;
+  /**
+   * Buyer side: stakers' signed consent to count their stake toward this
+   * node's buyer identities on sellers' staked free tiers. Each identity sends
+   * only the delegations naming its own address.
+   */
+  freeTierDelegations?: FreeTierDelegation[];
   /** Seller free-usage on-chain record batching. */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
@@ -336,6 +422,11 @@ export interface NodeConfig {
   verification?: NodeVerificationConfig;
   /** Pluggable identity storage backend. When set, takes precedence over dataDir for identity loading. */
   identityStore?: IdentityStore;
+  /**
+   * An identity to use as is, ahead of the environment's and the stored one
+   * (e.g. a throwaway key for a short-lived discovery node).
+   */
+  identity?: Identity;
   /** Optional explicit config.json path for runtime config reloads. */
   configPath?: string;
   /**
@@ -362,6 +453,11 @@ export interface BuyerUsageServicePoint {
   inputTokens: string;
   cachedInputTokens: string;
   outputTokens: string;
+  /** Delivered images, video generations and seconds, and speech `input` characters; bigints as strings. */
+  outputImages: string;
+  videoGenerations: string;
+  videoSeconds: string;
+  inputCharacters: string;
   requestCount: number;
 }
 
@@ -405,9 +501,20 @@ const EXTERNAL_VERIFICATION_RESULT_TTL_MS = IDENTITY_HISTORY_TTL_MS;
  *  so a peer that hasn't answered in 3s isn't going to win the deposit —
  *  move on. */
 const DEFAULT_SWEEP_OFFER_TIMEOUT_MS = 3_000;
+/** How long a relayer that accepted a sweep and then failed to submit it is offered none. */
+const FAILED_SWEEP_RELAYER_COOLDOWN_MS = 15 * 60_000;
+/** How long after accepting a sweep a relayer's failure report still counts against it. */
+const SWEEP_OUTCOME_WATCH_MS = 5 * 60_000;
 /** Don't offer a sweep whose authorization expires too soon to safely land —
  *  mirrors MIN_REMAINING_VALIDITY_SECS in the seller-side relayer. */
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
+/** How often a running buyer re-checks its stored channels against the chain. */
+const BUYER_CHANNEL_RECONCILE_INTERVAL_MS = 5 * 60_000;
+/**
+ * How long a stop waits for a seller topUp() being mined. One still pending
+ * after it is kept in the channel store and resubmitted on the next start.
+ */
+const SELLER_STOP_TOP_UP_WAIT_MS = 5_000;
 
 /** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
 export interface ResponseAuthEvent {
@@ -436,10 +543,15 @@ export class AntseedNode extends EventEmitter {
   private _muxes = new Map<PeerId, ProxyMux>();
   private _decoders = new Map<PeerId, FrameDecoder>();
   private _keepalives = new Map<PeerId, KeepaliveManager>();
+  /** Seller side: closes buyer connections left idle with nothing open on them. */
+  private _inboundIdle: InboundIdleTracker | null = null;
+  private _inboundIdleSweep: ReturnType<typeof setInterval> | null = null;
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
   private _blockedBuyers = new Set<string>();
+  /** How each service served buyers lately, announced in the seller's metadata. */
+  private readonly _servicePerformance = new ServicePerformanceTracker();
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -451,16 +563,24 @@ export class AntseedNode extends EventEmitter {
   private _stakingClient: StakingClient | null = null;
   /** Batched reader for the on-chain inputs of the buyer trust score. */
   private _trustSignalsClient: TrustSignalsClient | null = null;
+  /** Batched reader for live DIFF verdicts on `AntseedVerificationResults`. */
+  private _verificationSignalsClient: VerificationSignalsClient | null = null;
+  /** Last good verification read per agent id, keyed by the services it covered. */
+  private _verificationStatusCache = new Map<number, { services: string[]; diffServices: string[]; sameServices: string[]; agent?: ServiceVerdicts['agent']; fetchedAt: number }>();
   private _sellerAddressResolver: SellerAddressResolver | null = null;
   private _identityClient: IdentityClient | null = null;
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
   private _verificationMuxes = new Map<PeerId, VerificationMux>();
   private _sweepMuxes = new Map<PeerId, SweepMux>();
+  /** Relayers whose accepted sweep then failed on-chain (a stuck wallet, say), until when they are skipped. */
+  private _failedSweepRelayers = new Map<PeerId, number>();
   private _peerCapabilities = new Map<PeerId, Set<string>>();
   /** Buyer identities beyond the default one, by name. */
   private _buyerIdentities = new Map<string, BuyerIdentityContext>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
+  /** Settles or closes a buyer's channel when its metering session goes idle; removed on stop. */
+  private _settleOnIdle: ((info: { buyerPeerId: string; reason: string }) => void) | null = null;
   /** Seller-side request handler (provider matching, execution, load tracking). */
   private _sellerHandler: SellerRequestHandler | null = null;
   /** Buyer-side payment manager (initialized when buyer has payment config). */
@@ -481,6 +601,10 @@ export class AntseedNode extends EventEmitter {
   private _verificationSampler: VerificationSampler | null = null;
   /** Periodic timeout checker interval. */
   private _timeoutCheckerInterval: ReturnType<typeof setInterval> | null = null;
+  private _buyerReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly _buyerReconcileRuns = new Set<Promise<void>>();
+  /** Set while stop() runs, so no trigger starts a reconcile pass after the drain. */
+  private _stopping = false;
   /** Block cursor for CloseRequested event polling. */
   private _closeRequestedFromBlock: number = 0;
   /** Seller session lifecycle tracking (metering, settlement). */
@@ -542,7 +666,7 @@ export class AntseedNode extends EventEmitter {
   /**
    * Re-sign the advertised seller metadata snapshot without a DHT announce.
    * Call after mutating a provider's `services` at runtime (e.g. when the
-   * model health checker unadvertises or restores a service) so the next
+   * model health checker marks a service failing or recovered) so the next
    * `GET /metadata` fetch reflects the change immediately.
    */
   async refreshSellerMetadata(): Promise<void> {
@@ -660,6 +784,16 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
+   * Session hash of the encrypted TCP connection to a peer (see PeerConnection.channelBinding),
+   * for the default buyer identity or a named one, else null.
+   */
+  getChannelBinding(peerId: PeerId, buyerIdentity?: string): string | null {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return context.getChannelBinding(peerId);
+    return this._connectionManager?.getConnection(peerId)?.channelBinding ?? null;
+  }
+
+  /**
    * Active seller sessions currently tracked in-memory.
    * Includes open sessions before they are finalized/settled.
    */
@@ -676,11 +810,12 @@ export class AntseedNode extends EventEmitter {
     if (this._started) {
       throw new Error("Node already started");
     }
+    this._stopping = false;
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
 
     // Load or create identity
-    this._identity = await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
+    this._identity = this._config.identity ?? await loadOrCreateIdentity(this._config.identityStore ?? dataDir);
     debugLog(`[Node] Identity loaded: ${this._identity.peerId.slice(0, 12)}...`);
 
     // Determine bootstrap nodes — merge official + any user-configured nodes unless
@@ -692,10 +827,20 @@ export class AntseedNode extends EventEmitter {
     );
     debugLog(`[Node] Starting as ${this._config.role} with ${bootstrapNodes.length} bootstrap node(s)`);
 
-    if (this._config.role === "seller") {
-      await this._startSeller(bootstrapNodes);
-    } else {
-      await this._startBuyer(bootstrapNodes);
+    try {
+      if (this._config.role === "seller") {
+        await this._startSeller(bootstrapNodes);
+      } else {
+        await this._startBuyer(bootstrapNodes);
+      }
+    } catch (error) {
+      // A start that fails partway (say the DHT after the payment store and
+      // RPC monitor) releases what it opened, so a retry starts clean.
+      this._started = true;
+      await this.stop().catch((err: unknown) => {
+        debugWarn(`[Node] Cleanup after a failed start failed: ${err instanceof Error ? err.message : err}`);
+      });
+      throw error;
     }
 
     this._started = true;
@@ -706,6 +851,14 @@ export class AntseedNode extends EventEmitter {
   async stop(): Promise<void> {
     if (!this._started) {
       return;
+    }
+
+    // Before the drain below: an RPC probe still in flight can report ready
+    // after it and would otherwise start a pass against the closing store.
+    this._stopping = true;
+    if (this._buyerReconcileTimer) {
+      clearInterval(this._buyerReconcileTimer);
+      this._buyerReconcileTimer = null;
     }
 
     const extraIdentities = [...this._buyerIdentities.values()];
@@ -720,6 +873,10 @@ export class AntseedNode extends EventEmitter {
     if (this._buyerNegotiator) {
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
       await this._buyerNegotiator.drainPendingNeedAuth();
+    }
+    // A reconcile run writes the channel store, which is closed below.
+    while (this._buyerReconcileRuns.size > 0) {
+      await Promise.all([...this._buyerReconcileRuns]);
     }
 
     // End all active buyer payment sessions before shutdown
@@ -776,6 +933,13 @@ export class AntseedNode extends EventEmitter {
       this._connectionManager.closeAll();
       this._connectionManager = null;
     }
+    this._sellerPaymentManager?.markConnectionsClosed();
+
+    // A top-up being mined lifts the ceiling over work already served: give
+    // it a moment to land now that no new work can arrive.
+    if (this._sellerPaymentManager) {
+      await this._sellerPaymentManager.waitForRunningTopUps(SELLER_STOP_TOP_UP_WAIT_MS);
+    }
 
     // Stop DHT
     if (this._dht) {
@@ -825,6 +989,12 @@ export class AntseedNode extends EventEmitter {
       this._timeoutCheckerInterval = null;
     }
 
+    if (this._inboundIdleSweep) {
+      clearInterval(this._inboundIdleSweep);
+      this._inboundIdleSweep = null;
+    }
+    this._inboundIdle = null;
+
     if (this._channelStore) {
       try {
         this._channelStore.close();
@@ -845,6 +1015,8 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
     this._trustSignalsClient = null;
+    this._verificationSignalsClient = null;
+    this._verificationStatusCache.clear();
     this._onChainStatsCache.clear();
     this._pendingPartialEnrichment.clear();
     this._identityClient = null;
@@ -854,6 +1026,12 @@ export class AntseedNode extends EventEmitter {
     this._buyerHandler = null;
     this._backgroundPeerDiscoveryPromise = null;
     this._sellerPaymentManager = null;
+    if (this._settleOnIdle) {
+      this.off("session:finalized", this._settleOnIdle);
+      this._settleOnIdle = null;
+    }
+    this._depositRelayer = null;
+    this._advertisingPausedReason = null;
     this._sessionTracker = null;
     this._started = false;
     this.emit("stopped");
@@ -881,16 +1059,9 @@ export class AntseedNode extends EventEmitter {
   }
 
   private async _lookupResultsToPeerInfos(results: LookupResult[], service?: string): Promise<PeerInfo[]> {
-    // Deduplicate by peerId (DHT can return the same peer from multiple topic lookups)
-    const seen = new Set<string>();
-    const peers: PeerInfo[] = [];
-    for (const r of results) {
-      const p = this._lookupResultToPeerInfo(r);
-      if (!seen.has(p.peerId)) {
-        seen.add(p.peerId);
-        peers.push(p);
-      }
-    }
+    // Deduplicate by peerId (DHT can return the same peer from multiple topic
+    // lookups, and from old endpoints after it moved hosts)
+    const peers = preferFreshestResultPerPeer(results).map((r) => this._lookupResultToPeerInfo(r));
 
     const filtered = service ? peers.filter((p) => peerOffersService(p, service)) : peers;
     this._attachCachedExternalVerificationResults(filtered);
@@ -908,6 +1079,11 @@ export class AntseedNode extends EventEmitter {
 
   startBackgroundPeerDiscoverySweep(): void {
     this._startBackgroundPeerDiscoverySweep();
+  }
+
+  /** The exhaustive discovery sweep in progress (it resolves when the sweep ends), or null when none is running. */
+  get peerDiscoverySweep(): Promise<PeerInfo[]> | null {
+    return this._backgroundPeerDiscoveryPromise;
   }
 
   private _startBackgroundPeerDiscoverySweep(): void {
@@ -1167,6 +1343,97 @@ export class AntseedNode extends EventEmitter {
    * configured — callers can safely invoke this regardless.
    */
   private async _enrichPeersWithOnChainStats(peers: PeerInfo[]): Promise<void> {
+    await this._enrichPeersWithTrustSignals(peers);
+    await this._enrichPeersWithVerificationStatus(peers);
+  }
+
+  /**
+   * Mark each peer's services that have a live DIFF verdict on
+   * `AntseedVerificationResults` (`onChainDiffServices`). Needs the agent id from the
+   * trust read. Reads are batched and cached per agent for
+   * VERIFICATION_STATUS_TTL_MS; a failed read reuses the last good one for up
+   * to VERIFICATION_STATUS_STALE_MAX_MS and otherwise leaves the peer
+   * unmarked, so an RPC outage never penalizes anyone.
+   */
+  private async _enrichPeersWithVerificationStatus(peers: PeerInfo[]): Promise<void> {
+    const client = this._verificationSignalsClient;
+    if (!client || peers.length === 0) return;
+    const nowMs = Date.now();
+    const targets: Array<{ peer: PeerInfo; agentId: number; services: string[] }> = [];
+    for (const peer of peers) {
+      const agentId = peer.onChainAgentId;
+      if (typeof agentId !== 'number' || !Number.isSafeInteger(agentId) || agentId <= 0) continue;
+      const services = advertisedVerificationKeys(peer);
+      if (services.length === 0) continue;
+      targets.push({ peer, agentId, services });
+    }
+    if (targets.length === 0) return;
+    const apply = (peer: PeerInfo, services: readonly string[], entry: { diffServices: string[]; sameServices: string[]; agent?: ServiceVerdicts['agent']; fetchedAt: number }): void => {
+      peer.onChainDiffServices = entry.diffServices.filter((service) => services.includes(service));
+      peer.onChainSameServices = entry.sameServices.filter((service) => services.includes(service));
+      if (entry.agent) peer.onChainVerificationStatus = { ...entry.agent };
+      else delete peer.onChainVerificationStatus;
+      peer.onChainVerificationFetchedAt = entry.fetchedAt;
+      // The trust score carries the verification multiplier: recompute it from its parts.
+      applyTrust(peer);
+    };
+    const stale = new Map<number, string[]>();
+    for (const target of targets) {
+      const cached = this._verificationStatusCache.get(target.agentId);
+      // Peers sharing an agent id can advertise different services; a read that covered all of
+      // this peer's services answers it too.
+      if (cached && target.services.every((service) => cached.services.includes(service)) && nowMs - cached.fetchedAt < VERIFICATION_STATUS_TTL_MS) {
+        apply(target.peer, target.services, cached);
+        continue;
+      }
+      const services = stale.get(target.agentId) ?? [];
+      for (const service of target.services) if (!services.includes(service)) services.push(service);
+      stale.set(target.agentId, services);
+    }
+    if (stale.size === 0) return;
+    // A refresh replaces the agent's cache entry, so it must cover every service any peer of
+    // that agent needs, including peers just answered from the old entry.
+    for (const target of targets) {
+      const services = stale.get(target.agentId);
+      if (!services) continue;
+      for (const service of target.services) if (!services.includes(service)) services.push(service);
+    }
+    let read: Map<number, ServiceVerdicts> = new Map();
+    try {
+      read = await client.readServiceVerdicts([...stale].map(([agentId, services]) => ({ agentId, services })));
+    } catch (err) {
+      debugWarn(`[Node] On-chain verification read failed: ${err instanceof Error ? err.message : err}`);
+    }
+    const fetchedAt = Date.now();
+    if (this._verificationStatusCache.size >= ON_CHAIN_STATS_CACHE_MAX_ENTRIES) {
+      for (const [agentId, entry] of this._verificationStatusCache) {
+        if (fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) this._verificationStatusCache.delete(agentId);
+      }
+    }
+    for (const [agentId, services] of stale) {
+      const verdicts = read.get(agentId);
+      if (verdicts) {
+        this._verificationStatusCache.set(agentId, { services: [...services], diffServices: verdicts.diff, sameServices: verdicts.same, agent: verdicts.agent, fetchedAt });
+      }
+    }
+    // The cache now holds this read where it succeeded and the last good read
+    // where it failed; a failed read older than the stale window fails open.
+    for (const target of targets) {
+      if (!stale.has(target.agentId)) continue;
+      const entry = this._verificationStatusCache.get(target.agentId);
+      if (!entry || fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) {
+        delete target.peer.onChainDiffServices;
+        delete target.peer.onChainSameServices;
+        delete target.peer.onChainVerificationStatus;
+        delete target.peer.onChainVerificationFetchedAt;
+        applyTrust(target.peer);
+        continue;
+      }
+      apply(target.peer, target.services, entry);
+    }
+  }
+
+  private async _enrichPeersWithTrustSignals(peers: PeerInfo[]): Promise<void> {
     const client = this._trustSignalsClient;
     if (!client || peers.length === 0) {
       return;
@@ -1536,7 +1803,8 @@ export class AntseedNode extends EventEmitter {
     // Per-service usage (model attribution for the desktop savings tile).
     // Documented as lower bounds — requests that raced NeedAuth may lack
     // service attribution, so Σ services ≤ channel totals.
-    const services = this._channelStore.getBuyerServiceUsageTotals(buyerAddress).map((s) => ({
+    // Typed, so a field added to the totals but not to BuyerUsageServicePoint fails to compile.
+    const services = this._channelStore.getBuyerServiceUsageTotals(buyerAddress).map((s): BuyerUsageServicePoint => ({
       serviceIdHash: s.serviceId,
       amountUsdc: s.amountUsdc,
       inputTokens: s.inputTokens,
@@ -1545,6 +1813,7 @@ export class AntseedNode extends EventEmitter {
       outputImages: s.outputImages,
       videoGenerations: s.videoGenerations,
       videoSeconds: s.videoSeconds,
+      inputCharacters: s.inputCharacters,
       requestCount: s.requestCount,
     }));
     return {
@@ -1557,6 +1826,37 @@ export class AntseedNode extends EventEmitter {
       channels,
       services,
     };
+  }
+
+  /**
+   * Bring every buyer identity's stored channels in line with the chain:
+   * retire each row the chain shows settled, withdrawn, or never opened. Runs
+   * on its own at buyer start, whenever the chain RPC becomes reachable, when
+   * an identity is added, and every 5 minutes, unless
+   * `autoReconcileBuyerChannels` is false. stop() waits for runs in flight;
+   * once it has begun, this starts none.
+   */
+  reconcileBuyerChannels(): Promise<void> {
+    if (this._stopping) return Promise.resolve();
+    const run = this._reconcileBuyerChannels();
+    this._buyerReconcileRuns.add(run);
+    void run.then(() => this._buyerReconcileRuns.delete(run));
+    return run;
+  }
+
+  private async _reconcileBuyerChannels(): Promise<void> {
+    const negotiators = [this._buyerNegotiator, ...[...this._buyerIdentities.values()].map((context) => context.negotiator)];
+    for (const negotiator of negotiators) {
+      if (!negotiator) continue;
+      try {
+        const { retired, unchecked, readError } = await negotiator.reconcileChannelsWithChain();
+        if (retired.length > 0 || unchecked > 0) {
+          debugLog(`[Node] Buyer channels reconciled with the chain: retired=${retired.length} unchecked=${unchecked}${readError ? ` (${readError})` : ''}`);
+        }
+      } catch (err) {
+        debugWarn(`[Node] Buyer channel reconcile failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
   }
 
   async sendRequest(
@@ -1655,6 +1955,7 @@ export class AntseedNode extends EventEmitter {
       },
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       requireSecureTransport: this._config.requireSecureTransport,
+      freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       shared: {
         channelStore: this._channelStore,
         depositsClient: this._depositsClient,
@@ -1669,6 +1970,7 @@ export class AntseedNode extends EventEmitter {
       emit: (event, payload) => { this.emit(event, payload); },
     });
     this._buyerIdentities.set(name, context);
+    if (this._config.autoReconcileBuyerChannels !== false) void this.reconcileBuyerChannels();
     debugLog(`[Node] Buyer identity "${name}" loaded (wallet=${identity.wallet.address.slice(0, 10)}...)`);
     return { name, address: identity.wallet.address };
   }
@@ -1717,6 +2019,7 @@ export class AntseedNode extends EventEmitter {
       reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
+      ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
     };
   }
 
@@ -1752,6 +2055,7 @@ export class AntseedNode extends EventEmitter {
           this._keepalives.get(peerId)?.handlePong(frame.payload);
           continue;
         }
+        this._inboundIdle?.touch(peerId);
         if (paymentMux && PaymentMux.isPaymentMessage(frame.type)) {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -1773,11 +2077,13 @@ export class AntseedNode extends EventEmitter {
             debugWarn(`[Node] Failed to handle sweep frame from ${peerId.slice(0, 12)}...: ${message}`);
           });
         } else if (proxyMux) {
+          // A request stays in flight until its response is sent, however long the provider takes.
+          const finished = this._inboundIdle?.begin(peerId);
           proxyMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle frame from ${peerId.slice(0, 12)}...: ${message}`);
             conn.fail(err instanceof Error ? err : new Error(message));
-          });
+          }).finally(() => finished?.());
         }
       }
     });
@@ -1786,6 +2092,7 @@ export class AntseedNode extends EventEmitter {
 
     conn.on("stateChange", (state: ConnectionState) => {
       if (state === ConnectionState.Closed || state === ConnectionState.Failed) {
+        this._inboundIdle?.untrack(peerId, conn);
         // Guard against stale close events: if a reconnect arrived before this
         // connection finished closing, a new decoder will have been registered.
         // Wiping the maps would evict the live session, so bail out early.
@@ -1850,6 +2157,7 @@ export class AntseedNode extends EventEmitter {
     const signalingPort = this._config.signalingPort ?? 6882;
     debugLog(`[Node] Starting seller — DHT port=${dhtPort}, signaling port=${signalingPort}`);
     assertSingleRoutingService(this._providers);
+    assertSameNameUpstreamsAgree(this._providers);
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
     try {
@@ -1886,13 +2194,17 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = this._config.freeTier
       ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
       : null;
+    const offered = this._offeredServicesByPrice();
+    this._sellerFreeTierLimiter?.setPaidServices(offered.paid);
+    this._sellerFreeTierLimiter?.setFreeServices(offered.free);
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
+    this._initializeFreeTierStakeResolver(identity);
 
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
       const spm = this._sellerPaymentManager;
-      this.on("session:finalized", (info: { buyerPeerId: string; reason: string }) => {
+      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => {
         if (info.reason === "idle-settle") {
           debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
           void spm.settleSession(info.buyerPeerId, { settleOnly: true });
@@ -1900,7 +2212,8 @@ export class AntseedNode extends EventEmitter {
           debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
           void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
         }
-      });
+      };
+      this.on("session:finalized", this._settleOnIdle);
     }
 
     // Start DHT
@@ -1911,7 +2224,22 @@ export class AntseedNode extends EventEmitter {
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
       ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
+      ...(this._config.maxInboundConnections !== undefined ? { maxInboundConnections: this._config.maxInboundConnections } : {}),
+      ...(this._config.maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp: this._config.maxInboundConnectionsPerIp } : {}),
     });
+    const inboundIdleTimeoutMs = this._config.inboundIdleTimeoutMs ?? DEFAULT_INBOUND_IDLE_TIMEOUT_MS;
+    if (inboundIdleTimeoutMs > 0) {
+      this._inboundIdle = new InboundIdleTracker({
+        idleTimeoutMs: inboundIdleTimeoutMs,
+        holdsSession: (buyerPeerId) => Boolean(this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER))
+          || (this._sellerFreeUsageManager?.hasSession(buyerPeerId) ?? false),
+      });
+      this._inboundIdleSweep = setInterval(() => {
+        const closed = this._inboundIdle?.sweep() ?? [];
+        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no channel open`);
+      }, Math.min(60_000, inboundIdleTimeoutMs));
+      this._inboundIdleSweep.unref?.();
+    }
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
       debugWarn(`[ConnectionManager] ${err.message}`);
@@ -1919,7 +2247,7 @@ export class AntseedNode extends EventEmitter {
     await this._connectionManager.startListening({
       peerId: identity.peerId,
       port: signalingPort,
-      host: "0.0.0.0",
+      host: this._config.bindHost ?? "0.0.0.0",
     });
 
     // Resolve actual bound port (important when port 0 is used for OS-assigned)
@@ -1927,38 +2255,50 @@ export class AntseedNode extends EventEmitter {
     const actualDhtPort = this._dht.getPort();
 
     // NAT traversal: automatically map ports via UPnP/NAT-PMP
-    this._nat = new NatTraversal();
-    const natResult = await this._nat.mapPorts([
-      { port: actualSignalingPort, protocol: "TCP" },
-      { port: actualDhtPort, protocol: "UDP" },
-    ]);
+    if (this._config.natTraversal !== false) {
+      this._nat = new NatTraversal();
+      const natResult = await this._nat.mapPorts([
+        { port: actualSignalingPort, protocol: "TCP" },
+        { port: actualDhtPort, protocol: "UDP" },
+      ]);
 
-    if (natResult.success) {
-      this.emit("nat:mapped", natResult);
-    } else {
-      debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
-      debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
-      this.emit("nat:failed");
+      if (natResult.success) {
+        this.emit("nat:mapped", natResult);
+      } else {
+        debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
+        debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
+        this.emit("nat:failed");
+      }
     }
 
     // Set up announcer for providers
     if (this._providers.length > 0) {
-      const extraCapabilities = [
+      const baseCapabilities = [
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
       ];
+      const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
+      const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
-        providers: this._providers.map((p) => ({
-          provider: p.name,
+        providers: this._providers.map((p) => {
+          // With provider IDs, buyers get the protocols they used to infer from the provider's name.
+          const serviceApiProtocols = this._config.announceProviderIds
+            ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
+            : p.serviceApiProtocols;
+          return {
+          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
+          // Read live: the model health checker updates it between refreshes.
+          serviceHealth: () => announcedServiceHealth(p),
+          servicePerformance: () => this._servicePerformance.snapshot(p.name, p.services),
           maxConcurrency: p.maxConcurrency,
-          isAvailable: () => this._advertisingPausedReason === null && p.healthCheckAvailable !== false,
+          isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
             defaults: {
               inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -1966,7 +2306,8 @@ export class AntseedNode extends EventEmitter {
             },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
-        })),
+          };
+        }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
         ...(this._config.verifications ? { verifications: this._config.verifications } : {}),
@@ -1974,7 +2315,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            p.name,
+            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -1985,7 +2326,9 @@ export class AntseedNode extends EventEmitter {
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
+        // Keep the listening endpoint discoverable when publicAddress names another host.
         signalingPort: actualSignalingPort,
+        publicSignalingPort: parsePublicAddress(this._config.publicAddress ?? "")?.port,
         ...(this._channelsClient ? { channelsClient: this._channelsClient } : {}),
         ...(this._stakingClient ? { stakingClient: this._stakingClient, paymentsEnabled: true } : {}),
         ...(this._config.sellerContract ? { sellerContract: this._config.sellerContract } : {}),
@@ -1996,7 +2339,7 @@ export class AntseedNode extends EventEmitter {
 
       // Serve metadata on the signaling port (HTTP requests are auto-detected)
       this._connectionManager!.setMetadataProvider(
-        () => this._announcer?.getLatestMetadata() ?? null,
+        (requestedVersion) => this._announcer?.getMetadataForVersion(requestedVersion) ?? null,
       );
     }
 
@@ -2007,6 +2350,10 @@ export class AntseedNode extends EventEmitter {
         debugWarn('[Node] Seller free-tier limits are using in-memory accounting because metering storage is unavailable; counters reset on restart.');
       }
     }
+    const sellerBuyerLimiter = this._config.buyerLimits
+      ? new SellerBuyerLimiter(this._config.buyerLimits, (buyerPeerId) => this._channelStore?.getFirstChannelCreatedAt(buyerPeerId, CHANNEL_ROLE.SELLER) ?? null)
+      : null;
+    if (sellerBuyerLimiter) debugLog(`[Node] Seller buyer limits enabled: ${sellerBuyerLimiter.describe()}`);
 
     // Create seller request handler
     this._sellerHandler = new SellerRequestHandler({
@@ -2016,12 +2363,15 @@ export class AntseedNode extends EventEmitter {
       sellerPaymentManager: this._sellerPaymentManager,
       sellerFreeUsageManager: this._sellerFreeUsageManager,
       sellerFreeTierLimiter,
+      sellerBuyerLimiter,
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
+      ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
       isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(buyerPeerId.toLowerCase().replace(/^0x/, '')),
+      servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
@@ -2132,8 +2482,17 @@ export class AntseedNode extends EventEmitter {
         getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
+        freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       },
     );
+
+    if (this._buyerNegotiator && this._config.autoReconcileBuyerChannels !== false) {
+      const reconcile = (): void => { void this.reconcileBuyerChannels(); };
+      this._rpcHealth?.onReady(reconcile);
+      reconcile();
+      this._buyerReconcileTimer = setInterval(reconcile, BUYER_CHANNEL_RECONCILE_INTERVAL_MS);
+      this._buyerReconcileTimer.unref?.();
+    }
 
     debugLog(`[Node] Buyer ready — DHT running on port ${this._dht!.getPort()}`);
   }
@@ -2248,6 +2607,7 @@ export class AntseedNode extends EventEmitter {
 
     this._muxes.set(buyerPeerId, mux);
     this._wireConnection(conn, buyerPeerId);
+    this._inboundIdle?.track(buyerPeerId, conn);
     this.emit("connection", conn);
   }
 
@@ -2317,7 +2677,7 @@ export class AntseedNode extends EventEmitter {
             sellerContracts.delete(sellerContract);
             sellerContracts.set(sellerContract, contract);
           } else {
-            contract = new EthersContract(sellerContract, isOperatorAbi, channelsClientRef!.provider);
+            contract = new EthersContract(sellerContract, isOperatorAbi, payments.readProvider ?? channelsClientRef!.provider);
             if (sellerContracts.size >= SELLER_CONTRACTS_MAX) {
               const oldest = sellerContracts.keys().next().value;
               if (oldest !== undefined) sellerContracts.delete(oldest);
@@ -2377,7 +2737,7 @@ export class AntseedNode extends EventEmitter {
       debugLog(`[Node] StakingClient initialized (contract=${payments.stakingAddress.slice(0, 10)}...)`);
     }
     if (this._channelsClient && payments.stakingAddress && payments.channelsAddress) {
-      this._trustSignalsClient = new TrustSignalsClient(this._channelsClient.provider, {
+      this._trustSignalsClient = new TrustSignalsClient(payments.readProvider ?? this._channelsClient.provider, {
         sellerRegistry: payments.stakingAddress,
         channels: payments.channelsAddress,
         ...(payments.sellerPoolsAddress ? { sellerPools: payments.sellerPoolsAddress } : {}),
@@ -2385,6 +2745,15 @@ export class AntseedNode extends EventEmitter {
         ...(payments.washTradingRegistryAddress ? { washTradingRegistry: payments.washTradingRegistryAddress } : {}),
       });
       debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
+    }
+    if (this._channelsClient && payments.verificationContractAddress) {
+      this._verificationSignalsClient = new VerificationSignalsClient(
+        payments.readProvider ?? this._channelsClient.provider,
+        payments.verificationContractAddress,
+        payments.verificationResultsAddress,
+        payments.verificationPointsPolicyAddress,
+      );
+      debugLog(`[Node] VerificationSignalsClient initialized (contract=${payments.verificationContractAddress.slice(0, 10)}...)`);
     }
 
     // Initialize IdentityClient (ERC-8004 IdentityRegistry)
@@ -2413,7 +2782,12 @@ export class AntseedNode extends EventEmitter {
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
       };
-      this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
+      this._sellerPaymentManager = new SellerPaymentManager(
+        this._identity,
+        sellerConfig,
+        this._channelStore,
+        (buyerPeerId) => this._paymentMuxes.get(buyerPeerId as PeerId),
+      );
       debugLog(`[Node] SellerPaymentManager initialized`);
 
       // Deposit-sweep relayer (opt-out — ON by default when the chain has a relay)
@@ -2573,7 +2947,8 @@ export class AntseedNode extends EventEmitter {
    * each relayer an uncontested window. Candidates are shuffled so no single
    * relayer always gets first refusal. A relayer that reports 'rejected' (or
    * stays silent past `perPeerTimeoutMs`) forfeits its turn; 'submitted' or
-   * 'confirmed' ends the round. Progress still arrives as 'sweep:receipt'
+   * 'confirmed' ends the round. A relayer that accepted a sweep and then
+   * reported its submission failed is offered sweeps last for a while. Progress still arrives as 'sweep:receipt'
    * events, and the wire protocol is unchanged — relayers need no upgrade.
    */
   async dispatchSweepRequest(
@@ -2586,20 +2961,28 @@ export class AntseedNode extends EventEmitter {
     const perPeerTimeoutMs = opts?.perPeerTimeoutMs ?? DEFAULT_SWEEP_OFFER_TIMEOUT_MS;
 
     const candidates: Array<{ peerId: PeerId; conn: PeerConnection }> = [];
+    const skipped: Array<{ peerId: PeerId; conn: PeerConnection }> = [];
+    const now = Date.now();
     for (const peerId of this._muxes.keys()) {
       const capabilities = this._peerCapabilities.get(peerId);
       if (!capabilities?.has(CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1)) continue;
       const conn = this._connectionManager.getConnection(peerId);
       if (!conn) continue;
       if (conn.state !== ConnectionState.Open && conn.state !== ConnectionState.Authenticated) continue;
-      candidates.push({ peerId, conn });
+      const failedUntil = this._failedSweepRelayers.get(peerId);
+      if (failedUntil !== undefined && failedUntil <= now) this._failedSweepRelayers.delete(peerId);
+      (failedUntil !== undefined && failedUntil > now ? skipped : candidates).push({ peerId, conn });
     }
     for (let i = candidates.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [candidates[i], candidates[j]] = [candidates[j]!, candidates[i]!];
     }
+    // A relayer whose last accepted sweep failed is asked only when no other relayer takes it.
+    candidates.push(...skipped);
 
     const wantNonce = payload.nonce.toLowerCase();
+    // Watch the whole sweep before offering it: a relayer's 'submitted' and 'rejected' can arrive together.
+    const stopWatching = this._watchSweepOutcomes(wantNonce);
     let offered = 0;
     for (const { peerId, conn } of candidates) {
       // Stop offering when the authorization is too close to expiry for a
@@ -2619,7 +3002,31 @@ export class AntseedNode extends EventEmitter {
       }
       // 'rejected' or silence — pass the opportunity to the next relayer.
     }
+    stopWatching();
     return { offered, accepted: false };
+  }
+
+  /**
+   * Until stopped or SWEEP_OUTCOME_WATCH_MS pass, remember any relayer that accepts `authNonce`
+   * ('submitted') and then reports it could not submit it, so later sweeps go to it last.
+   */
+  private _watchSweepOutcomes(authNonce: string): () => void {
+    const accepted = new Set<string>();
+    const listener = (event: { peerId: string; payload: SweepReceiptPayload }): void => {
+      if (event.payload.authNonce.toLowerCase() !== authNonce) return;
+      if (event.payload.status === 'submitted') accepted.add(event.peerId);
+      else if (event.payload.status === 'rejected' && accepted.has(event.peerId)) {
+        this._failedSweepRelayers.set(event.peerId as PeerId, Date.now() + FAILED_SWEEP_RELAYER_COOLDOWN_MS);
+      }
+    };
+    const timer = setTimeout(() => cleanup(), SWEEP_OUTCOME_WATCH_MS);
+    timer.unref?.();
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      this.off('sweep:receipt', listener);
+    };
+    this.on('sweep:receipt', listener);
+    return cleanup;
   }
 
   /** Resolve with the first 'sweep:receipt' from `peerId` for `authNonce`
@@ -2688,92 +3095,15 @@ export class AntseedNode extends EventEmitter {
     const displayName = sanitizePeerDisplayName(result.metadata.displayName);
     const providers = result.metadata.providers.map((p) => p.provider);
     const firstProvider = result.metadata.providers[0];
-    const providerPricingEntries: NonNullable<PeerInfo["providerPricing"]> = {};
-    const providerServiceCategoryEntries: NonNullable<PeerInfo["providerServiceCategories"]> = {};
-    const providerServiceApiProtocolEntries: NonNullable<PeerInfo["providerServiceApiProtocols"]> = {};
-    const providerServiceUnitBillingModelEntries: NonNullable<PeerInfo["providerServiceUnitBillingModels"]> = {};
-    const providerServiceCapabilityEntries: NonNullable<PeerInfo["providerServiceCapabilities"]> = {};
-
-    for (const providerAnnouncement of result.metadata.providers) {
-      const provName = providerAnnouncement.provider;
-      const serviceEntries: Record<string, TokenPricingUsdPerMillion> = {};
-      for (const service of providerAnnouncement.services) {
-        serviceEntries[service] =
-          providerAnnouncement.servicePricing?.[service] ?? providerAnnouncement.defaultPricing;
-      }
-
-      const existing = providerPricingEntries[provName];
-      if (existing) {
-        // Merge services from duplicate provider names
-        Object.assign(existing.services ?? {}, serviceEntries);
-        if (!existing.services && Object.keys(serviceEntries).length > 0) {
-          existing.services = serviceEntries;
-        }
-      } else {
-        providerPricingEntries[provName] = {
-          defaults: {
-            inputUsdPerMillion: providerAnnouncement.defaultPricing.inputUsdPerMillion,
-            outputUsdPerMillion: providerAnnouncement.defaultPricing.outputUsdPerMillion,
-            ...(providerAnnouncement.defaultPricing.cachedInputUsdPerMillion != null
-              ? { cachedInputUsdPerMillion: providerAnnouncement.defaultPricing.cachedInputUsdPerMillion }
-              : {}),
-          },
-          ...(Object.keys(serviceEntries).length > 0 ? { services: serviceEntries } : {}),
-        };
-      }
-
-      if (providerAnnouncement.serviceCategories && Object.keys(providerAnnouncement.serviceCategories).length > 0) {
-        const existingCats = providerServiceCategoryEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceCategories)
-            .map(([service, categories]) => [service, [...categories]]),
-        );
-        if (existingCats) {
-          Object.assign(existingCats.services, newEntries);
-        } else {
-          providerServiceCategoryEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceApiProtocols && Object.keys(providerAnnouncement.serviceApiProtocols).length > 0) {
-        const existingProtos = providerServiceApiProtocolEntries[provName];
-        const newEntries = Object.fromEntries(
-          Object.entries(providerAnnouncement.serviceApiProtocols)
-            .map(([service, protocols]) => [service, [...protocols]]),
-        );
-        if (existingProtos) {
-          Object.assign(existingProtos.services, newEntries);
-        } else {
-          providerServiceApiProtocolEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceUnitBillingModels && Object.keys(providerAnnouncement.serviceUnitBillingModels).length > 0) {
-        const existingBillingModels = providerServiceUnitBillingModelEntries[provName];
-        const newEntries: ServiceUnitBillingModelsV1 = { ...providerAnnouncement.serviceUnitBillingModels };
-        if (existingBillingModels) {
-          Object.assign(existingBillingModels.services, newEntries);
-        } else {
-          providerServiceUnitBillingModelEntries[provName] = { services: newEntries };
-        }
-      }
-
-      if (providerAnnouncement.serviceCapabilities && Object.keys(providerAnnouncement.serviceCapabilities).length > 0) {
-        const existingCapabilities = providerServiceCapabilityEntries[provName];
-        const newEntries = { ...providerAnnouncement.serviceCapabilities };
-        if (existingCapabilities) {
-          Object.assign(existingCapabilities.services, newEntries);
-        } else {
-          providerServiceCapabilityEntries[provName] = { services: newEntries };
-        }
-      }
-    }
-
-    const hasProviderPricing = Object.keys(providerPricingEntries).length > 0;
-    const hasProviderServiceCategories = Object.keys(providerServiceCategoryEntries).length > 0;
-    const hasProviderServiceApiProtocols = Object.keys(providerServiceApiProtocolEntries).length > 0;
-    const hasProviderServiceUnitBillingModels = Object.keys(providerServiceUnitBillingModelEntries).length > 0;
-    const hasProviderServiceCapabilities = Object.keys(providerServiceCapabilityEntries).length > 0;
+    const matrices = mergeProviderAnnouncements(result.metadata.providers);
+    const nonEmpty = <T extends object>(matrix: T): T | undefined => (Object.keys(matrix).length > 0 ? matrix : undefined);
+    const providerPricing = nonEmpty(matrices.providerPricing);
+    const providerServiceCategories = nonEmpty(matrices.providerServiceCategories);
+    const providerServiceApiProtocols = nonEmpty(matrices.providerServiceApiProtocols);
+    const providerServiceUnitBillingModels = nonEmpty(matrices.providerServiceUnitBillingModels);
+    const providerServiceCapabilities = nonEmpty(matrices.providerServiceCapabilities);
+    const providerServiceHealth = nonEmpty(matrices.providerServiceHealth);
+    const providerServicePerformance = nonEmpty(matrices.providerServicePerformance);
 
     return {
       peerId: result.metadata.peerId,
@@ -2791,11 +3121,13 @@ export class AntseedNode extends EventEmitter {
         ? { capabilities: [...result.metadata.capabilities] }
         : {}),
       publicAddress: this._resolvePublicAddress(result),
-      ...(hasProviderPricing ? { providerPricing: providerPricingEntries } : {}),
-      ...(hasProviderServiceCategories ? { providerServiceCategories: providerServiceCategoryEntries } : {}),
-      ...(hasProviderServiceApiProtocols ? { providerServiceApiProtocols: providerServiceApiProtocolEntries } : {}),
-      ...(hasProviderServiceUnitBillingModels ? { providerServiceUnitBillingModels: providerServiceUnitBillingModelEntries } : {}),
-      ...(hasProviderServiceCapabilities ? { providerServiceCapabilities: providerServiceCapabilityEntries } : {}),
+      ...(providerPricing ? { providerPricing } : {}),
+      ...(providerServiceCategories ? { providerServiceCategories } : {}),
+      ...(providerServiceApiProtocols ? { providerServiceApiProtocols } : {}),
+      ...(providerServiceUnitBillingModels ? { providerServiceUnitBillingModels } : {}),
+      ...(providerServiceCapabilities ? { providerServiceCapabilities } : {}),
+      ...(providerServiceHealth ? { providerServiceHealth } : {}),
+      ...(providerServicePerformance ? { providerServicePerformance } : {}),
       defaultInputUsdPerMillion: firstProvider?.defaultPricing.inputUsdPerMillion,
       defaultOutputUsdPerMillion: firstProvider?.defaultPricing.outputUsdPerMillion,
       defaultCachedInputUsdPerMillion: firstProvider?.defaultPricing.cachedInputUsdPerMillion,
@@ -2808,6 +3140,85 @@ export class AntseedNode extends EventEmitter {
       onChainChannelCount: result.metadata.onChainChannelCount,
       onChainGhostCount: result.metadata.onChainGhostCount,
     };
+  }
+
+  /** Replace the buyer's free-tier delegations; later requests send the new set. */
+  setFreeTierDelegations(delegations: FreeTierDelegation[]): void {
+    this._config.freeTierDelegations = [...delegations];
+  }
+
+  /** Header value carrying the unexpired delegations to `buyerAddress`, or null when there are none. */
+  private _freeTierDelegationsHeader(buyerAddress: string): string | null {
+    const nowSeconds = Date.now() / 1000;
+    const delegations = (this._config.freeTierDelegations ?? []).filter((delegation) =>
+      delegation.buyer.toLowerCase() === buyerAddress.toLowerCase() && delegation.expiresAt > nowSeconds);
+    return delegations.length > 0 ? encodeFreeTierDelegationsHeader(delegations) : null;
+  }
+
+  /**
+   * Back staked free-tier tiers with on-chain reads: the positions of the
+   * buyer and of every staker that signed a delegation to it in this seller's
+   * pool. Without the seller pools contract every buyer keeps the base limits
+   * and no tiers are advertised.
+   */
+  /**
+   * Free-tier programs to advertise within what is left of the peer
+   * capability limit. Programs that do not fit are still enforced; buyers
+   * learn them from the seller's refusals instead.
+   */
+  /**
+   * Offered services by whether some provider charges for them (tokens or any
+   * priced unit-billing model), as the request handler decides it. A paid
+   * service's allowance never admits a free-usage channel; the free ones decide admission.
+   */
+  private _offeredServicesByPrice(): { paid: string[]; free: string[] } {
+    const paid = new Set<string>();
+    const offered = new Set<string>();
+    for (const provider of this._providers) {
+      for (const service of provider.services) {
+        offered.add(service);
+        if (isPricedProviderService(provider, service)) paid.add(service);
+      }
+    }
+    return { paid: [...paid], free: [...offered].filter((service) => !paid.has(service)) };
+  }
+
+  private _freeTierCapabilities(usedCapabilities: number): string[] {
+    const limiter = this._sellerFreeTierLimiter;
+    if (!limiter) return [];
+    const capabilities = limiter.capabilities(MAX_PEER_CAPABILITIES - usedCapabilities);
+    if (capabilities.length < limiter.capabilities().length) {
+      debugWarn(
+        `[Node] Not every free-tier program fits in peer metadata (${MAX_PEER_CAPABILITIES} capabilities max); ` +
+        `the rest are enforced but not advertised`,
+      );
+    }
+    return capabilities;
+  }
+
+  private _initializeFreeTierStakeResolver(identity: Identity): void {
+    const limiter = this._sellerFreeTierLimiter;
+    const payments = this._config.payments;
+    if (!limiter || !limiter.hasStakeTiers) return;
+    if (!payments?.rpcUrl || !payments.sellerPoolsAddress) {
+      debugLog("[Node] Staked free-tier tiers disabled: seller pools contract not configured");
+      return;
+    }
+    const sellerPools = new SellerPoolsClient({
+      rpcUrl: payments.rpcUrl,
+      ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
+      contractAddress: payments.sellerPoolsAddress,
+      // Only stake writes use the token; the free tier only reads.
+      antsTokenAddress: "0x0000000000000000000000000000000000000000",
+      ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
+    });
+    const sellerAddress = this._config.sellerContract?.sellerContract ?? identity.wallet.address;
+    limiter.setStakeResolver(new FreeTierStakeResolver({
+      sellerAgentId: () => sellerPools.agentIdForSeller(sellerAddress),
+      currentEpoch: () => sellerPools.currentEpoch(),
+      stakerPositions: (staker, agentId, epoch) => sellerPools.stakerPositionsInPool(staker, agentId, epoch),
+    }), payments.chainId ?? 8453);
+    debugLog(`[Node] Staked free-tier tiers enabled (pools=${payments.sellerPoolsAddress.slice(0, 10)}...)`);
   }
 
   private _warnIfFreeUsageMeteringUnavailable(): void {
@@ -2861,4 +3272,18 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * A provider that failed to initialize is announced as failing from the
+ * first announcement, before the model health checker has published anything.
+ */
+/** @internal Exported for tests. */
+export function announcedServiceHealth(provider: Provider): Record<string, ServiceHealth> | undefined {
+  if (provider.healthCheckAvailable !== false) return provider.serviceHealth;
+  const health = Object.create(null) as Record<string, ServiceHealth>;
+  for (const service of provider.services) {
+    health[service] = serviceHealthOf(provider.serviceHealth, service) ?? { status: 'failing', reason: 'init_failed' };
+  }
+  return health;
 }

@@ -9,13 +9,6 @@
   -webkit-app-region: no-drag;
 }
 
-.credits {
-  @include chip.chip-text;
-  flex: 0 0 auto;
-  min-width: 0;
-  max-width: 180px;
-}
-
 .iconButton {
   flex: 0 0 auto;
   width: chip.$chip-height;
@@ -29,17 +22,17 @@
   cursor: pointer;
 }
 
-.credits:hover {
-  @include chip.chip-hover;
+.keysButton {
+  @include chip.chip-text;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
 }
 
-/* Placeholder while the first balance read is in flight — never a fake $0.00. */
-.creditsSkeleton {
-  display: inline-block;
-  width: 3.25em;
-  min-height: 0;
-  height: 0.9em;
-  vertical-align: middle;
+.keysButton:hover {
+  @include chip.chip-hover;
 }
 
 .iconButton:hover,
@@ -50,24 +43,8 @@
   opacity: 1;
 }
 
-.credits:focus-visible,
+.keysButton:focus-visible,
 .iconButton:focus-visible {
   outline: 2px solid var(--accent-green);
   outline-offset: 2px;
-}
-
-/* Something blocks paid use (deposit short of the minimum, all credits held
-   in sessions): an amber dot, with the reason in the tooltip. */
-.creditsBlocked {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.creditsDot {
-  flex: 0 0 auto;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent-orange, #d98b2b);
 }

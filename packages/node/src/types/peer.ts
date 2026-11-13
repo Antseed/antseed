@@ -13,6 +13,8 @@ export type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 import type {
   ProviderPricingMatrixEntry,
@@ -20,6 +22,8 @@ import type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 
 import type { TrustBreakdown } from '../reputation/trust-score.js';
@@ -70,6 +74,10 @@ export interface PeerInfo {
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   /** Provider/service model capability hints announced by seller. */
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Provider/service self health check results announced by seller (metadata v13+). */
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** Provider/service performance the seller measured on its buyer traffic (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   /** Deterministic fallback default input price (USD per 1M tokens). */
   defaultInputUsdPerMillion?: number;
   /** Deterministic fallback default output price (USD per 1M tokens). */
@@ -114,6 +122,25 @@ export interface PeerInfo {
   onChainWashFlagged?: boolean;
   /** Proven wash share of the seller's volume, in basis points. */
   onChainWashShareBps?: number;
+  /**
+   * Advertised services with a live DIFF verdict on `AntseedVerificationResults`, as
+   * trimmed lowercase service names. Each one keeps 10% of its effective
+   * reputation (see `effectiveModelReputationScore`). Absent when unread.
+   */
+  onChainDiffServices?: string[];
+  /**
+   * Advertised services with a live SAME verdict, as trimmed lowercase service
+   * names. Display only: reputation does not use them. Absent when unread.
+   */
+  onChainSameServices?: string[];
+  /**
+   * The seller agent's on-chain verification status (every service with a live verdict) and
+   * the points multiplier the verification policy gives it, in bps (null when the rates are
+   * unread). A multiplier below 10,000 cuts the trust score by the same factor.
+   */
+  onChainVerificationStatus?: { sameCount: number; diffCount: number; pointsMultiplierBps: number | null };
+  /** Unix ms of the verification read behind `onChainDiffServices` and `onChainSameServices`. */
+  onChainVerificationFetchedAt?: number;
   /**
    * Unix ms when the buyer last refreshed on-chain stats for this peer.
    * Used to throttle repeat chain reads across discovery cycles.

@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { stripVTControlCharacters } from 'node:util';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('native video runtime configuration maps each video seller endpoint to its credentials', () => {
-  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video']] as const) {
+  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video'], ['alibaba-video', 'ALIBABA_VIDEO', 'fal-video']] as const) {
     const config = createDefaultConfig();
     config.seller.providers = { video: { plugin, baseUrl: 'https://seller.example.test', apiKeyEnv: 'TEST_VIDEO_KEY', services: { model: { unitBillingModels: { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } } };
     const previous = process.env['TEST_VIDEO_KEY'];
@@ -21,16 +25,42 @@ test('native video runtime configuration maps each video seller endpoint to its 
 import { createDefaultConfig } from '../../../config/defaults.js';
 import { resolveEffectiveSellerConfig } from '../../../config/effective.js';
 import { requireCryptoConfig, resolveBaseRpcUrlOverride } from '../../payment-utils.js';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
+  announcedPricedServices,
   assertSellerPrerequisites,
+  probeRpcUrls,
+  resolveSellerPaymentsAfterRpcProbe,
   buildSellerRuntimeOverridesFromFlags,
   buildSellerPluginRuntimeEnv,
+  describeBaseRpc,
+  getUnsupportedFallbackUpstreamsWarning,
+  getImageEditUnitBillingWarning,
   getUnsupportedUnitBillingWarning,
   isPublicRpcUrl,
   mergeSellerRuntimeEnv,
+  parseOptionalNonNegativeIntegerEnv,
   parseOptionalPositiveIntegerEnv,
+  restartSupervisor,
   selectSellerProviderNames,
 } from './start.js';
+
+test('seller runtime passes extraProtocols per service without changing the default', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: {
+      model: { upstreamModel: 'upstream-model', extraProtocols: ['openai-responses', 'anthropic-messages'] },
+      'chat-only': {},
+    } },
+  };
+  const env = buildSellerPluginRuntimeEnv(config.seller, 'inference');
+  assert.deepEqual(JSON.parse(env['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] ?? '{}'), {
+    model: ['openai-responses', 'anthropic-messages'],
+  });
+  delete config.seller.providers.inference?.services.model?.extraProtocols;
+  assert.equal(buildSellerPluginRuntimeEnv(config.seller, 'inference')['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'], undefined);
+});
 
 test('seller start runtime overrides are runtime-only and win over env/config', () => {
   const config = createDefaultConfig();
@@ -80,6 +110,7 @@ test('buildSellerPluginRuntimeEnv translates unified config into flat ANTSEED_* 
       services: {
         'claude-sonnet-4-5-20250929': {
           upstreamModel: 'claude-sonnet-4-5-20250929',
+          imageEditModel: 'qwen-edit',
           categories: ['coding', 'chat'],
           pricing: {
             inputUsdPerMillion: 18,
@@ -134,6 +165,9 @@ test('buildSellerPluginRuntimeEnv translates unified config into flat ANTSEED_* 
   // When upstream == serviceId, no alias entry is emitted.
   assert.equal(aliases['claude-sonnet-4-5-20250929'], undefined);
 
+  const editModels = JSON.parse(runtimeEnv['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON'] ?? '{}') as Record<string, string>;
+  assert.equal(editModels['claude-sonnet-4-5-20250929'], 'qwen-edit');
+
   const capabilities = JSON.parse(runtimeEnv['ANTSEED_SERVICE_CAPABILITIES_JSON'] ?? '{}') as Record<string, unknown>;
   assert.deepEqual(capabilities['claude-sonnet-4-5-20250929'], {
     contextWindow: 200000,
@@ -185,6 +219,50 @@ test('getUnsupportedUnitBillingWarning identifies plugins that ignore configured
       label: 'Unit billing',
       type: 'string',
     }]),
+    undefined,
+  );
+});
+
+test('getImageEditUnitBillingWarning identifies edit services without image pricing', () => {
+  const provider = {
+    plugin: 'openai',
+    services: {
+      unpriced: { imageEditModel: 'qwen-edit' },
+      priced: {
+        imageEditModel: 'flux-2-max-edit',
+        unitBillingModels: {
+          'openai-images': {
+            version: 1 as const,
+            components: [
+              {
+                unit: 'output_images' as const,
+                priceUsd: 0.04,
+              },
+            ],
+          },
+        },
+      },
+      free: {
+        imageEditModel: 'qwen-edit',
+        unitBillingModels: {
+          'openai-images': { version: 1 as const, components: [] },
+        },
+      },
+    },
+  };
+
+  assert.match(
+    getImageEditUnitBillingWarning('venice', provider) ?? '',
+    /Provider "venice".*unpriced.*shared output_images price/,
+  );
+  assert.equal(
+    getImageEditUnitBillingWarning('venice', {
+      ...provider,
+      services: {
+        priced: provider.services.priced,
+        free: provider.services.free,
+      },
+    }),
     undefined,
   );
 });
@@ -360,6 +438,14 @@ test('parseOptionalPositiveIntegerEnv accepts positive integer env values', () =
   assert.equal(parseOptionalPositiveIntegerEnv('not-a-number'), undefined);
 });
 
+test('parseOptionalNonNegativeIntegerEnv accepts 0 and positive integer env values', () => {
+  assert.equal(parseOptionalNonNegativeIntegerEnv('0'), 0);
+  assert.equal(parseOptionalNonNegativeIntegerEnv(' 1800000 '), 1800000);
+  assert.equal(parseOptionalNonNegativeIntegerEnv(undefined), undefined);
+  assert.equal(parseOptionalNonNegativeIntegerEnv('-1'), undefined);
+  assert.equal(parseOptionalNonNegativeIntegerEnv('30m'), undefined);
+});
+
 test('isPublicRpcUrl detects built-in public Base RPC endpoints', () => {
   assert.equal(isPublicRpcUrl('https://base.publicnode.com'), true);
   assert.equal(isPublicRpcUrl('https://base.drpc.org'), true);
@@ -374,6 +460,35 @@ test('isPublicRpcUrl matches host only and ignores invalid or dedicated RPC URLs
   assert.equal(isPublicRpcUrl('https://rpc.example.com/base.publicnode.com'), false);
   assert.equal(isPublicRpcUrl('https://dedicated-base-rpc.example'), false);
   assert.equal(isPublicRpcUrl('not a url'), false);
+});
+
+test('seller start never prints the secret parts of the Base RPC URL', () => {
+  const cases: Array<{ url: string; secrets: string[]; shown: string }> = [
+    // A one-character key in the path.
+    { url: 'https://lb.drpc.live/Z', secrets: ['Z'], shown: 'https://lb.drpc.live/…' },
+    // A /v1/{chain}/{key} gateway path.
+    { url: 'https://rpc.example.test/v1/base/path-secret-key', secrets: ['path-secret-key', '/v1/base'], shown: 'https://rpc.example.test/…' },
+    // A key only in the query string.
+    { url: 'https://base-rpc.example.test/?apikey=query-secret-key', secrets: ['query-secret-key', 'apikey'], shown: 'https://base-rpc.example.test/…' },
+    // Credentials in the userinfo.
+    { url: 'https://rpc-user-secret:rpc-pass-secret@base.example.test/', secrets: ['rpc-user-secret', 'rpc-pass-secret'], shown: 'https://base.example.test/…' },
+    // Malformed input and a URL that is not http(s) show a fixed placeholder.
+    { url: 'lb.drpc.live/malformed-secret', secrets: ['malformed-secret', 'drpc'], shown: '<invalid RPC URL>' },
+    { url: 'not a url malformed-secret', secrets: ['malformed-secret'], shown: '<invalid RPC URL>' },
+    { url: 'wss://host-secret.example.test/ws-secret', secrets: ['host-secret', 'ws-secret'], shown: '<invalid RPC URL>' },
+  ];
+  for (const { url, secrets, shown } of cases) {
+    const output = describeBaseRpc(url, 'config/default').map((line) => stripVTControlCharacters(line)).join('\n');
+    for (const secret of secrets) assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+    assert.equal(output, `  Base RPC URL: ${shown} (config/default)`);
+  }
+});
+
+test('seller start still warns about a public Base RPC after masking', () => {
+  const lines = describeBaseRpc('https://mainnet.base.org', 'runtime override').map((line) => stripVTControlCharacters(line));
+  assert.equal(lines[0], '  Base RPC URL: https://mainnet.base.org (runtime override)');
+  assert.match(lines[1] ?? '', /^ {2}Warning: using a public Base RPC\./);
+  assert.equal(lines.length, 2);
 });
 
 test('resolveBaseRpcUrlOverride uses flag before ANTSEED_BASE_RPC_URL', () => {
@@ -432,4 +547,357 @@ test('selectSellerProviderNames parses comma-separated provider filters and repo
 
   assert.deepEqual(selection.selected, ['together', 'missing']);
   assert.deepEqual(selection.unknown, ['missing']);
+});
+
+test('buildSellerPluginRuntimeEnv resolves fallback upstream keys and model names', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    kimi: {
+      plugin: 'openai',
+      baseUrl: 'https://api.moonshot.example',
+      services: { 'kimi-k3.1-pro': { upstreamModel: 'kimi-k3.1-pro' } },
+      fallbackUpstreams: [
+        {
+          baseUrl: 'https://openrouter.example/api',
+          apiKeyEnv: 'TEST_FALLBACK_KEY',
+          services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+        },
+        { baseUrl: 'https://mirror.moonshot.example', pathRewrite: { '/v1/chat/completions': '/v2/chat/completions' } },
+      ],
+    },
+  };
+  const previous = process.env['TEST_FALLBACK_KEY'];
+  process.env['TEST_FALLBACK_KEY'] = 'fallback-key';
+  try {
+    const env = buildSellerPluginRuntimeEnv(config.seller, 'kimi');
+    assert.deepEqual(JSON.parse(env['ANTSEED_FALLBACK_UPSTREAMS_JSON']!), [
+      {
+        baseUrl: 'https://openrouter.example/api',
+        apiKey: 'fallback-key',
+        services: ['kimi-k3.1-pro'],
+        serviceAliasMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+      },
+      { baseUrl: 'https://mirror.moonshot.example', pathRewrite: { '/v1/chat/completions': '/v2/chat/completions' } },
+    ]);
+
+    delete process.env['TEST_FALLBACK_KEY'];
+    assert.throws(
+      () => buildSellerPluginRuntimeEnv(config.seller, 'kimi'),
+      /fallbackUpstreams\[0\] of provider "kimi" reads its API key from TEST_FALLBACK_KEY, which is not set/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env['TEST_FALLBACK_KEY'];
+    else process.env['TEST_FALLBACK_KEY'] = previous;
+  }
+});
+
+test('buildSellerPluginRuntimeEnv keeps a fallback model name equal to the service id', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    kimi: {
+      plugin: 'openai',
+      services: { 'kimi-k3.1-pro': { upstreamModel: 'moonshotai/kimi-k3.1-pro' } },
+      fallbackUpstreams: [
+        { baseUrl: 'https://api.moonshot.example', services: { 'kimi-k3.1-pro': { upstreamModel: 'kimi-k3.1-pro' } } },
+      ],
+    },
+  };
+  const env = buildSellerPluginRuntimeEnv(config.seller, 'kimi');
+  assert.deepEqual(JSON.parse(env['ANTSEED_FALLBACK_UPSTREAMS_JSON']!), [
+    {
+      baseUrl: 'https://api.moonshot.example',
+      services: ['kimi-k3.1-pro'],
+      serviceAliasMap: { 'kimi-k3.1-pro': 'kimi-k3.1-pro' },
+    },
+  ]);
+});
+
+test('getUnsupportedFallbackUpstreamsWarning flags plugins without fallback support', () => {
+  const providerConfig = {
+    plugin: 'anthropic',
+    services: {},
+    fallbackUpstreams: [{ baseUrl: 'https://backup.example' }],
+  };
+  assert.match(
+    getUnsupportedFallbackUpstreamsWarning('claude', providerConfig, [])!,
+    /Provider "claude" \(anthropic\) ignores fallbackUpstreams/,
+  );
+  assert.equal(
+    getUnsupportedFallbackUpstreamsWarning('kimi', providerConfig, [{ key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: '', type: 'string', required: false }]),
+    undefined,
+  );
+  assert.equal(getUnsupportedFallbackUpstreamsWarning('kimi', { plugin: 'openai', services: {} }, []), undefined);
+});
+
+test('a restart from the dashboard is offered only when a supervisor will start the seller again', () => {
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '1' }, 4321), 'its supervisor')
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), 'Kubernetes')
+  // A shell inside the pod (kubectl exec) is not the container's main process, so nothing would restart it.
+  assert.equal(restartSupervisor({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 4321), null)
+  // A terminal that inherited systemd's INVOCATION_ID is not supervised.
+  assert.equal(restartSupervisor({ INVOCATION_ID: 'abc' }, 4321), null)
+  assert.equal(restartSupervisor({ ANTSEED_SUPERVISED: '0', KUBERNETES_SERVICE_HOST: '10.0.0.1' }, 1), null)
+})
+
+/** A JSON-RPC endpoint that answers eth_chainId after `delaysMs[n]` on its n-th request (the last delay repeats). */
+async function slowRpc(delaysMs: number[]): Promise<{ url: string; requests: () => number; close: () => Promise<void> }> {
+  let count = 0;
+  const server: Server = createServer((req, res) => {
+    const delay = delaysMs[Math.min(count, delaysMs.length - 1)]!;
+    count += 1;
+    req.resume();
+    const timer = setTimeout(() => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x2105' }));
+    }, delay);
+    res.on('close', () => clearTimeout(timer));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests: () => count,
+    close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }),
+  };
+}
+
+const fastProbe = { timeoutMs: 100, attempts: 3, retryDelayMs: 10 };
+
+test('probeRpcUrls retries an RPC that is slow at first, instead of giving up after one timeout', async () => {
+  const rpc = await slowRpc([300, 300, 0]);
+  try {
+    assert.equal(await probeRpcUrls([rpc.url], fastProbe), true);
+    assert.equal(rpc.requests(), 3);
+  } finally {
+    await rpc.close();
+  }
+});
+
+test('probeRpcUrls accepts an answer from a fallback RPC when the primary is too slow', async () => {
+  const slow = await slowRpc([5_000]);
+  const fallback = await slowRpc([0]);
+  try {
+    assert.equal(await probeRpcUrls([slow.url, fallback.url], fastProbe), true);
+  } finally {
+    await slow.close();
+    await fallback.close();
+  }
+});
+
+test('probeRpcUrls reports unreachable after every attempt times out', async () => {
+  const rpc = await slowRpc([5_000]);
+  try {
+    const started = Date.now();
+    assert.equal(await probeRpcUrls([rpc.url], fastProbe), false);
+    assert.equal(rpc.requests(), 3);
+    assert.ok(Date.now() - started < 2_000);
+  } finally {
+    await rpc.close();
+  }
+});
+
+test('an unreachable RPC keeps payments on for a priced seller and turns them off only for a free one', async () => {
+  const down = async () => false;
+  const base = { paymentsEnabled: true, settlementEnv: null, rpcUrls: ['http://10.255.255.1:8545'], probe: down };
+  assert.deepEqual(
+    await resolveSellerPaymentsAfterRpcProbe({ ...base, pricedServiceIds: ['kimi-k2.6'] }),
+    { paymentsEnabled: true, rpcReachable: false },
+  );
+  assert.deepEqual(
+    await resolveSellerPaymentsAfterRpcProbe({ ...base, pricedServiceIds: [] }),
+    { paymentsEnabled: false, rpcReachable: false },
+  );
+  // ANTSEED_ENABLE_SETTLEMENT decides on its own, without probing.
+  let probed = false;
+  const probe = async () => { probed = true; return false; };
+  assert.deepEqual(
+    await resolveSellerPaymentsAfterRpcProbe({ ...base, probe, settlementEnv: true, pricedServiceIds: ['kimi-k2.6'] }),
+    { paymentsEnabled: true, rpcReachable: null },
+  );
+  assert.deepEqual(
+    await resolveSellerPaymentsAfterRpcProbe({ ...base, probe, paymentsEnabled: false, settlementEnv: false, pricedServiceIds: ['kimi-k2.6'] }),
+    { paymentsEnabled: false, rpcReachable: null },
+  );
+  assert.equal(probed, false);
+  assert.deepEqual(
+    await resolveSellerPaymentsAfterRpcProbe({ ...base, probe: async () => true, pricedServiceIds: [] }),
+    { paymentsEnabled: true, rpcReachable: true },
+  );
+});
+
+test('announcedPricedServices counts a price the plugin applies on its own', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } }, free: {} } },
+    other: { plugin: 'openai', services: { 'plugin-default': {} } },
+  };
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  assert.deepEqual(
+    announcedPricedServices(config.seller, ['inference', 'other'], [
+      { services: ['kimi-k2.6', 'free'], pricing: { defaults: zero, services: { 'kimi-k2.6': { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 }, free: zero } } },
+      { services: ['plugin-default'], pricing: { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } } },
+    ]).sort(),
+    ['kimi-k2.6', 'plugin-default'],
+  );
+  assert.deepEqual(announcedPricedServices(config.seller, ['inference'], [{ services: ['free'], pricing: { defaults: zero } }]), ['kimi-k2.6']);
+});
+
+test('assertSellerPrerequisites refuses a priced seller whose RPC did not answer, unless chain checks are skipped', async () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } } } },
+  };
+  const input = {
+    dataDir: '/tmp/no-identity-here',
+    config,
+    effectiveSeller: config.seller,
+    providerNames: ['inference'],
+    paymentsEnabled: true,
+    runtimePricingOverride: false,
+    skipChainChecks: false,
+    unreachableRpc: { urls: ['http://10.255.255.1:8545'], pricedServiceIds: ['kimi-k2.6'] },
+  };
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    await assert.rejects(assertSellerPrerequisites(input), /seller prerequisites not met/);
+  } finally {
+    console.error = originalError;
+  }
+  const output = errors.join('\n');
+  assert.match(output, /Base RPC unreachable/);
+  assert.match(output, /http:\/\/10\.255\.255\.1:8545/);
+  assert.match(output, /kimi-k2\.6/);
+  assert.match(output, /ANTSEED_ENABLE_SETTLEMENT=false/);
+  await assertSellerPrerequisites({ ...input, skipChainChecks: true });
+});
+
+async function capturePrerequisiteErrors(input: Parameters<typeof assertSellerPrerequisites>[0]): Promise<string> {
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    await assert.rejects(assertSellerPrerequisites(input), /seller prerequisites not met/);
+  } finally {
+    console.error = originalError;
+  }
+  return stripVTControlCharacters(errors.join('\n'));
+}
+
+test('the unreachable-RPC prerequisite failure never prints the secret parts of the RPC URLs', async () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } } } },
+  };
+  const output = await capturePrerequisiteErrors({
+    dataDir: '/tmp/no-identity-here',
+    config,
+    effectiveSeller: config.seller,
+    providerNames: ['inference'],
+    paymentsEnabled: true,
+    runtimePricingOverride: false,
+    skipChainChecks: false,
+    unreachableRpc: {
+      urls: ['https://lb.drpc.live/primary-secret-key', 'https://rpc-user-secret:rpc-pass-secret@fallback.example.test/?apikey=fallback-secret-key'],
+      pricedServiceIds: ['kimi-k2.6'],
+    },
+  });
+  assert.match(output, /No answer from https:\/\/lb\.drpc\.live\/…, https:\/\/fallback\.example\.test\/… after/);
+  for (const secret of ['primary-secret-key', 'rpc-user-secret', 'rpc-pass-secret', 'apikey', 'fallback-secret-key']) {
+    assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+  }
+});
+
+test('the on-chain readiness failure never prints the secret parts of the RPC URLs in the chain error', async (t) => {
+  // An RPC that refuses every call, as one does when its key has expired.
+  const server = createServer((_req, res) => { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-prereq-'));
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const config = createDefaultConfig();
+  // One RPC, no fallbacks: ethers puts its URL (`info.requestUrl`) in the error message.
+  config.payments.crypto = { ...config.payments.crypto!, chainId: 'base-local' };
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } } } },
+  };
+  const output = await capturePrerequisiteErrors({
+    dataDir,
+    config,
+    effectiveSeller: config.seller,
+    providerNames: ['inference'],
+    paymentsEnabled: true,
+    runtimePricingOverride: false,
+    skipChainChecks: false,
+    baseRpcUrlOverride: `${origin}/v2/primary-secret-key?apikey=query-secret-key`,
+  });
+  assert.match(output, /On-chain readiness check failed[\s\S]*401 Unauthorized/);
+  for (const secret of ['primary-secret-key', 'apikey', 'query-secret-key']) {
+    assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+  }
+});
+
+test('a plugin unit price with zero token defaults and no config pricing keeps payments on and fails the prerequisites when the RPC is down', async () => {
+  const config = createDefaultConfig();
+  // provider-irp-router: zero token defaults, IRP_ROUTER_PRICE_USD as a completed_requests price, no pricing in config.
+  config.seller.providers = { router: { plugin: 'irp-router', services: { 'irp-router': {} } } };
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  const pricedServiceIds = announcedPricedServices(config.seller, ['router'], [{
+    services: ['irp-router'],
+    pricing: { defaults: zero },
+    serviceUnitBillingModels: { 'irp-router': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+  }]);
+  assert.deepEqual(pricedServiceIds, ['irp-router']);
+  // The same plugin at $0 is free.
+  assert.deepEqual(announcedPricedServices(config.seller, ['router'], [{
+    services: ['irp-router'],
+    pricing: { defaults: zero },
+    serviceUnitBillingModels: { 'irp-router': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] } } },
+  }]), []);
+
+  const rpcUrls = ['http://10.255.255.1:8545'];
+  const decision = await resolveSellerPaymentsAfterRpcProbe({
+    paymentsEnabled: true, settlementEnv: null, rpcUrls, pricedServiceIds, probe: async () => false,
+  });
+  assert.deepEqual(decision, { paymentsEnabled: true, rpcReachable: false });
+  const originalError = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    await assert.rejects(assertSellerPrerequisites({
+      dataDir: '/tmp/no-identity-here',
+      config,
+      effectiveSeller: config.seller,
+      providerNames: ['router'],
+      paymentsEnabled: decision.paymentsEnabled,
+      runtimePricingOverride: false,
+      skipChainChecks: false,
+      unreachableRpc: { urls: rpcUrls, pricedServiceIds },
+    }), /seller prerequisites not met/);
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(errors.join('\n'), /Base RPC unreachable[\s\S]*irp-router/);
+});
+
+test('announcedPricedServices counts unit prices set in the seller config (image, video, speech)', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    media: {
+      plugin: 'openai',
+      services: {
+        'qwen-image': { unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } } },
+        'free-image': { unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0 }] } } },
+      },
+    },
+  };
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  assert.deepEqual(
+    announcedPricedServices(config.seller, ['media'], [{ services: ['qwen-image', 'free-image'], pricing: { defaults: zero } }]),
+    ['qwen-image'],
+  );
 });

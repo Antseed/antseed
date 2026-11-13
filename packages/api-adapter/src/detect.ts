@@ -40,6 +40,9 @@ export function detectRequestServiceApiProtocol(
   ) {
     return 'openai-images';
   }
+  if (normalizedPath.split('?')[0] === '/v1/audio/speech') {
+    return 'openai-audio-speech';
+  }
   if (normalizedPath.startsWith('/v1/systemone')) {
     return 'typesafe-systemone';
   }

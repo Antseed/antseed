@@ -82,6 +82,12 @@ test('a halved trust score says why, and sub-cent prices keep their digits', () 
   )
 })
 
+test('a DIFF-penalized trust score names the verification verdict', () => {
+  const penalty = 'cut to 10% from 90: live DIFF verification verdict'
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+  assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 9, penalty), [`trust 9 (${penalty}) below buyer minimum 60`])
+})
+
 test('buyer hard limits narrow a gateway policy; routing preferences are not part of them', () => {
   const buyer = buyerHardPolicy({ minPeerReputation: 50, verifierRequired: true })
   assert.deepEqual(buyer, { minReputation: 50, requireVerified: true })
@@ -164,6 +170,8 @@ test('requireTee excludes sellers without the TEE capability, independent of ver
   assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts()), ['no TEE'])
   assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts({ teeCapable: true, unverifiedReason: 'not verified (verification disabled on this buyer)' })), [])
   assert.deepEqual(pinnedPeerExclusionReasons({ requireTee: true }, facts(), 'gpt-5'), ['no TEE'])
+  assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts({ teeCapable: false, teeFailure: 'not an approved TEE seller build' })),
+    ['TEE attestation failed: not an approved TEE seller build'])
 })
 
 test('model routes and allowedModels match like the gateway: case, variants, peer@model', () => {
