@@ -53,9 +53,6 @@ export function createBrowserPreviewTool(sendToRenderer?: SendToRenderer): ToolD
     },
   };
 }
-
-export const browserPreviewTool: ToolDefinition = createBrowserPreviewTool();
-
 const StartDevServerParams = Type.Object({
   command: Type.String({
     description:
@@ -273,5 +270,3 @@ export function createStartDevServerTool(sendToRenderer?: SendToRenderer): ToolD
     },
   };
 }
-
-export const startDevServerTool: ToolDefinition = createStartDevServerTool();

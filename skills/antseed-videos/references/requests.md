@@ -4,7 +4,7 @@ Every command uses `curl` and `jq` against the local buyer proxy. Build JSON wit
 
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
-auth='authorization: Bearer antseed-desktop'
+auth="authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Catalog
@@ -35,10 +35,12 @@ curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" | jq -r 
      ([.peers[] | "\(.displayName // .peerId[0:8])(\(.reputationScore // 0 | floor))"] | join(" "))]
   | map(tostring) | @tsv'
 
-# One model's offers: protocol, options, pricing.
+# One model's offers: protocol, options, pricing. The catalog entry carries them
+# (the gateway serves only the list, not /v1/models/<id>).
 model_file="$(mktemp)"
-curl -sS --fail-with-body -H "$auth" \
-  "$proxy_url/v1/models/$(jq -rn --arg id "$model" '$id|@uri')" > "$model_file"
+curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" \
+  | jq -e --arg id "$model" '.data[] | select(.id == $id)' > "$model_file" \
+  || { echo "No video model with id $model" >&2; exit 1; }
 jq '.peers[] | {peerId, protocol, video: .capabilities.video, fields: .capabilities.supportedParameters, price: .unitBillingModels[.protocol].components}' "$model_file"
 
 # Image models for frames: id, inputs, $ per image (low-high), seller count, sellers that take output_format.

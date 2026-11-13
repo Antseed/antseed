@@ -60,13 +60,13 @@ Next: [Quickstart](/docs/quickstart).
 
 ## Desktop app
 
-The desktop app (AI VPN) bundles the buyer, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
+Antseed Desktop bundles a local gateway, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
 
 - **macOS**: `.dmg` for Apple Silicon and Intel, signed and notarized.
 - **Windows**: `.exe` installer for x64, code-signed.
 - **Linux**: `.AppImage` and `.deb`.
 
-No account is needed. Free models work right away; for paid models, add credits by card or USDC from **Profile → Add Credits**.
+No account is needed. Free models work right away; for paid models, add funds by card or USDC from **Add funds** on the app's Home.
 
 Next: [Desktop app](/docs/desktop).
 

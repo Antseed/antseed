@@ -8,6 +8,9 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
+/** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
+const COMPLETIONS_PATH = /^[^?]*\/(?:chat\/)?completions\/?(?:\?|$)/i;
+
 export interface RelayConfig {
   /**
    * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
@@ -365,6 +368,11 @@ export class HttpRelay {
   }
 
   private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
+    // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
+    const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
+    const requestPath = `${pathname}${search}`;
+    const upstreamPath = upstream.pathRewrite?.[requestPath] ?? requestPath;
+
     // Resolve dynamic auth token if provider uses OAuth / keychain
     let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
       authHeaderName: this._config.authHeaderName,
@@ -443,29 +451,23 @@ export class HttpRelay {
           // Force `stream_options.include_usage = true` on streaming OpenAI Chat
           // Completions requests. Without this, strict OpenAI-spec upstreams
           // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
-          // which makes `parseResponseUsage` return zeros and causes the
-          // seller to record `cost=0 (in=0 out=0)` for every request —
-          // effectively giving away inference for free.
+          // and the seller has no figure to bill by.
           //
-          // We only touch `/v1/chat/completions` with `stream:true`, and we
-          // preserve any caller-supplied `stream_options` fields. We don't
-          // override an explicit `include_usage:false` (operators can still
-          // disable via `injectJsonFields` below if they really need to).
-          if (
-            request.path.toLowerCase().startsWith('/v1/chat/completions')
-            && transformed.stream === true
-          ) {
+          // We only touch completions paths on a streaming request, and we
+          // preserve the caller's other `stream_options` fields. A caller's
+          // `include_usage:false` does not count: the figure is what the
+          // answer is billed by. Operators can still disable it via
+          // `injectJsonFields` below if they really need to.
+          if ((COMPLETIONS_PATH.test(requestPath) || COMPLETIONS_PATH.test(upstreamPath)) && transformed.stream) {
             const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
               ? transformed.stream_options as Record<string, unknown>
               : {};
-            if (existing.include_usage === undefined) {
-              transformed.stream_options = { ...existing, include_usage: true };
-            }
+            transformed.stream_options = { ...existing, include_usage: true };
           }
 
           // Body injection targets chat-style APIs. Image and speech APIs
           // reject unknown fields (Venice validates them strictly).
-          const lowerPath = request.path.toLowerCase();
+          const lowerPath = requestPath.toLowerCase();
           const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
           const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
@@ -480,11 +482,7 @@ export class HttpRelay {
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
-    let path = request.path.startsWith('/') ? request.path : `/${request.path}`;
-    if (upstream.pathRewrite && path in upstream.pathRewrite) {
-      path = upstream.pathRewrite[path]!;
-    }
-    const url = `${base}${path}`;
+    const url = `${base}${upstreamPath}`;
 
     // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
     const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
@@ -605,12 +603,15 @@ export class HttpRelay {
 
       const reader = fetchResponse.body.getReader();
       let totalStreamBytes = 0;
+      /** The last two bytes streamed (LF is 10): whether a cut stream left a line or an event open. */
+      let tail: number[] = [10, 10];
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
+          if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
           this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
@@ -621,8 +622,9 @@ export class HttpRelay {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
         this._callbacks.onResponseChunk?.({
           requestId: request.requestId,
+          // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
-            `event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
+            `${tail[1] !== 10 ? '\n\n' : tail[0] !== 10 ? '\n' : ''}event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
           ),
           done: false,
         });

@@ -192,6 +192,7 @@ export class SellerPaymentManager {
    */
   private readonly _activeBuyers = new Set<string>();
   private readonly _buyerDisconnectMarkers = new Map<string, object>();
+  private readonly _paymentMuxFor: ((buyerPeerId: string) => PaymentMux | undefined) | undefined;
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
@@ -318,8 +319,15 @@ export class SellerPaymentManager {
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
 
-  constructor(identity: Identity, config: SellerPaymentConfig, channelStore: ChannelStore) {
+  constructor(
+    identity: Identity,
+    config: SellerPaymentConfig,
+    channelStore: ChannelStore,
+    /** The buyer's live payment connection, if it is connected; the node owns these. */
+    paymentMuxFor?: (buyerPeerId: string) => PaymentMux | undefined,
+  ) {
     this._config = config;
+    this._paymentMuxFor = paymentMuxFor;
     this._signer = identity.wallet;
     const channelsClient = new ChannelsClient({
       rpcUrl: config.rpcUrl,
@@ -1789,6 +1797,7 @@ export class SellerPaymentManager {
             this._topUpInFlight.delete(channelId);
           }
           if (outcome === 'permanent-failure') break;
+          if (outcome === 'succeeded') this._promptCatchUpAfterTopUp(buyerPeerId, channelId);
           // After a success, a higher top-up queued meanwhile goes next; after
           // a retryable failure, only a newer request retries it.
           if (outcome === 'succeeded' ? !this._pendingTopUp.has(channelId) : !this._topUpsWanted.has(channelId)) break;
@@ -1801,6 +1810,31 @@ export class SellerPaymentManager {
       }
     });
     this._topUpsRunning.set(channelId, run);
+  }
+
+  /**
+   * After a top-up lands, ask the buyer to sign any spend above what it has
+   * signed. While the top-up was pending the buyer signed only up to the
+   * confirmed deposit, and it can't see the top-up land: without this prompt
+   * the rest stays unsigned until the next request, or the close, asks.
+   */
+  private _promptCatchUpAfterTopUp(buyerPeerId: string, channelId: string): void {
+    const paymentMux = this._paymentMuxFor?.(buyerPeerId);
+    if (!paymentMux || this._connectionsClosed) return;
+    const spent = this._spent.get(channelId) ?? 0n;
+    const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
+    if (spent <= accepted || spent > (this._reserveMax.get(channelId) ?? 0n)) return;
+    try {
+      paymentMux.sendNeedAuth({
+        channelId,
+        requiredCumulativeAmount: spent.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        deposit: this._channelStore.getChannel(channelId)?.authMax ?? '0',
+      });
+      debugLog(`[SellerPayment] Asked for the catch-up auth after topUp: channel=${channelId.slice(0, 18)}... spent=${spent} accepted=${accepted}`);
+    } catch (err) {
+      debugWarn(`[SellerPayment] Failed to send catch-up NeedAuth after topUp: ${this._formatError(err)}`);
+    }
   }
 
   /**
@@ -2951,7 +2985,9 @@ export class SellerPaymentManager {
     }
 
     // Anything served but not yet signed for is unclaimable — ask for the
-    // catch-up auth rather than closing at a loss.
+    // catch-up auth rather than closing at a loss. Ask before waiting: the
+    // buyer may not know about the spend (e.g. its NeedAuth was lost to a
+    // seller restart), so without the request the wait can only time out.
     let spent = this._spent.get(channelId) ?? 0n;
     let best = this._getSettleParams(channelId);
     if (spent > best.amount) {
@@ -2960,11 +2996,6 @@ export class SellerPaymentManager {
       // stay open, rather than wait for a catch-up that cannot be accepted yet.
       // The stored ceiling can lag the chain after a restart: read it first.
       if (this._pendingTopUp.has(channelId) && spent > await this.refreshReserveMaxFromChain(channelId)) this._scheduleTopUp(buyerPeerId, channelId);
-      else await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
-      spent = this._spent.get(channelId) ?? 0n;
-      best = this._getSettleParams(channelId);
-    }
-    if (spent > best.amount) {
       const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
       try {
         paymentMux.sendNeedAuth({
@@ -2976,6 +3007,11 @@ export class SellerPaymentManager {
       } catch (err) {
         debugWarn(`[SellerPayment] Failed to send catch-up NeedAuth before close: ${this._formatError(err)}`);
       }
+      await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
+      spent = this._spent.get(channelId) ?? 0n;
+      best = this._getSettleParams(channelId);
+    }
+    if (spent > best.amount) {
       return reject('pending_auth', `unsigned spend outstanding (spent=${spent} signed=${best.amount})`, {
         retryAfterMs: CLOSE_RETRY_AFTER_MS,
         requiredCumulativeAmount: spent.toString(),

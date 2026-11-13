@@ -1,6 +1,6 @@
 {
   "name": "@antseed/payments",
-  "version": "0.1.105",
+  "version": "0.1.107",
   "description": "Buyer payments portal for Antseed",
   "files": [
     "dist"

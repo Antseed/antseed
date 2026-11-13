@@ -37,6 +37,7 @@ import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import { SellerAuthorizationError } from './seller-address-resolver.js';
 import { parseResponseUsage } from './response-usage.js';
+import { usageForBilling } from './estimated-usage.js';
 import { computeCostUsdc, estimateTokensFromBytesSampled, type ServicePricing } from './pricing.js';
 import { formatUsdc } from './usdc-utils.js';
 import { parseJsonObject, tryParseJsonObject } from '@antseed/protocol/json-codec';
@@ -96,7 +97,7 @@ const MAX_STALE_SESSION_CHECKS = 5;
  * the workspace and its funding path.
  */
 export const OUT_OF_CREDITS_MESSAGE =
-  'You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit" ' +
+  'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" ' +
   'in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
@@ -1151,6 +1152,8 @@ export class BuyerPaymentNegotiator {
     response: SerializedHttpResponse,
     service?: string,
     requestId?: string,
+    /** The body the request was sent with: a chat answer with no usage figure is priced by the same estimate the seller bills. */
+    requestBody?: Uint8Array,
   ): void {
     // Post-response cost estimation feeds the next SpendingAuth. Token pricing
     // stays on computeCostUsdc; image unit billing is an optional surcharge.
@@ -1199,7 +1202,8 @@ export class BuyerPaymentNegotiator {
     if (unitBilling && requestId) {
       this._bpm.recordObservedUnitUsage(requestId, unitBilling.usage);
     }
-    const usage = unitBilling?.tokenUsage ?? parseResponseUsage(response.body);
+    const usage = unitBilling?.tokenUsage
+      ?? (requestBody ? usageForBilling(requestBody, response).usage : parseResponseUsage(response.body));
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
         ?? this._peerDefaultPricing(peer);

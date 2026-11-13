@@ -162,7 +162,7 @@ function StaysOnYourMachine() {
       title={<>Everything stays<br />on your machine.</>}
       lead={
         <>
-          The AI VPN runs on your computer. Your settings, your signing key, and every routing
+          Antseed Desktop runs on your computer. Your settings, your signing key, and every routing
           decision stay on your device. Each request goes peer-to-peer over an encrypted
           connection to the provider you picked.
         </>
@@ -192,7 +192,7 @@ const PRIVACY_FAQ = [
   },
   {
     q: 'Is paying anonymous too?',
-    a: 'There is no account to pay from. You can top up by card or Apple Pay in the AI VPN, or with USDC from the CLI. Settlement happens in USDC on Base, so payments are tied to a wallet, not to your name, and like any public chain that activity is visible onchain. <a href="/docs/faq">More questions in the FAQ →</a>',
+    a: 'There is no account to pay from. You can top up by card or Apple Pay in Antseed Desktop, or with USDC from the CLI. Settlement happens in USDC on Base, so payments are tied to a wallet, not to your name, and like any public chain that activity is visible onchain. <a href="/docs/faq">More questions in the FAQ →</a>',
   },
 ];
 
