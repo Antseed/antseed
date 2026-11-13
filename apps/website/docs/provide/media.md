@@ -340,6 +340,7 @@ Components can match the request's `resolution`:
 - Buyers pay only when the finished video is delivered: a complete MP4 at least 90% of the requested duration and at most 64 MiB.
 - `video_seconds` needs an explicit `duration` in the request. Use `video_generations` if buyers may send `auto`.
 - Buyers refuse video requests priced above $5.00.
+- Each paid create opens a payment channel, and you pay its gas before your upstream sees the create. To stop a buyer spending that on videos that never get paid for, a buyer with 16 channels that ended unpaid in the last day, and no paid video since, gets `429 one_off_channel_backoff` with `Retry-After` instead of another channel. The wait starts at a minute and grows to an hour. More than 16 creates starting at once get the same answer with a 5-second wait.
 
 ### Video capabilities
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { DSTACK_RUNTIME_EVENT_TYPE, runtimeEventDigest, type DstackEvent } from './dstack-event-log.js'
 import type { ApprovedDstackOs, ApprovedNodeBuilds } from './approved-node-measurements.js'
+import { sellerConfigName } from './dstack-app-compose.js'
 
 /** Test-only: a conforming dstack TEE seller deployment, built from deploy/tee-seller/docker-compose.json. */
 
@@ -11,8 +12,10 @@ export function testOs(mrtdHex: string): ApprovedDstackOs {
   return { name: 'dstack test', mrtd: mrtdHex, rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48) }
 }
 
+export const TEST_OS_IMAGE = { name: 'dstack test', hash: 'aa'.repeat(32) }
+
 export function testBuilds(mrtdHex: string): ApprovedNodeBuilds {
-  return { os: [testOs(mrtdHex)], images: [TEST_IMAGE] }
+  return { os: [testOs(mrtdHex)], osImages: [TEST_OS_IMAGE], images: [TEST_IMAGE] }
 }
 
 type Obj = Record<string, any>
@@ -23,16 +26,30 @@ export function referenceCompose(): Obj {
     .replace('sha256:<release digest>', TEST_IMAGE.digest)
     .replace('<seller peer id, 40 hex, no 0x>', 'f'.repeat(40))
     .replace('https://<upstream host>', 'https://upstream.example')
-  return JSON.parse(raw) as Obj
+  const compose = JSON.parse(raw) as Obj
+  const [config] = Object.values(compose['configs']) as Obj[]
+  return withSellerConfigContent(compose, config['content'])
 }
 
 /** The seller config inside a compose, parsed. */
 export function sellerConfig(compose: Obj): Obj {
-  return JSON.parse(compose['configs']['seller-config']['content']) as Obj
+  const [config] = Object.values(compose['configs']) as Obj[]
+  return JSON.parse(config['content']) as Obj
+}
+
+/** The compose with this seller config content, named after it as compose.mjs names it. */
+export function withSellerConfigContent(compose: Obj, content: string): Obj {
+  const name = sellerConfigName(content)
+  const seller = compose['services']['seller']
+  return {
+    ...compose,
+    services: { ...compose['services'], seller: { ...seller, configs: [{ ...seller['configs'][0], source: name }] } },
+    configs: { [name]: { content } },
+  }
 }
 
 export function withSellerConfig(compose: Obj, config: Obj): Obj {
-  return { ...compose, configs: { 'seller-config': { content: JSON.stringify(config) } } }
+  return withSellerConfigContent(compose, JSON.stringify(config))
 }
 
 /** app-compose.json around a compose file, as dstack builds it. */

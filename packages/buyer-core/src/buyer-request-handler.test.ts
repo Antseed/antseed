@@ -245,6 +245,77 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect(sendProxyRequest).toHaveBeenCalledTimes(2);
   });
 
+  it('prices the response it received before the attempt ends, and prices nothing for a 402 it retries', async () => {
+    const { handler, negotiator } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+    const peer = makePeer();
+    const request = makeRequest();
+    const steps: string[] = [];
+    negotiator.bpm.beginPaidRequest.mockImplementation(() => { steps.push('begin'); });
+    negotiator.bpm.endPaidRequest.mockImplementation((_peer: string, requestId: string) => { steps.push(`end ${requestId}`); });
+    negotiator.estimateCostFromResponse.mockImplementation((_peer: unknown, answer: SerializedHttpResponse) => { steps.push(`price ${answer.statusCode}`); });
+
+    await handler.sendRequest(peer, request);
+    // The seller's NeedAuth for the request is judged against the priced
+    // response, so pricing comes before the attempt is reported as ended.
+    expect(steps).toEqual(['begin', `end ${request.requestId}`, 'begin', 'price 200', `end ${request.requestId}`]);
+  });
+
+  it('bounds what the seller may bill only for an attempt the caller gave up, not one the seller can end itself', async () => {
+    for (const ending of ['caller abort', 'abort with an error', 'timeout', 'closed connection'] as const) {
+      const { negotiator } = makeHandler([]);
+      const estimateCostFromPartialResponse = vi.fn();
+      let reportState: (state: ConnectionState) => void = () => {};
+      const connection = {
+        state: ConnectionState.Connected, send: vi.fn(), off: vi.fn(), channelBinding: null,
+        on: vi.fn((_event: string, listener: (state: ConnectionState) => void) => { reportState = listener; }),
+      };
+      // The seller never answers.
+      const handler = new BuyerRequestHandler({ requestTimeoutMs: ending === 'timeout' ? 20 : 60_000 }, {
+        localPeerId: toPeerId('4'.repeat(40)),
+        negotiator: { ...negotiator, estimateCostFromPartialResponse } as never,
+        verificationStorage: null,
+        verificationSampler: null,
+        getConnection: async () => connection as never,
+        getMux: () => ({ sendProxyRequest: vi.fn(), cancelProxyRequest: vi.fn(), activeRequestCount: () => 1 } as never),
+        getVerificationMux: () => ({}) as never,
+        registerPaymentMux: vi.fn(),
+      });
+      const abort = new AbortController();
+      const request = makeRequest();
+      const pending = handler.sendRequest(makePeer(), request, undefined, { signal: abort.signal });
+      setTimeout(() => {
+        if (ending === 'caller abort') abort.abort();
+        if (ending === 'abort with an error') abort.abort(new Error('no answer within 4s'));
+        if (ending === 'closed connection') reportState(ConnectionState.Closed);
+      }, 5);
+      await expect(pending).rejects.toThrow();
+      expect(estimateCostFromPartialResponse, ending).toHaveBeenCalledTimes(ending === 'caller abort' ? 1 : 0);
+      expect(negotiator.bpm.endPaidRequest, ending).toHaveBeenCalledWith(makePeer().peerId, request.requestId, false);
+    }
+  });
+
+  it('bounds nothing for an attempt the caller gave up before it was sent', async () => {
+    const { negotiator } = makeHandler([]);
+    const estimateCostFromPartialResponse = vi.fn();
+    const sendProxyRequest = vi.fn();
+    const handler = new BuyerRequestHandler({}, {
+      localPeerId: toPeerId('4'.repeat(40)),
+      negotiator: { ...negotiator, estimateCostFromPartialResponse } as never,
+      verificationStorage: null,
+      verificationSampler: null,
+      getConnection: async () => ({ state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn(), channelBinding: null }) as never,
+      getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn(), activeRequestCount: () => 1 } as never),
+      getVerificationMux: () => ({}) as never,
+      registerPaymentMux: vi.fn(),
+    });
+    const abort = new AbortController();
+    abort.abort();
+    await expect(handler.sendRequest(makePeer(), makeRequest(), undefined, { signal: abort.signal })).rejects.toThrow(/aborted/);
+    // The seller never saw it, so it has nothing to bill.
+    expect(sendProxyRequest).not.toHaveBeenCalled();
+    expect(estimateCostFromPartialResponse).not.toHaveBeenCalled();
+  });
+
   const catchUp = (required: string, accepted: string) => response(402, {
     error: 'payment_required',
     minBudgetPerRequest: '10000',

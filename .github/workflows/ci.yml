@@ -6,71 +6,121 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to a pull request replaces the run for the older push. Runs on main are never
+# cancelled: each has its own group.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Steps that several jobs share are written once, where they first appear (`&name`), and reused
+# with `*name`. Every job runs on its own runner, so jobs wait for nothing but their own steps:
+# the slowest job sets the time a run takes. Keep slow suites in separate jobs, not in one.
 jobs:
   test:
-    name: Test
+    name: Test (packages)
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - &checkout
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - &setup-pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 9.15.4
 
-      - uses: actions/setup-node@v4
+      - &setup-node
+        uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
-      - name: Install dependencies
+      - &install
+        name: Install dependencies
         run: pnpm install
 
       # Build in dependency order so each tier's tests can resolve imports
-      - name: Build tier 0 (node)
+      - &build-tier0
+        name: Build tier 0 (node)
         run: pnpm run build:tier0
 
-      - name: Build tier 1 (provider-core, router-core)
+      - &build-tier1
+        name: Build tier 1 (provider-core, router-core)
         run: pnpm run build:tier1
 
-      - name: Build tier 2 (plugins)
+      - &build-tier2
+        name: Build tier 2 (plugins)
         run: pnpm run build:tier2
 
-      - name: Build tier 3 (payments, ants, gateway console)
+      - &build-tier3
+        name: Build tier 3 (payments, ants, gateway console)
         run: pnpm run build:tier3
 
-      # CLI test script builds itself; desktop has no tests — skip tier4.
-      # e2e runs after everything else: it builds packages/node and apps/cli
-      # (e2e/global-setup.ts), and a rebuild while the CLI tests import those
-      # dist/ files fails them with "does not provide an export named …".
+      # Every workspace package except the two with their own job below, the CLI and e2e. A new
+      # package is tested here without any change to this file.
       - name: Test
-        run: pnpm -r --filter '!@antseed/e2e' run test
+        run: pnpm -r --filter '!@antseed/e2e' --filter '!@antseed/cli' run test
 
       - name: Test (TEE seller image launcher)
         run: node --test deploy/tee-seller/*.test.mjs
 
-      - name: Test (e2e)
+  test-cli:
+    name: Test (CLI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+
+      # The CLI test script builds the CLI itself.
+      - name: Test
+        run: pnpm --filter '@antseed/cli' run test
+
+  test-e2e:
+    name: Test (e2e)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+
+      - &build-cli
+        name: Build the CLI
+        run: pnpm --filter=@antseed/cli run build
+
+      # e2e/global-setup.ts would build @antseed/node and the CLI again; both are built above.
+      # Nothing else may write those dist/ directories while the tests run: a rebuild under a
+      # running test fails it with "does not provide an export named …".
+      - name: Test
         run: pnpm --filter '@antseed/e2e' run test
+        env:
+          ANTSEED_E2E_SKIP_BUILD: '1'
 
   e2e-payment:
     name: E2E Payment Flow
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
 
       # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
       # installer and github.com release downloads for Foundry can time out (504) for hours.
-      - name: Install Foundry
+      - &install-foundry
+        name: Install Foundry
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -80,17 +130,18 @@ jobs:
           mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
-      - name: Install dependencies
-        run: pnpm install
+      - *install
+      - *build-tier0
 
-      - name: Build tier 0 (node)
-        run: pnpm run build:tier0
-
-      - name: Install Forge dependencies
+      # It ignores the pin: forge-std moves to the latest tag and foundry.lock is rewritten, in
+      # this checkout only. Locally, restore both afterwards.
+      - &forge-deps
+        name: Install Forge dependencies
         run: cd packages/contracts && forge install foundry-rs/forge-std
 
-      # Shared with the other job that deploys: contracts compile once per change to them.
-      - name: Restore compiled contracts
+      # Shared by every job that deploys: contracts compile once per change to them.
+      - &contracts-cache
+        name: Restore compiled contracts
         uses: actions/cache@v4
         with:
           path: |
@@ -106,79 +157,122 @@ jobs:
         run: node e2e/scripts/full-payment-flow.mjs
         timeout-minutes: 15
 
+  # The scenarios are split over the shards, two at a time on each runner as before. Every
+  # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs). `shards` is the number
+  # of entries in `shard`: to add a shard, add a number to the list and raise `shards` to match,
+  # or some scenarios run in no shard and every job still passes. Keep the strategy context out
+  # of the job name: with it there, GitHub creates one of the matrix jobs and ends the run with
+  # "Internal server error".
   payment-stress:
-    name: Payment stress (Base-like RPC)
+    name: Payment stress (Base-like RPC, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+        shards: [3]
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-
-      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
-      # installer and github.com release downloads for Foundry can time out (504) for hours.
-      - name: Install Foundry
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
-            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
-          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
-          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-
-      - name: Install dependencies
-        run: pnpm install
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install-foundry
+      - *install
 
       # The real CLI seller and buyer run here, so build up to the CLI.
-      - name: Build tiers 0-3 and the CLI
-        run: |
-          pnpm run build:tier0
-          pnpm run build:tier1
-          pnpm run build:tier2
-          pnpm run build:tier3
-          pnpm --filter=@antseed/cli run build
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+      - *build-cli
 
-      - name: Install Forge dependencies
-        run: cd packages/contracts && forge install foundry-rs/forge-std
-
-      # Shared with the other job that deploys: contracts compile once per change to them.
-      - name: Restore compiled contracts
-        uses: actions/cache@v4
-        with:
-          path: |
-            packages/contracts/out
-            packages/contracts/cache_forge
-          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
+      - *forge-deps
+      - *contracts-cache
 
       - name: Run payment stress scenarios
-        run: node e2e/stress/ci.mjs --parallel 2 --out "$RUNNER_TEMP/antseed-stress"
+        run: node e2e/stress/ci.mjs --parallel 2 --shard "${{ matrix.shard }}/${{ matrix.shards }}" --out "$RUNNER_TEMP/antseed-stress"
         timeout-minutes: 30
 
       - name: Upload stress logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: payment-stress-logs
+          name: payment-stress-logs-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/antseed-stress/logs
             ${{ runner.temp }}/antseed-stress/runs/*/*.log
             ${{ runner.temp }}/antseed-stress/runs/*/*.json
           retention-days: 7
 
+  testbench:
+    name: Testbench (local chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install-foundry
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+      - *build-cli
+      - *forge-deps
+      - *contracts-cache
+
+      - name: Test the testbench
+        run: pnpm test:testbench
+
+      - name: Test the PR guard
+        run: pnpm test:pr-guard
+
+      # One seed per commit, so a failure replays with the rerun line it prints. Set here because
+      # the runner context is not available in a job-level env.
+      - name: Choose the seed and state directory
+        run: |
+          echo "SEED=$((16#${GITHUB_SHA:0:8}))" >> "$GITHUB_ENV"
+          echo "ANTSEED_TESTBENCH_HOME=$RUNNER_TEMP/testbench" >> "$GITHUB_ENV"
+
+      - name: Run chat-basic
+        run: pnpm testbench run chat-basic --chain local --strict --seed "$SEED"
+
+      - name: Run payment-flow
+        run: pnpm testbench run payment-flow --chain local --strict --seed "$SEED"
+
+      - name: Run routing-smoke
+        run: pnpm testbench run routing-smoke --chain local --strict --seed "$SEED"
+
+      - name: Run issue-1200-spendingauth-catchup
+        run: pnpm testbench run issue-1200-spendingauth-catchup --chain local --strict --seed "$SEED"
+
+      - name: Run stress-smoke
+        run: pnpm testbench run stress-smoke --chain local --strict --seed "$SEED"
+
+      - name: Upload testbench reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-reports
+          path: |
+            ${{ runner.temp }}/testbench/*/reports
+            ${{ runner.temp }}/testbench/*/logs
+          retention-days: 7
+
+      # desktop-chat is not in this job yet. It would need, after the build above:
+      #   - Electron's system libraries and xvfb (apt-get)
+      #   - pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer
+      #   - pnpm exec playwright install ffmpeg
+      #   - xvfb-run -a pnpm testbench run desktop-chat --chain local --strict --seed "$SEED"
+
   installer-lint:
     name: Lint installer script
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - *checkout
 
       - name: shellcheck install-gateway.sh
         run: |
@@ -190,31 +284,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Build tier 0 (node)
-        run: pnpm run build:tier0
-
-      - name: Build tier 1 (provider-core, router-core)
-        run: pnpm run build:tier1
-
-      - name: Build tier 2 (plugins)
-        run: pnpm run build:tier2
-
-      - name: Build tier 3 (payments, ants, gateway console)
-        run: pnpm run build:tier3
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
 
       - name: Typecheck
         run: pnpm run typecheck
@@ -224,7 +301,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - *checkout
 
       # Pinned SHA — DeterminateSystems/nix-installer-action @main as of 2026-08-31
       - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41

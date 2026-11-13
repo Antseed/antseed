@@ -20,11 +20,11 @@ function withPluginVersion(pkgName: string, version: string, fn: (dir: string) =
 }
 
 test('assertPinnedPluginVersion handles pinned and unpinned installs', () => {
-  withPluginVersion(TEE_PACKAGE, '0.1.6', (dir) => {
+  withPluginVersion(TEE_PACKAGE, '0.1.8', (dir) => {
     assert.doesNotThrow(() => assertPinnedPluginVersion(TEE_PACKAGE, dir))
   })
   withPluginVersion(TEE_PACKAGE, '0.1.0', (dir) => {
-    assert.throws(() => assertPinnedPluginVersion(TEE_PACKAGE, dir), /version-locked to 0\.1\.6/)
+    assert.throws(() => assertPinnedPluginVersion(TEE_PACKAGE, dir), /version-locked to 0\.1\.8/)
   })
   withPluginVersion('@antseed/provider-openai', '999.0.0', (dir) => {
     assert.doesNotThrow(() => assertPinnedPluginVersion('@antseed/provider-openai', dir))

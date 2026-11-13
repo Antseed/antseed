@@ -54,6 +54,7 @@ import {
   type AdaptiveRouteScore,
   type RouteRequestShape,
   type PeerInfo,
+  buildNetworkServiceOffers,
   type NetworkServiceOffer,
   type PeerMetadata,
   type ModelRoutingPreferences,
@@ -317,6 +318,9 @@ export interface BuyerBalances {
 
 /** Exit code `POST /_antseed/restart` ends the process with, so a supervisor restarts it. */
 export const BUYER_RESTART_EXIT_CODE = 75
+/** The ways a chat request can arrive, whichever the seller speaks natively. */
+const CHAT_REQUEST_PROTOCOLS: readonly ServiceApiProtocol[] = ['openai-chat-completions', 'openai-responses', 'anthropic-messages']
+
 const MIN_RESTART_INTERVAL_MS = 30_000
 const BALANCE_CACHE_TTL_MS = 15_000
 /** A balance up to this much past its TTL is answered at once while it refreshes. */
@@ -358,6 +362,8 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+  cachedInputUsdPerMillion: number | null
   /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
   /** The score before a DIFF cut; present only when one applies. */
@@ -1757,8 +1763,31 @@ export class BuyerProxy {
       cachedInputUsdPerMillion: offer?.cachedInputUsdPerMillion ?? null,
       imageUsdPerImage: offer?.maxImageUsdPerImage ?? offer?.minImageUsdPerImage ?? null,
       unverifiedReason: this._unverifiedReason(peer),
-      teeCapable: parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID),
+      ...this._teeFacts(peer),
     }
+  }
+
+  /**
+   * Checks the TEE attestation of every seller that advertises one, as soon as
+   * it is found, so the model list can show which really are TEE sellers and a
+   * failing one drops out of Private before anything is sent. Cached, deduped
+   * and capped like any check; a busy or unrun one is tried on a later discovery.
+   */
+  private _checkTeeSellers(peers: readonly PeerInfo[]): void {
+    if (!this._verifier) return
+    for (const peer of peers) {
+      if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) continue
+      void this._teeVerification.verifyForDisplay(peer,
+        () => this._runVerifier(peer, { require: false, prefer: [TEE_VERIFIER_ID] }, AbortSignal.timeout(31_000)))
+        .catch(() => undefined)
+    }
+  }
+
+  /** Advertising the TEE verifier makes a seller TEE-capable until its attestation fails. */
+  private _teeFacts(peer: PeerInfo): Pick<PolicyPeerFacts, 'teeCapable' | 'teeFailure'> {
+    if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) return { teeCapable: false }
+    const failure = this._teeVerification.teeFailure(peer)
+    return failure ? { teeCapable: false, teeFailure: failure } : { teeCapable: true }
   }
 
   /**
@@ -2167,26 +2196,7 @@ export class BuyerProxy {
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */
   private async _routePreview(model: string, requestPolicy: RoutingPolicy | null): Promise<RoutePreviewCandidate[]> {
     const peers = await this._getPeers()
-    const request: SerializedHttpRequest = {
-      requestId: randomUUID(),
-      method: 'POST',
-      path: '/v1/chat/completions',
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model })),
-    }
-    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, model, null, 'strict')
-    const plan = this._planModelRoutes({
-      modelPeers: candidatePeers,
-      modelPlans: routePlanByPeerId,
-      request,
-      requestProtocol: null,
-      requestedService: model,
-      explicitProvider: null,
-      requiredParameters: [],
-      requestPolicy,
-      preferredPeerId: null,
-      deterministic: true,
-    })
+    const plan = this._planChatModelRoutes(peers, model, requestPolicy)
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
     // Routing never considers a service its seller announces as failing, so
@@ -2205,6 +2215,7 @@ export class BuyerProxy {
         reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion ?? null,
         ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
         selection: null,
         health: offer.health ?? null,
@@ -2219,6 +2230,7 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: verdict.offer.cachedInputUsdPerMillion ?? null,
         ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
         health: verdict.offer.health ?? null,
@@ -2839,6 +2851,7 @@ export class BuyerProxy {
 
     this._cachedPeers = merged
     this._teeVerification.observePeers(merged)
+    this._checkTeeSellers(merged)
     this._cacheLastUpdatedAtMs = Date.now()
     this._cacheMutationEpoch += 1
     this._persistPeersToState()
@@ -3919,11 +3932,51 @@ export class BuyerProxy {
     const responseHeaders = { 'content-type': 'application/json', 'x-antseed-request-id': randomUUID() }
     const peers = await this._getPeers()
     const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
+    // Lists what a request could be routed to. `?scope=network` is the console
+    // browsing everything on the network, usable or not.
+    const listPolicy = requestPolicy ?? (url.searchParams.get('scope') === 'network' ? null : {})
+    // Each model is planned once, among only the sellers offering it: a list
+    // holds hundreds of models, so planning across all peers takes over a second.
+    const offers = buildNetworkServiceOffers(peers)
+    // Sets keep first-seen order and dedupe by peer.
+    const sellersByModel = new Map<string, Set<PeerInfo>>()
+    if (listPolicy) {
+      for (const offer of offers) {
+        const peer = peerById.get(offer.peerId)
+        if (!peer) continue
+        const key = canonicalModelKey(offer.serviceId)
+        const sellers = sellersByModel.get(key)
+        if (!sellers) sellersByModel.set(key, new Set([peer]))
+        else sellers.add(peer)
+      }
+    }
+    const routable = new Map<string, Set<string>>()
+    const routableSellers = (serviceId: string, policy: RoutingPolicy): Set<string> => {
+      const key = canonicalModelKey(serviceId)
+      let sellers = routable.get(key)
+      if (!sellers) {
+        sellers = this._routableChatSellers([...(sellersByModel.get(key) ?? [])], serviceId, policy)
+        routable.set(key, sellers)
+      }
+      return sellers
+    }
+    const teeScopes = new Map<string, ReturnType<TeeVerification['teeProvenScope']>>()
     const models = buildNetworkModels(peers, this._now(), {
+      offers,
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      ...(requestPolicy
-        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(requestPolicy, peerById.get(offer.peerId), offer) }
+      teeScope: (peer) => {
+        // Once per seller for this listing, not per model it offers.
+        if (!teeScopes.has(peer.peerId)) teeScopes.set(peer.peerId, this._teeVerification.teeProvenScope(peer))
+        return teeScopes.get(peer.peerId) ?? null
+      },
+      ...(listPolicy
+        ? {
+            offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)
+              // Routing's own answer for chat models, so limits only it applies
+              // (the price cap, a trust cut per model) can't list a model that fails.
+              && ((offer.type ?? 'text') !== 'text' || routableSellers(offer.serviceId, listPolicy).has(offer.peerId)),
+          }
         : {}),
     })
 
@@ -4026,11 +4079,55 @@ export class BuyerProxy {
    * the checks that judge a pinned `peer@model`: the model allow list, the
    * seller-level policy, a strict model route and the buyer's hard limits.
    */
+  /** Which of these sellers a chat request for this model could be routed to right now. */
+  private _routableChatSellers(peers: PeerInfo[], serviceId: string, requestPolicy: RoutingPolicy): Set<string> {
+    // Any way in counts, and each resolves to the provider a real request of that
+    // kind would use: the cheapest compatible one, not the first one advertised.
+    const routable = new Set<string>()
+    for (const protocol of CHAT_REQUEST_PROTOCOLS) {
+      for (const verdict of this._planChatModelRoutes(peers, serviceId, requestPolicy, protocol).verdicts) {
+        if (verdict.eligible) routable.add(verdict.peer.peerId)
+      }
+      if (routable.size === peers.length) break
+    }
+    return routable
+  }
+
+  /**
+   * The route plan for a model-only request: what model listing and route preview
+   * mean by routable. Without a protocol it covers every kind of model (images,
+   * video, speech); with one it resolves the provider a request of that kind uses.
+   */
+  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null, requestProtocol: ServiceApiProtocol | null = null) {
+    const request: SerializedHttpRequest = {
+      requestId: randomUUID(),
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model })),
+    }
+    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, requestProtocol, model, null, 'strict')
+    return this._planModelRoutes({
+      modelPeers: candidatePeers,
+      modelPlans: routePlanByPeerId,
+      request,
+      requestProtocol,
+      requestedService: model,
+      explicitProvider: null,
+      requiredParameters: [],
+      requestPolicy,
+      preferredPeerId: null,
+      deterministic: true,
+    })
+  }
+
   private _policyAllowsOffer(requestPolicy: RoutingPolicy, peer: PeerInfo | undefined, offer: NetworkServiceOffer): boolean {
     if (!peer || !policyAllowsModel(this._effectivePolicy(requestPolicy), offer.serviceId)) return false
     const facts = this._policyFacts(peer, offer)
     return pinnedPeerExclusionReasons(requestPolicy, facts, offer.serviceId).length === 0
-      && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
+      // The whole buyer level, as routing applies it: a seller below the buyer's
+      // minimum trust can't be routed to, so listing it offers a model that fails.
+      && policyExclusionReasons(this._buyerPolicy(), facts).length === 0
   }
 
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -4567,8 +4664,8 @@ export class BuyerProxy {
     let trackedConversationId = storedConversation?.id ?? null
     // Resolve the `antseed` model alias to the session's default route first,
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // substituted value. Tools connected to the buyer without a gateway can
+    // carry the alias, so route changes apply without config rewrites.
     // A data service is named in the path. Its body is the operation's own:
     // a `model` or `service` field there is the provider's, never a route.
     const isDataRequest = dataServiceRoute(serializedReq) !== null
@@ -4582,8 +4679,9 @@ export class BuyerProxy {
         error: {
           type: 'no_default_route',
           code: 'no_default_route',
-          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in the AI VPN, but no route is set. `
-            + 'Pick a model in the desktop app, or request "<peerId>@<model>" explicitly.',
+          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the buyer's default route, but none is set. `
+            + 'Request a model by name ("<model>" or "<peerId>@<model>"), or set a default route with '
+            + 'POST /_antseed/route {"model":"<peerId>@<model>"}.',
           param: 'model',
         },
       }))

@@ -8,7 +8,7 @@ description: Where the buyer config file lives, the buyer settings it holds, rou
 
 The buyer reads its settings from `~/.antseed/config.json`. You do not need the file to start: `antseed buyer start` uses built-in defaults when it is missing. Add settings only when you want to change routing, price caps, timeouts or the chain connection.
 
-The desktop app and the Gateway Console write to the same file: the desktop's **Preferences** and the console's **Settings → Buyer**. Seller settings live in the same file and are covered in [Seller configuration](/docs/provide/config).
+The Gateway Console writes to the same file from **Settings → Buyer**. Seller settings live in the same file and are covered in [Seller configuration](/docs/provide/config).
 
 ## Edit the config
 
@@ -44,12 +44,15 @@ Settings resolve in this order: command-line flags, then environment variables, 
 | `payments.maxVideoRequestUsdc` | `5000000` ($5.00) | Most one video may cost, in USDC base units |
 | `payments.maxReserveAmountUsdc` | `1000000` ($1.00) | Most the buyer reserves for one payment channel, in USDC base units |
 | `network.bootstrapNodes` | `[]` | Extra DHT bootstrap nodes. They are added to the built-in public nodes and can't replace them; see [Test your seller before going live](/docs/provide/test-locally) |
+| `network.noOfficialBootstrap` | `false` | Use only `network.bootstrapNodes`, for an isolated test network |
+| `network.dhtPort` | OS-assigned | UDP port of the node's DHT socket |
+| `network.bindHost` | all interfaces | Local address the node's DHT socket binds to |
 
 Some buyer start flags override these for one run, for example `--port`, `--max-input-usd-per-million`, `--max-output-usd-per-million` and `--metadata-fetch-timeout-ms`. See [CLI commands](/docs/commands).
 
 ## Routing preferences
 
-`buyer.routingPreferences` controls automatic routing for model-only requests. The desktop app's **Preferences** edit the same values. Defaults:
+`buyer.routingPreferences` controls automatic routing for model-only requests. Defaults:
 
 ```json
 {

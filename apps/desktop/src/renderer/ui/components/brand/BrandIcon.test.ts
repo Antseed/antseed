@@ -100,3 +100,8 @@ test('tunnel providers resolve their bundled brand marks', () => {
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'cloudflare' })), /cloudflare\.svg/);
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'ngrok' })), /ngrok\.svg/);
 });
+
+test('Prime Agent gets its own app icon, not a model family', () => {
+  assert.equal(resolveBrandKey('prime-agent', 'Prime Agent'), 'prime-agent');
+  assert.equal(resolveBrandKey('prime-intellect', 'INTELLECT-3'), 'generic');
+});
