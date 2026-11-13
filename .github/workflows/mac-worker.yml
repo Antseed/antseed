@@ -18,3 +18,25 @@ jobs:
       - name: Swift tests
         working-directory: apps/mac-worker
         run: swift test
+
+  build-app:
+    name: Build app (unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build Antseed Colony (ad hoc signed)
+        working-directory: apps/mac-worker
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          scripts/build-app.sh
+          ditto -c -k --keepParent "build/Antseed Colony.app" build/Antseed-Colony-unsigned.zip
+
+      - name: Upload the app as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antseed-colony-unsigned
+          path: apps/mac-worker/build/Antseed-Colony-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14
