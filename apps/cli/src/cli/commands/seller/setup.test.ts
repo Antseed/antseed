@@ -36,6 +36,11 @@ test('getSellerSetupCredentialHint matches the selected plugin', () => {
   assert.equal(getSellerSetupCredentialHint('typesafe'), 'export TYPESAFE_API_KEY=<key>');
 });
 
+test('getSellerSetupCredentialHint points openai-responses at the Codex sign-in, not OPENAI_API_KEY', () => {
+  assert.equal(getSellerSetupCredentialHint('openai'), 'export OPENAI_API_KEY=<key>');
+  assert.equal(getSellerSetupCredentialHint('openai-responses'), 'sign in to Codex on this machine (~/.codex/auth.json)');
+});
+
 test('applySellerSetupRpcUrl stores valid custom RPC URLs, ignores blanks, and clears with dash', () => {
   const config = createDefaultConfig();
 
