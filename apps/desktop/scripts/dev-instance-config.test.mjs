@@ -16,7 +16,7 @@ test('resolveInstancePorts never returns the single-instance defaults or invalid
 
   assert.notEqual(ports.renderer, 5174);
   assert.notEqual(ports.payments, 3118);
-  assert.notEqual(ports.systemProxy, 8378);
+  assert.notEqual(ports.gateway, 8379);
   for (const port of Object.values(ports)) {
     assert.ok(port > 0 && port <= 65_535);
   }

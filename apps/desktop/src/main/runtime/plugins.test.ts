@@ -14,7 +14,7 @@ process.env['HOME'] = homeDir;
 process.env['USERPROFILE'] = homeDir;
 Object.defineProperty(process, 'resourcesPath', { value: resourcesDir, configurable: true });
 
-const { installPluginFromBundle } = await import('./plugins.js');
+const { installPluginFromBundle, windowsNpmInvocation } = await import('./plugins.js');
 
 const pluginsDir = path.join(homeDir, '.antseed', 'plugins');
 const bundleRoot = path.join(resourcesDir, 'bundled-plugins');
@@ -61,4 +61,21 @@ test('installing the bundled router keeps plugins the bundle does not ship', asy
   // Packages the CLI installed are kept.
   assert.equal(installedVersion('@antseed/provider-openai'), '1.4.0');
   assert.equal(installedVersion('openai'), '4.0.0');
+});
+
+const nodejs = 'C:\\Program Files\\nodejs';
+const cli = `${nodejs}\\node_modules\\npm\\bin\\npm-cli.js`;
+
+test('a Windows npm.cmd runs as its node.exe and npm-cli.js, never the .cmd itself', () => {
+  const files = new Set([`${nodejs}\\npm.cmd`, `${nodejs}\\node.exe`, cli]);
+  assert.deepEqual(windowsNpmInvocation(`${nodejs}\\npm.cmd`, (file) => files.has(file)), { bin: `${nodejs}\\node.exe`, leadingArgs: [cli] });
+});
+
+test('an npm.cmd without node.exe beside it runs npm-cli.js on this runtime; without npm-cli.js, through a shell', () => {
+  const global = 'C:\\Users\\a\\AppData\\Roaming\\npm';
+  const globalCli = `${global}\\node_modules\\npm\\bin\\npm-cli.js`;
+  const viaRuntime = windowsNpmInvocation(`${global}\\npm.cmd`, (file) => file === globalCli);
+  assert.equal(viaRuntime.bin, process.execPath);
+  assert.deepEqual(viaRuntime.leadingArgs, [globalCli]);
+  assert.deepEqual(windowsNpmInvocation(`${global}\\npm.cmd`, () => false), { bin: `${global}\\npm.cmd`, leadingArgs: [], shell: true });
 });

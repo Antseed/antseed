@@ -37,7 +37,7 @@ export function UpdateBanner() {
 
     const unsubscribe = bridge.onUpdateStatus(apply);
     // Replay a status that fired before this component mounted.
-    void bridge.getUpdateStatus?.().then((status) => {
+    void bridge.getUpdateStatus?.()?.then((status) => {
       if (status) setUpdate((prev) => prev ?? status);
     }).catch(() => {});
     return unsubscribe;
