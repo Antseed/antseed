@@ -8,7 +8,7 @@ description: Where the buyer config file lives, the buyer settings it holds, rou
 
 The buyer reads its settings from `~/.antseed/config.json`. You do not need the file to start: `antseed buyer start` uses built-in defaults when it is missing. Add settings only when you want to change routing, price caps, timeouts or the chain connection.
 
-The desktop app and the Gateway Console write to the same file: the desktop's **Preferences** and the console's **Settings → Buyer**. Seller settings live in the same file and are covered in [Seller configuration](/docs/provide/config).
+The Gateway Console writes to the same file from **Settings → Buyer**. Seller settings live in the same file and are covered in [Seller configuration](/docs/provide/config).
 
 ## Edit the config
 
@@ -52,7 +52,7 @@ Some buyer start flags override these for one run, for example `--port`, `--max-
 
 ## Routing preferences
 
-`buyer.routingPreferences` controls automatic routing for model-only requests. The desktop app's **Preferences** edit the same values. Defaults:
+`buyer.routingPreferences` controls automatic routing for model-only requests. Defaults:
 
 ```json
 {

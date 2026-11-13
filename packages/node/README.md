@@ -235,7 +235,7 @@ const node = new AntseedNode({
 
 ### Desktop App
 
-The Antseed Desktop app encrypts the identity at rest using Electron's `safeStorage` API. The encryption key is stored in the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret) and the encrypted blob is stored at `~/.antseed/identity.enc`. On first launch, any existing plaintext `identity.key` is migrated to the encrypted store and deleted.
+Antseed Desktop encrypts the identity at rest using Electron's `safeStorage` API. The encryption key is stored in the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret) and the encrypted blob is stored at `~/.antseed/identity.enc`. On first launch, any existing plaintext `identity.key` is migrated to the encrypted store and deleted.
 
 ## On-Chain Settlement Flow
 
@@ -553,7 +553,7 @@ interface ConfigField {
 }
 ```
 
-The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. Plugins are installed with `antseed plugin add <package-name>`.
+The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. The CLI installs a provider plugin when a seller adds a provider that uses it: `antseed config seller add-provider <name> --plugin <package-name>`.
 
 ## Links
 

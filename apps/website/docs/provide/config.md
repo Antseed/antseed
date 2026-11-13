@@ -196,7 +196,10 @@ Credentials always come from environment variables, never from `config.json`.
 | `typesafe` | System One decision models (`POST /v1/systemone`) | `TYPESAFE_API_KEY` |
 | `venice-video` | Video models behind the Venice video API | `VENICE_VIDEO_API_KEY` |
 | `fal-video` | fal.ai video models | `FAL_VIDEO_API_KEY` |
+| `fal-image` | fal.ai image models through the OpenAI Images API | `FAL_IMAGE_API_KEY` |
 | `alibaba-video` | Alibaba Cloud Model Studio video models (Wan, HappyHorse) | `ALIBABA_VIDEO_API_KEY` |
+| `irp-router` | Any Inference Routing Protocol router, as an `irp-suggest` routing service (`--base-url`) | `IRP_ROUTER_API_KEY`, optional |
+| `free-model-router` | An `irp-suggest` routing service that ranks free models among a buyer's candidates | None |
 | `claude-code`, `claude-oauth`, `openai-responses` | Subscription credentials, for testing only | Local keychain, OAuth token or Codex auth file |
 
 Any other npm package that exports a provider plugin works too. See [Provider plugin API](/docs/provider-api).
@@ -292,7 +295,7 @@ Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to 
 }
 ```
 
-Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, the desktop app and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
+Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, gateways and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
 
 #### Per-model programs
 
