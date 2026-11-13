@@ -2766,7 +2766,12 @@ export class AntseedNode extends EventEmitter {
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
       };
-      this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
+      this._sellerPaymentManager = new SellerPaymentManager(
+        this._identity,
+        sellerConfig,
+        this._channelStore,
+        (buyerPeerId) => this._paymentMuxes.get(buyerPeerId as PeerId),
+      );
       debugLog(`[Node] SellerPaymentManager initialized`);
 
       // Deposit-sweep relayer (opt-out — ON by default when the chain has a relay)
