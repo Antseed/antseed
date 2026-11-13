@@ -25,6 +25,12 @@ type ChatModelDropdownProps = {
   onOpen?: () => void;
   onOpenChange?: (open: boolean) => void;
   onRetry?: () => void;
+  /**
+   * Video and decision models can't be picked: the chat model runs them through
+   * its skills. Puts a prompt for one into the message box; without it those
+   * rows only copy the prompt.
+   */
+  onUsePrompt?: (prompt: string) => void;
   /** Caps the menu's height where there is less room below than in the chat header. */
   menuMaxHeight?: number;
   /**
@@ -73,12 +79,23 @@ export function centeredScrollTop(itemTop: number, itemHeight: number, menuHeigh
   return Math.max(0, itemTop - headerHeight - (menuHeight - headerHeight - itemHeight) / 2);
 }
 
-export type PickerTab = 'auto' | 'text' | 'image';
+export type PickerTab = 'auto' | 'text' | 'image' | 'video' | 'decision';
+
+/** Tabs whose models the chat model runs through a skill: listed, never picked. */
+export const PROMPT_TABS: ReadonlySet<PickerTab> = new Set(['video', 'decision']);
 
 /** The tab a model is listed under: routers under Auto, then by type. */
 export function pickerTabFor(model: ChatModel | null | undefined): PickerTab {
   if (model?.router) return 'auto';
-  return model?.type === 'image' ? 'image' : 'text';
+  if (model?.type === 'image' || model?.type === 'video' || model?.type === 'decision') return model.type;
+  return 'text';
+}
+
+/** The message that has the chat model run a video or decision model through its skill. */
+export function skillPrompt(model: ChatModel): string {
+  return model.type === 'video'
+    ? `Make a video with the model ${model.id} (antseed-videos skill) of: `
+    : `Use the decision model ${model.id} (antseed-decisions skill) to answer: `;
 }
 
 /** The tab the picker opens on: the model in use's, or the first tab that lists anything. */
@@ -90,10 +107,17 @@ export function initialPickerTab(selected: ChatModel | null | undefined, tabs: r
 /** Each tab's rows. Free narrows Text and Image only: a router's pick is priced alone, and Auto has no Free toggle. */
 export function pickerLists(models: ChatModel[], query: string, freeOnly: boolean): Record<PickerTab, ChatModel[]> {
   const { routers, text, image } = filterChatModels(models, query, null);
+  const needle = query.trim().toLowerCase();
+  const ofType = (type: string) => models
+    .filter((model) => model.type === type && !model.router
+      && (!needle || model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle)))
+    .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
   return {
     auto: routers,
     text: freeOnly ? text.filter((model) => model.free) : text,
     image: freeOnly ? image.filter((model) => model.free) : image,
+    video: ofType('video'),
+    decision: ofType('decision'),
   };
 }
 
@@ -198,6 +222,7 @@ export function ChatModelDropdown({
   menuMaxHeight,
   menuAnchor = 'trigger',
   menuPlacement = 'below',
+  onUsePrompt,
 }: ChatModelDropdownProps) {
   const [open, setOpen] = useState(false);
   useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
@@ -215,11 +240,18 @@ export function ChatModelDropdown({
   const [hovered, setHovered] = useState<Hovered | null>(null);
   // No room for the card beside the menu (a narrow window, Home's full-width menu): rows carry the details.
   const [cardRoom, setCardRoom] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copiedId) return undefined;
+    const timer = setTimeout(() => setCopiedId(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copiedId]);
   const lists = useMemo(() => pickerLists(models, query, freeOnly), [models, query, freeOnly]);
   // Tabs for the kinds the gateway lists at all, so a filter can't hide a tab.
   const tabs = useMemo(() => {
     const kinds = new Set(models.map(pickerTabFor));
-    return ([['auto', 'Auto'], ['text', 'Text'], ['image', 'Image']] as const).filter(([key]) => kinds.has(key));
+    return ([['auto', 'Auto'], ['text', 'Text'], ['image', 'Image'], ['video', 'Video'], ['decision', 'Decision']] as const)
+      .filter(([key]) => kinds.has(key));
   }, [models]);
   const hasFree = useMemo(() => models.some((model) => model.free), [models]);
   const shown = lists[tab];
@@ -329,6 +361,51 @@ export function ChatModelDropdown({
     );
   }
 
+  /** A video or decision row: not pickable; it starts or copies a prompt for the chat model. */
+  function renderPromptModel(model: ChatModel) {
+    const prompt = skillPrompt(model);
+    return (
+      <div
+        key={model.id}
+        className={`${styles.pickerRow} ${styles.pickerPromptRow}${cardRoom ? '' : ` ${styles.pickerRowTall}`}`}
+        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
+      >
+        <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
+        {cardRoom ? <span className={styles.pickerName}>{model.label}</span> : (
+          <span className={styles.pickerNameGroup}>
+            <span className={styles.pickerName}>{model.label}</span>
+            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
+          </span>
+        )}
+        <span className={styles.pickerTags}>
+          {onUsePrompt && (
+            <button
+              type="button"
+              className={styles.pickerAction}
+              aria-label={`Use ${model.label} in the chat`}
+              onClick={() => {
+                setOpen(false);
+                onUsePrompt(prompt);
+              }}
+            >
+              Use in chat
+            </button>
+          )}
+          <button
+            type="button"
+            className={styles.pickerAction}
+            aria-label={`Copy a prompt for ${model.label}`}
+            onClick={() => {
+              void navigator.clipboard?.writeText(prompt).then(() => setCopiedId(model.id)).catch(() => {});
+            }}
+          >
+            {copiedId === model.id ? 'Copied' : 'Copy prompt'}
+          </button>
+        </span>
+      </div>
+    );
+  }
+
   function renderDetails({ model, top, left }: Hovered) {
     const lab = modelLab(model);
     const byline = model.router
@@ -413,7 +490,7 @@ export function ChatModelDropdown({
                   aria-label="Search models"
                 />
               </label>
-              {hasFree && tab !== 'auto' && (
+              {hasFree && (tab === 'text' || tab === 'image') && (
                 <button
                   type="button"
                   className={`${styles.freeFilter}${freeOnly ? ` ${styles.freeFilterOn}` : ''}`}
@@ -452,8 +529,13 @@ export function ChatModelDropdown({
               )}
             </div>
           )}
+          {!error && PROMPT_TABS.has(tab) && shown.length > 0 && (
+            <div className={styles.modelDropdownStatus}>
+              {tab === 'video' ? 'Video models' : 'Decision models'} run through your chat model: start a prompt for one, or copy it.
+            </div>
+          )}
           {!error && shown.length === 0 && <div className={styles.modelDropdownStatus}>{emptyText}</div>}
-          {shown.map(renderModel)}
+          {shown.map(PROMPT_TABS.has(tab) ? renderPromptModel : renderModel)}
           {hovered && renderDetails(hovered)}
         </div>
       )}

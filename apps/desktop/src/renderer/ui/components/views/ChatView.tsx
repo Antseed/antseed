@@ -1411,6 +1411,16 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                     onOpen={() => void actions.refreshChatModels()}
                     onRetry={() => void actions.refreshChatModels(true)}
                     menuPlacement="above"
+                    onUsePrompt={(prompt) => {
+                      // The chat model runs it: leave image mode, or Send would make an image.
+                      if (imageMode) actions.selectChatModel(snap.chatSelectedModelId);
+                      setInputValue(prompt);
+                      requestAnimationFrame(() => {
+                        const input = inputRef.current;
+                        input?.focus();
+                        input?.setSelectionRange(prompt.length, prompt.length);
+                      });
+                    }}
                   />
                   {/* Image models have sellers too: pick one, or leave it to Auto. */}
                   {pickerModelId && (imageMode || !selectedTextModel?.router) ? (
