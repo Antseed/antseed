@@ -1032,8 +1032,10 @@ export class SellerRequestHandler {
       try {
         try {
           // Token-priced services show the buyer the seller's own price in the body; a per-unit
-          // charge (images, video) is settled on delivery, so no estimate is shown for those.
-          const sellerCost: SellerCost | undefined = unitBillingModel ? undefined : (usage) => tokenCostUsd(usage, requestPricing);
+          // charge (images, video) is settled on delivery, so no estimate is shown for those. A request
+          // served free (a free service or the free allowance) costs the buyer nothing, and says so.
+          const sellerCost: SellerCost | undefined = unitBillingModel ? undefined
+            : isServedFree ? () => 0 : (usage) => tokenCostUsd(usage, requestPricing);
           let response = await this._executeRequest(provider, request, sellerCost, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
