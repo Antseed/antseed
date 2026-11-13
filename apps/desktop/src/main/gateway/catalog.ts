@@ -80,6 +80,25 @@ function entrySupportsImages(entry: GatewayModelEntry, peers: Array<Record<strin
   return peers.length > 0 && peers.every(peerTakesImages);
 }
 
+function peerReasons(peer: Record<string, unknown>): boolean {
+  return record(peer['capabilities'])['reasoning'] === true;
+}
+
+/**
+ * Thinking: the gateway guarantees reasoning (every seller reported it), or
+ * every peer serving the model declares it — the gateway may route to any of
+ * them, and a seller that does not reason may reject a thinking request.
+ */
+function entryReasonsEverywhere(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): boolean {
+  return record(entry['capabilities'])['reasoning'] === true || (peers.length > 0 && peers.every(peerReasons));
+}
+
+function sellerIds(peers: Array<Record<string, unknown>>, keep: (peer: Record<string, unknown>) => boolean): string[] {
+  return peers
+    .filter(keep)
+    .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [normalizeSellerId(peer['peerId'])] : []));
+}
+
 function peerTakesImages(peer: Record<string, unknown>): boolean {
   const capabilities = peer['capabilities'];
   const inputs = capabilities && typeof capabilities === 'object'
@@ -89,9 +108,7 @@ function peerTakesImages(peer: Record<string, unknown>): boolean {
 }
 
 function imageInputSellerIds(peers: Array<Record<string, unknown>>): string[] {
-  return peers
-    .filter(peerTakesImages)
-    .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [normalizeSellerId(peer['peerId'])] : []));
+  return sellerIds(peers, peerTakesImages);
 }
 
 /** Each seller's price per image, for the seller picker: the route preview prices tokens only. */
@@ -173,6 +190,7 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
   const name = typeof entry['name'] === 'string' && entry['name'].trim() ? entry['name'].trim() : entry.id;
   const contextWindow = entryContextWindow(entry);
   const imageSellers = imageInputSellerIds(peers);
+  const reasoningSellers = sellerIds(peers, peerReasons);
   const imagePrices = type === 'image' ? imageUsdBySeller(peers) : {};
   return {
     id: entry.id,
@@ -184,6 +202,8 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
     ...(contextWindow ? { contextWindow } : {}),
     ...(Object.keys(imagePrices).length > 0 ? { imageUsdBySeller: imagePrices } : {}),
     ...entryOfferSummary(entry, peers, options),
+    ...(entryReasonsEverywhere(entry, peers) ? { reasoningEverySeller: true } : {}),
+    ...(reasoningSellers.length > 0 ? { reasoningSellerIds: reasoningSellers } : {}),
   };
 }
 

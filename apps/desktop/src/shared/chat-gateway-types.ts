@@ -32,7 +32,12 @@ export type ChatModel = {
   /** Some seller runs it sealed end to end: the seller and its model provider are both in a verified TEE. */
   teeEndToEnd?: boolean;
   toolUse: boolean;
+  /** Some seller declares reasoning. */
   reasoning: boolean;
+  /** Every seller the gateway may pick declares reasoning (the buyer's guaranteed capability), so the chat may ask it to think. */
+  reasoningEverySeller?: boolean;
+  /** Sellers (lowercase, no 0x) that declare reasoning, for a chat pinned to one when not all of them do. */
+  reasoningSellerIds?: string[];
   /**
    * Cheapest advertised prices across sellers, USD per million tokens; null when none advertised.
    * A stakers-only $0 offer counts only when no other seller has one.

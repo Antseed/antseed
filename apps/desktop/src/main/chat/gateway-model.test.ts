@@ -103,6 +103,31 @@ test('the picker lists each model id once: tool-capable first, then most sellers
   assert.deepEqual(models.map((model) => model.label), ['Delta', 'Crowded', 'alpha', 'Beta']);
 });
 
+test('thinking needs every seller to declare reasoning, or the pinned one', () => {
+  const peers = [
+    { peerId: 'AA', capabilities: { reasoning: true } },
+    { peerId: 'bb', capabilities: { reasoning: false } },
+  ];
+  const mixed = toChatModel({ id: 'claude-haiku-5-5', peers });
+  assert.deepEqual([mixed.reasoning, mixed.reasoningEverySeller, mixed.reasoningSellerIds], [true, undefined, ['aa']]);
+  // The gateway's guarantee: every seller reported reasoning.
+  const guaranteed = toChatModel({ id: 'm', capabilities: { reasoning: true }, peers: [{ peerId: 'cc' }] });
+  assert.equal(guaranteed.reasoningEverySeller, true);
+  const all = toChatModel({ id: 'm', peers: [{ peerId: 'dd', capabilities: { reasoning: true } }] });
+  assert.equal(all.reasoningEverySeller, true);
+  assert.equal(toChatModel({ id: 'm' }).reasoningEverySeller, undefined);
+});
+
+test('an Anthropic model reasons only when its sellers do and its form of thinking is known', () => {
+  const anthropic = (modelId: string, reasoning?: boolean) => makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, ...(reasoning === undefined ? {} : { reasoning }) }).reasoning;
+  assert.deepEqual(
+    [anthropic('claude-haiku-5-5', true), anthropic('claude-haiku-5-5', false), anthropic('claude-haiku-5-5'), anthropic('code-helper', true)],
+    [true, false, false, false],
+  );
+  // The OpenAI protocols keep their own reasoning handling.
+  assert.equal(makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-responses', supportsImages: false }).reasoning, true);
+});
+
 test('gateway models use the origin for Anthropic and /v1 for OpenAI, with a bearer key', () => {
   const anthropic = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false });
   assert.equal(anthropic.baseUrl, 'http://127.0.0.1:8379');
