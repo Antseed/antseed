@@ -227,6 +227,7 @@ export {
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   inferServiceProtocol,
   resolveServiceProtocol,
   type BuildNetworkServiceOffersOptions,
