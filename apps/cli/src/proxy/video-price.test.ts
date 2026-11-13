@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { videoOfferPrice } from './video-price.js'
+import type { UnitBillingComponentV1, VideoOptions } from '@antseed/node'
+import { videoOfferPrice, type VideoOffer } from './video-price.js'
 
-const offer = (protocol: string, components: unknown[], video: Record<string, unknown> = {}) => ({
+const offer = (protocol: string, components: UnitBillingComponentV1[], video: VideoOptions = {}): VideoOffer => ({
   peerId: 'aaaa', provider: 'example', serviceId: 'example-video', capabilities: { video },
   unitBillingModels: { [protocol]: { version: 1, components } },
 })
@@ -27,7 +28,7 @@ test('a video offer is priced as billing prices a plain create: per resolution, 
 })
 
 test('Venice prices a video create at its announced aspect ratio and audio when the create names none; other protocols do not', () => {
-  const components = [{ unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '720p', aspect_ratio: '16:9', audio: 'true' } }]
+  const components: UnitBillingComponentV1[] = [{ unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '720p', aspect_ratio: '16:9', audio: 'true' } }]
   assert.deepEqual(videoOfferPrice(offer('venice-video', components, { aspectRatios: ['16:9', '9:16'], audio: true })), { perSecondUsd: 0.1, perVideoUsd: 0 })
   assert.equal(videoOfferPrice(offer('fal-video', components, { aspectRatios: ['16:9'], audio: true })), null)
 })
@@ -38,7 +39,7 @@ test('an offer without a price per second, or with billing that is not a video p
 })
 
 test('a video offer is priced at each resolution it announces, so a surcharge on one does not hide the base rate', () => {
-  const components = [
+  const components: UnitBillingComponentV1[] = [
     { unit: 'video_seconds', priceUsd: 0.1 },
     { unit: 'video_seconds', priceUsd: 0.2, match: { resolution: '720p' } },
   ]
