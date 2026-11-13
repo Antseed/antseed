@@ -2157,59 +2157,58 @@ export class SellerPaymentManager {
 
     if (accepted === 0n) {
       if (settleOnly) return;
+      // A channel with nothing signed stays open for the timeout checker: it keeps
+      // its spend, so a buyer that comes back still owes what it was served.
       debugLog(`[SellerPayment] Zero-cumulative channel ${channelId.slice(0, 18)}... — deferring to timeout checker`);
-    } else if (settleOnly) {
-      await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
-      return;
-    } else {
-      const retries = this._closeRetryCount.get(channelId) ?? 0;
-      if (retries >= SellerPaymentManager.MAX_CLOSE_RETRIES) {
-        debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
-        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
-      } else {
-        debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
-        const closeResult = await this._submitClose(
-          channelId,
-          amount,
-          () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
-        );
-        if (closeResult.closed) {
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
-          this._closeRetryCount.delete(channelId);
-        } else {
-          if (this._isRetryableTxSubmissionFailure(closeResult.error)) {
-            debugWarn(
-              `[SellerPayment] Close hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
-              `— keeping channel state for retry: ${this._formatError(closeResult.error)}`,
-            );
-            if (cleanupOnFailure) {
-              this._deactivateBuyerForChannel(buyerPeerId, channelId);
-            }
-            return;
-          }
-
-          const failedAttempts = retries + 1;
-          debugWarn(`[SellerPayment] Failed to close channel (attempt ${failedAttempts}): ${this._formatError(closeResult.error)}`);
-          this._closeRetryCount.set(channelId, failedAttempts);
-
-          if (failedAttempts < SellerPaymentManager.MAX_CLOSE_RETRIES) {
-            if (cleanupOnFailure) {
-              this._deactivateBuyerForChannel(buyerPeerId, channelId);
-            }
-            return;
-          }
-
-          debugWarn(`[SellerPayment] close() failed ${failedAttempts} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
-        }
-      }
-    }
-
-    // A channel with nothing signed stays open for the timeout checker: it keeps
-    // its spend, so a buyer that comes back still owes what it was served.
-    if (accepted === 0n) {
       this._deactivateBuyerForChannel(buyerPeerId, channelId);
       return;
+    }
+
+    if (settleOnly) {
+      await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
+      return;
+    }
+
+    const retries = this._closeRetryCount.get(channelId) ?? 0;
+    if (retries >= SellerPaymentManager.MAX_CLOSE_RETRIES) {
+      debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
+      this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+    } else {
+      debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+      const closeResult = await this._submitClose(
+        channelId,
+        amount,
+        () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
+      );
+      if (closeResult.closed) {
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
+        this._closeRetryCount.delete(channelId);
+      } else {
+        if (this._isRetryableTxSubmissionFailure(closeResult.error)) {
+          debugWarn(
+            `[SellerPayment] Close hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
+            `— keeping channel state for retry: ${this._formatError(closeResult.error)}`,
+          );
+          if (cleanupOnFailure) {
+            this._deactivateBuyerForChannel(buyerPeerId, channelId);
+          }
+          return;
+        }
+
+        const failedAttempts = retries + 1;
+        debugWarn(`[SellerPayment] Failed to close channel (attempt ${failedAttempts}): ${this._formatError(closeResult.error)}`);
+        this._closeRetryCount.set(channelId, failedAttempts);
+
+        if (failedAttempts < SellerPaymentManager.MAX_CLOSE_RETRIES) {
+          if (cleanupOnFailure) {
+            this._deactivateBuyerForChannel(buyerPeerId, channelId);
+          }
+          return;
+        }
+
+        debugWarn(`[SellerPayment] close() failed ${failedAttempts} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+      }
     }
 
     // Clean up maps after successful close or exhausted retries
