@@ -52,6 +52,8 @@ function fixture(options: { operator?: string | null; referrals?: boolean; explo
   };
   const client = {
     currentEpoch: vi.fn(async () => 24),
+    referrerOf: vi.fn(async () => wallet),
+    boundAtEpoch: vi.fn(async () => 18),
     pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 20 || epoch === 22 ? 5n : 0n)),
     pendingReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 3 || epoch === 5 ? 7n : 0n)),
     claim: vi.fn(async () => '0xhash'),
@@ -296,6 +298,22 @@ describe('referee bonus', () => {
     expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 23); // the latest finished epoch
     expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 24); // still open
     expect(client.claimReferee).toHaveBeenCalledWith(operatorSigner, buyer, [20, 22]);
+  });
+
+  it('scans the whole bonus window on-chain, however long ago the invite bound', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    client.boundAtEpoch.mockResolvedValue(2);
+    client.currentEpoch.mockResolvedValue(60);
+    client.pendingRefereeReward.mockImplementation(async (_buyer: string, epoch: number) => (epoch === 3 ? 5n : 0n));
+    expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [3] });
+    expect(client.pendingRefereeReward.mock.calls.map((call) => call[1])).toEqual(Array.from({ length: 13 }, (_, i) => 2 + i));
+  });
+
+  it('scans nothing on-chain for a buyer without an invite', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    client.referrerOf.mockResolvedValue(ZeroAddress);
+    await expect(claimRefereeRewards(ctx)).rejects.toThrow('No invite bonus');
+    expect(client.pendingRefereeReward).not.toHaveBeenCalled();
   });
 
   it('claims the epochs payable on-chain when the explorer request fails', async () => {

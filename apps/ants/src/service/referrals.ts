@@ -1,8 +1,9 @@
 import { join } from 'node:path';
-import { getAddress, isAddress } from 'ethers';
+import { ZeroAddress, getAddress, isAddress } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import {
   INVITE_VALIDITY_EPOCHS,
+  REFEREE_BONUS_EPOCHS,
   encodeInvite,
   inviteLink,
   nextInviteIndex,
@@ -352,11 +353,18 @@ export function referralClaimBatches(pairs: ClaimPair[], maxPairs = MAX_REFERRAL
 
 /**
  * Epochs with a non-zero referee bonus for `buyer`, from `pendingRefereeReward`
- * per epoch. Costs one read per epoch, so only claims use it, and only when
- * Antscan cannot answer.
+ * over its whole bonus window (claims have no age limit). Costs one read per
+ * epoch, so only claims use it, and only when Antscan cannot answer.
  */
-async function pendingRefereeEpochs(client: Pick<ReferralsClient, 'currentEpoch' | 'pendingRefereeReward'>, buyer: string): Promise<number[]> {
-  const rewards = await scanEpochRewards(await client.currentEpoch(), (epoch) => client.pendingRefereeReward(buyer, epoch));
+async function pendingRefereeEpochs(
+  client: Pick<ReferralsClient, 'currentEpoch' | 'referrerOf' | 'boundAtEpoch' | 'pendingRefereeReward'>,
+  buyer: string,
+): Promise<number[]> {
+  const [referrer, boundAt, current] = await Promise.all([client.referrerOf(buyer), client.boundAtEpoch(buyer), client.currentEpoch()]);
+  if (referrer === ZeroAddress) return [];
+  // The window ends after epoch boundAt + REFEREE_BONUS_EPOCHS, so nothing later is scanned.
+  const end = Math.min(current, boundAt + REFEREE_BONUS_EPOCHS + 1);
+  const rewards = await scanEpochRewards(boundAt, end, (epoch) => client.pendingRefereeReward(buyer, epoch));
   return rewards.map(({ epoch }) => epoch);
 }
 

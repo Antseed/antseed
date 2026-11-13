@@ -17,6 +17,7 @@ export interface ClientEpochReward {
 
 const CLIENT_REWARDS_ABI = [
   'function emissionsGate() external view returns (address)',
+  'function firstCreditEpoch() external view returns (uint256)',
   'function identityRegistry() external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
   'function clientEpochClaimed(uint256 clientAgentId, uint256 epoch) external view returns (bool)',
@@ -56,12 +57,19 @@ export class ClientRewardsClient extends BaseEvmClient {
     return Number(await contract.getFunction('currentEpoch')());
   }
 
+  /** The first epoch the contract credits usage to; nothing before it is payable. */
+  async firstCreditEpoch(): Promise<number> {
+    return Number(await this.contract().getFunction('firstCreditEpoch')());
+  }
+
   /**
-   * Epochs with a non-zero payable reward for `clientAgentId`, scanning the
-   * last `lookback` claimable epochs (unclaimed, claimable, budget available).
+   * Epochs with a non-zero payable reward for `clientAgentId` (unclaimed,
+   * claimable, budget available), scanning every claimable epoch since the
+   * first credited one: claims have no age limit. One read per epoch.
    */
-  async pendingRewards(clientAgentId: number, lookback = 26): Promise<ClientEpochReward[]> {
-    return scanEpochRewards(await this.currentEpoch(), (epoch) => this.pendingReward(clientAgentId, epoch), lookback);
+  async pendingRewards(clientAgentId: number): Promise<ClientEpochReward[]> {
+    const [from, current] = await Promise.all([this.firstCreditEpoch(), this.currentEpoch()]);
+    return scanEpochRewards(from, current, (epoch) => this.pendingReward(clientAgentId, epoch));
   }
 
   /** Mint the client's share of `epoch` to its agent owner, who must be `signer`. */

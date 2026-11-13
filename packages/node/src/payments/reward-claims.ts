@@ -4,21 +4,23 @@ import type { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client
 export type RewardTransactionRecorder = (hash: string, kind: 'claim' | 'accounting') => Promise<void>;
 
 /**
- * Epochs with a non-zero payable reward among the last `lookback` claimable
- * epochs before `currentEpoch` (an epoch is claimable once it ends), read in
- * parallel with `readPending`, in epoch order.
+ * Epochs from `fromEpoch` up to the last claimable one before `currentEpoch`
+ * (an epoch is claimable once it ends) with a non-zero payable reward, in
+ * epoch order. Reads `readPending` 32 epochs at a time.
  */
 export async function scanEpochRewards(
+  fromEpoch: number,
   currentEpoch: number,
   readPending: (epoch: number) => Promise<bigint>,
-  lookback = 26,
 ): Promise<Array<{ epoch: number; amount: bigint }>> {
-  const latestClaimable = currentEpoch - 1;
-  if (latestClaimable < 0) return [];
-  const from = Math.max(0, latestClaimable - lookback + 1);
-  const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-  const amounts = await Promise.all(epochs.map(readPending));
-  return epochs.map((epoch, i) => ({ epoch, amount: amounts[i]! })).filter(({ amount }) => amount > 0n);
+  const from = Math.max(0, fromEpoch);
+  const found: Array<{ epoch: number; amount: bigint }> = [];
+  for (let start = from; start < currentEpoch; start += 32) {
+    const epochs = Array.from({ length: Math.min(32, currentEpoch - start) }, (_, i) => start + i);
+    const amounts = await Promise.all(epochs.map(readPending));
+    epochs.forEach((epoch, i) => { if (amounts[i]! > 0n) found.push({ epoch, amount: amounts[i]! }); });
+  }
+  return found;
 }
 
 export async function pendingEpochRewards(

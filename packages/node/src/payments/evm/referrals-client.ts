@@ -87,6 +87,11 @@ export class ReferralsClient extends BaseEvmClient {
     return this.contract().getFunction('referrerOf')(buyer);
   }
 
+  /** The epoch `buyer`'s invite bound; meaningful only when `referrerOf(buyer)` is set. */
+  async boundAtEpoch(buyer: string): Promise<number> {
+    return Number(await this.contract().getFunction('boundAtEpoch')(buyer));
+  }
+
   async referredCount(referrer: string): Promise<number> {
     return Number(await this.contract().getFunction('referredCount')(referrer));
   }
