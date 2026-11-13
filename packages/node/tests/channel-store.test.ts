@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel, type StoredReceipt } from '../src/payments/channel-store.js';
 
 function makeTempDir(): string {
@@ -82,6 +83,37 @@ describe('ChannelStore', () => {
     expect(loaded!.settledAt).toBeTypeOf('number');
   });
 
+  it('durably preserves reserve recovery state', () => {
+    const recovery = {
+      reserveSalt: 'reserve-salt', initialReserveAmount: '1000000', reserveMaxAmount: '5000000',
+      latestReserveAuthSig: 'reserve-signature', latestReserveDeadline: 1900000000,
+      reserveAuthPending: true, confirmedReserveAmount: '1000000',
+    };
+    const channel = makeChannel({ ...recovery, authMax: '850000' });
+    store.upsertChannel(channel);
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject(recovery);
+    store.upsertChannel({ ...store.getChannel(channel.sessionId)!, confirmedReserveAmount: '5000000', reserveAuthPending: false });
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject({ confirmedReserveAmount: '5000000', reserveAuthPending: false });
+  });
+
+  it('upgrades a version-five database without changing existing channels', () => {
+    const channel = makeChannel();
+    store.upsertChannel(channel);
+    store.close();
+    const legacyDatabase = new Database(join(tempDir, 'sessions.db'));
+    legacyDatabase.exec('ALTER TABLE payment_channels DROP COLUMN payment_recovery; DELETE FROM schema_version WHERE version = 6');
+    legacyDatabase.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject(channel);
+    expect(store.getChannel(channel.sessionId)?.confirmedReserveAmount).toBeUndefined();
+    store.upsertChannel({ ...store.getChannel(channel.sessionId)!, confirmedReserveAmount: '850000' });
+    expect(store.getChannel(channel.sessionId)?.confirmedReserveAmount).toBe('850000');
+  });
+
   it('test_updateTokensDelivered: increment tokens, verify', () => {
     const channel = makeChannel();
     store.upsertChannel(channel);
@@ -91,6 +123,73 @@ describe('ChannelStore', () => {
     const loaded = store.getChannel(channel.sessionId);
     expect(loaded!.tokensDelivered).toBe('250000');
     expect(loaded!.requestCount).toBe(3);
+  });
+
+  it('atomically commits an authorization with its service totals', () => {
+    const channel = makeChannel();
+    store.upsertChannel(channel);
+
+    store.commitAuthorization({
+      ...channel,
+      authMax: '250000',
+      tokensDelivered: '12',
+      previousConsumption: '8',
+      requestCount: 1,
+    }, [{
+      serviceId: '0x' + '11'.repeat(32),
+      cumulativeAmount: 250000n,
+      cumulativeInputTokens: 12n,
+      cumulativeCachedInputTokens: 2n,
+      cumulativeOutputTokens: 8n,
+      cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 0n,
+    }]);
+
+    expect(store.getChannel(channel.sessionId)).toMatchObject({
+      authMax: '250000',
+      tokensDelivered: '12',
+      previousConsumption: '8',
+      requestCount: 1,
+    });
+    expect(store.getServiceTotals(channel.sessionId)).toEqual([
+      expect.objectContaining({
+        cumulativeAmount: '250000',
+        cumulativeInputTokens: '12',
+        cumulativeOutputTokens: '8',
+      }),
+    ]);
+  });
+
+  it('rolls back the channel snapshot when service-total persistence fails', () => {
+    const channel = makeChannel();
+    store.upsertChannel(channel);
+    store.replaceServiceTotals(channel.sessionId, [{
+      serviceId: '0x' + '22'.repeat(32),
+      cumulativeAmount: '10',
+      cumulativeInputTokens: '1',
+      cumulativeCachedInputTokens: '0',
+      cumulativeOutputTokens: '1',
+      cumulativeRequestCount: '1',
+      cumulativeOutputImages: '0',
+    }]);
+
+    expect(() => store.commitAuthorization({ ...channel, authMax: '999' }, [{
+      serviceId: null as unknown as string,
+      cumulativeAmount: 999n,
+      cumulativeInputTokens: 9n,
+      cumulativeCachedInputTokens: 0n,
+      cumulativeOutputTokens: 9n,
+      cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 0n,
+    }])).toThrow();
+
+    expect(store.getChannel(channel.sessionId)?.authMax).toBe(channel.authMax);
+    expect(store.getServiceTotals(channel.sessionId)).toEqual([
+      expect.objectContaining({
+        serviceId: '0x' + '22'.repeat(32),
+        cumulativeAmount: '10',
+      }),
+    ]);
   });
 
   it('test_getActiveByPeer: returns correct active channel', () => {
@@ -125,12 +224,114 @@ describe('ChannelStore', () => {
     expect(store.listAllChannels(100, CHANNEL_KIND.FREE)).toHaveLength(1);
   });
 
+  it('sums seller totals per status over the whole history, kinds asked for only, without the buyer role', () => {
+    const seller = (n: number, extra: Partial<StoredChannel>) => makeChannel({ sessionId: '0x' + n.toString(16).padStart(64, '0'), role: CHANNEL_ROLE.SELLER, ...extra });
+    for (let n = 1; n <= 150; n++) store.upsertChannel(seller(n, { status: CHANNEL_STATUS.SETTLED, tokensDelivered: '10', settledAmount: '8' }));
+    store.upsertChannel(seller(200, { channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video', tokensDelivered: '5' }));
+    store.upsertChannel(seller(201, { channelKind: CHANNEL_KIND.FREE, tokensDelivered: '99' }));
+    store.upsertChannel(makeChannel({ sessionId: '0x' + 'ff'.repeat(32), tokensDelivered: '1000', settledAmount: '1000', status: CHANNEL_STATUS.SETTLED }));
+
+    const totals = store.getRoleTotalsByStatus(CHANNEL_ROLE.SELLER, [CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF]);
+    expect(totals.sort((a, b) => a.status.localeCompare(b.status))).toEqual([
+      { status: CHANNEL_STATUS.ACTIVE, count: 1, tokensDelivered: 5n, settledAmount: 0n },
+      { status: CHANNEL_STATUS.SETTLED, count: 150, tokensDelivered: 1500n, settledAmount: 1200n },
+    ]);
+  });
+
+  it('counts a peer\'s one-off channels that ended unpaid after its last fully paid video', () => {
+    const FLOOR = 10_000;
+    const id = (n: number) => '0x' + n.toString(16).padStart(64, '0');
+    const video = (n: number, endedAt: number, settledAmount: string | null, extra: Partial<StoredChannel> = {}) => makeChannel({
+      sessionId: id(n), role: CHANNEL_ROLE.SELLER, channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: `video-${n}`,
+      status: CHANNEL_STATUS.SETTLED, reservedAt: endedAt, settledAt: endedAt, settledAmount, ...extra,
+    });
+    const unpaid = (since = 0) => store.getUnpaidOneOffChannels('peer-abc123', CHANNEL_ROLE.SELLER, since, FLOOR);
+
+    store.upsertChannel(video(1, 100, '0'));
+    store.upsertChannel(video(2, 200, '800000', { tokensDelivered: '800000' }));
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+
+    store.upsertChannel(video(3, 300, '0'));
+    store.upsertChannel(video(4, 400, '9999'));
+    store.upsertChannel(video(5, 500, null, { status: CHANNEL_STATUS.TIMEOUT, settledAt: null }));
+    // Delivered but not paid for: it counts, and proves nothing about the buyer.
+    store.upsertChannel(video(6, 600, '0', { tokensDelivered: '800000' }));
+    // None of these counts: a channel that paid for itself, one still open, and other parties' or kinds'.
+    store.upsertChannel(video(7, 700, '650000'));
+    store.upsertChannel(video(8, 700, null, { status: CHANNEL_STATUS.ACTIVE, settledAt: null }));
+    store.upsertChannel(video(9, 700, '0', { peerId: 'other-peer' }));
+    store.upsertChannel(video(10, 700, '0', { role: CHANNEL_ROLE.BUYER }));
+    store.upsertChannel(video(11, 700, '0', { channelKind: CHANNEL_KIND.PAID }));
+    // Paid videos of other parties or kinds start nothing again for this peer.
+    store.upsertChannel(video(12, 750, '800000', { tokensDelivered: '800000', peerId: 'other-peer' }));
+    store.upsertChannel(video(13, 750, '800000', { tokensDelivered: '800000', role: CHANNEL_ROLE.BUYER }));
+    store.upsertChannel(video(14, 750, '800000', { tokensDelivered: '800000', channelKind: CHANNEL_KIND.PAID }));
+    // A delivered video only partly paid earned enough not to count, but starts nothing again.
+    store.upsertChannel(video(16, 760, '650000', { tokensDelivered: '800000' }));
+
+    expect(unpaid()).toEqual({ count: 4, lastEndedAt: 600 });
+    expect(unpaid(400)).toEqual({ count: 2, lastEndedAt: 600 });
+    expect(unpaid(600)).toEqual({ count: 0, lastEndedAt: 0 });
+    expect(store.getUnpaidOneOffChannels('no-such-peer', CHANNEL_ROLE.SELLER, 0, FLOOR)).toEqual({ count: 0, lastEndedAt: 0 });
+
+    // A later retry of a timed-out close touches the row but does not move when the channel ended.
+    store.updateChannelStatus(id(5), CHANNEL_STATUS.TIMEOUT);
+    expect(unpaid(500)).toEqual({ count: 1, lastEndedAt: 600 });
+
+    // A later delivered video paid in full starts the count again, and retries do not bring old channels back.
+    store.upsertChannel(video(15, 800, '800000', { tokensDelivered: '800000' }));
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+    store.updateChannelStatus(id(5), CHANNEL_STATUS.TIMEOUT);
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+  });
+
+  it('keeps one-off channels out of the session lookup and finds them by request', () => {
+    const paid = makeChannel({ sessionId: '0x' + '30'.repeat(32), channelKind: CHANNEL_KIND.PAID, createdAt: Date.now() - 1000 });
+    const videoA = makeChannel({ sessionId: '0x' + '40'.repeat(32), channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video-a', createdAt: Date.now() });
+    const videoB = makeChannel({ sessionId: '0x' + '50'.repeat(32), channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video-b', createdAt: Date.now() + 1 });
+    store.upsertChannel(paid);
+    store.upsertChannel(videoA);
+    store.upsertChannel(videoB);
+
+    expect(store.getActiveChannelByPeer('peer-abc123', CHANNEL_ROLE.BUYER)!.sessionId).toBe(paid.sessionId);
+    expect(store.getOneOffChannelByRequest('peer-abc123', CHANNEL_ROLE.BUYER, 'video-a')!.sessionId).toBe(videoA.sessionId);
+    expect(store.getOneOffChannelByRequest('peer-abc123', CHANNEL_ROLE.BUYER, 'video-b')).toMatchObject({
+      sessionId: videoB.sessionId,
+      channelKind: CHANNEL_KIND.ONE_OFF,
+      oneOffRequestId: 'video-b',
+    });
+    expect(store.getOneOffChannelByRequest('peer-abc123', CHANNEL_ROLE.SELLER, 'video-a')).toBeNull();
+    expect(store.getOneOffChannelByRequest('peer-abc123', CHANNEL_ROLE.BUYER, 'video-c')).toBeNull();
+    expect(store.getActiveChannels(CHANNEL_ROLE.BUYER, CHANNEL_KIND.ONE_OFF).map((channel) => channel.sessionId).sort())
+      .toEqual([videoA.sessionId, videoB.sessionId].sort());
+  });
+
   it('test_getActiveByPeer: returns null when no active channel', () => {
     const s1 = makeChannel({ status: CHANNEL_STATUS.SETTLED });
     store.upsertChannel(s1);
 
     const active = store.getActiveChannelByPeer('peer-abc123', CHANNEL_ROLE.BUYER);
     expect(active).toBeNull();
+  });
+
+  it('lists funded buyer channels across kinds and statuses without changing session lookups', () => {
+    const paid = makeChannel({ sessionId: 'paid', createdAt: 1 });
+    const oneOff = makeChannel({ sessionId: 'video', channelKind: CHANNEL_KIND.ONE_OFF, createdAt: 2 });
+    const settled = makeChannel({ sessionId: 'settled-video', channelKind: CHANNEL_KIND.ONE_OFF, status: CHANNEL_STATUS.SETTLED, createdAt: 3 });
+    for (const channel of [
+      paid,
+      oneOff,
+      settled,
+      makeChannel({ sessionId: 'free', channelKind: CHANNEL_KIND.FREE }),
+      makeChannel({ sessionId: 'seller', role: CHANNEL_ROLE.SELLER, channelKind: CHANNEL_KIND.ONE_OFF }),
+      makeChannel({ sessionId: 'other-buyer', buyerEvmAddr: '0x' + 'dd'.repeat(20), channelKind: CHANNEL_KIND.ONE_OFF }),
+    ]) store.upsertChannel(channel);
+
+    expect(store.getBuyerPaymentChannels(paid.buyerEvmAddr).map((channel) => channel.sessionId))
+      .toEqual(['settled-video', 'video', 'paid']);
+    expect(store.getActiveChannelByPeer(paid.peerId, CHANNEL_ROLE.BUYER)?.sessionId).toBe('paid');
+    expect(store.getActiveChannelsByBuyer(CHANNEL_ROLE.BUYER, paid.buyerEvmAddr).map((channel) => channel.sessionId))
+      .toEqual(['paid']);
   });
 
   it('test_getLatestByPeer: returns most recent (any status)', () => {
@@ -248,7 +449,12 @@ describe('ChannelStore', () => {
         cumulativeCachedInputTokens: '100',
         cumulativeOutputTokens: '200',
         cumulativeRequestCount: '3',
+        cumulativeOutputImages: '2',
+        cumulativeVideoGenerations: '1',
+        cumulativeVideoSeconds: '8',
+        cumulativeInputCharacters: '19',
       }]);
+      // Rows written before migration 005 hydrate without the images field.
       store.replaceServiceTotals(free.sessionId, [{
         serviceId: '0x' + '11'.repeat(32),
         cumulativeAmount: '0',
@@ -265,7 +471,14 @@ describe('ChannelStore', () => {
       expect(totals[0].inputTokens).toBe('900');
       expect(totals[0].cachedInputTokens).toBe('100');
       expect(totals[0].outputTokens).toBe('500');
+      expect(totals[0].outputImages).toBe('2');
+      expect(totals[0].videoGenerations).toBe('1');
+      expect(totals[0].videoSeconds).toBe('8');
+      expect(totals[0].inputCharacters).toBe('19');
       expect(totals[0].requestCount).toBe(5);
+      // The channel's signed metadata carries the speech characters back too.
+      expect(store.getChannelMetadata(paid).cumulativeInputCharacters).toBe(19n);
+      expect(store.getChannelMetadata(free).cumulativeInputCharacters).toBe(0n);
     });
 
     it('keeps distinct services separate and excludes other buyers', () => {

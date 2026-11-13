@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractUsage } from '../src/utils.js';
+import { extractImageRequestFacts, extractProviderResponseFacts, extractRequestBodyFields, extractUsage } from '../src/utils.js';
 
 describe('extractUsage', () => {
   it('returns zeros for empty usage', () => {
@@ -209,5 +209,162 @@ describe('extractUsage', () => {
     });
     expect(result.freshInputTokens).toBe(200);   // 1000 - 800
     expect(result.cachedInputTokens).toBe(800);
+  });
+});
+
+describe('image/provider fact extraction', () => {
+  it('extracts billable OpenAI image generation request attributes and default output count', () => {
+    const facts = extractImageRequestFacts({
+      path: '/v1/images/generations',
+      method: 'POST',
+      body: {
+        model: 'gpt-image-1',
+        size: '1024x1024',
+        quality: 'high',
+        background: 'transparent',
+        output_format: 'png',
+      },
+    });
+    expect(facts).toEqual({
+      model: 'gpt-image-1',
+      size: '1024x1024',
+      quality: 'high',
+      requestedImages: 1,
+    });
+  });
+
+  it('defaults the image edits path to one output image when n is omitted', () => {
+    const facts = extractImageRequestFacts({
+      path: '/v1/images/edits',
+      method: 'POST',
+      body: { model: 'gpt-image-1' },
+    });
+    expect(facts).toEqual({
+      model: 'gpt-image-1',
+      size: 'auto',
+      quality: 'auto',
+      requestedImages: 1,
+    });
+  });
+
+  it('normalizes invalid image counts to the endpoint default', () => {
+    for (const n of [0, -1, 1.5, '0', Number.MAX_SAFE_INTEGER + 1]) {
+      const facts = extractImageRequestFacts({
+        path: '/v1/images/generations',
+        method: 'POST',
+        body: { model: 'gpt-image-1', n },
+      });
+      expect(facts.requestedImages).toBe(1);
+    }
+  });
+
+  it('extracts billing fields from a multipart image edits body, skipping file parts', () => {
+    const boundary = '----antseedBoundary123';
+    const body = new TextEncoder().encode([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="model"',
+      '',
+      'gpt-image-1',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="n"',
+      '',
+      '2',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="size"',
+      '',
+      '1024x1024',
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="image"; filename="photo.png"',
+      'Content-Type: image/png',
+      '',
+      '\x89PNG\r\n\x1a\nbinary-bytes-here',
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'));
+
+    const fields = extractRequestBodyFields(
+      { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body,
+    );
+    expect(fields).toEqual({ model: 'gpt-image-1', n: '2', size: '1024x1024' });
+
+    const facts = extractImageRequestFacts({
+      path: '/v1/images/edits',
+      method: 'POST',
+      body: fields ?? undefined,
+    });
+    expect(facts).toEqual({
+      model: 'gpt-image-1',
+      size: '1024x1024',
+      quality: 'auto',
+      requestedImages: 2,
+    });
+  });
+
+  it('reads multipart text fields as UTF-8, emoji and CJK included', () => {
+    const boundary = '----antseedBoundary123';
+    const prompt = 'make the sky warmer 🌅 让天空更温暖 €™';
+    const body = new TextEncoder().encode([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="prompt"',
+      '',
+      prompt,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'));
+    expect(extractRequestBodyFields({ 'content-type': `multipart/form-data; boundary=${boundary}` }, body)).toEqual({ prompt });
+  });
+
+  it('falls back to JSON parsing for non-multipart content types', () => {
+    const fields = extractRequestBodyFields(
+      { 'content-type': 'application/json' },
+      new TextEncoder().encode(JSON.stringify({ model: 'gpt-image-1', n: 3 })),
+    );
+    expect(fields).toEqual({ model: 'gpt-image-1', n: 3 });
+  });
+
+  it('returns null for a multipart body with a malformed boundary', () => {
+    expect(
+      extractRequestBodyFields(
+        { 'content-type': 'multipart/form-data' },
+        new TextEncoder().encode('irrelevant'),
+      ),
+    ).toBeNull();
+  });
+
+  it('extracts supported OpenAI image response facts without changing token usage', () => {
+    const facts = extractProviderResponseFacts({
+      usage: {
+        input_tokens: 120,
+        output_tokens: 300,
+        input_tokens_details: {
+          text_tokens: 20,
+          image_tokens: 100,
+          cached_tokens: 10,
+        },
+        output_tokens_details: {
+          text_tokens: 0,
+          image_tokens: 300,
+        },
+      },
+      data: [{ b64_json: 'a' }, { b64_json: 'b' }],
+    });
+    expect(facts.tokenUsage.inputTokens).toBe(120);
+    expect(facts.tokenUsage.cachedInputTokens).toBe(10);
+    expect(facts.outputImages).toBe(2);
+  });
+
+  it('counts only response entries that contain delivered image data', () => {
+    const facts = extractProviderResponseFacts({
+      data: [
+        {},
+        null,
+        { b64_json: '' },
+        { url: '   ' },
+        { b64_json: 'encoded-image' },
+        { url: 'https://example.test/image.png' },
+      ],
+    });
+    expect(facts.outputImages).toBe(2);
   });
 });

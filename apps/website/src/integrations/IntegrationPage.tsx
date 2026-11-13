@@ -1,4 +1,4 @@
-import {useState, useCallback} from 'react';
+import {useEffect, useRef, useState, useCallback, type JSX, type ReactNode} from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Head from '@docusaurus/Head';
@@ -9,6 +9,7 @@ import {
   FORMAT_TO_PROTOCOL,
   STATUS_LABELS,
   integrations,
+  LIST_MODELS_COMMAND,
   type Integration,
   type ConfigBlock,
   type Step,
@@ -18,20 +19,34 @@ import {ArrowRight, Button, FinalCta, Ticks, ticksToHtml} from '../components/ui
 
 function CopyButton({value}: {value: string}) {
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
   const handle = useCallback(() => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        setCopied(true);
+        window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {
+        /* clipboard blocked (insecure context / permission) — nothing to show */
+      });
   }, [value]);
   return (
-    <button className={`${styles.copyBtn}${copied ? ' ' + styles.copied : ''}`} onClick={handle}>
+    <button type="button" className={`${styles.copyBtn}${copied ? ' ' + styles.copied : ''}`} onClick={handle}>
       {copied ? '✓ Copied' : 'Copy'}
     </button>
   );
 }
 
-function CodeBlock({path, language: _language, snippet}: {path?: string; language?: string; snippet: string}) {
+/** Explanatory paragraph under a step or config block; renders nothing without text. */
+function StepNote({text}: {text?: string}) {
+  if (!text) return null;
+  return <p className={styles.stepNote}><Ticks>{text}</Ticks></p>;
+}
+
+function CodeBlock({path, snippet}: {path?: string; snippet: string}) {
   // Note: we use a <div>, not a <pre>, because Docusaurus' custom.css applies
   // `pre { background: #f6f8fa !important }` globally and we need a dark block.
   return (
@@ -58,6 +73,15 @@ function ExampleOutput({label = 'Example output', snippet}: {label?: string; sni
 }
 
 function ConfigBlockRenderer({b}: {b: ConfigBlock}) {
+  return (
+    <div>
+      {b.title && <p className={styles.stepLabel}>{b.title}</p>}
+      <ConfigBlockBody b={b} />
+    </div>
+  );
+}
+
+function ConfigBlockBody({b}: {b: ConfigBlock}) {
   if (b.kind === 'env') {
     const lines = Object.entries(b.vars).map(([k, v]) => `export ${k}=${JSON.stringify(v)}`).join('\n');
     return (
@@ -76,30 +100,30 @@ function ConfigBlockRenderer({b}: {b: ConfigBlock}) {
           <summary>Show as shell exports</summary>
           <CodeBlock snippet={lines} />
         </details>
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <StepNote text={b.note} />
       </div>
     );
   }
   if (b.kind === 'file') {
     return (
       <>
-        <CodeBlock path={b.path} language={b.language} snippet={b.snippet} />
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <CodeBlock path={b.path} snippet={b.snippet} />
+        <StepNote text={b.note} />
       </>
     );
   }
   if (b.kind === 'code') {
     return (
       <>
-        <CodeBlock language={b.language} snippet={b.snippet} />
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <CodeBlock snippet={b.snippet} />
+        <StepNote text={b.note} />
       </>
     );
   }
   return (
     <>
       <div className={styles.guiBlock}><Ticks>{b.instructions}</Ticks></div>
-      {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+      <StepNote text={b.note} />
     </>
   );
 }
@@ -108,9 +132,9 @@ function StepBlock({s}: {s: Step}) {
   return (
     <li className={styles.step}>
       <span className={styles.stepLabel}>{s.label}</span>
-      {s.command && <CodeBlock language={s.language} snippet={s.command} />}
+      {s.command && <CodeBlock snippet={s.command} />}
       {s.output && <ExampleOutput label={s.outputLabel} snippet={s.output} />}
-      {s.note && <p className={styles.stepNote}><Ticks>{s.note}</Ticks></p>}
+      <StepNote text={s.note} />
     </li>
   );
 }
@@ -119,16 +143,17 @@ function RunFirstBanner() {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <div className={`${styles.runFirst}${collapsed ? ' ' + styles.runFirstCollapsed : ''}`}>
+    <div id="run-first" className={`${styles.runFirst}${collapsed ? ' ' + styles.runFirstCollapsed : ''}`}>
       <header className={styles.runFirstHeader}>
         <div>
           <p className={styles.runFirstKicker}>
             <span className={styles.runFirstDot} aria-hidden="true" />
-            Run AntSeed first
+            Run Antseed first
           </p>
           <p className={styles.runFirstSub}>
-            Every integration assumes a buyer proxy at <code>http://localhost:8377</code>.
-            One-time setup, ~2 minutes.
+            Every integration needs an Antseed endpoint: a gateway, best on a small server
+            so every tool on every machine can reach it, or the local buyer proxy (same
+            computer only). One-time setup, a few minutes.
           </p>
         </div>
         <button
@@ -146,16 +171,28 @@ function RunFirstBanner() {
           <p className={styles.glossaryTitle}>The model in your head</p>
           <ul className={styles.glossaryList}>
             <li>
-              <strong>Buyer proxy</strong> - a small server on{' '}
-              <code>localhost:8377</code> that accepts API calls from your tools and
-              forwards them to the AntSeed network. It speaks{' '}
+              <strong>Gateway</strong> - the API server you run with{' '}
+              <code>antseed gateway start</code> (or in the background with{' '}
+              <code>antseed gateway service install</code>) or the server installer, at{' '}
+              <code>/v1</code> on port 8379. It gives every tool its own API key with
+              budgets, routing policy and usage logs, and passes requests to a buyer.
+              Reach it locally, on your network, behind a{' '}
+              <Link to="/docs/tunnels">tunnel</Link>, or on a server. Tools send the
+              key as <code>Authorization: Bearer</code>.
+            </li>
+            <li>
+              <strong>Buyer proxy</strong> - the server on{' '}
+              <code>localhost:8377</code> that finds sellers and pays them, forwarding
+              your requests to the Antseed network. It only listens on localhost and
+              checks no key, so tools can call it directly only on the same computer;
+              everything else goes through a gateway. It speaks{' '}
               <em>all four LLM protocols</em> at once -{' '}
               <code>/v1/messages</code> (Anthropic),{' '}
               <code>/v1/chat/completions</code> (OpenAI Chat),{' '}
               <code>/v1/responses</code> (OpenAI Responses), and{' '}
               <code>/v1/completions</code> (legacy) - and translates between them via{' '}
               <a
-                href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+                href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
                 target="_blank"
                 rel="noreferrer">
                 <code>@antseed/api-adapter</code>
@@ -169,7 +206,7 @@ function RunFirstBanner() {
             </li>
             <li>
               <strong>Service</strong> - a single model id like{' '}
-              <code>claude-sonnet-4-6</code> or <code>deepseek-v4-flash</code>. <em>This
+              <code>kimi-k2.6</code> or <code>deepseek-v4-flash</code>. <em>This
               is what you pass as <code>model</code> in your tool's config.</em>
               Each service has its own native protocol list and{' '}
               <code>in</code>/<code>cachedIn</code>/<code>out</code> pricing.
@@ -193,9 +230,12 @@ function RunFirstBanner() {
               chatbots, this is often the dominant cost line.
             </li>
             <li>
-              <strong>Pin</strong> - telling your buyer proxy “route requests to{' '}
-              <em>this</em> peer.” No auto-selection - you choose, the proxy obeys.
-              Two ways: a session-wide pin via{' '}
+              <strong>Pin</strong> - optionally telling Antseed “route
+              requests to <em>this</em> peer.” Without a pin, the buyer
+              ranks eligible offers with the same Price + Trust preferences used
+              by the desktop and can fail over on retryable peer failures. A
+              recognized conversation softly prefers its previous successful
+              seller; pin only when you want one specific seller: a session-wide pin via{' '}
               <code>antseed buyer connection set --peer &lt;id&gt;</code> (saved to{' '}
               <code>~/.antseed/buyer.state.json</code>), or a per-request{' '}
               <code>x-antseed-pin-peer: &lt;id&gt;</code> header (no session state
@@ -208,19 +248,42 @@ function RunFirstBanner() {
             <span className={styles.runFirstNum}>1</span>
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
-                Install the CLI and start the buyer proxy.
+                Run a gateway, ideally on a small server (VPS).
               </p>
               <p className={styles.runFirstHint}>
-                Prefer a GUI? The <Link to="/install">VPR</Link> wraps everything below
-                in one app. CLI flow:
+                <strong>Recommended: a gateway on a server.</strong> One command on any
+                Linux VPS with systemd installs the buyer and the gateway, serves them over
+                HTTPS on your domain and keeps them running. Every tool, on any machine,
+                then uses the same URL with its own API key, and keeps working when your
+                laptop sleeps. See <Link to="/docs/gateway/server">Run a gateway on a server</Link>.
               </p>
               <CodeBlock
-                snippet={`# 1. Install\nnpm install -g @antseed/cli\n\n# 2. Set a buyer identity (64-char hex private key).\n#    This signs requests; it never holds USDC. Generate once, reuse forever.\nexport ANTSEED_IDENTITY_HEX=$(openssl rand -hex 32)\n\n# 3. Start the proxy on http://localhost:8377\nantseed buyer start`}
+                snippet={`# On the server (DNS for the domain points at it, ports 80 and 443 open)\ncurl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com\n\n# Then, wherever your tool runs:\nexport ANTSEED_BASE_URL="https://gateway.example.com/v1"\nexport ANTSEED_API_KEY="antseed_…"   # printed by the installer, or from the console's Keys page`}
               />
               <p className={styles.runFirstHint}>
-                Save the value of <code>ANTSEED_IDENTITY_HEX</code> somewhere safe -
-                losing it means losing access to whatever USDC you've deposited under that
-                buyer address.
+                <strong>Just trying it out?</strong> Run the gateway on your own computer
+                with <code>curl -fsSL https://antseed.com/install.sh | bash</code> and use{' '}
+                <code>http://localhost:8379/v1</code>. Its keys only work while the computer
+                is on, and other machines can't reach it unless you publish it with a{' '}
+                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>)
+                or, on a network you trust, start it
+                with <code>--host 0.0.0.0</code>. You can{' '}
+                <Link to="/docs/gateway/migrate">move it to a server</Link> later with its
+                keys and wallets. See the <Link to="/docs/quickstart">quickstart</Link>.
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Same computer, no gateway.</strong> The desktop app runs the buyer
+                proxy for you, and its <strong>Apps</strong> view launches tools pre-wired
+                to it. Headless:
+              </p>
+              <CodeBlock
+                snippet={`npm install -g @antseed/cli\nantseed buyer start   # http://localhost:8377/v1, no key needed`}
+              />
+              <p className={styles.runFirstHint}>
+                The buyer proxy only listens on localhost and spends from your deposit
+                without checking a key. Never publish port 8377 (port forward,{' '}
+                <code>socat</code>, reverse proxy); put a gateway in front of it instead.
+                Back up <code>~/.antseed/identity.key</code>: it is the buyer wallet key.
               </p>
             </div>
           </li>
@@ -267,8 +330,8 @@ function RunFirstBanner() {
     "peerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "name": "Acme Inference",
     "services": [
-      { "service": "gpt-5.4",      "protocols": ["openai-responses"],         "in": 0.25, "cachedIn": 0.05, "out": 1.5 },
-      { "service": "gpt-5.5",      "protocols": ["openai-responses"],         "in": 0.4,  "cachedIn": 0.05, "out": 2 },
+      { "service": "kimi-k2.6",    "protocols": ["openai-responses"],         "in": 0.6,  "cachedIn": 0.06, "out": 2.5 },
+      { "service": "gpt-oss-120b", "protocols": ["openai-responses"],         "in": 0.15, "cachedIn": 0.02, "out": 0.6 },
       { "service": "minimax-m2.7", "protocols": ["openai-chat-completions"],  "in": 0.21, "cachedIn": 0.04, "out": 0.84 }
     ]
   },
@@ -346,8 +409,8 @@ function RunFirstBanner() {
   "services": [
     { "service": "deepseek-v4-flash", "protocols": ["openai-chat-completions"], "in": 0,    "cachedIn": 0,    "out": 0,    "tags": ["chat","fast","free","tasks"] },
     { "service": "minimax-m2.7",      "protocols": ["openai-chat-completions"], "in": 0.21, "cachedIn": 0.04, "out": 0.84, "tags": ["chat","writing","creative"] },
-    { "service": "claude-sonnet-4-6", "protocols": ["openai-chat-completions","anthropic-messages"], "in": 1.8, "cachedIn": 0.18, "out": 9, "tags": ["chat","code","coding","vision"] },
-    { "service": "gpt-5-mini",        "protocols": ["openai-responses"], "in": 0.25, "cachedIn": 0.05, "out": 2, "tags": ["chat","reasoning"] }
+    { "service": "kimi-k2.6",         "protocols": ["openai-chat-completions","anthropic-messages"], "in": 0.6, "cachedIn": 0.06, "out": 2.5, "tags": ["chat","code","coding"] },
+    { "service": "qwen3-235b-a22b-thinking", "protocols": ["openai-responses"], "in": 0.25, "cachedIn": 0.05, "out": 2, "tags": ["chat","reasoning"] }
   ]
 }`}
               />
@@ -404,46 +467,83 @@ function RunFirstBanner() {
             <span className={styles.runFirstNum}>4</span>
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
-                Tell the proxy which peer to use, then verify it serves your models.
+                Verify your endpoint sees the models — and optionally pick a seller.
               </p>
               <p className={styles.runFirstHint}>
-                Two ways to do this. Pick whichever fits your workflow - you can mix them.
-              </p>
-              <p className={styles.runFirstHint} style={{marginTop: 6}}>
-                <strong>Option A - session pin (most common).</strong> One command, every
-                future request goes to that peer. Persists in{' '}
-                <code>~/.antseed/buyer.state.json</code> across restarts.
+                <strong>No pin needed.</strong> A request that names only a model
+                selects the highest-ranked eligible offer under your shared Price +
+                Trust preferences and fails over to the next-ranked seller on
+                retryable peer errors.{' '}
+                <code>/v1/models</code> lists every model on the network,
+                aggregated across sellers:
               </p>
               <CodeBlock
-                snippet={`# Pin the peer you chose for every request from now on (survives restart).\n# Replace the id below with one from your real \`antseed network browse\` output.\nantseed buyer connection set --peer cccccccccccccccccccccccccccccccccccccccc\n\n# What models does the proxy now expose? (OpenAI-compatible /v1/models)\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
+                snippet={`# Every model on the network (free, no seller is called)\n${LIST_MODELS_COMMAND}\n\n# Local buyer proxy: no key\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
               />
               <ExampleOutput
                 label="Example response"
                 snippet={`"deepseek-v4-flash"
 "gpt-oss-120b"
 "gemma-3-27b"
-"qwen3-coder-480b"
-"claude-sonnet-4-6"
-"claude-opus-4-7"`}
+"glm-5.2"
+"kimi-k2.6"
+"minimax-m2.7"`}
               />
               <p className={styles.runFirstHint}>
-                These are the <strong>only</strong> values you can pass as{' '}
-                <code>model</code> in your tool's config. Pass anything else and the
-                proxy returns <code>404 model_not_found</code>.
+                These are the values you can pass as <code>model</code> in your
+                tool's config (close aliases like <code>opus-5</code> for{' '}
+                <code>claude-opus-5</code> also resolve). A model no seller your routing
+                policy allows serves returns <code>502 model_not_found</code>. A gateway
+                key limited to certain models lists only those.
+              </p>
+              <p className={styles.runFirstHint}>
+                Automatic routes keep soft conversation affinity when the tool sends
+                stable session metadata: later turns prefer the seller and service that
+                actually served the chat, but can fail over if that route becomes
+                unavailable or ineligible. Explicit pins remain hard.
               </p>
               <p className={styles.runFirstHint} style={{marginTop: 12}}>
-                <strong>Option B - per-request header (no pin needed).</strong> Send{' '}
-                <code>x-antseed-pin-peer: &lt;peerId&gt;</code> on each call. Overrides
-                any session pin for that one request, and works even if no peer has been
-                pinned at all. Best for scripts, schedulers, and multi-tenant deployments
-                that fan out to different peers per call.
+                To force a <em>specific</em> seller instead of auto-selection,
+                pick one of three overrides — you can mix them:
+              </p>
+              <p className={styles.runFirstHint} style={{marginTop: 6}}>
+                <strong>Option A - session pin (local buyer proxy only).</strong> One
+                command, every future request goes to that peer. Persists in{' '}
+                <code>~/.antseed/buyer.state.json</code> across restarts. On a gateway, use
+                a routing policy or preset instead.
               </p>
               <CodeBlock
-                snippet={`curl http://localhost:8377/v1/chat/completions \\
+                snippet={`# Pin the peer you chose for every request from now on (survives restart).\n# Replace the id below with one from your real \`antseed network browse\` output.\nantseed buyer connection set --peer cccccccccccccccccccccccccccccccccccccccc`}
+              />
+              <p className={styles.runFirstHint} style={{marginTop: 12}}>
+                <strong>Option B - per-request header.</strong> Send{' '}
+                <code>x-antseed-pin-peer: &lt;peerId&gt;</code> on each call. Overrides
+                any session pin for that one request. Best for scripts, schedulers, and
+                multi-tenant deployments that fan out to different peers per call.
+              </p>
+              <CodeBlock
+                snippet={`curl "$ANTSEED_BASE_URL/chat/completions" \\
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \\
   -H 'content-type: application/json' \\
   -H 'x-antseed-pin-peer: cccccccccccccccccccccccccccccccccccccccc' \\
   -d '{
     "model": "minimax-m2.7",
+    "messages": [{"role": "user", "content": "hi"}]
+  }'`}
+              />
+              <p className={styles.runFirstHint} style={{marginTop: 12}}>
+                <strong>Option C - model prefix (works in any tool).</strong> Set the{' '}
+                <code>model</code> field to <code>&lt;peerId&gt;@&lt;service-id&gt;</code>.
+                Antseed pins that peer for the request and strips the prefix before
+                routing, so the seller just sees the service id. This is the way to pick
+                a peer from tools where you can only type a model name.
+              </p>
+              <CodeBlock
+                snippet={`curl "$ANTSEED_BASE_URL/chat/completions" \\
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "model": "cccccccccccccccccccccccccccccccccccccccc@minimax-m2.7",
     "messages": [{"role": "user", "content": "hi"}]
   }'`}
               />
@@ -455,22 +555,28 @@ function RunFirstBanner() {
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
                 <span className={styles.runFirstOptionalTag}>Optional</span>
-                Deposit USDC - only needed for paid services. Use the payments portal
-                so funding flows from a <strong>separate cold wallet</strong>, not from
-                the buyer identity:
-              </p>
-              <CodeBlock snippet={`antseed payments`} />
-              <p className={styles.runFirstHint}>
-                The portal opens at{' '}
-                <code>http://127.0.0.1:3118?token=&lt;hex&gt;</code> (token printed once at
-                startup). Connect MetaMask / Coinbase Wallet / Rabby, sign the deposit,
-                and USDC moves into the Deposits contract credited to your buyer
-                address. Verify with <code>antseed buyer balance</code>.
+                Add funds - only needed for paid services:
               </p>
               <p className={styles.runFirstHint}>
-                <strong>Don't send funds to your <code>ANTSEED_IDENTITY_HEX</code>{' '}
-                wallet directly</strong> - it's a hot signing key, not a treasury. The
-                portal handles the deposit contract call from your cold wallet.
+                <strong>Gateway:</strong> open <strong>Wallet &amp; Funding</strong> in
+                the console and add funds by card or with USDC on Base. Each workspace
+                pays from its own wallet. See <Link to="/docs/gateway/funding">Funding</Link>.
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Local buyer proxy:</strong>
+              </p>
+              <CodeBlock snippet={`antseed buyer deposit`} />
+              <p className={styles.runFirstHint}>
+                Prints your buyer&apos;s funding address and a QR code (an EIP-681
+                payment request). Send USDC to it from any wallet or exchange —
+                incoming funds are swept into the Deposits contract and credited to
+                your buyer automatically: a permissionless relayer submits the
+                transaction for a fixed ~$0.05 USDC fee, so the buyer never needs
+                ETH. Verify with <code>antseed buyer balance</code>.
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Send USDC on the Base network only</strong> - other tokens or
+                networks are not recoverable by the sweep.
               </p>
             </div>
           </li>
@@ -482,7 +588,7 @@ function RunFirstBanner() {
 }
 
 /**
- * Explains, in one block, exactly what wire format the tool sends, what AntSeed
+ * Explains, in one block, exactly what wire format the tool sends, what Antseed
  * peers advertise per service (the `protocols` array), and what happens when
  * they differ.
  *
@@ -501,8 +607,8 @@ function WireFormatPanel({i}: {i: Integration}) {
       <section className={styles.wireFormat}>
         <p className={styles.wireFormatTitle}>Wire format • multi-protocol</p>
         <p className={styles.wireFormatBody}>
-          {i.name} can send <strong>any</strong> of AntSeed's supported protocols -
-          configure per call. AntSeed will match each request to the peer's advertised
+          {i.name} can send <strong>any</strong> of Antseed's supported protocols -
+          configure per call. Antseed will match each request to the peer's advertised
           service protocols (see <code>providerServiceApiProtocols</code> on a peer)
           and translate when they don't match.
         </p>
@@ -529,13 +635,13 @@ function WireFormatPanel({i}: {i: Integration}) {
 
   return (
     <section className={styles.wireFormat}>
-      <p className={styles.wireFormatTitle}>How {i.name} talks to AntSeed</p>
+      <p className={styles.wireFormatTitle}>How {i.name} talks to Antseed</p>
       <ul className={styles.wireFormatFacts}>
         <li>
           <strong>Wire format sent by {i.name}:</strong>{' '}
           <code>{FORMAT_LABELS[fmt]}</code>{' '}
           <span className={styles.wireFormatDim}>
-            (hits <code>{endpoint}</code> on the buyer proxy)
+            (hits <code>{endpoint}</code> on your gateway or buyer proxy)
           </span>
         </li>
         <li>
@@ -551,15 +657,15 @@ function WireFormatPanel({i}: {i: Integration}) {
           browse command exposes the same field per peer.
         </li>
         <li>
-          <strong>What happens when protocols don't match:</strong> AntSeed's{' '}
+          <strong>What happens when protocols don't match:</strong> Antseed's{' '}
           <a
-            href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+            href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
             target="_blank"
             rel="noreferrer">
             <code>@antseed/api-adapter</code>
           </a>{' '}
           translates between {FORMAT_LABELS[fmt]} and the service's native protocol on
-          the fly. So a request from {i.name} can still reach a service that only
+          the fly, inside the buyer. So a request from {i.name} can still reach a service that only
           advertises{' '}
           {fmt === 'anthropic-messages' ? (
             <code>openai-chat-completions</code>
@@ -572,7 +678,7 @@ function WireFormatPanel({i}: {i: Integration}) {
           <li className={styles.wireFormatWarn}>
             <strong>One known caveat:</strong> services whose only advertised protocol
             is <code>openai-responses</code> require streaming. If {i.name} sends a
-            non-streaming request and the proxy routes it to one of those services,
+            non-streaming request and Antseed routes it to one of those services,
             the call fails with <code>HTTP 400: Stream must be set to true</code>.
             Pick a service whose <code>protocols</code> includes{' '}
             <code>{protocol}</code> (or another non-responses protocol) to avoid this.
@@ -583,7 +689,7 @@ function WireFormatPanel({i}: {i: Integration}) {
   );
 }
 
-function Section({eyebrow, title, children}: {eyebrow: string; title: string; children: React.ReactNode}) {
+function Section({eyebrow, title, children}: {eyebrow: string; title: string; children: ReactNode}) {
   return (
     <section className={styles.section}>
       <p className={styles.sectionEyebrow}>{eyebrow}</p>
@@ -602,7 +708,9 @@ export default function IntegrationPage({integration}: {integration: Integration
     .filter((x) => x.category === i.category && x.slug !== i.slug)
     .slice(0, 4);
 
-  const pageUrl = `https://antseed.com/integrations/${i.slug}`;
+  // Trailing slash matches `trailingSlash: true` in docusaurus.config.ts, so the
+  // URLs in JSON-LD are the same ones the canonical tag and sitemap point at.
+  const pageUrl = `https://antseed.com/integrations/${i.slug}/`;
 
   // `oneLiner` is authored with markdown backticks for on-page code styling.
   // Meta descriptions are plain text, so Google and social cards would print the
@@ -611,7 +719,8 @@ export default function IntegrationPage({integration}: {integration: Integration
 
   // Mirrors what Docusaurus renders into <title> (Layout title + site title), so
   // og:title can't drift from the page title (X falls back to og:title).
-  const pageTitle = `${i.name} | AntSeed`;
+  const titleText = i.seoTitle ?? i.name;
+  const pageTitle = `${titleText} | Antseed`;
 
   // Marks up the breadcrumb rendered below so search engines read the hierarchy.
   const breadcrumbLd = {
@@ -619,58 +728,57 @@ export default function IntegrationPage({integration}: {integration: Integration
     '@type': 'BreadcrumbList',
     itemListElement: [
       {'@type': 'ListItem', position: 1, name: 'Home', item: 'https://antseed.com/'},
-      {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations'},
+      {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations/'},
       {'@type': 'ListItem', position: 3, name: i.name, item: pageUrl},
     ],
   };
 
   // Mirrors the Step sections actually rendered below, in the same order, so the
   // markup never claims a step the page doesn't show.
+  const howToSteps: {'@type': 'HowToStep'; name: string; text: string; url: string}[] = [];
+  if (i.install.length > 0) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: `Install ${i.name}`,
+      text: i.install.map((s) => s.label).join(' '),
+      url: `${pageUrl}#install`,
+    });
+  }
+  howToSteps.push({
+    '@type': 'HowToStep',
+    name: `Point ${i.name} at Antseed`,
+    text: `Configure ${i.name} to send requests to your Antseed gateway with a gateway API key, or to the local buyer proxy at http://localhost:8377 when it runs on the same computer.`,
+    url: `${pageUrl}#configure`,
+  });
+  if (i.modelHints) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: 'Pick a model',
+      text: `Choose a model available on the network. Suggested: ${i.modelHints.suggested.join(', ')}.`,
+      url: `${pageUrl}#model`,
+    });
+  }
+  if (i.test && i.test.length > 0) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: 'Test it',
+      text: i.test.map((s) => s.label).join(' '),
+      url: `${pageUrl}#test`,
+    });
+  }
   const howToLd = {
     '@context': 'https://schema.org',
     '@type': 'HowTo',
-    name: `Connect ${i.name} to AntSeed`,
-    description: `Route ${i.name} through the AntSeed peer-to-peer inference network.`,
-    step: [
-      ...(i.install.length > 0
-        ? [{
-            '@type': 'HowToStep',
-            name: `Install ${i.name}`,
-            text: i.install.map((s) => s.label).join(' '),
-            url: `${pageUrl}#install`,
-          }]
-        : []),
-      {
-        '@type': 'HowToStep',
-        name: `Point ${i.name} at AntSeed`,
-        text: `Configure ${i.name} to send requests to the local AntSeed proxy at http://localhost:8377.`,
-        url: `${pageUrl}#configure`,
-      },
-      ...(i.modelHints
-        ? [{
-            '@type': 'HowToStep',
-            name: 'Pick a model',
-            text: `Choose a model available on the network. Suggested: ${i.modelHints.suggested.join(', ')}.`,
-            url: `${pageUrl}#model`,
-          }]
-        : []),
-      ...(i.test && i.test.length > 0
-        ? [{
-            '@type': 'HowToStep',
-            name: 'Test it',
-            text: i.test.map((s) => s.label).join(' '),
-            url: `${pageUrl}#test`,
-          }]
-        : []),
-    ],
+    name: `Connect ${i.name} to Antseed`,
+    description: `Route ${i.name} through the Antseed peer-to-peer inference network.`,
+    step: howToSteps,
   };
 
   return (
     <Layout
-      title={i.name}
-      description={`Connect ${i.name} to the AntSeed peer-to-peer inference network. ${metaOneLiner}`}>
+      title={titleText}
+      description={`Connect ${i.name} to the Antseed peer-to-peer inference network. ${metaOneLiner}`}>
       <Head>
-        <link rel="alternate" type="text/markdown" href="/skill.md" title="Agent-readable integration guide" />
         <meta property="og:title" content={pageTitle} />
         <meta property="og:description" content={metaOneLiner} />
         <script type="application/ld+json">{JSON.stringify(breadcrumbLd)}</script>
@@ -696,14 +804,13 @@ export default function IntegrationPage({integration}: {integration: Integration
             )}
           </div>
           <div className={styles.detailHeaderText}>
-            <h1>{i.name}</h1>
+            <h1>{i.headline ?? i.name}</h1>
             <p className={styles.detailOneLiner}><Ticks>{i.oneLiner}</Ticks></p>
             <div className={styles.detailBadgeRow}>
               <span className={`${styles.detailBadge} ${styles.detailBadgeGreen}`}>{CATEGORY_LABELS[i.category]}</span>
               <span className={styles.detailBadge}>{FORMAT_LABELS[i.format]}</span>
               <span className={styles.detailBadge}>~{i.setupMinutes} min</span>
-              {i.status === 'community' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
-              {i.status === 'coming-soon' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
+              {i.status !== 'verified' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
             </div>
           </div>
         </header>
@@ -734,7 +841,7 @@ export default function IntegrationPage({integration}: {integration: Integration
 
         <Section
           eyebrow={i.install.length > 0 ? 'Step 2' : 'Step 1'}
-          title={`Point ${i.name} at AntSeed`}>
+          title={`Point ${i.name} at Antseed`}>
           <div className={styles.configList}>
             {i.configure.map((b, idx) => <ConfigBlockRenderer key={idx} b={b} />)}
           </div>
@@ -747,8 +854,9 @@ export default function IntegrationPage({integration}: {integration: Integration
             </div>
             {i.modelHints.note && <p className={styles.modelNote}><Ticks>{i.modelHints.note}</Ticks></p>}
             <p className={styles.modelNote}>
-              The exact list of models depends on which peer you pin. Run{' '}
-              <code>antseed network browse</code> or open the{' '}
+              The full list is every model on the network. Run{' '}
+              <code>GET /v1/models</code> on your endpoint,{' '}
+              <code>antseed network browse</code>, or open the{' '}
               <a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">live network page</a> to see what's available right now.
             </p>
           </Section>
@@ -765,9 +873,7 @@ export default function IntegrationPage({integration}: {integration: Integration
         <WireFormatPanel i={i} />
 
         {i.troubleshooting && i.troubleshooting.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>If it goes wrong</p>
-            <h2 className={styles.sectionTitle}>Troubleshooting</h2>
+          <Section eyebrow="If it goes wrong" title="Troubleshooting">
             <ul className={styles.troubleshootList}>
               {i.troubleshooting.map((t, idx) => (
                 <li key={idx}>
@@ -776,29 +882,25 @@ export default function IntegrationPage({integration}: {integration: Integration
                 </li>
               ))}
             </ul>
-          </section>
+          </Section>
         )}
 
         {i.caveats && i.caveats.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Heads up</p>
-            <h2 className={styles.sectionTitle}>Caveats</h2>
+          <Section eyebrow="Heads up" title="Caveats">
             <ul className={styles.bulletList}>
               {i.caveats.map((c, idx) => <li key={idx}><Ticks>{c}</Ticks></li>)}
             </ul>
-          </section>
+          </Section>
         )}
 
         {i.links && i.links.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Reference</p>
-            <h2 className={styles.sectionTitle}>Links</h2>
+          <Section eyebrow="Reference" title="Links">
             <div className={styles.linkRow}>
               {i.links.map((l, idx) => (
                 <a key={idx} href={l.href} target="_blank" rel="noopener noreferrer">{l.label}</a>
               ))}
             </div>
-          </section>
+          </Section>
         )}
 
         {i.agentSummary && (
@@ -806,36 +908,33 @@ export default function IntegrationPage({integration}: {integration: Integration
             <h3>For agents</h3>
             <p><Ticks>{i.agentSummary}</Ticks></p>
             <p>
-              Full machine-readable catalog of every AntSeed integration:{' '}
-              <a href="/skill.md">/skill.md</a>
+              Give your agent the skill: <code>{i.agentSkill ?? 'gh skill install Antseed/antseed join-buyer'}</code>
             </p>
           </aside>
         )}
 
         {related.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Same category</p>
-            <h2 className={styles.sectionTitle}>Related</h2>
+          <Section eyebrow="Same category" title="Related">
             <div className={styles.relatedRow}>
               {related.map((r) => (
                 <Link key={r.slug} to={`/integrations/${r.slug}`}>{r.name}</Link>
               ))}
               <Link to="/integrations">All integrations<ArrowRight size={16} /></Link>
             </div>
-          </section>
+          </Section>
         )}
       </article>
 
       <FinalCta
         title={`Run ${i.name} on the open market`}
-        sub="Install AntSeed, point this tool at your local proxy, and pay per request in USDC."
+        sub="Run a gateway, point this tool at it, and pay per request."
         note={
           <>
             <a href="/integrations">All integrations</a>
-            <a href="/docs/guides/using-the-api">Protocol guide</a>
+            <a href="/docs/gateway/api">Gateway API</a>
           </>
         }>
-        <Button to="/docs/install" variant="white" size="lg" arrow>Install AntSeed</Button>
+        <Button to="/docs/quickstart" variant="white" size="lg" arrow>Run a gateway</Button>
         <Button to="/providers" variant="light" size="lg">Become a provider</Button>
       </FinalCta>
     </Layout>

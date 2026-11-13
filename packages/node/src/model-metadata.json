@@ -1,0 +1,5745 @@
+{
+  "version": 2,
+  "reviewedAt": "2026-08-17",
+  "sources": {
+    "openrouter": {
+      "label": "OpenRouter model catalog",
+      "url": "https://openrouter.ai/api/v1/models"
+    },
+    "venice": {
+      "label": "Venice model catalog",
+      "url": "https://api.venice.ai/api/v1/models?type=all"
+    }
+  },
+  "tagDefinitions": {
+    "Uncensored": "The maintained upstream catalog explicitly marks the model uncensored.",
+    "Coding": "The upstream catalog identifies the model as code-optimized or its official model name is code-specific.",
+    "Reasoning": "The upstream catalog explicitly identifies reasoning support.",
+    "Vision": "The upstream catalog explicitly identifies image input support.",
+    "Web search": "The upstream catalog identifies a search-specialized model with integrated web search.",
+    "Audio input": "The upstream catalog explicitly identifies audio input support.",
+    "Video input": "The upstream catalog explicitly identifies video input support.",
+    "Roleplay": "The official model name identifies a roleplay specialization.",
+    "Anime": "The official model name identifies an anime image specialization.",
+    "Fast": "The official model name or maintained upstream trait identifies a speed-optimized variant.",
+    "Open weights": "A maintained upstream description explicitly identifies the model as open-source or open-weight."
+  },
+  "models": {
+    "ace-step-15": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "ace-step-15"
+        ]
+      }
+    },
+    "aion-2.0": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "aion-labs/aion-2.0"
+        ]
+      }
+    },
+    "aion-3.0": {
+      "tags": [
+        "Uncensored",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "aion-labs/aion-3.0"
+        ],
+        "venice": [
+          "aion-labs-aion-3-0"
+        ]
+      }
+    },
+    "aion-3.0-mini": {
+      "tags": [
+        "Uncensored",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "aion-labs/aion-3.0-mini"
+        ],
+        "venice": [
+          "aion-labs-aion-3-0-mini"
+        ]
+      }
+    },
+    "aion-rp-llama-3.1-8b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "aion-labs/aion-rp-llama-3.1-8b"
+        ]
+      }
+    },
+    "bria-bg-remover": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "bria-bg-remover"
+        ]
+      }
+    },
+    "chroma": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "chroma"
+        ]
+      }
+    },
+    "claude-3-haiku": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-3-haiku"
+        ]
+      }
+    },
+    "claude-fable-5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-fable-5"
+        ],
+        "venice": [
+          "claude-fable-5"
+        ]
+      }
+    },
+    "claude-haiku-4.5": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-haiku-4.5"
+        ]
+      }
+    },
+    "claude-opus-4": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4"
+        ]
+      }
+    },
+    "claude-opus-4.1": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.1"
+        ]
+      }
+    },
+    "claude-opus-4.5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.5"
+        ],
+        "venice": [
+          "claude-opus-4-5"
+        ]
+      }
+    },
+    "claude-opus-4.6": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.6"
+        ],
+        "venice": [
+          "claude-opus-4-6"
+        ]
+      }
+    },
+    "claude-opus-4.7": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.7"
+        ],
+        "venice": [
+          "claude-opus-4-7"
+        ]
+      }
+    },
+    "claude-opus-4.7-fast": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.7-fast"
+        ]
+      }
+    },
+    "claude-opus-4.8": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.8"
+        ],
+        "venice": [
+          "claude-opus-4-8"
+        ]
+      }
+    },
+    "claude-opus-4.8-fast": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-4.8-fast"
+        ],
+        "venice": [
+          "claude-opus-4-8-fast"
+        ]
+      }
+    },
+    "claude-opus-5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-5"
+        ],
+        "venice": [
+          "claude-opus-5"
+        ]
+      }
+    },
+    "claude-opus-5-fast": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-opus-5-fast"
+        ],
+        "venice": [
+          "claude-opus-5-fast"
+        ]
+      }
+    },
+    "claude-sonnet-4": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-sonnet-4"
+        ]
+      }
+    },
+    "claude-sonnet-4.5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-sonnet-4.5"
+        ],
+        "venice": [
+          "claude-sonnet-4-5"
+        ]
+      }
+    },
+    "claude-sonnet-4.6": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-sonnet-4.6"
+        ],
+        "venice": [
+          "claude-sonnet-4-6"
+        ]
+      }
+    },
+    "claude-sonnet-5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "anthropic/claude-sonnet-5"
+        ],
+        "venice": [
+          "claude-sonnet-5"
+        ]
+      }
+    },
+    "codestral-2508": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/codestral-2508"
+        ]
+      }
+    },
+    "cogito-v2.1-671b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepcogito/cogito-v2.1-671b"
+        ]
+      }
+    },
+    "command-a": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "cohere/command-a"
+        ]
+      }
+    },
+    "command-r-08-2024": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "cohere/command-r-08-2024"
+        ]
+      }
+    },
+    "command-r-plus-08-2024": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "cohere/command-r-plus-08-2024"
+        ]
+      }
+    },
+    "command-r7b-12-2024": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "cohere/command-r7b-12-2024"
+        ]
+      }
+    },
+    "cydonia-24b-v4.1": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "thedrummer/cydonia-24b-v4.1"
+        ]
+      }
+    },
+    "deepseek-chat": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-chat"
+        ]
+      }
+    },
+    "deepseek-chat-v3-0324": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-chat-v3-0324"
+        ]
+      }
+    },
+    "deepseek-chat-v3.1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-chat-v3.1"
+        ]
+      }
+    },
+    "deepseek-r1": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-r1"
+        ]
+      }
+    },
+    "deepseek-r1-0528": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-r1-0528"
+        ]
+      }
+    },
+    "deepseek-r1-distill-llama-70b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-r1-distill-llama-70b"
+        ]
+      }
+    },
+    "deepseek-v3.1-terminus": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v3.1-terminus"
+        ]
+      }
+    },
+    "deepseek-v3.2": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v3.2"
+        ],
+        "venice": [
+          "deepseek-v3.2"
+        ]
+      }
+    },
+    "deepseek-v3.2-exp": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v3.2-exp"
+        ]
+      }
+    },
+    "deepseek-v4-flash": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v4-flash"
+        ],
+        "venice": [
+          "deepseek-v4-flash"
+        ]
+      }
+    },
+    "deepseek-v4-flash-0731": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v4-flash-0731"
+        ],
+        "venice": [
+          "deepseek-v4-flash-0731"
+        ]
+      }
+    },
+    "deepseek-v4-flash-0731-fast": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "deepseek-v4-flash-0731-fast"
+        ]
+      }
+    },
+    "deepseek-v4-pro": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v4-pro"
+        ],
+        "venice": [
+          "deepseek-v4-pro"
+        ]
+      }
+    },
+    "deepseek-v4-pro-0813": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "deepseek/deepseek-v4-pro-0813"
+        ],
+        "venice": [
+          "deepseek-v4-pro-0813"
+        ]
+      }
+    },
+    "dolphin-mistral-24b-venice-edition": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "cognitivecomputations/dolphin-mistral-24b-venice-edition"
+        ]
+      }
+    },
+    "e2ee-deepseek-v4-flash": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-deepseek-v4-flash"
+        ]
+      }
+    },
+    "e2ee-gemma-3-27b-p": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "e2ee-gemma-3-27b-p"
+        ]
+      }
+    },
+    "e2ee-gemma-4-26b-a4b-uncensored-p": {
+      "tags": [
+        "Uncensored"
+      ],
+      "aliases": [
+        "gemma-4-26b-uncensored-p"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-gemma-4-26b-a4b-uncensored-p"
+        ]
+      }
+    },
+    "e2ee-gemma-4-31b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-gemma-4-31b"
+        ]
+      }
+    },
+    "e2ee-glm-5-1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-glm-5-1"
+        ]
+      }
+    },
+    "e2ee-glm-5-2-p": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-glm-5-2-p"
+        ]
+      }
+    },
+    "e2ee-gpt-oss-120b-p": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-gpt-oss-120b-p"
+        ]
+      }
+    },
+    "e2ee-gpt-oss-20b-p": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-gpt-oss-20b-p"
+        ]
+      }
+    },
+    "e2ee-qwen-2-5-7b-p": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "e2ee-qwen-2-5-7b-p"
+        ]
+      }
+    },
+    "e2ee-qwen3-6-27b": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-qwen3-6-27b"
+        ]
+      }
+    },
+    "e2ee-qwen3-6-35b-a3b": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-qwen3-6-35b-a3b"
+        ]
+      }
+    },
+    "e2ee-qwen3-6-35b-a3b-uncensored-p": {
+      "tags": [
+        "Uncensored"
+      ],
+      "aliases": [
+        "qwen3.6-35b-uncensored-p"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-qwen3-6-35b-a3b-uncensored-p"
+        ]
+      }
+    },
+    "e2ee-qwen3-vl-30b-a3b-p": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "venice": [
+          "e2ee-qwen3-vl-30b-a3b-p"
+        ]
+      }
+    },
+    "elevenlabs-music": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "elevenlabs-music"
+        ]
+      }
+    },
+    "elevenlabs-sound-effects-v2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "elevenlabs-sound-effects-v2"
+        ]
+      }
+    },
+    "elevenlabs-tts-multilingual-v2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "elevenlabs-tts-multilingual-v2"
+        ]
+      }
+    },
+    "elevenlabs-tts-v3": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "elevenlabs-tts-v3"
+        ]
+      }
+    },
+    "elevenlabs/scribe-v2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "elevenlabs/scribe-v2"
+        ]
+      }
+    },
+    "ernie-4.5-vl-424b-a47b": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "baidu/ernie-4.5-vl-424b-a47b"
+        ]
+      }
+    },
+    "fal-ai/wizper": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "fal-ai/wizper"
+        ]
+      }
+    },
+    "firered-image-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "firered-image-edit"
+        ]
+      }
+    },
+    "flux-2-max": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-2-max"
+        ]
+      }
+    },
+    "flux-2-max-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-2-max-edit"
+        ]
+      }
+    },
+    "flux-2-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-2-pro"
+        ]
+      }
+    },
+    "flux-3-first-last-frame-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-3-first-last-frame-to-video"
+        ]
+      }
+    },
+    "flux-3-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-3-image-to-video"
+        ]
+      }
+    },
+    "flux-3-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "flux-3-text-to-video"
+        ]
+      }
+    },
+    "fugu-ultra": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "sakana/fugu-ultra"
+        ]
+      }
+    },
+    "gemini-2.5-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-flash"
+        ]
+      }
+    },
+    "gemini-2.5-flash-image": {
+      "tags": [
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-flash-image"
+        ]
+      }
+    },
+    "gemini-2.5-flash-lite": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-flash-lite"
+        ]
+      }
+    },
+    "gemini-2.5-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-pro"
+        ]
+      }
+    },
+    "gemini-2.5-pro-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-pro-preview"
+        ]
+      }
+    },
+    "gemini-2.5-pro-preview-05-06": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-2.5-pro-preview-05-06"
+        ]
+      }
+    },
+    "gemini-3-flash-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3-flash-preview"
+        ],
+        "venice": [
+          "gemini-3-flash-preview"
+        ]
+      }
+    },
+    "gemini-3-pro-image": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3-pro-image"
+        ]
+      }
+    },
+    "gemini-3-pro-image-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3-pro-image-preview"
+        ]
+      }
+    },
+    "gemini-3.1-flash-image": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-flash-image"
+        ]
+      }
+    },
+    "gemini-3.1-flash-image-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-flash-image-preview"
+        ]
+      }
+    },
+    "gemini-3.1-flash-lite": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-flash-lite"
+        ]
+      }
+    },
+    "gemini-3.1-flash-lite-image": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-flash-lite-image"
+        ]
+      }
+    },
+    "gemini-3.1-flash-lite-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-flash-lite-preview"
+        ]
+      }
+    },
+    "gemini-3.1-pro-preview": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-pro-preview"
+        ],
+        "venice": [
+          "gemini-3-1-pro-preview"
+        ]
+      }
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.1-pro-preview-customtools"
+        ]
+      }
+    },
+    "gemini-3.5-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.5-flash"
+        ],
+        "venice": [
+          "gemini-3-5-flash"
+        ]
+      }
+    },
+    "gemini-3.5-flash-lite": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.5-flash-lite"
+        ],
+        "venice": [
+          "gemini-3-5-flash-lite"
+        ]
+      }
+    },
+    "gemini-3.6-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.6-flash"
+        ],
+        "venice": [
+          "gemini-3-6-flash"
+        ]
+      }
+    },
+    "gemini-3.7-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemini-3.7-flash"
+        ],
+        "venice": [
+          "gemini-3-7-flash"
+        ]
+      }
+    },
+    "gemini-embedding-2-preview": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "gemini-embedding-2-preview"
+        ]
+      }
+    },
+    "gemini-omni-flash-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "gemini-omni-flash-image-to-video"
+        ]
+      }
+    },
+    "gemini-omni-flash-reference-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "gemini-omni-flash-reference-to-video"
+        ]
+      }
+    },
+    "gemini-omni-flash-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "gemini-omni-flash-text-to-video"
+        ]
+      }
+    },
+    "gemma-2-27b-it": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "google/gemma-2-27b-it"
+        ]
+      }
+    },
+    "gemma-3-12b-it": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemma-3-12b-it"
+        ]
+      }
+    },
+    "gemma-3-27b-it": {
+      "tags": [
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemma-3-27b-it"
+        ],
+        "venice": [
+          "google-gemma-3-27b-it"
+        ]
+      }
+    },
+    "gemma-3-4b-it": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemma-3-4b-it"
+        ]
+      }
+    },
+    "gemma-3n-e4b-it": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "google/gemma-3n-e4b-it"
+        ]
+      }
+    },
+    "gemma-4-26b-a4b-it": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemma-4-26b-a4b-it"
+        ],
+        "venice": [
+          "google-gemma-4-26b-a4b-it"
+        ]
+      }
+    },
+    "gemma-4-31b-it": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/gemma-4-31b-it"
+        ],
+        "venice": [
+          "google-gemma-4-31b-it"
+        ]
+      }
+    },
+    "gemma-4-uncensored": {
+      "tags": [
+        "Uncensored",
+        "Vision"
+      ],
+      "sources": {
+        "venice": [
+          "gemma-4-uncensored"
+        ]
+      }
+    },
+    "glm-4.5": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.5"
+        ]
+      }
+    },
+    "glm-4.5-air": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.5-air"
+        ]
+      }
+    },
+    "glm-4.5v": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.5v"
+        ]
+      }
+    },
+    "glm-4.6": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.6"
+        ],
+        "venice": [
+          "zai-org-glm-4.6"
+        ]
+      }
+    },
+    "glm-4.6v": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.6v"
+        ]
+      }
+    },
+    "glm-4.7": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.7"
+        ],
+        "venice": [
+          "zai-org-glm-4.7"
+        ]
+      }
+    },
+    "glm-4.7-flash": {
+      "tags": [
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-4.7-flash"
+        ],
+        "venice": [
+          "zai-org-glm-4.7-flash"
+        ]
+      }
+    },
+    "glm-5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-5"
+        ],
+        "venice": [
+          "zai-org-glm-5"
+        ]
+      }
+    },
+    "glm-5-turbo": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-5-turbo"
+        ],
+        "venice": [
+          "z-ai-glm-5-turbo"
+        ]
+      }
+    },
+    "glm-5.1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-5.1"
+        ],
+        "venice": [
+          "zai-org-glm-5-1"
+        ]
+      }
+    },
+    "glm-5.2": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-5.2"
+        ],
+        "venice": [
+          "zai-org-glm-5-2"
+        ]
+      }
+    },
+    "glm-5v-turbo": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "z-ai/glm-5v-turbo"
+        ],
+        "venice": [
+          "z-ai-glm-5v-turbo"
+        ]
+      }
+    },
+    "gpt-3.5-turbo": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-3.5-turbo"
+        ]
+      }
+    },
+    "gpt-3.5-turbo-0613": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-3.5-turbo-0613"
+        ]
+      }
+    },
+    "gpt-3.5-turbo-16k": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-3.5-turbo-16k"
+        ]
+      }
+    },
+    "gpt-3.5-turbo-instruct": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-3.5-turbo-instruct"
+        ]
+      }
+    },
+    "gpt-4": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4"
+        ]
+      }
+    },
+    "gpt-4-turbo": {
+      "tags": [
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4-turbo"
+        ]
+      }
+    },
+    "gpt-4-turbo-preview": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4-turbo-preview"
+        ]
+      }
+    },
+    "gpt-4.1": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4.1"
+        ]
+      }
+    },
+    "gpt-4.1-mini": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4.1-mini"
+        ]
+      }
+    },
+    "gpt-4.1-nano": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4.1-nano"
+        ]
+      }
+    },
+    "gpt-4o-2024-11-20": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4o",
+          "openai/gpt-4o-2024-05-13",
+          "openai/gpt-4o-2024-08-06",
+          "openai/gpt-4o-2024-11-20"
+        ],
+        "venice": [
+          "openai-gpt-4o-2024-11-20"
+        ]
+      }
+    },
+    "gpt-4o-mini": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-4o-mini",
+          "openai/gpt-4o-mini-2024-07-18"
+        ],
+        "venice": [
+          "openai-gpt-4o-mini-2024-07-18"
+        ]
+      }
+    },
+    "gpt-5": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5"
+        ]
+      }
+    },
+    "gpt-5-image": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5-image"
+        ]
+      }
+    },
+    "gpt-5-image-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5-image-mini"
+        ]
+      }
+    },
+    "gpt-5-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5-mini"
+        ]
+      }
+    },
+    "gpt-5-nano": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5-nano"
+        ]
+      }
+    },
+    "gpt-5-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5-pro"
+        ]
+      }
+    },
+    "gpt-5.1": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.1"
+        ]
+      }
+    },
+    "gpt-5.1-codex": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.1-codex"
+        ]
+      }
+    },
+    "gpt-5.1-codex-max": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.1-codex-max"
+        ]
+      }
+    },
+    "gpt-5.1-codex-mini": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.1-codex-mini"
+        ]
+      }
+    },
+    "gpt-5.2": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.2"
+        ],
+        "venice": [
+          "openai-gpt-52"
+        ]
+      }
+    },
+    "gpt-5.2-chat": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.2-chat"
+        ]
+      }
+    },
+    "gpt-5.2-codex": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.2-codex"
+        ],
+        "venice": [
+          "openai-gpt-52-codex"
+        ]
+      }
+    },
+    "gpt-5.2-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.2-pro"
+        ]
+      }
+    },
+    "gpt-5.3-codex": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.3-codex"
+        ],
+        "venice": [
+          "openai-gpt-53-codex"
+        ]
+      }
+    },
+    "gpt-5.4": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.4"
+        ],
+        "venice": [
+          "openai-gpt-54"
+        ]
+      }
+    },
+    "gpt-5.4-image-2": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.4-image-2"
+        ]
+      }
+    },
+    "gpt-5.4-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.4-mini"
+        ],
+        "venice": [
+          "openai-gpt-54-mini"
+        ]
+      }
+    },
+    "gpt-5.4-nano": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.4-nano"
+        ]
+      }
+    },
+    "gpt-5.4-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.4-pro"
+        ],
+        "venice": [
+          "openai-gpt-54-pro"
+        ]
+      }
+    },
+    "gpt-5.5": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.5"
+        ],
+        "venice": [
+          "openai-gpt-55"
+        ]
+      }
+    },
+    "gpt-5.5-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.5-pro"
+        ],
+        "venice": [
+          "openai-gpt-55-pro"
+        ]
+      }
+    },
+    "gpt-5.6-luna": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-luna"
+        ],
+        "venice": [
+          "openai-gpt-56-luna"
+        ]
+      }
+    },
+    "gpt-5.6-luna-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-luna-pro"
+        ],
+        "venice": [
+          "openai-gpt-56-luna-pro"
+        ]
+      }
+    },
+    "gpt-5.6-sol": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-sol"
+        ],
+        "venice": [
+          "openai-gpt-56-sol"
+        ]
+      }
+    },
+    "gpt-5.6-sol-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-sol-pro"
+        ],
+        "venice": [
+          "openai-gpt-56-sol-pro"
+        ]
+      }
+    },
+    "gpt-5.6-terra": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-terra"
+        ],
+        "venice": [
+          "openai-gpt-56-terra"
+        ]
+      }
+    },
+    "gpt-5.6-terra-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-5.6-terra-pro"
+        ],
+        "venice": [
+          "openai-gpt-56-terra-pro"
+        ]
+      }
+    },
+    "gpt-audio": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-audio"
+        ]
+      }
+    },
+    "gpt-audio-mini": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-audio-mini"
+        ]
+      }
+    },
+    "gpt-chat-latest": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-chat-latest"
+        ]
+      }
+    },
+    "gpt-image-1-5": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "gpt-image-1-5"
+        ]
+      }
+    },
+    "gpt-image-1-5-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "gpt-image-1-5-edit"
+        ]
+      }
+    },
+    "gpt-image-2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "gpt-image-2"
+        ]
+      }
+    },
+    "gpt-image-2-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "gpt-image-2-edit"
+        ]
+      }
+    },
+    "gpt-oss-120b": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-oss-120b"
+        ],
+        "venice": [
+          "openai-gpt-oss-120b"
+        ]
+      }
+    },
+    "gpt-oss-20b": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-oss-20b"
+        ]
+      }
+    },
+    "gpt-oss-safeguard-20b": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/gpt-oss-safeguard-20b"
+        ]
+      }
+    },
+    "granite-4.0-h-micro": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "ibm-granite/granite-4.0-h-micro"
+        ]
+      }
+    },
+    "granite-4.1-8b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "ibm-granite/granite-4.1-8b"
+        ]
+      }
+    },
+    "grok-4.20": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-4.20"
+        ],
+        "venice": [
+          "grok-4-20"
+        ]
+      }
+    },
+    "grok-4.20-multi-agent": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-4.20-multi-agent"
+        ],
+        "venice": [
+          "grok-4-20-multi-agent"
+        ]
+      }
+    },
+    "grok-4.3": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-4.3"
+        ],
+        "venice": [
+          "grok-4-3"
+        ]
+      }
+    },
+    "grok-4.5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-4.5"
+        ],
+        "venice": [
+          "grok-4-5"
+        ]
+      }
+    },
+    "grok-4.6": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-4.6"
+        ],
+        "venice": [
+          "grok-4-6"
+        ]
+      }
+    },
+    "grok-build-0.1": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "x-ai/grok-build-0.1"
+        ],
+        "venice": [
+          "grok-build-0-1"
+        ]
+      }
+    },
+    "grok-imagine-1-5-image-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-1-5-image-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-1-5-reference-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-1-5-reference-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-1-5-text-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-1-5-text-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-edit"
+        ]
+      }
+    },
+    "grok-imagine-image": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-image"
+        ]
+      }
+    },
+    "grok-imagine-image-2-0": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-image-2-0"
+        ]
+      }
+    },
+    "grok-imagine-image-2-0-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-image-2-0-edit"
+        ]
+      }
+    },
+    "grok-imagine-image-quality": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-image-quality"
+        ]
+      }
+    },
+    "grok-imagine-image-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-image-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-quality-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-quality-edit"
+        ]
+      }
+    },
+    "grok-imagine-reference-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-reference-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-text-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-text-to-video-private"
+        ]
+      }
+    },
+    "grok-imagine-video-to-video-private": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "grok-imagine-video-to-video-private"
+        ]
+      }
+    },
+    "happyhorse-1-0-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-0-image-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-0-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-0-reference-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-0-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-0-text-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-0-video-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-0-video-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-1-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-1-image-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-1-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-1-reference-to-video"
+        ]
+      }
+    },
+    "happyhorse-1-1-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "happyhorse-1-1-text-to-video"
+        ]
+      }
+    },
+    "hermes-3-llama-3.1-405b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "nousresearch/hermes-3-llama-3.1-405b"
+        ],
+        "venice": [
+          "hermes-3-llama-3.1-405b"
+        ]
+      }
+    },
+    "hermes-3-llama-3.1-70b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "nousresearch/hermes-3-llama-3.1-70b"
+        ]
+      }
+    },
+    "hermes-4-405b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "nousresearch/hermes-4-405b"
+        ]
+      }
+    },
+    "hermes-4-70b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "nousresearch/hermes-4-70b"
+        ]
+      }
+    },
+    "hunyuan-a13b-instruct": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "tencent/hunyuan-a13b-instruct"
+        ]
+      }
+    },
+    "hunyuan-image-v3": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "hunyuan-image-v3"
+        ]
+      }
+    },
+    "hy3": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "tencent/hy3"
+        ]
+      }
+    },
+    "hy3-preview": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "tencent/hy3-preview"
+        ]
+      }
+    },
+    "ideogram-v4": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "ideogram-v4"
+        ]
+      }
+    },
+    "imagineart-1.5-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "imagineart-1.5-pro"
+        ]
+      }
+    },
+    "inkling": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "thinkingmachines/inkling"
+        ],
+        "venice": [
+          "inkling"
+        ]
+      }
+    },
+    "inkling-small": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "thinkingmachines/inkling-small"
+        ]
+      }
+    },
+    "jamba-large-1.7": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "ai21/jamba-large-1.7"
+        ]
+      }
+    },
+    "kat-coder-air-v2.5": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "kwaipilot/kat-coder-air-v2.5"
+        ]
+      }
+    },
+    "kat-coder-pro-v2": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "kwaipilot/kat-coder-pro-v2"
+        ]
+      }
+    },
+    "kat-coder-pro-v2.5": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "kwaipilot/kat-coder-pro-v2.5"
+        ]
+      }
+    },
+    "kimi-k2": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2"
+        ]
+      }
+    },
+    "kimi-k2-0905": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2-0905"
+        ]
+      }
+    },
+    "kimi-k2-thinking": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2-thinking"
+        ]
+      }
+    },
+    "kimi-k2.5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2.5"
+        ],
+        "venice": [
+          "kimi-k2-5"
+        ]
+      }
+    },
+    "kimi-k2.6": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2.6"
+        ],
+        "venice": [
+          "kimi-k2-6"
+        ]
+      }
+    },
+    "kimi-k2.7-code": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k2.7-code"
+        ],
+        "venice": [
+          "kimi-k2-7-code"
+        ]
+      }
+    },
+    "kimi-k3": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "moonshotai/kimi-k3"
+        ],
+        "venice": [
+          "kimi-k3"
+        ]
+      }
+    },
+    "kimi-k3-fast-api": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Fast",
+        "Open weights"
+      ],
+      "sources": {
+        "venice": [
+          "kimi-k3-fast-api"
+        ]
+      }
+    },
+    "kling-2.5-turbo-pro-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-2.5-turbo-pro-image-to-video"
+        ]
+      }
+    },
+    "kling-2.5-turbo-pro-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-2.5-turbo-pro-text-to-video"
+        ]
+      }
+    },
+    "kling-2.6-pro-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-2.6-pro-image-to-video"
+        ]
+      }
+    },
+    "kling-2.6-pro-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-2.6-pro-text-to-video"
+        ]
+      }
+    },
+    "kling-o3-4k-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-4k-image-to-video"
+        ]
+      }
+    },
+    "kling-o3-4k-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-4k-reference-to-video"
+        ]
+      }
+    },
+    "kling-o3-4k-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-4k-text-to-video"
+        ]
+      }
+    },
+    "kling-o3-pro-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-pro-image-to-video"
+        ]
+      }
+    },
+    "kling-o3-pro-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-pro-reference-to-video"
+        ]
+      }
+    },
+    "kling-o3-pro-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-pro-text-to-video"
+        ]
+      }
+    },
+    "kling-o3-standard-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-standard-image-to-video"
+        ]
+      }
+    },
+    "kling-o3-standard-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-standard-reference-to-video"
+        ]
+      }
+    },
+    "kling-o3-standard-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-o3-standard-text-to-video"
+        ]
+      }
+    },
+    "kling-v3-4k-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-4k-reference-to-video"
+        ]
+      }
+    },
+    "kling-v3-4k-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-4k-text-to-video"
+        ]
+      }
+    },
+    "kling-v3-pro-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-pro-image-to-video"
+        ]
+      }
+    },
+    "kling-v3-pro-motion-control": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-pro-motion-control"
+        ]
+      }
+    },
+    "kling-v3-pro-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-pro-text-to-video"
+        ]
+      }
+    },
+    "kling-v3-standard-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-standard-image-to-video"
+        ]
+      }
+    },
+    "kling-v3-standard-motion-control": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-standard-motion-control"
+        ]
+      }
+    },
+    "kling-v3-standard-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "kling-v3-standard-text-to-video"
+        ]
+      }
+    },
+    "kling-v3-turbo-pro-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-v3-turbo-pro-image-to-video"
+        ]
+      }
+    },
+    "kling-v3-turbo-pro-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-v3-turbo-pro-text-to-video"
+        ]
+      }
+    },
+    "kling-v3-turbo-standard-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-v3-turbo-standard-image-to-video"
+        ]
+      }
+    },
+    "kling-v3-turbo-standard-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "kling-v3-turbo-standard-text-to-video"
+        ]
+      }
+    },
+    "krea-2-turbo": {
+      "tags": [
+        "Uncensored",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "krea-2-turbo"
+        ]
+      }
+    },
+    "krea-v2-large": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "krea-v2-large"
+        ]
+      }
+    },
+    "krea-v2-medium": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "krea-v2-medium"
+        ]
+      }
+    },
+    "l3-lunaris-8b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "sao10k/l3-lunaris-8b"
+        ]
+      }
+    },
+    "l3.1-euryale-70b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "sao10k/l3.1-euryale-70b"
+        ]
+      }
+    },
+    "l3.3-euryale-70b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "sao10k/l3.3-euryale-70b"
+        ]
+      }
+    },
+    "laguna-s-2.1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "poolside/laguna-s-2.1"
+        ]
+      }
+    },
+    "laguna-xs-2.1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "poolside/laguna-xs-2.1"
+        ]
+      }
+    },
+    "ling-2.6-1t": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "inclusionai/ling-2.6-1t"
+        ]
+      }
+    },
+    "ling-2.6-flash": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "inclusionai/ling-2.6-flash"
+        ]
+      }
+    },
+    "ling-3.0-flash": {
+      "tags": [
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "inclusionai/ling-3.0-flash"
+        ]
+      }
+    },
+    "llama-3.1-70b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-3.1-70b-instruct"
+        ]
+      }
+    },
+    "llama-3.1-8b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-3.1-8b-instruct"
+        ]
+      }
+    },
+    "llama-3.2-1b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-3.2-1b-instruct"
+        ]
+      }
+    },
+    "llama-3.2-3b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "llama-3.2-3b"
+        ]
+      }
+    },
+    "llama-3.2-3b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-3.2-3b-instruct"
+        ]
+      }
+    },
+    "llama-3.3-70b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "llama-3.3-70b"
+        ]
+      }
+    },
+    "llama-3.3-70b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-3.3-70b-instruct"
+        ]
+      }
+    },
+    "llama-4-maverick": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-4-maverick"
+        ]
+      }
+    },
+    "llama-4-scout": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-4-scout"
+        ]
+      }
+    },
+    "llama-guard-4-12b": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta-llama/llama-guard-4-12b"
+        ]
+      }
+    },
+    "longcat-2.0": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "meituan/longcat-2.0"
+        ]
+      }
+    },
+    "longcat-distilled-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "longcat-distilled-image-to-video"
+        ]
+      }
+    },
+    "longcat-distilled-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "longcat-distilled-text-to-video"
+        ]
+      }
+    },
+    "longcat-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "longcat-image-to-video"
+        ]
+      }
+    },
+    "longcat-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "longcat-text-to-video"
+        ]
+      }
+    },
+    "ltx-2-5-fast-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "ltx-2-5-fast-image-to-video"
+        ]
+      }
+    },
+    "ltx-2-5-fast-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "ltx-2-5-fast-text-to-video"
+        ]
+      }
+    },
+    "ltx-2-5-pro-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "ltx-2-5-pro-image-to-video"
+        ]
+      }
+    },
+    "ltx-2-5-pro-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "ltx-2-5-pro-text-to-video"
+        ]
+      }
+    },
+    "ltx-2-v2-3-fast-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "ltx-2-v2-3-fast-image-to-video"
+        ]
+      }
+    },
+    "ltx-2-v2-3-fast-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "ltx-2-v2-3-fast-text-to-video"
+        ]
+      }
+    },
+    "ltx-2-v2-3-full-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "ltx-2-v2-3-full-image-to-video"
+        ]
+      }
+    },
+    "ltx-2-v2-3-full-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "ltx-2-v2-3-full-text-to-video"
+        ]
+      }
+    },
+    "luma-uni-1": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "luma-uni-1"
+        ]
+      }
+    },
+    "luma-uni-1-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "luma-uni-1-edit"
+        ]
+      }
+    },
+    "luma-uni-1-max": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "luma-uni-1-max"
+        ]
+      }
+    },
+    "luma-uni-1-max-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "luma-uni-1-max-edit"
+        ]
+      }
+    },
+    "lustify-sdxl": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "lustify-sdxl"
+        ]
+      }
+    },
+    "lustify-v7": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "lustify-v7"
+        ]
+      }
+    },
+    "lustify-v8": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "lustify-v8"
+        ]
+      }
+    },
+    "lyria-3-clip-preview": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/lyria-3-clip-preview"
+        ]
+      }
+    },
+    "lyria-3-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "lyria-3-pro"
+        ]
+      }
+    },
+    "lyria-3-pro-preview": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "google/lyria-3-pro-preview"
+        ]
+      }
+    },
+    "magnum-v4-72b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "anthracite-org/magnum-v4-72b"
+        ]
+      }
+    },
+    "mercury-2": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "inception/mercury-2"
+        ],
+        "venice": [
+          "mercury-2"
+        ]
+      }
+    },
+    "mimo-v2.5": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "xiaomi/mimo-v2.5"
+        ]
+      }
+    },
+    "mimo-v2.5-pro": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "xiaomi/mimo-v2.5-pro"
+        ]
+      }
+    },
+    "minimax-01": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-01"
+        ]
+      }
+    },
+    "minimax-h3-enhanced-reference-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-h3-enhanced-reference-to-video"
+        ]
+      }
+    },
+    "minimax-h3-enhanced-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-h3-enhanced-text-to-video"
+        ]
+      }
+    },
+    "minimax-h3-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-h3-image-to-video"
+        ]
+      }
+    },
+    "minimax-h3-reference-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-h3-reference-to-video"
+        ]
+      }
+    },
+    "minimax-h3-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-h3-text-to-video"
+        ]
+      }
+    },
+    "minimax-m1": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m1"
+        ]
+      }
+    },
+    "minimax-m2": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m2"
+        ]
+      }
+    },
+    "minimax-m2-her": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m2-her"
+        ]
+      }
+    },
+    "minimax-m2.1": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m2.1"
+        ]
+      }
+    },
+    "minimax-m2.5": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m2.5"
+        ],
+        "venice": [
+          "minimax-m25"
+        ]
+      }
+    },
+    "minimax-m2.7": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m2.7"
+        ],
+        "venice": [
+          "minimax-m27"
+        ]
+      }
+    },
+    "minimax-m3": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "minimax/minimax-m3"
+        ]
+      }
+    },
+    "minimax-m3-preview": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "venice": [
+          "minimax-m3-preview"
+        ]
+      }
+    },
+    "minimax-music-v2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "minimax-music-v2"
+        ]
+      }
+    },
+    "minimax-music-v25": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "minimax-music-v25"
+        ]
+      }
+    },
+    "minimax-music-v26": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "minimax-music-v26"
+        ]
+      }
+    },
+    "ministral-14b-2512": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/ministral-14b-2512"
+        ]
+      }
+    },
+    "ministral-3b-2512": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/ministral-3b-2512"
+        ]
+      }
+    },
+    "ministral-8b-2512": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/ministral-8b-2512"
+        ]
+      }
+    },
+    "mistral-large": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-large"
+        ]
+      }
+    },
+    "mistral-large-2407": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-large-2407"
+        ]
+      }
+    },
+    "mistral-large-2512": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-large-2512"
+        ]
+      }
+    },
+    "mistral-medium-3": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-medium-3"
+        ]
+      }
+    },
+    "mistral-medium-3-5": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-medium-3-5"
+        ]
+      }
+    },
+    "mistral-medium-3.1": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-medium-3.1"
+        ]
+      }
+    },
+    "mistral-nemo": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-nemo"
+        ]
+      }
+    },
+    "mistral-saba": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-saba"
+        ]
+      }
+    },
+    "mistral-small-24b-instruct-2501": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-small-24b-instruct-2501"
+        ]
+      }
+    },
+    "mistral-small-2603": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-small-2603"
+        ],
+        "venice": [
+          "mistral-small-2603"
+        ]
+      }
+    },
+    "mistral-small-3.1-24b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-small-3.1-24b-instruct"
+        ]
+      }
+    },
+    "mistral-small-3.2-24b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "mistralai/mistral-small-3.2-24b-instruct"
+        ],
+        "venice": [
+          "mistral-small-3-2-24b-instruct"
+        ]
+      }
+    },
+    "mixtral-8x22b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/mixtral-8x22b-instruct"
+        ]
+      }
+    },
+    "mmaudio-v2-text-to-audio": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "mmaudio-v2-text-to-audio"
+        ]
+      }
+    },
+    "morph-v3-fast": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "morph/morph-v3-fast"
+        ]
+      }
+    },
+    "morph-v3-large": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "morph/morph-v3-large"
+        ]
+      }
+    },
+    "muse-glimmer-30b": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta/muse-glimmer-30b"
+        ]
+      }
+    },
+    "muse-spark-1.1": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta/muse-spark-1.1"
+        ]
+      }
+    },
+    "muse-spark-1.2": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "meta/muse-spark-1.2"
+        ]
+      }
+    },
+    "mythomax-l2-13b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "gryphe/mythomax-l2-13b"
+        ]
+      }
+    },
+    "nano-banana-2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-2"
+        ]
+      }
+    },
+    "nano-banana-2-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-2-edit"
+        ]
+      }
+    },
+    "nano-banana-2-lite": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-2-lite"
+        ]
+      }
+    },
+    "nano-banana-2-lite-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-2-lite-edit"
+        ]
+      }
+    },
+    "nano-banana-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-pro"
+        ]
+      }
+    },
+    "nano-banana-pro-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nano-banana-pro-edit"
+        ]
+      }
+    },
+    "nemotron-3-nano-30b-a3b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "nvidia/nemotron-3-nano-30b-a3b"
+        ]
+      }
+    },
+    "nemotron-3-super-120b-a12b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "nvidia/nemotron-3-super-120b-a12b"
+        ]
+      }
+    },
+    "nemotron-3-ultra-550b-a55b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "nvidia/nemotron-3-ultra-550b-a55b"
+        ]
+      }
+    },
+    "nemotron-3.5-lightning": {
+      "tags": [
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "nvidia/nemotron-3.5-lightning"
+        ]
+      }
+    },
+    "nex-n2-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "nex-agi/nex-n2-mini"
+        ]
+      }
+    },
+    "nex-n2-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "nex-agi/nex-n2-pro"
+        ]
+      }
+    },
+    "nova-2-lite-v1": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "amazon/nova-2-lite-v1"
+        ]
+      }
+    },
+    "nova-lite-v1": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "amazon/nova-lite-v1"
+        ]
+      }
+    },
+    "nova-micro-v1": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "amazon/nova-micro-v1"
+        ]
+      }
+    },
+    "nova-premier-v1": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "amazon/nova-premier-v1"
+        ]
+      }
+    },
+    "nova-pro-v1": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "amazon/nova-pro-v1"
+        ]
+      }
+    },
+    "nvidia-nemotron-3-5-lightning-30b-a3b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "nvidia-nemotron-3-5-lightning-30b-a3b"
+        ]
+      }
+    },
+    "nvidia-nemotron-3-nano-30b-a3b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nvidia-nemotron-3-nano-30b-a3b"
+        ]
+      }
+    },
+    "nvidia-nemotron-3-ultra-550b-a55b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "venice": [
+          "nvidia-nemotron-3-ultra-550b-a55b"
+        ]
+      }
+    },
+    "nvidia/parakeet-tdt-0.6b-v3": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "nvidia/parakeet-tdt-0.6b-v3"
+        ]
+      }
+    },
+    "o1": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o1"
+        ]
+      }
+    },
+    "o1-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o1-pro"
+        ]
+      }
+    },
+    "o3": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o3"
+        ]
+      }
+    },
+    "o3-mini": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o3-mini"
+        ]
+      }
+    },
+    "o3-mini-high": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o3-mini-high"
+        ]
+      }
+    },
+    "o3-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o3-pro"
+        ]
+      }
+    },
+    "o4-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o4-mini"
+        ]
+      }
+    },
+    "o4-mini-high": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "openai/o4-mini-high"
+        ]
+      }
+    },
+    "olafangensan-glm-4.7-flash-heretic": {
+      "tags": [
+        "Uncensored",
+        "Reasoning",
+        "Fast"
+      ],
+      "aliases": [
+        "glm-4.7-flash-heretic"
+      ],
+      "sources": {
+        "venice": [
+          "olafangensan-glm-4.7-flash-heretic"
+        ]
+      }
+    },
+    "olmo-3-32b-think": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "allenai/olmo-3-32b-think"
+        ]
+      }
+    },
+    "openai/whisper-large-v3": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "openai/whisper-large-v3"
+        ]
+      }
+    },
+    "ovi-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "ovi-image-to-video"
+        ]
+      }
+    },
+    "palmyra-x5": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "writer/palmyra-x5"
+        ]
+      }
+    },
+    "perceptron-mk1": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "perceptron/perceptron-mk1"
+        ]
+      }
+    },
+    "phi-4": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "microsoft/phi-4"
+        ]
+      }
+    },
+    "pixverse-c1-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-c1-image-to-video"
+        ]
+      }
+    },
+    "pixverse-c1-reference-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-c1-reference-to-video"
+        ]
+      }
+    },
+    "pixverse-c1-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-c1-text-to-video"
+        ]
+      }
+    },
+    "pixverse-c1-transition": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-c1-transition"
+        ]
+      }
+    },
+    "pixverse-v5.6-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-v5.6-image-to-video"
+        ]
+      }
+    },
+    "pixverse-v5.6-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-v5.6-text-to-video"
+        ]
+      }
+    },
+    "pixverse-v5.6-transition": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "pixverse-v5.6-transition"
+        ]
+      }
+    },
+    "qwen-2.5-72b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen-2.5-72b-instruct"
+        ]
+      }
+    },
+    "qwen-2.5-7b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen-2.5-7b-instruct"
+        ]
+      }
+    },
+    "qwen-2.5-coder-32b-instruct": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen-2.5-coder-32b-instruct"
+        ]
+      }
+    },
+    "qwen-edit-uncensored": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "qwen-edit-uncensored"
+        ]
+      }
+    },
+    "qwen-image": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen-image"
+        ]
+      }
+    },
+    "qwen-image-2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen-image-2"
+        ]
+      }
+    },
+    "qwen-image-2-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen-image-2-edit"
+        ]
+      }
+    },
+    "qwen-image-2-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen-image-2-pro"
+        ]
+      }
+    },
+    "qwen-image-2-pro-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen-image-2-pro-edit"
+        ]
+      }
+    },
+    "qwen-image-3": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "qwen-image-3"
+        ]
+      }
+    },
+    "qwen-image-3-edit": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "qwen-image-3-edit"
+        ]
+      }
+    },
+    "qwen-image-3-pro": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "qwen-image-3-pro"
+        ]
+      }
+    },
+    "qwen-image-3-pro-edit": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "qwen-image-3-pro-edit"
+        ]
+      }
+    },
+    "qwen-plus-2025-07-28": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen-plus",
+          "qwen/qwen-plus-2025-07-28"
+        ]
+      }
+    },
+    "qwen2.5-vl-72b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen2.5-vl-72b-instruct"
+        ]
+      }
+    },
+    "qwen3-14b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-14b"
+        ]
+      }
+    },
+    "qwen3-235b-a22b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-235b-a22b"
+        ]
+      }
+    },
+    "qwen3-235b-a22b-2507": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-235b-a22b-2507"
+        ]
+      }
+    },
+    "qwen3-235b-a22b-instruct-2507": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen3-235b-a22b-instruct-2507"
+        ]
+      }
+    },
+    "qwen3-235b-a22b-thinking-2507": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-235b-a22b-thinking-2507"
+        ],
+        "venice": [
+          "qwen3-235b-a22b-thinking-2507"
+        ]
+      }
+    },
+    "qwen3-30b-a3b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-30b-a3b"
+        ]
+      }
+    },
+    "qwen3-30b-a3b-instruct-2507": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-30b-a3b-instruct-2507"
+        ]
+      }
+    },
+    "qwen3-30b-a3b-thinking-2507": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-30b-a3b-thinking-2507"
+        ]
+      }
+    },
+    "qwen3-32b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-32b"
+        ]
+      }
+    },
+    "qwen3-8b": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-8b"
+        ]
+      }
+    },
+    "qwen3-coder": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-coder"
+        ]
+      }
+    },
+    "qwen3-coder-30b-a3b-instruct": {
+      "tags": [
+        "Coding"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-coder-30b-a3b-instruct"
+        ]
+      }
+    },
+    "qwen3-coder-480b-a35b-instruct-turbo": {
+      "tags": [
+        "Coding",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "qwen3-coder-480b-a35b-instruct-turbo"
+        ]
+      }
+    },
+    "qwen3-coder-flash": {
+      "tags": [
+        "Coding",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-coder-flash"
+        ]
+      }
+    },
+    "qwen3-coder-next": {
+      "tags": [
+        "Coding",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-coder-next"
+        ]
+      }
+    },
+    "qwen3-coder-plus": {
+      "tags": [
+        "Coding",
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-coder-plus"
+        ]
+      }
+    },
+    "qwen3-max": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-max"
+        ]
+      }
+    },
+    "qwen3-max-thinking": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-max-thinking"
+        ]
+      }
+    },
+    "qwen3-next-80b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "qwen3-next-80b"
+        ]
+      }
+    },
+    "qwen3-next-80b-a3b-instruct": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-next-80b-a3b-instruct"
+        ]
+      }
+    },
+    "qwen3-next-80b-a3b-thinking": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-next-80b-a3b-thinking"
+        ]
+      }
+    },
+    "qwen3-vl-235b-a22b": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "venice": [
+          "qwen3-vl-235b-a22b"
+        ]
+      }
+    },
+    "qwen3-vl-235b-a22b-instruct": {
+      "tags": [
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-235b-a22b-instruct"
+        ]
+      }
+    },
+    "qwen3-vl-235b-a22b-thinking": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-235b-a22b-thinking"
+        ]
+      }
+    },
+    "qwen3-vl-30b-a3b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-30b-a3b-instruct"
+        ]
+      }
+    },
+    "qwen3-vl-30b-a3b-thinking": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-30b-a3b-thinking"
+        ]
+      }
+    },
+    "qwen3-vl-32b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-32b-instruct"
+        ]
+      }
+    },
+    "qwen3-vl-8b-instruct": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-8b-instruct"
+        ]
+      }
+    },
+    "qwen3-vl-8b-thinking": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3-vl-8b-thinking"
+        ]
+      }
+    },
+    "qwen3.5-122b-a10b": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-122b-a10b"
+        ]
+      }
+    },
+    "qwen3.5-27b": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-27b"
+        ]
+      }
+    },
+    "qwen3.5-35b-a3b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-35b-a3b"
+        ],
+        "venice": [
+          "qwen3-5-35b-a3b"
+        ]
+      }
+    },
+    "qwen3.5-397b-a17b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-397b-a17b"
+        ],
+        "venice": [
+          "qwen3-5-397b-a17b"
+        ]
+      }
+    },
+    "qwen3.5-9b": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-9b"
+        ],
+        "venice": [
+          "qwen3-5-9b"
+        ]
+      }
+    },
+    "qwen3.5-flash-02-23": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-flash-02-23"
+        ]
+      }
+    },
+    "qwen3.5-plus-02-15": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-plus-02-15"
+        ]
+      }
+    },
+    "qwen3.5-plus-20260420": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.5-plus-20260420"
+        ]
+      }
+    },
+    "qwen3.6-27b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.6-27b"
+        ],
+        "venice": [
+          "qwen3-6-27b"
+        ]
+      }
+    },
+    "qwen3.6-35b-a3b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.6-35b-a3b"
+        ],
+        "venice": [
+          "qwen3-6-35b-a3b"
+        ]
+      }
+    },
+    "qwen3.6-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.6-flash"
+        ]
+      }
+    },
+    "qwen3.6-max-preview": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.6-max-preview"
+        ]
+      }
+    },
+    "qwen3.6-plus": {
+      "tags": [
+        "Uncensored",
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "aliases": [
+        "qwen3.6-plus-uncensored"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.6-plus"
+        ],
+        "venice": [
+          "qwen-3-6-plus"
+        ]
+      }
+    },
+    "qwen3.7-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.7-flash"
+        ]
+      }
+    },
+    "qwen3.7-max": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.7-max"
+        ],
+        "venice": [
+          "qwen-3-7-max"
+        ]
+      }
+    },
+    "qwen3.7-plus": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.7-plus"
+        ],
+        "venice": [
+          "qwen-3-7-plus"
+        ]
+      }
+    },
+    "qwen3.8-2.4t-a95b": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.8-2.4t-a95b"
+        ],
+        "venice": [
+          "qwen-3-8-2-4t-a95b"
+        ]
+      }
+    },
+    "qwen3.8-27b": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.8-27b"
+        ]
+      }
+    },
+    "qwen3.8-max": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input"
+      ],
+      "sources": {
+        "openrouter": [
+          "qwen/qwen3.8-max"
+        ],
+        "venice": [
+          "qwen-3-8-max"
+        ]
+      }
+    },
+    "recraft-v4": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "recraft-v4"
+        ]
+      }
+    },
+    "recraft-v4-pro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "recraft-v4-pro"
+        ]
+      }
+    },
+    "reka-edge": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "rekaai/reka-edge"
+        ]
+      }
+    },
+    "reka-flash-3": {
+      "tags": [
+        "Reasoning",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "rekaai/reka-flash-3"
+        ]
+      }
+    },
+    "relace-apply-3": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "relace/relace-apply-3"
+        ]
+      }
+    },
+    "relace-search": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "relace/relace-search"
+        ]
+      }
+    },
+    "remm-slerp-l2-13b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "undi95/remm-slerp-l2-13b"
+        ]
+      }
+    },
+    "ring-2.6-1t": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "inclusionai/ring-2.6-1t"
+        ]
+      }
+    },
+    "rocinante-12b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "thedrummer/rocinante-12b"
+        ]
+      }
+    },
+    "runway-gen4-5": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "runway-gen4-5"
+        ]
+      }
+    },
+    "runway-gen4-5-text": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "runway-gen4-5-text"
+        ]
+      }
+    },
+    "runway-gen4-turbo": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "runway-gen4-turbo"
+        ]
+      }
+    },
+    "sakana-namazu": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "sakana/sakana-namazu"
+        ]
+      }
+    },
+    "seed-1.6": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-1.6"
+        ]
+      }
+    },
+    "seed-1.6-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-1.6-flash"
+        ]
+      }
+    },
+    "seed-2-1-turbo": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Video input",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-2-1-turbo"
+        ],
+        "venice": [
+          "seed-2-1-turbo"
+        ]
+      }
+    },
+    "seed-2.0-code": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-2.0-code"
+        ]
+      }
+    },
+    "seed-2.0-lite": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-2.0-lite"
+        ]
+      }
+    },
+    "seed-2.0-mini": {
+      "tags": [
+        "Reasoning",
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance-seed/seed-2.0-mini"
+        ]
+      }
+    },
+    "seed-audio-1-0": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seed-audio-1-0"
+        ]
+      }
+    },
+    "seedance-1-5-pro-image-to-video-basic": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedance-1-5-pro-image-to-video-basic"
+        ]
+      }
+    },
+    "seedance-1-5-pro-text-to-video-basic": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedance-1-5-pro-text-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-fast-image-to-video-basic": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "seedance-2-0-fast-image-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-fast-reference-to-video-basic": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "seedance-2-0-fast-reference-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-fast-text-to-video-basic": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "seedance-2-0-fast-text-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-image-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-image-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-mini-image-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-mini-image-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-mini-reference-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-mini-reference-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-mini-text-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-mini-text-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-reference-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-reference-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-0-text-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-0-text-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-5-image-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-5-image-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-5-reference-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-5-reference-to-video-basic"
+        ]
+      }
+    },
+    "seedance-2-5-text-to-video-basic": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "seedance-2-5-text-to-video-basic"
+        ]
+      }
+    },
+    "seedream-v4": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v4"
+        ]
+      }
+    },
+    "seedream-v4-edit": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v4-edit"
+        ]
+      }
+    },
+    "seedream-v5-lite": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v5-lite"
+        ]
+      }
+    },
+    "seedream-v5-lite-edit": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v5-lite-edit"
+        ]
+      }
+    },
+    "seedream-v5-pro": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v5-pro"
+        ]
+      }
+    },
+    "seedream-v5-pro-edit": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "seedream-v5-pro-edit"
+        ]
+      }
+    },
+    "skyfall-36b-v2": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "thedrummer/skyfall-36b-v2"
+        ]
+      }
+    },
+    "solar-pro-3": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "upstage/solar-pro-3"
+        ]
+      }
+    },
+    "solar-pro4": {
+      "tags": [
+        "Reasoning"
+      ],
+      "sources": {
+        "openrouter": [
+          "upstage/solar-pro4"
+        ]
+      }
+    },
+    "sonar": {
+      "tags": [
+        "Vision",
+        "Web search"
+      ],
+      "sources": {
+        "openrouter": [
+          "perplexity/sonar"
+        ]
+      }
+    },
+    "sonar-deep-research": {
+      "tags": [
+        "Reasoning",
+        "Web search"
+      ],
+      "sources": {
+        "openrouter": [
+          "perplexity/sonar-deep-research"
+        ]
+      }
+    },
+    "sonar-pro": {
+      "tags": [
+        "Vision",
+        "Web search"
+      ],
+      "sources": {
+        "openrouter": [
+          "perplexity/sonar-pro"
+        ]
+      }
+    },
+    "sonar-pro-search": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Web search"
+      ],
+      "sources": {
+        "openrouter": [
+          "perplexity/sonar-pro-search"
+        ]
+      }
+    },
+    "sonar-reasoning-pro": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Web search"
+      ],
+      "sources": {
+        "openrouter": [
+          "perplexity/sonar-reasoning-pro"
+        ]
+      }
+    },
+    "sonilo-v1-1-music": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sonilo-v1-1-music"
+        ]
+      }
+    },
+    "sonilo-v1-1-sound-effects": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sonilo-v1-1-sound-effects"
+        ]
+      }
+    },
+    "sora-2-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sora-2-image-to-video"
+        ]
+      }
+    },
+    "sora-2-pro-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sora-2-pro-image-to-video"
+        ]
+      }
+    },
+    "sora-2-pro-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sora-2-pro-text-to-video"
+        ]
+      }
+    },
+    "sora-2-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "sora-2-text-to-video"
+        ]
+      }
+    },
+    "stable-audio-25": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "stable-audio-25"
+        ]
+      }
+    },
+    "step-3.5-flash": {
+      "tags": [
+        "Reasoning",
+        "Fast",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "stepfun/step-3.5-flash"
+        ]
+      }
+    },
+    "step-3.7-flash": {
+      "tags": [
+        "Reasoning",
+        "Vision",
+        "Fast"
+      ],
+      "sources": {
+        "openrouter": [
+          "stepfun/step-3.7-flash"
+        ]
+      }
+    },
+    "stt-xai-v1": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "stt-xai-v1"
+        ]
+      }
+    },
+    "text-embedding-3-large": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-3-large"
+        ]
+      }
+    },
+    "text-embedding-3-small": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-3-small"
+        ]
+      }
+    },
+    "text-embedding-bge-en-icl": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-bge-en-icl"
+        ]
+      }
+    },
+    "text-embedding-bge-m3": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-bge-m3"
+        ]
+      }
+    },
+    "text-embedding-multilingual-e5-large-instruct": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-multilingual-e5-large-instruct"
+        ]
+      }
+    },
+    "text-embedding-nemotron-embed-vl-1b-v2": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-nemotron-embed-vl-1b-v2"
+        ]
+      }
+    },
+    "text-embedding-qwen3-0-6b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-qwen3-0-6b"
+        ]
+      }
+    },
+    "text-embedding-qwen3-8b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "text-embedding-qwen3-8b"
+        ]
+      }
+    },
+    "topaz-video-upscale": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "topaz-video-upscale"
+        ]
+      }
+    },
+    "trinity-large-thinking": {
+      "tags": [
+        "Reasoning",
+        "Open weights"
+      ],
+      "sources": {
+        "openrouter": [
+          "arcee-ai/trinity-large-thinking"
+        ]
+      }
+    },
+    "tts-chatterbox-hd": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-chatterbox-hd"
+        ]
+      }
+    },
+    "tts-elevenlabs-turbo-v2-5": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "tts-elevenlabs-turbo-v2-5"
+        ]
+      }
+    },
+    "tts-gemini-3-1-flash": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "tts-gemini-3-1-flash"
+        ]
+      }
+    },
+    "tts-gradium-v1": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-gradium-v1"
+        ]
+      }
+    },
+    "tts-inworld-1-5-max": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-inworld-1-5-max"
+        ]
+      }
+    },
+    "tts-kokoro": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-kokoro"
+        ]
+      }
+    },
+    "tts-minimax-speech-02-hd": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-minimax-speech-02-hd"
+        ]
+      }
+    },
+    "tts-orpheus": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-orpheus"
+        ]
+      }
+    },
+    "tts-qwen3-0-6b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-qwen3-0-6b"
+        ]
+      }
+    },
+    "tts-qwen3-1-7b": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-qwen3-1-7b"
+        ]
+      }
+    },
+    "tts-xai-v1": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "tts-xai-v1"
+        ]
+      }
+    },
+    "ui-tars-1.5-7b": {
+      "tags": [
+        "Vision"
+      ],
+      "sources": {
+        "openrouter": [
+          "bytedance/ui-tars-1.5-7b"
+        ]
+      }
+    },
+    "unslopnemo-12b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "thedrummer/unslopnemo-12b"
+        ]
+      }
+    },
+    "upscaler": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "upscaler"
+        ]
+      }
+    },
+    "venice-sd35": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "venice-sd35"
+        ]
+      }
+    },
+    "venice-uncensored-1-2": {
+      "tags": [
+        "Uncensored",
+        "Vision"
+      ],
+      "sources": {
+        "venice": [
+          "venice-uncensored-1-2"
+        ]
+      }
+    },
+    "venice-uncensored-role-play": {
+      "tags": [
+        "Uncensored",
+        "Vision",
+        "Roleplay"
+      ],
+      "aliases": [
+        "venice-role-play-uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "venice-uncensored-role-play"
+        ]
+      }
+    },
+    "veo3-fast-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "veo3-fast-image-to-video"
+        ]
+      }
+    },
+    "veo3-fast-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "veo3-fast-text-to-video"
+        ]
+      }
+    },
+    "veo3-full-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "veo3-full-image-to-video"
+        ]
+      }
+    },
+    "veo3-full-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "veo3-full-text-to-video"
+        ]
+      }
+    },
+    "veo3.1-fast-image-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "veo3.1-fast-image-to-video"
+        ]
+      }
+    },
+    "veo3.1-fast-text-to-video": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "veo3.1-fast-text-to-video"
+        ]
+      }
+    },
+    "veo3.1-full-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "veo3.1-full-image-to-video"
+        ]
+      }
+    },
+    "veo3.1-full-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "veo3.1-full-text-to-video"
+        ]
+      }
+    },
+    "vidu-q3-image-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "vidu-q3-image-to-video"
+        ]
+      }
+    },
+    "vidu-q3-text-to-video": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "vidu-q3-text-to-video"
+        ]
+      }
+    },
+    "virtuoso-large": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "arcee-ai/virtuoso-large"
+        ]
+      }
+    },
+    "voxtral-small-24b-2507": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mistralai/voxtral-small-24b-2507"
+        ]
+      }
+    },
+    "wai-Illustrious": {
+      "tags": [
+        "Uncensored",
+        "Anime"
+      ],
+      "sources": {
+        "venice": [
+          "wai-Illustrious"
+        ]
+      }
+    },
+    "wan-2-2-enhanced-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-2-enhanced-image-to-video"
+        ]
+      }
+    },
+    "wan-2-7-enhanced-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-enhanced-image-to-video"
+        ]
+      }
+    },
+    "wan-2-7-enhanced-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-enhanced-text-to-video"
+        ]
+      }
+    },
+    "wan-2-7-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-image-to-video"
+        ]
+      }
+    },
+    "wan-2-7-pro-edit": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "wan-2-7-pro-edit"
+        ]
+      }
+    },
+    "wan-2-7-pro-text-to-image": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "wan-2-7-pro-text-to-image"
+        ]
+      }
+    },
+    "wan-2-7-reference-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-reference-to-video"
+        ]
+      }
+    },
+    "wan-2-7-text-to-image": {
+      "tags": [],
+      "sources": {
+        "venice": [
+          "wan-2-7-text-to-image"
+        ]
+      }
+    },
+    "wan-2-7-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-text-to-video"
+        ]
+      }
+    },
+    "wan-2-7-video-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2-7-video-to-video"
+        ]
+      }
+    },
+    "wan-2.1-pro-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.1-pro-image-to-video"
+        ]
+      }
+    },
+    "wan-2.2-a14b-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.2-a14b-text-to-video"
+        ]
+      }
+    },
+    "wan-2.5-preview-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.5-preview-image-to-video"
+        ]
+      }
+    },
+    "wan-2.5-preview-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.5-preview-text-to-video"
+        ]
+      }
+    },
+    "wan-2.6-flash-image-to-video": {
+      "tags": [
+        "Uncensored",
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.6-flash-image-to-video"
+        ]
+      }
+    },
+    "wan-2.6-image-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.6-image-to-video"
+        ]
+      }
+    },
+    "wan-2.6-text-to-video": {
+      "tags": [
+        "Uncensored"
+      ],
+      "sources": {
+        "venice": [
+          "wan-2.6-text-to-video"
+        ]
+      }
+    },
+    "weaver": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "mancer/weaver"
+        ]
+      }
+    },
+    "wizardlm-2-8x22b": {
+      "tags": [],
+      "sources": {
+        "openrouter": [
+          "microsoft/wizardlm-2-8x22b"
+        ]
+      }
+    },
+    "xiaomi-mimo-v2-5": {
+      "tags": [
+        "Coding",
+        "Reasoning",
+        "Vision",
+        "Audio input",
+        "Video input"
+      ],
+      "sources": {
+        "venice": [
+          "xiaomi-mimo-v2-5"
+        ]
+      }
+    },
+    "z-image-turbo": {
+      "tags": [
+        "Fast"
+      ],
+      "sources": {
+        "venice": [
+          "z-image-turbo"
+        ]
+      }
+    }
+  }
+}

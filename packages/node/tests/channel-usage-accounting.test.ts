@@ -10,6 +10,7 @@ describe('channel usage accounting', () => {
       cachedInputTokens: 2n,
       outputTokens: 5n,
       requests: 1n,
+      outputImages: 0n,
     });
     const second = advanceUsageMetadata(first, 'gpt-free', {
       amount: 7n,
@@ -17,11 +18,13 @@ describe('channel usage accounting', () => {
       cachedInputTokens: 1n,
       outputTokens: 4n,
       requests: 1n,
+      outputImages: 1n,
     });
 
     expect(second.cumulativeInputTokens).toBe(13n);
     expect(second.cumulativeOutputTokens).toBe(9n);
     expect(second.cumulativeRequestCount).toBe(2n);
+    expect(second.cumulativeOutputImages).toBe(1n);
     expect(second.services).toEqual([
       {
         serviceId: getServiceMetadataId('gpt-free'),
@@ -30,6 +33,10 @@ describe('channel usage accounting', () => {
         cumulativeCachedInputTokens: 3n,
         cumulativeOutputTokens: 9n,
         cumulativeRequestCount: 2n,
+        cumulativeOutputImages: 1n,
+        cumulativeVideoGenerations: 0n,
+        cumulativeVideoSeconds: 0n,
+        cumulativeInputCharacters: 0n,
       },
     ]);
   });
@@ -41,12 +48,17 @@ describe('channel usage accounting', () => {
       cachedInputTokens: 0n,
       outputTokens: 5n,
       requests: 1n,
+      outputImages: 0n,
     });
 
     expect(next).toEqual({
       cumulativeInputTokens: 10n,
       cumulativeOutputTokens: 5n,
       cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 0n,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+      cumulativeInputCharacters: 0n,
       services: [],
     });
   });

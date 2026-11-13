@@ -11,6 +11,9 @@ import { assertValidConfig } from '../../../config/validation.js';
 import { TRUSTED_PLUGINS } from '../../../plugins/registry.js';
 import { installPlugin } from '../../../plugins/manager.js';
 import type { AntseedConfig, SellerProviderConfig, SellerServiceConfig } from '../../../config/types.js';
+import { isImageModelId } from '@antseed/provider-core';
+import { parseServiceUnitBillingModelsInput } from '../../../config/service-metadata.js';
+import { promptServiceCapabilities } from './capability-prompts.js';
 import { createIdentityClient, createStakingClient, normalizeHttpRpcUrl } from '../../payment-utils.js';
 
 export function buildSellerSetupProviderEntry(input: {
@@ -85,6 +88,12 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'sign in to Claude Code on this machine';
     case 'local-llm':
       return 'start your local LLM runtime (no API key required)';
+    case 'typesafe':
+      return 'export TYPESAFE_API_KEY=<key>';
+    case 'venice-video':
+      return 'export VENICE_VIDEO_API_KEY=<seller-api-key>';
+    case 'fal-video':
+      return 'export FAL_VIDEO_API_KEY=<seller-fal-key>';
     default:
       return `set the credentials required by ${pluginName}`;
   }
@@ -105,7 +114,7 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
 
       try {
-        console.log(chalk.bold('\nAntSeed Seller Setup\n'));
+        console.log(chalk.bold('\nAntseed seller setup\n'));
 
         const currentRpcUrl = config.payments.crypto?.rpcUrl;
         const rpcPrompt = currentRpcUrl
@@ -179,6 +188,9 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
           const svcInputStr = await rl.question('Input price (USD/1M, or enter for provider default): ');
           const svcOutputStr = await rl.question('Output price (USD/1M, or enter for provider default): ');
           const categoriesStr = await rl.question('Categories (comma-separated, e.g., chat,coding): ');
+          const serviceKind = isImageModelId(upstreamInput.trim() || serviceId) ? 'image' : 'text';
+          const capabilities = await promptServiceCapabilities(rl, serviceKind);
+          const unitBillingModelsStr = await rl.question('Unit billing models JSON by protocol (optional): ');
 
           const service: SellerServiceConfig = {};
           const upstreamModel = upstreamInput.trim();
@@ -197,6 +209,12 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
 
           if (categoriesStr.trim()) {
             service.categories = categoriesStr.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+          }
+          if (capabilities) {
+            service.capabilities = capabilities;
+          }
+          if (unitBillingModelsStr.trim()) {
+            service.unitBillingModels = parseServiceUnitBillingModelsInput(unitBillingModelsStr.trim());
           }
 
           services[serviceId] = service;
@@ -247,8 +265,8 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
         console.log(chalk.bold('\nNext steps:\n'));
         console.log(`  ${chalk.cyan('1.')} Set credentials: ${chalk.dim(getSellerSetupCredentialHint(pluginName))}`);
         console.log(`  ${chalk.cyan('2.')} Register on-chain: ${chalk.dim('antseed seller register')}`);
-        console.log(`  ${chalk.cyan('3.')} Stake USDC: ${chalk.dim('antseed seller stake 10')}`);
-        console.log(`  ${chalk.cyan('4.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(`  ${chalk.cyan('3.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(chalk.dim('     Optional: stake ANTS for rewards with antseed seller stake <ants> --epochs <n>'));
         console.log('');
 
         await printReadinessCheck(globalOpts.dataDir, globalOpts.config);

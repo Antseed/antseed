@@ -1,0 +1,270 @@
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { after, before, describe, it } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from '../lib/cli-node.mjs';
+import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig } from '../lib/node-options.mjs';
+
+const chain = { chainId: 'base-local', evmChainId: 31337, rpcUrl: 'http://127.0.0.1:8545', depositsContractAddress: '0x01', channelsContractAddress: '0x02', stakingContractAddress: '0x03', usdcContractAddress: '0x04', identityRegistryAddress: '0x05' };
+const bootstrapNodes = [{ host: '127.0.0.1', port: 40000 }];
+const payments = { ...paymentsConfig(chain, 'http://127.0.0.1:41000', { settlementIdleMs: 15_000 }), minBudgetPerRequest: '10000' };
+const providers = { chat: { plugin: 'openai', baseUrl: 'http://127.0.0.1:42000', apiKeyEnv: 'TESTBENCH_KEY_CHAT', services: { model: {} } } };
+const sellerConfig = () => cliSellerConfig({ id: 'a', providers, chain, bootstrapNodes, payments });
+const routingPreferences = { minTrustScore: 0, allowedPeerIds: ['ab'.repeat(20)], blockedPeerIds: [] };
+const buyerConfig = (extra = {}) => cliBuyerConfig({ proxyPort: 43000, routingPreferences, chain, bootstrapNodes, payments: { ...payments, maxReserveAmountUsdc: '2000000' }, ...extra });
+
+describe('CLI config writer', () => {
+  it('writes every network option the SDK path sets into a seller config', () => {
+    const config = assertCliConfig(sellerConfig(), 'seller');
+    assert.deepEqual(config.network, { bootstrapNodes: ['127.0.0.1:40000'], dhtPort: 0, signalingPort: 0, bindHost: '127.0.0.1', natTraversal: false, noOfficialBootstrap: true, allowPrivateIPs: true, dhtOperationTimeoutMs: 5000 });
+    assert.equal(config.payments.crypto.rpcUrl, 'http://127.0.0.1:41000');
+    assert.equal(config.payments.crypto.chainId, 'base-local');
+    assert.equal(config.payments.minBudgetPerRequest, '10000');
+    assert.equal(config.payments.defaultAuthDurationSecs, payments.defaultAuthDurationSecs);
+    assert.equal(config.seller.providers, providers);
+    assert.equal(config.seller.healthCheck.enabled, false);
+    assert.deepEqual(config.relayer, { enabled: false });
+  });
+
+  it('leaves the minimum budget to the CLI default unless the topology sets it', () => {
+    const { minBudgetPerRequest, ...unset } = payments;
+    assert.equal(cliSellerConfig({ id: 'a', providers, chain, bootstrapNodes, payments: unset }).payments.minBudgetPerRequest, undefined);
+  });
+
+  it('writes the proxy port, routing, caps and network of a buyer config', () => {
+    const config = assertCliConfig(buyerConfig({ maxPricing: { defaults: { inputUsdPerMillion: 7, outputUsdPerMillion: 8 } } }), 'buyer');
+    assert.equal(config.buyer.proxyPort, 43000);
+    assert.equal(config.buyer.minPeerReputation, 0);
+    assert.equal(config.buyer.autoSweep, false);
+    assert.equal(config.buyer.routingPreferences, routingPreferences);
+    assert.equal(config.buyer.maxPricing.defaults.outputUsdPerMillion, 8);
+    assert.equal(config.payments.maxReserveAmountUsdc, '2000000');
+    assert.equal(config.network.dhtPort, 0);
+    assert.equal(config.network.signalingPort, undefined);
+    assert.equal(buyerConfig().buyer.maxPricing, undefined);
+  });
+
+  it('refuses default ports and anything that leaves the private network', () => {
+    const change = (config, section, patch) => ({ ...config, [section]: { ...config[section], ...patch } });
+    const seller = sellerConfig();
+    assert.throws(() => assertCliConfig(change(seller, 'network', { dhtPort: 6881 }), 'seller'), /dhtPort=6881 collides/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { signalingPort: 6882 }), 'seller'), /signalingPort=6882 collides/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { dhtPort: undefined }), 'seller'), /dhtPort must be set explicitly/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { signalingPort: undefined }), 'seller'), /signalingPort must be set explicitly/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { bindHost: '0.0.0.0' }), 'seller'), /bindHost/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { natTraversal: true }), 'seller'), /natTraversal/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { noOfficialBootstrap: false }), 'seller'), /noOfficialBootstrap/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { allowPrivateIPs: false }), 'seller'), /allowPrivateIPs/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { bootstrapNodes: [] }), 'seller'), /private bootstrap/);
+    assert.throws(() => assertCliConfig(change(seller, 'network', { bootstrapNodes: ['1.2.3.4:6881'] }), 'seller'), /not a private loopback/);
+    assert.throws(() => assertCliConfig(change(seller, 'payments', { crypto: { rpcUrl: 'https://mainnet.base.org' } }), 'seller'), /rpcUrl/);
+    const buyer = buyerConfig();
+    assert.throws(() => assertCliConfig(change(buyer, 'buyer', { proxyPort: 8377 }), 'buyer'), /proxyPort=8377/);
+    assert.throws(() => assertCliConfig(change(buyer, 'buyer', { proxyPort: undefined }), 'buyer'), /proxyPort=undefined/);
+    assert.throws(() => assertCliConfig(change(buyer, 'network', { dhtPort: 6881 }), 'buyer'), /dhtPort=6881 collides/);
+  });
+});
+
+describe('CLI launcher', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'tb-cli-node-')); });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('builds the CLI argv on a data dir and an isolated environment', () => {
+    assert.deepEqual(cliArgs('/repo', '/d', ['seller', 'start']), ['/repo/apps/cli/dist/cli/index.js', '--data-dir', '/d', '--config', '/d/config.json', '--verbose', 'seller', 'start']);
+    const env = cliNodeEnv({ PATH: '/bin', ANTSEED_SETTLEMENT_IDLE_MS: '1', OPENAI_API_KEY: 'real' }, join(dir, 'home'), { TESTBENCH_KEY_CHAT: 'mock-only' });
+    assert.equal(env.HOME, join(dir, 'home'));
+    assert.equal(env.PATH, '/bin');
+    assert.equal(env.ANTSEED_DEBUG, '1');
+    assert.equal(env.ANTSEED_SKIP_PLUGIN_UPDATE_CHECK, '1');
+    assert.equal(env.ANTSEED_NO_UPDATE_CHECK, '1');
+    assert.equal(env.TESTBENCH_KEY_CHAT, 'mock-only');
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.ANTSEED_SETTLEMENT_IDLE_MS, undefined);
+    assert.match(env.NODE_OPTIONS, /--unhandled-rejections=warn --import file:.*isolate-preload\.mjs$/);
+    assert.equal(env.ANTSEED_TESTBENCH_NODE_DIST, undefined);
+    assert.equal(cliNodeEnv({ PATH: '/bin', ANTSEED_TESTBENCH_NODE_DIST: '/stale' }, join(dir, 'home')).ANTSEED_TESTBENCH_NODE_DIST, undefined);
+    assert.equal(cliNodeEnv({ PATH: '/bin' }, join(dir, 'home'), {}, '/tree').ANTSEED_TESTBENCH_NODE_DIST, '/tree/packages/node/dist');
+  });
+
+  it('the preload empties the bootstrap list of the tree the process runs from and keeps another tree off the real network', async () => {
+    const dist = join(dir, 'other-tree', 'packages', 'node', 'dist');
+    await mkdir(join(dist, 'discovery'), { recursive: true });
+    await writeFile(join(dist, 'package.json'), '{"type":"module"}');
+    await writeFile(join(dist, 'discovery', 'bootstrap.js'), "export const OFFICIAL_BOOTSTRAP_NODES = [{ host: 'real.example', port: 6881 }];");
+    await mkdir(join(dist, 'p2p'));
+    await writeFile(join(dist, 'p2p', 'nat-traversal.js'), "export class NatTraversal { async mapPorts() { throw new Error('mapped the real router'); } async cleanup() { throw new Error('touched the real router'); } }");
+    const preload = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'isolate-preload.mjs')).href;
+    const url = (file) => JSON.stringify(pathToFileURL(join(realpathSync(dist), file)).href);
+    const script = `
+      import net from 'node:net'; import dgram from 'node:dgram'; import { once } from 'node:events';
+      const { OFFICIAL_BOOTSTRAP_NODES: nodes } = await import(${url('discovery/bootstrap.js')});
+      const { NatTraversal } = await import(${url('p2p/nat-traversal.js')});
+      const nat = new NatTraversal();
+      const mapped = await nat.mapPorts([{ port: 6881, protocol: 'UDP' }]); await nat.cleanup();
+      const listened = async (...args) => { const server = net.createServer(); server.listen(...args); await once(server, 'listening'); const host = server.address().address; server.close(); return host; };
+      const bound = async (...args) => { const socket = dgram.createSocket('udp4'); socket.bind(...args); await once(socket, 'listening'); const host = socket.address().address; socket.close(); return host; };
+      console.log(JSON.stringify({ nodes: nodes.length, mapped, tcp: [await listened(0, '0.0.0.0'), await listened(0), await listened({ port: 0, host: '0.0.0.0' })], udp: [await bound(0), await bound(0, '0.0.0.0'), await bound({ port: 0 })] }));
+      process.exit(0);`;
+    const result = spawnSync(process.execPath, ['--import', preload, '--input-type=module', '-e', script], { encoding: 'utf8', env: { PATH: process.env.PATH, ANTSEED_TESTBENCH_NODE_DIST: dist } });
+    assert.equal(result.status, 0, result.stderr);
+    const seen = JSON.parse(result.stdout);
+    assert.equal(seen.nodes, 0);
+    assert.deepEqual(seen.mapped, { success: false, externalIp: null, mappings: [] }, 'no NAT mapping on the real router');
+    assert.deepEqual(seen.tcp, ['127.0.0.1', '127.0.0.1', '127.0.0.1']);
+    assert.deepEqual(seen.udp, ['127.0.0.1', '127.0.0.1', '127.0.0.1']);
+  });
+
+  it('links workspace plugins where the CLI loader looks, once', async () => {
+    const repo = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
+    const home = join(dir, 'home-plugins');
+    await linkPlugins(home, repo, ['provider-openai', 'router-local', 'provider-openai']);
+    await linkPlugins(home, repo, ['provider-openai']);
+    assert.equal(readlinkSync(join(home, '.antseed/plugins/node_modules/@antseed/provider-openai')), join(repo, 'plugins/provider-openai'));
+    assert.equal(readlinkSync(join(home, '.antseed/plugins/node_modules/@antseed/router-local')), join(repo, 'plugins/router-local'));
+    await assert.rejects(linkPlugins(home, repo, ['provider-nope']), /No workspace plugin provider-nope/);
+  });
+
+  it('appends both output streams to the log across restarts and captures the output', async () => {
+    const logPath = join(dir, 'node.log');
+    for (const round of [1, 2]) {
+      const node = spawnCliNode({ who: 'seller:a', args: ['-e', `console.log('out ${round}'); console.error('err ${round}')`], env: process.env, logPath });
+      await once(node.child, 'close');
+      await new Promise((r) => setTimeout(r, 20));
+      assert.match(node.output(), new RegExp(`out ${round}`));
+      node.stopCapture();
+      assert.equal(node.output(), '');
+    }
+    const text = readFileSync(logPath, 'utf8');
+    for (const line of ['out 1', 'err 1', 'out 2', 'err 2', 'start seller:a', 'seller:a exited code=0']) assert.ok(text.includes(line), line);
+  });
+
+  it('fails readiness when the process exits, flagging a lost port', async () => {
+    const node = spawnCliNode({ who: 'buyer', args: ['-e', `console.error('listen EADDRINUSE: address already in use'); process.exit(1)`], env: process.env, logPath: join(dir, 'buyer.log') });
+    await once(node.child, 'close');
+    await assert.rejects(waitForCliReady(node, () => false), (error) => error.code === 'EADDRINUSE' && /buyer exited with 1/.test(error.message));
+    const hung = spawnCliNode({ who: 'buyer', args: ['-e', 'setTimeout(() => {}, 5000)'], env: process.env, logPath: join(dir, 'buyer.log') });
+    await assert.rejects(waitForCliReady(hung, () => false, { timeoutMs: 50, intervalMs: 5 }), /was not ready after 50 ms/);
+    hung.child.kill('SIGKILL');
+    assert.equal(await waitForCliReady(spawnCliNodeAlive(dir), () => 'value'), 'value');
+  });
+
+  it('recognizes seller and buyer readiness and the isolation guard', () => {
+    const state = { state: 'seeding', pid: 7, peerId: 'p' };
+    assert.equal(sellerReady('- Starting seeding daemon...', state, 7), null);
+    assert.equal(sellerReady('✔ Seeding active', state, 8), null, 'a stale state file of an earlier process');
+    assert.equal(sellerReady('✔ Seeding active', null, 7), null);
+    assert.equal(sellerReady('✔ Seeding active', state, 7), state);
+    assert.throws(() => assertSellerPaymentsOn('Payments disabled: RPC node unreachable at http://127.0.0.1:1\n✔ Seeding active', 'seller:a'), /seller:a started with payments disabled/);
+    assert.doesNotThrow(() => assertSellerPaymentsOn('✔ Seeding active', 'seller:a'));
+    assert.equal(buyerProxyListening('- Starting local proxy on port 4000...', 4000), false);
+    assert.equal(buyerProxyListening('✔ Proxy listening on http://localhost:4000', 4000), true);
+    assert.equal(buyerProxyListening('✔ Proxy listening on http://localhost:40001', 4000), false);
+    assert.throws(() => buyerProxyListening('Proxy port 4000 already in use; reusing existing local proxy.', 4000), (error) => error.code === 'EADDRINUSE');
+    assert.doesNotThrow(() => assertSingleBootstrap('[Node] Starting as seller with 1 bootstrap node(s)', 's'));
+    assert.throws(() => assertSingleBootstrap('[Node] Starting as buyer with 3 bootstrap node(s)', 'buyer'), /ISOLATION: buyer started with 3/);
+    assert.throws(() => assertSingleBootstrap('nothing', 'buyer'), /ISOLATION/);
+  });
+
+  it('crashChild kills at once without running shutdown handlers, and waits for the exit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tb-crash-'));
+    try {
+      const marker = join(dir, 'graceful');
+      // A seller-like child: on SIGTERM it would "settle" (write the marker) before exiting.
+      const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'); process.exit(0); }); setInterval(() => {}, 1000); console.log('up')`], { stdio: ['ignore', 'pipe', 'ignore'] });
+      await once(child.stdout, 'data');
+      assert.equal(await crashChild(child), true);
+      assert.equal(child.signalCode, 'SIGKILL', 'exited by SIGKILL, before crashChild returned');
+      assert.equal(existsSync(marker), false, 'no shutdown handler ran');
+      assert.equal(await crashChild(child), false, 'an exited child is left alone');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops on SIGTERM without forcing, and forces a process that ignores it', async () => {
+    const forced = [];
+    const polite = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000); console.log('up')`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await once(polite.stdout, 'data');
+    await stopWithGrace(polite, { graceMs: 5000, onForced: (ms) => forced.push(ms) });
+    assert.equal(polite.exitCode, 0);
+    assert.deepEqual(forced, []);
+    await stopWithGrace(polite, { graceMs: 5000, onForced: (ms) => forced.push(ms) });
+    assert.deepEqual(forced, [], 'an exited process is left alone');
+    const stubborn = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); console.log('up')`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await once(stubborn.stdout, 'data');
+    await stopWithGrace(stubborn, { graceMs: 100, onForced: (ms) => forced.push(ms) });
+    assert.equal(stubborn.signalCode, 'SIGKILL');
+    assert.equal(forced.length, 1);
+    // Node timers can fire a millisecond early as Date.now() measures it; the force still came after the grace.
+    assert.ok(forced[0] >= 98, `forced after ${forced[0]} ms`);
+  });
+
+  it('keeps a CLI process from outliving its parent (preload)', async () => {
+    const preload = new URL('../lib/isolate-preload.mjs', import.meta.url).href;
+    const marker = join(dir, 'orphan-stopped');
+    const child = `process.on('SIGTERM', () => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'); process.exit(0); }); setInterval(() => {}, 1000);`;
+    const parent = spawn(process.execPath, ['-e', `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore', env: { ...process.env, NODE_OPTIONS: ${JSON.stringify(`--import ${preload}`)} } }).unref(); setTimeout(() => process.exit(0), 1000);`], { stdio: 'ignore' });
+    await once(parent, 'exit');
+    const deadline = Date.now() + 8000;
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(existsSync(marker));
+  });
+});
+
+function spawnCliNodeAlive(dir) {
+  const node = spawnCliNode({ who: 'buyer', args: ['-e', 'setTimeout(() => {}, 200)'], env: process.env, logPath: join(dir, 'buyer.log') });
+  return node;
+}
+
+describe('CLI buyer client', () => {
+  const closes = [];
+  let closeResponse = { status: 200, body: { ok: true, result: { status: 'closed', channelId: '0xc' } } };
+  let peersStatus = 200;
+  let server;
+  let url;
+  before(async () => {
+    server = createServer((request, response) => {
+      const send = (status, body) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(body)); };
+      let raw = '';
+      request.on('data', (chunk) => { raw += chunk; });
+      request.on('end', () => {
+        if (request.url === '/_antseed/channels') return send(200, { ok: true, channels: [{ peerId: 'p1' }] });
+        if (request.url === '/_antseed/peers/refresh') return send(peersStatus, { ok: peersStatus === 200, error: 'no dht' });
+        if (request.url === '/_antseed/peers') return send(200, { ok: true, peers: [{ peerId: 'p1' }] });
+        if (request.url === '/_antseed/channels/close') { closes.push(JSON.parse(raw)); return send(closeResponse.status, closeResponse.body); }
+        return send(404, { ok: false, error: 'nope' });
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    url = `http://127.0.0.1:${server.address().port}`;
+  });
+  after(() => { server.closeAllConnections(); server.close(); });
+
+  it('reads channels and peers over the proxy API', async () => {
+    const client = cliBuyerClient(url);
+    assert.deepEqual(await client.getActiveBuyerChannels(), [{ peerId: 'p1' }]);
+    assert.deepEqual((await client.discoverPeers()).map((peer) => peer.peerId), ['p1']);
+  });
+
+  it('reads a failed discovery as no peers yet, so the supervisor keeps polling', async () => {
+    peersStatus = 502;
+    assert.deepEqual(await cliBuyerClient(url).discoverPeers(), []);
+    peersStatus = 200;
+  });
+
+  it('returns the node result from a close and throws what the node threw', async () => {
+    const client = cliBuyerClient(url);
+    assert.deepEqual(await client.requestChannelClose('p1'), { status: 'closed', channelId: '0xc' });
+    assert.deepEqual(closes.at(-1), { peerId: 'p1' });
+    closeResponse = { status: 502, body: { ok: false, error: 'Seller did not answer' } };
+    await assert.rejects(client.requestChannelClose('p1'), /Seller did not answer/);
+  });
+});

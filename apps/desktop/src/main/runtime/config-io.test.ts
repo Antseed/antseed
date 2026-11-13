@@ -29,6 +29,11 @@ function readBuyerMaxPricing(config: Record<string, unknown>): { input: unknown;
   };
 }
 
+function readBuyerRoutingPreferences(config: Record<string, unknown>): Record<string, unknown> {
+  const buyer = config.buyer as { routingPreferences?: Record<string, unknown> } | undefined;
+  return buyer?.routingPreferences ?? {};
+}
+
 test('ensureConfig creates config with desktop buyer max pricing defaults', async (t) => {
   const { dir, configPath } = await makeTempConfigPath();
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -43,6 +48,13 @@ test('ensureConfig creates config with desktop buyer max pricing defaults', asyn
   assert.equal((config.buyer as { peerRefreshIntervalMs?: number }).peerRefreshIntervalMs, DESKTOP_DEFAULT_PEER_REFRESH_INTERVAL_MS);
   assert.equal((config.buyer as { metadataFetchTimeoutMs?: number }).metadataFetchTimeoutMs, DESKTOP_DEFAULT_METADATA_FETCH_TIMEOUT_MS);
   assert.equal((config.buyer as { disableMetadataV2Services?: boolean }).disableMetadataV2Services, false);
+  assert.deepEqual(readBuyerRoutingPreferences(config), {
+    preferFreePeers: false,
+    maxInputUsdPerMillion: 25,
+    minTrustScore: 60,
+    allowedPeerIds: [],
+    blockedPeerIds: [],
+  });
   assert.equal(
     (config.seller as { maxConcurrentBuyers?: number }).maxConcurrentBuyers,
     DESKTOP_DEFAULT_SELLER_MAX_CONCURRENT_BUYERS,
@@ -149,6 +161,35 @@ test('ensureConfig preserves valid buyer peer refresh interval and metadata v2 s
   assert.equal((config.buyer as { peerRefreshIntervalMs?: number }).peerRefreshIntervalMs, 30_000);
   assert.equal((config.buyer as { metadataFetchTimeoutMs?: number }).metadataFetchTimeoutMs, 2_000);
   assert.equal((config.buyer as { disableMetadataV2Services?: boolean }).disableMetadataV2Services, true);
+});
+
+test('ensureConfig preserves valid buyer routing preferences', async (t) => {
+  const { dir, configPath } = await makeTempConfigPath();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const peerId = 'a'.repeat(40);
+  await writeFile(configPath, JSON.stringify({
+    buyer: {
+      routingPreferences: {
+        preferFreePeers: true,
+        maxInputUsdPerMillion: 8,
+        minTrustScore: 72,
+        allowedPeerIds: [peerId],
+        blockedPeerIds: [],
+      },
+    },
+  }, null, 2));
+
+  await ensureConfig(configPath);
+
+  const config = await readConfig(configPath);
+  assert.deepEqual(readBuyerRoutingPreferences(config), {
+    preferFreePeers: true,
+    maxInputUsdPerMillion: 8,
+    minTrustScore: 72,
+    allowedPeerIds: [peerId],
+    blockedPeerIds: [],
+  });
 });
 
 test('ensureConfig preserves buyer max pricing at or below desktop defaults', async (t) => {

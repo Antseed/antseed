@@ -11,6 +11,8 @@
  * loaded here.
  */
 
+import {DOWNLOAD_BASE_URL} from './useLatestDesktopDownload';
+
 type DataLayerEvent = Record<string, unknown> & {event: string};
 
 declare global {
@@ -27,26 +29,104 @@ export function track(event: string, params: Record<string, unknown> = {}): void
 }
 
 /**
- * Any link that points at our GitHub releases counts as a VPR download —
- * both the direct per-platform asset URL and the releases-page fallback that
- * `useLatestDesktopDownload` returns when detection fails.
+ * Any link that points at our download proxy (download.antseed.com, see
+ * apps/download-proxy), a release asset, or the latest-release fallback
+ * counts as an Antseed Desktop download — the proxy URL is the normal per-platform CTA
+ * target, and /releases/latest is what `useLatestDesktopDownload` returns
+ * when detection fails. The bare /releases list (the "all platforms &
+ * versions" escape hatch) is deliberately excluded: browsing versions is not
+ * a download conversion, and it tracks as a plain outbound click.
  */
 export function isDownloadUrl(href: string): boolean {
-  return /^https?:\/\/(www\.)?github\.com\/AntSeed\/antseed\/releases(\/|$)/i.test(href);
+  return (
+    /^https?:\/\/download\.antseed\.com(\/|$)/i.test(href) ||
+    /^https?:\/\/(www\.)?github\.com\/Antseed\/antseed\/releases\/(latest|download)(\/|$)/i.test(href)
+  );
 }
 
 /**
- * Which OS a download link is for, read from the release asset filename
- * (`…-arm64.dmg`, `…-x64.exe`, `….AppImage`). Derived from the URL rather than
- * passed down as a prop so no button or call site needs to know about
- * analytics. Returns 'releases_page' for the generic fallback link, where the
- * user picks the asset themselves and we genuinely don't know yet.
+ * Which OS a download link is for, read from the proxy path
+ * (`/vpr/mac-arm64`) or a release asset filename (`…-arm64.dmg`,
+ * `…-x64.exe`, `….AppImage`). Derived from the URL rather than passed down
+ * as a prop so no button or call site needs to know about analytics. Returns
+ * 'releases_page' for the generic fallback link, where the user picks the
+ * asset themselves and we genuinely don't know yet.
  */
 export function platformFromUrl(href: string): string {
+  const proxy = /\/vpr\/(mac|win|linux)-(?:arm64|x64)(\?|$)/i.exec(href);
+  if (proxy) return proxy[1].toLowerCase();
   if (/\.(dmg|pkg)(\?|$)/i.test(href)) return 'mac';
   if (/\.(exe|msi)(\?|$)/i.test(href)) return 'win';
   if (/\.(appimage|deb|rpm|tar\.gz)(\?|$)/i.test(href)) return 'linux';
   return 'releases_page';
+}
+
+/**
+ * GA client id from the first-party `_ga` cookie ("GA1.1.<A>.<B>" → "<A>.<B>").
+ * Null when GA hasn't set cookies (blocked, consent pending, SSR).
+ */
+export function gaClientId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = /(?:^|; )_ga=([^;]+)/.exec(document.cookie);
+  if (!match) return null;
+  const parts = decodeURIComponent(match[1]).split('.');
+  if (parts.length < 4 || !/^\d+$/.test(parts[2]) || !/^\d+$/.test(parts[3])) return null;
+  return `${parts[2]}.${parts[3]}`;
+}
+
+/**
+ * GA session id from the `_ga_<stream>` cookie. Two formats exist in the
+ * wild: "GS1.1.<sessionId>.<n>..." (dot-separated) and
+ * "GS2.1.s<sessionId>$o<n>$..." (dollar-separated).
+ */
+export function gaSessionId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = /(?:^|; )_ga_[A-Z0-9]+=([^;]+)/.exec(document.cookie);
+  if (!match) return null;
+  const value = decodeURIComponent(match[1]);
+  const gs2 = /\.s(\d+)/.exec(value);
+  if (gs2) return gs2[1];
+  const parts = value.split('.');
+  if (parts.length >= 3 && /^\d+$/.test(parts[2])) return parts[2];
+  return null;
+}
+
+/**
+ * Append the visitor's GA ids to a download-proxy URL (?cid=...&sid=...), so
+ * the proxy's server-side download_started/completed events land inside this
+ * visitor's GA session and inherit source/campaign attribution. Non-proxy
+ * URLs and already-attributed URLs pass through unchanged; without GA
+ * cookies (ad blockers) the plain URL still works — the download is then
+ * counted without session attribution, exactly as before.
+ */
+export function withGaAttribution(href: string): string {
+  try {
+    const url = new URL(href);
+    if (url.hostname !== new URL(DOWNLOAD_BASE_URL).hostname) return href;
+    if (url.searchParams.has('cid')) return href;
+    const cid = gaClientId();
+    if (!cid) return href;
+    url.searchParams.set('cid', cid);
+    const sid = gaSessionId();
+    if (sid) url.searchParams.set('sid', sid);
+    return url.toString();
+  } catch {
+    return href;
+  }
+}
+
+/**
+ * True for internal links into the /get-started mobile onboarding flow
+ * (e.g. the mobile-sidebar navbar item). Expects an absolute URL.
+ */
+export function isGetStartedUrl(href: string): boolean {
+  try {
+    const url = new URL(href);
+    if (typeof window !== 'undefined' && url.hostname !== window.location.hostname) return false;
+    return /^\/get-started\/?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 /** True for links leaving antseed.com. Protocol links (mailto:, tel:) excluded. */

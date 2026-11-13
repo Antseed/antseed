@@ -1,17 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildVerifierCapabilities, getCachedVerdict, normalizeVerifierIds, parseVerifierCapabilities, resolveVerifierPolicy, selectVerifier, verifierSupportFingerprint, withVerifyTimeout, type CachedVerdict, type VerifyOutcome } from './verifier.js'
+import { buildVerifierCapabilities, normalizeVerifierIds, parseVerifierCapabilities, resolveVerifierPolicy, selectVerifier, verifierSupportFingerprint, withVerifyTimeout } from './verifier.js'
 
 const TEE = 'antseed-verifier'
-const OK: VerifyOutcome = { ok: true, verified: true }
-
-function countedRun(outcome: VerifyOutcome = OK): { run: () => Promise<VerifyOutcome>; runs: () => number } {
-  let count = 0
-  return {
-    run: async () => { count++; return outcome },
-    runs: () => count,
-  }
-}
 
 test('buildVerifierCapabilities: first id is the default; dot-separated (PEER_CAPABILITY_PATTERN-safe)', () => {
   assert.deepEqual(buildVerifierCapabilities([TEE, 'acme-x']), [
@@ -85,36 +76,4 @@ test('verifierSupportFingerprint: changes when advertised verifiers change (cach
   const b = verifierSupportFingerprint(['verifier.acme-x'])
   assert.notEqual(a, b)
   assert.equal(a, verifierSupportFingerprint(['verifier-default.antseed-verifier', 'verifier.antseed-verifier']))
-})
-
-test('getCachedVerdict: caches unexpired verdicts, re-runs otherwise, skips transient, and hard-bounds size', async () => {
-  const cache = new Map<string, CachedVerdict>()
-  const { run, runs } = countedRun()
-  const first = await getCachedVerdict(cache, 'k', 0, 1000, 10, run)
-  const second = await getCachedVerdict(cache, 'k', 1, 1000, 10, run)
-  assert.equal(runs(), 1)
-  assert.deepEqual(second, first)
-
-  const changedKey = countedRun()
-  const changedKeyCache = new Map<string, CachedVerdict>()
-  await getCachedVerdict(changedKeyCache, 'peer|A', 0, 1000, 10, changedKey.run)
-  await getCachedVerdict(changedKeyCache, 'peer|B', 0, 1000, 10, changedKey.run)
-  assert.equal(changedKey.runs(), 2)
-
-  const expired = countedRun()
-  const expiredCache = new Map<string, CachedVerdict>()
-  await getCachedVerdict(expiredCache, 'k', 0, 100, 10, expired.run)
-  await getCachedVerdict(expiredCache, 'k', 200, 100, 10, expired.run)
-  assert.equal(expired.runs(), 2)
-
-  const transient = countedRun({ ok: false, verified: false, transient: true })
-  const transientCache = new Map<string, CachedVerdict>()
-  await getCachedVerdict(transientCache, 'k', 0, 1000, 10, transient.run)
-  await getCachedVerdict(transientCache, 'k', 0, 1000, 10, transient.run)
-  assert.equal(transient.runs(), 2)
-  assert.equal(transientCache.size, 0)
-
-  const bounded = new Map<string, CachedVerdict>()
-  for (let i = 0; i < 15; i++) await getCachedVerdict(bounded, `k${i}`, 0, 1_000_000, 10, async () => OK)
-  assert.ok(bounded.size <= 10, `cache size ${bounded.size} exceeded max 10`)
 })

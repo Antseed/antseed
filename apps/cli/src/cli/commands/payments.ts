@@ -1,53 +1,45 @@
 import type { Command } from 'commander';
-import { getGlobalOptions } from './types.js';
+import chalk from 'chalk';
 
-type PortalOptions = { port: string };
-
-async function startPaymentsPortal(program: Command, options: PortalOptions): Promise<void> {
-  const port = Number(options.port) > 0 ? Number(options.port) : 3118;
-  const globalOpts = getGlobalOptions(program);
-
-  try {
-    const { createServer } = await import('@antseed/payments');
-    const rawHex = process.env['ANTSEED_IDENTITY_HEX'] || undefined;
-    const identityHex = rawHex ? rawHex.replace(/^0x/i, '') : undefined;
-    const server = await createServer({ port, dataDir: globalOpts.dataDir, identityHex });
-    await server.listen({ port, host: '127.0.0.1' });
-
-    const token = (server as unknown as { bearerToken?: string }).bearerToken ?? '';
-    const url = token
-      ? `http://127.0.0.1:${port}?token=${token}`
-      : `http://127.0.0.1:${port}`;
-    console.log(`Payments portal running at ${url}`);
-    console.log('Press Ctrl+C to stop.');
-  } catch (err) {
-    console.error('Failed to start payments portal:', err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
+// The payments portal this command used to launch is retired: deposits are
+// now fully in-terminal (`antseed deposit` + automatic gasless sweeping), so
+// `antseed payments` just points at the commands that replaced it.
+function printPaymentCommands(): void {
+  console.log('');
+  console.log(chalk.bold('The payments portal has been retired. Use these commands instead:'));
+  console.log('');
+  console.log(`  ${chalk.bold('antseed buyer deposit')}           Show your funding address + checkout link`);
+  console.log(`  ${chalk.bold('antseed buyer activity')}          Tokens, spending history, savings, and active channels`);
+  console.log(`  ${chalk.bold('antseed buyer balance')}           Hot-wallet USDC and deposits balances`);
+  console.log(`  ${chalk.bold('antseed buyer sweep')}             Manually sweep hot-wallet USDC into deposits (gasless)`);
+  console.log(`  ${chalk.bold('antseed buyer withdraw')} <usdc>   Withdraw deposits back to the hot wallet`);
+  console.log(`  ${chalk.bold('antseed buyer channels')}          Inspect and close payment channels`);
+  console.log(`  ${chalk.bold('antseed buyer status')}            Connection and balance status`);
+  console.log('');
+  console.log(chalk.dim('While `antseed buyer start` is running, incoming hot-wallet USDC is swept'));
+  console.log(chalk.dim('into your deposits balance automatically (disable with buyer.autoSweep=false).'));
+  console.log('');
 }
 
 export function registerPaymentsCommand(program: Command): void {
   const payments = program
     .command('payments')
-    .description('Manage buyer payments')
-    .option('-p, --port <port>', 'Portal port', '3118')
-    .action(async (options: PortalOptions) => {
-      await startPaymentsPortal(program, options);
-    });
-
-  payments
-    .command('portal')
-    .description('Launch the buyer payments portal')
-    .option('-p, --port <port>', 'Portal port', '3118')
-    .action(async (options: PortalOptions) => {
-      await startPaymentsPortal(program, options);
-    });
-
-  payments
-    .command('summary')
-    .description('Show payment summary guidance')
+    .description('Payment commands overview (the payments portal is retired)')
     .action(() => {
-      console.log('Payment summary is not available yet.');
-      console.log('For now, use `antseed buyer balance` and `antseed buyer status`.');
+      printPaymentCommands();
+    });
+
+  // Retired subcommands kept as aliases so old scripts land on the guidance
+  // instead of a commander "unknown command" error.
+  payments
+    .command('portal', { hidden: true })
+    .action(() => {
+      printPaymentCommands();
+    });
+
+  payments
+    .command('summary', { hidden: true })
+    .action(() => {
+      printPaymentCommands();
     });
 }

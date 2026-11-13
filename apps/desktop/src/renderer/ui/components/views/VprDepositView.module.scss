@@ -11,37 +11,15 @@
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  max-width: 392px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
 
-/* ---------- Balance header ---------- */
-
-.balanceCard {
+.primaryMethods {
   display: grid;
-  gap: 2px;
-  padding: 12px 16px;
-}
-
-.balanceLabel {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.balanceValue {
-  color: var(--text-primary);
-  font-size: 24px;
-  font-weight: 650;
-  line-height: 28px;
-}
-
-.balanceHint {
-  margin-top: 2px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  gap: 12px;
+  width: 100%;
 }
 
 /* ---------- Method chooser (CTAs) ---------- */
@@ -60,8 +38,8 @@
   text-align: left;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: #0e0e12;
-  color: #ffffff;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   font-size: 15px;
   font-weight: 650;
   line-height: 20px;
@@ -108,19 +86,6 @@
 
 .methodGroup > button {
   justify-self: stretch;
-}
-
-/* Leading Fun-logo chip — .methodCtaIcon's geometry, tinted from the CTA's
-   own text color so it holds up in both themes. */
-.funCtaIcon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 /* Text block takes the middle so the badge cluster hugs the right edge,
@@ -205,6 +170,30 @@
   display: block;
 }
 
+.peerMark,
+.paymentRailMark {
+  display: block;
+  object-fit: contain;
+}
+
+.peerMark {
+  border-radius: 7px;
+}
+
+.paymentRailMark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+/* Trailing chevron on a method row — quiet "this opens a screen" affordance. */
+.methodArrow {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
 /* Round filler chip in a badge cluster ("+", QR glyph, …). */
 .badgeChip {
   display: inline-flex;
@@ -224,6 +213,9 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Explicit: the Fun SDK wraps its button in a provider div, so the row
+     can't rely on grid-item stretch like the plain buttons do. */
+  width: 100%;
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -289,6 +281,10 @@
   color: var(--text-faint, var(--text-secondary));
   font-size: 11px;
   line-height: 14px;
+}
+
+.amountHintWarn {
+  color: var(--text-secondary);
 }
 
 .amountRow {
@@ -382,18 +378,6 @@
   font-size: 11px;
   line-height: 14px;
   color: var(--text-secondary);
-}
-
-.methodHint {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
-  text-align: center;
-}
-
-.methodHint strong {
-  color: var(--text-primary);
-  font-weight: 600;
 }
 
 .addressRow {
@@ -549,29 +533,6 @@
   color: var(--brand);
 }
 
-.cardPayButton {
-  width: 100%;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 16px;
-  border: none;
-  border-radius: 999px;
-  background: var(--brand);
-  color: var(--bg-card, #fff);
-  font-size: 15px;
-  font-weight: 650;
-  cursor: pointer;
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
-}
-
-.cardPayButton:hover {
-  filter: brightness(1.05);
-  box-shadow: var(--shadow-sm);
-}
-
 .cardNotice {
   color: var(--accent-red, #d64545);
   font-size: 12px;
@@ -604,12 +565,25 @@
   flex: 0 0 auto;
 }
 
-.secureNote {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+/* Add funds: the balance beside the ways to add to it, when there's room. */
+.chooseStack {
+  gap: 14px;
+}
+
+@media (min-width: 1040px) {
+  .chooseStack {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    column-gap: 24px;
+    align-items: start;
+
+    > * {
+      grid-column: 2;
+    }
+
+    > :first-child {
+      grid-column: 1;
+      grid-row: 1 / span 6;
+    }
+  }
 }

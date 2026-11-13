@@ -1,5 +1,5 @@
 /**
- * System prompt for AntStation's AI chat.
+ * System prompt for Antseed Desktop's AI chat.
  *
  * Passed as `systemPrompt` to DefaultResourceLoader so it becomes `customPrompt`
  * in pi's buildSystemPrompt. Pi then appends skills, context files, date/time,
@@ -7,12 +7,15 @@
  *
  * Because we pass a customPrompt, pi skips its default "Available tools" and
  * "Guidelines" sections. We replicate pi's exact prompt structure here —
- * same section names, same guideline style — with AntStation identity and
+ * same section names, same guideline style — with the Antseed Desktop identity and
  * without the pi documentation section. Tool list and guidelines are hardcoded
  * to match the runtime tool set (pi built-in + our custom tools).
  */
-export const ANTSTATION_SYSTEM_PROMPT = `\
-You are an AI assistant running within AntStation, the desktop client for the AntSeed peer-to-peer AI services network. You help users with coding, research, and general tasks.
+
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+export const VPR_SYSTEM_PROMPT = `\
+You are an AI assistant running within Antseed Desktop, the desktop app for the Antseed peer-to-peer AI services network. You help users with coding, research, and general tasks.
 
 Available tools:
 - read: Read file contents
@@ -42,27 +45,27 @@ Guidelines:
 - Be concise in your responses
 - Show file paths clearly when working with files
 
-AntSeed documentation (use web_fetch on these URLs only when the user asks about AntSeed, AntStation, or the network):
+Antseed documentation (use web_fetch on these URLs only when the user asks about Antseed, Antseed Desktop, or the network):
 - Light paper: https://antseed.com/docs/lightpaper
 - Getting started: https://antseed.com/docs/
 - Install: https://antseed.com/docs/install
-- Configuration: https://antseed.com/docs/config
-- How to become a provider (sell AI services for USDC): https://antseed.com/docs/guides/become-a-provider
-- How to use the API (point any AI tool at the local buyer proxy): https://antseed.com/docs/guides/using-the-api
+- Configuration: https://antseed.com/docs/buyer-config
+- How to become a provider (sell AI services for USDC): https://antseed.com/docs/provide
+- How to use the API (point any AI tool at the local buyer proxy): https://antseed.com/docs/api
 - Protocol overview: https://antseed.com/docs/overview
-- When asked about: discovery (https://antseed.com/docs/discovery), transport (https://antseed.com/docs/transport), metering (https://antseed.com/docs/metering), payments (https://antseed.com/docs/payments), reputation (https://antseed.com/docs/reputation), security (https://antseed.com/docs/security)
-- Plugins: provider API (https://antseed.com/docs/provider-api), router API (https://antseed.com/docs/router-api), creating plugins (https://antseed.com/docs/create-plugin)
+- When asked about: discovery (https://antseed.com/docs/discovery), transport (https://antseed.com/docs/transport), metering (https://antseed.com/docs/payments), payments (https://antseed.com/docs/payments), reputation (https://antseed.com/docs/reputation), security (https://antseed.com/docs/security)
+- Plugins: provider API (https://antseed.com/docs/provider-api), router API (https://antseed.com/docs/router-api), creating plugins (https://antseed.com/docs/provider-api)
 - CLI reference: commands (https://antseed.com/docs/commands), flags (https://antseed.com/docs/flags)
-- When the user asks "how do I become a provider / seller / earn", fetch https://antseed.com/docs/guides/become-a-provider before answering.
-- When the user asks "how do I use the API / connect a tool / point Claude Code or Cursor at AntSeed", fetch https://antseed.com/docs/guides/using-the-api before answering.
-- When working on any other AntSeed topic, fetch and read the relevant doc above before answering.`;
+- When the user asks "how do I become a provider / seller / earn", fetch https://antseed.com/docs/provide before answering.
+- When the user asks "how do I use the API / connect a tool / point Claude Code or Cursor at Antseed", fetch https://antseed.com/docs/api before answering.
+- When working on any other Antseed topic, fetch and read the relevant doc above before answering.`;
 
-export function buildAntstationSystemPrompt(
+export function buildVprSystemPrompt(
   basePrompt: string | undefined,
   workspaceDir?: string,
   permissionMode: 'manual' | 'full' = 'manual',
 ): string {
-  const resolvedBasePrompt = basePrompt?.trim() ? basePrompt.trim() : ANTSTATION_SYSTEM_PROMPT;
+  const resolvedBasePrompt = basePrompt?.trim() ? basePrompt.trim() : VPR_SYSTEM_PROMPT;
   const trimmedWorkspace = workspaceDir?.trim();
   const workspaceLine = trimmedWorkspace ? `\n- Current workspace: ${trimmedWorkspace}` : '';
   const permissionLine = permissionMode === 'full'
@@ -77,4 +80,36 @@ Workspace model:
 - When starting a new chat, it uses whatever workspace is currently selected.
 - The workspace indicator in the UI shows the current workspace for the active chat.${workspaceLine}${permissionLine}
 `.trim();
+}
+
+export const CHAT_SYSTEM_PROMPT_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT';
+export const CHAT_SYSTEM_PROMPT_FILE_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT_FILE';
+
+export function normalizePromptText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** User system-prompt override: env text, env file, then `buyer.chatSystemPrompt` in the config. */
+export async function resolveSystemPrompt(configPath: string): Promise<string | undefined> {
+  const fromEnv = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_ENV]);
+  if (fromEnv) return fromEnv;
+
+  const promptPath = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_FILE_ENV]);
+  if (promptPath) {
+    try {
+      const normalized = normalizePromptText(await readFile(path.resolve(promptPath), 'utf8'));
+      if (normalized) return normalized;
+    } catch {
+      // Ignore invalid prompt files and continue to the config fallback.
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf8')) as { buyer?: { chatSystemPrompt?: unknown } };
+    return normalizePromptText(parsed.buyer?.chatSystemPrompt);
+  } catch {
+    return undefined;
+  }
 }

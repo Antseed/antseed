@@ -1,22 +1,27 @@
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { access, readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { Wallet, hashMessage, getBytes, hexlify, verifyMessage } from "ethers";
+import { Wallet } from "ethers";
 import { toPeerId, type PeerId } from "../types/peer.js";
 import { hexToBytes, bytesToHex } from "../utils/hex.js";
+import {
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
+  assertNewIdentityPassphrase,
+  decryptIdentityKey,
+  encryptIdentityKey,
+  identityEnvelopeAddress,
+  isIdentityEnvelope,
+  resolveIdentityPassphrase,
+  type ScryptParams,
+} from "./identity-envelope.js";
 
 export { hexToBytes, bytesToHex };
 
-/**
- * Domain prefixes for signing contexts.
- * Prevents cross-domain signature replay between different parts of the protocol.
- */
-const DOMAIN_DATA = new TextEncoder().encode("antseed-data-v1:");
-const DOMAIN_MSG = "antseed-msg-v1:";
-
 const CONFIG_DIR = join(homedir(), ".antseed");
 const PRIVATE_KEY_FILE = "identity.key";
+const ENCRYPTED_PRIVATE_KEY_FILE = "identity.enc";
 
 export interface Identity {
   peerId: PeerId;
@@ -34,31 +39,177 @@ export interface IdentityStore {
   save(hexKey: string): Promise<void>;
 }
 
+export interface FileIdentityStoreOptions {
+  /**
+   * Unlocks an encrypted key file, and encrypts new ones. Defaults to
+   * ANTSEED_PASSPHRASE / ANTSEED_PASSPHRASE_FILE; null means no passphrase.
+   */
+  passphrase?: string | null;
+  /**
+   * scrypt cost for keys this store encrypts. Defaults to
+   * DEFAULT_SCRYPT_PARAMS; tests pass a cheaper cost so they do not spend
+   * seconds per key under load. Decryption always uses the file's own cost.
+   */
+  scrypt?: ScryptParams;
+}
+
+/** Decrypted keys by envelope, so repeated loads in one process skip the deliberately slow scrypt. */
+const decryptedKeys = new Map<string, { passphrase: string; hexKey: string }>();
+
 /**
- * Stores identity private key as a hex file on disk (default behavior).
+ * Stores identity private key as a file on disk (default behavior): 64 hex
+ * chars, or a passphrase-encrypted envelope (see identity-envelope.ts).
  */
 export class FileIdentityStore implements IdentityStore {
   private readonly keyPath: string;
+  private readonly encryptedKeyPath: string;
   private readonly dir: string;
 
-  constructor(configDir?: string) {
+  constructor(configDir?: string, private readonly options: FileIdentityStoreOptions = {}) {
     this.dir = configDir ?? CONFIG_DIR;
     this.keyPath = join(this.dir, PRIVATE_KEY_FILE);
+    this.encryptedKeyPath = join(this.dir, ENCRYPTED_PRIVATE_KEY_FILE);
   }
 
-  async load(): Promise<string | null> {
+  private passphrase(): string | null {
+    return this.options.passphrase !== undefined ? this.options.passphrase : resolveIdentityPassphrase();
+  }
+
+  /** The key file's content, or null when there is none. */
+  private async readKeyFile(): Promise<string | null> {
     try {
-      const hexKey = (await readFile(this.keyPath, "utf-8")).trim();
-      return hexKey.length > 0 ? hexKey : null;
-    } catch {
-      return null;
+      return (await readFile(this.keyPath, "utf-8")).trim();
+    } catch (error) {
+      if (isMissingFileError(error)) return null;
+      throw new Error(`Unable to read identity at ${this.keyPath}; refusing to create a replacement identity.`, { cause: error });
     }
   }
 
-  async save(hexKey: string): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.keyPath, hexKey, { mode: 0o600 });
+  async load(): Promise<string | null> {
+    const stored = await this.readKeyFile();
+    if (stored !== null) return isIdentityEnvelope(stored) ? this.decrypt(stored) : stored;
+
+    try {
+      await access(this.encryptedKeyPath);
+    } catch (error) {
+      if (isMissingFileError(error)) return null;
+      throw new Error(`Unable to inspect identity at ${this.encryptedKeyPath}; refusing to create a replacement identity.`, { cause: error });
+    }
+
+    throw new Error(
+      `An app-encrypted identity already exists at ${this.encryptedKeyPath}. ` +
+      'The CLI cannot decrypt Electron safeStorage identities and will not create a second wallet in the same data directory. ' +
+      'Back up the private key from Antseed Desktop and import it for CLI use, launch the CLI through Antseed Desktop, or choose a different --data-dir.',
+    );
   }
+
+  /** Written encrypted when a passphrase is configured. */
+  async save(hexKey: string): Promise<void> {
+    const passphrase = this.passphrase();
+    if (!passphrase) return this.writeKeyFile(hexKey);
+    assertNewIdentityPassphrase(passphrase);
+    await this.writeKeyFile(await encryptIdentityKey(hexKey, passphrase, this.options.scrypt));
+  }
+
+  /** How the key file is stored, or null when there is none. */
+  async format(): Promise<"plaintext" | "encrypted" | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null) return null;
+    return isIdentityEnvelope(stored) ? "encrypted" : "plaintext";
+  }
+
+  /** The wallet address, read without the passphrase; null when there is no key file. */
+  async address(): Promise<string | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null) return null;
+    if (isIdentityEnvelope(stored)) return identityEnvelopeAddress(stored);
+    return identityFromPrivateKeyHex(this.validHex(stored)).wallet.address;
+  }
+
+  /**
+   * Whether this passphrase unlocks the encrypted key file; null when the
+   * file is missing or plaintext. Throws when the file is unreadable or damaged.
+   */
+  async unlocksWith(passphrase: string): Promise<boolean | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null || !isIdentityEnvelope(stored)) return null;
+    const cached = decryptedKeys.get(stored);
+    if (cached?.passphrase === passphrase) return true;
+    let hexKey: string;
+    try {
+      hexKey = await decryptIdentityKey(stored, passphrase);
+    } catch (error) {
+      if ((error as Error).message.startsWith("Wrong passphrase")) return false;
+      throw error;
+    }
+    decryptedKeys.set(stored, { passphrase, hexKey });
+    return true;
+  }
+
+  /** Encrypts a plaintext key file in place; false when it already is encrypted. */
+  async protect(): Promise<boolean> {
+    const passphrase = this.passphrase();
+    if (!passphrase) throw new Error(`Set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to the passphrase that should protect the key.`);
+    const stored = await this.readKeyFile();
+    if (stored === null) throw new Error(`No identity at ${this.keyPath}.`);
+    if (isIdentityEnvelope(stored)) return false;
+    assertNewIdentityPassphrase(passphrase);
+    const hexKey = this.validHex(stored);
+    const envelope = await encryptIdentityKey(hexKey, passphrase, this.options.scrypt);
+    // The plaintext is about to be replaced: make sure the passphrase opens what replaces it.
+    if (await decryptIdentityKey(envelope, passphrase) !== hexKey) throw new Error(`Encrypting ${this.keyPath} failed its check; the file was left as it was.`);
+    await this.writeKeyFile(envelope);
+    return true;
+  }
+
+  /** Decrypts an encrypted key file in place; false when it already is plaintext. */
+  async unprotect(): Promise<boolean> {
+    const stored = await this.readKeyFile();
+    if (stored === null) throw new Error(`No identity at ${this.keyPath}.`);
+    if (!isIdentityEnvelope(stored)) return false;
+    await this.writeKeyFile(await this.decrypt(stored));
+    return true;
+  }
+
+  private validHex(stored: string): string {
+    const hexKey = stored.replace(/^0x/, "");
+    if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) throw new Error(`Identity at ${this.keyPath} is invalid: expected 64 hex characters.`);
+    return hexKey.toLowerCase();
+  }
+
+  private async decrypt(envelope: string): Promise<string> {
+    const passphrase = this.passphrase();
+    if (!passphrase) {
+      throw new Error(`Identity at ${this.keyPath} is encrypted; set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to unlock it.`);
+    }
+    const cached = decryptedKeys.get(envelope);
+    if (cached?.passphrase === passphrase) return cached.hexKey;
+    let hexKey: string;
+    try {
+      hexKey = await decryptIdentityKey(envelope, passphrase);
+    } catch (error) {
+      throw new Error(`Cannot unlock identity at ${this.keyPath}: ${(error as Error).message}`, { cause: error });
+    }
+    decryptedKeys.set(envelope, { passphrase, hexKey });
+    return hexKey;
+  }
+
+  /** Owner-only and atomic, so a crash never leaves a half-written key. */
+  private async writeKeyFile(content: string): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const temp = `${this.keyPath}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await writeFile(temp, content, { mode: 0o600, flag: "wx" });
+      await rename(temp, this.keyPath);
+    } catch (error) {
+      await rm(temp, { force: true });
+      throw error;
+    }
+  }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
 /** Environment variable for passing identity hex from a parent process (e.g. desktop → CLI). */
@@ -101,7 +252,10 @@ export async function loadOrCreateIdentity(configDirOrStore?: string | IdentityS
       : configDirOrStore;
 
   const existingHex = await store.load();
-  if (existingHex && existingHex.length === 64) {
+  if (existingHex !== null) {
+    if (existingHex.length !== 64) {
+      throw new Error(`Existing identity is invalid: expected 64 hex characters, found ${existingHex.length}. Refusing to replace it.`);
+    }
     return identityFromPrivateKeyHex(existingHex);
   }
 
@@ -114,70 +268,5 @@ export async function loadOrCreateIdentity(configDirOrStore?: string | IdentityS
   return identityFromPrivateKeyHex(hex);
 }
 
-/**
- * Sign arbitrary binary data with the identity's secp256k1 private key.
- * Domain-tagged with "antseed-data-v1:" prefix to prevent cross-domain replay.
- * Uses EIP-191 personal_sign. Returns a 65-byte signature (r + s + v).
- */
-export function signData(
-  wallet: Wallet,
-  data: Uint8Array
-): Uint8Array {
-  const tagged = new Uint8Array(DOMAIN_DATA.length + data.length);
-  tagged.set(DOMAIN_DATA, 0);
-  tagged.set(data, DOMAIN_DATA.length);
-  const digest = hashMessage(tagged);
-  const sig = wallet.signingKey.sign(digest);
-  return getBytes(sig.serialized);
-}
-
-/**
- * Verify a binary data signature from a remote peer using ecrecover.
- * The expectedAddress is the 40-char hex peerId (no 0x prefix).
- */
-export function verifySignature(
-  expectedAddress: string,
-  signature: Uint8Array,
-  data: Uint8Array
-): boolean {
-  try {
-    const tagged = new Uint8Array(DOMAIN_DATA.length + data.length);
-    tagged.set(DOMAIN_DATA, 0);
-    tagged.set(data, DOMAIN_DATA.length);
-    const recovered = verifyMessage(tagged, hexlify(signature));
-    return recovered.slice(2).toLowerCase() === expectedAddress.toLowerCase();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Sign a UTF-8 message and return a hex-encoded secp256k1 signature (130 hex chars = 65 bytes).
- * Domain-tagged with "antseed-msg-v1:" prefix to prevent cross-domain replay.
- */
-export function signUtf8(wallet: Wallet, message: string): string {
-  const tagged = DOMAIN_MSG + message;
-  const msgBytes = new TextEncoder().encode(tagged);
-  const digest = hashMessage(msgBytes);
-  const sig = wallet.signingKey.sign(digest);
-  return sig.serialized.slice(2);
-}
-
-/**
- * Verify a UTF-8 message against a hex-encoded secp256k1 signature.
- * Returns true if the recovered address matches the expected address.
- */
-export function verifyUtf8(
-  address: string,
-  message: string,
-  signatureHex: string
-): boolean {
-  try {
-    const tagged = DOMAIN_MSG + message;
-    const msgBytes = new TextEncoder().encode(tagged);
-    const recovered = verifyMessage(msgBytes, '0x' + signatureHex);
-    return recovered.slice(2).toLowerCase() === address.toLowerCase();
-  } catch {
-    return false;
-  }
-}
+// Signing primitives moved to @antseed/protocol; re-exported for compatibility.
+export { signData, verifySignature, signUtf8, verifyUtf8 } from '@antseed/protocol/signing';

@@ -1,10 +1,10 @@
 # Antseed Network Protocol Specification
 
-**Version:** 1.8 (current discovery metadata format uses `METADATA_VERSION = 10`)
+**Version:** 1.9 (current discovery metadata format uses `METADATA_VERSION = 12`)
 
 ## Overview
 
-AntSeed is a fully decentralized protocol for peer-to-peer AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream inference results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication. The network exists entirely as the set of participating nodes; there is no infrastructure beyond the nodes themselves.
+Antseed is a fully decentralized protocol for peer-to-peer AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream inference results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication. The network exists entirely as the set of participating nodes; there is no infrastructure beyond the nodes themselves.
 
 ## Architecture
 
@@ -68,6 +68,10 @@ How Buyers pay Sellers for inference. Covers pricing terms, payment settlement, 
 
 See: [04-payments.md](./04-payments.md)
 
+For the recognized-usage accounting extensions, see [Reward
+Policies](../../../apps/website/docs/protocol/reward-policies.md). This separates
+the deployed policy mechanism from the proposed model-verification designs below.
+
 ### 5. Reputation
 
 How nodes build and query trust. Covers reputation scoring, peer ratings, historical performance tracking, and Sybil resistance.
@@ -110,6 +114,7 @@ See: [08-fingerprint-swarm.md](./08-fingerprint-swarm.md)
 
 | Version | Date | Notes |
 |---|---|---|
+| 1.9 | 2026-08-09 | Updated discovery for metadata v11/v12, image unit billing, service capabilities, and buyer-first rollout requirements |
 | 1.8 | 2026-06-15 | Updated discovery spec for metadata v10, seller contracts, peer capabilities, and domain/GitHub verification claims |
 | 1.7 | 2026-06-15 | Added Real Money, Fake Models as model-substitution motivation for model verification |
 | 1.6 | 2026-06-15 | Added READER-style passive proxy-reader provenance to the model-verification verifier suite |

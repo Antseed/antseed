@@ -39,3 +39,14 @@ export function runMigrations(db: Database.Database, migrations: Migration[]): v
     applied.add(migration.version);
   }
 }
+
+/**
+ * `ALTER TABLE … ADD COLUMN` that is a no-op when the column is already there,
+ * for migrations that may meet a database where a test build added it under
+ * another version number.
+ */
+export function addColumnIfMissing(db: Database.Database, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some((entry) => entry.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}

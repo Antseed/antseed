@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUpRight01Icon, Copy01Icon, Settings02Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { Modal } from '@antseed/ui';
+import { BrandIcon, Modal } from '@antseed/ui';
 import type { TelegramBridgeStatus } from '../../../types/bridge';
-import { BrandIcon } from '../brand/BrandIcon';
 import styles from './VprToolsView.module.scss';
+import { recordUserAction } from '../../../modules/telemetry/actions';
 
 /**
- * "Telegram Bot" row in Connected apps. Unlike proxy-profile apps this does
- * not intercept anything — it pairs the user's personal Telegram bot with
+ * "Telegram Bot" row in Agents & apps. It pairs the user's personal Telegram bot with
  * the local chat agent (main-process bridge long-polls the Bot API).
  */
 export function TelegramBotCard() {
@@ -23,7 +22,7 @@ export function TelegramBotCard() {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let disposed = false;
-    void bridge?.telegramGetStatus?.().then((result) => {
+    void bridge?.telegramGetStatus?.()?.then((result) => {
       if (!disposed && result.ok && result.data) setStatus(result.data);
     });
     const off = bridge?.onTelegramStatusChanged?.((next) => setStatus(next));
@@ -37,6 +36,7 @@ export function TelegramBotCard() {
     const bridge = window.antseedDesktop;
     const token = tokenDraft.trim();
     if (!token || !bridge?.telegramConnect) return;
+    recordUserAction('app_connect', 'apps', 'telegram');
     setConnectBusy(true);
     setError(null);
     try {
@@ -57,6 +57,7 @@ export function TelegramBotCard() {
     const bridge = window.antseedDesktop;
     if (!bridge?.telegramDisconnect) return;
     if (!window.confirm('Disconnect the Telegram bot? The saved token is removed from this device.')) return;
+    recordUserAction('app_disconnect', 'apps', 'telegram');
     const result = await bridge.telegramDisconnect();
     if (result.data) setStatus(result.data);
     setChangingBot(false);
@@ -86,44 +87,37 @@ export function TelegramBotCard() {
 
   return (
     <>
-      <div className={`${styles.appPill}${paired ? ` ${styles.appPillConnected}` : ''}`}>
-        <div className={styles.appHead}>
-          <span className={styles.appIdentity}>
-            <BrandIcon name="telegram" hints={['Telegram']} size={24} />
-            <span className={styles.appText}>
-              <span className={styles.appNameRow}>
-                <span className={styles.appName}>Telegram Bot</span>
-                {paired ? (
-                  <span className={styles.appMeta}>
-                    <span className={styles.connectedDot} aria-hidden="true" />
-                    Connected
-                  </span>
-                ) : null}
-              </span>
-              {meta ? <span className={styles.appMeta}>{meta}</span> : null}
-            </span>
-          </span>
-          {configured ? (
+      <div className={styles.appCard}>
+        <span className={styles.appTile}>
+          <BrandIcon name="telegram" hints={['Telegram']} size={30} />
+        </span>
+        {configured ? (
+          <span className={styles.appCardCorner}>
             <button
               type="button"
-              className={`${styles.configAction}${modalOpen ? ` ${styles.configActionActive}` : ''}`}
+              className={styles.appCornerButton}
               onClick={() => setModalOpen(true)}
               aria-haspopup="dialog"
               aria-label="Telegram Bot settings"
               title="Telegram Bot settings"
             >
-              <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={2} />
+              <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={1.8} />
             </button>
+          </span>
+        ) : null}
+        <span className={styles.appCardName}>Telegram Bot</span>
+        <span className={styles.appCardFoot}>
+          {paired ? (
+            <span className={styles.appStatus} title={meta ?? undefined}>
+              <span className={styles.connectedDot} aria-hidden="true" />
+              Connected
+            </span>
+          ) : configured ? (
+            <span className={styles.appMuted} title={meta ?? undefined}>{meta}</span>
           ) : (
-            <button
-              type="button"
-              className={styles.connectAction}
-              onClick={() => setModalOpen(true)}
-            >
-              Connect
-            </button>
+            <button type="button" className={styles.appChip} onClick={() => setModalOpen(true)}>Connect</button>
           )}
-        </div>
+        </span>
       </div>
 
       <Modal
@@ -131,8 +125,19 @@ export function TelegramBotCard() {
         onClose={() => { setModalOpen(false); setError(null); setChangingBot(false); }}
         size="sm"
         title="Telegram Bot"
-        subtitle="Your VPR chat, from any device"
-        className={styles.vprModal}
+        subtitle={(
+          <span className={styles.modalAppSubtitle}>
+            Connect a private Telegram bot to chat with your Antseed agent from Telegram.
+            <button
+              type="button"
+              className={styles.settingWebsiteLink}
+              onClick={() => void window.antseedDesktop?.openExternalUrl?.('https://telegram.org/apps')}
+            >
+              Website / download
+              <HugeiconsIcon icon={ArrowUpRight01Icon} size={12} strokeWidth={2} />
+            </button>
+          </span>
+        )}
         bodyClassName={styles.settingsBody}
       >
         {showTokenForm ? (
@@ -243,7 +248,7 @@ export function TelegramBotCard() {
               </div>
               <p className={styles.settingHint}>
                 Paired with {status?.ownerName ?? 'you'} on Telegram. Messages to the bot
-                run on this computer&apos;s agent and are billed like any VPR chat.
+                run on this computer&apos;s agent and are billed like any chat in the app.
                 Use <code>/new</code> for a fresh conversation and <code>/stop</code> to
                 cancel a reply. Risky tool calls ask for approval with buttons in the chat.
               </p>

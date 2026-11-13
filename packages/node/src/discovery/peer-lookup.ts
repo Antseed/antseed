@@ -11,6 +11,7 @@ import {
 import type { PeerMetadata } from "./peer-metadata.js";
 import { encodeMetadataForSigning } from "./metadata-codec.js";
 import type { MetadataResolver, PeerEndpoint } from "./metadata-resolver.js";
+import { validateMetadata } from "./metadata-validator.js";
 import { debugLog, debugWarn } from "../utils/debug.js";
 
 function shuffle<T>(arr: T[]): T[] {
@@ -86,6 +87,22 @@ type ResolveLookupResultsOptions = {
   onResult?: (result: LookupResult) => void | Promise<void>;
 };
 
+/**
+ * One result per peerId, keeping the newest signed announcement: a seller
+ * that moved hosts can still be listed at its old endpoints for a while.
+ */
+export function preferFreshestResultPerPeer(results: LookupResult[]): LookupResult[] {
+  const best = new Map<string, LookupResult>();
+  for (const result of results) {
+    const peerId = result.metadata.peerId.toLowerCase();
+    const current = best.get(peerId);
+    if (!current || result.metadata.timestamp > current.metadata.timestamp) {
+      best.set(peerId, result);
+    }
+  }
+  return [...best.values()];
+}
+
 export class PeerLookup {
   private readonly config: LookupConfig;
   private nextSubnetStart = 0;
@@ -101,7 +118,7 @@ export class PeerLookup {
    *
    *   1. Wildcard topic, alone. Its broad reach pulls many peers and warms
    *      the local DHT routing table with nodes that already know about
-   *      AntSeed traffic.
+   *      Antseed traffic.
    *   2. Each subnet topic, one at a time, against that hot routing table.
    *      Each subnet only holds ~total/SUBNET_COUNT announcers, which keeps
    *      us well under the K-closest saturation limit that made the single
@@ -244,15 +261,7 @@ export class PeerLookup {
   }
 
   private deduplicateResultsByPeerId(results: LookupResult[]): LookupResult[] {
-    const seen = new Set<string>();
-    const deduped: LookupResult[] = [];
-    for (const result of results) {
-      const peerId = result.metadata.peerId.toLowerCase();
-      if (seen.has(peerId)) continue;
-      seen.add(peerId);
-      deduped.push(result);
-    }
-    return deduped;
+    return preferFreshestResultPerPeer(results);
   }
 
   async findByCapability(capability: string, name?: string): Promise<LookupResult[]> {
@@ -335,9 +344,35 @@ export class PeerLookup {
   }
 
   private async _resolveSinglePeer(peer: PeerEndpoint): Promise<LookupResult | null> {
-    const endpoint = `${peer.host}:${peer.port}`;
     const metadata = await this.config.metadataResolver.resolve(peer);
     if (metadata === null) {
+      return null;
+    }
+
+    return this._validateResolvedMetadata(peer, metadata);
+  }
+
+  private async _validateResolvedMetadata(
+    peer: PeerEndpoint,
+    metadata: PeerMetadata,
+  ): Promise<LookupResult | null> {
+    const endpoint = `${peer.host}:${peer.port}`;
+    const version = metadata.version;
+
+    try {
+      const schemaErrors = validateMetadata(metadata);
+      if (schemaErrors.length > 0) {
+        debugWarn(
+          `[PeerLookup] Dropping ${version} metadata from ${endpoint}: invalid schema `
+          + schemaErrors.map((error) => `${error.field}=${error.message}`).join("; "),
+        );
+        return null;
+      }
+    } catch (err) {
+      debugWarn(
+        `[PeerLookup] Dropping ${version} metadata from ${endpoint}: invalid schema `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
 
@@ -345,7 +380,7 @@ export class PeerLookup {
       const valid = await this.verifyMetadataSignature(metadata);
       if (!valid) {
         debugWarn(
-          `[PeerLookup] Dropping metadata from ${endpoint}: invalid signature `
+          `[PeerLookup] Dropping ${version} metadata from ${endpoint}: invalid signature `
           + `peerId=${metadata.peerId?.slice(0, 12) ?? 'unknown'}...`,
         );
         return null;
@@ -356,7 +391,7 @@ export class PeerLookup {
       const freshness = this.getMetadataFreshness(metadata);
       if (freshness.stale) {
         debugWarn(
-          `[PeerLookup] Dropping metadata from ${endpoint}: stale `
+          `[PeerLookup] Dropping ${version} metadata from ${endpoint}: stale `
           + `ageMs=${freshness.ageMs} maxAgeMs=${this.config.maxAnnouncementAgeMs} `
           + `reference=${freshness.reference} `
           + `clientServerSkewMs=${freshness.clientServerSkewMs ?? 'unknown'} `
@@ -366,7 +401,7 @@ export class PeerLookup {
       }
       if (freshness.clockSkewSuspected) {
         debugWarn(
-          `[PeerLookup] Accepting metadata from ${endpoint} using seller HTTP Date; `
+          `[PeerLookup] Accepting ${version} metadata from ${endpoint} using seller HTTP Date; `
           + `client clock skew suspected clientAgeMs=${freshness.clientAgeMs} `
           + `serverAgeMs=${freshness.ageMs} `
           + `clientServerSkewMs=${freshness.clientServerSkewMs ?? 'unknown'} `
@@ -377,7 +412,7 @@ export class PeerLookup {
     }
 
     debugLog(
-      `[PeerLookup] Accepted metadata from ${endpoint}: peerId=${metadata.peerId.slice(0, 12)}... `
+      `[PeerLookup] Accepted ${version} metadata from ${endpoint}: peerId=${metadata.peerId.slice(0, 12)}... `
       + `displayName=${JSON.stringify(metadata.displayName ?? null)} `
       + `providers=${metadata.providers.length}`,
     );

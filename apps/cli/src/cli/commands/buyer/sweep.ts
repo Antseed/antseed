@@ -15,6 +15,7 @@ import { AntseedNode, buildReceiveAuthorization, makeUsdcDomain, peerRelaysSweep
 import type { DepositRelayClient, DepositsClient, SweepRequestPayload, SweepReceiptPayload } from '@antseed/node'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildBuyerBootstrapEntries } from './start.js'
+import { daemonFetch } from './daemon.js'
 
 const AUTH_VALIDITY_SECS = 3600
 const POLL_INTERVAL_MS = 3000
@@ -39,39 +40,26 @@ function parseTimeoutSecs(value: string | undefined): { value: number; usedDefau
 
 // ─── Running-daemon control plane ─────────────────────────────────────
 
-/** Fetch against the local buyer daemon; null when nothing is listening. */
-async function daemonFetch(
-  port: number,
-  path: string,
-  init?: RequestInit,
-  timeoutMs = 10_000,
-): Promise<Response | null> {
-  try {
-    return await fetch(`http://127.0.0.1:${port}${path}`, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-  } catch {
-    return null
-  }
-}
-
 /** POST the signed payload to the daemon, which offers it to relayers one at
  *  a time. Returns the peers-offered count, or null when no daemon is
  *  reachable on the proxy port. The generous timeout covers the daemon's
  *  sequential offer round (~10s per candidate relayer). */
-async function daemonBroadcast(port: number, payload: SweepRequestPayload): Promise<number | null> {
+async function daemonBroadcast(
+  port: number,
+  payload: SweepRequestPayload,
+): Promise<{ sent: number; accepted?: boolean } | null> {
   const res = await daemonFetch(port, '/_antseed/sweep', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   }, 90_000)
   if (!res) return null
-  const body = await res.json().catch(() => null) as { ok?: boolean; sent?: number; error?: string } | null
+  const body = await res.json().catch(() => null) as { ok?: boolean; sent?: number; accepted?: boolean; error?: string } | null
   if (!res.ok || !body?.ok || typeof body.sent !== 'number') {
     throw new Error(`Daemon rejected the sweep request: ${body?.error ?? `HTTP ${res.status}`}`)
   }
-  return body.sent
+  // `accepted` is undefined when an older daemon predates sequential dispatch.
+  return { sent: body.sent, ...(typeof body.accepted === 'boolean' ? { accepted: body.accepted } : {}) }
 }
 
 /** Ask the daemon to refresh discovery and eagerly connect to a few sellers. */
@@ -310,18 +298,28 @@ export function registerBuyerSweepCommand(buyerCmd: Command): void {
         // collide with the daemon's peerId on the network.
         const proxyPort = config.buyer.proxyPort
         const netSpinner = ora(`Checking for a running buyer daemon on port ${proxyPort}...`).start()
-        let sent = await daemonBroadcast(proxyPort, payload)
+        let dispatchResult = await daemonBroadcast(proxyPort, payload)
         let getReceipt: () => Promise<SweepReceiptPayload | null>
+        let sent: number
 
-        if (sent !== null) {
-          if (sent === 0) {
+        if (dispatchResult !== null) {
+          if (dispatchResult.sent === 0) {
             netSpinner.text = 'Daemon has no connected sweep relayers — refreshing discovery...'
             await daemonRefreshAndConnect(proxyPort)
-            sent = await daemonBroadcast(proxyPort, payload) ?? 0
+            dispatchResult = await daemonBroadcast(proxyPort, payload) ?? { sent: 0 }
           }
+          sent = dispatchResult.sent
           if (sent === 0) {
             netSpinner.fail(chalk.red('Buyer daemon is running but could not reach any sweep relayers.'))
             console.log(chalk.dim('Your funds have not moved — check the daemon\'s network connectivity and retry.'))
+            process.exit(1)
+          }
+          // accepted === false means every relayer in the round declined (or
+          // stayed silent) — fail fast instead of waiting out the full
+          // confirmation window. undefined (older daemon) falls through.
+          if (dispatchResult.accepted === false) {
+            netSpinner.fail(chalk.red(`No relayer accepted the sweep (offered to ${sent} peer${sent === 1 ? '' : 's'}).`))
+            console.log(chalk.dim('Your funds have not moved — relayers may be at capacity or unprofitable at this amount. Retry shortly.'))
             process.exit(1)
           }
           netSpinner.text = `Broadcast via running daemon to ${sent} peer${sent === 1 ? '' : 's'} — waiting for a relayer...`
@@ -337,6 +335,7 @@ export function registerBuyerSweepCommand(buyerCmd: Command): void {
             bootstrapNodes,
             allowPrivateIPs: true,
             dataDir: globalOpts.dataDir,
+            autoReconcileBuyerChannels: false,
           })
           await node.start()
 

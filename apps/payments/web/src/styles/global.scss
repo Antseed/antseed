@@ -1588,6 +1588,13 @@ $dash-sidebar-width: 240px;
   color: var(--text-muted);
 }
 
+.authorize-wallet-connected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .authorize-wallet-addr {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
@@ -2387,18 +2394,6 @@ body,
 
 .rewards-info p:last-child {
   margin-bottom: 0;
-}
-
-.rewards-diem-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-
-.rewards-diem-actions span {
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
 .rewards-history--nested {

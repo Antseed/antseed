@@ -1,10 +1,15 @@
 import {
   extractUsage,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesFunctionCallId,
+  openAIResponsesMessageId,
   parseJsonSafe,
+  RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
   type TokenUsage,
 } from './utils.js';
+
+const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
 
 export interface CanonicalFunctionTool {
   name: string;
@@ -25,8 +30,15 @@ export type CanonicalContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; url?: string; mediaType?: string; data?: string };
 
+export type CanonicalResponseMessagePhase = 'commentary' | 'final_answer';
+
 export type CanonicalInputItem =
-  | { type: 'message'; role: 'user' | 'assistant'; content: CanonicalContentPart[] }
+  | {
+    type: 'message';
+    role: 'user' | 'assistant';
+    content: CanonicalContentPart[];
+    phase?: CanonicalResponseMessagePhase;
+  }
   | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string }
   | { type: 'function_call_output'; callId: string; output: string };
 
@@ -54,6 +66,7 @@ export interface CanonicalLlmRequest {
   instructions?: string;
   input: CanonicalInputItem[];
   maxOutputTokens?: number;
+  reasoningEffort?: string;
   temperature?: number;
   topP?: number;
   stop?: string | string[];
@@ -65,8 +78,18 @@ export interface CanonicalLlmRequest {
   cacheBreakpoints?: CanonicalCacheBreakpoints;
 }
 
+function assignToolsAndToolChoice(
+  body: Record<string, unknown>,
+  tools: unknown[] | undefined,
+  toolChoice: unknown,
+): void {
+  if (!tools || tools.length === 0) return;
+  body.tools = tools;
+  if (toolChoice !== undefined) body.tool_choice = toolChoice;
+}
+
 export type CanonicalOutputItem =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
   | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string };
 
 export interface CanonicalLlmResponse {
@@ -74,6 +97,7 @@ export interface CanonicalLlmResponse {
   model: string;
   output: CanonicalOutputItem[];
   stopReason: string | null;
+  endTurn?: boolean;
   usage: TokenUsage;
 }
 
@@ -93,11 +117,18 @@ function toolParameters(parameters: unknown): Record<string, unknown> {
 
 export function renderCanonicalRequestToOpenAIChatBody(
   request: CanonicalLlmRequest,
-  options: { toolCallContent?: '' | null; groupAssistantToolCallsWithPreviousMessage?: boolean } = {},
+  options: {
+    toolCallContent?: '' | null;
+    groupAssistantToolCallsWithPreviousMessage?: boolean;
+    preserveResponsesAgentSemantics?: boolean;
+  } = {},
 ): Record<string, unknown> {
   const messages: unknown[] = [];
-  if (request.instructions !== undefined && request.instructions.length > 0) {
-    messages.push({ role: 'system', content: request.instructions });
+  const instructions = options.preserveResponsesAgentSemantics && request.tools?.length
+    ? appendResponsesChatCompatibilityInstructions(request.instructions)
+    : request.instructions;
+  if (instructions !== undefined && instructions.length > 0) {
+    messages.push({ role: 'system', content: instructions });
   }
 
   for (const item of request.input) {
@@ -111,7 +142,13 @@ export function renderCanonicalRequestToOpenAIChatBody(
           continue;
         }
       }
-      messages.push({ role: item.role, content: renderCanonicalContentToOpenAIChat(item.content) });
+      messages.push({
+        role: item.role,
+        content: renderCanonicalContentToOpenAIChat(item.content),
+        ...(options.preserveResponsesAgentSemantics && item.role === 'assistant' && item.phase
+          ? { name: item.phase }
+          : {}),
+      });
       continue;
     }
     if (item.type === 'function_call') {
@@ -146,13 +183,17 @@ export function renderCanonicalRequestToOpenAIChatBody(
     ...(request.stream ? { stream_options: { include_usage: true } } : {}),
   };
   if (typeof request.maxOutputTokens === 'number') body.max_tokens = request.maxOutputTokens;
+  if (request.reasoningEffort !== undefined) body.reasoning_effort = request.reasoningEffort;
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
-  const tools = renderCanonicalToolsToOpenAIChat(request.tools);
-  if (tools) body.tools = tools;
+  const tools = renderCanonicalToolsToOpenAIChat(
+    options.preserveResponsesAgentSemantics && request.tools?.length
+      ? [...request.tools, { name: RESPONSES_FINAL_ANSWER_TOOL, parameters: { type: 'object', properties: {} } }]
+      : request.tools,
+  );
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
-  if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata) body.metadata = request.metadata;
   if (request.user) body.user = request.user;
   // Routes the request to the cache that holds this conversation's prefix.
@@ -174,6 +215,7 @@ export function renderCanonicalRequestToOpenAIResponsesBody(
         type: 'message',
         role: item.role,
         content: renderCanonicalContentToOpenAIResponses(item.content, item.role),
+        ...(item.role === 'assistant' && item.phase ? { phase: item.phase } : {}),
       });
       continue;
     }
@@ -202,13 +244,13 @@ export function renderCanonicalRequestToOpenAIResponsesBody(
     stream: request.stream,
   };
   if (typeof request.maxOutputTokens === 'number') body.max_output_tokens = request.maxOutputTokens;
+  if (request.reasoningEffort !== undefined) body.reasoning = { effort: request.reasoningEffort };
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
   const tools = renderCanonicalToolsToOpenAIResponses(request.tools);
-  if (tools) body.tools = tools;
   const toolChoice = renderCanonicalToolChoiceToOpenAIResponses(request.toolChoice);
-  if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  assignToolsAndToolChoice(body, tools, toolChoice);
   if (options.includeMetadata !== false && request.metadata) body.metadata = request.metadata;
   if (options.includeUser !== false && request.user) body.user = request.user;
   if (request.promptCacheKey) body.prompt_cache_key = request.promptCacheKey;
@@ -318,10 +360,9 @@ export function renderCanonicalRequestToAnthropicMessagesBody(request: Canonical
       const lastTool = tools[tools.length - 1];
       if (lastTool) lastTool.cache_control = EPHEMERAL_CACHE_CONTROL;
     }
-    body.tools = tools;
   }
   const toolChoice = renderCanonicalToolChoiceToAnthropic(request.toolChoice);
-  if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata || request.user) {
     body.metadata = {
       ...(request.metadata ?? {}),
@@ -441,6 +482,9 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
   }
 
   if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.length > 0) {
+    request.reasoningEffort = body.reasoning_effort;
+  }
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
@@ -468,10 +512,31 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   }
 
   const input = body.input;
+  const normalizedInput = Array.isArray(input)
+    ? input.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const msg = item as Record<string, unknown>;
+      if (msg.type !== 'message' || msg.role !== 'assistant' || !Array.isArray(msg.content)) return item;
+      const text = msg.content.map((part) => {
+        if (!part || typeof part !== 'object') return '';
+        const value = (part as Record<string, unknown>).text;
+        return typeof value === 'string' ? value : '';
+      }).join('');
+      if (!RESPONSES_FINAL_ANSWER_TOOL_RE.test(text)) return item;
+      return {
+        ...msg,
+        content: [{
+          type: 'output_text',
+          text: text.replace(RESPONSES_FINAL_ANSWER_TOOL_RE, '').trim(),
+          ...(Array.isArray(msg.annotations) ? { annotations: msg.annotations } : {}),
+        }],
+      };
+    })
+    : input;
   if (typeof input === 'string') {
     request.input.push({ type: 'message', role: 'user', content: [{ type: 'text', text: input }] });
-  } else if (Array.isArray(input)) {
-    for (const item of input) {
+  } else if (Array.isArray(normalizedInput)) {
+    for (const item of normalizedInput) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
@@ -506,11 +571,18 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // Non-message items (reasoning, web_search_call, ...) carry no renderable
       // text — dropping them avoids injecting empty user messages mid-history.
       if (type !== 'message' && textFromCanonicalContent(content).length === 0) continue;
-      request.input.push({ type: 'message', role, content });
+      const phase = role === 'assistant' ? normalizeResponseMessagePhase(msg.phase) : undefined;
+      request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}) });
     }
   }
 
   if (typeof body.max_output_tokens === 'number') request.maxOutputTokens = body.max_output_tokens;
+  if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
+    const effort = (body.reasoning as Record<string, unknown>).effort;
+    if (typeof effort === 'string' && effort.length > 0) {
+      request.reasoningEffort = effort;
+    }
+  }
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
@@ -541,17 +613,19 @@ export function normalizeOpenAIChatResponseBody(
     ? firstChoice.message as Record<string, unknown>
     : {};
 
-  const output: CanonicalOutputItem[] = [];
   const text = toStringContent(message.content);
-  if (text.length > 0) output.push({ type: 'text', text });
-
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const output: CanonicalOutputItem[] = [];
+  if (text.length > 0) {
+    output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : undefined });
+  }
   for (const [index, rawToolCall] of toolCalls.entries()) {
     if (!rawToolCall || typeof rawToolCall !== 'object') continue;
     const toolCall = rawToolCall as Record<string, unknown>;
     const fn = toolCall.function && typeof toolCall.function === 'object'
       ? toolCall.function as Record<string, unknown>
       : {};
+    if (fn.name === RESPONSES_FINAL_ANSWER_TOOL) continue;
     output.push({
       type: 'function_call',
       id: typeof toolCall.id === 'string' && toolCall.id.length > 0 ? toolCall.id : `call_${index + 1}`,
@@ -562,7 +636,21 @@ export function normalizeOpenAIChatResponseBody(
 
   const usage = extractUsage(body);
   const stopReason = typeof firstChoice.finish_reason === 'string' ? firstChoice.finish_reason : null;
-  return { id, model, output, stopReason, usage };
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    endTurn: toolCalls.some((toolCall) => {
+      const fn = toolCall.function && typeof toolCall.function === 'object'
+        ? toolCall.function as Record<string, unknown>
+        : {};
+      return fn.name === RESPONSES_FINAL_ANSWER_TOOL;
+    })
+      ? true
+      : false,
+    usage,
+  };
 }
 
 export function normalizeOpenAIResponsesResponseBody(
@@ -579,7 +667,8 @@ export function normalizeOpenAIResponsesResponseBody(
     const item = itemRaw as Record<string, unknown>;
     if (item.type === 'message') {
       const text = textFromResponsesContent(item.content);
-      if (text.length > 0) output.push({ type: 'text', text });
+      const phase = normalizeResponseMessagePhase(item.phase);
+      if (text.length > 0) output.push({ type: 'text', text, ...(phase ? { phase } : {}) });
       continue;
     }
     if (item.type === 'function_call') {
@@ -683,18 +772,19 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
 
 export function renderCanonicalResponseToOpenAIResponsesBody(response: CanonicalLlmResponse): Record<string, unknown> {
   const output: unknown[] = [];
-  const text = response.output
-    .filter((item): item is { type: 'text'; text: string } => item.type === 'text')
-    .map((item) => item.text)
-    .join('');
+  const textItems = response.output
+    .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
+  const text = textItems.map((item) => item.text).join('');
+  const phase = textItems.find((item) => item.phase)?.phase;
 
   if (text.length > 0) {
     output.push({
       type: 'message',
-      id: `${response.id}_msg_1`,
+      id: openAIResponsesMessageId(response.id),
       role: 'assistant',
       status: 'completed',
       content: [{ type: 'output_text', text, annotations: [] }],
+      ...(phase ? { phase } : {}),
     });
   }
 
@@ -702,7 +792,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     if (item.type !== 'function_call') continue;
     output.push({
       type: 'function_call',
-      id: item.id,
+      id: openAIResponsesFunctionCallId(item.id),
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
@@ -718,6 +808,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,
+    ...(response.endTurn !== undefined ? { end_turn: response.endTurn } : {}),
     usage: openAIResponsesUsage(response.usage),
   };
 }
@@ -790,6 +881,20 @@ function parseToolArguments(args: Record<string, unknown> | string): Record<stri
 
 function modelFromBody(body: Record<string, unknown>): string | null {
   return typeof body.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null;
+}
+
+function normalizeResponseMessagePhase(value: unknown): CanonicalResponseMessagePhase | undefined {
+  return value === 'commentary' || value === 'final_answer' ? value : undefined;
+}
+
+function appendResponsesChatCompatibilityInstructions(instructions: string | undefined): string {
+  const compatibility = [
+    'Chat Completions compatibility requirement:',
+    '- Assistant messages named "commentary" are interim progress updates, not final answers.',
+    '- If more work remains, do not end with commentary alone; include the next tool call in the same response.',
+    '- Return text without a tool call only when it is the final answer to the user.',
+  ].join('\n');
+  return instructions ? `${instructions}\n\n${compatibility}` : compatibility;
 }
 
 function isAssistantMessage(value: unknown): value is Record<string, unknown> {

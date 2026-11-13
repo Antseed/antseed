@@ -5,6 +5,7 @@ export {
   ANTSEED_WILDCARD_TOPIC,
   capabilityTopic,
   peerTopic,
+  sellerTopics,
   subnetTopic,
   subnetOf,
   SUBNET_COUNT,
@@ -19,6 +20,8 @@ export { encodeMetadata, encodeMetadataForSigning, decodeMetadata } from './meta
 export { validateMetadata, MAX_METADATA_SIZE, MAX_PROVIDERS, type ValidationError } from './metadata-validator.js';
 export {
   METADATA_VERSION,
+  LEGACY_METADATA_VERSION,
+  METADATA_VERSION_HEADER,
   WELL_KNOWN_SERVICE_CATEGORIES,
   type DomainVerificationClaim,
   type DomainVerificationMethod,
@@ -57,6 +60,21 @@ export {
   type PeerVerificationLink,
 } from './verification-links.js';
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './public-address.js';
+export { sanitizePeerDisplayName } from './display-name.js';
 export { type MetadataResolver, type PeerEndpoint } from './metadata-resolver.js';
-export { HttpMetadataResolver, type HttpMetadataResolverConfig } from './http-metadata-resolver.js';
+export { HttpMetadataResolver, MAX_METADATA_HTTP_RESPONSE_SIZE, type HttpMetadataResolverConfig } from './http-metadata-resolver.js';
 export { DHTHealthMonitor, DEFAULT_HEALTH_THRESHOLDS, type DHTHealthSnapshot, type HealthThresholds } from './dht-health.js';
+export {
+  buildNetworkServiceOffers,
+  compareNetworkServiceOfferPrice,
+  inferServiceProtocol,
+  resolveServiceProtocol,
+  selectLowestPricedCanonicalOffers,
+  selectLowestPricedNetworkServiceOffer,
+  type BuildNetworkServiceOffersOptions,
+  type CatalogServiceCapabilities,
+  type CatalogServiceProtocol,
+  type NetworkServiceCatalogPeer,
+  type NetworkServiceOffer,
+} from './service-catalog.js';
+export { getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS, type MetadataVersionCodec } from './metadata-codec.js';

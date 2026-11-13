@@ -1,4 +1,5 @@
-import type { Provider, ServiceApiProtocol } from '@antseed/node';
+import type { Provider, ServiceApiProtocol, ServiceCapabilities, ServiceUnitBillingModelsV1, UnitBillingComponentV1, UnitBillingModelV1 } from '@antseed/node';
+import { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH, isKnownServiceApiProtocol, validateServiceCapabilityFields, validateUnitBillingModelForProtocolV1 } from '@antseed/node';
 
 export function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
   const parsed = raw === undefined ? fallback : Number.parseFloat(raw);
@@ -49,6 +50,69 @@ export function parseServicePricingJson(raw: string | undefined): Provider['pric
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+export function parseServiceUnitBillingModelsJson(raw: string | undefined, key = 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'): ServiceUnitBillingModelsV1 | undefined {
+  if (!raw) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`${key} must be valid JSON`);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${key} must be an object map of service -> protocol -> unit billing model`);
+  }
+
+  const out: ServiceUnitBillingModelsV1 = {};
+  for (const [service, protocols] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!protocols || typeof protocols !== 'object' || Array.isArray(protocols)) {
+      throw new Error(`${key}.${service} must be an object map of protocol -> unit billing model`);
+    }
+    for (const [protocol, model] of Object.entries(protocols as Record<string, unknown>)) {
+      if (!isKnownServiceApiProtocol(protocol)) {
+        throw new Error(`${key}.${service}.${protocol} must be a known service API protocol`);
+      }
+      if (!model || typeof model !== 'object' || Array.isArray(model)) {
+        throw new Error(`${key}.${service}.${protocol} must be a unit billing model object`);
+      }
+      const normalized = normalizeUnitBillingModel(model as Record<string, unknown>, `${key}.${service}.${protocol}`);
+      const errors = validateUnitBillingModelForProtocolV1(protocol, normalized);
+      if (errors.length > 0) {
+        throw new Error(`${key}.${service}.${protocol}: ${errors.join('; ')}`);
+      }
+      out[service] = {
+        ...(out[service] ?? {}),
+        [protocol]: normalized,
+      } as ServiceUnitBillingModelsV1[string];
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeUnitBillingModel(raw: Record<string, unknown>, field: string): UnitBillingModelV1 {
+  if (raw.version !== 1 || !Array.isArray(raw.components)) {
+    throw new Error(`${field} must have version=1 and a components array`);
+  }
+  const components = raw.components.map((component, index): UnitBillingComponentV1 => {
+    if (!component || typeof component !== 'object' || Array.isArray(component)) {
+      throw new Error(`${field}.components[${index}] must be an object`);
+    }
+    const c = component as Record<string, unknown>;
+    if (typeof c.unit !== 'string' || typeof c.priceUsd !== 'number') {
+      throw new Error(`${field}.components[${index}] requires unit and numeric priceUsd`);
+    }
+    const match = c.match;
+    return {
+      unit: c.unit,
+      priceUsd: c.priceUsd,
+      ...(match && typeof match === 'object' && !Array.isArray(match) ? { match: match as Record<string, string> } : {}),
+    } as UnitBillingComponentV1;
+  });
+  return { version: 1, components };
+}
+
 export function parseCsv(raw: string | undefined): string[] {
   if (!raw) return [];
   return Array.from(
@@ -59,6 +123,61 @@ export function parseCsv(raw: string | undefined): string[] {
         .filter((entry) => entry.length > 0),
     ),
   );
+}
+
+export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANTSEED_SERVICE_CAPABILITIES_JSON'): Record<string, ServiceCapabilities> | undefined {
+  if (!raw) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`${key} must be valid JSON`);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${key} must be an object map of service -> capabilities`);
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length > MAX_SERVICES_PER_PROVIDER) {
+    throw new Error(`${key} must not define more than ${MAX_SERVICES_PER_PROVIDER} services`);
+  }
+  const out: Record<string, ServiceCapabilities> = {};
+  for (const [service, rawCaps] of entries) {
+    if (service.length > MAX_SERVICE_NAME_LENGTH) {
+      throw new Error(`${key} service name "${service}" exceeds ${MAX_SERVICE_NAME_LENGTH} characters`);
+    }
+    if (!rawCaps || typeof rawCaps !== 'object' || Array.isArray(rawCaps)) {
+      throw new Error(`${key}.${service} must be a capabilities object`);
+    }
+    const caps = rawCaps as Record<string, unknown>;
+    const normalized: ServiceCapabilities = {};
+    for (const field of ['contextWindow', 'maxOutputTokens'] as const) {
+      if (caps[field] !== undefined) normalized[field] = caps[field] as number;
+    }
+    if (caps.inputs !== undefined) normalized.inputs = caps.inputs as ServiceCapabilities['inputs'];
+    if (caps.outputs !== undefined) normalized.outputs = caps.outputs as ServiceCapabilities['outputs'];
+    for (const field of ['reasoning', 'toolUse', 'structuredOutput'] as const) {
+      if (caps[field] !== undefined) normalized[field] = caps[field] as boolean;
+    }
+    if (caps.supportedParameters !== undefined) {
+      normalized.supportedParameters = caps.supportedParameters as ServiceCapabilities['supportedParameters'];
+    }
+    if (caps.video !== undefined) normalized.video = caps.video as ServiceCapabilities['video'];
+    if (caps.speech !== undefined) normalized.speech = caps.speech as ServiceCapabilities['speech'];
+    // Same validator the announce path uses, so anything accepted here is
+    // guaranteed to announce instead of failing silently at announce time.
+    const fieldErrors = validateServiceCapabilityFields(normalized);
+    if (fieldErrors.length > 0) {
+      throw new Error(`${key}.${service}: ${fieldErrors.join('; ')}`);
+    }
+    if (Object.keys(normalized).length > 0) {
+      out[service] = normalized;
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function parseJsonObject(raw: string | undefined, key: string): Record<string, unknown> | undefined {
@@ -84,4 +203,100 @@ export function buildServiceApiProtocols(
 ): Record<string, ServiceApiProtocol[]> | undefined {
   if (services.length === 0) return undefined;
   return Object.fromEntries(services.map((service) => [service, [protocol]]));
+}
+
+/**
+ * Well-known image-generation model families. Shared by the openai plugin's
+ * protocol classification and the seller setup wizard's capability prompts so
+ * "what counts as an image model" cannot drift between the two.
+ *
+ * Match the final path segment so namespaced model IDs such as
+ * `venice/flux-2-pro` work without treating an unrelated namespace as a model
+ * family. Keep generic one-word IDs exact to avoid false positives.
+ */
+const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|flux-3-image$|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
+
+export function isImageModelId(model: string): boolean {
+  const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
+  return IMAGE_MODEL_ID_PATTERN.test(modelId);
+}
+
+/**
+ * Text-to-speech model IDs served through `POST /v1/audio/speech`: OpenAI's
+ * `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts`, and Venice's `tts-*` family.
+ */
+const SPEECH_MODEL_ID_PATTERN = /^(?:tts-|gpt-4o(?:-mini)?-tts(?:-|$))/;
+
+export function isSpeechModelId(model: string): boolean {
+  const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
+  return SPEECH_MODEL_ID_PATTERN.test(modelId);
+}
+
+/**
+ * One backup upstream from `ANTSEED_FALLBACK_UPSTREAMS_JSON`. The CLI writes
+ * this from `seller.providers.<name>.fallbackUpstreams` with API keys resolved.
+ */
+export interface FallbackUpstreamConfig {
+  baseUrl: string;
+  /** API key for this upstream. Omit to reuse the provider's own key. */
+  apiKey?: string;
+  /** Services this upstream serves. Omit to serve every service of the provider. */
+  services?: string[];
+  /** Announced service -> upstream model at this upstream, over the provider's alias map. */
+  serviceAliasMap?: Record<string, string>;
+  pathRewrite?: Record<string, string>;
+}
+
+export function parseFallbackUpstreamsJson(raw: string | undefined, key = 'ANTSEED_FALLBACK_UPSTREAMS_JSON'): FallbackUpstreamConfig[] | undefined {
+  if (!raw) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`${key} must be valid JSON`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${key} must be an array of upstreams`);
+  }
+
+  // Service IDs are matched case-insensitively; paths are case-sensitive.
+  const stringMap = (value: unknown, field: string, lowercaseKeys: boolean): Record<string, string> | undefined => {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !Object.values(value).every((entry) => typeof entry === 'string' && entry.trim().length > 0)) {
+      throw new Error(`${field} must be an object of non-empty strings`);
+    }
+    return Object.fromEntries(Object.entries(value as Record<string, string>)
+      .map(([k, v]) => [lowercaseKeys ? k.trim().toLowerCase() : k, v.trim()]));
+  };
+
+  const out = parsed.map((entry, index): FallbackUpstreamConfig => {
+    const field = `${key}[${index}]`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${field} must be an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    const baseUrl = typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '';
+    if (!/^https?:\/\//i.test(baseUrl) || !URL.canParse(baseUrl)) {
+      throw new Error(`${field}.baseUrl must be an http(s) URL`);
+    }
+    if (e.apiKey !== undefined && (typeof e.apiKey !== 'string' || e.apiKey.trim().length === 0)) {
+      throw new Error(`${field}.apiKey must be a non-empty string`);
+    }
+    if (e.services !== undefined && (!Array.isArray(e.services) || e.services.length === 0
+      || !e.services.every((service) => typeof service === 'string' && service.trim().length > 0))) {
+      throw new Error(`${field}.services must be a non-empty array of service IDs`);
+    }
+    const serviceAliasMap = stringMap(e.serviceAliasMap, `${field}.serviceAliasMap`, true);
+    const pathRewrite = stringMap(e.pathRewrite, `${field}.pathRewrite`, false);
+    return {
+      baseUrl,
+      ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey.trim() } : {}),
+      ...(Array.isArray(e.services) ? { services: (e.services as string[]).map((service) => service.trim()) } : {}),
+      ...(serviceAliasMap ? { serviceAliasMap } : {}),
+      ...(pathRewrite ? { pathRewrite } : {}),
+    };
+  });
+  return out.length > 0 ? out : undefined;
 }

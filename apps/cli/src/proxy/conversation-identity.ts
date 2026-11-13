@@ -1,4 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter'
+import { createHash } from 'node:crypto'
 import { SYSTEM_PROXY_SOURCE_HEADER } from './request-utils.js'
 
 /**
@@ -71,6 +72,16 @@ const TITLE_REQUEST_PREFIXES = [
   'write a short title',
   'summarize this conversation in a title',
   'summarize this coding conversation',
+  // Claude Desktop titles each new chat from a session of its own.
+  'you are coming up with a succinct title',
+]
+
+/** Some integrations prepend shared provider instructions before their title
+    prompt, so the title-specific text is not at the start of the instruction
+    block. These exact markers are safe to recognize in system/developer roles
+    and top-level instructions; user messages still require a leading prefix. */
+const TITLE_REQUEST_INSTRUCTION_MARKERS = [
+  'you are a helper that generates concise session titles for a session picker',
 ]
 
 /** Injected project-doc blobs — Codex sends AGENTS.md / CLAUDE.md contents
@@ -78,6 +89,7 @@ const TITLE_REQUEST_PREFIXES = [
     requests these must never label a chat, not even as a fallback; matched
     against the tag-stripped text so a wrapper can't hide the doc header. */
 const INSTRUCTION_DOC_PATTERN = /^#*\s*(agents|claude|gemini)\.md\b/i
+const RECOMMENDED_PLUGINS_PATTERN = /^here is a list of plugins that are available but not installed\b/i
 
 function getHeader(headers: Record<string, string>, name: string): string {
   const direct = headers[name]
@@ -183,6 +195,50 @@ function sessionKeyFromBody(body: Record<string, unknown> | null): string {
 }
 
 /**
+ * Some OpenAI-compatible clients identify themselves but do not expose their
+ * internal conversation id on the wire. Build a deterministic fallback from
+ * the stable request prefix through the first genuine user turn, so appended
+ * assistant/tool history does not change the key on later requests.
+ */
+function syntheticSessionKeyFromBody(body: Record<string, unknown> | null): string {
+  if (!body) return ''
+  const candidates = [body['messages'], body['input']]
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue
+    for (let index = 0; index < candidate.length; index++) {
+      const item = candidate[index]
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const record = item as Record<string, unknown>
+      if (record['role'] !== 'user') continue
+      const texts = textFromContent(record['content'] ?? record['text'])
+        .map(normalizeConversationText)
+        .filter((text) => text.length > 0)
+      const genuineText = texts.find((text) => {
+        const normalized = normalizeSnippet(text)
+        return normalized.length > 0
+          && !looksLikeMachineContext(text)
+          && !looksLikeTitleRequest(text)
+          && !INSTRUCTION_DOC_PATTERN.test(normalized)
+      })
+      if (!genuineText) continue
+      const stablePrefix = JSON.stringify(candidate.slice(0, index + 1))
+      return `synthetic-${createHash('sha256').update(stablePrefix).digest('hex').slice(0, 32)}`
+    }
+  }
+  return ''
+}
+
+/**
+ * The client tool's slug, from the same headers conversation identity reads,
+ * even when the request carries no session to key on.
+ */
+export function requestClientTool(headers: Record<string, string>): string {
+  const source = systemProxySource(headers)
+  const detectedTool = toolSessionHeader(headers)?.tool || detectTool(headers)
+  return source === 'public-tunnel' && detectedTool === 'cursor' ? 'cursor' : source || detectedTool
+}
+
+/**
  * Extract the conversation identity from a completion request, or null when
  * the tool sent nothing to key on. `parsedBody` is the request body as a JSON
  * object when available (callers usually have it parsed already).
@@ -192,31 +248,92 @@ export function extractConversationIdentity(
   parsedBody: Record<string, unknown> | null,
 ): ConversationIdentity | null {
   const named = toolSessionHeader(headers)
+  const source = systemProxySource(headers)
+  const originator = slugifyTool(getHeader(headers, 'originator'))
+  const detectedTool = named?.tool || detectTool(headers)
+  // Older tunnel gateways stamped every request as `public-tunnel`. Cursor's
+  // User-Agent is the only client identity it sends, so let that refine the
+  // generic tunnel source while preserving named System Proxy profiles.
+  const tool = source === 'public-tunnel' && detectedTool === 'cursor'
+    ? 'cursor'
+    : source || detectedTool
   const sessionKey = named?.sessionKey
     || getHeader(headers, 'thread-id')
     || getHeader(headers, 'session-id')
     || getHeader(headers, 'x-session-id')
     || getHeader(headers, 'x-session-affinity')
     || sessionKeyFromBody(parsedBody)
+    || ((source || originator || detectedTool === 'cursor') ? syntheticSessionKeyFromBody(parsedBody) : '')
   const trimmed = sessionKey.trim()
   if (!trimmed) return null
   const parent = getHeader(headers, 'x-parent-session-id').trim()
   return {
-    tool: systemProxySource(headers) || named?.tool || detectTool(headers),
+    tool,
     sessionKey: trimmed,
     parentSessionKey: parent.length > 0 ? parent : null,
     isUserThread: isUserThread(headers),
   }
 }
 
+/** Header some upstreams route a conversation to its prompt cache by (the Codex backend among them). */
+export const UPSTREAM_SESSION_HEADER = 'session_id'
+
+/**
+ * The request's headers with the conversation's key as `session_id`, unless
+ * the client sent one. Clients name their session id differently (see the top
+ * of this file), and a reverse proxy in front of a gateway may drop header
+ * names with underscores (Caddy does by default), so the buyer sets it itself.
+ */
+export function withUpstreamSessionHeader(
+  headers: Record<string, string>,
+  identity: ConversationIdentity,
+): Record<string, string> {
+  if (getHeader(headers, UPSTREAM_SESSION_HEADER).trim()) return headers
+  return { ...headers, [UPSTREAM_SESSION_HEADER]: identity.sessionKey }
+}
+
 function looksLikeMachineContext(text: string): boolean {
   const start = text.trimStart().toLowerCase()
   return NON_PROMPT_PREFIXES.some((prefix) => start.startsWith(prefix))
+    || looksLikeCursorEnvironment(start)
+}
+
+function looksLikeCursorEnvironment(text: string): boolean {
+  const normalized = text.trimStart().toLowerCase().replace(/\s+/g, ' ')
+  return (normalized.startsWith('os version:') || /^<user_info(?:\s[^>]*)?>\s*os version:/.test(normalized))
+    && normalized.includes(' shell:')
+}
+
+export function isCursorEnvironmentSnippet(text: string): boolean {
+  return looksLikeCursorEnvironment(text)
+}
+
+function normalizeConversationText(text: string): string {
+  if (isDiscardedConversationContext(text)) return ''
+  const cursorQuery = /<user_query(?:\s[^>]*)?>([\s\S]*?)<\/user_query>/i.exec(text)?.[1]
+  return (cursorQuery ?? text).trim()
+}
+
+function isDiscardedConversationContext(text: string): boolean {
+  return looksLikeCursorEnvironment(text) || looksLikeRecommendedPlugins(text)
+}
+
+function looksLikeRecommendedPlugins(text: string): boolean {
+  const normalized = text
+    .replace(/<\/?recommended_plugins(?:\s[^>]*)?>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return RECOMMENDED_PLUGINS_PATTERN.test(normalized)
 }
 
 function looksLikeTitleRequest(text: string): boolean {
   const start = text.trimStart().toLowerCase()
   return TITLE_REQUEST_PREFIXES.some((prefix) => start.startsWith(prefix))
+}
+
+function containsKnownTitleInstructionMarker(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim()
+  return TITLE_REQUEST_INSTRUCTION_MARKERS.some((marker) => normalized.includes(marker))
 }
 
 /** Strip XML-ish tags (prompts often open with wrappers like `<session>`),
@@ -256,6 +373,18 @@ function userTextsFromMessageList(list: unknown): string[] {
   return texts
 }
 
+function instructionTextsFromMessageList(list: unknown): string[] {
+  if (!Array.isArray(list)) return []
+  const texts: string[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    if (record['role'] !== 'system' && record['role'] !== 'developer') continue
+    texts.push(...textFromContent(record['content']))
+  }
+  return texts
+}
+
 /**
  * Best-effort label for a new conversation: the first genuine user prompt in
  * the request, skipping machine-generated context wrappers (system reminders,
@@ -276,7 +405,9 @@ export function extractFirstUserSnippet(parsedBody: Record<string, unknown> | nu
   // conversation stays unlabeled until a real turn arrives. Genuine prompts
   // are preferred over machine-context wrappers, and candidates that strip
   // down to nothing (pure markup) are passed over.
-  const usable = candidates.filter((text) => text.trim().length > 0 && !looksLikeTitleRequest(text))
+  const usable = candidates
+    .map(normalizeConversationText)
+    .filter((text) => text.trim().length > 0 && !looksLikeTitleRequest(text))
   const genuine = usable.filter((text) => !looksLikeMachineContext(text))
   for (const text of [...genuine, ...usable]) {
     const normalized = normalizeSnippet(text)
@@ -287,7 +418,8 @@ export function extractFirstUserSnippet(parsedBody: Record<string, unknown> | nu
 
 /**
  * True when the request is a tool's title/summary housekeeping turn rather
- * than a chat turn — its *leading* user message is a title instruction.
+ * than a chat turn. Exact known helper markers may appear in instruction
+ * roles; generic title phrasing must be the *leading* user message.
  *
  * Keyed on the first message because OpenCode sends
  * `[{"Generate a title for this conversation:"}, ...the real conversation]`,
@@ -300,8 +432,18 @@ export function extractFirstUserSnippet(parsedBody: Record<string, unknown> | nu
  * model — and that becomes the chat's pin, outranking the selected model for
  * the rest of the session.
  */
-export function isTitleGenerationRequest(parsedBody: Record<string, unknown> | null): boolean {
+export function isTitleGenerationRequest(
+  parsedBody: Record<string, unknown> | null,
+): boolean {
   if (!parsedBody) return false
+  const instructions = parsedBody['instructions']
+  const instructionCandidates: string[] = typeof instructions === 'string'
+    ? [instructions]
+    : []
+  instructionCandidates.push(...instructionTextsFromMessageList(parsedBody['messages']))
+  instructionCandidates.push(...instructionTextsFromMessageList(parsedBody['input']))
+  if (instructionCandidates.some(containsKnownTitleInstructionMarker)) return true
+
   const candidates: string[] = []
   candidates.push(...userTextsFromMessageList(parsedBody['messages']))
   const input = parsedBody['input']
@@ -320,7 +462,7 @@ export function isTitleGenerationRequest(parsedBody: Record<string, unknown> | n
  */
 export function sanitizeStoredSnippet(text: string): string {
   if (!text) return ''
-  if (looksLikeTitleRequest(text)) return ''
+  if (looksLikeTitleRequest(text) || isDiscardedConversationContext(text)) return ''
   const normalized = normalizeSnippet(text)
   // Stored labels from before the instruction-doc rule heal to empty so the
   // next real turn names the chat.

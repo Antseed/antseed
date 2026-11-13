@@ -14,6 +14,8 @@ export interface BaseProviderConfig {
   services: string[];
   pricing: Provider['pricing'];
   serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
+  serviceUnitBillingModels?: Provider['serviceUnitBillingModels'];
+  serviceCapabilities?: Provider['serviceCapabilities'];
   relay: RelayConfig;
 }
 
@@ -26,6 +28,8 @@ export class BaseProvider implements Provider {
   readonly services: string[];
   readonly pricing: Provider['pricing'];
   readonly serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
+  readonly serviceUnitBillingModels?: Provider['serviceUnitBillingModels'];
+  readonly serviceCapabilities?: Provider['serviceCapabilities'];
   readonly maxConcurrency: number;
 
   private readonly _relay: HttpRelay;
@@ -38,6 +42,8 @@ export class BaseProvider implements Provider {
     this.services = config.services;
     this.pricing = config.pricing;
     this.serviceApiProtocols = config.serviceApiProtocols;
+    this.serviceUnitBillingModels = config.serviceUnitBillingModels;
+    this.serviceCapabilities = config.serviceCapabilities;
     this.maxConcurrency = config.relay.maxConcurrency;
 
     this._relay = new HttpRelay(config.relay, {

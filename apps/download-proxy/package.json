@@ -1,0 +1,20 @@
+{
+  "name": "@antseed/download-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that serves desktop installer downloads from GitHub Releases through download.antseed.com with download started/completed/aborted telemetry",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

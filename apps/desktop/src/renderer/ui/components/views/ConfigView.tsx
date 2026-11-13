@@ -2,7 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { useRetainedState } from '../../hooks/useRetainedState';
-import { VprBackTitle, VprCard, VprSettingRow, VprToggle } from '../vpr/VprKit';
+import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
 import styles from './ConfigView.module.scss';
 
 type ConfigViewProps = {
@@ -113,22 +113,19 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
       cryptoChainId: chainId,
     });
     setDirty(false);
-    // Restart buyer runtime to pick up new config
+    // Restart buyer runtime to pick up new config. Connected apps stay
+    // connected across the restart — a restart is not a disconnect.
     try {
-      await actions.stopConnect();
-    } catch { /* may not be running */ }
-    try {
-      await actions.startConnect();
+      await actions.restartConnect();
     } catch { /* will auto-start on next request */ }
   }
 
   const baseInstalled = voiceStatus?.models.some((model) => model.id === 'base' && model.installed) ?? false;
 
   return (
-    <section className={`view view-config ${styles.view}`} role="tabpanel">
+    <section className="view view-config view-pinned-header" role="tabpanel">
+      <VprPage title="Configuration" backFallback="help" subtitle="Buyer, payments and voice transcription.">
       <div className={styles.stack}>
-        <VprBackTitle title="Configuration" fallback="help" />
-
         <VprCard className={styles.card}>
           <span className={styles.cardTitle}>Buyer</span>
           <VprSettingRow
@@ -207,7 +204,7 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
           <span className={styles.cardTitle}>Voice transcription</span>
           <VprSettingRow
             title="Local Whisper model"
-            hint="Voice messages are transcribed locally — Tiny is bundled, Base is more accurate"
+            hint="Voice messages are transcribed locally — Tiny downloads on first use, Base is more accurate"
             control={(
               <select
                 className={styles.select}
@@ -216,8 +213,9 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
                 disabled={!voiceStatus}
               >
                 {(voiceStatus?.models || []).map((model) => (
-                  <option key={model.id} value={model.id} disabled={!model.installed}>
-                    {model.label} {model.size}{model.installed ? '' : ' — not installed'}
+                  <option key={model.id} value={model.id} disabled={!model.installed && model.id !== 'tiny'}>
+                    {model.label} {model.size}
+                    {model.installed ? '' : model.id === 'tiny' ? ' — downloads on first use' : ' — not installed'}
                   </option>
                 ))}
               </select>
@@ -247,6 +245,7 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
           </p>
         ) : null}
       </div>
+      </VprPage>
     </section>
   );
 }

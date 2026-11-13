@@ -46,7 +46,7 @@ export function UsdcLogo({ size = 22 }: { size?: number }) {
 /**
  * Brand-accurate ant paths (viewBox 0 0 32 32). Uses `currentColor` so the
  * parent <g> can set the colour for light/dark surfaces. Verbatim from the
- * AntSeed brand guidelines.
+ * Antseed brand guidelines.
  */
 function BrandAntPaths() {
   return (
@@ -146,8 +146,8 @@ export function AntsTokenCoinInline() {
   );
 }
 
-/** AntSeed-style ant drawing. `light = true` inside dark badges, `false`
- *  on light backgrounds. Used in AntStation marketing block + flow diagram. */
+/** Antseed-style ant drawing. `light = true` inside dark badges, `false`
+ *  on light backgrounds. Used in the claim marketing block + flow diagram. */
 export function AntIcon({ size = 22, light = false }: { size?: number; light?: boolean }) {
   const body = light ? '#ffffff' : '#1a1a1a';
   const limb = light ? 'var(--green)' : '#8a8a8a';

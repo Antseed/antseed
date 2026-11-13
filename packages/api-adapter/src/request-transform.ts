@@ -8,7 +8,12 @@ import {
   renderCanonicalRequestToOpenAIResponsesBody,
   type CanonicalLlmRequest,
 } from './canonical.js';
-import { encodeJson, parseJsonObject } from './utils.js';
+import {
+  encodeJson,
+  openAIResponsesFunctionCallId,
+  openAIResponsesMessageId,
+  parseJsonObject,
+} from './utils.js';
 
 export interface ServiceApiRequestTransformResult {
   request: SerializedHttpRequest;
@@ -23,6 +28,7 @@ export interface ServiceApiRequestTransformOptions {
 }
 
 const CLIENT_STREAM_REQUESTED_HEADER = 'x-antseed-client-stream-requested';
+const LEGACY_RESPONSES_MESSAGE_ID_SUFFIX = '_msg_1';
 
 type RequestNormalizer = (body: Record<string, unknown>) => CanonicalLlmRequest;
 type RequestRenderer = (
@@ -43,6 +49,7 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
       groupAssistantToolCallsWithPreviousMessage: options.from === 'anthropic-messages',
+      preserveResponsesAgentSemantics: options.from === 'openai-responses',
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(
@@ -74,8 +81,11 @@ export function transformRequest(
   const normalized = normalize(body);
   const streamRequested = options.streamRequested ?? normalized.stream;
   if (options.from === options.to) {
+    const repairedBody = options.from === 'openai-responses'
+      ? repairLegacyResponsesItemIds(body)
+      : null;
     return {
-      request,
+      request: repairedBody ? { ...request, body: encodeJson(repairedBody) } : request,
       streamRequested,
       requestedModel: normalized.model,
     };
@@ -103,6 +113,59 @@ export function transformRequest(
     streamRequested,
     requestedModel: normalized.model,
   };
+}
+
+/**
+ * Render a Chat Completions, Anthropic Messages or Responses request body as a plain
+ * OpenAI Chat Completions body, using the same normalizers as `transformRequest`.
+ * Unlike a transform for dispatch, no downstream-execution additions are made (no
+ * Responses agent instructions or synthetic tools), so the result describes exactly
+ * what the client asked for. Returns null for unsupported protocols.
+ */
+export function renderRequestBodyAsOpenAIChat(
+  from: ServiceApiProtocol,
+  body: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (from === 'openai-chat-completions') return structuredClone(body);
+  const normalize = REQUEST_NORMALIZERS[from];
+  if (!normalize) return null;
+  return renderCanonicalRequestToOpenAIChatBody(normalize(body), {
+    groupAssistantToolCallsWithPreviousMessage: from === 'anthropic-messages',
+  });
+}
+
+function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<string, unknown> | null {
+  if (!Array.isArray(body.input)) return null;
+
+  let changed = false;
+  const input = body.input.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== 'string') return item;
+
+    let repairedId: string | null = null;
+    if (record.type === 'function_call' && !record.id.startsWith('fc_')) {
+      repairedId = openAIResponsesFunctionCallId(record.id);
+    } else if (
+      (record.type === 'message' || record.type === 'item_reference')
+      && !record.id.startsWith('msg_')
+      && record.id.endsWith(LEGACY_RESPONSES_MESSAGE_ID_SUFFIX)
+    ) {
+      const responseId = record.id.slice(0, -LEGACY_RESPONSES_MESSAGE_ID_SUFFIX.length);
+      if (responseId.length > 0) repairedId = openAIResponsesMessageId(responseId);
+    } else if (
+      record.type === 'item_reference'
+      && (record.id.startsWith('call_') || record.id.startsWith('tool_'))
+    ) {
+      repairedId = openAIResponsesFunctionCallId(record.id);
+    }
+
+    if (!repairedId) return item;
+    changed = true;
+    return { ...record, id: repairedId };
+  });
+
+  return changed ? { ...body, input } : null;
 }
 
 function headersForTargetProtocol(

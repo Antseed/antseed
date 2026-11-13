@@ -1,0 +1,97 @@
+.placeholder {
+  width: min(340px, calc(100% - 32px));
+  margin: 4px 16px 12px;
+}
+
+.canvas {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 28% 24%, color-mix(in srgb, var(--accent-green) 11%, transparent), transparent 42%),
+    color-mix(in srgb, var(--bg-card-alt) 86%, var(--bg-primary));
+}
+
+.glow {
+  position: absolute;
+  width: 58%;
+  height: 58%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-green) 9%, transparent);
+  filter: blur(32px);
+}
+
+.icon {
+  position: relative;
+  z-index: 1;
+  color: color-mix(in srgb, var(--text-muted) 78%, var(--accent-green));
+}
+
+.shimmer {
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-primary) 8%, transparent),
+    transparent
+  );
+  transform: skewX(-14deg) translateX(-180%);
+  animation: image-shimmer 1.7s ease-in-out infinite;
+}
+
+.caption {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 4px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.video {
+  width: min(460px, calc(100% - 32px));
+
+  .canvas {
+    aspect-ratio: 16 / 9;
+  }
+
+  .caption {
+    flex-wrap: wrap;
+  }
+}
+
+.hint {
+  color: color-mix(in srgb, var(--text-muted) 72%, transparent);
+}
+
+.pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-green) 36%, transparent);
+  animation: image-pulse 1.7s ease-out infinite;
+}
+
+@keyframes image-shimmer {
+  0% { transform: skewX(-14deg) translateX(-180%); }
+  55%, 100% { transform: skewX(-14deg) translateX(360%); }
+}
+
+@keyframes image-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-green) 36%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer,
+  .pulse {
+    animation: none;
+  }
+}

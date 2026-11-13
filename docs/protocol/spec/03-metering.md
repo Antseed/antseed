@@ -100,6 +100,14 @@ A `MeteringEvent` represents one request/response cycle through the proxy.
 
 Receipts are the unit of billing. The seller generates a signed receipt after each request; payments settle based on receipts.
 
+### Non-Token Unit Usage
+
+Protocols may define canonical non-token usage alongside token counts. Metadata v11 introduces `UnitBillingModelV1`; the initial supported unit is `output_images` for the `openai-images` API protocol.
+
+For image responses, both peers count non-empty `b64_json` or `url` outputs. The seller's advertised component model maps the observed count and request attributes (`model`, `size`, `quality`, or `resolution`) to a USD amount. Positive delivered usage must match at least one component. Unmatched usage is an error, not a zero-price result.
+
+Token and unit costs are computed independently and then summed. The buyer verifies both portions before authorizing cumulative payment.
+
 ### UsageReceipt Interface
 
 | Field            | Type          | Description                                    |

@@ -11,3 +11,4 @@ export * from './report.js';
 export * from './rating.js';
 export * from './plugin-config.js';
 export * from './service-api.js';
+export * from './billing.js';

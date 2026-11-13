@@ -149,6 +149,14 @@ function parseSseEvents(sseText: string): Array<{ event: string | null; data: st
 }
 
 describe('detectRequestServiceApiProtocol', () => {
+  it('identifies model routing independently from TypeSafe and the local routing endpoint', () => {
+    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/routing/rank', headers: {} }))).toBe('irp-suggest');
+    expect(detectRequestServiceApiProtocol(makeRequest({ method: 'GET', path: '/v1/routing/models?service=router', headers: {} }))).toBe('irp-suggest');
+    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/systemone', headers: {} }))).toBe('typesafe-systemone');
+    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/_antseed/route', headers: {} }))).toBeNull();
+    expect(selectTargetProtocolForRequest('irp-suggest', ['irp-suggest'])).toEqual({ targetProtocol: 'irp-suggest', requiresTransform: false });
+    expect(selectTargetProtocolForRequest('irp-suggest', ['openai-chat-completions'])).toBeNull();
+  });
   it('detects anthropic messages from path', () => {
     expect(detectRequestServiceApiProtocol(makeRequest())).toBe('anthropic-messages');
   });
@@ -157,6 +165,15 @@ describe('detectRequestServiceApiProtocol', () => {
     expect(
       detectRequestServiceApiProtocol(makeRequest({ path: '/v1/chat/completions' })),
     ).toBe('openai-chat-completions');
+  });
+
+  it('detects openai images from the generations and edits paths', () => {
+    expect(
+      detectRequestServiceApiProtocol(makeRequest({ path: '/v1/images/generations' })),
+    ).toBe('openai-images');
+    expect(
+      detectRequestServiceApiProtocol(makeRequest({ path: '/v1/images/edits' })),
+    ).toBe('openai-images');
   });
 });
 
@@ -187,8 +204,14 @@ describe('inferProviderDefaultServiceApiProtocols', () => {
     expect(inferProviderDefaultServiceApiProtocols('claude-oauth')).toEqual(['anthropic-messages']);
   });
 
-  it('infers openai-style providers', () => {
-    expect(inferProviderDefaultServiceApiProtocols('openai')).toEqual(['openai-chat-completions']);
+  it('keeps generic openai fallback chat-only', () => {
+    expect(inferProviderDefaultServiceApiProtocols('openai')).toEqual([
+      'openai-chat-completions',
+    ]);
+  });
+
+  it('keeps local-llm fallback chat-only', () => {
+    expect(inferProviderDefaultServiceApiProtocols('local-llm')).toEqual(['openai-chat-completions']);
   });
 });
 
@@ -780,6 +803,97 @@ describe('createStreamingAdapter chat to anthropic', () => {
     expect(sseText).toContain('event: message_stop');
   });
 
+  it('reports input and cached tokens in message_delta from the final chat usage chunk', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-usage',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-usage","model":"gpt-4.1","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n'
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49,"prompt_tokens_details":{"cached_tokens":10}}}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect(messageDelta).toBeDefined();
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 32,
+      output_tokens: 7,
+      cache_read_input_tokens: 10,
+    });
+  });
+
+  it('reports a full cache hit in message_delta as zero fresh input plus cache reads', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-full-cache',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-cache","model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+        + 'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":42}}}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 7,
+      cache_read_input_tokens: 42,
+    });
+  });
+
+  it('reports cache reads in message_delta like the non-streamed answer when the prompt count is zero', () => {
+    const usage = { prompt_tokens: 0, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 50 } };
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-cache-only',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-cache-only","model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+        + `data: ${JSON.stringify({ choices: [], usage })}\n\n`
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const streamed = (JSON.parse(events.find((event) => event.event === 'message_delta')!.data) as { usage: unknown }).usage;
+
+    const nonStreamed = adaptResponseForTest('openai-chat-completions', 'anthropic-messages', {
+      requestId: 'req-cache-only',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'chatcmpl-cache-only',
+        model: 'gpt-4.1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'Hi' }, finish_reason: 'stop' }],
+        usage,
+      })),
+    }, { streamRequested: false, fallbackModel: 'claude-sonnet' });
+
+    expect(streamed).toEqual({ input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 50 });
+    expect((JSON.parse(new TextDecoder().decode(nonStreamed.body)) as { usage: unknown }).usage).toEqual(streamed);
+  });
+
+  it('does not invent input tokens in message_delta when the chat stream reports no usage', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-no-usage',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-none","model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({ output_tokens: 0 });
+  });
+
   it('converts streamed tool call deltas into anthropic tool_use events', () => {
     const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
     const chunks = adapter.adaptChunk({
@@ -882,7 +996,55 @@ describe('createStreamingAdapter chat to anthropic', () => {
   });
 });
 
+/** A Messages stream as a seller's relay delivers it: the upstream's frames, then an empty final chunk. */
+const ANTHROPIC_STREAM_FRAMES = [
+  'event: message_start\n'
+  + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":5,"output_tokens":0}}}\n\n',
+  'event: content_block_delta\n'
+  + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+  'event: message_delta\n'
+  + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+  'event: message_stop\n'
+  + 'data: {"type":"message_stop"}\n\n',
+];
+
+function relayStreamForTest(
+  adapter: ReturnType<typeof createStreamAdapterForTest>,
+  frames: string[],
+): Array<{ event: string | null; data: string }> {
+  const chunks = [
+    ...frames.map((frame) => ({ requestId: 'req-relay', data: new TextEncoder().encode(frame), done: false })),
+    { requestId: 'req-relay', data: new Uint8Array(0), done: true },
+  ];
+  const decoder = new TextDecoder();
+  return parseSseEvents(chunks.flatMap((chunk) => adapter.adaptChunk(chunk)).map((chunk) => decoder.decode(chunk.data)).join(''));
+}
+
 describe('createStreamingAdapter anthropic to chat', () => {
+  it('finishes once when the final chunk arrives empty after message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES);
+
+    const finishes = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => JSON.parse(event.data) as { choices?: Array<{ finish_reason?: string | null }> })
+      .filter((payload) => typeof payload.choices?.[0]?.finish_reason === 'string');
+    expect(finishes.map((payload) => payload.choices?.[0]?.finish_reason)).toEqual(['stop']);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
+  it('still finishes a stream that ends without message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES.slice(0, 3));
+
+    const finishes = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => JSON.parse(event.data) as { choices?: Array<{ finish_reason?: string | null }> })
+      .filter((payload) => typeof payload.choices?.[0]?.finish_reason === 'string');
+    expect(finishes).toHaveLength(1);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
   it('uses one fallback response id when message_start has not supplied an id yet', () => {
     const dateNow = vi.spyOn(Date, 'now')
       .mockReturnValueOnce(1000)
@@ -964,6 +1126,106 @@ describe('selectTargetProtocolForRequest – responses', () => {
   });
 });
 
+describe('native responses passthrough', () => {
+  const decode = (body: Uint8Array): Record<string, unknown> =>
+    JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+
+  it('preserves the exact request and cache-relevant history fields', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.5',
+        previous_response_id: 'resp_previous',
+        prompt_cache_key: 'conversation-42',
+        prompt_cache_retention: '24h',
+        include: ['reasoning.encrypted_content'],
+        input: [
+          { type: 'reasoning', id: 'rs_native', encrypted_content: 'encrypted' },
+          {
+            type: 'function_call',
+            id: 'fc_native',
+            call_id: 'tool_native',
+            name: 'search',
+            arguments: '{}',
+          },
+          {
+            type: 'message',
+            id: 'msg_native',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'cached prefix', annotations: [] }],
+          },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+        ],
+      })),
+    });
+
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-responses' });
+
+    expect(result).not.toBeNull();
+    expect(result!.request).toBe(request);
+    expect(result!.request.body).toBe(request.body);
+  });
+
+  it('repairs only legacy synthesized IDs while preserving cache fields', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.5',
+        previous_response_id: 'resp_previous',
+        prompt_cache_key: 'conversation-42',
+        prompt_cache_retention: '24h',
+        input: [
+          {
+            type: 'message',
+            id: 'chatcmpl-legacy_msg_1',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'legacy prefix', annotations: [] }],
+          },
+          { type: 'item_reference', id: 'chatcmpl-reference_msg_1' },
+          {
+            type: 'function_call',
+            id: 'tool_legacy',
+            call_id: 'tool_legacy',
+            name: 'search',
+            arguments: '{}',
+          },
+          { type: 'item_reference', id: 'tool_legacy' },
+          { type: 'message', id: 'msg_native', role: 'assistant', content: [] },
+        ],
+      })),
+    });
+
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-responses' });
+    const body = decode(result!.request.body);
+    const input = body.input as Array<Record<string, unknown>>;
+
+    expect(result!.request).not.toBe(request);
+    expect(body.previous_response_id).toBe('resp_previous');
+    expect(body.prompt_cache_key).toBe('conversation-42');
+    expect(body.prompt_cache_retention).toBe('24h');
+    expect(input[0].id).toBe('msg_chatcmpl-legacy_1');
+    expect(input[1].id).toBe('msg_chatcmpl-reference_1');
+    expect(input[2]).toMatchObject({ id: 'fc_tool_legacy', call_id: 'tool_legacy' });
+    expect(input[3].id).toBe('fc_tool_legacy');
+    expect(input[4].id).toBe('msg_native');
+  });
+
+  it('preserves the exact response and does not create a stream adapter', () => {
+    const response: SerializedHttpResponse = {
+      requestId: 'req-native-response',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'resp_native',
+        output: [{ type: 'message', id: 'msg_native', role: 'assistant', content: [] }],
+      })),
+    };
+
+    expect(transformResponse(response, { from: 'openai-responses', to: 'openai-responses' })).toBe(response);
+    expect(createStreamingAdapter({ from: 'openai-responses', to: 'openai-responses' })).toBeNull();
+  });
+});
+
 describe('transformRequest responses to chat', () => {
   it('converts string input to chat completions request', () => {
     const result = transformRequest(makeResponsesRequest(), { from: 'openai-responses', to: 'openai-chat-completions' });
@@ -981,6 +1243,20 @@ describe('transformRequest responses to chat', () => {
     const messages = body.messages as Array<Record<string, unknown>>;
     expect(messages[0]).toEqual({ role: 'system', content: 'Answer concisely' });
     expect(messages[1]).toEqual({ role: 'user', content: 'What is the capital of France?' });
+  });
+
+  it('preserves reasoning effort when converting responses to chat completions', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        input: 'Return only 42',
+        reasoning: { effort: 'none' },
+      })),
+    });
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' });
+
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+    expect(body.reasoning_effort).toBe('none');
   });
 
   it('converts array input to messages', () => {
@@ -1054,6 +1330,37 @@ describe('transformRequest responses to chat', () => {
     expect(body.user).toBe('user-123');
   });
 
+  it('preserves Responses phases and prevents commentary-only completion in chat tool workflows', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        instructions: 'Keep working until the task is complete.',
+        input: [
+          {
+            type: 'message',
+            role: 'assistant',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text: 'I am checking the diff.' }],
+          },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Continue.' }] },
+        ],
+        tools: [{ type: 'function', name: 'exec_command', parameters: { type: 'object' } }],
+      })),
+    });
+
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' });
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+    const messages = body.messages as Array<Record<string, unknown>>;
+
+    expect(messages[0]?.role).toBe('system');
+    expect(messages[0]?.content).toContain('do not end with commentary alone');
+    expect(messages[1]).toEqual({
+      role: 'assistant',
+      name: 'commentary',
+      content: 'I am checking the diff.',
+    });
+  });
+
   it('converts Responses API flat tools to Chat Completions nested format', () => {
     const responsesTools = [{ type: 'function', name: 'search', description: 'Search the web', parameters: { type: 'object' } }];
     const request = makeResponsesRequest({
@@ -1069,8 +1376,31 @@ describe('transformRequest responses to chat', () => {
     expect(body.tools).toEqual([{
       type: 'function',
       function: { name: 'search', description: 'Search the web', parameters: { type: 'object' } },
+    }, {
+      type: 'function',
+      function: { name: 'final_answer', parameters: { properties: {}, type: 'object' } },
     }]);
     expect(body.tool_choice).toBe('auto');
+  });
+
+  it('omits tool_choice when a Codex compaction request has no tools', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-4.1',
+        input: [{
+          role: 'user',
+          content: [{ type: 'input_text', text: 'summarize the conversation' }],
+        }],
+        tools: [],
+        tool_choice: 'auto',
+        parallel_tool_calls: false,
+      })),
+    });
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' });
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
   });
 
   it('omits tools when only built-in Responses tools are provided', () => {
@@ -1241,6 +1571,21 @@ describe('transformRequest responses to chat', () => {
 });
 
 describe('transformRequest responses to anthropic', () => {
+  it('omits tool_choice when no tools are available', () => {
+    const result = transformRequest(makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-4.1',
+        input: 'summarize the conversation',
+        tools: [],
+        tool_choice: 'auto',
+      })),
+    }), { from: 'openai-responses', to: 'anthropic-messages' });
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+
   it('converts responses input, tools, and shared fields to anthropic messages', () => {
     const result = transformRequest(makeResponsesRequest({
       body: new TextEncoder().encode(JSON.stringify({
@@ -1349,9 +1694,10 @@ describe('transformResponse chat to responses', () => {
     const output = body.output as Array<Record<string, unknown>>;
     expect(output).toHaveLength(1);
     expect(output[0].type).toBe('message');
-    expect(output[0].id).toBe('chatcmpl-abc_msg_1');
+    expect(output[0].id).toBe('msg_chatcmpl-abc_1');
     expect(output[0].role).toBe('assistant');
     expect(output[0].status).toBe('completed');
+    expect(output[0].phase).toBeUndefined();
 
     const content = output[0].content as Array<Record<string, unknown>>;
     expect(content[0]).toEqual({
@@ -1430,9 +1776,11 @@ describe('transformResponse chat to responses', () => {
 
     // Should have message item + function_call item
     const functionCall = output.find((item) => item.type === 'function_call');
+    const message = output.find((item) => item.type === 'message');
+    expect(message?.phase).toBe('commentary');
     expect(functionCall).toBeDefined();
     expect(functionCall!.name).toBe('write');
-    expect(functionCall!.id).toBe('call_123');
+    expect(functionCall!.id).toBe('fc_call_123');
     expect(functionCall!.call_id).toBe('call_123');
     expect(functionCall!.arguments).toBe('{"path":"hello.txt"}');
   });
@@ -1499,7 +1847,7 @@ describe('transformResponse chat to responses', () => {
       output_index: 0,
       item: {
         type: 'message',
-        id: 'chatcmpl-stream_msg_1',
+        id: 'msg_chatcmpl-stream_1',
         status: 'in_progress',
         content: [{ type: 'output_text', text: '', annotations: [] }],
       },
@@ -1509,7 +1857,7 @@ describe('transformResponse chat to responses', () => {
     expect(delta).toBeDefined();
     expect(JSON.parse(delta!.data)).toMatchObject({
       type: 'response.output_text.delta',
-      item_id: 'chatcmpl-stream_msg_1',
+      item_id: 'msg_chatcmpl-stream_1',
       output_index: 0,
       content_index: 0,
       delta: 'Hello!',
@@ -1542,7 +1890,7 @@ describe('transformResponse chat to responses', () => {
       output_index: 1,
       item: {
         type: 'function_call',
-        id: 'call_123',
+        id: 'fc_call_123',
         call_id: 'call_123',
         name: 'write',
         arguments: '',
@@ -1555,7 +1903,7 @@ describe('transformResponse chat to responses', () => {
     expect(JSON.parse(delta!.data)).toMatchObject({
       type: 'response.function_call_arguments.delta',
       output_index: 1,
-      item_id: 'call_123',
+      item_id: 'fc_call_123',
       call_id: 'call_123',
       delta: '{"path":"hello.txt"}',
     });
@@ -1565,7 +1913,7 @@ describe('transformResponse chat to responses', () => {
     expect(JSON.parse(done!.data)).toMatchObject({
       type: 'response.function_call_arguments.done',
       output_index: 1,
-      item_id: 'call_123',
+      item_id: 'fc_call_123',
       call_id: 'call_123',
       name: 'write',
       arguments: '{"path":"hello.txt"}',
@@ -1613,6 +1961,26 @@ describe('transformResponse chat to responses', () => {
 });
 
 describe('transformRequest chat to responses', () => {
+  it('omits tool_choice when no tools are available', () => {
+    const request: SerializedHttpRequest = {
+      requestId: 'req-chat-to-resp-no-tools',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'summarize the conversation' }],
+        tools: [],
+        tool_choice: 'auto',
+      })),
+    };
+    const result = transformRequest(request, { from: 'openai-chat-completions', to: 'openai-responses' });
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+
   it('preserves shared request fields when converting chat to responses', () => {
     const request: SerializedHttpRequest = {
       requestId: 'req-chat-to-resp',
@@ -1642,6 +2010,24 @@ describe('transformRequest chat to responses', () => {
     expect(body.input).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
     ]);
+  });
+
+  it('preserves reasoning effort when converting chat completions to responses', () => {
+    const request: SerializedHttpRequest = {
+      requestId: 'req-chat-reasoning-effort',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        messages: [{ role: 'user', content: 'Return only 42' }],
+        reasoning_effort: 'none',
+      })),
+    };
+    const result = transformRequest(request, { from: 'openai-chat-completions', to: 'openai-responses' });
+
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: 'none' });
   });
 
   it('carries an explicit prompt_cache_key through to the responses body', () => {
@@ -1879,6 +2265,89 @@ describe('createStreamingAdapter chat to responses', () => {
     expect(sseText).toContain('hello.txt');
   });
 
+  it('marks streamed text as commentary when accompanied by tool calls', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'openai-responses', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-commentary-tool',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-tool","model":"gpt-5.6-sol","choices":[{"delta":{"content":"I am checking."},"finish_reason":null}]}\n\n'
+        + 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDone = events.find((event) => {
+      if (event.event !== 'response.output_item.done') return false;
+      return JSON.parse(event.data).item?.type === 'message';
+    });
+    const completed = events.find((event) => event.event === 'response.completed');
+
+    expect(JSON.parse(messageDone!.data).item.phase).toBe('commentary');
+    expect(JSON.parse(completed!.data).response.output[0].phase).toBe('commentary');
+  });
+
+  it('tells Codex to stop when chat-only models use the explicit final-answer tool', () => {
+    const finalText = 'The test suite now covers both cases.';
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'kimi-k3',
+        instructions: 'Continue working with tools until done.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Add tests.' }] }],
+        tools: [{ type: 'function', name: 'exec_command', parameters: { type: 'object' } }],
+      })),
+    });
+    const transformed = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' })!;
+    const chatResponse = makeOpenAIResponse({
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'chatcmpl-interim',
+        model: 'kimi-k3',
+        choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: finalText, tool_calls: [{ id: 'call_final', type: 'function', function: { name: 'final_answer', arguments: '{}' } }] } }],
+        usage: { prompt_tokens: 20, completion_tokens: 7 },
+      })),
+    });
+    const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
+    const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
+
+    expect(JSON.parse(new TextDecoder().decode(transformed.request.body)).messages[0].content)
+      .toContain('include the next tool call');
+    expect(body.end_turn).toBe(true);
+  });
+
+  it('tells Codex to continue after unmarked chat text responses', () => {
+    const chatResponse = makeOpenAIResponse({
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'chatcmpl-final',
+        model: 'kimi-k3',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'The test suite now covers both cases.' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 9 },
+      })),
+    });
+    const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
+    const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
+
+    expect(body.end_turn).toBe(false);
+  });
+
+  it('converts unmarked chat text streams into explicit tool terminations', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'openai-responses', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-interim-stream',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-final-stream","model":"kimi-k3","choices":[{"delta":{"content":"The test suite now covers both cases."},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const completed = events.find((event) => event.event === 'response.completed');
+
+    const response = JSON.parse(completed!.data).response;
+    expect(response.end_turn).toBe(true);
+    expect(response.output[0].type).toBe('message');
+  });
+
   it('emits response.created first and avoids phantom text items for tool-only streams', () => {
     const adapter = createStreamAdapterForTest('openai-chat-completions', 'openai-responses', '');
     const chunks = adapter.adaptChunk({
@@ -1902,7 +2371,7 @@ describe('createStreamingAdapter chat to responses', () => {
       output_index: 0,
       item: {
         type: 'function_call',
-        id: 'call_1',
+        id: 'fc_call_1',
       },
     });
 
@@ -1913,7 +2382,7 @@ describe('createStreamingAdapter chat to responses', () => {
       response: {
         output: [{
           type: 'function_call',
-          id: 'call_1',
+          id: 'fc_call_1',
           call_id: 'call_1',
           name: 'write',
           arguments: '{"path":"hello.txt"}',
@@ -1972,6 +2441,129 @@ describe('createStreamingAdapter responses to anthropic', () => {
     expect(sseText).toContain('event: message_stop');
   });
 
+  it('reports input and cached tokens in message_delta from response.completed usage', () => {
+    const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-usage',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_u","object":"response","model":"gpt-4.1","status":"in_progress","output":[],"usage":null}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hello"}\n\n'
+        + 'event: response.completed\n'
+        + 'data: {"type":"response.completed","response":{"id":"resp_u","object":"response","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":7,"total_tokens":49}}}\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect(messageDelta).toBeDefined();
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 32,
+      output_tokens: 7,
+      cache_read_input_tokens: 10,
+    });
+  });
+
+  it('does not invent input tokens in message_delta when the responses stream reports no usage', () => {
+    const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-no-usage',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_n","model":"gpt-4.1","status":"in_progress","output":[],"usage":null}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+        + 'event: response.completed\n'
+        + 'data: {"type":"response.completed","response":{"id":"resp_n","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi","annotations":[]}]}],"usage":null}}\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({ output_tokens: 0 });
+  });
+
+  it('reports cache reads from response.completed like the non-streamed answer when the input count is zero', () => {
+    const usage = { input_tokens: 0, input_tokens_details: { cached_tokens: 50 }, output_tokens: 7 };
+    const output = [{ type: 'message', id: 'msg_1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Hi', annotations: [] }] }];
+    const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-cache-only',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_co","model":"gpt-4.1","status":"in_progress","output":[],"usage":null}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+        + 'event: response.completed\n'
+        + `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_co', model: 'gpt-4.1', status: 'completed', output, usage } })}\n\n`,
+      ),
+      done: true,
+    });
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const streamed = (JSON.parse(events.find((event) => event.event === 'message_delta')!.data) as { usage: unknown }).usage;
+
+    const nonStreamed = adaptResponseForTest('openai-responses', 'anthropic-messages', {
+      requestId: 'req-resp-cache-only',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ id: 'resp_co', model: 'gpt-4.1', status: 'completed', output, usage })),
+    }, { streamRequested: false, fallbackModel: 'claude-sonnet' });
+
+    expect(streamed).toEqual({ input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 50 });
+    expect((JSON.parse(new TextDecoder().decode(nonStreamed.body)) as { usage: unknown }).usage).toEqual(streamed);
+  });
+
+  it('takes the input split from response.completed when response.created also carried usage', () => {
+    const render = (createdUsage: string, completedUsage: string) => {
+      const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+      const chunks = adapter.adaptChunk({
+        requestId: 'req-resp-created-usage',
+        data: new TextEncoder().encode(
+          'event: response.created\n'
+          + `data: {"type":"response.created","response":{"id":"resp_c","model":"gpt-4.1","status":"in_progress","output":[],"usage":${createdUsage}}}\n\n`
+          + 'event: response.output_text.delta\n'
+          + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+          + 'event: response.completed\n'
+          + `data: {"type":"response.completed","response":{"id":"resp_c","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi","annotations":[]}]}],"usage":${completedUsage}}}\n\n`,
+        ),
+        done: true,
+      });
+      const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+      const start = JSON.parse(events.find((event) => event.event === 'message_start')!.data) as { message: { usage: Record<string, number> } };
+      const delta = (JSON.parse(events.find((event) => event.event === 'message_delta')!.data) as { usage: Record<string, number> }).usage;
+      // A client folds message_delta over message_start, overwriting the fields it carries (as the official SDK does).
+      return { delta, final: { ...start.message.usage, ...delta } };
+    };
+
+    // A cache split that changes between the two events never mixes old and new counts.
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":0}',
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":42},"output_tokens":7}',
+    )).toEqual({
+      delta: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 },
+      final: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 },
+    });
+    // A cache count message_start showed is overwritten, not left to add to the final input.
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":7}',
+    )).toEqual({
+      delta: { input_tokens: 42, output_tokens: 7, cache_read_input_tokens: 0 },
+      final: { input_tokens: 42, output_tokens: 7, cache_read_input_tokens: 0 },
+    });
+    // A completed event without input counts keeps the ones response.created reported.
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
+      '{"input_tokens":0,"output_tokens":7}',
+    )).toEqual({
+      delta: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 },
+      final: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 },
+    });
+  });
+
   it('uses contiguous anthropic block indices for mixed text and tool streams', () => {
     const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
     const chunks = adapter.adaptChunk({
@@ -2011,6 +2603,28 @@ describe('createStreamingAdapter responses to anthropic', () => {
 });
 
 describe('createStreamingAdapter responses to chat', () => {
+  it('drops a cached count from response.created that response.completed no longer reports', () => {
+    const adapter = createStreamAdapterForTest('openai-responses', 'openai-chat-completions', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-chat-cache',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_cc","model":"gpt-4.1","status":"in_progress","output":[],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":30},"output_tokens":0}}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+        + 'event: response.completed\n'
+        + 'data: {"type":"response.completed","response":{"id":"resp_cc","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi","annotations":[]}]}],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":7}}}\n\n',
+      ),
+      done: true,
+    });
+
+    const usages = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''))
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => (JSON.parse(event.data) as { usage?: unknown }).usage)
+      .filter((usage) => usage !== undefined && usage !== null);
+    expect(usages).toEqual([{ prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 }]);
+  });
+
   it('converts responses SSE frames into chat completion chunks incrementally', () => {
     const adapter = createStreamAdapterForTest('openai-responses', 'openai-chat-completions', '');
     const start = adapter.adaptStart({
@@ -2049,6 +2663,14 @@ describe('createStreamingAdapter responses to chat', () => {
 });
 
 describe('createStreamingAdapter anthropic to responses', () => {
+  it('completes once when the final chunk arrives empty after message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-responses', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES);
+
+    expect(events.filter((event) => event.event === 'response.completed')).toHaveLength(1);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
   it('composes anthropic SSE frames into responses SSE frames incrementally', () => {
     const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-responses', '');
     const start = adapter.adaptStart({

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,6 +8,62 @@ import { ConversationStore, CONVERSATIONS_FILE, conversationId } from './convers
 async function makeDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'antseed-conv-'))
 }
+
+test('conversation router settings persist independently, clone inputs and clear back to inheritance', async (context) => {
+  const dir = await makeDir()
+  const store = new ConversationStore(dir)
+  context.after(async () => { await store.flush(); await rm(dir, { recursive: true, force: true }) })
+  const first = store.touch({ tool: 'vpr', sessionKey: 'first' })
+  const second = store.touch({ tool: 'vpr', sessionKey: 'second' })
+  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, options: { cost_quality_tradeoff: 9 } }
+  store.setPinnedModel(first.id, 'old-model', 'user')
+  store.setRoutingSelection(first.id, selection)
+  selection.service.serviceId = 'mutated'
+  assert.equal(store.get(first.id)?.routingSelection?.service.serviceId, 'alpha-route')
+  assert.equal(store.get(first.id)?.routingSelection?.options?.cost_quality_tradeoff, 9)
+  assert.equal(store.get(first.id)?.pinnedModel, null)
+  assert.equal(store.get(first.id)?.peerSource, 'auto')
+  assert.equal(store.get(second.id)?.routingSelection, null)
+  store.touch({ tool: 'vpr', sessionKey: 'first', lastModel: 'actual-model' })
+  store.recordRoutedModel(first.id, 'a'.repeat(40) + '@actual-model')
+  await store.flush()
+  const reloaded = new ConversationStore(dir)
+  assert.deepEqual(reloaded.get(first.id)?.routingSelection, store.get(first.id)?.routingSelection)
+  assert.equal(reloaded.get(second.id)?.routingSelection, null)
+  reloaded.setRoutingSelection(first.id, null)
+  assert.equal(reloaded.get(first.id)?.routingSelection, null)
+  assert.equal(reloaded.get(first.id)?.pinnedModel, null)
+  await reloaded.flush()
+  assert.equal(new ConversationStore(dir).get(first.id)?.routingSelection, null)
+})
+
+test('explicit model pins replace router overrides but automatic affinity does not', async (context) => {
+  const dir = await makeDir()
+  const store = new ConversationStore(dir)
+  context.after(async () => { await store.flush(); await rm(dir, { recursive: true, force: true }) })
+  const chat = store.touch({ tool: 'vpr', sessionKey: 'first' })
+  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' } }
+  store.setRoutingSelection(chat.id, selection)
+  store.setPinnedModel(chat.id, 'automatic-model', 'auto')
+  assert.deepEqual(store.get(chat.id)?.routingSelection, selection)
+  store.setPinnedModel(chat.id, 'chosen-model', 'user')
+  assert.equal(store.get(chat.id)?.routingSelection, null)
+  assert.equal(store.get(chat.id)?.pinnedModel, 'chosen-model')
+})
+
+test('legacy and malformed persisted conversation overrides load without breaking records', async (context) => {
+  const dir = await makeDir()
+  context.after(() => rm(dir, { recursive: true, force: true }))
+  const invalid = [undefined, null, { kind: 'router' }, { kind: 'model', model: 'model-a' },
+    { kind: 'router', service: { peerId: 'invalid', provider: 'alpha', serviceId: 'alpha-route' } }]
+  await writeFile(join(dir, CONVERSATIONS_FILE), JSON.stringify({ conversations: invalid.map((routingSelection, index) => ({
+    tool: 'vpr', sessionKey: `chat-${index}`, routingSelection, lastActiveAt: Date.now(),
+  })) }))
+  const store = new ConversationStore(dir)
+  assert.equal(store.list().length, invalid.length)
+  assert.ok(store.list().every(chat => chat.routingSelection === null))
+  assert.throws(() => store.setRoutingSelection('vpr:chat-0', { kind: 'router' } as any), /exact routing-service target/)
+})
 
 test('touch creates a conversation and keeps the original snippet', async () => {
   const dir = await makeDir()
@@ -76,6 +132,52 @@ test('persists to conversations.json and reloads across instances', async () => 
     assert.equal(record.label, 'My renamed chat')
     assert.equal(record.snippet, 'hello there')
     assert.equal(reloaded.getPinnedModel('opencode', 'ses_a'), 'b'.repeat(40) + '@glm-5')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('reload removes legacy Droid title-helper duplicates without merging real chats', async () => {
+  const dir = await makeDir()
+  try {
+    const { writeFile } = await import('node:fs/promises')
+    const now = Date.now()
+    const record = (sessionKey: string, inputTokens: string, createdAt: number, overrides: Record<string, unknown> = {}) => ({
+      tool: 'droid',
+      sessionKey,
+      snippet: 'same first prompt',
+      inputTokens,
+      createdAt,
+      lastActiveAt: createdAt,
+      ...overrides,
+    })
+    await writeFile(join(dir, CONVERSATIONS_FILE), JSON.stringify({
+      conversations: [
+        record('title', '301', now),
+        record('chat', '14802', now + 218),
+        record('reused-title', '2400', now - 86_400_000, { requestCount: 8, peerSource: 'user' }),
+        record('reused-chat', '29602', now + 10_000, { requestCount: 2 }),
+        record('unmatched-small-chat', '301', now + 15_000, { snippet: 'different prompt' }),
+        record('same-size-chat', '14802', now + 20_000),
+        record('same-size-chat-2', '14900', now + 20_100),
+        record('named-title', '301', now + 30_000, { label: 'Keep me' }),
+        record('named-chat', '14802', now + 30_100),
+        { ...record('codex-title', '301', now), tool: 'codex' },
+        { ...record('codex-chat', '14802', now + 100), tool: 'codex' },
+      ],
+    }), 'utf8')
+
+    const store = new ConversationStore(dir)
+    assert.equal(store.get('droid:title'), null)
+    assert.ok(store.get('droid:chat'))
+    assert.equal(store.get('droid:reused-title'), null)
+    assert.ok(store.get('droid:reused-chat'))
+    assert.ok(store.get('droid:unmatched-small-chat'))
+    assert.ok(store.get('droid:same-size-chat'))
+    assert.ok(store.get('droid:same-size-chat-2'))
+    assert.equal(store.get('droid:named-title')?.label, 'Keep me')
+    assert.ok(store.get('codex:codex-title'))
+    assert.ok(store.get('codex:codex-chat'))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -208,12 +310,25 @@ test('reload re-cleans snippets persisted by older extraction rules', async () =
           snippet: 'Generate a title for this conversation:',
           createdAt: Date.now(), lastActiveAt: Date.now(),
         },
+        {
+          tool: 'public-tunnel', sessionKey: 'old3',
+          snippet: 'OS Version: darwin 25.2.0 Shell: zsh Workspace Path: unknown Is directory a git…',
+          createdAt: Date.now(), lastActiveAt: Date.now(),
+        },
+        {
+          tool: 'codex-desktop', sessionKey: 'old4',
+          snippet: 'Here is a list of plugins that are available but not installed. - Airtable…',
+          createdAt: Date.now(), lastActiveAt: Date.now(),
+        },
       ],
     }), 'utf8')
     const store = new ConversationStore(dir)
     assert.equal(store.get('claude-code:old1')?.snippet, 'try to understand who reviews are from and more text')
     // Old title-request snippets are dropped so the next real turn names the chat.
     assert.equal(store.get('opencode:old2')?.snippet, '')
+    assert.equal(store.get('public-tunnel:old3'), null)
+    assert.equal(store.get('cursor:old3')?.snippet, '')
+    assert.equal(store.get('codex-desktop:old4')?.snippet, '')
     await store.flush()
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -319,4 +434,50 @@ test('cached input is clamped to the input it is a subset of', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('a route change made while a request is in flight survives that request completing', async () => {
+  const dir = await makeDir()
+  try {
+    const store = new ConversationStore(dir)
+    const oldRoute = 'a'.repeat(40) + '@gpt-5'
+    const id = store.touch({ tool: 'codex', sessionKey: 's1', lastModel: oldRoute }).id
+    assert.equal(store.get(id)?.peerSource, 'auto')
+
+    // Request starts: the proxy captures the chat's pin.
+    const pinAtRouting = store.get(id)?.pinnedModel ?? null
+    // User switches the chat's model mid-flight.
+    store.setPinnedModel(id, 'claude-sonnet', 'auto')
+    // The old request then completes on the old route.
+    const recorded = store.recordRoutedModel(id, oldRoute, pinAtRouting)
+
+    assert.equal(recorded?.pinnedModel, 'claude-sonnet')
+    assert.equal(recorded?.peerSource, 'auto')
+    assert.equal(recorded?.lastModel, oldRoute)
+
+    // A request routed after the switch records its actual peer normally.
+    const nextRoute = 'b'.repeat(40) + '@claude-sonnet'
+    const next = store.recordRoutedModel(id, nextRoute, store.get(id)?.pinnedModel ?? null)
+    assert.equal(next?.pinnedModel, nextRoute)
+    assert.equal(next?.lastModel, nextRoute)
+    await store.flush()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('records which router chose the latest turn, and clears it for a direct turn', async (context) => {
+  const dir = await makeDir()
+  context.after(async () => { await rm(dir, { recursive: true, force: true }) })
+  const store = new ConversationStore(dir)
+  const { id } = store.touch({ tool: 'vpr', sessionKey: 'routed' })
+  assert.equal(store.get(id)?.lastRouter, null)
+  store.setLastRouter(id, `${'d'.repeat(40)}@route`)
+  assert.equal(store.get(id)?.lastRouter, `${'d'.repeat(40)}@route`)
+  await store.flush()
+  const reloaded = new ConversationStore(dir)
+  assert.equal(reloaded.get(id)?.lastRouter, `${'d'.repeat(40)}@route`)
+  store.setLastRouter(id, null)
+  assert.equal(store.get(id)?.lastRouter, null)
+  await store.flush()
 })

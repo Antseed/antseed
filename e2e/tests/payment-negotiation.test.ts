@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { AntseedNode } from '@antseed/node';
-import type { SerializedHttpRequest, PeerInfo } from '@antseed/node';
+import type { SerializedHttpRequest } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockAnthropicProvider } from './helpers/mock-provider.js';
 import { tmpdir } from 'node:os';
@@ -55,7 +55,7 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
     try { if (buyerDataDir) { await rm(buyerDataDir, { recursive: true, force: true }); buyerDataDir = null; } } catch {}
   });
 
-  it('buyer receives 402 when seller has payments configured but buyer has no payment session', async () => {
+  it('buyer receives a buyer-fault error when seller requires payment but buyer runs no payments', async () => {
     bootstrap = await createLocalBootstrap();
 
     // Seller with a fake payments config (will trigger 402 path)
@@ -104,13 +104,17 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
     expect(seller).toBeDefined();
 
     // Send request — buyer has no BuyerPaymentManager, so no negotiation.
-    // The request reaches the seller, which has _sessionsClient set, so it returns 402.
+    // The seller returns 402, and the buyer converts it into a buyer-fault
+    // error: no amount of credits helps when payments are not running, so
+    // forwarding the raw "add credits" 402 would misdirect the user.
     const request = makeRequest();
     const response = await buyerNode!.sendRequest(seller!, request);
 
-    expect(response.statusCode).toBe(402);
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['x-antseed-fault-attribution']).toBe('buyer');
     const body = new TextDecoder().decode(response.body);
-    expect(body).toContain('payment_required');
+    expect(body).toContain('buyer_payments_inactive');
+    expect(body).toContain('payments are not running on this buyer');
 
     // Seller's provider was NOT called (request rejected before routing)
     expect(mockProvider.requestCount).toBe(0);
@@ -210,16 +214,22 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
     const seller = peers.find((p) => p.peerId === sellerNode!.peerId);
     expect(seller).toBeDefined();
 
-    // The buyer will get 402, attempt negotiation, but the PaymentRequired
-    // timeout or RPC failure will cause it to fail. The request should
-    // ultimately return an error (either 402 or throw).
+    // The buyer gets a 402 and tries to negotiate, but its RPC is unreachable
+    // so it cannot read its own deposit balance. That is a buyer-side fault:
+    // the negotiator reports 503 `chain_rpc_unavailable` immediately rather
+    // than negotiating blind and stalling out into an error that blames the
+    // seller. A 402 remains acceptable for setups that get far enough to hear
+    // the seller's payment requirements first.
     const request = makeRequest();
     try {
       const response = await buyerNode!.sendRequest(seller!, request);
-      // If we get a response, it should be a 402 (negotiation failed)
-      expect(response.statusCode).toBe(402);
+      expect([402, 503]).toContain(response.statusCode);
+      if (response.statusCode === 503) {
+        const body = JSON.parse(new TextDecoder().decode(response.body)) as { reason?: string };
+        expect(body.reason).toBe('chain_rpc_unavailable');
+      }
     } catch (err) {
-      // Negotiation may throw on timeout — that's expected with unreachable RPC
+      // Negotiation may still throw on timeout for other configurations.
       expect(err).toBeDefined();
       expect((err as Error).message).toMatch(/timed?\s*out|failed|PaymentRequired|Lock confirmation/i);
     }

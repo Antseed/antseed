@@ -1,5 +1,37 @@
 import type { PeerMetrics } from './peer-scorer.js'
 
+/** Consecutive failures tolerated before a peer starts cooling down. */
+export const DEFAULT_MAX_FAILURES = 3
+/** Cooldown applied at the first offending failure, doubled for each one after. */
+export const DEFAULT_FAILURE_COOLDOWN_MS = 30_000
+/** Doubling cap: 30s → 60 → 120 → 240 → 480 (8 min ceiling). */
+export const MAX_COOLDOWN_DOUBLINGS = 4
+
+export interface FailureCooldownOptions {
+  maxFailures?: number
+  baseCooldownMs?: number
+  maxDoublings?: number
+}
+
+/**
+ * Canonical peer-cooldown escalation curve, shared by every consumer that
+ * penalizes an unresponsive peer. Returns 0 while the streak is still within
+ * tolerance, so callers can treat a zero as "not cooling down".
+ */
+export function computeFailureCooldownMs(
+  failureStreak: number,
+  options?: FailureCooldownOptions,
+): number {
+  const maxFailures = Math.max(1, options?.maxFailures ?? DEFAULT_MAX_FAILURES)
+  const baseCooldownMs = Math.max(1, options?.baseCooldownMs ?? DEFAULT_FAILURE_COOLDOWN_MS)
+  const maxDoublings = Math.max(0, options?.maxDoublings ?? MAX_COOLDOWN_DOUBLINGS)
+
+  if (!Number.isFinite(failureStreak) || failureStreak < maxFailures) return 0
+
+  const penaltyPower = Math.min(maxDoublings, Math.trunc(failureStreak) - maxFailures)
+  return baseCooldownMs * (2 ** penaltyPower)
+}
+
 export interface PeerMetricsTrackerConfig {
   latencyAlpha?: number       // Default: 0.3
   maxFailures?: number        // Default: 3
@@ -47,9 +79,11 @@ export class PeerMetricsTracker {
       this._failureStreakMap.set(peerId, nextStreak)
       this._totalFailureMap.set(peerId, (this._totalFailureMap.get(peerId) ?? 0) + 1)
 
-      if (nextStreak >= this._maxFailures) {
-        const penaltyPower = Math.min(4, nextStreak - this._maxFailures)
-        const cooldownMs = this._failureCooldownMs * (2 ** penaltyPower)
+      const cooldownMs = computeFailureCooldownMs(nextStreak, {
+        maxFailures: this._maxFailures,
+        baseCooldownMs: this._failureCooldownMs,
+      })
+      if (cooldownMs > 0) {
         this._cooldownUntilMap.set(peerId, now + cooldownMs)
       }
     }

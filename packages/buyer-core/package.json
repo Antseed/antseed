@@ -1,0 +1,127 @@
+{
+  "name": "@antseed/buyer-core",
+  "version": "0.1.47",
+  "description": "Transport-agnostic Antseed buyer machinery: request handling, payment negotiation, channel accounting. Portable — no Node-only dependencies",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.3.2",
+    "@antseed/api-adapter": "workspace:*",
+    "@antseed/protocol": "workspace:*",
+    "ethers": "~6.16.0",
+    "hash-wasm": "4.12.0",
+    "tokenx": "^1.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./base-evm-client": {
+      "import": "./dist/base-evm-client.js",
+      "types": "./dist/base-evm-client.d.ts"
+    },
+    "./buyer-free-usage-manager": {
+      "import": "./dist/buyer-free-usage-manager.js",
+      "types": "./dist/buyer-free-usage-manager.d.ts"
+    },
+    "./buyer-payment-manager": {
+      "import": "./dist/buyer-payment-manager.js",
+      "types": "./dist/buyer-payment-manager.d.ts"
+    },
+    "./buyer-payment-negotiator": {
+      "import": "./dist/buyer-payment-negotiator.js",
+      "types": "./dist/buyer-payment-negotiator.d.ts"
+    },
+    "./buyer-request-handler": {
+      "import": "./dist/buyer-request-handler.js",
+      "types": "./dist/buyer-request-handler.d.ts"
+    },
+    "./channel-session-state": {
+      "import": "./dist/channel-session-state.js",
+      "types": "./dist/channel-session-state.d.ts"
+    },
+    "./channel-store-types": {
+      "import": "./dist/channel-store-types.js",
+      "types": "./dist/channel-store-types.d.ts"
+    },
+    "./channel-usage-accounting": {
+      "import": "./dist/channel-usage-accounting.js",
+      "types": "./dist/channel-usage-accounting.d.ts"
+    },
+    "./channels-client": {
+      "import": "./dist/channels-client.js",
+      "types": "./dist/channels-client.d.ts"
+    },
+    "./debug": {
+      "import": "./dist/debug.js",
+      "types": "./dist/debug.d.ts"
+    },
+    "./deposits-client": {
+      "import": "./dist/deposits-client.js",
+      "types": "./dist/deposits-client.d.ts"
+    },
+    "./interfaces": {
+      "import": "./dist/interfaces.js",
+      "types": "./dist/interfaces.d.ts"
+    },
+    "./errors": {
+      "import": "./dist/errors.js",
+      "types": "./dist/errors.d.ts"
+    },
+    "./payment-mux": {
+      "import": "./dist/payment-mux.js",
+      "types": "./dist/payment-mux.d.ts"
+    },
+    "./pricing": {
+      "import": "./dist/pricing.js",
+      "types": "./dist/pricing.d.ts"
+    },
+    "./unit-billing": {
+      "import": "./dist/unit-billing.js",
+      "types": "./dist/unit-billing.d.ts"
+    },
+    "./proxy-mux": {
+      "import": "./dist/proxy-mux.js",
+      "types": "./dist/proxy-mux.d.ts"
+    },
+    "./response-auth": {
+      "import": "./dist/response-auth.js",
+      "types": "./dist/response-auth.d.ts"
+    },
+    "./response-usage": {
+      "import": "./dist/response-usage.js",
+      "types": "./dist/response-usage.d.ts"
+    },
+    "./seller-address-resolver": {
+      "import": "./dist/seller-address-resolver.js",
+      "types": "./dist/seller-address-resolver.d.ts"
+    },
+    "./usdc-utils": {
+      "import": "./dist/usdc-utils.js",
+      "types": "./dist/usdc-utils.d.ts"
+    },
+    "./verification-codec": {
+      "import": "./dist/verification-codec.js",
+      "types": "./dist/verification-codec.d.ts"
+    },
+    "./verification-mux": {
+      "import": "./dist/verification-mux.js",
+      "types": "./dist/verification-mux.d.ts"
+    }
+  }
+}

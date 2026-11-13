@@ -112,45 +112,47 @@
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: 392px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
 
-.title {
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
+/* Articles and topic lists keep a readable width, on the heading's left edge. */
+.reading > * {
+  width: 100%;
+  max-width: 720px;
 }
 
 .section {
   display: grid;
-  gap: 8px;
+  gap: 14px;
 }
 
 .sectionLabel {
+  margin: 0;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 19px;
   font-weight: 600;
-  line-height: 20px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .sectionHint {
+  margin: -8px 0 0;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 /* ---------- Rows ---------- */
 
 .row {
   width: 100%;
-  min-height: 44px;
+  min-height: 50px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: 12px;
+  padding: 12px 20px;
   border: none;
   /* The legacy global button rule adds a border-radius, which makes the
      hairline dividers curve at their ends — menu rows must stay square and
@@ -240,8 +242,8 @@ button.row:focus-visible {
 
 .articleCard {
   display: grid;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px;
+  padding: 20px;
 }
 
 .articleSection {
@@ -251,8 +253,8 @@ button.row:focus-visible {
 
 .articleHeading {
   color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 550;
   line-height: 20px;
 }
 
@@ -260,6 +262,24 @@ button.row:focus-visible {
   color: var(--text-primary);
   font-size: 13px;
   line-height: 20px;
+}
+
+.resourceLinks {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+  margin-top: 2px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+}
+
+.resourceLabel {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .docsLink {
@@ -346,9 +366,22 @@ button.row:focus-visible {
 }
 
 .settingCard > :first-child {
-  padding: 0 16px 12px;
+  padding: 8px 20px 18px;
 }
 
 .rowFlush {
   border-top: 1px solid var(--border);
+}
+
+/* Wide windows: sections flow into two columns, each kept whole. */
+.columns {
+  display: block;
+  max-width: 1000px;
+  columns: 2 400px;
+  column-gap: 24px;
+
+  > * {
+    break-inside: avoid;
+    margin-bottom: 30px;
+  }
 }

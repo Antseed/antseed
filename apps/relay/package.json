@@ -1,0 +1,33 @@
+{
+  "name": "@antseed/relay",
+  "version": "0.1.1",
+  "description": "Web relay for Antseed: seller discovery cache + WebSocket-to-TCP signaling bridge for browser buyers",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@antseed/node": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@antseed/node": "workspace:*",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

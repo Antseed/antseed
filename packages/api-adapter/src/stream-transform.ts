@@ -3,8 +3,11 @@ import {
   createChatStreamParser,
   encodeSseEvents,
   extractUsage,
+  RESPONSES_FINAL_ANSWER_TOOL,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesFunctionCallId,
+  openAIResponsesMessageId,
   parseJsonSafe,
   parseSseBuffer,
   type StreamingResponseAdapter,
@@ -34,6 +37,7 @@ type CanonicalStreamEvent =
     id: string;
     model: string;
     finishReason: string | null;
+    endTurn?: boolean;
     usage: TokenUsage;
     toolCalls: CanonicalStreamToolCall[];
   };
@@ -43,6 +47,7 @@ type CanonicalStreamRenderer = (options: StreamTransformInternals) => ProtocolSt
 
 interface StreamTransformInternals {
   fallbackModel: string | null;
+  forceResponsesAgentTools?: boolean;
 }
 
 interface ProtocolStreamNormalizer {
@@ -54,6 +59,8 @@ interface ProtocolStreamRenderer {
 }
 
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+
+const RESPONSES_CONTINUE_TOOL = 'exec_command';
 
 const STREAM_NORMALIZERS: Partial<Record<ServiceApiProtocol, CanonicalStreamNormalizer>> = {
   'anthropic-messages': createAnthropicStreamNormalizer,
@@ -76,7 +83,10 @@ export function createStreamingAdapter(
   const createRenderer = STREAM_RENDERERS[options.to];
   if (!createNormalizer || !createRenderer) return null;
 
-  const internals = { fallbackModel: options.fallbackModel ?? null };
+  const internals = {
+    fallbackModel: options.fallbackModel ?? null,
+    forceResponsesAgentTools: options.from === 'openai-responses',
+  };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
 
@@ -92,6 +102,9 @@ export function createStreamingAdapter(
 function createChatStreamNormalizer(options: StreamTransformInternals): ProtocolStreamNormalizer {
   const emitted: CanonicalStreamEvent[] = [];
   let responseStarted = false;
+  let sawRealToolCall = false;
+  let sawFinalMarker = false;
+  let textBuffer = '';
 
   const emitStart = (id: string, model: string, usage: TokenUsage = ZERO_USAGE): void => {
     if (responseStarted) return;
@@ -107,10 +120,14 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
   const parser = createChatStreamParser({
     onText(delta) {
       emitStart(parser.getId(), parser.getModel());
+      textBuffer += delta;
       emitted.push({ type: 'text_delta', delta });
     },
     onToolCallStart(index, id, name) {
       emitStart(parser.getId(), parser.getModel());
+      if (name === RESPONSES_FINAL_ANSWER_TOOL) return;
+      sawRealToolCall = true;
+      sawFinalMarker = false;
       emitted.push({ type: 'tool_call_start', index, id, name });
     },
     onToolCallDelta(index, _id, argumentsDelta) {
@@ -118,13 +135,28 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
     },
     onFinish(info) {
       emitStart(info.id, info.model, info.usage);
+      if (info.toolCalls.some((toolCall) => toolCall.name === RESPONSES_FINAL_ANSWER_TOOL)) {
+        sawFinalMarker = true;
+      }
+      const forceToolCompletion = options.forceResponsesAgentTools && !sawRealToolCall;
+      const toolCalls = forceToolCompletion
+        ? [...info.toolCalls, {
+          index: Math.max(-1, ...info.toolCalls.map((toolCall) => toolCall.index)) + 1,
+          id: `final_${info.id || 'response'}`,
+          name: sawFinalMarker || /\s+(Done|Complete|Complete\.)$/i.test(textBuffer)
+            ? RESPONSES_FINAL_ANSWER_TOOL
+            : RESPONSES_CONTINUE_TOOL,
+          arguments: '',
+        }]
+        : info.toolCalls;
       emitted.push({
         type: 'response_done',
         id: info.id,
         model: info.model,
         finishReason: info.finishReason,
+        endTurn: !forceToolCompletion,
         usage: info.usage,
-        toolCalls: info.toolCalls,
+        toolCalls,
       });
     },
   }, {
@@ -149,6 +181,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let usage: TokenUsage = ZERO_USAGE;
   let finishReason: string | null = null;
   let responseStarted = false;
+  // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
+  let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
 
@@ -242,6 +276,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'message_stop') {
+          if (responseDone) continue;
+          responseDone = true;
           emitStart(emitted);
           emitted.push({
             type: 'response_done',
@@ -254,7 +290,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
       }
 
-      if (chunk.done && emitted.length === 0) {
+      if (chunk.done && !responseDone && emitted.length === 0) {
+        responseDone = true;
         return [{
           type: 'response_done',
           id: responseId,
@@ -575,7 +612,14 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             data: {
               type: 'message_delta',
               delta: { stop_reason: mapFinishReasonToAnthropicStopReason(event.finishReason), stop_sequence: null },
-              usage: { output_tokens: event.usage.outputTokens },
+              // Cumulative usage, as Anthropic's message_delta allows. Input
+              // counts are left out when the upstream reported none, so a
+              // client keeps the message_start value instead of a made-up zero.
+              // When they are reported, cache reads are written even at 0, so
+              // a cache count message_start showed can't outlive the final split.
+              usage: reportsInput(event.usage)
+                ? { ...anthropicUsage(event.usage), cache_read_input_tokens: event.usage.cachedInputTokens }
+                : { output_tokens: event.usage.outputTokens },
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
@@ -613,6 +657,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   };
 
   const getResponseId = (): string => responseId || fallbackResponsesId(options.fallbackModel);
+  const getMessageId = (): string => openAIResponsesMessageId(getResponseId());
   const getToolOutputIndex = (index: number): number => index + (outputStarted ? 1 : 0);
 
   const ensureResponseCreated = (
@@ -643,7 +688,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
     ensureResponseCreated(emitted, null);
     if (outputStarted) return;
     outputStarted = true;
-    const msgId = `${getResponseId()}_msg_1`;
+    const msgId = getMessageId();
     pushEvent(emitted, 'response.output_item.added', {
       output_index: 0,
       item: {
@@ -677,7 +722,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           textBuffer += event.delta;
           pushEvent(emitted, 'response.output_text.delta', {
             output_index: 0,
-            item_id: `${getResponseId()}_msg_1`,
+            item_id: getMessageId(),
             content_index: 0,
             delta: event.delta,
             logprobs: [],
@@ -694,11 +739,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             arguments: '',
           };
           toolCalls.set(event.index, toolCall);
+          const itemId = openAIResponsesFunctionCallId(toolCall.id);
           pushEvent(emitted, 'response.output_item.added', {
             output_index: getToolOutputIndex(event.index),
             item: {
               type: 'function_call',
-              id: toolCall.id,
+              id: itemId,
               call_id: toolCall.id,
               name: toolCall.name,
               arguments: '',
@@ -719,7 +765,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           toolCalls.set(event.index, toolCall);
           pushEvent(emitted, 'response.function_call_arguments.delta', {
             output_index: getToolOutputIndex(event.index),
-            item_id: toolCall.id,
+            item_id: openAIResponsesFunctionCallId(toolCall.id),
             call_id: toolCall.id,
             delta: event.argumentsDelta,
           });
@@ -728,9 +774,10 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
+          const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           if (!outputDone) {
             outputDone = true;
-            const msgId = `${getResponseId()}_msg_1`;
+            const msgId = getMessageId();
             if (outputStarted) {
               pushEvent(emitted, 'response.output_text.done', {
                 output_index: 0,
@@ -753,15 +800,17 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   role: 'assistant',
                   status: 'completed',
                   content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
+                  ...(messagePhase ? { phase: messagePhase } : {}),
                 },
               });
             }
 
             for (const toolCall of sortedToolCalls(toolCalls)) {
               const outputIndex = getToolOutputIndex(toolCall.index);
+              const itemId = openAIResponsesFunctionCallId(toolCall.id);
               pushEvent(emitted, 'response.function_call_arguments.done', {
                 output_index: outputIndex,
-                item_id: toolCall.id,
+                item_id: itemId,
                 call_id: toolCall.id,
                 name: toolCall.name,
                 arguments: toolCall.arguments,
@@ -770,7 +819,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                 output_index: outputIndex,
                 item: {
                   type: 'function_call',
-                  id: toolCall.id,
+                  id: itemId,
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
@@ -790,14 +839,15 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               output: [
                 ...(outputStarted ? [{
                   type: 'message' as const,
-                  id: `${getResponseId()}_msg_1`,
+                  id: getMessageId(),
                   role: 'assistant' as const,
                   status: 'completed' as const,
                   content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
+                  ...(messagePhase ? { phase: messagePhase } : {}),
                 }] : []),
                 ...sortedToolCalls(toolCalls).map((toolCall) => ({
                   type: 'function_call' as const,
-                  id: toolCall.id,
+                  id: openAIResponsesFunctionCallId(toolCall.id),
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
@@ -805,6 +855,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                 })),
               ],
               output_text: textBuffer,
+              ...(event.endTurn !== undefined ? { end_turn: event.endTurn } : {}),
               usage: openAIResponsesUsage(event.usage),
             },
           });
@@ -876,12 +927,20 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Whether a usage reported any input, fresh or cached (a cache hit can come with a zero prompt count). */
+function reportsInput(usage: TokenUsage): boolean {
+  return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
+}
+
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
+  // The input counts are one split: take them together from whichever event
+  // reported input, so a stale cached or fresh count can't outlive its total.
+  const input = reportsInput(next) ? next : previous;
   return {
-    inputTokens: next.inputTokens > 0 ? next.inputTokens : previous.inputTokens,
+    inputTokens: input.inputTokens,
     outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens,
-    freshInputTokens: next.freshInputTokens > 0 ? next.freshInputTokens : previous.freshInputTokens,
-    cachedInputTokens: next.cachedInputTokens > 0 ? next.cachedInputTokens : previous.cachedInputTokens,
+    freshInputTokens: input.freshInputTokens,
+    cachedInputTokens: input.cachedInputTokens,
   };
 }
 

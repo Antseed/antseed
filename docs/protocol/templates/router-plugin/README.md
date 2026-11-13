@@ -1,6 +1,6 @@
 # Build a Antseed Router Plugin
 
-This template shows how to publish a **router plugin** for the Antseed Network. A router plugin implements peer selection logic — deciding which seller peer to route each inference request to based on latency, price, reputation, or any custom criteria.
+This template shows how to publish a **router plugin** for the Antseed Network. A router plugin implements general buyer policy and peer-selection logic based on latency, price, reputation, or custom criteria. The CLI buyer proxy additionally applies the shared model-route planner to model-only requests so `/v1/models`, Desktop, and API dispatch agree on seller ordering.
 
 ## How It Works
 
@@ -11,10 +11,13 @@ CLI loads antseed-router-lowest-latency from ~/.antseed/plugins/
        ↓
 plugin.createRouter(config) → Router
        ↓
-AntseedNode (buyer mode) calls router.selectPeer() for each request
+AntseedNode (buyer mode) calls router.selectPeer() for generic requests
+       ↓
+CLI model-only requests resolve canonical offers, apply router policy,
+then rank eligible offers with @antseed/node/model-routing
 ```
 
-Your plugin only owns peer selection. Discovery, transport, metering, and payments are handled by the node.
+Your plugin owns general peer policy and generic selection. Discovery, canonical model matching, transport, metering, and payments are handled by the node and buyer proxy. Explicit peer pins remain hard overrides.
 
 ## Quick Start
 
@@ -66,6 +69,8 @@ import { DefaultRouter } from '@antseed/node';
 const router = new DefaultRouter({ minReputation: 70 }); // default is 0 (no reputation gate)
 ```
 
+That `DefaultRouter` behavior is the generic SDK fallback. In the CLI buyer proxy, a bare model id is planned with the shared Price + Trust preferences after router-policy checks. The model-route default `minTrustScore` is `60`, independent of the generic router's `minReputation` default.
+
 ## Publishing
 
 ```bash
@@ -114,7 +119,7 @@ interface Router {
 
 ## Links
 
-- [@antseed/node source](https://github.com/AntSeed/node)
-- [Router interface](https://github.com/AntSeed/node/tree/main/src/interfaces/buyer-router.ts)
-- [Official local router](https://github.com/AntSeed/router-local)
+- [@antseed/node source](https://github.com/Antseed/node)
+- [Router interface](https://github.com/Antseed/node/tree/main/src/interfaces/buyer-router.ts)
+- [Official local router](https://github.com/Antseed/router-local)
 - [Provider plugin template](../provider-plugin/)

@@ -3,6 +3,7 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { Alert02Icon, Download01Icon } from '@hugeicons/core-free-icons';
 import { useUiSelector } from '../hooks/useUiSelector';
 import type { UpdateStatus } from '../../types/bridge';
+import { BottomNotice } from './BottomNotice';
 import styles from './UpdateBanner.module.scss';
 
 const DEFAULT_INSTALL_HINT = 'Quit the app, reopen, and try again.';
@@ -36,7 +37,7 @@ export function UpdateBanner() {
 
     const unsubscribe = bridge.onUpdateStatus(apply);
     // Replay a status that fired before this component mounted.
-    void bridge.getUpdateStatus?.().then((status) => {
+    void bridge.getUpdateStatus?.()?.then((status) => {
       if (status) setUpdate((prev) => prev ?? status);
     }).catch(() => {});
     return unsubscribe;
@@ -94,28 +95,16 @@ export function UpdateBanner() {
 
   if (update.status === 'error') {
     return (
-      <div className={`${styles.banner} ${styles.bannerError}`} role="alert">
-        <span className={`${styles.icon} ${styles.iconError}`} aria-hidden="true">
-          <HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />
-        </span>
-        <div className={styles.text}>
-          <span className={`${styles.title} ${styles.titleError}`}>Update failed</span>
-          <span className={styles.body}>
-            {update.message} {update.hint ?? DEFAULT_INSTALL_HINT}
-          </span>
-        </div>
-        <button type="button" className={styles.action} onClick={handleCopyDetails}>
-          {detailsCopied ? 'Copied' : 'Copy details'}
-        </button>
-        <button
-          type="button"
-          className={styles.dismiss}
-          aria-label="Dismiss update error"
-          onClick={() => setUpdate(null)}
-        >
-          ×
-        </button>
-      </div>
+      <BottomNotice
+        actions={[{ label: detailsCopied ? 'Copied' : 'Copy details', onClick: handleCopyDetails }]}
+        body={`${update.message} ${update.hint ?? DEFAULT_INSTALL_HINT}`}
+        dismissLabel="Dismiss update error"
+        icon={<HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />}
+        onDismiss={() => setUpdate(null)}
+        role="alert"
+        title="Update failed"
+        tone="danger"
+      />
     );
   }
 
@@ -124,55 +113,28 @@ export function UpdateBanner() {
   const available = update.status === 'available';
   const percent = update.status === 'downloading' ? update.percent : 0;
   return (
-    <div className={styles.banner} role="status">
-      <span className={styles.icon} aria-hidden="true">
-        <HugeiconsIcon icon={Download01Icon} size={18} strokeWidth={1.8} />
-      </span>
-      <div className={styles.text}>
-        <span className={styles.title}>
-          {installing ? 'Installing update…' : downloading ? 'Downloading update…' : 'Update available'}
-        </span>
-        <span className={styles.body}>
-          {installing
-            ? 'The app will restart on the new version in a moment.'
-            : downloading
-              ? `Version ${update.version} · ${percent}%`
-              : available
-                ? `Version ${update.version} is available.`
-                : `Version ${update.version} is downloaded and ready to install.`}
-        </span>
-        {downloading && (
+    <BottomNotice
+      actions={installing ? [] : available
+        ? [{ label: 'Download', onClick: () => { void window.antseedDesktop?.downloadUpdate?.(); } }]
+        : update.status === 'ready'
+          ? [{ label: 'Restart & update', onClick: handleInstall }]
+          : []}
+      body={installing
+        ? 'The app will restart on the new version in a moment.'
+        : downloading
+          ? `Version ${update.version} · ${percent}%`
+          : available
+            ? `Version ${update.version} is available.`
+            : `Version ${update.version} is downloaded and ready to install.`}
+      detail={downloading ? (
           <span className={styles.progressTrack} aria-hidden="true">
             <span className={styles.progressFill} style={{ width: `${percent}%` }} />
           </span>
-        )}
-      </div>
-      {!installing && (
-        <>
-          {available && (
-            <button
-              type="button"
-              className={styles.action}
-              onClick={() => { void window.antseedDesktop?.downloadUpdate?.(); }}
-            >
-              Download
-            </button>
-          )}
-          {update.status === 'ready' && (
-            <button type="button" className={styles.action} onClick={handleInstall}>
-              Restart &amp; update
-            </button>
-          )}
-          <button
-            type="button"
-            className={styles.dismiss}
-            aria-label="Dismiss update notice"
-            onClick={() => setDismissedVersion(update.version)}
-          >
-            ×
-          </button>
-        </>
-      )}
-    </div>
+        ) : undefined}
+      dismissLabel="Dismiss update notice"
+      icon={<HugeiconsIcon icon={Download01Icon} size={18} strokeWidth={1.8} />}
+      onDismiss={installing ? undefined : () => setDismissedVersion(update.version)}
+      title={installing ? 'Installing update…' : downloading ? 'Downloading update…' : 'Update available'}
+    />
   );
 }

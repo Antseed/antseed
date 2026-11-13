@@ -5,51 +5,28 @@ import { runMigrations } from '../storage/migrate.js';
 import { channelMigrations } from '../storage/migrations/channels/index.js';
 import type { SpendingAuthMetadata, SpendingAuthServiceMetadata } from './evm/signatures.js';
 
-export const CHANNEL_STATUS = {
-  ACTIVE: 'active',
-  SETTLED: 'settled',
-  TIMEOUT: 'timeout',
-  GHOST: 'ghost',
-} as const;
-
-export const CHANNEL_KIND = {
-  PAID: 'paid',
-  FREE: 'free',
-} as const;
-
-export const CHANNEL_ROLE = {
-  BUYER: 'buyer',
-  SELLER: 'seller',
-} as const;
-
-export type ChannelStatus = typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS];
-export type ChannelKind = typeof CHANNEL_KIND[keyof typeof CHANNEL_KIND];
-export type ChannelRole = typeof CHANNEL_ROLE[keyof typeof CHANNEL_ROLE];
-
-export interface StoredChannel {
-  sessionId: string;
-  peerId: string;
-  role: ChannelRole;
-  channelKind?: ChannelKind;
-  sellerEvmAddr: string;
-  buyerEvmAddr: string;
-  nonce: number;
-  authMax: string;          // bigint stored as string
-  deadline: number;
-  previousSessionId: string;
-  previousConsumption: string; // bigint as string
-  tokensDelivered: string;    // bigint as string
-  requestCount: number;
-  reservedAt: number;
-  settledAt: number | null;
-  settledAmount: string | null; // bigint as string
-  status: ChannelStatus;
-  latestBuyerSig: string | null;
-  latestSpendingAuthSig: string | null;
-  latestMetadata: string | null;       // hex-encoded
-  createdAt: number;
-  updatedAt: number;
-}
+// Channel constants/types + BuyerChannelStore interface moved to @antseed/buyer-core.
+export {
+  CHANNEL_STATUS,
+  CHANNEL_KIND,
+  CHANNEL_ROLE,
+  type ChannelStatus,
+  type ChannelKind,
+  type ChannelRole,
+  type StoredChannel,
+  type StoredChannelServiceTotal,
+  type BuyerChannelStore,
+} from '@antseed/buyer-core/channel-store-types';
+import {
+  CHANNEL_STATUS,
+  CHANNEL_KIND,
+  CHANNEL_ROLE,
+  type ChannelStatus,
+  type ChannelKind,
+  type ChannelRole,
+  type StoredChannel,
+  type StoredChannelServiceTotal,
+} from '@antseed/buyer-core/channel-store-types';
 
 export interface StoredReceipt {
   id?: number;
@@ -62,17 +39,6 @@ export interface StoredReceipt {
   createdAt: number;
 }
 
-export interface StoredChannelServiceTotal {
-  sessionId: string;
-  serviceId: string;
-  cumulativeAmount: string; // bigint as string
-  cumulativeInputTokens: string; // bigint as string
-  cumulativeCachedInputTokens: string; // bigint as string
-  cumulativeOutputTokens: string; // bigint as string
-  cumulativeRequestCount: string; // bigint as string
-  updatedAt: number;
-}
-
 /** Per-service usage aggregated across all of a buyer's channels (paid + free).
     `serviceId` is the keccak hash of the service name (see getServiceMetadataId). */
 export interface BuyerServiceUsageTotal {
@@ -80,7 +46,12 @@ export interface BuyerServiceUsageTotal {
   amountUsdc: string; // bigint as string (base units)
   inputTokens: string; // bigint as string
   cachedInputTokens: string; // bigint as string
+  /** Includes OUTPUT_IMAGE_TOKEN_EQUIVALENT credits for generated images. */
   outputTokens: string; // bigint as string
+  outputImages: string; // bigint as string
+  videoGenerations: string; // bigint as string
+  videoSeconds: string; // bigint as string
+  inputCharacters: string; // bigint as string
   requestCount: number;
 }
 
@@ -96,13 +67,17 @@ export class ChannelStore {
     receipt: Omit<StoredReceipt, 'id'>,
   ) => void;
   private readonly _replaceServiceTotalsTxn: (sessionId: string, totals: StoredChannelServiceTotal[]) => void;
+  private readonly _commitAuthorizationTxn: (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => void;
 
   private readonly _stmts: {
     upsert: Database.Statement;
     getById: Database.Statement;
     getActiveByPeer: Database.Statement;
+    getOneOffByRequest: Database.Statement;
+    getUnpaidOneOffChannels: Database.Statement;
     getActiveByPeerAndBuyer: Database.Statement;
     getLatestByPeer: Database.Statement;
+    getFirstCreatedByPeer: Database.Statement;
     getLatestByPeerAndBuyer: Database.Statement;
     updateStatusWithAmount: Database.Statement;
     updateStatus: Database.Statement;
@@ -110,6 +85,7 @@ export class ChannelStore {
     getMaxNonce: Database.Statement;
     listAll: Database.Statement;
     getTimedOut: Database.Statement;
+    getUnsettledByStatus: Database.Statement;
     insertReceipt: Database.Statement;
     getReceipts: Database.Statement;
     updateReceiptAck: Database.Statement;
@@ -133,7 +109,7 @@ export class ChannelStore {
         this.insertReceipt(receipt);
       },
     );
-    this._replaceServiceTotalsTxn = this._db.transaction((sessionId: string, totals: StoredChannelServiceTotal[]) => {
+    const replaceServiceTotals = (sessionId: string, totals: StoredChannelServiceTotal[]) => {
       this._stmts.deleteServiceTotals.run(sessionId);
       for (const total of totals) {
         this._stmts.insertServiceTotal.run({
@@ -144,10 +120,21 @@ export class ChannelStore {
           cumulativeCachedInputTokens: total.cumulativeCachedInputTokens,
           cumulativeOutputTokens: total.cumulativeOutputTokens,
           cumulativeRequestCount: total.cumulativeRequestCount,
+          cumulativeOutputImages: total.cumulativeOutputImages ?? '0',
+          cumulativeVideoGenerations: total.cumulativeVideoGenerations ?? '0',
+          cumulativeVideoSeconds: total.cumulativeVideoSeconds ?? '0',
+          cumulativeInputCharacters: total.cumulativeInputCharacters ?? '0',
           updatedAt: total.updatedAt,
         });
       }
-    });
+    };
+    this._replaceServiceTotalsTxn = this._db.transaction(replaceServiceTotals);
+    this._commitAuthorizationTxn = this._db.transaction(
+      (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => {
+        this.upsertChannel(channel);
+        replaceServiceTotals(channel.sessionId, totals);
+      },
+    );
   }
 
   private _prepareStatements() {
@@ -158,13 +145,13 @@ export class ChannelStore {
           nonce, auth_max, deadline, previous_session_id, previous_consumption,
           tokens_delivered, request_count, reserved_at, settled_at, settled_amount,
           status, latest_buyer_sig, latest_metadata_auth_sig, latest_metadata,
-          created_at, updated_at
+          created_at, updated_at, payment_recovery, one_off_request_id
         ) VALUES (
           @sessionId, @peerId, @role, @channelKind, @sellerEvmAddr, @buyerEvmAddr,
           @nonce, @authMax, @deadline, @previousSessionId, @previousConsumption,
           @tokensDelivered, @requestCount, @reservedAt, @settledAt, @settledAmount,
           @status, @latestBuyerSig, @latestSpendingAuthSig, @latestMetadata,
-          @createdAt, @updatedAt
+          @createdAt, @updatedAt, @paymentRecovery, @oneOffRequestId
         )
         ON CONFLICT(session_id) DO UPDATE SET
           channel_kind = @channelKind,
@@ -178,11 +165,28 @@ export class ChannelStore {
           latest_buyer_sig = @latestBuyerSig,
           latest_metadata_auth_sig = @latestSpendingAuthSig,
           latest_metadata = @latestMetadata,
+          payment_recovery = @paymentRecovery,
           updated_at = @updatedAt
       `),
       getById: this._db.prepare(
         'SELECT * FROM payment_channels WHERE session_id = ?',
       ),
+      getOneOffByRequest: this._db.prepare(
+        "SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND one_off_request_id = ? AND channel_kind = 'one_off' ORDER BY created_at DESC LIMIT 1",
+      ),
+      // A channel's end time is when its settlement was recorded, else when it was reserved: both are written once.
+      getUnpaidOneOffChannels: this._db.prepare(`
+        SELECT COUNT(*) AS count, MAX(COALESCE(settled_at, reserved_at)) AS lastEndedAt
+        FROM payment_channels
+        WHERE peer_id = @peerId AND role = @role AND channel_kind = 'one_off' AND status <> 'active'
+          AND CAST(COALESCE(settled_amount, '0') AS INTEGER) < @minEarned
+          AND COALESCE(settled_at, reserved_at) > MAX(@since, COALESCE((
+            SELECT MAX(settled_at) FROM payment_channels
+            WHERE peer_id = @peerId AND role = @role AND channel_kind = 'one_off' AND status = 'settled'
+              AND CAST(tokens_delivered AS INTEGER) > 0
+              AND CAST(settled_amount AS INTEGER) >= CAST(tokens_delivered AS INTEGER)
+          ), 0))
+      `),
       getActiveByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC LIMIT 1',
       ),
@@ -191,6 +195,9 @@ export class ChannelStore {
       ),
       getLatestByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
+      ),
+      getFirstCreatedByPeer: this._db.prepare(
+        'SELECT MIN(created_at) AS first FROM payment_channels WHERE peer_id = ? AND role = ?',
       ),
       getLatestByPeerAndBuyer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND buyer_evm_addr = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
@@ -212,6 +219,9 @@ export class ChannelStore {
       ),
       getTimedOut: this._db.prepare(
         'SELECT * FROM payment_channels WHERE channel_kind = ? AND status = ? AND updated_at < ? ORDER BY updated_at LIMIT 100',
+      ),
+      getUnsettledByStatus: this._db.prepare(
+        'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND settled_at IS NULL ORDER BY updated_at LIMIT ?',
       ),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
@@ -253,11 +263,15 @@ export class ChannelStore {
         INSERT INTO payment_channel_service_totals (
           session_id, service_id, cumulative_amount, cumulative_input_tokens,
           cumulative_cached_input_tokens, cumulative_output_tokens,
-          cumulative_request_count, updated_at
+          cumulative_request_count, cumulative_output_images,
+          cumulative_video_generations, cumulative_video_seconds,
+          cumulative_input_characters, updated_at
         ) VALUES (
           @sessionId, @serviceId, @cumulativeAmount, @cumulativeInputTokens,
           @cumulativeCachedInputTokens, @cumulativeOutputTokens,
-          @cumulativeRequestCount, @updatedAt
+          @cumulativeRequestCount, @cumulativeOutputImages,
+          @cumulativeVideoGenerations, @cumulativeVideoSeconds,
+          @cumulativeInputCharacters, @updatedAt
         )
       `),
       getServiceTotals: this._db.prepare(
@@ -290,6 +304,17 @@ export class ChannelStore {
       latestBuyerSig: channel.latestBuyerSig ?? null,
       latestSpendingAuthSig: channel.latestSpendingAuthSig ?? null,
       latestMetadata: channel.latestMetadata ?? null,
+      paymentRecovery: JSON.stringify({
+        reserveSalt: channel.reserveSalt,
+        initialReserveAmount: channel.initialReserveAmount,
+        reserveMaxAmount: channel.reserveMaxAmount,
+        latestReserveAuthSig: channel.latestReserveAuthSig,
+        latestReserveDeadline: channel.latestReserveDeadline,
+        reserveAuthPending: channel.reserveAuthPending,
+        confirmedReserveAmount: channel.confirmedReserveAmount,
+        oneOffVideoJob: channel.oneOffVideoJob,
+      }),
+      oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
     });
@@ -298,6 +323,20 @@ export class ChannelStore {
   getChannel(sessionId: string): StoredChannel | null {
     const row = this._stmts.getById.get(sessionId) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
+  }
+
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null {
+    const row = this._stmts.getOneOffByRequest.get(peerId, role, requestId) as ChannelRow | undefined;
+    return row ? rowToChannel(row) : null;
+  }
+
+  /**
+   * A peer's one-off channels that ended after `since`, and after its last
+   * delivered video paid in full, having earned less than `minEarned`.
+   */
+  getUnpaidOneOffChannels(peerId: string, role: ChannelRole, since: number, minEarned: number): { count: number; lastEndedAt: number } {
+    const row = this._stmts.getUnpaidOneOffChannels.get({ peerId, role, since, minEarned }) as { count: number; lastEndedAt: number | null };
+    return { count: row.count, lastEndedAt: row.lastEndedAt ?? 0 };
   }
 
   getActiveChannelByPeer(peerId: string, role: ChannelRole, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
@@ -319,6 +358,12 @@ export class ChannelStore {
   getLatestChannel(peerId: string, role: ChannelRole, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
     const row = this._stmts.getLatestByPeer.get(peerId, role, channelKind) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
+  }
+
+  /** When the first channel with this peer in this role was created (ms), or null when there is none. */
+  getFirstChannelCreatedAt(peerId: string, role: ChannelRole): number | null {
+    const row = this._stmts.getFirstCreatedByPeer.get(peerId, role) as { first: number | null } | undefined;
+    return row?.first ?? null;
   }
 
   getLatestChannelByPeerAndBuyer(peerId: string, role: ChannelRole, buyerEvmAddr: string, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
@@ -369,6 +414,35 @@ export class ChannelStore {
       )
       .all(role, buyerEvmAddr, channelKind) as ChannelRow[];
     return rows.map(rowToChannel);
+  }
+
+  getBuyerPaymentChannels(buyerEvmAddr: string): StoredChannel[] {
+    const rows = this._db.prepare(
+      'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+    ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
+  /**
+   * Channel counts and amounts per status for every channel of a role and the
+   * given kinds, summed in SQLite (no history limit, nothing loaded).
+   */
+  getRoleTotalsByStatus(role: ChannelRole, channelKinds: readonly ChannelKind[] = [CHANNEL_KIND.PAID]): Array<{
+    status: string;
+    count: number;
+    tokensDelivered: bigint;
+    settledAmount: bigint;
+  }> {
+    if (channelKinds.length === 0) return [];
+    const rows = this._db.prepare(`
+      SELECT status, COUNT(*) AS count,
+        COALESCE(SUM(CAST(tokens_delivered AS INTEGER)), 0) AS delivered,
+        COALESCE(SUM(CAST(settled_amount AS INTEGER)), 0) AS settled
+      FROM payment_channels
+      WHERE role = ? AND channel_kind IN (${channelKinds.map(() => '?').join(', ')})
+      GROUP BY status
+    `).all(role, ...channelKinds) as Array<{ status: string; count: number; delivered: number; settled: number }>;
+    return rows.map((row) => ({ status: row.status, count: row.count, tokensDelivered: BigInt(row.delivered), settledAmount: BigInt(row.settled) }));
   }
 
   /** Aggregate totals across all channels for a given peer and role. */
@@ -449,6 +523,12 @@ export class ChannelStore {
     return rows.map(rowToChannel);
   }
 
+  /** Channels of any kind in `status` with no settlement recorded, least recently updated first. */
+  getUnsettledChannelsByStatus(role: ChannelRole, status: ChannelStatus, limit = 100): StoredChannel[] {
+    const rows = this._stmts.getUnsettledByStatus.all(role, status, limit) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
   // ── Receipt CRUD ──────────────────────────────────────────────
 
   insertReceipt(receipt: Omit<StoredReceipt, 'id'>): void {
@@ -498,17 +578,21 @@ export class ChannelStore {
   }
 
   replaceMetadataServiceTotals(sessionId: string, services: readonly SpendingAuthServiceMetadata[] = []): void {
-    this.replaceServiceTotals(
-      sessionId,
-      services.map((service) => ({
-        serviceId: service.serviceId,
-        cumulativeAmount: service.cumulativeAmount.toString(),
-        cumulativeInputTokens: service.cumulativeInputTokens.toString(),
-        cumulativeCachedInputTokens: service.cumulativeCachedInputTokens.toString(),
-        cumulativeOutputTokens: service.cumulativeOutputTokens.toString(),
-        cumulativeRequestCount: service.cumulativeRequestCount.toString(),
-      })),
-    );
+    this.replaceServiceTotals(sessionId, this._metadataTotals(services));
+  }
+
+  /** Persist the signed channel snapshot and its exact service totals atomically. */
+  commitAuthorization(
+    channel: StoredChannel,
+    services: readonly SpendingAuthServiceMetadata[] = [],
+  ): void {
+    const updatedAt = Date.now();
+    const totals = this._metadataTotals(services).map((total) => ({
+      sessionId: channel.sessionId,
+      ...total,
+      updatedAt,
+    }));
+    this._commitAuthorizationTxn(channel, totals);
   }
 
   getServiceTotals(sessionId: string): StoredChannelServiceTotal[] {
@@ -526,7 +610,9 @@ export class ChannelStore {
       .prepare(`
         SELECT t.service_id, t.cumulative_amount, t.cumulative_input_tokens,
                t.cumulative_cached_input_tokens, t.cumulative_output_tokens,
-               t.cumulative_request_count
+               t.cumulative_request_count, t.cumulative_output_images,
+               t.cumulative_video_generations, t.cumulative_video_seconds,
+               t.cumulative_input_characters
         FROM payment_channel_service_totals t
         JOIN payment_channels c ON c.session_id = t.session_id
         WHERE c.role = ? AND c.buyer_evm_addr = ?
@@ -538,23 +624,47 @@ export class ChannelStore {
         cumulative_cached_input_tokens: string;
         cumulative_output_tokens: string;
         cumulative_request_count: string;
+        cumulative_output_images: string;
+        cumulative_video_generations: string;
+        cumulative_video_seconds: string;
+        cumulative_input_characters: string;
       }>;
 
     const byService = new Map<string, {
-      amount: bigint; input: bigint; cached: bigint; output: bigint; requests: bigint;
+      amount: bigint;
+      input: bigint;
+      cached: bigint;
+      output: bigint;
+      requests: bigint;
+      images: bigint;
+      videoGenerations: bigint;
+      videoSeconds: bigint;
+      inputCharacters: bigint;
     }>();
     const toBigInt = (value: string): bigint => {
       try { return BigInt(value || '0'); } catch { return 0n; }
     };
     for (const row of rows) {
       const entry = byService.get(row.service_id) ?? {
-        amount: 0n, input: 0n, cached: 0n, output: 0n, requests: 0n,
+        amount: 0n,
+        input: 0n,
+        cached: 0n,
+        output: 0n,
+        requests: 0n,
+        images: 0n,
+        videoGenerations: 0n,
+        videoSeconds: 0n,
+        inputCharacters: 0n,
       };
       entry.amount += toBigInt(row.cumulative_amount);
       entry.input += toBigInt(row.cumulative_input_tokens);
       entry.cached += toBigInt(row.cumulative_cached_input_tokens);
       entry.output += toBigInt(row.cumulative_output_tokens);
       entry.requests += toBigInt(row.cumulative_request_count);
+      entry.images += toBigInt(row.cumulative_output_images);
+      entry.videoGenerations += toBigInt(row.cumulative_video_generations);
+      entry.videoSeconds += toBigInt(row.cumulative_video_seconds);
+      entry.inputCharacters += toBigInt(row.cumulative_input_characters);
       byService.set(row.service_id, entry);
     }
     return Array.from(byService.entries()).map(([serviceId, entry]) => ({
@@ -563,6 +673,10 @@ export class ChannelStore {
       inputTokens: entry.input.toString(),
       cachedInputTokens: entry.cached.toString(),
       outputTokens: entry.output.toString(),
+      outputImages: entry.images.toString(),
+      videoGenerations: entry.videoGenerations.toString(),
+      videoSeconds: entry.videoSeconds.toString(),
+      inputCharacters: entry.inputCharacters.toString(),
       requestCount: Number(entry.requests),
     }));
   }
@@ -575,16 +689,43 @@ export class ChannelStore {
       cumulativeCachedInputTokens: BigInt(total.cumulativeCachedInputTokens),
       cumulativeOutputTokens: BigInt(total.cumulativeOutputTokens),
       cumulativeRequestCount: BigInt(total.cumulativeRequestCount),
+      cumulativeOutputImages: BigInt(total.cumulativeOutputImages ?? '0'),
+      cumulativeVideoGenerations: BigInt(total.cumulativeVideoGenerations ?? '0'),
+      cumulativeVideoSeconds: BigInt(total.cumulativeVideoSeconds ?? '0'),
+      cumulativeInputCharacters: BigInt(total.cumulativeInputCharacters ?? '0'),
     }));
   }
 
   getChannelMetadata(channel: StoredChannel): SpendingAuthMetadata {
+    const services = this.getMetadataServiceTotals(channel.sessionId);
     return {
       cumulativeInputTokens: BigInt(channel.tokensDelivered),
       cumulativeOutputTokens: BigInt(channel.previousConsumption),
       cumulativeRequestCount: BigInt(channel.requestCount),
-      services: this.getMetadataServiceTotals(channel.sessionId),
+      // No channel column for images — recovered from the per-service rows.
+      cumulativeOutputImages: services.reduce((sum, s) => sum + s.cumulativeOutputImages, 0n),
+      cumulativeVideoGenerations: services.reduce((sum, s) => sum + (s.cumulativeVideoGenerations ?? 0n), 0n),
+      cumulativeVideoSeconds: services.reduce((sum, s) => sum + (s.cumulativeVideoSeconds ?? 0n), 0n),
+      cumulativeInputCharacters: services.reduce((sum, s) => sum + (s.cumulativeInputCharacters ?? 0n), 0n),
+      services,
     };
+  }
+
+  private _metadataTotals(
+    services: readonly SpendingAuthServiceMetadata[],
+  ): Omit<StoredChannelServiceTotal, 'sessionId' | 'updatedAt'>[] {
+    return services.map((service) => ({
+      serviceId: service.serviceId,
+      cumulativeAmount: service.cumulativeAmount.toString(),
+      cumulativeInputTokens: service.cumulativeInputTokens.toString(),
+      cumulativeCachedInputTokens: service.cumulativeCachedInputTokens.toString(),
+      cumulativeOutputTokens: service.cumulativeOutputTokens.toString(),
+      cumulativeRequestCount: service.cumulativeRequestCount.toString(),
+      cumulativeOutputImages: (service.cumulativeOutputImages ?? 0n).toString(),
+      cumulativeVideoGenerations: (service.cumulativeVideoGenerations ?? 0n).toString(),
+      cumulativeVideoSeconds: (service.cumulativeVideoSeconds ?? 0n).toString(),
+      cumulativeInputCharacters: (service.cumulativeInputCharacters ?? 0n).toString(),
+    }));
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────
@@ -597,6 +738,8 @@ export class ChannelStore {
 // ── Row types ─────────────────────────────────────────────────
 
 interface ChannelRow {
+  payment_recovery: string | null;
+  one_off_request_id: string | null;
   session_id: string;
   peer_id: string;
   role: string;
@@ -640,11 +783,16 @@ interface ServiceTotalRow {
   cumulative_cached_input_tokens: string;
   cumulative_output_tokens: string;
   cumulative_request_count: string;
+  cumulative_output_images: string;
+  cumulative_video_generations: string;
+  cumulative_video_seconds: string;
+  cumulative_input_characters: string;
   updated_at: number;
 }
 
 function rowToChannel(row: ChannelRow): StoredChannel {
   return {
+    ...(row.payment_recovery ? JSON.parse(row.payment_recovery) : {}),
     sessionId: row.session_id,
     peerId: row.peer_id,
     role: row.role as ChannelRole,
@@ -665,6 +813,7 @@ function rowToChannel(row: ChannelRow): StoredChannel {
     latestBuyerSig: row.latest_buyer_sig,
     latestSpendingAuthSig: row.latest_metadata_auth_sig,
     latestMetadata: row.latest_metadata,
+    ...(row.one_off_request_id ? { oneOffRequestId: row.one_off_request_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -692,6 +841,10 @@ function rowToServiceTotal(row: ServiceTotalRow): StoredChannelServiceTotal {
     cumulativeCachedInputTokens: row.cumulative_cached_input_tokens,
     cumulativeOutputTokens: row.cumulative_output_tokens,
     cumulativeRequestCount: row.cumulative_request_count,
+    cumulativeOutputImages: row.cumulative_output_images ?? '0',
+    cumulativeVideoGenerations: row.cumulative_video_generations ?? '0',
+    cumulativeVideoSeconds: row.cumulative_video_seconds ?? '0',
+    cumulativeInputCharacters: row.cumulative_input_characters ?? '0',
     updatedAt: row.updated_at,
   };
 }

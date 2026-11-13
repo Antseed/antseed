@@ -3,14 +3,14 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { Alert02Icon } from '@hugeicons/core-free-icons';
 import { useUiSelector } from '../hooks/useUiSelector';
 import type { RendererUiState } from '../../core/state';
-import styles from './NetworkAlertBanner.module.scss';
+import { BottomNotice } from './BottomNotice';
 
 type AlertKind = RendererUiState['networkAlert'];
 
 const MESSAGES: Record<Exclude<AlertKind, 'none'>, { title: string; body: string }> = {
   'no-internet': {
     title: 'No internet connection',
-    body: 'VPR can’t reach the peer-to-peer network. Check your connection — requests won’t work until you’re back online.',
+    body: 'Antseed Desktop can’t reach the peer-to-peer network. Check your connection — requests won’t work until you’re back online.',
   },
   blocked: {
     title: 'Peer-to-peer network unreachable',
@@ -35,22 +35,15 @@ export function NetworkAlertBanner() {
   const msg = MESSAGES[alert];
 
   return (
-    <div className={styles.banner} role="alert">
-      <span className={styles.icon} aria-hidden="true">
-        <HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />
-      </span>
-      <div className={styles.text}>
-        <span className={styles.title}>{msg.title}</span>
-        <span className={styles.body}>{msg.body}</span>
-      </div>
-      <button
-        type="button"
-        className={styles.dismiss}
-        aria-label="Dismiss network warning"
-        onClick={() => setDismissed(alert)}
-      >
-        ×
-      </button>
-    </div>
+    <BottomNotice
+      align="start"
+      body={msg.body}
+      dismissLabel="Dismiss network warning"
+      icon={<HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />}
+      onDismiss={() => setDismissed(alert)}
+      role="alert"
+      title={msg.title}
+      tone="danger"
+    />
   );
 }

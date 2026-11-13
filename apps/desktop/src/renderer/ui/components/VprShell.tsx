@@ -1,28 +1,40 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
+import { BubbleChatIcon, PencilEdit02Icon, SidebarLeftIcon } from '@hugeicons/core-free-icons';
+import { Logo, LogoMark } from '@antseed/ui';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
-import { formatCredits } from '../../core/format';
-import { navViews } from './viewRegistry';
+import { useActions } from '../hooks/useActions';
+import { selectHeadlineBalanceUsdc } from '../../core/balance';
+import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
+import { homeProgress } from '../../modules/app/home-progress';
+import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
+import { useCachedResource } from '../../modules/app/cached-resource';
+import { navViews, type NavView } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
 import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
+import { ConsoleLaunchNotice } from './ConsoleLaunchNotice';
+import { openGatewayConsole } from '../../modules/app/console-launch';
+import { SidebarBalance } from './vpr/SidebarBalance';
 import { VprNavContext } from './vpr/VprNavContext';
+import { VprHeaderActions } from './vpr/VprHeaderActions';
+import { PrivacySwitchDialog } from './vpr/PrivacyToggle';
+import { setPrivateNight } from '../lib/theme';
 import styles from './VprShell.module.scss';
+import { usePrivateMode } from '../hooks/usePrivateMode';
 
-/* Views built on VprPage carry the credits pill inside their pinned header,
-   so the shell's floating pill would duplicate it. Home and chat keep the
-   floating one. */
-const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set([
-  'explore',
-  'model',
+/* Views built on VprPage carry Help and API keys inside their pinned header,
+   so the shell's floating toolbar would duplicate them. */
+const VIEWS_WITH_HEADER_ACTIONS: ReadonlySet<ViewName> = new Set<ViewName>([
+  'chat',
   'tools',
-  'chats',
-  'credits',
-  'deposit',
-  'activity',
   'rewards',
+  'deposit',
+  'desktop',
+  'connection',
+  'config',
   'preferences',
   'help',
 ]);
@@ -36,131 +48,263 @@ type VprShellProps = {
   children: React.ReactNode;
 };
 
+const SIDEBAR_COLLAPSED_KEY = 'antseed.sidebarCollapsed';
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // Storage unavailable; the sidebar opens expanded next launch.
+  }
+}
+
 const mainNavEntries = navViews('main');
+// Home leads the rail, then Chat with its new-chat button, then the rest.
+const homeNavEntry = mainNavEntries.find(({ view }) => view === 'home') ?? null;
+const otherNavEntries = mainNavEntries.filter(({ view }) => view !== 'home');
 const bottomNavEntries = navViews('bottom');
 
+function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; starting?: boolean; origin: string | null } | undefined): string {
+  if (!status) return 'Gateway starting';
+  const where = status.mode === 'local' ? 'Local gateway' : (status.origin?.replace(/^https?:\/\//, '') ?? 'Remote gateway');
+  return `${where} · ${status.reachable ? 'ready' : status.starting ? 'starting' : 'unreachable'}`;
+}
+
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
+  const actions = useActions();
   const snap = useUiSelector((state) => ({
-    creditsSpendableUsdc: state.creditsSpendableUsdc,
-    connectBadgeLabel: state.connectBadge.label,
-    networkHealth: state.ovDhtHealth,
-    proxyPort: state.ovProxyPort,
-    peers: state.ovPeers,
-    serviceCount: state.ovServiceCount,
-    chatNeedsAttention: state.chatPaymentApprovalVisible || state.chatSendingConversationIds.length > 0,
-    chatPanelExpanded: state.chatPanelExpanded,
+    headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
+    chatNeedsAttention: state.chatSendingConversationIds.length > 0,
   }), shallowEqual);
+  const gateway = useCachedResource(gatewayResource);
+  const gatewayStatus = gateway.data?.status;
+  const privateMode = usePrivateMode();
+
+  // The gateway's model list follows the mode, wherever the user has gone by
+  // the time a switch lands.
+  const { switching: privacySwitching } = usePrivacySwitch();
+  const privacy = useCachedResource(privacyResource);
+  const landedMode = privacySwitching ? null : privacy.data?.mode ?? null;
+  const lastLandedMode = useRef(landedMode);
+  useEffect(() => {
+    if (!landedMode) return;
+    const changed = lastLandedMode.current !== null && lastLandedMode.current !== landedMode;
+    lastLandedMode.current = landedMode;
+    if (changed) void actions.privacySwitchLanded(landedMode);
+  }, [actions, landedMode]);
+
+  // Private shows the night palette everywhere while it's on.
+  useEffect(() => {
+    setPrivateNight(privateMode);
+    return () => setPrivateNight(false);
+  }, [privateMode]);
 
   const [appVersion, setAppVersion] = useState<string>(
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
   );
   useEffect(() => {
-    window.antseedDesktop?.getAppVersion?.().then(setAppVersion).catch(() => {});
+    window.antseedDesktop?.getAppVersion?.()?.then(setAppVersion).catch(() => {});
   }, []);
-
-  // Chat opens thin — the conversation-list panel (and the wide window
-  // preset, see AppShell) only appear once the user expands the chat view.
-  const chatPanelVisible = activeView === 'chat' && snap.chatPanelExpanded;
 
   const navValue = useMemo(
     () => ({ navigate: onSelectView, back: onNavigateBack }),
     [onSelectView, onNavigateBack],
   );
 
+  // Until the first prompt, new chats start from Home's big chat box.
+  const startNewChat = useCallback(() => {
+    actions.startNewChat();
+    onSelectView(homeProgress.get().firstPromptAt === null ? 'home' : 'chat');
+  }, [actions, onSelectView]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        startNewChat();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [startNewChat]);
+
+  const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
+  const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
+  // A remote gateway pays from its own wallet: Add funds opens its console's
+  // Wallet page, never this computer's checkout.
+  const gatewayMode = gateway.data?.status.mode;
+  const addFunds = useCallback(() => {
+    if (gatewayMode === 'remote') void openGatewayConsole('/wallet');
+    else onSelectView('deposit');
+  }, [gatewayMode, onSelectView]);
+  const chatActive = activeView === 'chat';
+  const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
+
+  // Collapsed keeps a rail: the Antseed mark, nav icons and the balance.
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
+  const toggleSidebar = useCallback(() => {
+    setCollapsed((current) => {
+      writeSidebarCollapsed(!current);
+      return !current;
+    });
+  }, []);
+  const toggleLabel = collapsed ? 'Show sidebar' : 'Hide sidebar';
+
   return (
-    <div className={`${styles.shell}${chatPanelVisible ? ` ${styles.shellWithPanel}` : ''}`}>
+    <div className={`${styles.shell}${collapsed ? ` ${styles.shellCollapsed}` : ''}`}>
       {/* Window-drag handle: the hidden-inset title bar has no native drag
           region, so this strip provides one. pointer-events: none keeps web
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
-      <nav className={styles.sidebar} aria-label="VPR navigation">
-        <div className={styles.navGroup}>
-          {mainNavEntries.map(({ view, nav }) => {
-            const active = activeView === view;
-            return (
-              <button
-                key={view}
-                type="button"
-                className={`${styles.navButton}${active ? ` ${styles.navButtonActive}` : ''}`}
-                aria-current={active ? 'page' : undefined}
-                onClick={() => onSelectView(view)}
-              >
-                <HugeiconsIcon icon={nav.icon} size={24} strokeWidth={1.8} />
-                <span className={styles.navLabel}>{nav.label}</span>
-                {view === 'chat' && snap.chatNeedsAttention && activeView !== 'chat' && (
-                  <span className={styles.navDot} aria-label="Chat activity" />
-                )}
-              </button>
-            );
-          })}
+      <nav className={styles.sidebar} aria-label="Main navigation">
+        <div className={styles.brandRow}>
+          {collapsed ? <LogoMark size={26} className={styles.logo} /> : <Logo height={24} className={styles.logo} />}
+          <button
+            type="button"
+            className={styles.sidebarToggle}
+            onClick={toggleSidebar}
+            aria-label={toggleLabel}
+            aria-expanded={!collapsed}
+            title={toggleLabel}
+          >
+            <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.7} />
+          </button>
         </div>
-        <div className={styles.navBottom}>
-          {bottomNavEntries.map(({ view, nav }) => (
-            <button
-              key={view}
-              type="button"
-              className={`${styles.navButton}${activeView === view ? ` ${styles.navButtonActive}` : ''}`}
-              aria-current={activeView === view ? 'page' : undefined}
-              onClick={() => onSelectView(view)}
+        {homeNavEntry ? (
+          <SidebarNavItem
+            entry={homeNavEntry}
+            active={activeView === 'home'}
+            collapsed={collapsed}
+            onSelectView={onSelectView}
+          />
+        ) : null}
+        <div className={styles.navRow}>
+          <button
+            type="button"
+            className={`${styles.navButton} ${styles.navButtonWithAction}${chatActive ? ` ${styles.navButtonActive}` : ''}`}
+            aria-current={chatActive ? 'page' : undefined}
+            aria-label={collapsed ? 'Chat' : undefined}
+            title={collapsed ? 'Chat' : undefined}
+            onClick={openConversation}
+          >
+            <HugeiconsIcon icon={BubbleChatIcon} size={18} strokeWidth={1.7} />
+            <span className={styles.navLabel}>Chat</span>
+            {snap.chatNeedsAttention && !chatActive && <span className={styles.navDot} aria-label="Chat activity" />}
+          </button>
+          <button
+            type="button"
+            className={styles.navAction}
+            onClick={startNewChat}
+            aria-label="New chat"
+            title={`New chat (${isMac ? '⌘N' : 'Ctrl+N'})`}
+          >
+            <HugeiconsIcon icon={PencilEdit02Icon} size={16} strokeWidth={1.7} />
+          </button>
+        </div>
+        <div className={styles.navGroup}>
+          {otherNavEntries.map((entry) => (
+            <SidebarNavItem
+              key={entry.view}
+              entry={entry}
+              active={activeView === entry.view}
+              collapsed={collapsed}
+              onSelectView={onSelectView}
             >
-              <HugeiconsIcon icon={nav.icon} size={24} strokeWidth={1.8} />
-              <span className={styles.navLabel}>{nav.label}</span>
-            </button>
+              {/* One-shot onboarding nudge: the user hasn't opened Apps
+                  yet — opening it plays the connect-your-tools walkthrough
+                  and clears the dot for good. */}
+              {entry.view === 'tools' && activeView !== 'tools' && shouldNotifyAppsOnboarding() && (
+                <span className={styles.navDot} aria-label="Connect your apps" />
+              )}
+            </SidebarNavItem>
           ))}
         </div>
+        {collapsed ? (
+          <div className={styles.railSpacer} />
+        ) : (
+          <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
+        )}
+        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={addFunds} compact={collapsed} />
+        {/* Gateway, then Settings: both open in the app. */}
+        {bottomNavEntries.map((entry) => (
+          <SidebarNavItem
+            key={entry.view}
+            entry={entry}
+            active={activeView === entry.view}
+            collapsed={collapsed}
+            onSelectView={onSelectView}
+          />
+        ))}
+        <p className={styles.status} title={collapsed ? `${gatewayStatusText(gatewayStatus)} · v${appVersion}` : undefined}>
+          <span
+            className={gatewayStatus && !gatewayStatus.reachable && !gatewayStatus.starting ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}
+            title={gatewayStatus && !gatewayStatus.reachable ? gatewayStatus.lastError ?? undefined : undefined}
+          >
+            {gatewayStatusText(gatewayStatus)}
+          </span>
+          <span className={styles.statusVersion}>v{appVersion}</span>
+        </p>
       </nav>
-      {chatPanelVisible && <ChatListPanel onSelectView={onSelectView} />}
       <main className={styles.mainPane}>
         <div className={styles.content}>
           <VprNavContext.Provider value={navValue}>{children}</VprNavContext.Provider>
+          <PrivacySwitchDialog />
         </div>
-        {/* The no-drag carve-out lives on this static wrapper: the pill
+        {/* The no-drag carve-out lives on this static wrapper: the toolbar
             itself runs a compositor scroll-timeline animation, and animated
             elements don't reliably register app-region rects. The slot must
             also come AFTER the view content in the DOM — app-region rects
             are collected in document order and later drag regions (e.g. the
-            home view's hero banner) would otherwise paint over the pill's
+            home view's hero banner) would otherwise paint over the toolbar's
             no-drag hole and swallow its clicks. */}
-        {!VIEWS_WITH_HEADER_CREDITS.has(activeView) && (
+        {!VIEWS_WITH_HEADER_ACTIONS.has(activeView) && (
           <div className={styles.creditsPillSlot}>
-            <button
-              type="button"
-              className={styles.creditsPill}
-              title="Add credits"
-              onClick={() => onSelectView('deposit')}
-            >
-              ${formatCredits(snap.creditsSpendableUsdc)}
-            </button>
+            <VprHeaderActions className={styles.creditsPill} onSelectView={onSelectView} />
           </div>
         )}
         <NetworkAlertBanner />
         <UpdateBanner />
-        <DepositProgressBanner />
+        <ConsoleLaunchNotice onOpenSettings={() => onSelectView('preferences')} />
+        <DepositProgressBanner onAddFunds={addFunds} onDepositView={activeView === 'deposit'} />
       </main>
-      <footer className={styles.statusStrip}>
-        <span
-          className={`${styles.statusItem}${
-            snap.networkHealth === 'Down'
-              ? ` ${styles.statusBad}`
-              : snap.networkHealth === 'Limited'
-                ? ` ${styles.statusWarn}`
-                : ''
-          }`}
-        >
-          {snap.networkHealth}
-        </span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.connectBadgeLabel}</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>Port: {snap.proxyPort}</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.peers} Peers</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.serviceCount} Services</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>v{appVersion}</span>
-      </footer>
     </div>
+  );
+}
+
+/**
+ * A standard sidebar nav item (Home, the main entries, Gateway and Settings).
+ * It opens its view in the app; `children` render after the label, for a
+ * status dot. Chat has its own row with the new-chat action.
+ */
+export function SidebarNavItem({ entry, active, collapsed, onSelectView, children }: {
+  entry: NavView;
+  active: boolean;
+  collapsed: boolean;
+  onSelectView: (view: ViewName) => void;
+  children?: React.ReactNode;
+}) {
+  const { view, nav } = entry;
+  return (
+    <button
+      type="button"
+      className={`${styles.navButton}${active ? ` ${styles.navButtonActive}` : ''}`}
+      aria-current={active ? 'page' : undefined}
+      aria-label={collapsed ? nav.label : undefined}
+      title={collapsed ? nav.label : undefined}
+      onClick={() => onSelectView(view)}
+    >
+      <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
+      <span className={styles.navLabel}>{nav.label}</span>
+      {children}
+    </button>
   );
 }

@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 400" width="720" height="400" role="img" aria-labelledby="ccpb-title ccpb-desc">
+  <title id="ccpb-title">Claude Code pricing: monthly cost against requests per month</title>
+  <desc id="ccpb-desc">A line chart comparing the $20 per month Claude Pro subscription against per-token API billing. Uncached Opus 5 API cost rises steeply and crosses the subscription line at 351 requests per month. With a 90 percent prompt cache hit rate the API line rises more slowly and does not cross until 641 requests per month. The $200 Max 20x tier is off the top of this scale, at roughly 3,500 requests per month.</desc>
+
+  <rect x="0" y="0" width="720" height="400" fill="#FFFFFF"/>
+
+  <g font-family="General Sans, system-ui, sans-serif" font-size="12" fill="#001E12">
+
+    <!-- horizontal gridlines -->
+    <g stroke="#CCCDCC" stroke-width="1">
+      <line x1="60" y1="350" x2="700" y2="350"/>
+      <line x1="60" y1="286" x2="700" y2="286"/>
+      <line x1="60" y1="222" x2="700" y2="222"/>
+      <line x1="60" y1="158" x2="700" y2="158"/>
+      <line x1="60" y1="94" x2="700" y2="94"/>
+    </g>
+
+    <!-- y axis labels -->
+    <g text-anchor="end" fill="#001E12" fill-opacity="0.6">
+      <text x="50" y="354">$0</text>
+      <text x="50" y="290">$10</text>
+      <text x="50" y="226">$20</text>
+      <text x="50" y="162">$30</text>
+      <text x="50" y="98">$40</text>
+    </g>
+
+    <!-- x axis labels -->
+    <g text-anchor="middle" fill="#001E12" fill-opacity="0.6">
+      <text x="60" y="370">0</text>
+      <text x="140" y="370">100</text>
+      <text x="220" y="370">200</text>
+      <text x="300" y="370">300</text>
+      <text x="380" y="370">400</text>
+      <text x="460" y="370">500</text>
+      <text x="540" y="370">600</text>
+      <text x="620" y="370">700</text>
+      <text x="700" y="370">800</text>
+    </g>
+    <text x="380" y="391" text-anchor="middle" fill="#001E12" fill-opacity="0.6">Requests per month</text>
+
+    <!-- Pro subscription: flat $20 -->
+    <line x1="60" y1="222" x2="700" y2="222" stroke="#D79627" stroke-width="2.5"/>
+    <text x="66" y="215" fill="#D79627" font-weight="600">Claude Pro, $20/mo flat</text>
+
+    <!-- API, uncached Opus 5 at $0.0570 per request -->
+    <line x1="60" y1="350" x2="700" y2="58.4" stroke="#001E12" stroke-width="2.5"/>
+    <text x="618" y="74" text-anchor="end" fill="#001E12" font-weight="600">API, no cache</text>
+
+    <!-- API with 90% cache hits at $0.0312 per request -->
+    <line x1="60" y1="350" x2="700" y2="190.3" stroke="#10B981" stroke-width="2.5" stroke-dasharray="7 5"/>
+    <text x="694" y="176" text-anchor="end" fill="#0A6F4D" font-weight="600">API, 90% cache hits</text>
+
+    <!-- crossing points -->
+    <g>
+      <circle cx="340.9" cy="222" r="5.5" fill="#FFFFFF" stroke="#001E12" stroke-width="2.5"/>
+      <line x1="340.9" y1="222" x2="340.9" y2="350" stroke="#001E12" stroke-width="1" stroke-dasharray="3 4" stroke-opacity="0.45"/>
+      <text x="334" y="140" text-anchor="end" font-weight="600" font-size="13">351 requests</text>
+      <text x="334" y="156" text-anchor="end" fill-opacity="0.6">breakeven, no cache</text>
+
+      <circle cx="572.9" cy="222" r="5.5" fill="#FFFFFF" stroke="#0A6F4D" stroke-width="2.5"/>
+      <line x1="572.9" y1="222" x2="572.9" y2="350" stroke="#0A6F4D" stroke-width="1" stroke-dasharray="3 4" stroke-opacity="0.45"/>
+      <text x="566" y="296" text-anchor="end" font-weight="600" font-size="13" fill="#0A6F4D">641 requests</text>
+      <text x="566" y="312" text-anchor="end" fill="#0A6F4D" fill-opacity="0.75">breakeven, cached</text>
+    </g>
+
+    <!-- axes -->
+    <line x1="60" y1="30" x2="60" y2="350" stroke="#A4A5A4" stroke-width="1.5"/>
+    <line x1="60" y1="350" x2="700" y2="350" stroke="#A4A5A4" stroke-width="1.5"/>
+
+    <text x="60" y="20" font-size="11" fill="#001E12" fill-opacity="0.5">Monthly cost, Claude Opus 5 at published rates. Request shape: 6,361 input / 1,006 output tokens. Max 20x at $200 is off this scale, near 3,500 requests.</text>
+  </g>
+</svg>

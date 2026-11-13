@@ -3,23 +3,18 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
 import { parseVerifierCapabilities } from '../../../plugins/verifier.js';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
-  AntseedNode,
-  computeOnChainReputationScore,
+  buildNetworkServiceOffers,
+  type NetworkServiceOffer,
   type PeerInfo,
 } from '@antseed/node';
-import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery';
 import {
   collectPeerVerificationLinks,
   type PeerVerificationLink,
 } from '@antseed/node/discovery';
-import { parsePersistedPeers } from '../../../proxy/buyer-proxy.js';
-import { buildPaymentsConfig } from './chain-config-helper.js';
-import { resolveEffectiveBuyerConfig } from '../../../config/effective.js';
+import { discoverNetwork, loadBuyerSnapshot, type NetworkSnapshot } from '../../../discovery/network-snapshot.js';
 import {
   collectServiceTags,
   parseTagFilter,
@@ -39,62 +34,32 @@ interface BrowseOptions {
   top?: string;
 }
 
-interface BrowseSnapshot {
-  peers: PeerInfo[];
-  onChainStatsRefreshedAt: number | null;
-  sourceLabel: string;
+type BrowseSnapshot = NetworkSnapshot;
+
+const offersByPeer = new WeakMap<PeerInfo, NetworkServiceOffer[]>();
+function peerServiceOffers(peer: PeerInfo): NetworkServiceOffer[] {
+  let offers = offersByPeer.get(peer);
+  if (!offers) {
+    offers = buildNetworkServiceOffers([peer]);
+    offersByPeer.set(peer, offers);
+  }
+  return offers;
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+function offerServiceLabel(offer: NetworkServiceOffer): string {
+  return offer.serviceId === offer.provider ? '(default)' : offer.serviceId;
 }
 
 /**
- * Load a snapshot from a live buyer daemon. Returns `null` unless the daemon is
- * connected, its PID is alive, and the persisted peer list is non-empty.
+ * An offer counts as "free" when input, output, and (if announced)
+ * cached-input prices are all exactly $0. Undefined input/output prices are
+ * "unknown", not free — those are handled separately by the formatter.
  */
-async function loadSnapshotFromBuyerState(dataDir: string): Promise<BrowseSnapshot | null> {
-  try {
-    const raw = await readFile(join(dataDir, 'buyer.state.json'), 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      state?: unknown;
-      pid?: unknown;
-      onChainStatsRefreshedAt?: unknown;
-    };
-    if (parsed.state !== 'connected') return null;
-    if (typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)) return null;
-    const peers = parsePersistedPeers(parsed);
-    if (peers.length === 0) return null;
-    const refreshedAt = typeof parsed.onChainStatsRefreshedAt === 'number'
-      && Number.isFinite(parsed.onChainStatsRefreshedAt)
-      ? parsed.onChainStatsRefreshedAt
-      : null;
-    return {
-      peers,
-      onChainStatsRefreshedAt: refreshedAt,
-      sourceLabel: `buyer daemon (pid ${parsed.pid})`,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A pricing entry counts as "free" when both input and output prices are
- * finite and zero. We intentionally don't treat undefined/negative values as
- * free — those are "unknown" and handled separately by the formatter.
- */
-function isFreePricing(pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number }): boolean {
+function isFreeOffer(offer: NetworkServiceOffer): boolean {
   return (
-    Number.isFinite(pricing.inputUsdPerMillion)
-    && Number.isFinite(pricing.outputUsdPerMillion)
-    && pricing.inputUsdPerMillion === 0
-    && pricing.outputUsdPerMillion === 0
+    offer.inputUsdPerMillion === 0
+    && offer.outputUsdPerMillion === 0
+    && (offer.cachedInputUsdPerMillion === undefined || offer.cachedInputUsdPerMillion === 0)
   );
 }
 
@@ -104,17 +69,10 @@ function isFreePricing(pricing: { inputUsdPerMillion: number; outputUsdPerMillio
  */
 function collectServiceNames(peer: PeerInfo): string[] {
   const names = new Set<string>();
-  const pricing = peer.providerPricing;
-  if (pricing) {
-    for (const entry of Object.values(pricing)) {
-      const services = entry.services;
-      if (services) {
-        for (const name of Object.keys(services)) {
-          const trimmed = name.trim();
-          if (trimmed.length > 0) names.add(trimmed);
-        }
-      }
-    }
+  for (const offer of peerServiceOffers(peer)) {
+    if (offer.serviceId === offer.provider) continue;
+    const trimmed = offer.serviceId.trim();
+    if (trimmed.length > 0) names.add(trimmed);
   }
   return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
@@ -125,20 +83,8 @@ function collectServiceNames(peer: PeerInfo): string[] {
  */
 function collectFreeServiceNames(peer: PeerInfo): string[] {
   const names = new Set<string>();
-  const pricing = peer.providerPricing;
-  if (pricing) {
-    for (const entry of Object.values(pricing)) {
-      if (entry.services) {
-        for (const [serviceName, servicePricing] of Object.entries(entry.services)) {
-          if (isFreePricing(servicePricing)) names.add(serviceName);
-        }
-      }
-      // If the provider's defaults are free and no per-service override lifts
-      // them, consider "(default)" a free offering worth surfacing.
-      if (entry.defaults && isFreePricing(entry.defaults) && (!entry.services || Object.keys(entry.services).length === 0)) {
-        names.add('(default)');
-      }
-    }
+  for (const offer of peerServiceOffers(peer)) {
+    if (isFreeOffer(offer)) names.add(offerServiceLabel(offer));
   }
   return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
@@ -192,21 +138,15 @@ export function peerMatchesServiceFilter(peer: PeerInfo, filter: string): boolea
 function resolveBestPaidPricing(peer: PeerInfo): { input: number | null; output: number | null } {
   let bestInput: number | null = null;
   let bestOutput: number | null = null;
-  const pricing = peer.providerPricing;
-  if (pricing) {
-    for (const entry of Object.values(pricing)) {
-      const candidates: Array<{ inputUsdPerMillion: number; outputUsdPerMillion: number }> = [];
-      if (entry.defaults) candidates.push(entry.defaults);
-      if (entry.services) candidates.push(...Object.values(entry.services));
-      for (const c of candidates) {
-        if (isFreePricing(c)) continue;
-        if (Number.isFinite(c.inputUsdPerMillion) && c.inputUsdPerMillion > 0) {
-          if (bestInput === null || c.inputUsdPerMillion < bestInput) bestInput = c.inputUsdPerMillion;
-        }
-        if (Number.isFinite(c.outputUsdPerMillion) && c.outputUsdPerMillion > 0) {
-          if (bestOutput === null || c.outputUsdPerMillion < bestOutput) bestOutput = c.outputUsdPerMillion;
-        }
-      }
+  for (const offer of peerServiceOffers(peer)) {
+    if (isFreeOffer(offer)) continue;
+    const input = offer.inputUsdPerMillion;
+    const output = offer.outputUsdPerMillion;
+    if (input !== undefined && Number.isFinite(input) && input > 0) {
+      if (bestInput === null || input < bestInput) bestInput = input;
+    }
+    if (output !== undefined && Number.isFinite(output) && output > 0) {
+      if (bestOutput === null || output < bestOutput) bestOutput = output;
     }
   }
   // Top-level defaults are only used when we have nothing else — and only if
@@ -220,8 +160,9 @@ function resolveBestPaidPricing(peer: PeerInfo): { input: number | null; output:
   return { input: bestInput, output: bestOutput };
 }
 
+/** Buyer trust score (0-100) as computed by the node; the CLI never re-scores. */
 function effectiveOnChainReputationScore(peer: PeerInfo): number | null {
-  return peer.onChainReputationScore ?? computeOnChainReputationScore(peer);
+  return peer.onChainReputationScore ?? null;
 }
 
 const BROWSE_SYBIL_WARN_THRESHOLD = 0.30;
@@ -231,11 +172,16 @@ function isPeerSybilRisky(peer: PeerInfo): boolean {
     && peer.onChainSybilRisk >= BROWSE_SYBIL_WARN_THRESHOLD;
 }
 
+/** Proven wash trader per `AntseedWashTradingRegistry`; the trust score is 0. */
+function isPeerWashFlagged(peer: PeerInfo): boolean {
+  return peer.onChainWashFlagged === true;
+}
+
 function formatReputationScore(peer: PeerInfo): string {
   const score = effectiveOnChainReputationScore(peer);
   if (score == null) return chalk.dim('—');
   const formatted = (score / 10).toFixed(1);
-  const warn = isPeerSybilRisky(peer) ? chalk.red('⚠ ') : '';
+  const warn = isPeerSybilRisky(peer) || isPeerWashFlagged(peer) ? chalk.red('⚠ ') : '';
   if (score >= 80) return warn + chalk.green(formatted);
   if (score >= 50) return warn + chalk.cyan(formatted);
   if (score > 0)   return warn + chalk.yellow(formatted);
@@ -517,12 +463,16 @@ function renderCompactTable(peers: PeerInfo[], hasChainData: boolean): void {
   if (!hasChainData) {
     console.log(chalk.dim('  Sessions / Volume / Last settled are dim — configure chain RPC to enable on-chain verification.'));
   }
+  const washFlagged = peers.filter(isPeerWashFlagged);
+  if (washFlagged.length > 0) {
+    console.log(`  ${chalk.red('⚠')} ${chalk.red(`${washFlagged.length} peer(s) are proven wash traders (on-chain registry) — trust 0`)}${chalk.dim(`: ${washFlagged.map((peer) => peer.peerId.slice(0, 12)).join(', ')}`)}`);
+  }
   const anySybilWarn = peers.some(isPeerSybilRisky);
   if (anySybilWarn) {
     console.log(chalk.dim(`  ${chalk.red('⚠')} peers triggered on-chain sybil heuristics. Run ${chalk.bold('antseed network peer <id>')} for the per-signal breakdown.`));
   }
   if (anyFreeService) {
-    console.log(chalk.dim('  Free column lists services a peer offers at $0 in/out. "Min In/Out $/1M" always reflects the cheapest PAID option.'));
+    console.log(chalk.dim('  Free column lists services a peer offers at $0 input, cached-input, and output. "Min In/Out $/1M" always reflects the cheapest PAID option.'));
   }
   if (anyDelegatedSeller) {
     console.log(chalk.dim(`  ${chalk.yellow('On-chain seller')} is the contract address that receives payments — differs from Peer when a delegated/proxy operator runs the node.`));
@@ -569,63 +519,26 @@ function renderExpandedTable(peers: PeerInfo[], requestedTags: Set<string>): voi
   const anyVerificationLinks = peers.some((peer) => collectPeerVerificationLinks(peer).length > 0);
 
   for (const peer of peers) {
-    const pricing = peer.providerPricing;
-    if (!pricing || Object.keys(pricing).length === 0) {
-      // Peer with no pricing info — render one row per provider as a fallback
-      // shape so the table is never empty for a known peer. These rows have
-      // no tags and can never match `--tag`, so suppress them under a filter.
-      if (hasTagFilter) continue;
-      for (const provider of peer.providers) {
-        rows.push({
-          peerId: peer.peerId,
-          provider,
-          service: '—',
-          input: formatUsdPerMillion(peer.defaultInputUsdPerMillion ?? null),
-          output: formatUsdPerMillion(peer.defaultOutputUsdPerMillion ?? null),
-          score: formatReputationScore(peer),
-          sessions: typeof peer.onChainChannelCount === 'number' ? String(peer.onChainChannelCount) : '—',
-          volume: formatUsdcVolume(peer.onChainTotalVolumeUsdcMicros ?? null),
-          tags: [],
-        });
-      }
-      continue;
-    }
-    for (const [providerName, providerEntry] of Object.entries(pricing)) {
-      const services = providerEntry.services ?? {};
-      const serviceEntries = Object.entries(services);
-      if (serviceEntries.length === 0) {
-        // Synthetic `(default)` row — defaults aren't tagged so they can't
-        // match a tag filter; keep the row only when no filter is active.
-        if (hasTagFilter) continue;
-        rows.push({
-          peerId: peer.peerId,
-          provider: providerName,
-          service: '(default)',
-          input: formatUsdPerMillion(providerEntry.defaults?.inputUsdPerMillion ?? null),
-          output: formatUsdPerMillion(providerEntry.defaults?.outputUsdPerMillion ?? null),
-          score: formatReputationScore(peer),
-          sessions: typeof peer.onChainChannelCount === 'number' ? String(peer.onChainChannelCount) : '—',
-          volume: formatUsdcVolume(peer.onChainTotalVolumeUsdcMicros ?? null),
-          tags: [],
-        });
+    const offers = [...peerServiceOffers(peer)].sort((a, b) => (
+      a.provider.localeCompare(b.provider) || a.serviceId.localeCompare(b.serviceId)
+    ));
+    for (const offer of offers) {
+      const isFallbackRow = offer.serviceId === offer.provider;
+      if (hasTagFilter && isFallbackRow) continue;
+      if (hasTagFilter && !serviceMatchesTagFilter(peer, offer.provider, offer.serviceId, requestedTags)) {
         continue;
       }
-      for (const [serviceName, servicePricing] of serviceEntries.sort(([a], [b]) => a.localeCompare(b))) {
-        if (hasTagFilter && !serviceMatchesTagFilter(peer, providerName, serviceName, requestedTags)) {
-          continue;
-        }
-        rows.push({
-          peerId: peer.peerId,
-          provider: providerName,
-          service: serviceName,
-          input: formatUsdPerMillion(servicePricing.inputUsdPerMillion),
-          output: formatUsdPerMillion(servicePricing.outputUsdPerMillion),
-          score: formatReputationScore(peer),
-          sessions: typeof peer.onChainChannelCount === 'number' ? String(peer.onChainChannelCount) : '—',
-          volume: formatUsdcVolume(peer.onChainTotalVolumeUsdcMicros ?? null),
-          tags: collectServiceTags(peer, providerName, serviceName),
-        });
-      }
+      rows.push({
+        peerId: peer.peerId,
+        provider: offer.provider,
+        service: offerServiceLabel(offer),
+        input: formatUsdPerMillion(offer.inputUsdPerMillion ?? null),
+        output: formatUsdPerMillion(offer.outputUsdPerMillion ?? null),
+        score: formatReputationScore(peer),
+        sessions: typeof peer.onChainChannelCount === 'number' ? String(peer.onChainChannelCount) : '—',
+        volume: formatUsdcVolume(peer.onChainTotalVolumeUsdcMicros ?? null),
+        tags: collectServiceTags(peer, offer.provider, offer.serviceId),
+      });
     }
   }
 
@@ -717,60 +630,23 @@ export function registerNetworkBrowseCommand(networkCmd: Command): void {
     .action(async (rawOptions: BrowseOptions) => {
       const globalOpts = getGlobalOptions(networkCmd);
       const config = await loadConfig(globalOpts.config);
-      const effectiveBuyerConfig = resolveEffectiveBuyerConfig({ config });
       const serviceFilter = rawOptions.service?.trim();
       const tagFilter = parseTagFilter(rawOptions.tag);
       const sortKey = parseSortKey(rawOptions.sort);
       const topLimit = parseTopLimit(rawOptions.top);
 
-      let snapshot = await loadSnapshotFromBuyerState(globalOpts.dataDir);
+      let snapshot: BrowseSnapshot | null = await loadBuyerSnapshot(globalOpts.dataDir);
 
       if (!snapshot) {
-        const bootstrapNodes = config.network.bootstrapNodes.length > 0
-          ? toBootstrapConfig(parseBootstrapList(config.network.bootstrapNodes))
-          : undefined;
-
         const spinner = ora('Discovering peers on the network...').start();
-        const paymentsConfig = buildPaymentsConfig(config.payments?.crypto);
-
-        const node = new AntseedNode({
-          role: 'buyer',
-          ...(bootstrapNodes ? { bootstrapNodes } : {}),
-          dhtOperationTimeoutMs: 30_000,
-          metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,
-          ...(paymentsConfig ? { payments: paymentsConfig } : {}),
-        });
-
         try {
-          await node.start();
-        } catch (err) {
-          spinner.fail(chalk.red(`Failed to connect to network: ${(err as Error).message}`));
-          process.exit(1);
-        }
-
-        try {
-          const peers = await node.discoverPeers(serviceFilter);
-          spinner.succeed(chalk.green(`Found ${peers.length} peer(s)`));
-          // Only stamp `onChainStatsRefreshedAt` when the enrichment loop
-          // could actually have run — otherwise we'd display a misleading
-          // "On-chain stats as of just now" header on top of a table that
-          // has "—" in every on-chain column. Derive it from the per-peer
-          // timestamps so we reflect only real RPC reads.
-          const latestChainStamp = peers
-            .map((p) => p.onChainStatsFetchedAt ?? 0)
-            .reduce((max, v) => (v > max ? v : max), 0);
-          snapshot = {
-            peers,
-            onChainStatsRefreshedAt: latestChainStamp > 0 ? latestChainStamp : null,
-            sourceLabel: 'live DHT discovery',
-          };
+          snapshot = await discoverNetwork(config, { ...(serviceFilter ? { serviceFilter } : {}), rpcSource: 'network-browse' });
+          spinner.succeed(chalk.green(`Found ${snapshot.peers.length} peer(s)`));
         } catch (err) {
           spinner.fail(chalk.red(`Discovery failed: ${(err as Error).message}`));
-          await node.stop();
+          process.exitCode = 1;
           return;
         }
-
-        await node.stop();
       }
 
       let peers = snapshot.peers;
@@ -832,7 +708,13 @@ export function registerNetworkBrowseCommand(networkCmd: Command): void {
 
       const topPeer = displayed[0];
       if (topPeer) {
-        console.log(chalk.bold('Pin a peer:'));
+        const exampleService = collectServiceNames(topPeer)[0];
+        console.log(chalk.bold('Use a model (auto-selects the best peer, no pin needed):'));
+        console.log(`  curl -s localhost:8377/v1/models | jq '.data[].id'   ${chalk.dim('# every model on the network')}`);
+        if (exampleService) {
+          console.log(chalk.dim(`  then request it:  curl localhost:8377/v1/chat/completions -d '{"model": "${exampleService}", ...}'`));
+        }
+        console.log(chalk.bold('Or force this seller:'));
         console.log(`  antseed buyer connection set --peer ${topPeer.peerId}`);
         console.log(chalk.dim(`  or per-request:   curl -H "x-antseed-pin-peer: ${topPeer.peerId}" ...`));
         console.log(chalk.dim(`  full details:     antseed network peer ${topPeer.peerId}`));

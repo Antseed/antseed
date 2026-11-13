@@ -141,9 +141,9 @@ describe('PeerAnnouncer live load metadata', () => {
   it('keeps announce work O(1) in the seller\'s service count', async () => {
     // Property-style: announcing N services must produce the same number of
     // DHT announces as announcing 1, because service filtering is metadata
-    // driven. Walks 1 / 10 / 78 / 200 services to cover both "healthy" and
-    // "pathological catalog" cases.
-    for (const n of [1, 10, 78, 200]) {
+    // driven. Keep generated catalogs inside the signed metadata validator's
+    // service-count limit so this test stays focused on DHT work.
+    for (const n of [1, 100, 512]) {
       const { config, dht } = makeConfig();
       config.providers = [{
         provider: 'openai',

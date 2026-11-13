@@ -1,10 +1,11 @@
 const HOP_BY_HOP_HEADERS = new Set([
-  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'connection', 'expect', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade',
 ]);
 
 const INTERNAL_HEADERS = new Set([
   'x-antseed-provider',
+  'x-antseed-service',
 ]);
 
 export interface StripRelayRequestHeadersOptions {

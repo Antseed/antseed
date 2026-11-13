@@ -12,6 +12,15 @@ type BashPermissionClass = {
   canAlwaysAllow: boolean;
 };
 
+/**
+ * The tool permissions a run gets: the model's saved mode, which only the
+ * request can lower. A request can't raise it: the renderer's value may come
+ * from another chat that was on screen when a held send went out.
+ */
+export function effectivePermissionMode(saved: ChatPermissionMode, requested: ChatPermissionMode | null): ChatPermissionMode {
+  return requested === 'manual' ? 'manual' : saved;
+}
+
 export function requiresToolApproval(mode: ChatPermissionMode, toolName: string): boolean {
   return mode === 'manual' && RISKY_TOOLS.has(toolName);
 }
@@ -20,12 +29,12 @@ export function isToolPermissionAutoAllowed(permissionKey: string): boolean {
   return AUTO_ALLOWED_TOOL_PERMISSION_KEYS.has(permissionKey);
 }
 
-function hasPeer(peerId: string | null | undefined): boolean {
-  return Boolean(peerId?.trim());
+function hasScope(scopeId: string | null | undefined): boolean {
+  return Boolean(scopeId?.trim());
 }
 
-function peerSuffix(peerId: string | null | undefined): string {
-  return hasPeer(peerId) ? 'for this peer' : 'once';
+function scopeSuffix(scopeId: string | null | undefined): string {
+  return hasScope(scopeId) ? 'for this model' : 'once';
 }
 
 function firstShellWord(command: string): string {
@@ -102,11 +111,11 @@ function isFileChangingShellCommand(command: string): boolean {
     || /\b(?:mv|cp|mkdir|touch|install|ln|python|python3|node|npm|pnpm|yarn|bun)\b/.test(command);
 }
 
-function classifyBashCommand(command: string, peerId?: string | null): BashPermissionClass {
+function classifyBashCommand(command: string, scopeId?: string | null): BashPermissionClass {
   const normalized = command.trim().toLowerCase();
   const word = firstShellWord(command);
   const gitSubcommand = firstGitSubcommand(command);
-  const canAlwaysAllow = hasPeer(peerId);
+  const canAlwaysAllow = hasScope(scopeId);
 
   if (isSensitiveShellCommand(normalized)) {
     return {
@@ -123,7 +132,7 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
       key: 'bash:network',
       label: 'network shell commands',
       title: 'Allow network shell command?',
-      alwaysAllowLabel: `Always allow network commands ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow network commands ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -135,7 +144,7 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
         key: 'bash:git-read',
         label: 'read-only git commands',
         title: 'Allow read-only git command?',
-        alwaysAllowLabel: `Always allow read-only git ${peerSuffix(peerId)}`,
+        alwaysAllowLabel: `Always allow read-only git ${scopeSuffix(scopeId)}`,
         canAlwaysAllow,
       };
     }
@@ -143,7 +152,7 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
       key: 'bash:git-write',
       label: 'git change commands',
       title: 'Allow git change command?',
-      alwaysAllowLabel: `Always allow git changes ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow git changes ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -153,7 +162,7 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
       key: 'bash:read',
       label: 'read-only shell commands',
       title: 'Allow read-only shell command?',
-      alwaysAllowLabel: `Always allow read-only shell ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow read-only shell ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -163,7 +172,7 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
       key: 'bash:write',
       label: 'shell commands that can change files',
       title: 'Allow file-changing shell command?',
-      alwaysAllowLabel: `Always allow file-changing shell ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow file-changing shell ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -172,16 +181,16 @@ function classifyBashCommand(command: string, peerId?: string | null): BashPermi
     key: 'bash:other',
     label: 'other shell commands',
     title: 'Allow shell command?',
-    alwaysAllowLabel: `Always allow shell commands ${peerSuffix(peerId)}`,
+    alwaysAllowLabel: `Always allow shell commands ${scopeSuffix(scopeId)}`,
     canAlwaysAllow: false,
   };
 }
 
-export function describeToolApproval(toolName: string, input: Record<string, unknown>, peerId?: string | null): Pick<ToolApprovalRequest, 'permissionKey' | 'permissionLabel' | 'title' | 'description' | 'subject' | 'alwaysAllowLabel' | 'canAlwaysAllow'> {
-  const canAlwaysAllow = hasPeer(peerId);
+export function describeToolApproval(toolName: string, input: Record<string, unknown>, scopeId?: string | null): Pick<ToolApprovalRequest, 'permissionKey' | 'permissionLabel' | 'title' | 'description' | 'subject' | 'alwaysAllowLabel' | 'canAlwaysAllow'> {
+  const canAlwaysAllow = hasScope(scopeId);
   if (toolName === 'bash') {
     const command = typeof input.command === 'string' ? input.command : JSON.stringify(input, null, 2);
-    const bashClass = classifyBashCommand(command, peerId);
+    const bashClass = classifyBashCommand(command, scopeId);
     return {
       permissionKey: bashClass.key,
       permissionLabel: bashClass.label,
@@ -199,7 +208,7 @@ export function describeToolApproval(toolName: string, input: Record<string, unk
       title: 'Allow file edit?',
       description: '',
       subject: typeof input.path === 'string' ? input.path : JSON.stringify(input, null, 2),
-      alwaysAllowLabel: `Always allow file edits ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow file edits ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -210,7 +219,7 @@ export function describeToolApproval(toolName: string, input: Record<string, unk
       title: 'Allow file write?',
       description: '',
       subject: typeof input.path === 'string' ? input.path : JSON.stringify(input, null, 2),
-      alwaysAllowLabel: `Always allow file writes ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow file writes ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -221,7 +230,7 @@ export function describeToolApproval(toolName: string, input: Record<string, unk
       title: 'Allow dev server?',
       description: '',
       subject: typeof input.command === 'string' ? input.command : JSON.stringify(input, null, 2),
-      alwaysAllowLabel: `Always allow dev servers ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow dev servers ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -233,7 +242,7 @@ export function describeToolApproval(toolName: string, input: Record<string, unk
       title: 'Allow web fetch?',
       description: '',
       subject: url || JSON.stringify(input, null, 2),
-      alwaysAllowLabel: `Always allow web fetches ${peerSuffix(peerId)}`,
+      alwaysAllowLabel: `Always allow web fetches ${scopeSuffix(scopeId)}`,
       canAlwaysAllow,
     };
   }
@@ -243,7 +252,7 @@ export function describeToolApproval(toolName: string, input: Record<string, unk
     title: `Allow ${toolName}?`,
     description: `The agent wants to run ${toolName}.`,
     subject: JSON.stringify(input, null, 2),
-    alwaysAllowLabel: `Always allow ${toolName} ${peerSuffix(peerId)}`,
+    alwaysAllowLabel: `Always allow ${toolName} ${scopeSuffix(scopeId)}`,
     canAlwaysAllow,
   };
 }

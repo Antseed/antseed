@@ -1,661 +1,203 @@
-@use '../vpr/chip';
+@use '../../../theme-tokens' as tokens;
 
-/* Doubled class beats the global `.view` rule (display: block, overflow-y:
-   auto) regardless of stylesheet injection order. */
+/* Doubled class beats the global `.view` rule regardless of stylesheet
+   injection order. Home is one centred column over the living field that fits
+   a normal window: heading, prompt and mode note, then the setup steps. In a
+   short window only the setup steps scroll (see `.setup`). */
 .view.view {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* The hero is pinned; only .scroller below it scrolls. */
   overflow: hidden;
-  padding: 0;
+  padding: 0 24px 16px;
 }
 
-.heroPane {
-  flex: 0 0 auto;
-  padding: 8px 16px 0;
+/* The Anonymous field is daylight art, so it keeps the day palette even when
+   the rest of the app follows a dark theme setting. */
+.day {
+  @include tokens.day-tokens;
+  color: var(--text-primary);
 }
 
-.scroller {
-  flex: 1 1 auto;
-  min-height: 0;
+/* The hidden-inset title bar has no drag region of its own. */
+.dragBar {
+  position: relative;
+  flex: 0 0 58px;
+  margin: 0 -24px;
+  -webkit-app-region: drag;
 }
 
-.scrollerViewport {
-  overflow-y: auto;
-  overflow-x: clip;
-  padding: 16px;
-  scroll-timeline: --active-view-scroll y;
+.toggleSlot {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+
+  > * {
+    pointer-events: auto;
+  }
 }
 
 .stack {
+  position: relative;
+  z-index: 2;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  width: 100%;
-  max-width: 392px;
-  margin: 0 auto;
+  gap: 10px;
   min-width: 0;
 }
 
-/* ---------- Power hero ---------- */
+/* Shrinks and scrolls on its own when a short window or a long prompt leaves
+   too little room. Outside the hero, so its model menus aren't clipped. The
+   padding keeps the card's ring and shadow inside the scroll box; it reaches
+   into the view's bottom padding so a normal window still doesn't scroll. */
+.setup {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 -8px -16px;
+  padding: 0 8px 4px;
+  overflow-y: auto;
+}
 
 .hero {
+  /* Above the setup card, so the model menus open over it. */
   position: relative;
-  /* Places the power circle concentric with the banner's notch: the notch
-     circle center sits at y=101.7 in the 128px shape, minus the 48px
-     button radius. */
-  padding-top: 54px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-/* Brand banner: the designer's grain-gradient texture clipped by the
-   banner-shape SVG (rounded rect with a filleted notch for the power
-   button), mirroring the Subtract structure in Figma. */
-.heroBanner {
-  position: absolute;
-  top: 0;
-  left: -8px;
-  right: -8px;
-  height: 128px;
-  background: url('../../../assets/banner-texture.jpg') center / cover no-repeat, var(--brand);
-  -webkit-mask-image: url('../../../assets/banner-shape.svg');
-  mask-image: url('../../../assets/banner-shape.svg');
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
-  /* Drag regions are collected from layout, not hit-testing, so the banner
-     can stay click-transparent and still act as a window-drag handle.
-     Known trade-off: drag regions swallow wheel events, so the pointer must
-     leave the banner to scroll — acceptable for this one static strip at the
-     top of the screen (the scrollable view bodies themselves stay drag-free). */
-  -webkit-app-region: drag;
-  pointer-events: none;
-}
-
-/* Off: recolor the brand banner red — a color-blend overlay shifts the
-   texture's green hues to red while keeping its luminance detail. The
-   parent's mask clips the overlay with it. (Static blend: paints once.) */
-.heroBannerOff::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: var(--danger);
-  mix-blend-mode: color;
-}
-
-/* Shimmer band that sweeps the banner every few seconds while connected.
-   Speckled by a noise mask so it reads as the grain dots lighting up in a
-   wave. No blend mode here: blending an animated layer with its backdrop
-   forces the compositor to re-rasterize the banner on every frame, which
-   kept the GPU process busy for as long as the Home view was visible. */
-.heroBanner::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 45%;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.45) 50%, rgba(255, 255, 255, 0) 100%);
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  transform: translateX(-120%) skewX(-12deg);
-  opacity: 0;
-}
-
-.heroBannerLive::after {
-  opacity: 1;
-  will-change: transform;
-  animation: hero-wave 7s ease-in-out infinite;
-}
-
-@keyframes hero-wave {
-  0% {
-    transform: translateX(-120%) skewX(-12deg);
-  }
-  30% {
-    transform: translateX(350%) skewX(-12deg);
-  }
-  100% {
-    transform: translateX(350%) skewX(-12deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .heroBannerLive::after {
-    animation: none;
-    opacity: 0;
-  }
-}
-
-.power {
-  position: relative;
-  z-index: 1;
-  width: 96px;
-  height: 96px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  border: none;
-  background: var(--bg-card);
-  color: var(--text-muted);
-  cursor: pointer;
-  box-shadow: var(--shadow-float);
-  transition: color 0.15s ease, transform 0.1s ease;
-}
-
-/* Hover keeps the current state's color — a green preview here reads as
-   "running" while the mouse rests on the button right after stopping. */
-.power:hover {
-  filter: brightness(1.08);
-}
-
-.power:active {
-  transform: scale(0.97);
-}
-
-.power:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 3px rgba(var(--brand-rgb), 0.4),
-    var(--shadow-float);
-}
-
-.powerOn {
-  color: var(--brand);
-}
-
-/* Off: red — unmistakably not connected. */
-.powerOff {
-  color: var(--danger);
-}
-
-.statusLine {
-  position: relative;
-  z-index: 1;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-  color: var(--text-muted);
-}
-
-.statusOnline {
-  color: var(--accent-green);
-}
-
-/* ---------- Default model card + dropdown ---------- */
-
-.modelDropdown {
-  position: relative;
-  width: 100%;
-  margin-top: 2px;
-}
-
-/* Floating panel below the card (Figma "dropdown": white, 16px radius,
-   shadow/2, rows + "All models" footer). */
-.modelMenu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  border-radius: 16px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-float);
-  overflow: hidden;
-}
-
-.modelMenuFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 16px;
-  border: none;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg-card);
-  color: var(--accent-green);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-
-.modelMenuFooter:hover {
-  background: var(--bg-hover);
-}
-
-.modelMenuFooter:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-.modelCard {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 12px 12px 16px;
-  min-height: 66px;
-  border-radius: 16px;
-  border: none;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  text-align: left;
-  cursor: pointer;
-  transition: box-shadow 0.12s ease;
-}
-
-.modelCard:hover {
-  box-shadow: var(--shadow-float);
-}
-
-.modelCard:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-.modelCardBody {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.modelCardCaption {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-/* Caption parts keep their size — the seller caps itself with max-width
-   instead of squeezing the label next to it. */
-.modelCardCaption > span {
+  z-index: 3;
   flex: 0 0 auto;
-}
-
-/* Same separator the dropdown rows use between meta parts. */
-.modelCardDivider {
-  color: var(--text-muted);
-}
-
-.modelCardMeta {
-  color: var(--text-muted);
-}
-
-/* The pinned seller reads as the routing target, not as muted metadata. */
-.modelCardSeller {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--accent-green);
-  font-weight: 500;
-}
-
-.modelCardTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.modelName {
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.freeTag {
-  padding: 0 6px;
-  border-radius: 8px;
-  border: 1px solid var(--success-subtle-border);
-  background: var(--success-subtle-bg);
-  color: var(--success-subtle-text);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
-}
-
-.modelCardChevron {
-  flex: 0 0 auto;
-  color: var(--text-secondary);
-}
-
-/* ---------- Connected variant ---------- */
-
-.connectedGroup {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  padding-top: clamp(0px, calc(9vh - 40px), 72px);
+  text-align: center;
 }
 
-/* Top-level pop-out control over the banner (top-left), for detaching the
-   floating window. Same chip treatment as the credits pill so the two
-   controls over the banner always match in height and style. */
-.heroPop {
-  @include chip.chip-icon;
-  position: absolute;
-  /* The shell's credits pill sits at top: 12px of the main pane; .hero
-     starts below .heroPane's 8px top padding, so 4px here puts both chips
-     on the same line. */
-  top: 8px;
-  left: 0px;
-  z-index: 1;
-  -webkit-app-region: no-drag;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.heroPop:hover:not(:disabled) {
-  @include chip.chip-hover;
-  color: var(--accent-green);
-}
-
-.heroPop:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.restartBanner {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 14px;
-  background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.restartBanner > span {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.restartBanner strong {
+.heading {
+  margin: 0;
   color: var(--text-primary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: clamp(34px, 7.5vh, 68px);
+  font-weight: 470;
+  line-height: 1.02;
+  letter-spacing: -0.025em;
 }
 
-.restartBanner small {
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 16px;
+.subline {
+  margin: -4px 0 clamp(4px, 2vh, 18px);
+  /* Sits directly on the painting, so it needs the stronger ink in both modes. */
+  color: var(--text-primary);
+  opacity: 0.86;
+  font-size: clamp(14px, 2vh, 18px);
+  font-weight: 450;
+  line-height: 1.4;
 }
 
-.balanceBanner {
+.composer {
+  position: relative;
+  /* Keeps the model menus above the sections below the composer. */
+  z-index: 2;
   width: 100%;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 14px 12px 14px 16px;
-  border-radius: 16px;
-  background:
-    linear-gradient(100deg, #047452 0%, var(--accent-green) 55%, #24a06c 100%);
-  box-shadow: var(--shadow-sm);
-}
-
-.balanceBody {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.balanceTitle {
-  color: #ffffff;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 24px;
-}
-
-.balanceText {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.balanceClose {
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.8);
-  cursor: pointer;
-}
-
-.balanceClose:hover {
-  color: #ffffff;
-}
-
-.usageGroup {
-  width: 100%;
-  display: grid;
-  gap: 8px;
-}
-
-.usageLabel {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
-}
-
-.savingValue {
-  color: var(--accent-green);
-}
-
-/* ---------- Ask + routed apps ---------- */
-
-.connectGroup {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 16px;
-}
-
-.connectHeading {
-  text-align: center;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 20px;
-  color: var(--text-primary);
-}
-
-.askForm {
-  width: 100%;
-  display: flex;
-  align-items: center;
   gap: 8px;
-  padding: 9px 9px 9px 21px;
-  border-radius: 28px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+  padding: 16px 16px 12px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: var(--shadow);
+  text-align: left;
+  transition: border-color 0.12s ease;
 }
 
-.askForm:focus-within {
-  border-color: rgba(var(--brand-rgb), 0.5);
+.composer:focus-within {
+  border-color: var(--border-strong);
 }
 
 .askInput {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
+  min-height: 44px;
+  padding: 2px 0 0;
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 20px;
+  font: inherit;
+  font-size: 17px;
+  line-height: 1.5;
   outline: none;
+  resize: none;
 }
 
 .askInput::placeholder {
   color: var(--text-muted);
 }
 
+.composerFooter {
+  min-width: 0;
+  display: flex;
+  /* One row, as in the chat: a long model name ellipsizes instead of wrapping. */
+  align-items: center;
+  gap: 8px;
+}
+
+.composerSpacer {
+  flex: 1 1 auto;
+}
+
 .askSend {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   display: grid;
   padding: 0;
   place-items: center;
   border: none;
   border-radius: 50%;
-  background: rgba(var(--brand-rgb), 0.12);
-  color: var(--brand);
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
 .askSend:hover:not(:disabled) {
-  background: rgba(var(--brand-rgb), 0.24);
+  opacity: 0.88;
 }
 
 .askSend:disabled {
   cursor: default;
-  opacity: 0.6;
+  opacity: 0.45;
 }
 
-.appsGroup {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
+/* After the first prompt Home is a scrolling page of cards. */
+.scroll {
+  position: relative;
+  z-index: 2;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -24px;
+  padding: 0 24px;
+  overflow-y: auto;
+  scroll-timeline: --active-view-scroll y;
 }
 
-.appsLabel {
-  text-align: center;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 20px;
-  color: var(--text-secondary);
-}
+/* Short windows: the heading goes on one line and the extras step aside. */
+@media (max-height: 760px) {
+  .heading br {
+    display: none;
+  }
 
-/* Full-width connect rows (Figma "Use it on your favorite app"). */
-.toolList {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  .subline {
+    display: none;
+  }
 }
-
-.toolRow {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 16px 8px 12px;
-  border: none;
-  border-radius: 16px;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-
-.toolRow:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.toolRow:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-.toolRow:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.toolIdentity {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* Real application icon (extracted from the installed app) on app rows. */
-.appIcon {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  object-fit: contain;
-}
-
-.toolLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.toolConnect {
-  flex: 0 0 auto;
-  color: var(--accent-green);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.moreApps {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--accent-green);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.moreApps:hover {
-  color: var(--brand);
-}
-
-/* Recent chats card moved to the shared VprRecentChats component. */

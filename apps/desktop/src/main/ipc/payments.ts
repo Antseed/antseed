@@ -1,89 +1,59 @@
 /**
- * IPC surface for deposits, balances, channels and the wallet-signing pages.
+ * IPC surface for funding: balances, deposits, card checkout and the
+ * wallet-signing pages. Usage, channels and history live in the gateway console.
  */
 import { ipcMain, shell } from 'electron';
-import {
-  isDev,
-} from '../app-context.js';
-import {
-  LOCALHOST_URL,
-} from '../constants.js';
-import {
-  ensureSecureIdentity,
-  getSecureIdentity,
-} from '../identity.js';
-import {
-  BYTES32_RE,
-  type DesktopBuyerUsageTotals,
-  type DesktopPaymentChannelSummary,
-  type DesktopRewardsSummary,
-  EMPTY_REWARDS_SUMMARY,
-  MAX_SPENDING_AUTH_BASE_UNITS,
-  fetchBuyerProxyJson,
-  formatAnts,
-  loadBuyerChannels,
-  normalizeBuyerUsageTotals,
-  notePendingSpend,
-} from '../payments/buyer-channels.js';
-import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
+import { isDev } from '../app-context.js';
+import { LOCALHOST_URL } from '../constants.js';
+import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
+import { CREDITS_FRESH_MS, cachedRead, readKeys, refreshFresh } from '../payments/read-cache.js';
 import {
   type CreditsInfo,
-  getCachedAntsTokenClient,
-  getCachedEmissionsClient,
+  getDepositsClient,
   loadCachedCryptoConfig,
   refreshCreditsInfo,
-  setCachedAntsTokenClient,
-  setCachedEmissionsClient,
 } from '../payments/credits.js';
-import {
-  demoteDepositWatchTimer,
-  makeDepositsClient,
-  setDepositWatchBalance,
-  startDepositWatchTimer,
-  sweepIncomingUsdc,
-} from '../payments/deposit-sweep.js';
+import { demoteDepositWatch, startDepositWatch } from '../payments/deposit-sweep.js';
 import {
   DEFAULT_CARD_PROVIDERS,
   PAYMENTS_PORT,
   PAY_PAGE_KINDS,
   type PayPageKind,
-  crossmintApiBase,
   getPaymentsPortalToken,
   openPaymentsPopup,
+  payPageProvider,
   readCardProviders,
-  readCrossmintClientKey,
-  readFunkitApiKey,
   readGoodDollarConfig,
   startPaymentsPortal,
 } from '../payments/portal.js';
-import {
-  lookupPeer,
-  refreshPeerCache,
-} from '../runtime/peer-cache.js';
-import {
-  ANTSTokenClient,
-  EmissionsClient,
-  makeChannelsDomain,
-  makeDepositsDomain,
-  peerIdToAddress,
-  signSetOperator,
-  signSpendingAuth,
-} from '@antseed/node';
+import { openCheckoutPopup } from '../payments/checkout-window.js';
+import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
+import { createPeerPayCheckout } from '../payments/peer-pay.js';
+import { getMainWindow } from '../ui/window.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
+import { currentBalanceScope, localFundingBlock } from '../gateway/service.js';
+import { makeDepositsDomain, signSetOperator } from '@antseed/node';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
-  // (connected-wallet deposit, withdraw, authorize-operator, channel close,
-  // rewards claims) leave the app — everything else renders in-app. The full
+  // (connected-wallet deposit, withdraw, authorize-operator) leave the app — everything else renders in-app. The full
   // portal dashboard is retired.
   //
   // Preferred surface: a regular tab in the user's default browser, where
   // extension wallets like MetaMask work in their normal profile. Only when
   // that fails does a sandboxed Electron popup take over (WalletConnect/QR
   // flows only).
-  ipcMain.handle('payments:open-pay-page', async (_event, opts: { kind?: PayPageKind; amountUsdc?: string; channelId?: string }) => {
+  ipcMain.handle('payments:open-pay-page', async (_event, opts: { kind?: PayPageKind; amountUsdc?: string }) => {
     try {
       const kind: PayPageKind = opts?.kind && PAY_PAGE_KINDS.includes(opts.kind) ? opts.kind : 'deposit';
+      // Withdrawing what this wallet already holds stays open; adding to it doesn't when it isn't what pays.
+      if (kind === 'deposit') {
+        const blocked = await localFundingBlock();
+        if (blocked) return { ok: false, error: blocked };
+      }
       await startPaymentsPortal();
+      if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
+      else getTelemetryService()?.clearPendingWithdraw();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
       if (token) params.set('token', token);
@@ -91,9 +61,6 @@ export function registerPaymentsIpc(): void {
       params.set('action', kind);
       const amount = Number(opts?.amountUsdc);
       if (Number.isFinite(amount) && amount > 0) params.set('amount', String(amount));
-      if (kind === 'close-channel' && typeof opts?.channelId === 'string' && BYTES32_RE.test(opts.channelId)) {
-        params.set('channel', opts.channelId);
-      }
       const devUrl = isDev ? process.env['ANTSEED_PAYMENTS_DEV_URL']?.trim() : undefined;
       const base = devUrl || `${LOCALHOST_URL}:${PAYMENTS_PORT}`;
 
@@ -116,23 +83,15 @@ export function registerPaymentsIpc(): void {
     }
   });
 
-  ipcMain.handle('payments:card-providers', async () => {
-    try {
-      const providers = await readCardProviders();
-      // Only id + label cross into the renderer — URLs stay in the main process.
-      return { ok: true, data: providers.map(({ id, label }) => ({ id, label })) };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
   ipcMain.handle('payments:open-card-provider', async (_event, opts?: { providerId?: string; amountUsdc?: string }) => {
     try {
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
       const providers = await readCardProviders();
-      // The chooser's fixed lineup (Meridian, AntSeed Pay) must resolve even
+      // The chooser's fixed lineup (Meridian, Antseed Pay, Peer Pay) must resolve even
       // when a legacy config overrides the provider list with other entries.
       const provider = opts?.providerId
         ? providers.find((entry) => entry.id === opts.providerId)
@@ -142,47 +101,53 @@ export function registerPaymentsIpc(): void {
 
       const amount = Number(opts?.amountUsdc);
       const hasAmount = Number.isFinite(amount) && amount > 0;
-      let template = provider.url.split('{address}').join(identity.wallet.address);
-      if (hasAmount) template = template.split('{amount}').join(String(amount));
+      if (provider.id === 'peer-pay') {
+        if (!hasAmount) return { ok: false, error: 'Enter an amount before opening Peer Pay' };
+        const checkoutUrl = await createPeerPayCheckout({
+          endpoint: provider.url,
+          address: identity.wallet.address,
+          amount: opts?.amountUsdc ?? '',
+        }, identity.wallet);
+        if (isDev) console.log('[payments] Peer Pay checkout created');
+        openCheckoutPopup(checkoutUrl, getMainWindow());
+        return { ok: true };
+      }
+      // Antseed Pay refuses a link without an amount, or with one outside
+      // its $1–$200 / two-decimal rules, as "invalid or was altered" — and the
+      // Add Credits chooser opens it with no amount entered. Sign the amount
+      // the page accepts (the entered one, else the $20 default);
+      // the user can still change it on the page.
+      const payPage = payPageProvider(provider.id);
+      const amountStr = payPage
+        ? antseedPayLinkAmount(hasAmount ? amount : '')
+        : hasAmount ? String(amount) : '';
       let parsed: URL;
       try {
-        parsed = new URL(template);
-      } catch {
-        return { ok: false, error: 'Card provider URL is invalid' };
-      }
-      // https only — except loopback, so a locally-run payment page can be
-      // tested from the app before it is deployed.
-      const isLoopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
-      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback)) {
-        return { ok: false, error: 'Card provider URL must be https' };
-      }
-      if (!hasAmount) {
-        // No amount entered — drop query params still carrying the placeholder.
-        for (const [key, value] of [...parsed.searchParams.entries()]) {
-          if (value.includes('{amount}')) parsed.searchParams.delete(key);
-        }
+        parsed = resolveCardProviderUrl(provider.url, identity.wallet.address, amountStr);
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
 
-      // AntSeed Pay authenticates the request: the page expects the buyer
-      // address, currency and amount plus a personal-sign signature over the
-      // canonical message below, proving the params came from this wallet.
-      // The signed message carries the LOWERCASED address (the URL param stays
-      // checksummed) — verified against the reference sig their page accepts.
-      if (provider.id === 'antseed-pay') {
-        const cur = 'USD';
-        const amountStr = hasAmount ? String(amount) : '';
-        const message = [
-          'AntSeed Pay',
-          `address: ${identity.wallet.address.toLowerCase()}`,
-          `currency: ${cur}`,
-          `amount: ${amountStr}`,
-        ].join('\n');
-        parsed.searchParams.set('address', identity.wallet.address);
-        parsed.searchParams.set('cur', cur);
-        if (amountStr) parsed.searchParams.set('amount', amountStr);
-        parsed.searchParams.set('sig', await identity.wallet.signMessage(message));
+      // Antseed Pay authenticates the request: a personal-sign signature over
+      // the buyer address, currency and amount (see @antseed/payments/card-link,
+      // shared with the gateway console so both build the same link).
+      if (payPage) {
+        await signAntseedPayUrl(parsed, { wallet: identity.wallet, amount: amountStr, integration: payPage });
       }
       const url = parsed.toString();
+
+      // Antseed Pay needs no wallet extension (the link is pre-signed), so it
+      // opens as an app-owned checkout popup: the deposit watcher closes it
+      // the moment the bought USDC lands, instead of stranding a browser tab.
+      if (payPage) {
+        // The full signed funding link — nothing secret in it (the sig is in
+        // the URL by design), and having it in the dev log makes testing the
+        // hosted page outside the popup trivial. Dev only: production output
+        // shouldn't carry the buyer's address.
+        if (isDev) console.log('[payments] antseed-pay funding link:', url);
+        openCheckoutPopup(url, getMainWindow());
+        return { ok: true, url };
+      }
 
       try {
         await shell.openExternal(url);
@@ -203,13 +168,16 @@ export function registerPaymentsIpc(): void {
   // page, which submits setOperator() and runs the G$ deposit from there.
   ipcMain.handle('payments:open-gooddollar', async () => {
     try {
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
       const { url, operator } = await readGoodDollarConfig();
       const cc = await loadCachedCryptoConfig();
       if (!cc) return { ok: false, error: 'Chain configuration unavailable' };
-      const nonce = await makeDepositsClient(cc).getOperatorNonce(identity.wallet.address);
+      const client = await getDepositsClient(cc);
+      const nonce = await client.getOperatorNonce(identity.wallet.address);
       const domain = makeDepositsDomain(cc.chainId, cc.depositsAddress);
       const signature = await signSetOperator(identity.wallet, domain, { operator, nonce });
 
@@ -241,30 +209,18 @@ export function registerPaymentsIpc(): void {
     }
   });
 
-  ipcMain.handle('payments:crossmint-config', async () => {
+  ipcMain.handle('credits:get-info', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {
     try {
-      const clientKey = await readCrossmintClientKey();
-      if (!clientKey) return { ok: true, data: null };
-      return { ok: true, data: { clientKey, apiBase: crossmintApiBase(clientKey) } };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('payments:funkit-config', async () => {
-    try {
-      const apiKey = await readFunkitApiKey();
-      if (!apiKey) return { ok: true, data: null };
-      return { ok: true, data: { apiKey } };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('credits:get-info', async (): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {
-    try {
-      await ensureSecureIdentity();
-      const info = await refreshCreditsInfo();
+      // The balance comes from the gateway the app uses (local or remote):
+      // the wallet paying for its key. Display polls share one read; a caller
+      // deciding whether a payment can proceed passes `fresh`, and the
+      // gateway re-reads the chain.
+      // Keyed by the gateway and its key, so a read made for one key is
+      // never answered (or joined) for another on the same gateway.
+      const key = readKeys.credits(currentBalanceScope());
+      const info = opts?.fresh === true
+        ? await refreshFresh(key, () => refreshCreditsInfo({ fresh: true }))
+        : await cachedRead(key, CREDITS_FRESH_MS, () => refreshCreditsInfo());
       return { ok: true, data: info, error: null };
     } catch (err) {
       return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
@@ -273,24 +229,27 @@ export function registerPaymentsIpc(): void {
 
   ipcMain.handle('deposits:watch-start', async () => {
     try {
+      // No deposit address for a wallet that doesn't pay for this app's requests.
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
       const cc = await loadCachedCryptoConfig();
       if (!cc) return { ok: false, error: 'No payment chain configured' };
-      const client = makeDepositsClient(cc);
+      const client = await getDepositsClient(cc);
       const address = identity.wallet.address;
       let balance = 0n;
       try {
         balance = await client.getUSDCBalance(address);
       } catch {
-        // RPC hiccup — the poll loop picks it up
+        // RPC hiccup — the daemon's watcher picks it up
       }
-      setDepositWatchBalance(balance);
-      startDepositWatchTimer();
-      // USDC already sitting in the wallet (sent before the panel opened, or a
-      // card purchase that landed while the app was closed) — sweep it now.
-      if (balance > 0n) void sweepIncomingUsdc(client, address);
+      // The daemon's watcher does the sweeping (it holds the same key and the
+      // live relayer connections); this only promotes it to the fast cadence
+      // and forwards its progress events. USDC already sitting in the wallet
+      // is swept on the daemon's first fast tick.
+      await startDepositWatch();
       return {
         ok: true,
         data: {
@@ -307,186 +266,9 @@ export function registerPaymentsIpc(): void {
 
   ipcMain.handle('deposits:watch-stop', () => {
     // Not a hard stop: deliveries can land after the deposit view closes, so
-    // the watcher lingers at a slow cadence (and stops itself later).
-    demoteDepositWatchTimer();
+    // the daemon's watcher demotes to a slow cadence and the status poll
+    // lingers (and stops itself later).
+    demoteDepositWatch();
     return { ok: true };
-  });
-
-  // Max spending per session: $5 USDC = 5,000,000 base units. Main process enforces
-  // this cap to prevent a compromised renderer from signing unbounded authorizations.
-  ipcMain.handle('payments:sign-spending-auth', async (_event, params: {
-    channelId: string;
-    cumulativeAmountBaseUnits: string;
-    metadataHash: string;
-  }) => {
-    try {
-      // Validate renderer-supplied parameters at the trust boundary
-      if (!BYTES32_RE.test(params.channelId)) {
-        return { ok: false, error: 'Invalid channel ID format' };
-      }
-      const cumulativeAmount = BigInt(params.cumulativeAmountBaseUnits);
-      if (cumulativeAmount <= 0n || cumulativeAmount > MAX_SPENDING_AUTH_BASE_UNITS) {
-        return { ok: false, error: `cumulativeAmount exceeds cap (${MAX_SPENDING_AUTH_BASE_UNITS} base units)` };
-      }
-      if (!BYTES32_RE.test(params.metadataHash)) {
-        return { ok: false, error: 'Invalid metadataHash format' };
-      }
-
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      if (!identity) {
-        return { ok: false, error: 'Identity not available' };
-      }
-
-      const cc = await loadCachedCryptoConfig();
-      if (!cc) {
-        return { ok: false, error: 'No channels contract configured' };
-      }
-
-      const wallet = identity.wallet;
-
-      // Sign SpendingAuth (AntSeed Channels domain)
-      const channelsDomain = makeChannelsDomain(cc.chainId, cc.channelsAddress);
-      const spendingAuthSig = await signSpendingAuth(wallet, channelsDomain, {
-        channelId: params.channelId,
-        cumulativeAmount,
-        metadataHash: params.metadataHash,
-      });
-
-      const buyerEvmAddress = identity.wallet.address;
-
-      return {
-        ok: true,
-        data: {
-          spendingAuthSig,
-          buyerEvmAddress,
-        },
-      };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('payments:get-peer-info', async (_event, peerId: string) => {
-    try {
-      if (typeof peerId !== 'string' || peerId.trim().length === 0) {
-        return { ok: false, error: 'Invalid peerId' };
-      }
-      await refreshPeerCache();
-      const peer = lookupPeer(peerId.trim());
-      if (!peer) {
-        return { ok: false, error: 'Peer not found' };
-      }
-
-      return {
-        ok: true,
-        data: {
-          peerId: peer.peerId,
-          displayName: peer.displayName ?? null,
-          reputation: peer.reputation ?? 0,
-          onChainChannelCount: (peer as Record<string, unknown>).onChainChannelCount ?? null,
-          onChainGhostCount: (peer as Record<string, unknown>).onChainGhostCount ?? null,
-          evmAddress: peer.peerId ? peerIdToAddress(peer.peerId) : null,
-          timestamp: (peer as Record<string, unknown>).timestamp ?? null,
-          providers: peer.providers ?? [],
-          services: peer.services ?? [],
-        },
-      };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('payments:get-buyer-usage', async (): Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt: number | null }> => {
-    const body = await fetchBuyerProxyJson('/_antseed/buyer-usage');
-    if (!body) {
-      return { ok: false, data: null, error: 'buyer proxy unreachable', lastActivityAt: null };
-    }
-    const lastActivityAt = typeof body['lastActivityAt'] === 'number' ? body['lastActivityAt'] : null;
-    const totals = normalizeBuyerUsageTotals(body['totals']);
-    // Resolve service-id hashes to model names so the renderer can price
-    // usage against the retail baseline for the "Saving" tile.
-    if (totals.services.length > 0) {
-      const names = await resolveServiceIdHashes(totals.services.map((s) => s.serviceIdHash));
-      totals.services = totals.services.map((s) => ({
-        ...s,
-        serviceName: names.get(s.serviceIdHash.toLowerCase()) ?? null,
-      }));
-    }
-    return {
-      ok: true,
-      data: totals,
-      error: null,
-      lastActivityAt,
-    };
-  });
-
-  ipcMain.handle('payments:get-channels', async (): Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[] | null; error: string | null }> => {
-    const channels = await loadBuyerChannels(true);
-    if (!channels) {
-      return { ok: false, data: null, error: 'buyer proxy unreachable' };
-    }
-    notePendingSpend(channels);
-    return { ok: true, data: channels, error: null };
-  });
-
-  ipcMain.handle('payments:get-rewards-summary', async (): Promise<{ ok: boolean; data: DesktopRewardsSummary | null; error: string | null }> => {
-    try {
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      const cc = await loadCachedCryptoConfig();
-      if (!identity || !cc?.emissionsAddress) {
-        return { ok: true, data: EMPTY_REWARDS_SUMMARY, error: null };
-      }
-
-      let emissionsClient = getCachedEmissionsClient();
-      if (!emissionsClient) {
-        emissionsClient = new EmissionsClient({
-          rpcUrl: cc.rpcUrl,
-          ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
-          contractAddress: cc.emissionsAddress,
-          evmChainId: cc.chainId,
-        });
-        setCachedEmissionsClient(emissionsClient);
-      }
-      if (cc.antsTokenAddress && !getCachedAntsTokenClient()) {
-        setCachedAntsTokenClient(new ANTSTokenClient({
-          rpcUrl: cc.rpcUrl,
-          ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
-          contractAddress: cc.antsTokenAddress,
-          evmChainId: cc.chainId,
-        }));
-      }
-      const tokenClient = getCachedAntsTokenClient();
-      // transfersEnabled only depends on the token address — run it in parallel
-      // with the epoch + pending-emissions chain.
-      const [{ currentEpoch, pending }, transfersEnabled] = await Promise.all([
-        (async () => {
-          const info = await emissionsClient.getEpochInfo();
-          const startEpoch = Math.max(0, info.epoch - 9);
-          const epochs = Array.from({ length: info.epoch - startEpoch + 1 }, (_, index) => startEpoch + index);
-          return { currentEpoch: info.epoch, pending: await emissionsClient.pendingEmissions(identity.wallet.address, epochs) };
-        })(),
-        tokenClient ? tokenClient.transfersEnabled() : Promise.resolve(false),
-      ]);
-
-      return {
-        ok: true,
-        data: {
-          available: true,
-          pendingAnts: formatAnts(pending.seller + pending.buyer),
-          currentEpoch,
-          transfersEnabled,
-          error: null,
-        },
-        error: null,
-      };
-    } catch (err) {
-      return {
-        ok: true,
-        data: { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) },
-        error: null,
-      };
-    }
   });
 }

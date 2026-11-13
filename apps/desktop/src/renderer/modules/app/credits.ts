@@ -5,40 +5,51 @@ import type { DesktopBridge } from '../../types/bridge';
 type CreditsModuleOptions = {
   bridge?: DesktopBridge;
   uiState: RendererUiState;
-  onBalanceSufficientForPayment?: () => void;
+  onPaymentStateChanged?: () => void | Promise<void>;
 };
 
 export type CreditsModuleApi = {
   refreshCredits: () => Promise<void>;
-  refreshPaymentSummary: (force?: boolean) => Promise<void>;
   startPeriodicRefresh: () => void;
   stopPeriodicRefresh: () => void;
   getAvailableUsdc: () => string;
-  notifyPaymentCardVisible: () => void;
 };
 
 const CREDITS_REFRESH_INTERVAL_MS = 60_000;
-const CREDITS_FAST_REFRESH_INTERVAL_MS = 5_000;
-// Self-throttle for refreshPaymentSummary. Slightly under the Credits view's
-// 60s poll interval so a tick arriving a moment "early" (relative to when the
-// previous fetch finished) is not skipped.
-const PAYMENT_SUMMARY_THROTTLE_MS = 55_000;
 
-const MAX_AUTO_RETRIES = 2;
+// Until the balance has been read once, a failed or empty read retries on a
+// short backoff instead of leaving the placeholder up until the next poll.
+const UNKNOWN_BALANCE_RETRY_BASE_MS = 2_000;
+const UNKNOWN_BALANCE_RETRY_MAX_MS = 30_000;
 
-export function initCreditsModule({ bridge, uiState, onBalanceSufficientForPayment }: CreditsModuleOptions): CreditsModuleApi {
+export function initCreditsModule({
+  bridge,
+  uiState,
+  onPaymentStateChanged,
+}: CreditsModuleOptions): CreditsModuleApi {
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
-  let fastRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  let autoRetryCount = 0;
-  let lastCardVisibleAt = 0;
-  let lastPaymentSummaryRefreshAt = 0;
-  let paymentSummaryRefreshInFlight = false;
+  let unknownBalanceRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let unknownBalanceRetries = 0;
 
-  async function refreshCredits(): Promise<void> {
+  function scheduleUnknownBalanceRetry(): void {
+    if (uiState.creditsBalanceKnown) {
+      unknownBalanceRetries = 0;
+      return;
+    }
+    if (unknownBalanceRetryTimer || !refreshTimer) return;
+    const delay = Math.min(UNKNOWN_BALANCE_RETRY_BASE_MS * 2 ** unknownBalanceRetries, UNKNOWN_BALANCE_RETRY_MAX_MS);
+    unknownBalanceRetries++;
+    unknownBalanceRetryTimer = setTimeout(() => {
+      unknownBalanceRetryTimer = null;
+      void refreshCredits();
+    }, delay);
+  }
+
+  async function refreshCredits(fresh = true): Promise<void> {
     if (!bridge?.creditsGetInfo) return;
 
     try {
-      const result = await bridge.creditsGetInfo();
+      const result = await bridge.creditsGetInfo(fresh ? { fresh: true } : undefined);
       if (result.ok && result.data) {
         // Only notify if values actually changed
         const changed =
@@ -47,6 +58,12 @@ export function initCreditsModule({ bridge, uiState, onBalanceSufficientForPayme
           uiState.creditsTotalUsdc !== result.data.balanceUsdc ||
           uiState.creditsPendingUsdc !== result.data.pendingUsdc ||
           uiState.creditsSpendableUsdc !== result.data.spendableUsdc ||
+          uiState.creditsWalletUsdc !== result.data.walletUsdc ||
+          uiState.creditsTotalOwnedUsdc !== result.data.totalOwnedUsdc ||
+          uiState.creditsCreditLimitUsdc !== result.data.creditLimitUsdc ||
+          (result.data.minFirstDepositUsdc != null && uiState.creditsMinFirstDepositUsdc !== result.data.minFirstDepositUsdc) ||
+          (result.data.depositFeeUsdc != null && uiState.creditsDepositFeeUsdc !== result.data.depositFeeUsdc) ||
+          uiState.creditsBalanceKnown !== (result.data.balanceKnown ?? true) ||
           uiState.creditsEvmAddress !== result.data.evmAddress ||
           uiState.creditsOperatorAddress !== (result.data.operatorAddress ?? null);
 
@@ -55,114 +72,33 @@ export function initCreditsModule({ bridge, uiState, onBalanceSufficientForPayme
         uiState.creditsTotalUsdc = result.data.balanceUsdc;
         uiState.creditsPendingUsdc = result.data.pendingUsdc;
         uiState.creditsSpendableUsdc = result.data.spendableUsdc;
+        uiState.creditsWalletUsdc = result.data.walletUsdc;
+        uiState.creditsTotalOwnedUsdc = result.data.totalOwnedUsdc;
         uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
+        if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
+        if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
+        uiState.creditsBalanceKnown = result.data.balanceKnown ?? true;
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 
-        // Clear channel badges when no funds are reserved (all channels closed)
-        const reserved = parseFloat(uiState.creditsReservedUsdc);
-        if (reserved === 0 && uiState.chatActiveChannels.size > 0) {
-          uiState.chatActiveChannels.clear();
-        }
-
-        // Low balance detection
-        const available = parseFloat(uiState.creditsAvailableUsdc);
-        const lowBalance = available > 0 && (available < 1.0 || (reserved > 0 && available < reserved));
-        if (uiState.chatLowBalanceWarning !== lowBalance) {
-          uiState.chatLowBalanceWarning = lowBalance;
-        }
-
-        // Auto-retry: if the payment approval card is visible and balance
-        // now covers the required amount, dismiss the card and retry.
-        if (
-          uiState.chatPaymentApprovalVisible &&
-          !uiState.chatPaymentApprovalLoading &&
-          onBalanceSufficientForPayment &&
-          autoRetryCount < MAX_AUTO_RETRIES
-        ) {
-          const required = parseFloat(uiState.chatPaymentApprovalAmount || '0');
-          if (available > 0 && required > 0 && available >= required) {
-            stopFastRefresh();
-            autoRetryCount++;
-            onBalanceSufficientForPayment();
-            // Fall through to notifyUiStateChanged so title bar balance updates
-          }
-        }
-
-        // Start/stop fast polling based on whether the payment card is visible
-        if (uiState.chatPaymentApprovalVisible && !fastRefreshTimer) {
-          startFastRefresh();
-        } else if (!uiState.chatPaymentApprovalVisible && fastRefreshTimer) {
-          stopFastRefresh();
-        }
-
         if (changed) notifyUiStateChanged();
+        await onPaymentStateChanged?.();
 
       }
     } catch {
       // Silently fail — cached values remain
     }
-  }
-
-  async function refreshPaymentSummary(force = false): Promise<void> {
-    if (paymentSummaryRefreshInFlight) return;
-    if (!force && Date.now() - lastPaymentSummaryRefreshAt < PAYMENT_SUMMARY_THROTTLE_MS) return;
-    if (!bridge?.paymentsGetBuyerUsage && !bridge?.paymentsGetChannels && !bridge?.paymentsGetRewardsSummary) return;
-
-    paymentSummaryRefreshInFlight = true;
-    uiState.creditsSummaryLoading = true;
-    notifyUiStateChanged();
-    try {
-      const [usage, channels, rewards] = await Promise.all([
-        bridge?.paymentsGetBuyerUsage?.().catch(() => null) ?? Promise.resolve(null),
-        bridge?.paymentsGetChannels?.().catch(() => null) ?? Promise.resolve(null),
-        bridge?.paymentsGetRewardsSummary?.().catch(() => null) ?? Promise.resolve(null),
-      ]);
-
-      if (usage?.ok && usage.data) {
-        uiState.creditsBuyerUsage = usage.data;
-      }
-      if (channels?.ok && Array.isArray(channels.data)) {
-        uiState.creditsChannels = channels.data;
-      }
-      if (rewards?.ok && rewards.data) {
-        uiState.creditsRewards = rewards.data;
-      }
-      // Arm the throttle only once the buyer answered the usage query.
-      // While it's still booting that fetch fails ("buyer proxy
-      // unreachable") — but rewards is chain-side and reports ok even with
-      // no data, so any-of-three would arm the throttle on a boot-time
-      // failure and pin the zero-value tiles for the whole window.
-      if (usage?.ok) {
-        lastPaymentSummaryRefreshAt = Date.now();
-      }
-    } finally {
-      paymentSummaryRefreshInFlight = false;
-      uiState.creditsSummaryLoading = false;
-      notifyUiStateChanged();
-    }
-  }
-
-  function startFastRefresh(): void {
-    if (fastRefreshTimer) return;
-    fastRefreshTimer = setInterval(() => void refreshCredits(), CREDITS_FAST_REFRESH_INTERVAL_MS);
-  }
-
-  function stopFastRefresh(): void {
-    if (fastRefreshTimer) {
-      clearInterval(fastRefreshTimer);
-      fastRefreshTimer = null;
-    }
+    scheduleUnknownBalanceRetry();
   }
 
   function onWindowFocus(): void {
-    void refreshCredits();
+    void refreshCredits(false);
   }
 
   function startPeriodicRefresh(): void {
     if (refreshTimer) return;
+    refreshTimer = setInterval(() => void refreshCredits(false), CREDITS_REFRESH_INTERVAL_MS);
     void refreshCredits();
-    refreshTimer = setInterval(() => void refreshCredits(), CREDITS_REFRESH_INTERVAL_MS);
     window.addEventListener('focus', onWindowFocus);
   }
 
@@ -171,7 +107,10 @@ export function initCreditsModule({ bridge, uiState, onBalanceSufficientForPayme
       clearInterval(refreshTimer);
       refreshTimer = null;
     }
-    stopFastRefresh();
+    if (unknownBalanceRetryTimer) {
+      clearTimeout(unknownBalanceRetryTimer);
+      unknownBalanceRetryTimer = null;
+    }
     window.removeEventListener('focus', onWindowFocus);
   }
 
@@ -179,16 +118,5 @@ export function initCreditsModule({ bridge, uiState, onBalanceSufficientForPayme
     return uiState.creditsAvailableUsdc;
   }
 
-  /**
-   * Call when the payment approval card becomes visible (new 402 cycle).
-   * Resets the auto-retry counter and starts fast polling immediately.
-   */
-  function notifyPaymentCardVisible(): void {
-    autoRetryCount = 0;
-    lastCardVisibleAt = Date.now();
-    startFastRefresh();
-    void refreshCredits();
-  }
-
-  return { refreshCredits, refreshPaymentSummary, startPeriodicRefresh, stopPeriodicRefresh, getAvailableUsdc, notifyPaymentCardVisible };
+  return { refreshCredits, startPeriodicRefresh, stopPeriodicRefresh, getAvailableUsdc };
 }

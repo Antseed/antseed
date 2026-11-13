@@ -1,0 +1,193 @@
+import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test, { afterEach, beforeEach, describe } from 'node:test'
+import { Command } from 'commander'
+import { FileIdentityStore, identityFromPrivateKeyHex, identityPassphraseEnv } from '@antseed/node'
+import {
+  archiveBuyerIdentity,
+  createBuyerIdentity,
+  listBuyerIdentities,
+  loadBuyerIdentity,
+  storedDefaultIdentityAddress,
+} from '../../../buyer-identities/store.js'
+import type { PassphrasePrompt } from '../../wallet-passphrase.js'
+import { registerBuyerIdentityCommands } from './identity.js'
+
+// The passphrase comes from a file here: unlike ANTSEED_PASSPHRASE, which the
+// node takes out of the environment once, it can be switched off between tests.
+let dataDir: string
+let passphraseFile: string
+
+function usePassphrase(passphrase: string | null): void {
+  if (passphrase === null) {
+    delete process.env['ANTSEED_PASSPHRASE_FILE']
+    return
+  }
+  writeFileSync(passphraseFile, `${passphrase}\n`)
+  process.env['ANTSEED_PASSPHRASE_FILE'] = passphraseFile
+}
+
+async function run(...args: string[]): Promise<string> {
+  const program = new Command()
+  program.exitOverride().option('--data-dir <path>')
+  const buyer = program.command('buyer')
+  registerBuyerIdentityCommands(buyer)
+  const lines: string[] = []
+  const original = console.log
+  console.log = (...parts: unknown[]) => { lines.push(parts.map(String).join(' ')) }
+  try {
+    await program.parseAsync(['node', 'antseed', '--data-dir', dataDir, 'buyer', 'identity', ...args])
+  } finally {
+    console.log = original
+  }
+  return lines.join('\n')
+}
+
+const keyFile = (...parts: string[]): string => join(dataDir, ...parts, 'identity.key')
+const isEncrypted = (path: string): boolean => readFileSync(path, 'utf8').startsWith('{')
+
+beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), 'antseed-identity-protect-'))
+  passphraseFile = join(dataDir, 'passphrase')
+  usePassphrase(null)
+})
+
+afterEach(() => {
+  usePassphrase(null)
+  rmSync(dataDir, { recursive: true, force: true })
+})
+
+describe('buyer identities with a passphrase', () => {
+  test('are created encrypted, listed without it, and loaded only with it', async () => {
+    usePassphrase('correct horse')
+    const created = await createBuyerIdentity(dataDir, 'team-a')
+    assert.ok(isEncrypted(keyFile('buyer-identities', 'team-a')))
+    assert.equal(statSync(keyFile('buyer-identities', 'team-a')).mode & 0o777, 0o600)
+    assert.equal((await loadBuyerIdentity(dataDir, 'team-a'))?.wallet.address, created.address)
+
+    usePassphrase(null)
+    assert.deepEqual((await listBuyerIdentities(dataDir)).map((entry) => [entry.name, entry.address]), [['team-a', created.address]])
+    await assert.rejects(loadBuyerIdentity(dataDir, 'team-a'), /encrypted; set ANTSEED_PASSPHRASE/)
+
+    usePassphrase('wrong horse')
+    await assert.rejects(loadBuyerIdentity(dataDir, 'team-a'), /Wrong passphrase/)
+  })
+
+  test('the default wallet address is read from an encrypted key without decrypting it', async () => {
+    const hex = '44'.repeat(32)
+    writeFileSync(keyFile(), hex, { mode: 0o600 })
+    usePassphrase('correct horse')
+    await run('protect')
+    usePassphrase(null)
+    assert.equal(await storedDefaultIdentityAddress(dataDir), identityFromPrivateKeyHex(hex).wallet.address)
+  })
+})
+
+describe('buyer identity protect / unprotect', () => {
+  test('protect refuses without a passphrase', async () => {
+    writeFileSync(keyFile(), '55'.repeat(32), { mode: 0o600 })
+    await assert.rejects(run('protect'), /Set ANTSEED_PASSPHRASE/)
+    assert.ok(!isEncrypted(keyFile()))
+  })
+
+  test('protect --all encrypts every stored key in place; unprotect --all --yes reverses it', async () => {
+    const defaultHex = '66'.repeat(32)
+    writeFileSync(keyFile(), defaultHex, { mode: 0o600 })
+    const team = await createBuyerIdentity(dataDir, 'team-a')
+    const old = await createBuyerIdentity(dataDir, 'old')
+    const archived = await archiveBuyerIdentity(dataDir, 'old')
+    const files = [keyFile(), keyFile('buyer-identities', 'team-a'), join(archived, 'identity.key')]
+
+    usePassphrase('correct horse')
+    const output = await run('protect', '--all')
+    assert.match(output, /Encrypted default/)
+    assert.match(output, /Encrypted team-a/)
+    assert.match(output, /Encrypted \.archived\/old-/)
+    for (const file of files) {
+      assert.ok(isEncrypted(file), file)
+      assert.equal(statSync(file).mode & 0o777, 0o600, file)
+    }
+    assert.match(await run('protect', 'team-a'), /team-a is already encrypted/)
+    assert.equal((await loadBuyerIdentity(dataDir, 'team-a'))?.wallet.address, team.address)
+    assert.match(await run('list'), /data dir, encrypted/)
+
+    await assert.rejects(run('unprotect', '--all'), /--yes/)
+    assert.ok(isEncrypted(keyFile()))
+    await run('unprotect', '--all', '--yes')
+    assert.equal(readFileSync(keyFile(), 'utf8'), defaultHex)
+    assert.equal(identityFromPrivateKeyHex(readFileSync(join(archived, 'identity.key'), 'utf8')).wallet.address, old.address)
+    for (const file of files) assert.ok(!isEncrypted(file), file)
+    assert.deepEqual(readdirSync(dataDir).filter((name) => name.endsWith('.tmp')), [])
+  })
+
+  test('protect takes a single identity by name and leaves the others alone', async () => {
+    writeFileSync(keyFile(), '77'.repeat(32), { mode: 0o600 })
+    await createBuyerIdentity(dataDir, 'team-a')
+    usePassphrase('correct horse')
+    await run('protect', 'team-a')
+    assert.ok(isEncrypted(keyFile('buyer-identities', 'team-a')))
+    assert.ok(!isEncrypted(keyFile()))
+    await assert.rejects(run('protect', 'team-a', '--all'), /not both/)
+  })
+
+  test('protect refuses a passphrase that does not open the keys already encrypted', async () => {
+    writeFileSync(keyFile(), '7a'.repeat(32), { mode: 0o600 })
+    await createBuyerIdentity(dataDir, 'team-a')
+    usePassphrase('correct horse battery')
+    await run('protect', 'team-a')
+    usePassphrase('correct horse batery!')
+    await assert.rejects(run('protect'), /does not unlock the encrypted wallet key "team-a"/)
+    assert.ok(!isEncrypted(keyFile()))
+    usePassphrase('correct horse battery')
+    await run('protect')
+    assert.ok(isEncrypted(keyFile()))
+  })
+})
+
+// Last: a passphrase asked on the terminal stays set for the rest of the process.
+describe('buyer identity protect asks on the terminal when no passphrase is set', () => {
+  function fakePrompt(answers: string[], available = true): PassphrasePrompt & { questions: string[] } {
+    const questions: string[] = []
+    return { available, questions, ask: async (question) => { questions.push(question); return answers.shift() ?? '' } }
+  }
+
+  async function runWith(prompt: PassphrasePrompt, ...args: string[]): Promise<void> {
+    const program = new Command()
+    program.exitOverride().option('--data-dir <path>')
+    registerBuyerIdentityCommands(program.command('buyer'), prompt)
+    await program.parseAsync(['node', 'antseed', '--data-dir', dataDir, 'buyer', 'identity', ...args])
+  }
+
+  test('without a terminal it fails as before and asks nothing', async () => {
+    writeFileSync(keyFile(), '88'.repeat(32), { mode: 0o600 })
+    const prompt = fakePrompt(['correct horse battery'], false)
+    await assert.rejects(runWith(prompt, 'protect'), /Set ANTSEED_PASSPHRASE/)
+    assert.deepEqual(prompt.questions, [])
+    assert.ok(!isEncrypted(keyFile()))
+  })
+
+  test('a short or mistyped passphrase leaves the key as it was', async () => {
+    writeFileSync(keyFile(), '88'.repeat(32), { mode: 0o600 })
+    const short = fakePrompt(['too short'])
+    await assert.rejects(runWith(short, 'protect'), /at least 12 characters/)
+    assert.equal(short.questions.length, 1)
+    await assert.rejects(runWith(fakePrompt(['correct horse battery', 'correct horse batery']), 'protect'), /do not match/)
+    assert.ok(!isEncrypted(keyFile()))
+  })
+
+  test('asks twice, encrypts, and keeps the passphrase for this process only', async () => {
+    const hex = '99'.repeat(32)
+    writeFileSync(keyFile(), hex, { mode: 0o600 })
+    const prompt = fakePrompt(['correct horse battery', 'correct horse battery'])
+    await runWith(prompt, 'protect')
+    assert.equal(prompt.questions.length, 2)
+    assert.ok(isEncrypted(keyFile()))
+    assert.ok(!readFileSync(keyFile(), 'utf8').includes('correct horse battery'))
+    assert.equal(process.env['ANTSEED_PASSPHRASE'], undefined)
+    // Handed to a buyer the gateway starts, the same way as a passphrase from the environment.
+    assert.deepEqual(identityPassphraseEnv(), { ANTSEED_PASSPHRASE: 'correct horse battery' })
+    assert.equal(await new FileIdentityStore(dataDir).load(), hex)
+  })
+})

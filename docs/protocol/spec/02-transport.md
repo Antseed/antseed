@@ -134,14 +134,29 @@ Total: 117 bytes
 
 ### Transport Modes
 
-Connections support two transport modes, selected automatically at startup:
+Connections support three transports. **Encrypted TCP is the preferred transport between nodes**; WebRTC exists for peers that cannot open TCP sockets (e.g. browsers). Plaintext TCP is a legacy fallback.
 
 | Mode | Library | Description |
 |---|---|---|
-| `webrtc` | `node-datachannel` | WebRTC DataChannel via a TCP signaling socket |
-| `tcp` | Node.js `net` | Direct TCP socket |
+| `tcp` + `transport.tcp-enc.v1` | Node.js `net` | **Preferred.** Direct TCP with a mutually authenticated encrypted channel |
+| `tcp` (plaintext) | Node.js `net` | Legacy fallback for peers that do not advertise `transport.tcp-enc.v1` |
+| `webrtc` | `node-datachannel` | WebRTC DataChannel (DTLS) via a TCP signaling socket |
 
-Transport mode is auto-detected by attempting to create a `node-datachannel` peer connection. If the native module is available, `webrtc` mode is used; otherwise, the system falls back to `tcp` mode.
+Selection is capability-driven. An initiator uses:
+
+1. **Encrypted TCP** when the remote advertises `transport.tcp-enc.v1` (in discovery metadata or its intro/hello capabilities), or when `requireSecureTransport` is set.
+2. **WebRTC** only when the remote advertises `transport.webrtc.v1` but *not* `transport.tcp-enc.v1`, and the local node-datachannel stack passed its startup probe. Nodes advertise `transport.webrtc.v1` only when that probe succeeds; a node without a working stack refuses `hello` signaling.
+3. **Plaintext TCP** otherwise (legacy peers).
+
+Note: WebRTC DataChannel messages are capped at 256 KiB, which is why encrypted TCP is preferred for node-to-node traffic and why single request frames stay below `ANTSEED_UPLOAD_THRESHOLD_BYTES` (240 KiB).
+
+### Encrypted TCP (`transport.tcp-enc.v1`)
+
+- The initiator's `intro` line carries an `enc` offer: an ephemeral X25519 public key signed by the initiator's wallet, bound to the intro envelope's ts/nonce.
+- The responder answers with a single `enc-ack` line: its own signed ephemeral key, whose signature also covers the initiator's nonce (freshness + mutual authentication — the initiator verifies the ack's peerId against the peer it dialed).
+- Session keys: HKDF-SHA256 over the X25519 shared secret, salted with a transcript hash binding both peer ids, both nonces, and both public keys. One AES-256-GCM key per direction.
+- All subsequent traffic is length-prefixed AEAD frames (`u32be length | ciphertext+tag`) with implicit per-direction counter nonces. Ephemeral keys give forward secrecy.
+- Once an `enc` offer is sent, the handshake fails closed — there is no downgrade to plaintext.
 
 ### Data Channel
 
@@ -150,14 +165,16 @@ Transport mode is auto-detected by attempting to create a `node-datachannel` pee
 
 ### Initial Wire Protocol
 
-When a TCP socket connects (either mode), the first line is a JSON object terminated by `\n`:
+When a TCP socket connects (any mode), the first line is a JSON object terminated by `\n`:
 
-| Type | Field | Mode | Purpose |
+| Type | Fields | Mode | Purpose |
 |---|---|---|---|
-| `"intro"` | `peerId: string` | TCP direct | Identifies the connecting peer for raw TCP |
-| `"hello"` | `peerId: string` | WebRTC | Identifies the connecting peer for WebRTC signaling |
+| `"intro"` | `auth`, `capabilities?`, `enc?` | TCP direct | Authenticates the connecting peer; optionally opens the encrypted-transport handshake |
+| `"hello"` | `auth`, `capabilities?` | WebRTC | Authenticates the connecting peer for WebRTC signaling |
 
-After the initial line, in TCP mode the socket carries raw frame data. In WebRTC mode the socket carries JSON signaling messages (SDP offers/answers and ICE candidates) until the DataChannel opens, after which the DataChannel carries frame data.
+`auth` is a signed envelope `{ peerId, ts, nonce, sig, v? }` (EIP-191 over `type|peerId|ts|nonce`, replay-guarded, ±30 s skew). When `v: 2`, the signature additionally covers the JSON-encoded `capabilities` array and the `enc` public key, so a man-in-the-middle cannot strip the encryption offer or capabilities to force a legacy fallback. Peers send v2 whenever the remote is known to support it.
+
+After the initial line: in plaintext TCP mode the socket carries raw frame data; in encrypted TCP mode it carries AEAD frames after the `enc-ack`. In WebRTC mode the socket carries JSON signaling messages until the DataChannel opens, after which the DataChannel carries frame data. Each `sdp` signaling message carries a signed envelope over the exact SDP string (which contains the DTLS certificate fingerprint), binding the DTLS session to the peer's wallet identity; ICE candidates are unsigned because DTLS still verifies the certificate against the signed fingerprint.
 
 ### Connection States
 

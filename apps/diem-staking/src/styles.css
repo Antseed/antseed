@@ -450,6 +450,8 @@ h1.hero-title em { font-style: italic; color: var(--brand); }
   border-radius: 10px;
   line-height: 1.5;
   margin-bottom: 14px;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .claim-note strong { color: var(--ink-soft); }
 .claim-note a { color: var(--brand-darker); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
@@ -670,111 +672,17 @@ h1.hero-title em { font-style: italic; color: var(--brand); }
   background: linear-gradient(180deg, #fff, #fbfbf7);
 }
 .ants-destination {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
-  gap: 22px;
   border-color: rgba(var(--green-rgb),0.34);
   background:
     radial-gradient(circle at 90% 5%, rgba(var(--green-rgb),0.22), transparent 34%),
     linear-gradient(135deg, rgba(var(--green-rgb),0.11), rgba(255,255,255,0.94) 48%, #fff);
 }
-.claim-destination-copy,
-.antstation-window { position: relative; z-index: 1; }
-.ants-main { justify-content: flex-start; margin-bottom: 18px; }
-.ants-main strong { color: var(--brand-darker); }
-.antstation-flow {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.antstation-flow li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid rgba(var(--green-rgb),0.18);
-  border-radius: 10px;
-  background: rgba(255,255,255,0.64);
-  color: var(--ink-soft);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.4px;
-}
-.antstation-flow span {
-  color: var(--brand-dark);
-  font-weight: 700;
-}
-.antstation-window {
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  min-height: 238px;
-  padding: 14px;
-  border: 1px solid rgba(10,14,20,0.08);
-  border-radius: 16px;
-  background: var(--ink);
-  color: #fff;
-  box-shadow: 0 18px 40px rgba(10,14,20,0.14);
-}
-.window-bar {
-  display: flex;
-  gap: 5px;
-  margin-bottom: 18px;
-}
-.window-bar span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.24);
-}
-.window-bar span:first-child { background: var(--brand); }
-.window-title {
-  margin-bottom: 16px;
-  color: rgba(255,255,255,0.82);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-}
-.window-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-  border-top: 1px dashed rgba(255,255,255,0.12);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-.window-row span { color: rgba(255,255,255,0.46); }
-.window-row strong { color: var(--brand); font-weight: 600; }
-.window-claim {
-  margin-top: auto;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--brand);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  text-align: center;
-  text-transform: uppercase;
-}
-.ants-download-cta {
-  display: block;
-  text-align: center;
-  text-decoration: none;
-}
+.claim-destination-copy { position: relative; z-index: 1; }
+.ants-destination .destination-main strong { color: var(--brand-darker); }
 @media (max-width: 700px) {
   .claim-destination-top,
   .destination-main { align-items: flex-start; flex-direction: column; }
   .mini-route { width: 100%; min-width: 0; }
-  .ants-destination { grid-template-columns: 1fr; }
-  .antstation-flow { grid-template-columns: 1fr; }
-  .antstation-window { min-height: 210px; }
 }
 
 .stake-cta {
@@ -1294,7 +1202,7 @@ footer .links { display: flex; gap: 24px; }
    ANTSEED / DIEM BRAND PLATE OVERRIDE
    Dark-first. Clay/orange is reserved for DIEM money mechanics:
    $DIEM, staking, USDC allocations, fees, rewards, contracts.
-   Green remains for AntSeed network/action/ants.
+   Green remains for Antseed network/action/ants.
    ================================================================= */
 :root {
   color-scheme: dark;
@@ -1669,13 +1577,11 @@ footer a {
 .claim-mock .num { color: var(--green); }
 .claim-banner p { color: rgba(237,246,238,0.68); }
 .claim-path span,
-.claim-mock,
-.antstation-window {
+.claim-mock {
   background: rgba(255,255,255,0.045);
   border-color: rgba(255,255,255,0.1);
 }
-.claim-path strong,
-.window-bar span:first-child { background: var(--green); color: #06110b; }
+.claim-path strong { background: var(--green); color: #06110b; }
 
 .destination-tag.green,
 .why .check {
@@ -1689,16 +1595,7 @@ footer a {
     radial-gradient(circle at 90% 5%, rgba(var(--green-rgb),0.18), transparent 34%),
     linear-gradient(135deg, rgba(var(--green-rgb),0.08), rgba(12,17,16,0.94) 48%, rgba(7,11,9,0.96));
 }
-.antstation-flow li {
-  background: rgba(var(--green-rgb),0.055);
-  border-color: rgba(var(--green-rgb),0.18);
-  color: rgba(237,246,238,0.8);
-}
-.antstation-flow span,
-.window-row strong,
 .flow-mobile-ant-badge { color: var(--green); }
-.window-row span,
-.window-title { color: rgba(237,246,238,0.54); }
 
 .metric,
 .step,
@@ -1864,8 +1761,6 @@ html[data-theme='light'] .flow-mobile-source-txt h4 {
 html[data-theme='light'] .brand .seed,
 html[data-theme='light'] .claim-banner h2 em,
 html[data-theme='light'] .claim-mock .num,
-html[data-theme='light'] .antstation-flow span,
-html[data-theme='light'] .window-row strong,
 html[data-theme='light'] .flow-mobile-ant-badge {
   color: var(--green);
 }
@@ -2045,8 +1940,7 @@ html[data-theme='light'] .claim-mock .comment {
 }
 html[data-theme='light'] .claim-banner p { color: #59665d; }
 html[data-theme='light'] .claim-path span,
-html[data-theme='light'] .claim-mock,
-html[data-theme='light'] .antstation-window {
+html[data-theme='light'] .claim-mock {
   background: rgba(255,255,255,0.62);
   border-color: rgba(96, 73, 38, 0.14);
 }

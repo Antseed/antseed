@@ -1,5 +1,38 @@
 import { describe, it, expect } from 'vitest'
-import { PeerMetricsTracker } from './peer-metrics.js'
+import { PeerMetricsTracker, computeFailureCooldownMs } from './peer-metrics.js'
+
+describe('computeFailureCooldownMs', () => {
+  it('returns 0 while the streak is within tolerance', () => {
+    expect(computeFailureCooldownMs(0)).toBe(0)
+    expect(computeFailureCooldownMs(1)).toBe(0)
+    expect(computeFailureCooldownMs(2)).toBe(0)
+  })
+
+  it('doubles the cooldown for each failure past the threshold', () => {
+    expect(computeFailureCooldownMs(3)).toBe(30_000)
+    expect(computeFailureCooldownMs(4)).toBe(60_000)
+    expect(computeFailureCooldownMs(5)).toBe(120_000)
+    expect(computeFailureCooldownMs(6)).toBe(240_000)
+    expect(computeFailureCooldownMs(7)).toBe(480_000)
+  })
+
+  it('caps the doubling at 8 minutes no matter how long the streak runs', () => {
+    expect(computeFailureCooldownMs(8)).toBe(480_000)
+    expect(computeFailureCooldownMs(20)).toBe(480_000)
+    expect(computeFailureCooldownMs(1_000)).toBe(480_000)
+  })
+
+  it('honours custom thresholds', () => {
+    expect(computeFailureCooldownMs(2, { maxFailures: 2, baseCooldownMs: 500 })).toBe(500)
+    expect(computeFailureCooldownMs(3, { maxFailures: 2, baseCooldownMs: 500 })).toBe(1_000)
+    expect(computeFailureCooldownMs(9, { maxFailures: 2, baseCooldownMs: 500, maxDoublings: 1 })).toBe(1_000)
+  })
+
+  it('treats a non-finite streak as no cooldown', () => {
+    expect(computeFailureCooldownMs(Number.NaN)).toBe(0)
+    expect(computeFailureCooldownMs(Number.POSITIVE_INFINITY)).toBe(0)
+  })
+})
 
 describe('PeerMetricsTracker', () => {
   describe('latency EMA calculation', () => {

@@ -1,0 +1,460 @@
+---
+title: Seller configuration
+slug: /provide/config
+description: Every seller setting in config.json, from providers, services, pricing, categories and capabilities to free-tier limits, health checks and payment settings.
+---
+
+# Seller configuration
+
+A seller reads its settings from `~/.antseed/config.json` (change the path with `--config` or `ANTSEED_CONFIG`). Keep non-secret settings in the file and secrets such as API keys and the identity key in environment variables. Buyer settings in the same file are covered in [Buyer configuration](/docs/buyer-config).
+
+You rarely need to edit the JSON by hand. `antseed seller setup` and the `antseed config seller` commands write it for you, and `antseed config seller show` prints the current `seller` section. When a setting exists in several places, a command-line flag wins over an environment variable, which wins over `config.json`, which wins over the built-in default.
+
+## Providers and services
+
+Everything a seller announces lives under `seller.providers`. Each key is a label you choose; `plugin` names the provider plugin that serves it. Each provider holds one entry per service, keyed by the service ID buyers request.
+
+```json
+{
+  "seller": {
+    "providers": {
+      "inference": {
+        "plugin": "openai",
+        "baseUrl": "https://api.example-inference.com",
+        "defaults": {
+          "inputUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 2
+        },
+        "services": {
+          "deepseek-v4-flash": {
+            "upstreamModel": "<upstream-model-id>",
+            "categories": ["coding"],
+            "pricing": {
+              "inputUsdPerMillion": 0.25,
+              "cachedInputUsdPerMillion": 0.025,
+              "outputUsdPerMillion": 1
+            },
+            "capabilities": {
+              "contextWindow": 128000,
+              "inputs": ["text"],
+              "toolUse": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Provider fields
+
+| Field | Description |
+|---|---|
+| `plugin` | Plugin name (`openai`, `anthropic`, `local-llm`, …) or an npm package name. Required. |
+| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video`, `fal-video` and `alibaba-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
+| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
+| `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
+| `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
+| `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
+| `services` | The services this provider announces. |
+
+Providers of the same plugin announce under one provider name (two `openai` providers both announce as `openai`). A model that two of them list must have the same terms in both: price, API protocols, unit billing and capabilities. Buyers see one entry per provider name, so the seller refuses to start otherwise; list the model under one of them only, or give it the same terms. A video model can be listed by only one of them, because a video job stays with the upstream account that accepted it.
+
+### Backup upstreams
+
+A provider can list backup upstreams that serve the same models. When the main upstream fails before anything reaches the buyer, the seller sends the request to the next upstream instead of returning the error:
+
+- the request could not be sent, or timed out,
+- or the upstream answered `401`, `402`, `403`, `404`, `408`, `429`, `500`, `502`, `503`, `504` or `529` (bad key, out of credit, model gone, rate limit or quota, server error).
+
+Other errors, such as `400` for a malformed request, go back to the buyer unchanged. A stream that has already started is never switched.
+
+```json
+{
+  "seller": {
+    "providers": {
+      "kimi": {
+        "plugin": "openai",
+        "baseUrl": "https://api.example-inference.com",
+        "apiKeyEnv": "INFERENCE_API_KEY",
+        "fallbackUpstreams": [
+          {
+            "baseUrl": "https://api.example-backup.com",
+            "apiKeyEnv": "BACKUP_API_KEY",
+            "services": {
+              "kimi-k3.1-pro": { "upstreamModel": "<model-id-at-the-backup>" }
+            }
+          }
+        ],
+        "services": {
+          "kimi-k3.1-pro": {},
+          "kimi-k3": {}
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `baseUrl` | The backup's API base URL. Required. |
+| `apiKeyEnv` | Environment variable that holds the backup's API key. Omit to reuse the provider's key. The seller refuses to start if the variable is not set. |
+| `services` | The services this backup serves, with `upstreamModel` when the model has another name there. Omit to use the backup for every service of the provider, under the provider's own `upstreamModel` names. |
+| `pathRewrite` | Path rewrites for this backup. Defaults to the provider's `pathRewrite`. |
+
+The buyer gets the model they asked for and pays the service's normal price, whichever upstream answered. Backups share the provider's other settings (extra headers, body fields, concurrency), so only list upstreams that accept the same API.
+
+After an upstream fails for a service, the seller tries it last for that service for 30 seconds, or for as long as its `Retry-After` header asks (up to 5 minutes), so requests don't keep waiting on an upstream that is out of quota. [Model health checks](#model-health-checks) go through the same backups, so a service stays advertised while any of its upstreams works. The seller log shows each switch as `[http-relay] <service>: primary upstream <host> failed (HTTP 429); trying fallback <host>`.
+
+### Service fields
+
+| Field | Description |
+|---|---|
+| `upstreamModel` | Model ID sent upstream. Defaults to the service ID. |
+| `imageEditModel` | Venice image services only: the native edit model that serves `/v1/images/edits` for this service. See [Venice image edits](/docs/provide/media#venice-image-edits). |
+| `extraProtocols` | `openai` text services only: add `openai-responses` and/or `anthropic-messages` alongside Chat Completions. The upstream and fallbacks must already support those APIs; no protocol translation is performed. |
+| `pricing` | `inputUsdPerMillion`, `outputUsdPerMillion` and optional `cachedInputUsdPerMillion`, in USD per million tokens. Overrides the provider's `defaults`. |
+| `categories` | Tags announced in discovery. Lowercase letters, digits and hyphens. Buyers can filter on any tag; `privacy`, `legal`, `uncensored`, `coding`, `finance` and `tee` are the well-known ones shown in `antseed network browse --tag`. |
+| `capabilities` | Hints about the model. See below. |
+| `unitBillingModels` | Per-image, per-video, per-character (speech) or per-routing-request pricing. See [Unit-billed services](/docs/provide/media). |
+
+Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. When any seller of a model advertises a cached-input price, buyers count offers of that model that omit it at half their trust score, which can drop them below the buyer's minimum. Free offers are exempt.
+
+### Capabilities
+
+Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".
+
+| Field | Type | Meaning |
+|---|---|---|
+| `contextWindow` | number | Total context window in tokens |
+| `maxOutputTokens` | number | Maximum output tokens per response |
+| `inputs` | string[] | Accepted input modalities: `text`, `image`, `audio`, `video`, `pdf` |
+| `outputs` | string[] | Produced output modalities, same values |
+| `reasoning` | boolean | Supports reasoning effort or extended thinking |
+| `toolUse` | boolean | Supports tool calls |
+| `structuredOutput` | boolean | Supports JSON schema responses |
+| `supportedParameters` | string[] | Extra request-body parameters the service accepts, in lowercase snake_case (for example `seed`, `output_format`); at most 32 |
+| `video` | object | Options a video model accepts. See [Image, video and speech services](/docs/provide/media#video-services) |
+| `speech` | object | Voices (`voices`, `customVoices`) and `formats` of a speech model. See [Voices](/docs/provide/media#voices) |
+
+## Edit the configuration from the CLI
+
+Add a provider. This also installs its plugin into `~/.antseed/plugins`:
+
+```bash
+antseed config seller add-provider inference \
+  --plugin openai \
+  --base-url https://api.example-inference.com \
+  --input 0.5 --cached 0.05 --output 2
+```
+
+For OpenRouter, use `--base-url https://openrouter.ai/api`.
+
+Add or update a service. The provider must already exist:
+
+```bash
+antseed config seller add-service inference kimi-k2.6 \
+  --upstream "<upstream-model-id>" \
+  --input 0.6 --cached 0.06 --output 2.5 \
+  --categories coding \
+  --capabilities '{"contextWindow":128000,"inputs":["text"],"toolUse":true,"reasoning":true}'
+```
+
+| Option | Description |
+|---|---|
+| `--upstream <model>` | Upstream model ID (defaults to the service ID) |
+| `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens |
+| `--categories <list>` | Comma-separated tags |
+| `--capabilities <json>` | Capabilities object |
+| `--unit-billing-models <json>` | Unit pricing, see [Unit-billed services](/docs/provide/media) |
+| `--base-url <url>` | Sets `baseUrl` on the whole provider |
+
+Change single fields or remove entries:
+
+```bash
+antseed config seller set providers.inference.services.deepseek-v4-flash.pricing.inputUsdPerMillion 0.2
+antseed config seller set providers.inference.services.deepseek-v4-flash.categories '["coding","privacy"]'
+antseed config seller remove-service inference kimi-k2.6
+antseed config seller remove-provider inference
+```
+
+`config seller set` works with service IDs that contain a dot, such as `kimi-k2.6`, once the service exists: `providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion`. Add a new service with `add-service`. `set` accepts keys that already exist in the file, the provider and service fields on this page, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below. It refuses any other key, and a provider or service that doesn't exist, with an error and a non-zero exit code; add other blocks, such as `healthCheck`, by editing the file.
+
+`antseed seller setup` builds the capabilities object with one question per field, tailored to the service: image services are asked about input modalities and supported parameters, text services about context window, modalities, reasoning, tool use and structured output. You can paste a JSON object at the capabilities prompt instead.
+
+## Built-in plugins and credentials
+
+Credentials always come from environment variables, never from `config.json`.
+
+| Plugin | Serves | Credential |
+|---|---|---|
+| `openai` | OpenAI-compatible chat and image APIs | `OPENAI_API_KEY` |
+| `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `local-llm` | Ollama or llama.cpp (default `http://localhost:11434`) | `LOCAL_LLM_API_KEY`, optional |
+| `typesafe` | System One decision models (`POST /v1/systemone`) | `TYPESAFE_API_KEY` |
+| `venice-video` | Video models behind the Venice video API | `VENICE_VIDEO_API_KEY` |
+| `fal-video` | fal.ai video models | `FAL_VIDEO_API_KEY` |
+| `fal-image` | fal.ai image models through the OpenAI Images API | `FAL_IMAGE_API_KEY` |
+| `alibaba-video` | Alibaba Cloud Model Studio video models (Wan, HappyHorse) | `ALIBABA_VIDEO_API_KEY` |
+| `irp-router` | Any Inference Routing Protocol router, as an `irp-suggest` routing service (`--base-url`) | `IRP_ROUTER_API_KEY`, optional |
+| `free-model-router` | An `irp-suggest` routing service that ranks free models among a buyer's candidates | None |
+| `claude-code`, `claude-oauth`, `openai-responses` | Subscription credentials, for testing only | Local keychain, OAuth token or Codex auth file |
+
+Any other npm package that exports a provider plugin works too. See [Provider plugin API](/docs/provider-api).
+
+## Node settings
+
+| Key | Default | Description |
+|---|---|---|
+| `seller.publicAddress` | empty | `host:port` buyers should dial. Needed when the address the DHT sees isn't the one buyers can reach, such as behind a load balancer. Check it with `antseed seller doctor`. |
+| `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
+| `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
+| `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
+| `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
+| `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel or a free usage session open. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
+| `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
+| `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
+| `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
+| `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
+| `seller.buyerLimits` | none | Per-buyer load limits: tokens each buyer may use per provider per hour, tighter for buyers new to the seller, with optional per-service weights. See below. |
+| `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
+| `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
+| `seller.gasRefuel` | enabled, 0.0005 ETH, 10 USDC, 30 USDC/day | Base mainnet only, and needs `seller.gasCheck` on. When a gas check finds the wallet below `triggerBalanceEth`, the seller swaps `swapUsdc` of the wallet's own USDC for ETH on Uniswap v3 (USDC/WETH 0.05% pool, `slippageBps` default 100), paying the swap's gas from the ETH still there. At most `maxUsdcPerDay` in any 24 hours; failures retry with back-off. Set `enabled: false` to opt out. |
+| `seller.verifiers` | none | Verifier SDKs to run provers for. See [TEE seller](/docs/provide/tee). |
+| `seller.verifications` | none | Domain and GitHub ownership claims. See [Verified identity](/docs/provide/verified-identity). |
+| `seller.agentDir` | none | Ant agent directory. See below. |
+| `identity.displayName` | derived from peer ID | Name shown to buyers. |
+
+```bash
+antseed config set identity.displayName "Example Inference"
+antseed config seller set publicAddress "peer.example.com:6882"
+```
+
+### Free-tier limits
+
+A service is free when its token prices and all unit-billing prices are zero. Free services are unlimited unless you set `seller.freeTier`, which applies one allowance across all free services, per buyer address, per IP, or both:
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "windowMs": 86400000
+    }
+  }
+}
+```
+
+Set at least one of the two limits. `windowMs` is a sliding window (default 24 hours, minimum 1000). A request is served only while every configured limit has room, and only served requests count. Counters are stored in the seller's `metering.db`, survive restarts, and are shared across all free services. When a buyer runs out, the seller answers HTTP 429 with `code: "free_tier_exhausted"`, a `limitedBy` field (`address`, `ip`, `stake` or `stake_required`) and a `Retry-After` header. Paid services are unaffected unless you give one its own program; see [Per-model programs](#per-model-programs).
+
+| Limit | Keyed on | Caveat |
+|---|---|---|
+| `maxRequestsPerAddress` | Buyer identity address | A user can create another identity |
+| `maxRequestsPerIp` | Connecting IP, IPv6 grouped by /64 | Users behind one NAT share it; a seller behind a proxy sees the proxy's IP |
+
+When you set both, set the IP limit higher so a shared network isn't cut off by one heavy user. Use nonzero pricing when you need stronger protection.
+
+```bash
+antseed config seller set freeTier.maxRequestsPerAddress 100
+antseed config seller set freeTier.maxRequestsPerIp 300
+```
+
+Remove `seller.freeTier` to make free services unlimited again.
+
+#### Staked tiers
+
+Buyers who lock ANTS in your seller pool get a larger free allowance. Their stake raises your pool weight, which multiplies the points your paid usage earns, so staked free users pay you back through your paid services. Staked tiers are on by default whenever `seller.freeTier` is set:
+
+| Staking power | ≈ ANTS locked for one year | Allowance |
+|---|---|---|
+| 520,000 | 10,000 | 5× the base limit |
+| 2,600,000 | 50,000 | 20× the base limit |
+| 10,400,000 | 200,000 | Unlimited |
+
+Staking power is ANTS × epochs (weeks) of lock remaining, the same power the seller pool uses for rewards. It is zero until a position activates in the next epoch and shrinks as the lock runs down; a max-locked position keeps 104 epochs of power. The base limit is `maxRequestsPerAddress`, or `maxRequestsPerIp` when only that is set.
+
+The seller reads power from `AntseedSellerPools` for the buyer's own address plus every staker that signed a delegation to that buyer (sent in the `x-antseed-free-tier-delegations` request header, checked locally, up to 8), and adds it up. Usage is counted on the staked positions themselves, so every buyer behind the same stake shares one allowance, and transferring a position to a new wallet carries its used allowance with it. The seller strips the delegations header before the request reaches your provider. Staked requests skip the per-IP limit and don't count toward the base limits of unstaked buyers. Lookups are cached for 10 minutes; if the chain can't be read, buyers keep the base limits.
+
+Set your own program with `stakeTiers`, or `[]` to turn staked tiers off. Up to four tiers; `minPower` and `multiplier` must both increase (the first multiplier can be 1), and `"unlimited"` can only be the last:
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "stakeTiers": [
+        { "minPower": 260000, "multiplier": 10 },
+        { "minPower": 5200000, "multiplier": "unlimited" }
+      ]
+    }
+  }
+}
+```
+
+Your limits and tiers are signed into your peer metadata as `free-tier.v1.*` capabilities, so buyers, gateways and [Antscan](https://antscan.co/api/free-tier) can show them. Tiers are only announced when the seller can read the seller pools and deposits contracts. A staked buyer who runs out gets the same 429 with `limitedBy: "stake"`; every 429 from a seller with tiers also carries `stakeTiers` and the buyer's current `stakePower`. See [Staked free tier](/docs/staked-free-tier) for the buyer side.
+
+#### Per-model programs
+
+Give a model its own `freeTier` under its service to set its own limits and tiers. A model with its own program uses only that program and has its own counters, so its usage never counts against your other models. Models without one use `seller.freeTier`. If there's no seller-wide program, those models stay unlimited.
+
+On a priced model, its own program is a free allowance. A request the allowance covers is served free, with no payment channel. A request past the allowance is paid at the listed price, never refused. `seller.freeTier` never applies to a priced model.
+
+Add `"stakersOnly": true` to serve the program only to buyers whose stake reaches a tier. On a free model, everyone else gets a 429 with `limitedBy: "stake_required"`. On a priced model, everyone else pays the listed price. The base limits are still required: they are what the tier multipliers apply to.
+
+This config gives a free model 100 requests a day, raised for stakers, and makes a priced model free for large stakers while everyone else pays:
+
+```json
+{
+  "seller": {
+    "providers": {
+      "my-provider": {
+        "plugin": "openai",
+        "services": {
+          "glm-5.3-flash": {
+            "pricing": { "inputUsdPerMillion": 0, "outputUsdPerMillion": 0 },
+            "freeTier": {
+              "maxRequestsPerAddress": 100,
+              "stakeTiers": [
+                { "minPower": 1000000, "multiplier": 10 },
+                { "minPower": 10000000, "multiplier": "unlimited" }
+              ]
+            }
+          },
+          "kimi-k3": {
+            "pricing": { "inputUsdPerMillion": 0.6, "outputUsdPerMillion": 2.5 },
+            "freeTier": {
+              "maxRequestsPerAddress": 200,
+              "stakersOnly": true,
+              "stakeTiers": [{ "minPower": 45000000, "multiplier": 1 }]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+- **`glm-5.3-flash`:** 100 free requests a day for everyone. 1,000,000 power raises it to 1,000, and 10,000,000 power makes it unlimited.
+- **`kimi-k3`:** 200 free requests a day for buyers with at least 45,000,000 power, about 865,000 ANTS locked for a year. Everyone else, and a staker past 200, pays $0.60 / $2.50 per million tokens.
+
+`antseed seller start` prints each program on its own line, so you can check what you configured.
+
+Each model's program is advertised under a short hash of its id, as `free-tier.v1.m<hash>.*`. A program that uses the same tiers as `seller.freeTier` takes one capability string; one with its own tiers takes one string plus one per tier. Peer metadata allows 16 capability strings, and the node always uses 4 or 5 of them. A program that doesn't fit is still enforced, but not advertised, and the node logs a warning.
+
+A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. To add a program from the CLI, pass the whole object: `antseed config seller set providers.my-provider.services.glm-5.3-flash.freeTier '{"maxRequestsPerAddress":100}'`.
+
+### Restricted countries
+
+By default the seller refuses connections from IP addresses in Cuba, Iran, North Korea, Syria and Russia. The lookup uses the bundled `geoip-country` database, so no buyer address leaves the seller. It is best effort: buyers behind a VPN are seen at the VPN's address. A refused buyer gets "This seller does not accept connections from your location.", and `GET /metadata` returns 403 with the same text.
+
+```bash
+antseed config seller set restrictedCountries '["CU","IR","KP","SY","RU"]'
+antseed config seller set restrictedCountries '[]'    # turn the check off
+```
+
+### Buyer limits
+
+`buyerLimits` lets a seller control how much load each buyer puts on each provider, so no single buyer can take all of a provider's capacity. It caps the tokens each buyer may use from each provider in a rolling window. Each provider is counted on its own.
+
+- **What counts:** uncached input plus output tokens. Cached input is light work and isn't counted.
+- **Requests still running** count with their estimated size: input plus the output they ask for at most, or 8,192 output tokens when they set no maximum. A burst of parallel requests can't pass on the same usage. An answer that comes back without a usage report counts as that estimate.
+- **Over a limit**, the buyer gets 429 `buyer_usage_limited` with `retry-after`, before any payment step, until enough of its usage leaves the window.
+- **New buyers:** a buyer whose first payment channel with this seller is less than `newBuyers.forHours` old (default 72) gets `newBuyers.maxTokensPerBuyer`, and `newBuyers.maxTokensTotal` caps all new buyers together, so spreading load across new wallets gains nothing.
+- **Service weights:** `serviceWeights` makes a service's tokens count more (or less) against the limits, by service ID. Weight a heavy model so its tokens count as the extra work they are; a service without a weight counts 1.
+- **Only tokens:** services billed by other units (video, speech, images) are outside these limits.
+
+```json
+{
+  "seller": {
+    "buyerLimits": {
+      "windowMinutes": 60,
+      "maxTokensPerBuyer": 30000000,
+      "newBuyers": { "forHours": 72, "maxTokensPerBuyer": 5000000, "maxTokensTotal": 20000000 },
+      "serviceWeights": { "large-model": 10 }
+    }
+  }
+}
+```
+
+Every field is optional; a limit left out isn't applied. Counts are kept in memory, so a restart starts them over.
+
+### Free-usage records
+
+Free requests are still recorded on-chain so buyers earn usage credit, and the seller pays the gas. The seller writes a record once `recordBatchSize` free requests have accumulated on a channel, or `recordFlushIntervalMs` after the first unrecorded one, whichever comes first, and always before the channel's deadline. Larger values mean fewer transactions; usage is written later, never dropped.
+
+```bash
+antseed config seller set freeUsage.recordBatchSize 64
+antseed config seller set freeUsage.recordFlushIntervalMs 3600000
+```
+
+Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. The free-usage flow itself is described in [Payments](/docs/payments).
+
+### Model health checks
+
+The seller checks its own services and announces the result in its signed metadata. Buyer traffic counts as a check: a service that served a paid buyer request in the last `intervalMs` is not probed. Other text services are probed with a one-token request at startup and every `intervalMs`, and a buyer request that fails upstream triggers an early probe of that service, unless it is already announced as failing. A service that keeps failing is probed less often: every `intervalMs`, then every second, then every third (with the default 5, 10 and 15 minutes), so a rate-limited or empty upstream account is not hit by every check. After `failureThreshold` failed checks in a row the service is announced as failing: it stays in the metadata, buyers leave it out of their model lists and automatic routing, and a buyer who pins it gets an error saying the seller's health check is failing and why. The first passed check, or a successful buyer request, marks it healthy again.
+
+Buyers are never told about your upstream account: an upstream that is out of credit or rejects your key is announced as unavailable (`reason: "upstream_error"`), and a buyer request whose upstream answers with such an error (401, 403, 402 or a billing error) gets a `503` saying the model is unavailable on this seller, not the upstream's error. Your dashboard, `antseed seller status`, logs and alerts show the real reason.
+
+Image, video and speech services are never probed, because a probe would generate a paid result. An image service on an upstream without such a check (for example images on the OpenAI-compatible plugin) follows the account the upstream's text services found: each check interval while that upstream is out of credit counts as a failed check, and it recovers once the account has credit again. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)). Their failed buyer requests count as the checks: after `failureThreshold` upstream failures in a row (401, 402, 403, 5xx, or a request that throws; a 429 means busy, not broken) the service is announced as failing. A passing account or model check doesn't clear that. Because nothing can check it in the meantime, it is announced as unknown again after the same wait a failing text service has between probes, so buyers try it; one more failure marks it failing again, and a successful request marks it healthy.
+
+```json
+{
+  "seller": {
+    "healthCheck": { "enabled": true, "intervalMs": 300000, "failureThreshold": 3 }
+  }
+}
+```
+
+The seller also announces, in its signed metadata, how each service served buyers in the last hour: the number of requests, the share the upstream answered without a server-side error, rate limit, timeout or an error inside the stream, and for streamed answers the median and 90th percentile time to the first generated token and the median output speed. The seller keeps running counts rather than every request, so this costs next to nothing at any traffic. It measures these on its own buyer traffic, so there is nothing to configure. Buyers start from these figures for a seller they have not used yet, so a model that keeps failing gets less traffic before each buyer finds out for itself. See [discovery](/docs/discovery).
+
+### Ant agent
+
+An ant agent wraps your service with a persona, guardrails, on-demand knowledge and custom tools. Point `agentDir` at a directory containing an `agent.json` manifest, or map service IDs to directories, with `"*"` as the fallback:
+
+```json
+{
+  "seller": {
+    "agentDir": {
+      "kimi-k2.6": "./agents/coding",
+      "*": "./agents/default"
+    }
+  }
+}
+```
+
+Relative paths resolve from the config file's directory. See [Provider plugin API](/docs/provider-api#ant-agent) and the [`@antseed/ant-agent` README](https://github.com/Antseed/antseed/tree/main/packages/ant-agent) for the manifest format.
+
+## Payment settings
+
+| Key | Default | Description |
+|---|---|---|
+| `payments.crypto.chainId` | `base-mainnet` | `base-mainnet`, `base-sepolia` or `base-local` |
+| `payments.crypto.rpcUrl` | public Base RPC | Your Base JSON-RPC endpoint. See [Base RPC](/docs/buyer-config#base-rpc-url). |
+| `payments.minBudgetPerRequest` | `"10000"` ($0.01) | Minimum USDC per request, in base units |
+| `payments.minSettleDelta` | `"2000"` ($0.002) | Smallest unsettled amount, in base units, for which the idle settle loop sends a transaction. Closing a channel always settles the full amount. `seller start --min-settle-delta 0.002` overrides it in USDC. |
+| `payments.serveWhileClosePending` | `false` | Keep serving channels whose buyer already requested a close on-chain. Work served this way can become uncollectible. |
+| `payments.sellerContract.address` | none | An on-chain seller contract that fronts this peer. Buyers check that your peer address is an operator of the contract. |
+| `relayer.enabled` | `true` | Relay buyers' gasless deposit sweeps with your seller wallet and earn the relay fee |
+| `relayer.minProfitBaseUnits` | `"0"` | Minimum profit (relay fee minus estimated gas), in USDC base units |
+| `relayer.maxInFlight` | `2` | Concurrent sweep submissions |
+| `relayer.maxPerPeerPerMinute` | `6` | Sweep requests accepted per buyer per minute |
+
+How earnings reach you is covered in [Seller payments](/docs/provide/payments).
+
+## ANTS staking settings {#ants-staking}
+
+`antseed ants` and the seller staking commands find the recognized-usage contracts from the built-in deployment record for `payments.crypto.chainId` and from the on-chain `AntseedRegistry`, so nothing needs configuring on Base mainnet. Two optional settings live under `payments.crypto`:
+
+| Key | Description |
+|---|---|
+| `explorerApiUrl` | Antscan base URL used for pool statistics, volume history, seller profiles and closed positions. Defaults to `https://antscan.co`. Set it to `""` to read only the chain, which lists only the pools you stake in. |
+| `<contract>Address` | Per-contract overrides for local or test deployments: `sellerRegistryAddress`, `sellerPoolsAddress`, `sellerPoolsRewardsAddress`, `usageAccountingAddress`, `usageRewardsAddress`, `emissionsGateAddress`, `positionInitAddress`, `washTradingRegistryAddress`, `pointsPolicyRegistryAddress`, `antsTokenAddress`, `legacyEmissionsContractAddress`, `legacyStakingContractAddress`. `positionInitAddress` has no on-chain pointer and must be set explicitly outside the built-in deployments. |
+
+## Environment variables
+
+Environment variables hold secrets and per-run overrides. The seller-relevant ones are `ANTSEED_IDENTITY_HEX`, `ANTSEED_PASSPHRASE`, the plugin credentials above, `ANTSEED_BASE_RPC_URL`, `ANTSEED_SETTLEMENT_IDLE_MS` (idle time before settling, default 10 minutes), `ANTSEED_MAX_UPLOAD_BODY_BYTES` and `ANTSEED_VERIFIER_SDKS`. See [Flags and environment variables](/docs/flags) for the full list.

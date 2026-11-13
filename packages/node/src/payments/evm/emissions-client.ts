@@ -34,6 +34,10 @@ const EMISSIONS_ABI = [
   'function MAX_SELLER_SHARE_PCT() external view returns (uint256)',
   'function MAX_BUYER_SHARE_PCT() external view returns (uint256)',
   'function reserveAccumulated() external view returns (uint256)',
+  'function sellerRewardsPool() external view returns (address)',
+  'function sellerUnlockPolicy() external view returns (address)',
+  'function teamAccumulated() external view returns (uint256)',
+  'function paused() external view returns (bool)',
   // Reads — mappings exposed as auto-generated getters
   'function epochParams(uint256 epoch) external view returns (uint256 sellerSharePct, uint256 buyerSharePct, uint256 reserveSharePct, uint256 teamSharePct, uint256 maxSellerSharePct, uint256 maxBuyerSharePct, bool initialized)',
   'function epochTotalSellerPoints(uint256 epoch) external view returns (uint256)',
@@ -197,10 +201,19 @@ export class EmissionsClient extends BaseEvmClient {
     const connected = this._ensureConnected(signer);
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, EMISSIONS_ABI, connected);
-    const nonce = await this._reserveNonce(signerAddress);
-    const tx = await contract.getFunction('flushReserve')({ nonce });
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('flushReserve')({ nonce }));
+    const receipt = await this._waitForReceipt(tx);
     return receipt.hash;
+  }
+
+  /** Legacy locked-rewards pool address (zero when the V2 contract has none configured). */
+  async sellerRewardsPool(): Promise<string> {
+    const contract = new Contract(this._contractAddress, EMISSIONS_ABI, this._provider);
+    return contract.getFunction('sellerRewardsPool')();
+  }
+
+  async sellerUnlockPolicy(): Promise<string> {
+    const contract = new Contract(this._contractAddress, EMISSIONS_ABI, this._provider);
+    return contract.getFunction('sellerUnlockPolicy')();
   }
 }

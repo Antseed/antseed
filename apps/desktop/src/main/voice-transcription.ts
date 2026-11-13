@@ -6,22 +6,26 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const WHISPER_TIMEOUT_MS = 60_000;
+const MODEL_DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const CONFIG_FILE = 'voice-transcription.json';
 
+// Models are no longer bundled with the installer (the tiny model alone added
+// ~74 MB to every artifact). The tiny model is downloaded into userData on
+// first transcription; a copy under resources/whisper/models (dev checkouts,
+// old installs) is still honored if present.
 const MODELS = {
   tiny: {
     id: 'tiny',
     label: 'Tiny multilingual',
     size: '~75 MB',
-    bundled: true,
     fileName: 'ggml-tiny.bin',
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
   },
   base: {
     id: 'base',
     label: 'Base multilingual',
     size: '~142 MB',
-    bundled: false,
     fileName: 'ggml-base.bin',
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
   },
@@ -95,17 +99,57 @@ async function writeVoiceConfig(config: VoiceConfig): Promise<void> {
   await writeFile(getConfigPath(), JSON.stringify(config, null, 2));
 }
 
+/** Resolve a model file: a bundled copy wins, otherwise the userData install. */
+function resolveModelPath(modelId: VoiceModelId): string {
+  const bundledPath = getBundledModelPath(modelId);
+  return existsSync(bundledPath) ? bundledPath : getInstalledModelPath(modelId);
+}
+
 function modelExists(modelId: VoiceModelId): boolean {
-  const model = MODELS[modelId];
-  return existsSync(model.bundled ? getBundledModelPath(modelId) : getInstalledModelPath(modelId));
+  return existsSync(resolveModelPath(modelId));
 }
 
 async function getSelectedModelPath(): Promise<{ modelId: VoiceModelId; modelPath: string }> {
   const { selectedModel } = await readVoiceConfig();
   if (selectedModel === 'base' && modelExists('base')) {
-    return { modelId: 'base', modelPath: getInstalledModelPath('base') };
+    return { modelId: 'base', modelPath: resolveModelPath('base') };
   }
-  return { modelId: 'tiny', modelPath: getBundledModelPath('tiny') };
+  return { modelId: 'tiny', modelPath: resolveModelPath('tiny') };
+}
+
+async function downloadModel(modelId: VoiceModelId): Promise<void> {
+  const model = MODELS[modelId];
+  const targetPath = getInstalledModelPath(modelId);
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.download`;
+
+  try {
+    const response = await fetch(model.url, { signal: AbortSignal.timeout(MODEL_DOWNLOAD_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    await writeFile(tempPath, bytes);
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new Error(`Model download timed out after ${MODEL_DOWNLOAD_TIMEOUT_MS / 60_000} minutes.`);
+    }
+    throw error;
+  }
+}
+
+// Serializes concurrent first-use downloads (e.g. two quick recordings) so a
+// model is only fetched once.
+const pendingDownloads = new Map<VoiceModelId, Promise<void>>();
+
+async function ensureModelDownloaded(modelId: VoiceModelId): Promise<void> {
+  if (modelExists(modelId)) return;
+  let pending = pendingDownloads.get(modelId);
+  if (!pending) {
+    pending = downloadModel(modelId).finally(() => { pendingDownloads.delete(modelId); });
+    pendingDownloads.set(modelId, pending);
+  }
+  await pending;
 }
 
 function runWhisper(binaryPath: string, args: string[]): Promise<void> {
@@ -137,14 +181,12 @@ export async function getVoiceTranscriptionStatus() {
     size: model.size,
     installed: modelExists(model.id),
     selected: resolved.modelId === model.id,
-    bundled: model.bundled,
+    bundled: existsSync(getBundledModelPath(model.id)),
   }));
 
-  const missing = !existsSync(binaryPath)
-    ? `Missing whisper binary: ${binaryPath}`
-    : !existsSync(resolved.modelPath)
-      ? `Missing whisper model: ${resolved.modelPath}`
-      : null;
+  // A missing model file is not an error — it is downloaded automatically on
+  // first transcription (or via install). Only a missing binary is fatal.
+  const missing = !existsSync(binaryPath) ? `Missing whisper binary: ${binaryPath}` : null;
 
   return {
     available: !missing,
@@ -165,17 +207,15 @@ export async function setVoiceTranscriptionModel(modelId: string) {
 }
 
 export async function installVoiceTranscriptionModel(modelId: string) {
-  if (modelId !== 'base') return { ok: false, error: 'Only Base multilingual is available for install.' };
-  const model = MODELS.base;
-  await mkdir(path.dirname(getInstalledModelPath('base')), { recursive: true });
-  const tempPath = `${getInstalledModelPath('base')}.download`;
-
-  const response = await fetch(model.url);
-  if (!response.ok) return { ok: false, error: `Download failed: HTTP ${response.status}` };
-  const bytes = Buffer.from(await response.arrayBuffer());
-  await writeFile(tempPath, bytes);
-  await rename(tempPath, getInstalledModelPath('base'));
-  await writeVoiceConfig({ selectedModel: 'base' });
+  if (!isVoiceModelId(modelId)) return { ok: false, error: 'Unknown voice model.' };
+  try {
+    await ensureModelDownloaded(modelId);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  // Installing base is an explicit upgrade, so switch to it; installing tiny
+  // (pre-fetching the default) leaves the selection alone.
+  if (modelId === 'base') await writeVoiceConfig({ selectedModel: 'base' });
   return { ok: true, status: await getVoiceTranscriptionStatus() };
 }
 
@@ -187,7 +227,16 @@ export async function transcribeVoiceAudio(audio: ArrayBuffer | Uint8Array): Pro
   const status = await getVoiceTranscriptionStatus();
   if (!status.available) return { ok: false, error: status.error || 'Local transcription is not installed.' };
 
-  const dir = await mkdtemp(path.join(tmpdir(), 'antstation-whisper-'));
+  // First use: fetch the active model into userData (models are no longer
+  // bundled with the installer).
+  try {
+    await ensureModelDownloaded(status.activeModel);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Could not download the voice model: ${detail}` };
+  }
+
+  const dir = await mkdtemp(path.join(tmpdir(), 'vpr-whisper-'));
   try {
     const audioPath = path.join(dir, 'input.wav');
     const outputBase = path.join(dir, 'transcript');

@@ -1,4 +1,6 @@
+import { estimateTokenCount } from 'tokenx';
 import type { SerializedHttpResponse, SerializedHttpResponseChunk } from './types.js';
+import { isSpeechAudio } from './speech-audio.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -33,6 +35,14 @@ export function encodeText(text: string): Uint8Array {
   return encoder.encode(text);
 }
 
+export function openAIResponsesMessageId(responseId: string): string {
+  return `msg_${responseId}_1`;
+}
+
+export function openAIResponsesFunctionCallId(callId: string): string {
+  return callId.startsWith('fc_') ? callId : `fc_${callId}`;
+}
+
 export function parseJsonSafe(raw: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
@@ -57,6 +67,25 @@ export interface TokenUsage {
   freshInputTokens: number;
   /** Cached input tokens (prompt cache hits). Independent count, never overlaps freshInputTokens. */
   cachedInputTokens: number;
+}
+
+export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
+
+/** Plain API-shape facts parsed from image generation requests. */
+export interface ImageRequestFacts {
+  model?: string;
+  size?: string;
+  quality?: string;
+  resolution?: string;
+  requestedImages?: number;
+  /** Estimated token count of the text prompt only — input images never contribute. */
+  promptTokens?: number;
+}
+
+/** Plain API-shape usage facts parsed from provider responses. */
+export interface ProviderResponseFacts {
+  tokenUsage: TokenUsage;
+  outputImages?: number;
 }
 
 export function extractUsage(parsed: Record<string, unknown>): TokenUsage {
@@ -120,6 +149,196 @@ export function extractUsage(parsed: Record<string, unknown>): TokenUsage {
     : rawInput + cachedInputTokens;
 
   return { inputTokens, outputTokens, freshInputTokens, cachedInputTokens };
+}
+
+export function extractProviderResponseFacts(parsed: Record<string, unknown>): ProviderResponseFacts {
+  const tokenUsage = extractUsage(parsed);
+  const data = Array.isArray(parsed.data) ? parsed.data : undefined;
+  const outputImages = data?.filter(isDeliveredImageOutput).length;
+
+  return {
+    tokenUsage,
+    ...(outputImages !== undefined ? { outputImages } : {}),
+  };
+}
+
+/** The text fields an image is priced by, beside its service and count. */
+export const IMAGE_PRICE_ATTRIBUTES = ['size', 'quality', 'resolution'] as const;
+
+/** Every request field `extractImageRequestFacts` reads. A seller checks each is spelled exactly. */
+export const IMAGE_REQUEST_FIELDS: readonly string[] = ['model', 'service', ...IMAGE_PRICE_ATTRIBUTES, 'n', 'prompt'];
+
+export function extractImageRequestFacts(input: {
+  path?: string;
+  method?: string;
+  body?: Record<string, unknown>;
+}): ImageRequestFacts {
+  const body = input.body ?? {};
+  const facts: ImageRequestFacts = {};
+  const normalizedPath = input.path?.split('?')[0];
+  const isOpenAiImageEndpoint = normalizedPath === '/v1/images/generations'
+    || normalizedPath === '/v1/images/edits';
+
+  setStringAttr(facts, 'model', body.model ?? body.service);
+  for (const key of IMAGE_PRICE_ATTRIBUTES) {
+    setStringAttr(facts, key, body[key] ?? body[toCamelCase(key)]);
+  }
+  if (isOpenAiImageEndpoint) {
+    facts.size ??= 'auto';
+    facts.quality ??= 'auto';
+  }
+  // OpenAI image generation/edits default to one output image when `n` is omitted.
+  const looksLikeOpenAiImageGeneration = isOpenAiImageEndpoint
+    || hasImageOutputAttributes(facts);
+  const requestedImages = toOptionalPositiveInt(body.n) ?? (looksLikeOpenAiImageGeneration ? 1 : undefined);
+
+  if (requestedImages !== undefined) {
+    facts.requestedImages = requestedImages;
+  }
+  if (typeof body.prompt === 'string' && body.prompt.length > 0) {
+    facts.promptTokens = Math.max(1, estimateTokenCount(body.prompt));
+  }
+  return facts;
+}
+
+/** Every request field `extractSpeechRequestFacts` reads. A seller checks each is spelled exactly. */
+export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format'];
+
+/** What an OpenAI `POST /v1/audio/speech` request asks for. */
+export interface SpeechRequestFacts {
+  /** Unicode code points of `input`: the text read aloud, which speech services bill by. */
+  characters: number;
+  voice?: string;
+  responseFormat?: string;
+}
+
+/** Speech request facts from a JSON body, or null when `input` is missing or not text. */
+export function extractSpeechRequestFacts(body: Record<string, unknown> | null | undefined): SpeechRequestFacts | null {
+  const input = body?.input;
+  if (typeof input !== 'string' || input.length === 0) return null;
+  let characters = 0;
+  for (const _ of input) characters += 1;
+  return {
+    characters,
+    ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
+    ...(typeof body?.response_format === 'string' ? { responseFormat: body.response_format } : {}),
+  };
+}
+
+/** Case-insensitive header lookup (`name` in lowercase); '' when absent. */
+export function headerValue(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
+/**
+ * Whether a speech response delivered audio: a 2xx answer, not labelled JSON,
+ * SSE or text, whose bytes are audio a player can decode (see isSpeechAudio).
+ * Some upstreams label JSON errors `audio/mpeg`, so the status and the bytes
+ * decide, not the label. `responseFormat` is the request's, for headerless pcm.
+ */
+export function speechAudioDelivered(
+  response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>,
+  responseFormat?: string,
+): boolean {
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
+  const contentType = headerValue(response.headers, 'content-type').toLowerCase();
+  if (contentType.includes('json') || contentType.includes('text/event-stream') || contentType.startsWith('text/')) return false;
+  return isSpeechAudio(response.body, responseFormat);
+}
+
+/** Text fields larger than this are dropped — billing fields are all short. */
+export const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
+
+/**
+ * Extract the text (non-file) fields from a multipart/form-data body, e.g. the
+ * model/prompt/n/size fields of an OpenAI `/v1/images/edits` request. File
+ * parts (any part with a filename) are skipped, so image payloads are never
+ * decoded. Returns null when the content type is not multipart or the boundary
+ * is missing/malformed.
+ */
+export function parseMultipartFormFields(
+  body: Uint8Array,
+  contentType: string | undefined,
+): Record<string, string> | null {
+  if (!contentType) return null;
+  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
+  if (!boundary) return null;
+
+  // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
+  // even through binary file parts; text field values are re-decoded as UTF-8.
+  const text = new TextDecoder('latin1').decode(body);
+  const delimiter = `--${boundary}`;
+  const fields: Record<string, string> = {};
+  let index = text.indexOf(delimiter);
+  while (index !== -1) {
+    index += delimiter.length;
+    if (text.startsWith('--', index)) break;
+    const headerEnd = text.indexOf('\r\n\r\n', index);
+    if (headerEnd === -1) break;
+    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
+    if (next === -1) break;
+    const headerBlock = text.slice(index, headerEnd);
+    const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
+    if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
+      const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
+      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
+      }
+    }
+    index = next + 2;
+  }
+  return fields;
+}
+
+/**
+ * Parse the billing-relevant fields of a request body: JSON objects verbatim,
+ * multipart/form-data reduced to its text fields. Returns null for anything
+ * else (unparseable JSON, binary, unknown content types).
+ */
+export function extractRequestBodyFields(
+  headers: Record<string, string>,
+  body: Uint8Array,
+): Record<string, unknown> | null {
+  const contentType = headerValue(headers, 'content-type');
+  if (contentType && /^multipart\/form-data/i.test(contentType.trim())) {
+    return parseMultipartFormFields(body, contentType);
+  }
+  return parseJsonObject(body);
+}
+
+function toOptionalPositiveInt(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function setStringAttr(target: ImageRequestFacts, key: keyof Omit<ImageRequestFacts, 'requestedImages' | 'promptTokens'>, value: unknown): void {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    target[key] = value.trim();
+  }
+}
+
+function toCamelCase(key: string): string {
+  return key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+function hasImageOutputAttributes(attrs: ImageRequestFacts): boolean {
+  return attrs.size !== undefined
+    || attrs.quality !== undefined
+    || attrs.resolution !== undefined;
+}
+
+function isDeliveredImageOutput(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return isNonEmptyString(item.b64_json) || isNonEmptyString(item.url);
+}
+
+function isNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function toStringContentBlock(block: Record<string, unknown>): string {

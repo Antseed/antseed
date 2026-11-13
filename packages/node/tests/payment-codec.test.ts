@@ -39,6 +39,8 @@ describe('payment codec round-trips', () => {
       openSig: '0x' + 'ef'.repeat(65),
     };
     expect(decodeFreeUsageOpen(encodeFreeUsageOpen(payload))).toEqual(payload);
+    const withDelegations = { ...payload, freeTierDelegations: 'delegations-header' };
+    expect(decodeFreeUsageOpen(encodeFreeUsageOpen(withDelegations))).toEqual(withDelegations);
   });
 
   it('rejects FreeUsageOpen with a non-finite deadline', () => {
@@ -169,6 +171,38 @@ describe('payment codec round-trips', () => {
     const encoded = encodeNeedAuth(payload);
     const decoded = decodeNeedAuth(encoded);
     expect(decoded).toEqual(payload);
+  });
+
+  it('NeedAuth with billingUsage', () => {
+    const payload = {
+      channelId: '0x' + 'aa'.repeat(32),
+      requiredCumulativeAmount: '500000',
+      currentAcceptedCumulative: '200000',
+      deposit: '1000000',
+      requestId: 'req-image',
+      lastRequestCost: '80000',
+      inputTokens: '0',
+      outputTokens: '0',
+      billingUsage: {
+        version: 1 as const,
+        units: { output_images: '2' },
+      },
+    };
+    expect(decodeNeedAuth(encodeNeedAuth(payload))).toEqual(payload);
+  });
+
+  it('rejects malformed NeedAuth billingUsage', () => {
+    const encoded = new TextEncoder().encode(JSON.stringify({
+      channelId: '0x' + 'aa'.repeat(32),
+      requiredCumulativeAmount: '500000',
+      currentAcceptedCumulative: '200000',
+      deposit: '1000000',
+      billingUsage: {
+        version: 1,
+        units: { output_images: '-1' },
+      },
+    }));
+    expect(() => decodeNeedAuth(encoded)).toThrow(/billingUsage/);
   });
 
   it('CloseChannelRequest without an attached auth', () => {

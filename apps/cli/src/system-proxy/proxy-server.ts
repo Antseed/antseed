@@ -12,6 +12,8 @@ import type {
   SystemProxyResponseTransform,
   SystemProxySource,
 } from './types.js'
+import { CLIENT_CREDENTIAL_HEADERS } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -19,8 +21,7 @@ const HOP_BY_HOP = new Set([
 ])
 
 const ROUTED_SENSITIVE_HEADERS = new Set([
-  'authorization',
-  'cookie',
+  ...CLIENT_CREDENTIAL_HEADERS,
   'x-csrf-token',
 ])
 
@@ -30,8 +31,8 @@ const ROUTED_SENSITIVE_HEADERS = new Set([
     "something went wrong" UI, so it must read as a sentence for the person
     in front of the app, not as a machine payload. */
 const OUT_OF_CREDITS_MESSAGE =
-  'AntSeed is out of credits, so this request was not sent to a provider. '
-  + 'Open the AntSeed app and add funds to your balance, then send your message again.'
+  'Antseed is out of credits, so this request was not sent to a provider. '
+  + 'Open Antseed Desktop and add funds to your balance, then send your message again.'
 
 export interface BuyerForwardRequest {
   path: string
@@ -40,7 +41,7 @@ export interface BuyerForwardRequest {
   response?: SystemProxyResponseTransform
   conversation?: ConversationForwardContext
   /** True when the proxy assigned the body's `model` from its configured
-      route (vs forwarding a client-chosen AntSeed route untouched). Marked
+      route (vs forwarding a client-chosen Antseed route untouched). Marked
       on the forward so the buyer can let a per-chat pin override it. */
   modelRouted?: boolean
 }
@@ -101,7 +102,7 @@ export class SystemProxyServer {
     this.innerTlsServer.on('tlsClientError', (err) => {
       log(`TLS client error: ${err.message}`)
       if (err.message.includes('certificate unknown')) {
-        log('TLS trust failure: restart the client with NODE_EXTRA_CA_CERTS pointing at the AntSeed CA, or install/trust the CA for that client.')
+        log('TLS trust failure: restart the client with NODE_EXTRA_CA_CERTS pointing at the Antseed CA, or install/trust the CA for that client.')
       }
     })
 
@@ -115,7 +116,7 @@ export class SystemProxyServer {
     this.innerPort = (this.innerNetServer!.address() as net.AddressInfo).port
 
     this.outerServer = http.createServer({ maxHeaderSize: 64 * 1024 }, (_req, res) => {
-      res.writeHead(400).end('AntSeed system-proxy: use HTTPS via CONNECT.')
+      res.writeHead(400).end('Antseed system-proxy: use HTTPS via CONNECT.')
     })
     this.outerServer.on('connect', (req, socket, head) => {
       this.handleConnect(req, socket as net.Socket, head)
@@ -292,7 +293,9 @@ export class SystemProxyServer {
       } else {
         for (const [k, v] of Object.entries(req.headers)) {
           if (strippedHeaders.has(k.toLowerCase())) continue
-          if (k === 'host') continue
+          // The intercepted app's page context means nothing to the buyer,
+          // which refuses requests that look like they came from a web page.
+          if (k === 'host' || isBrowserContextHeader(k)) continue
           if (HOP_BY_HOP.has(k)) continue
           forwardHeaders[k] = v
         }
@@ -357,7 +360,7 @@ export class SystemProxyServer {
    * Connected apps surface that JSON error blob raw ("API Error: 402
    * {\"type\":\"api_error\",...}"), which gives the user no idea what
    * happened or what to do — so keep the 402 status but replace the body
-   * with a plain-text sentence telling them to top up in the AntSeed app.
+   * with a plain-text sentence telling them to top up in Antseed Desktop.
    */
   private respondOutOfCredits(
     proxyRes: http.IncomingMessage,

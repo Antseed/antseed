@@ -1,8 +1,10 @@
 import type { SerializedHttpRequest, ServiceApiProtocol } from './types.js';
+import { detectNativeVideoProtocol } from './native-video.js';
 
 const ANTHROPIC_PROVIDER_NAMES = new Set(['anthropic', 'claude-code', 'claude-oauth']);
 const OPENAI_CHAT_PROVIDER_NAMES = new Set(['openai', 'local-llm']);
 const OPENAI_RESPONSES_PROVIDER_NAMES = new Set(['openai-responses']);
+const TYPESAFE_PROVIDER_NAMES = new Set(['typesafe']);
 const STANDARD_ADAPTER_FALLBACKS: Partial<Record<ServiceApiProtocol, ServiceApiProtocol[]>> = {
   'anthropic-messages': ['openai-chat-completions', 'openai-responses'],
   'openai-chat-completions': ['openai-responses', 'anthropic-messages'],
@@ -18,6 +20,8 @@ export function detectRequestServiceApiProtocol(
   request: Pick<SerializedHttpRequest, 'path' | 'headers'>,
 ): ServiceApiProtocol | null {
   const normalizedPath = request.path.toLowerCase();
+  const videoProtocol = detectNativeVideoProtocol(request.path);
+  if (videoProtocol) return videoProtocol;
   if (normalizedPath.startsWith('/v1/messages') || normalizedPath.startsWith('/v1/complete')) {
     return 'anthropic-messages';
   }
@@ -30,6 +34,24 @@ export function detectRequestServiceApiProtocol(
   if (normalizedPath.startsWith('/v1/responses')) {
     return 'openai-responses';
   }
+  if (
+    normalizedPath.startsWith('/v1/images/generations')
+    || normalizedPath.startsWith('/v1/images/edits')
+  ) {
+    return 'openai-images';
+  }
+  if (normalizedPath.split('?')[0] === '/v1/audio/speech') {
+    return 'openai-audio-speech';
+  }
+  if (normalizedPath.startsWith('/v1/systemone')) {
+    return 'typesafe-systemone';
+  }
+  const pathOnly = normalizedPath.split('?')[0];
+  // Inference Routing Protocol suggest-only mode (see @antseed/protocol/irp).
+  if (pathOnly === '/v1/routing/models' || pathOnly === '/v1/routing/rank') {
+    return 'irp-suggest';
+  }
+
   const hasAnthropicVersionHeader = Object.keys(request.headers)
     .some((key) => key.toLowerCase() === 'anthropic-version');
   if (hasAnthropicVersionHeader) {
@@ -42,8 +64,12 @@ export function inferProviderDefaultServiceApiProtocols(providerName: string): S
   const normalized = providerName.trim().toLowerCase();
   if (normalized.length === 0) return [];
   if (ANTHROPIC_PROVIDER_NAMES.has(normalized)) return ['anthropic-messages'];
+  // Do not infer image support from the provider name alone. Sellers must
+  // advertise `openai-images` explicitly per service when they actually
+  // support the Images API.
   if (OPENAI_CHAT_PROVIDER_NAMES.has(normalized)) return ['openai-chat-completions'];
   if (OPENAI_RESPONSES_PROVIDER_NAMES.has(normalized)) return ['openai-responses'];
+  if (TYPESAFE_PROVIDER_NAMES.has(normalized)) return ['typesafe-systemone'];
   return [];
 }
 

@@ -5,7 +5,22 @@ import {
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
+  withUpstreamSessionHeader,
 } from './conversation-identity.js'
+
+const CURSOR_ENVIRONMENT = `<user_info>
+OS Version: darwin 25.2.0
+Shell: zsh
+Workspace Path: unknown
+Is directory a git repo: No
+Today's Date: August 25, 2026
+</user_info>
+<dynamic_tool_catalog>machine-generated tool instructions</dynamic_tool_catalog>`
+
+const cursorQuery = (prompt: string, time = '5:01 PM'): string => `<timestamp>Tuesday, Aug 25, 2026, ${time} (UTC+3)</timestamp>
+<user_query>
+${prompt}
+</user_query>`
 
 test('isCompletionRequestPath matches API turn endpoints', () => {
   assert.equal(isCompletionRequestPath('/v1/messages'), true)
@@ -125,6 +140,82 @@ test('requests without any identity return null', () => {
   assert.equal(extractConversationIdentity({}, null), null)
 })
 
+test('identified clients without a session id get a stable synthetic conversation key', () => {
+  const firstRequest = {
+    model: 'antseed',
+    messages: [
+      { role: 'system', content: 'You are Hermes.' },
+      { role: 'user', content: 'Refactor the payment service.' },
+    ],
+  }
+  const laterRequest = {
+    ...firstRequest,
+    messages: [
+      ...firstRequest.messages,
+      { role: 'assistant', content: 'I will inspect it.' },
+      { role: 'user', content: 'Start with the retry logic.' },
+    ],
+  }
+  const first = extractConversationIdentity({ originator: 'hermes' }, firstRequest)
+  const later = extractConversationIdentity({ originator: 'hermes' }, laterRequest)
+  assert.equal(first?.tool, 'hermes')
+  assert.match(first?.sessionKey ?? '', /^synthetic-[0-9a-f]{32}$/)
+  assert.equal(later?.sessionKey, first?.sessionKey)
+})
+
+test('cursor synthetic conversation keys use the prompt after the environment preamble', () => {
+  const headers = {
+    'user-agent': 'Cursor/1.0',
+    // Covers older tunnel gateways which forwarded Cursor's User-Agent but
+    // stamped every request with the generic public-tunnel source.
+    'x-antseed-system-proxy-source': 'public-tunnel',
+  }
+  const first = extractConversationIdentity(headers, {
+    messages: [
+      { role: 'user', content: CURSOR_ENVIRONMENT },
+      { role: 'user', content: cursorQuery('Fix the login bug.') },
+    ],
+  })
+  const later = extractConversationIdentity(headers, {
+    messages: [
+      { role: 'user', content: CURSOR_ENVIRONMENT },
+      { role: 'user', content: cursorQuery('Fix the login bug.') },
+      { role: 'assistant', content: 'I will inspect it.' },
+      { role: 'user', content: cursorQuery('Start with auth.ts.', '5:02 PM') },
+    ],
+  })
+  const otherChat = extractConversationIdentity(headers, {
+    messages: [
+      { role: 'user', content: CURSOR_ENVIRONMENT },
+      // The prompt can be identical in two newly-opened chats. Cursor's
+      // retained first-turn timestamp distinguishes them on later requests.
+      { role: 'user', content: cursorQuery('Fix the login bug.', '5:03 PM') },
+    ],
+  })
+  assert.equal(first?.tool, 'cursor')
+  assert.match(first?.sessionKey ?? '', /^synthetic-[0-9a-f]{32}$/)
+  assert.equal(later?.sessionKey, first?.sessionKey)
+  assert.notEqual(otherChat?.sessionKey, first?.sessionKey)
+})
+
+test('Cursor User-Agent creates identity without a tunnel source header', () => {
+  const identity = extractConversationIdentity({ 'user-agent': 'Cursor/1.0' }, {
+    messages: [
+      { role: 'user', content: CURSOR_ENVIRONMENT },
+      { role: 'user', content: [{ type: 'text', text: cursorQuery('hi') }] },
+    ],
+  })
+
+  assert.equal(identity?.tool, 'cursor')
+  assert.match(identity?.sessionKey ?? '', /^synthetic-[0-9a-f]{32}$/)
+})
+
+test('synthetic conversation keys ignore title-only housekeeping requests', () => {
+  assert.equal(extractConversationIdentity({ originator: 'hermes' }, {
+    messages: [{ role: 'user', content: 'Generate a title for this conversation:' }],
+  }), null)
+})
+
 test('snippet: anthropic messages with string content', () => {
   const snippet = extractFirstUserSnippet({
     messages: [{ role: 'user', content: 'fix the login bug in auth.ts' }],
@@ -153,6 +244,24 @@ test('snippet: responses input items skip environment context', () => {
     ],
   })
   assert.equal(snippet, 'say hi')
+})
+
+test('snippet: cursor environment preamble never becomes the title', () => {
+  assert.equal(extractFirstUserSnippet({
+    messages: [
+      { role: 'user', content: CURSOR_ENVIRONMENT },
+      { role: 'user', content: cursorQuery('Fix the login bug.') },
+    ],
+  }), 'Fix the login bug.')
+  assert.equal(extractFirstUserSnippet({
+    messages: [{ role: 'user', content: CURSOR_ENVIRONMENT }],
+  }), null)
+  assert.equal(extractFirstUserSnippet({
+    messages: [
+      { role: 'user', content: '<user_info>OS Version: darwin 25.2.0\nShell: zsh</user_info>' },
+      { role: 'user', content: cursorQuery('Fix the login bug.') },
+    ],
+  }), 'Fix the login bug.')
 })
 
 test('snippet: responses string input, whitespace collapsed and truncated', () => {
@@ -207,6 +316,19 @@ test('snippet: pure title request yields null, never a label', () => {
   }), null)
 })
 
+test('claude desktop title housekeeping is recognized and never labels a chat', () => {
+  // Claude Desktop fires this from a session id of its own; without the
+  // prefix it becomes a phantom chat row per new Claude conversation.
+  const body = {
+    messages: [{
+      role: 'user',
+      content: 'You are coming up with a succinct title for an agent chat session based on the messages so far.',
+    }],
+  }
+  assert.equal(isTitleGenerationRequest(body), true)
+  assert.equal(extractFirstUserSnippet(body), null)
+})
+
 test('snippet: injected project-doc blobs never label a chat', () => {
   // Codex sends AGENTS.md/CLAUDE.md contents as a user message ahead of the
   // real prompt; the doc must be skipped in favor of the genuine turn.
@@ -226,9 +348,31 @@ test('snippet: injected project-doc blobs never label a chat', () => {
   }), null)
 })
 
+test('snippet: Codex recommended plugins never label a chat', () => {
+  const pluginContext = `<recommended_plugins>
+Here is a list of plugins that are available but not installed.
+
+- Airtable
+- GitHub
+</recommended_plugins>`
+  assert.equal(extractFirstUserSnippet({
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: pluginContext }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'fix the Cursor icon' }] },
+    ],
+  }), 'fix the Cursor icon')
+  assert.equal(extractFirstUserSnippet({
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Here is a list of plugins that are available but not installed. - Airtable' }] },
+    ],
+  }), null)
+})
+
 test('sanitizeStoredSnippet heals stored project-doc labels to empty', async () => {
   const { sanitizeStoredSnippet } = await import('./conversation-identity.js')
   assert.equal(sanitizeStoredSnippet('# AGENTS.md instructions for /Users/shahafan/Development/antseed # CLAUDE.md --…'), '')
+  assert.equal(sanitizeStoredSnippet('OS Version: darwin 25.2.0 Shell: zsh Workspace Path: unknown Is directory a git…'), '')
+  assert.equal(sanitizeStoredSnippet('Here is a list of plugins that are available but not installed. - Airtable…'), '')
   assert.equal(sanitizeStoredSnippet('fix the login bug'), 'fix the login bug')
 })
 
@@ -259,6 +403,34 @@ test('title turns are recognised so they cannot define a chat model', () => {
   assert.equal(isTitleGenerationRequest({
     messages: [{ role: 'user', content: 'You write concise thread titles for a coding chat.' }],
   }), true)
+  // Factory/Droid puts the real first user message in the user role. Its
+  // title-specific system text follows a shared provider preamble, so the
+  // marker is not at the start of the instruction block.
+  const droidTitleRequest = {
+    messages: [
+      {
+        role: 'system',
+        content: `Shared provider compatibility preamble.
+You are a helper that generates concise session titles for a session picker.
+Input: one user message from the start of a session.`,
+      },
+      { role: 'user', content: 'wowow' },
+    ],
+  }
+  assert.equal(isTitleGenerationRequest(droidTitleRequest), true)
+
+  assert.equal(isTitleGenerationRequest({
+    instructions: `Shared provider compatibility preamble.
+You are a helper that generates concise session titles for a session picker.`,
+    input: 'wowow',
+  }), true)
+  assert.equal(isTitleGenerationRequest({
+    input: [{
+      type: 'message',
+      role: 'developer',
+      content: 'You are a helper that generates concise session titles for a session picker.',
+    }],
+  }), true)
 })
 
 test('real turns are not mistaken for title turns', () => {
@@ -267,10 +439,44 @@ test('real turns are not mistaken for title turns', () => {
   // (it is in the history once titling ran) is still a real turn.
   assert.equal(isTitleGenerationRequest({
     messages: [
+      { role: 'system', content: 'You are a helpful coding assistant.' },
       { role: 'user', content: 'fix the failing tests' },
       { role: 'user', content: 'Generate a title for this conversation:' },
     ],
   }), false)
+  // Broad title phrasing in instructions is not enough; instruction-role
+  // detection deliberately uses only exact known housekeeping markers.
+  assert.equal(isTitleGenerationRequest({
+    instructions: 'Generate a title for this session',
+    input: 'wowow',
+  }), false)
+  assert.equal(isTitleGenerationRequest({
+    messages: [
+      { role: 'system', content: 'Generate a title for this session' },
+      { role: 'user', content: 'wowow' },
+    ],
+  }), false)
   assert.equal(isTitleGenerationRequest(null), false)
   assert.equal(isTitleGenerationRequest({ model: 'x' }), false)
+})
+
+test('upstream session header: the conversation key under session_id, whatever the client called it', () => {
+  const sessionOf = (headers: Record<string, string>, body: Record<string, unknown> | null) => {
+    const identity = extractConversationIdentity(headers, body)
+    assert.ok(identity)
+    return withUpstreamSessionHeader(headers, identity)['session_id']
+  }
+  // A dash header, as Codex sends it and as a reverse proxy keeps it.
+  assert.equal(sessionOf({ 'session-id': 'codex-1' }, null), 'codex-1')
+  assert.equal(sessionOf({ 'x-session-id': 'oc-1' }, null), 'oc-1')
+  // Only the body says it: OpenAI prompt_cache_key, Claude Code metadata.
+  assert.equal(sessionOf({}, { prompt_cache_key: 'pi-1', input: 'hi' }), 'pi-1')
+  assert.equal(sessionOf({}, { metadata: { user_id: JSON.stringify({ session_id: 'cc-1' }) } }), 'cc-1')
+})
+
+test('upstream session header: a client session_id is kept as sent', () => {
+  const headers = { Session_id: 'client', 'x-session-id': 'other' }
+  const identity = extractConversationIdentity(headers, null)
+  assert.ok(identity)
+  assert.equal(withUpstreamSessionHeader(headers, identity), headers)
 })

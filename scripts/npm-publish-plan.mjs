@@ -1,0 +1,145 @@
+#!/usr/bin/env node
+/**
+ * Compute and validate the npm publish plan.
+ *
+ * The decision of WHAT to release is made by version bumps (locally, via the
+ * /publish flow): `pnpm -r publish` only publishes packages whose
+ * package.json version is not on the registry yet. This script makes that
+ * plan visible before publishing and enforces the release invariants that
+ * are easy to get wrong:
+ *
+ *   1. Pin cascade — pnpm resolves `workspace:*` regular dependencies to
+ *      EXACT versions at pack time. If a package is being published but a
+ *      public dependent that pins it is not, npm users of the dependent
+ *      keep resolving the old version and the fix silently never ships
+ *      (e.g. a @antseed/node bump requires republishing @antseed/payments
+ *      and @antseed/cli; peer-range dependents like provider-core do not
+ *      need a rebump).
+ *   2. Local-behind-registry — a local version older than the published
+ *      one means version bumps from a previous release were never
+ *      committed; publishing from this tree would ship stale code.
+ *   3. Unbumped dependency — a package being published pins a dependency
+ *      whose source changed since its last version bump. The dependent is
+ *      built against the new code, but npm installs resolve the old
+ *      published dependency (e.g. cli 0.1.221 imported an export that only
+ *      the unreleased @antseed/fingerprints had, and failed at startup).
+ *      Needs the full git history.
+ *
+ * Usage: node scripts/npm-publish-plan.mjs
+ * Exits non-zero on invariant violations or registry errors.
+ */
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { root, publishablePackages } from './publishable-packages.mjs';
+
+const packages = publishablePackages();
+
+async function publishedVersions(name) {
+  const res = await fetch(`https://registry.npmjs.org/${name.replace('/', '%2F')}`, {
+    headers: { accept: 'application/vnd.npm.install-v1+json' }, // abbreviated metadata
+  });
+  if (res.status === 404) return null; // never published
+  if (!res.ok) throw new Error(`registry returned ${res.status} for ${name}`);
+  const body = await res.json();
+  return { versions: Object.keys(body.versions ?? {}), latest: body['dist-tags']?.latest ?? null };
+}
+
+function compareSemver(a, b) {
+  const pa = a.split('-')[0].split('.').map(Number);
+  const pb = b.split('-')[0].split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
+  }
+  return 0;
+}
+
+const toPublish = new Set();
+const problems = [];
+const rows = [];
+
+for (const pkg of packages) {
+  const registry = await publishedVersions(pkg.name);
+  if (registry === null) {
+    toPublish.add(pkg.name);
+    rows.push([pkg.name, pkg.version, '(never published)', 'PUBLISH (first release)']);
+    continue;
+  }
+  if (registry.versions.includes(pkg.version)) {
+    rows.push([pkg.name, pkg.version, registry.latest, 'skip (already on npm)']);
+  } else if (registry.latest && compareSemver(pkg.version, registry.latest) < 0) {
+    rows.push([pkg.name, pkg.version, registry.latest, 'ERROR (local behind npm)']);
+    problems.push(
+      `${pkg.name}: local version ${pkg.version} is BEHIND npm latest ${registry.latest} — ` +
+      'a previous release probably never committed its version bumps.',
+    );
+  } else {
+    toPublish.add(pkg.name);
+    rows.push([pkg.name, pkg.version, registry.latest, 'PUBLISH']);
+  }
+}
+
+// Pin-cascade check: every public dependent that exact-pins a to-be-published
+// package (regular `workspace:` dependency) must itself be in the publish set.
+const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+for (const dependent of packages) {
+  for (const [depName, spec] of Object.entries(dependent.dependencies)) {
+    if (!String(spec).startsWith('workspace:')) continue;
+    if (!byName.has(depName)) continue;
+    if (toPublish.has(depName) && !toPublish.has(dependent.name)) {
+      problems.push(
+        `${depName} is being published, but ${dependent.name} pins it exactly (workspace dependency) ` +
+        `and has no version bump — npm installs of ${dependent.name} would keep the old ${depName}. ` +
+        `Bump ${dependent.name} too.`,
+      );
+    }
+  }
+}
+
+// Files changed since the commit that set the package's current version,
+// ignoring tests and docs (they never reach the published package).
+function unreleasedChanges(dir) {
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  const bump = git('log', '-1', '--format=%H', '-G"version": ', '--', join(dir, 'package.json'));
+  if (!bump) return [];
+  return git('diff', '--name-only', bump, 'HEAD', '--', dir)
+    .split('\n')
+    .filter((file) => file && !/(^|\/)tests?\/|\.(test|spec)\.[cm]?[jt]sx?$|\.md$/.test(file));
+}
+
+if (execFileSync('git', ['rev-parse', '--is-shallow-repository'], { cwd: root, encoding: 'utf8' }).trim() === 'true') {
+  problems.push('the git checkout is shallow, so unbumped dependencies cannot be checked; fetch the full history.');
+} else {
+  const unreleased = new Map();
+  for (const dependent of packages) {
+    if (!toPublish.has(dependent.name)) continue;
+    for (const [depName, spec] of Object.entries(dependent.dependencies)) {
+      if (!String(spec).startsWith('workspace:')) continue;
+      const dep = byName.get(depName);
+      if (!dep || toPublish.has(depName)) continue;
+      if (!unreleased.has(depName)) unreleased.set(depName, unreleasedChanges(dep.dir));
+      const files = unreleased.get(depName);
+      if (files.length === 0) continue;
+      problems.push(
+        `${dependent.name} is being published and pins ${depName}, but ${depName} changed since its last ` +
+        `version bump (${files.slice(0, 3).join(', ')}${files.length > 3 ? `, +${files.length - 3} more` : ''}) ` +
+        `— npm installs of ${dependent.name} would get the old ${depName}. Bump ${depName} too.`,
+      );
+    }
+  }
+}
+
+const widths = [0, 0, 0];
+for (const row of rows) {
+  for (let i = 0; i < 3; i++) widths[i] = Math.max(widths[i], String(row[i]).length);
+}
+console.log('npm publish plan (packages with a version not on the registry):\n');
+for (const row of rows) {
+  console.log(`  ${String(row[0]).padEnd(widths[0])}  ${String(row[1]).padEnd(widths[1])}  ${String(row[2]).padEnd(widths[2])}  ${row[3]}`);
+}
+console.log(`\n${toPublish.size} package(s) will be published.`);
+
+if (problems.length > 0) {
+  console.error('\nRelease invariant violations:');
+  for (const problem of problems) console.error(`  ✗ ${problem}`);
+  process.exit(1);
+}

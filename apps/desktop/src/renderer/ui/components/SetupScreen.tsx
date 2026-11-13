@@ -1,118 +1,214 @@
 import { useEffect, useState } from 'react';
-import { AntStationMark } from './AntStationLogo';
+import { BrandIcon, Logo, type BrandKey } from '@antseed/ui';
+import { HomeField } from './vpr/HomeField';
+import { canonicalModelKey } from '../../modules/catalog/model-identity';
+import { findChatModel } from '../../modules/chat/models';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import styles from './SetupScreen.module.scss';
 
-function CheckIcon() {
+/** The long tail of first-run setup — catalog build plus the trust-gate wait
+ *  — told a piece at a time: rotated every few seconds so it reads as work in
+ *  progress, not a stall. The work messages lead, then live discovery facts
+ *  and network truths carry the tail. The sequence holds on its last line
+ *  instead of looping — repeats would give the stall away. */
+function longTailMessages(counts: {
+  dhtNodeCount: number;
+  peerCount: number;
+  metadataPeerCount: number;
+  modelCount: number;
+  freeModelCount: number;
+}): string[] {
+  return [
+    'Building your model catalog…',
+    'Checking free sellers’ on-chain reputation…',
+    'Reading seller track records from the blockchain…',
+    'Ranking free sellers by settled volume and stake…',
+    'Picking the best free model for your first chat…',
+    `Found ${counts.modelCount} models across ${counts.peerCount} sellers so far…`,
+    `${counts.freeModelCount} of them are served completely free…`,
+    `Connected to ${counts.dhtNodeCount} network nodes…`,
+    `Fetched service catalogs from ${counts.metadataPeerCount} sellers…`,
+    'Reputation is built from settled payment volume…',
+    'Free means free - cached tokens included…',
+    'Auto-routing picks the most proven seller…',
+    'You can star models to build your own lineup…',
+    'Almost there - finalizing your model catalog…',
+  ];
+}
+/** How long each long-tail message shows before the next takes over. */
+const LONG_TAIL_ROTATE_MS = 3_000;
+
+/** Marquee logos: recognizable labs whose model families are served on the
+ *  network. Hard-coded — this plays before discovery has found anything. */
+const MARQUEE_BRANDS: BrandKey[] = [
+  'openai', 'anthropic', 'deepseek', 'qwen', 'gemini', 'mistral', 'llama', 'grok',
+];
+
+/** One compact live tally for the bottom strip. */
+function StatItem({ value, label }: { value: number; label: string }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M2.5 7L5.5 10L11.5 4" stroke="var(--accent-green)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <span className={`${styles.statItem}${value > 0 ? ` ${styles.statItemLive}` : ''}`}>
+      <span className={styles.statValue} key={value}>{value > 0 ? value.toLocaleString('en-US') : '–'}</span> {label}
+    </span>
   );
 }
 
-type StepRowProps = {
-  label: string;
-  done: boolean;
-  active: boolean;
-};
-
-function StepRow({ label, done, active }: StepRowProps) {
-  return (
-    <div className={`${styles.stepRow} ${done ? styles.done : ''} ${active ? styles.active : ''}`}>
-      <div className={styles.stepIcon}>
-        {done ? (
-          <CheckIcon />
-        ) : active ? (
-          <div className={styles.thinkingDots}>
-            <span />
-            <span />
-            <span />
-          </div>
-        ) : (
-          <div className={styles.stepDot} />
-        )}
-      </div>
-      <span className={styles.stepLabel}>{label}</span>
-    </div>
-  );
-}
-
-// Progress level advances monotonically: 0 → 1 → 2 → 3, never backward.
-// 0 = waiting for plugin  1 = plugin done, connecting
-// 2 = P2P activity seen   3 = service-loading activity seen
-type ProgressLevel = 0 | 1 | 2 | 3;
-
-export function SetupScreen() {
-  const snap = useUiSelector((state) => ({
-    appSetupComplete: state.appSetupComplete,
-    appSetupStep: state.appSetupStep,
-    chatServiceCount: state.chatServiceOptions.length,
-    runtimeActivityMessage: state.runtimeActivity.message,
-    networkAlert: state.networkAlert,
-  }), shallowEqual);
-  const [level, setLevel] = useState<ProgressLevel>(0);
+/**
+ * First-run setup, or with `startingGateway` the loader any launch shows while
+ * the local gateway comes up: the same screen, saying only that.
+ */
+export function SetupScreen({ startingGateway = false }: { startingGateway?: boolean } = {}) {
+  const snap = useUiSelector((state) => {
+    // Live discovery tallies from the dashboard poll — these move while the
+    // service catalog is still loading, so the wait shows real progress. A
+    // peer's services come from its fetched pricing matrix, so a non-empty
+    // list means its metadata actually resolved, and freeServices are offers
+    // it really serves for $0 — not headline prices that default to zero
+    // when unknown. Both tallies count unified models: serviceId variants of
+    // the same model collapse via canonical identity, matching how the
+    // Models catalog counts them.
+    const models = new Set<string>();
+    const freeModels = new Set<string>();
+    let metadataPeerCount = 0;
+    for (const peer of state.lastPeers) {
+      if (peer.services.length > 0) metadataPeerCount += 1;
+      for (const service of peer.services) {
+        const id = service.trim();
+        if (id) models.add(canonicalModelKey(id) || id.toLowerCase());
+      }
+      for (const service of peer.freeServices) {
+        const id = service.trim();
+        if (id) freeModels.add(canonicalModelKey(id) || id.toLowerCase());
+      }
+    }
+    return {
+      // Catalog reference for the preview's Models scene (rows derived below).
+      appSetupComplete: state.appSetupComplete,
+      appSetupStep: state.appSetupStep,
+      chatServiceCount: state.chatModels.length,
+      networkAlert: state.networkAlert,
+      dhtNodeCount: state.dhtNodeCount,
+      peerCount: state.lastPeers.length,
+      metadataPeerCount,
+      modelCount: models.size,
+      freeModelCount: freeModels.size,
+      routeModelLabel: findChatModel(state.chatModels, state.chatSelectedModelId)?.label ?? null,
+      routeModelFree: findChatModel(state.chatModels, state.chatSelectedModelId)?.free === true,
+    };
+  }, shallowEqual);
 
   const hasServices = snap.chatServiceCount > 0;
-  const msg = snap.runtimeActivityMessage;
+  // The whole point of first-run setup: the gateway lists a model the user
+  // can chat with. Only then does the screen call it done.
+  const freeReady = hasServices && snap.routeModelLabel !== null;
 
-  // Advance progress level monotonically inside useEffect so mutations
-  // only happen during the commit phase (safe in concurrent/strict mode).
+  // The long tail of first-run setup: discovery counts are all real, but the
+  // catalog is still loading and/or no free route has cleared the on-chain
+  // reputation threshold yet. A single sentence parked there reads as
+  // stalled, so past the first few seconds the line rotates through what
+  // that wait actually consists of.
+  const longTailPhase = snap.appSetupComplete
+    && snap.dhtNodeCount > 0
+    && snap.peerCount > 0
+    && snap.metadataPeerCount > 0
+    && snap.freeModelCount > 0
+    && !freeReady;
+  const [longTailTick, setLongTailTick] = useState(0);
   useEffect(() => {
-    setLevel((prev) => {
-      let next = prev;
-      if (snap.appSetupComplete && next < 1) next = 1 as ProgressLevel;
-      if (next >= 1 && /\bpeer(s)?\b|p2p|dht|discovering/i.test(msg) && next < 2) next = 2 as ProgressLevel;
-      if (next >= 1 && (hasServices || /service/i.test(msg)) && next < 3) next = 3 as ProgressLevel;
-      return next;
-    });
-  }, [snap.appSetupComplete, msg, hasServices]);
-  const networkDone = level >= 2 || hasServices;
-  const serviceActive = level >= 2 && !hasServices;
+    if (!longTailPhase) {
+      setLongTailTick(0);
+      return;
+    }
+    const timer = setInterval(() => setLongTailTick((tick) => tick + 1), LONG_TAIL_ROTATE_MS);
+    return () => clearInterval(timer);
+  }, [longTailPhase]);
 
-  const connectLabel = level <= 1 ? (msg || 'Connecting to P2P network...') : 'Connected to P2P network';
-  const serviceLabel = serviceActive ? 'Loading services...' : 'Loading services';
+  // One sentence describing what the buyer node is doing right now, derived
+  // from how far discovery has actually come — each phase hands off to the
+  // next as its number becomes real.
+  let activity: string;
+  if (startingGateway) {
+    activity = 'Starting Antseed on this computer…';
+  } else if (!snap.appSetupComplete) {
+    activity = snap.appSetupStep || 'Installing the router plugin…';
+  } else if (snap.dhtNodeCount === 0) {
+    activity = 'Connecting to the peer-to-peer network…';
+  } else if (snap.peerCount === 0) {
+    activity = 'Searching the network for AI sellers…';
+  } else if (snap.metadataPeerCount === 0) {
+    activity = 'Fetching seller catalogs…';
+  } else if (snap.freeModelCount === 0) {
+    activity = 'Looking for models served for free…';
+  } else {
+    const messages = longTailMessages(snap);
+    activity = messages[Math.min(longTailTick, messages.length - 1)];
+  }
 
   return (
     <>
-      {/* Frameless window: keep the top strip draggable but visually empty —
-          the setup screen carries its branding in the body. */}
+      {/* Frameless window: an invisible top strip keeps it draggable. */}
       <div className={styles.dragStrip} />
       <div className={styles.container}>
-        <div className={styles.content}>
-          <div className={styles.brand}>
-            <AntStationMark size={64} />
-            <span className={styles.brandName}>VPR</span>
-          </div>
-          <h1 className={styles.title}>Setting up your VPR</h1>
-          <p className={styles.subtitle}>This only takes a moment on first launch</p>
+        <HomeField night={false} />
+        <div className={styles.card}>
+          <Logo height={24} className={styles.logo} />
+          <h1 className={styles.heading}>Ask anything, on any model</h1>
+          <p className={styles.tagline}>At the best available prices, with the privacy you want.</p>
 
-          <div className={styles.steps}>
-            <StepRow label="Preparing workspace" done={true} active={false} />
-            <StepRow
-              label={snap.appSetupStep || 'Installing router plugin'}
-              done={snap.appSetupComplete}
-              active={!snap.appSetupComplete}
-            />
-            <StepRow label={connectLabel} done={networkDone} active={level === 1} />
-            <StepRow label="Discovering peers" done={networkDone} active={false} />
-            <StepRow label={serviceLabel} done={hasServices} active={serviceActive} />
+          {/* Logo marquee: the families of models on the network, drifting by
+              while discovery runs — the wait has something alive to look at. */}
+          <div className={styles.marquee} aria-hidden="true">
+            <div className={styles.marqueeTrack}>
+              {[...MARQUEE_BRANDS, ...MARQUEE_BRANDS].map((brand, index) => (
+                <span key={`${brand}-${index}`} className={styles.marqueeLogo}>
+                  <BrandIcon name={brand} brand={brand} size={22} />
+                </span>
+              ))}
+            </div>
           </div>
 
-          {snap.appSetupComplete && hasServices && (
+          {freeReady && !startingGateway ? (
             <div className={styles.ready}>
               <span className={styles.readyDot} />
-              Ready
+              {/* Only a model that is free is announced as one: paid sellers can be found first. */}
+              {`${snap.routeModelFree ? 'Free model' : 'Model'} ready${snap.routeModelLabel ? ` - ${snap.routeModelLabel}` : ''}`}
+            </div>
+          ) : (
+            // key swaps replay the entrance animation, so phase changes read
+            // as progress instead of a silent repaint.
+            <div className={styles.activity} key={activity} role="status">
+              <div className={styles.thinkingDots}>
+                <span />
+                <span />
+                <span />
+              </div>
+              <span>{activity}</span>
             </div>
           )}
+          {/* The raw discovery tallies, small — proof of progress, not the pitch. */}
+          {startingGateway ? null : <p className={styles.statStrip}>
+            <StatItem value={snap.dhtNodeCount} label="nodes" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.peerCount} label="sellers" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.modelCount} label="models" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.freeModelCount} label="free" />
+          </p>}
+          <p className={styles.firstRunNote}>
+            {startingGateway ? 'Usually takes a few seconds.' : 'Setting up — only on first run, takes 2 minutes max.'}
+          </p>
 
           {/* networkAlert carries a startup grace period, so this only appears
               once the network — not slow bootstrap — is the problem. */}
           {!hasServices && snap.networkAlert !== 'none' && (
             <p className={styles.networkHint} role="alert">
-              {snap.networkAlert === 'no-internet'
-                ? 'No internet connection detected. Connect to the internet to finish setup.'
-                : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it — try disconnecting the VPN or switching networks.'}
+              <span className={styles.networkDot} aria-hidden="true" />
+              <span>
+                {snap.networkAlert === 'no-internet'
+                  ? 'No internet connection detected. Connect to the internet to finish setup.'
+                  : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
+              </span>
             </p>
           )}
         </div>

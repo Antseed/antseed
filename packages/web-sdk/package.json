@@ -1,0 +1,38 @@
+{
+  "name": "@antseed/web-sdk",
+  "version": "0.1.41",
+  "description": "Browser buyer SDK for Antseed: connect to sellers over WebRTC via a signaling relay, pay with in-browser EIP-712 signatures",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "build:example": "esbuild examples/main.ts --bundle --format=esm --outdir=examples/dist",
+    "example": "esbuild examples/main.ts --bundle --format=esm --outdir=examples/dist --servedir=examples --serve=127.0.0.1:8974",
+    "test": "vitest run src",
+    "test:browser": "playwright test --config browser-e2e/playwright.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@antseed/buyer-core": "workspace:*",
+    "@antseed/protocol": "workspace:*",
+    "ethers": "~6.16.0"
+  },
+  "devDependencies": {
+    "@antseed/node": "workspace:*",
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.12",
+    "esbuild": "^0.25.0",
+    "fake-indexeddb": "^6.2.2",
+    "node-datachannel": "^0.7.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.0",
+    "ws": "^8.18.0"
+  }
+}

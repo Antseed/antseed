@@ -1,7 +1,7 @@
 // Static layout sections: Nav, Hero, AlphaStrip, ClaimBanner, HowItWorks, FAQ,
 // DualCards, Footer. These don't depend on on-chain state (ClaimBanner and
 // Hero take a couple of computed values as props so they can show the max rate /
-// pool TVL). Every AntStation download link flows through `useAntstationDownload`
+// pool TVL). Every VPR download link flows through `useVprDownload`
 // so Mac + Windows visitors get a direct installer href — same behaviour as
 // antseed.com.
 
@@ -10,7 +10,7 @@ import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
 import { useAccount } from 'wagmi';
 
 import { fmtPct, fmtPrice } from '../lib/format';
-import { useAntstationDownload, ANTSTATION_RELEASES_URL, type Platform } from '../lib/antstation';
+import { useVprDownload, type Platform } from '../lib/vpr';
 
 const ANTSEED_URL = 'https://antseed.com';
 const DIEM_TERMS_URL = 'https://diemantseed.com/terms-of-service.html';
@@ -47,7 +47,7 @@ function PlatformIcon({ platform, size = 16 }: { platform: Platform; size?: numb
 }
 
 // Platforms where we show the OS-specific label + icon. Other platforms
-// (Linux / mobile / unknown) keep the brand-generic "Download AntStation →".
+// (Linux / mobile / unknown) keep the brand-generic "Download VPR →".
 function hasDirectInstaller(platform: Platform): platform is 'mac' | 'win' {
   return platform === 'mac' || platform === 'win';
 }
@@ -173,31 +173,47 @@ export function Hero({ diemPrice, apy }: { diemPrice: number | null; apy: number
 }
 
 export function ClaimBanner() {
-  const { href, platform } = useAntstationDownload();
+  const { href, platform } = useVprDownload();
+
+  // Jump to the stake card and switch it to the Claim tab (the card listens
+  // for this event — see StakeCard).
+  const openClaimTab = (e: MouseEvent) => {
+    e.preventDefault();
+    window.dispatchEvent(new Event('diem:open-claim'));
+    const card = document.querySelector<HTMLElement>('.stake-card');
+    const nav = document.querySelector<HTMLElement>('.nav');
+    const offset = (nav?.offsetHeight ?? 73) + 8;
+    if (card) window.scrollTo({ top: Math.max(0, card.offsetTop - offset), behavior: 'smooth' });
+  };
+
   return (
     <div className="claim-banner">
       <div className="claim-banner-inner">
         <div>
-          <span className="eyebrow"><span className="pulse" /> AntStation required for $ANTS</span>
-          <h2>Download <em>AntStation</em> to claim your $ANTS.</h2>
+          <span className="eyebrow"><span className="pulse" /> $ANTS claims live on this page</span>
+          <h2>Claim your <em>$ANTS</em> right here.</h2>
           <p>
-            This page handles DIEM locking, withdrawal requests, and USDC claims. Your $ANTS claim lives in AntStation —
-            the AntSeed desktop app. Install it, open the Payments portal, connect the same
-            wallet you participate with, and claim eligible $ANTS there.
+            This page handles everything: DIEM locking, withdrawal requests, USDC claims,
+            and eligible $ANTS incentives. Open the Claim tab above with the same wallet
+            you participate with — no separate app needed to claim. To spend your $ANTS on
+            AI models, download VPR, the Antseed desktop app.
           </p>
           <div className="claim-path" aria-label="How to claim ANTS">
-            <span><strong>1</strong> Install AntStation</span>
-            <span><strong>2</strong> Open Payments</span>
-            <span><strong>3</strong> Connect same wallet</span>
+            <span><strong>1</strong> Connect wallet</span>
+            <span><strong>2</strong> Open Claim tab</span>
+            <span><strong>3</strong> Claim USDC</span>
             <span><strong>4</strong> Claim $ANTS</span>
           </div>
           <div className="claim-banner-actions">
-            {/* Match antseed.com's primary download button: OS icon +
-                "Download for <OS>" when we have a direct installer,
-                brand-generic fallback otherwise. */}
+            <a href="#stake" className="btn-primary" onClick={openClaimTab}>
+              Claim your $ANTS →
+            </a>
+            {/* Match antseed.com's download button: OS icon + "Download for
+                <OS>" when we have a direct installer, brand-generic fallback
+                otherwise. */}
             <a
               href={href}
-              className="btn-primary"
+              className="btn-ghost"
               target="_blank"
               rel="noopener noreferrer"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
@@ -205,32 +221,24 @@ export function ClaimBanner() {
               {hasDirectInstaller(platform) ? (
                 <>
                   <PlatformIcon platform={platform} />
-                  {platform === 'mac' ? 'Install AntStation for Mac to claim $ANTS' : 'Install AntStation for Windows to claim $ANTS'}
+                  {platform === 'mac' ? 'Download VPR for Mac' : 'Download VPR for Windows'}
                 </>
               ) : (
-                <>Install AntStation to claim $ANTS →</>
+                <>Download VPR →</>
               )}
             </a>
-            <a
-              href={ANTSTATION_RELEASES_URL}
-              className="btn-ghost"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              All releases →
-            </a>
             <a href={ANTSEED_URL} className="btn-ghost" target="_blank" rel="noopener noreferrer">
-              What is AntSeed?
+              What is Antseed?
             </a>
           </div>
         </div>
         <div className="claim-mock">
-          <div className="line"><span className="comment"># AntStation app › Payments</span></div>
-          <div className="line"><span className="key">claim location</span><span className="num">AntStation</span></div>
+          <div className="line"><span className="comment"># this page › Claim tab</span></div>
+          <div className="line"><span className="key">claim location</span><span className="num">this page</span></div>
           <div className="line"><span className="key">wallet</span><span className="num">same as Program</span></div>
           <div className="line"><span className="key">$ANTS pending</span><span className="num">ready to claim</span></div>
           <hr />
-          <div className="line"><span className="comment"># spend on any model →</span></div>
+          <div className="line"><span className="comment"># spend in VPR on any model →</span></div>
           <div className="line"><span className="key">claude-sonnet-4.6</span><span className="num">ready</span></div>
           <div className="line"><span className="key">gpt-5.2</span><span className="num">ready</span></div>
           <div className="line"><span className="key">sora-2 · video</span><span className="num">ready</span></div>
@@ -241,7 +249,7 @@ export function ClaimBanner() {
 }
 
 export function HowItWorks() {
-  const { href } = useAntstationDownload();
+  const { href } = useVprDownload();
   return (
     <section id="how">
       <span className="sec-label">How it works</span>
@@ -259,16 +267,18 @@ export function HowItWorks() {
         </Step>
         <Step num="02" label="Capacity" title="Support provider capacity">
           Locked DIEM is used as capacity support for connected provider infrastructure serving
-          AntSeed inference requests. Usage depends on buyer demand, uptime, pricing, and operations.
+          Antseed inference requests. Usage depends on buyer demand, uptime, pricing, and operations.
         </Step>
         <Step num="03" label="USDC" title="USDC allocations, if any">
           If paid requests are processed, eligible participants may receive USDC allocations after
           applicable operator fees and Program rules. Allocations are not guaranteed and may be zero.
         </Step>
-        <Step num="04" label="$ANTS" title="Claim eligible $ANTS in the payments portal">
-          $ANTS incentives may accrue by epoch if available under the Program rules. Install{' '}
-          <a href={href} target="_blank" rel="noopener noreferrer">AntStation</a>{' '}
-          or the CLI, open the payments portal, and claim with the same wallet you use here.
+        <Step num="04" label="$ANTS" title="Claim eligible $ANTS right here">
+          $ANTS incentives may accrue by epoch if available under the Program rules. Claim
+          them from the Claim tab on this page with the same wallet you lock with, then
+          spend them on network services in{' '}
+          <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the Antseed
+          desktop app.
         </Step>
       </div>
 
@@ -318,21 +328,21 @@ function Why() {
 }
 
 export function DualCards() {
-  const { href, platform, label } = useAntstationDownload();
+  const { href, platform, label } = useVprDownload();
   return (
     <section>
       <div className="dual">
         <a href={href} className="dual-card" target="_blank" rel="noopener noreferrer">
-          <span className="tag">◆  AntStation</span>
-          <h4>The AntSeed desktop app</h4>
+          <span className="tag">◆  VPR</span>
+          <h4>The Antseed desktop app</h4>
           <p>Chat with Claude, GPT, and every open model. Generate images and video. All at provider cost. No subscription markup. Free to download.</p>
-          <span className="arrow">{hasDirectInstaller(platform) ? `${label} →` : 'Download AntStation →'}</span>
+          <span className="arrow">{hasDirectInstaller(platform) ? `${label} →` : 'Download VPR →'}</span>
         </a>
         <a href={ANTSEED_URL} className="dual-card" target="_blank" rel="noopener noreferrer">
-          <span className="tag">◆  AntSeed</span>
+          <span className="tag">◆  Antseed</span>
           <h4>The P2P AI network</h4>
-          <p>No central gatekeeper. No markup. Pay per token in USDC. Connect any agent, any coding tool, or just chat through AntStation. Same network underneath.</p>
-          <span className="arrow">Explore AntSeed →</span>
+          <p>No central gatekeeper. No markup. Pay per token in USDC. Connect any agent, any coding tool, or just chat through VPR. Same network underneath.</p>
+          <span className="arrow">Explore Antseed →</span>
         </a>
       </div>
     </section>
@@ -340,7 +350,7 @@ export function DualCards() {
 }
 
 export function FAQ() {
-  const { href } = useAntstationDownload();
+  const { href } = useVprDownload();
   return (
     <section id="faq">
       <span className="sec-label">FAQ</span>
@@ -350,7 +360,7 @@ export function FAQ() {
           <summary>Where do USDC allocations come from?</summary>
           <div className="body">
             USDC allocations, if any, come from paid inference requests processed by the
-            connected provider infrastructure and settled through AntSeed smart contracts.
+            connected provider infrastructure and settled through Antseed smart contracts.
             After applicable operator fees and Program deductions, remaining USDC is allocated
             according to the Program rules. No allocation is guaranteed, and future usage may be zero.
           </div>
@@ -394,11 +404,12 @@ export function FAQ() {
         <details className="faq">
           <summary>How do I claim eligible $ANTS incentives?</summary>
           <div className="body">
-            Eligible $ANTS incentives may be available by epoch for the same wallet you use in the Program. To claim
-            them, install{' '}
-            <a href={href} target="_blank" rel="noopener noreferrer">AntStation</a>{' '}
-            or the AntSeed CLI and open the local payments portal. Claim from there using
-            the same wallet, then use $ANTS inside AntStation on supported network services.
+            Eligible $ANTS incentives may be available by epoch for the same wallet you use
+            in the Program. Claim them directly from this page: open the Claim tab in the
+            card above, connect your wallet, and claim any pending $ANTS. You can then use
+            $ANTS on supported network services inside{' '}
+            <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the Antseed
+            desktop app.
           </div>
         </details>
         <details className="faq">
@@ -426,7 +437,7 @@ export function FAQ() {
 }
 
 export function Footer({ proxyAddress }: { proxyAddress: string | null }) {
-  const { href: antstationHref } = useAntstationDownload();
+  const { href: vprHref } = useVprDownload();
   const contractHref = proxyAddress ? `${CONTRACT_URL_BASE}/${proxyAddress}` : `${CONTRACT_URL_BASE}/`;
   return (
     <footer>
@@ -442,7 +453,7 @@ export function Footer({ proxyAddress }: { proxyAddress: string | null }) {
       </div>
       <div className="links">
         <a href={ANTSEED_URL}>antseed.com</a>
-        <a href={antstationHref} target="_blank" rel="noopener noreferrer">AntStation</a>
+        <a href={vprHref} target="_blank" rel="noopener noreferrer">VPR</a>
         <a href={contractHref} target="_blank" rel="noopener noreferrer">Contract</a>
         <a href={AUDIT_REPORT_URL} target="_blank" rel="noopener noreferrer">Audit</a>
         <a href="#stake">Lock DIEM</a>

@@ -52,7 +52,7 @@ test('classifyCATrust: trusted when the current fingerprint is installed', () =>
   assert.equal(classifyCATrust('aabbcc', ['AA BB CC', '112233']), 'trusted')
 })
 
-test('classifyCATrust: stale when an AntSeed CA is trusted with a different fingerprint', () => {
+test('classifyCATrust: stale when an Antseed CA is trusted with a different fingerprint', () => {
   // The CERT_SIGNATURE_FAILURE case: an old CA is trusted, current one is not.
   assert.equal(classifyCATrust('AABBCC', ['DDEEFF']), 'stale')
 })

@@ -1,0 +1,106 @@
+{
+  "name": "@antseed/protocol",
+  "version": "0.1.19",
+  "description": "Antseed wire protocol: message types, frame/HTTP/payment codecs, and EIP-712 payment signatures. Portable — no Node-only dependencies",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./messages": {
+      "import": "./dist/messages.js",
+      "types": "./dist/messages.d.ts"
+    },
+    "./http": {
+      "import": "./dist/http.js",
+      "types": "./dist/http.d.ts"
+    },
+    "./framing": {
+      "import": "./dist/framing.js",
+      "types": "./dist/framing.d.ts"
+    },
+    "./request-codec": {
+      "import": "./dist/request-codec.js",
+      "types": "./dist/request-codec.d.ts"
+    },
+    "./json-codec": {
+      "import": "./dist/json-codec.js",
+      "types": "./dist/json-codec.d.ts"
+    },
+    "./payment-codec": {
+      "import": "./dist/payment-codec.js",
+      "types": "./dist/payment-codec.d.ts"
+    },
+    "./signatures": {
+      "import": "./dist/signatures.js",
+      "types": "./dist/signatures.d.ts"
+    },
+    "./connection-auth": {
+      "import": "./dist/connection-auth.js",
+      "types": "./dist/connection-auth.d.ts"
+    },
+    "./peer-id": {
+      "import": "./dist/peer-id.js",
+      "types": "./dist/peer-id.d.ts"
+    },
+    "./signing": {
+      "import": "./dist/signing.js",
+      "types": "./dist/signing.d.ts"
+    },
+    "./service-api": {
+      "import": "./dist/service-api.js",
+      "types": "./dist/service-api.d.ts"
+    },
+    "./billing": {
+      "import": "./dist/billing.js",
+      "types": "./dist/billing.d.ts"
+    },
+    "./routing": {
+      "import": "./dist/routing.js",
+      "types": "./dist/routing.d.ts"
+    },
+    "./irp": {
+      "import": "./dist/irp.js",
+      "types": "./dist/irp.d.ts"
+    },
+    "./capability": {
+      "import": "./dist/capability.js",
+      "types": "./dist/capability.d.ts"
+    },
+    "./peer-metadata": {
+      "import": "./dist/peer-metadata.js",
+      "types": "./dist/peer-metadata.d.ts"
+    },
+    "./peer-pricing": {
+      "import": "./dist/peer-pricing.js",
+      "types": "./dist/peer-pricing.d.ts"
+    },
+    "./connection-state": {
+      "import": "./dist/connection-state.js",
+      "types": "./dist/connection-state.d.ts"
+    },
+    "./model-identity": {
+      "import": "./dist/model-identity.js",
+      "types": "./dist/model-identity.d.ts"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ethers": "~6.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

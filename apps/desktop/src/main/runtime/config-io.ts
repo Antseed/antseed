@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing';
 import { DEFAULT_CONFIG_PATH } from '../constants.js';
 import { asString, asNumber } from '../utils.js';
 
@@ -11,9 +12,10 @@ export const DESKTOP_DEFAULT_MIN_PEER_REPUTATION = 0;
 export const DESKTOP_DEFAULT_PEER_REFRESH_INTERVAL_MS = 5 * 60_000;
 export const DESKTOP_DEFAULT_METADATA_FETCH_TIMEOUT_MS = 1500;
 export const DESKTOP_DEFAULT_SELLER_MAX_CONCURRENT_BUYERS = 50;
+const ROUTING_PEER_ID_PATTERN = /^(?:0x)?[0-9a-f]{40}$/i;
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
-  identity: { displayName: 'AntSeed Node' },
+  identity: { displayName: 'Antseed Node' },
   seller: {
     reserveFloor: 10,
     maxConcurrentBuyers: DESKTOP_DEFAULT_SELLER_MAX_CONCURRENT_BUYERS,
@@ -28,13 +30,18 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
       },
     },
     minPeerReputation: DESKTOP_DEFAULT_MIN_PEER_REPUTATION,
+    routingPreferences: {
+      ...DEFAULT_MODEL_ROUTING_PREFERENCES,
+      allowedPeerIds: [],
+      blockedPeerIds: [],
+    },
     proxyPort: 8377,
     peerRefreshIntervalMs: DESKTOP_DEFAULT_PEER_REFRESH_INTERVAL_MS,
     metadataFetchTimeoutMs: DESKTOP_DEFAULT_METADATA_FETCH_TIMEOUT_MS,
     disableMetadataV2Services: false,
   },
   network: { bootstrapNodes: [] },
-  payments: { preferredMethod: 'crypto', platformFeeRate: 0.05 },
+  payments: { preferredMethod: 'crypto' },
   providers: [],
   plugins: [],
 };
@@ -43,6 +50,19 @@ function asRecordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function validRoutingPeerIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const peerIds: string[] = [];
+  for (const valuePeerId of value) {
+    if (typeof valuePeerId !== 'string') return null;
+    const peerId = valuePeerId.trim();
+    if (!ROUTING_PEER_ID_PATTERN.test(peerId)) return null;
+    peerIds.push(peerId);
+  }
+  return peerIds;
 }
 
 async function writeConfigAtomic(config: Record<string, unknown>, configPath: string): Promise<void> {
@@ -68,6 +88,7 @@ function migrateDesktopBuyerDefaults(config: Record<string, unknown>): {
   const peerRefreshIntervalMs = buyer.peerRefreshIntervalMs;
   const metadataFetchTimeoutMs = buyer.metadataFetchTimeoutMs;
   const disableMetadataV2Services = buyer.disableMetadataV2Services;
+  const routingPreferences = asRecordValue(buyer.routingPreferences);
   const nextDefaults = { ...defaults };
   let migrated = false;
   let nextBuyer = buyer;
@@ -130,6 +151,40 @@ function migrateDesktopBuyerDefaults(config: Record<string, unknown>): {
     nextBuyer = {
       ...nextBuyer,
       disableMetadataV2Services: false,
+    };
+    migrated = true;
+  }
+
+  const allowedPeerIds = validRoutingPeerIds(routingPreferences.allowedPeerIds);
+  const blockedPeerIds = validRoutingPeerIds(routingPreferences.blockedPeerIds);
+  const nextRoutingPreferences = {
+    preferFreePeers: typeof routingPreferences.preferFreePeers === 'boolean'
+      ? routingPreferences.preferFreePeers
+      : DEFAULT_MODEL_ROUTING_PREFERENCES.preferFreePeers,
+    maxInputUsdPerMillion: typeof routingPreferences.maxInputUsdPerMillion === 'number'
+      && Number.isFinite(routingPreferences.maxInputUsdPerMillion)
+      && routingPreferences.maxInputUsdPerMillion >= 0
+      ? routingPreferences.maxInputUsdPerMillion
+      : DEFAULT_MODEL_ROUTING_PREFERENCES.maxInputUsdPerMillion,
+    minTrustScore: typeof routingPreferences.minTrustScore === 'number'
+      && Number.isFinite(routingPreferences.minTrustScore)
+      && routingPreferences.minTrustScore >= 0
+      && routingPreferences.minTrustScore <= 100
+      ? routingPreferences.minTrustScore
+      : DEFAULT_MODEL_ROUTING_PREFERENCES.minTrustScore,
+    allowedPeerIds: allowedPeerIds ?? [],
+    blockedPeerIds: blockedPeerIds ?? [],
+  };
+  if (
+    typeof routingPreferences.preferFreePeers !== 'boolean'
+    || routingPreferences.maxInputUsdPerMillion !== nextRoutingPreferences.maxInputUsdPerMillion
+    || routingPreferences.minTrustScore !== nextRoutingPreferences.minTrustScore
+    || allowedPeerIds === null
+    || blockedPeerIds === null
+  ) {
+    nextBuyer = {
+      ...nextBuyer,
+      routingPreferences: nextRoutingPreferences,
     };
     migrated = true;
   }

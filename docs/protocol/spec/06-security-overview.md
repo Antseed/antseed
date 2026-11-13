@@ -19,7 +19,7 @@ The buyer-seller flow enforces:
 | Local node process | Yes (operator-controlled) | Identity key, session state, metering DB, wallet signer |
 | DHT network | No — verified via signatures | Peer endpoints and topic results |
 | Metadata fetch | No — verified via signatures + freshness | Signed peer metadata payload |
-| P2P transport (WebRTC/TCP) | Authenticated via intro envelopes | Request/response frames, payment frames |
+| P2P transport (encrypted TCP preferred; WebRTC for TCP-incapable peers) | Mutually authenticated + end-to-end encrypted between upgraded peers; plaintext only with legacy peers | Request/response frames, payment frames |
 | On-chain contracts | Trust-minimized (contract + chain consensus) | Deposits, session locks, settlement balances, disputes |
 
 ## 3. Buyer → Seller Flow and Controls
@@ -46,8 +46,8 @@ The buyer-seller flow enforces:
 
 - Frame decoder validates message type and payload length (`MAX_PAYLOAD_SIZE = 64 MiB`).
 - Decode/dispatch errors fail the connection (fail-closed).
-- Request timeout: 30s. Stream idle timeout enforced and reset on each chunk.
-- Streaming bounded by max wall duration (default 5 min) and buffer cap (default 16 MiB).
+- Buyer request timeout defaults to 5 minutes; maximum stream duration defaults to 30 minutes (`packages/buyer-core/src/buyer-request-handler.ts`). Stream idle timeout is enforced and reset on each chunk.
+- Streaming is bounded by the configured wall duration and buffer cap (default 16 MiB).
 - Chunked uploads enforce per-request cap (32 MiB), global pending cap (256 MiB), timeout (120s), and explicit abort with 413/408 plus buffer zeroing.
 
 ### 3.4 Request Routing and Metering
@@ -65,7 +65,7 @@ The buyer-seller flow enforces:
 - Per request: buyer signs EIP-712 SpendingAuth (channelId, cumulativeAmount, metadataHash).
 - Seller submits latest SpendingAuth to settle() or close() on-chain.
 - On buyer disconnect: seller calls close() with last SpendingAuth to finalize.
-- On seller disappearance: requestTimeout() (permissionless after deadline) + withdraw() after 15min grace.
+- On seller disappearance: buyer/operator requestClose() + withdraw() after 15min grace.
 - Channels contract holds no USDC — all funds managed by AntseedDeposits.
 
 ## 4. Cryptographic Control Plane
@@ -82,7 +82,7 @@ The buyer-seller flow enforces:
 
 1. Keep `allowPrivateIPs=false` in production.
 2. Keep metadata signature verification and freshness checks enabled (both on by default).
-3. Prefer WebRTC transport for end-to-end encryption.
+3. Encrypted TCP (`transport.tcp-enc.v1`) is used automatically between peers that advertise it and is the preferred transport; set `requireSecureTransport` to refuse plaintext/unsigned transports entirely once your peers are upgraded.
 4. Use dedicated wallets for deposit and settlement operations and monitor settlement events.
 5. Persist and back up metering/payment state for audit and incident reconstruction.
 6. Keep upload/stream caps at defaults or tighter for internet-facing sellers.

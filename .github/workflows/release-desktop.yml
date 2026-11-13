@@ -1,13 +1,15 @@
 name: Release Desktop
 
-# Builds and publishes the AntSeed Desktop Electron app for macOS,
+# Builds and publishes the Antseed Desktop Electron app for macOS,
 # Windows, and Linux in parallel, attaching artifacts to the same GitHub
 # Release (tagged v<version>, read from apps/desktop/package.json).
 #
 # macOS: DMG + zip, arm64 + x64, code-signed with Developer ID and
-#        notarized via Apple App Store Connect API key.
-# Windows: NSIS installer, x64 + arm64. Optional code signing if the
-#          WIN_CSC_* secrets are set.
+#        notarized via Apple App Store Connect API key, plus bridge zips
+#        for installs from before the bundle rename (scripts/release-mac.mjs).
+# Windows: NSIS installer, x64 + arm64. Optional code signing via the
+#          CA's cloud signing API if the WIN_SIGN_* secrets are set
+#          (see apps/desktop/scripts/win-sign.cjs).
 # Linux: AppImage + deb, x64 + arm64, unsigned. Each arch builds on a
 #        native runner (ubuntu-latest / ubuntu-24.04-arm) so native
 #        modules never need cross-compilation.
@@ -30,9 +32,15 @@ name: Release Desktop
 #     APPLE_API_KEY_ID          e.g. 6JDM29LC2C
 #     APPLE_API_ISSUER          issuer UUID from App Store Connect
 #     APPLE_TEAM_ID             e.g. H3M5BXXQR2
-#   Windows (optional, for signed installers):
-#     WIN_CSC_LINK              base64 of a .pfx
-#     WIN_CSC_KEY_PASSWORD      password for the .pfx
+#   Windows (optional, for signed installers — the private key lives in
+#   the CA's cloud HSM, there is no .pfx. Signing talks straight to the
+#   CA's HTTPS API via the `ssign` CLI, authenticating with a TOTP. Both
+#   secrets live in the `release-signing` protected environment, not as
+#   repo secrets):
+#     WIN_SIGN_EMAIL            signing service account e-mail
+#     WIN_SIGN_OTP              TOTP seed (base32 or otpauth:// URI).
+#                               Long-lived signing credential — rotate by
+#                               re-issuing the service's QR if it leaks.
 #
 # Publishing auth uses the built-in GITHUB_TOKEN (contents: write).
 
@@ -60,11 +68,41 @@ permissions:
   contents: write  # needed for electron-builder to publish to Releases
 
 jobs:
+  # electron-builder creates the draft release when it doesn't exist yet.
+  # With several platform jobs publishing in parallel, two can pass that
+  # existence check at the same moment and each create their own draft,
+  # splitting the assets across duplicate v<version> drafts. Pre-create
+  # the draft here so every platform job finds it and only uploads assets.
+  create-draft:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the draft release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Dry run — nothing will be published, skipping draft creation"
+            exit 0
+          fi
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          if gh release view "v${version}" >/dev/null 2>&1; then
+            echo "Release v${version} already exists"
+          else
+            gh release create "v${version}" --draft --title "${version}" --notes ""
+          fi
+
   mac:
     name: Build & publish macOS
     # Tag-push always runs every platform.
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'mac'
-    runs-on: macos-14  # Apple Silicon; electron-builder cross-builds x64
+    needs: create-draft
+    runs-on: macos-15  # Apple Silicon; electron-builder cross-builds x64
     timeout-minutes: 60
 
     steps:
@@ -76,11 +114,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Bake comparable-prices URL
+        env:
+          ANTSEED_COMPARABLE_PRICES_URL: ${{ vars.ANTSEED_COMPARABLE_PRICES_URL }}
+        run: node scripts/bake-comparable-prices-url.mjs --require
+
+      - name: Bake desktop telemetry config
+        env:
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+        run: node scripts/bake-desktop-telemetry-config.mjs --require
 
       - name: Build monorepo (tiers 0-3)
         run: |
@@ -108,8 +157,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           # electron-builder accepts base64-encoded content directly in CSC_LINK.
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -133,15 +180,30 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.blockmap
-            apps/desktop/release/latest*.yml
+            apps/desktop/release/desktop-mac.yml
+            apps/desktop/release-bridge/*.zip
+            apps/desktop/release-bridge/*.blockmap
+            apps/desktop/release-bridge/latest-mac.yml
           if-no-files-found: warn
           retention-days: 14
 
   win:
     name: Build & publish Windows
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'win'
+    needs: create-draft
     runs-on: windows-latest
     timeout-minutes: 45
+    # The signing secrets live in a protected environment restricted by a
+    # deployment ref policy (main + desktop-v* tags) — the TOTP seed is a
+    # long-lived signing credential and the repo is public, so arbitrary
+    # branches must not be able to read it. No manual approval.
+    environment: release-signing
+    env:
+      # Exposed at job level so steps can gate on `env.WIN_SIGN_EMAIL != ''`
+      # (the secrets context can't be used directly in step `if`s reliably).
+      WIN_SIGN_EMAIL: ${{ secrets.WIN_SIGN_EMAIL }}
+      # ssign revision the "Build ssign" step builds (security-reviewed).
+      SSIGN_REV: 326aa34137b3441812e5300f3a0dbef6bd5a2f97
 
     steps:
       - uses: actions/checkout@v4
@@ -152,13 +214,26 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       # windows-latest ships with Python + VS Build Tools, needed by
       # node-gyp to rebuild native modules against Electron's Node ABI.
       - name: Install dependencies
         run: pnpm install
+        shell: pwsh
+
+      - name: Bake comparable-prices URL
+        env:
+          ANTSEED_COMPARABLE_PRICES_URL: ${{ vars.ANTSEED_COMPARABLE_PRICES_URL }}
+        run: node scripts/bake-comparable-prices-url.mjs --require
+        shell: pwsh
+
+      - name: Bake desktop telemetry config
+        env:
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+        run: node scripts/bake-desktop-telemetry-config.mjs --require
         shell: pwsh
 
       - name: Build monorepo (tiers 0-3)
@@ -169,14 +244,28 @@ jobs:
           pnpm run build:tier3
         shell: pwsh
 
+      - name: Cache ssign binary
+        if: env.WIN_SIGN_EMAIL != ''
+        id: ssign-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/ssign.exe
+          key: ssign-${{ env.SSIGN_REV }}-windows-x64
+
+      - name: Build ssign (cloud signing CLI)
+        # Built from a pinned, reviewed revision rather than a prebuilt
+        # binary — this tool handles the signing credential.
+        if: env.WIN_SIGN_EMAIL != '' && steps.ssign-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/Le-Syl21/ssign --rev $env:SSIGN_REV ssign
+        shell: pwsh
+
       - name: Build & publish desktop (Windows)
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # WIN_SIGN_EMAIL comes from the job-level env; both are read by
+          # apps/desktop/scripts/win-sign.cjs (the win.sign hook).
+          WIN_SIGN_OTP: ${{ secrets.WIN_SIGN_OTP }}
         run: |
           if ("${{ inputs.dry_run }}" -eq "true") {
             npm run dist:win
@@ -184,6 +273,20 @@ jobs:
             npm run release:win
           }
         shell: pwsh
+
+      - name: Verify Authenticode signatures
+        if: env.WIN_SIGN_EMAIL != ''
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found' }
+          $failed = $false
+          Get-ChildItem apps/desktop/release/*.exe | ForEach-Object {
+            & $signtool.FullName verify /pa $_.FullName
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { throw 'signature verification failed' }
 
       - name: Upload installers as workflow artifacts
         if: always()
@@ -200,6 +303,7 @@ jobs:
   linux:
     name: Build & publish Linux (${{ matrix.arch }})
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
+    needs: create-draft
     strategy:
       fail-fast: false
       matrix:
@@ -238,11 +342,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Bake comparable-prices URL
+        env:
+          ANTSEED_COMPARABLE_PRICES_URL: ${{ vars.ANTSEED_COMPARABLE_PRICES_URL }}
+        run: node scripts/bake-comparable-prices-url.mjs --require
+
+      - name: Bake desktop telemetry config
+        env:
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+        run: node scripts/bake-desktop-telemetry-config.mjs --require
 
       - name: Build monorepo (tiers 0-3)
         run: |
@@ -255,8 +370,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           USE_SYSTEM_FPM: ${{ matrix.arch == 'arm64' }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
@@ -276,68 +389,3 @@ jobs:
             apps/desktop/release/latest*.yml
           if-no-files-found: warn
           retention-days: 14
-
-  # Keep the rolling `alpha` release pointing at the newest prerelease build,
-  # under fixed asset names, so a single shareable link
-  # (releases/download/alpha/AntSeed-VPR-alpha-arm64.dmg) always serves the
-  # latest alpha. Prerelease + non-semver tag, so electron-updater and stable
-  # users never see it. Runs after the platform jobs and pulls the installers
-  # from the just-published versioned release (drafts included) — the local
-  # build outputs are not reliable by the end of a job (the mac x64 files
-  # disappear from disk), the release assets are.
-  mirror-alpha:
-    name: Mirror to rolling alpha release
-    needs: [mac, win, linux]
-    # Run when nothing failed, at least one platform published, and this is a
-    # real publish (not a dry run). A platform skipped via the `platforms`
-    # input must not block the mirror.
-    if: >-
-      !cancelled() &&
-      inputs.dry_run != true &&
-      needs.mac.result != 'failure' &&
-      needs.win.result != 'failure' &&
-      needs.linux.result != 'failure' &&
-      (needs.mac.result == 'success' || needs.win.result == 'success' || needs.linux.result == 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Mirror installers to the rolling alpha release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          version=$(node -p "require('./apps/desktop/package.json').version")
-          case "$version" in
-            *-*) ;;
-            *) echo "Stable version $version — skipping alpha mirror"; exit 0 ;;
-          esac
-          mkdir -p alpha
-          for pair in \
-            "AntSeed-VPR-${version}-arm64.dmg:AntSeed-VPR-alpha-arm64.dmg" \
-            "AntSeed-VPR-${version}.dmg:AntSeed-VPR-alpha.dmg" \
-            "AntSeed-VPR-Setup-${version}.exe:AntSeed-VPR-Setup-alpha.exe" \
-            "AntSeed-VPR-${version}-x64.AppImage:AntSeed-VPR-alpha-x64.AppImage" \
-            "AntSeed-VPR-${version}-arm64.AppImage:AntSeed-VPR-alpha-arm64.AppImage" \
-            "AntSeed-VPR-${version}-x64.deb:AntSeed-VPR-alpha-x64.deb" \
-            "AntSeed-VPR-${version}-arm64.deb:AntSeed-VPR-alpha-arm64.deb"; do
-            src="${pair%%:*}"; dst="${pair##*:}"
-            if gh release download "v${version}" -p "$src" --dir alpha --clobber; then
-              mv "alpha/$src" "alpha/$dst"
-            else
-              echo "Asset $src not on v${version} (platform skipped this run) — keeping the previous alpha copy"
-            fi
-          done
-          if [ -z "$(ls -A alpha)" ]; then
-            echo "No installers to mirror"; exit 0
-          fi
-          if ! gh release view alpha >/dev/null 2>&1; then
-            gh release create alpha --prerelease --title "AntSeed VPR alpha (rolling)" \
-              --notes "Rolling prerelease — always the latest alpha build."
-          fi
-          gh release upload alpha alpha/* --clobber
-          gh release edit alpha --prerelease --draft=false \
-            --notes "Rolling prerelease — always the latest alpha build. Currently mirrors v${version}."

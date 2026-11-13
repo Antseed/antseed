@@ -8,10 +8,32 @@ export {
 } from './peer-scorer.js'
 export {
   PeerMetricsTracker,
+  computeFailureCooldownMs,
+  DEFAULT_MAX_FAILURES,
+  DEFAULT_FAILURE_COOLDOWN_MS,
+  MAX_COOLDOWN_DOUBLINGS,
   type PeerMetricsTrackerConfig,
+  type FailureCooldownOptions,
 } from './peer-metrics.js'
 export {
   WELL_KNOWN_TOOL_HINTS,
   formatToolHints,
+  toolHintBaseUrl,
   type ToolHint,
 } from './tool-hints.js'
+export { ModelRoutingClient, routingProtocolOfTarget, type ModelRoutingClientApi } from './model-routing-client.js'
+export {
+  candidatePricing,
+  findRoutingClientAdapter,
+  InvalidRouterOptionsError,
+  irpCandidateId,
+  irpSuggestAdapter,
+  RouterCannotRankError,
+  routingClientAdapter,
+  validateRouterOptions,
+  type RankCandidate,
+  type RouterOptionSpec,
+  type RoutingClientAdapter,
+} from './routing-adapters/index.js'
+export { CacheObservations } from './cache-observations.js'
+export { routerModelResolver } from './router-model-names.js'

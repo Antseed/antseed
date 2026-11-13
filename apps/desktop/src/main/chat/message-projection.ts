@@ -107,6 +107,27 @@ export function parseAttachmentAttributes(raw: string): Record<string, string> {
 }
 
 export function convertPersistedAttachmentPromptToBlocks(text: string): string | ContentBlock[] {
+  const generatedImageMatch = /^<generated-image\b([^>]*)>$/i.exec(text.trim());
+  if (generatedImageMatch) {
+    const attrs = parseAttachmentAttributes(generatedImageMatch[1] ?? '');
+    const generatedMime = attrs.mime ?? '';
+    if (attrs.id && isSafeId(attrs.id) && /^image\/(png|jpeg|webp|gif)$/i.test(generatedMime)) {
+      return [{
+        type: 'file',
+        fileName: attrs.name || 'generated.png',
+        mimeType: generatedMime,
+        status: 'ready',
+        attachmentId: attrs.id,
+        generated: true,
+      }];
+    }
+  }
+
+  // An uploaded video's tag is its only record: it becomes its attachment card again.
+  text = text.replace(/^<uploaded-video\b([^>]*)>$/gim, '<file$1></file>');
+  const withoutUploadTags = text.replace(/^<uploaded-image\b[^>]*>$/gim, '');
+  if (withoutUploadTags !== text) text = withoutUploadTags.trim();
+
   const filePattern = /<file\b([^>]*)>\n?([\s\S]*?)\n?<\/file>/gi;
   const blocks: ContentBlock[] = [];
   let lastIndex = 0;
@@ -151,7 +172,12 @@ export function convertPiMessageToUiBlocks(message: Message): string | ContentBl
     for (const block of message.content) {
       if (!block) continue;
       if (block.type === 'text') {
-        blocks.push({ type: 'text', text: block.text });
+        const converted = convertPersistedAttachmentPromptToBlocks(block.text);
+        if (Array.isArray(converted)) {
+          blocks.push(...converted);
+        } else {
+          blocks.push({ type: 'text', text: converted });
+        }
         continue;
       }
       if (block.type === 'thinking') {
@@ -322,13 +348,18 @@ export function convertAssistantMessageForUi(
     totalTokens,
     tokenSource: usage.input > 0 || usage.output > 0 ? 'usage' : 'unknown',
   };
+  const content = convertPiMessageToUiBlocks(message);
+  const generatedImageCount = Array.isArray(content)
+    ? content.filter((block) => block.type === 'file' && block.generated).length
+    : 0;
   const mergedMeta: AiMessageMeta = {
     ...usageMeta,
+    ...(generatedImageCount > 0 ? { outputImages: generatedImageCount } : {}),
     ...(message.meta ?? {}),
   };
   return {
     role: 'assistant',
-    content: convertPiMessageToUiBlocks(message),
+    content,
     createdAt: normalizeTokenCount(message.timestamp),
     meta: mergedMeta,
   };

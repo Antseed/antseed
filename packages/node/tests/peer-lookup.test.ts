@@ -30,7 +30,7 @@ function buildMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
     ],
     region: 'test',
     timestamp: Date.now(),
-    signature: 'b'.repeat(128),
+    signature: 'b'.repeat(130),
     ...overrides,
   };
 }
@@ -87,7 +87,7 @@ describe('PeerLookup', () => {
 
   it('findAll queries the wildcard first, then subnet topics in order', async () => {
     // The wildcard runs alone first to warm the local DHT routing table
-    // with nodes that already know about AntSeed traffic; subsequent
+    // with nodes that already know about Antseed traffic; subsequent
     // per-subnet lookups converge much faster against that hot cache.
     // If this ordering regresses, sequential subnet lookups go back to
     // converging slowly on a cold routing table.
@@ -362,6 +362,49 @@ describe('PeerLookup', () => {
     expect(await peerLookup.findByPeerId('a'.repeat(39))).toEqual([]);
     expect(await peerLookup.findByPeerId('g'.repeat(40))).toEqual([]);
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('accepts still-supported v10 metadata from older sellers', async () => {
+    const targetId = 'a'.repeat(40);
+    const endpoint: PeerEndpoint = { host: '34.10.10.10', port: 6882 };
+    const lookup = vi.fn(async () => [endpoint]);
+    const dht = { lookup } as unknown as DHTNode;
+    const resolve = vi.fn(async () => buildMetadata({ peerId: targetId as any, version: 10 }));
+    const metadataResolver: MetadataResolver = { resolve };
+    const peerLookup = new PeerLookup({
+      dht,
+      metadataResolver,
+      requireValidSignature: false,
+      allowStaleMetadata: true,
+      maxAnnouncementAgeMs: 60_000,
+      maxResults: 50,
+    });
+
+    const results = await peerLookup.findByPeerId(targetId);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.metadata.version).toBe(10);
+  });
+
+  it('drops metadata announcing an unsupported version', async () => {
+    const targetId = 'a'.repeat(40);
+    const endpoint: PeerEndpoint = { host: '34.10.10.10', port: 6882 };
+    const lookup = vi.fn(async () => [endpoint]);
+    const dht = { lookup } as unknown as DHTNode;
+    const resolve = vi.fn(async () => buildMetadata({ peerId: targetId as any, version: 99 }));
+    const metadataResolver: MetadataResolver = { resolve };
+    const peerLookup = new PeerLookup({
+      dht,
+      metadataResolver,
+      requireValidSignature: false,
+      allowStaleMetadata: true,
+      maxAnnouncementAgeMs: 60_000,
+      maxResults: 50,
+    });
+
+    const results = await peerLookup.findByPeerId(targetId);
+
+    expect(results).toHaveLength(0);
   });
 
   it('preserves metadata publicAddress so callers can prefer it over the DHT source host', async () => {

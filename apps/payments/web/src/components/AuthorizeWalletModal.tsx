@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useAccount } from 'wagmi';
+import { useAccount, useDisconnect } from 'wagmi';
 import { ActionModal } from '../layout/ActionModal';
 import { useSetOperator } from '../hooks/useSetOperator';
 import type { PaymentConfig } from '../types';
-import { Button } from './Button';
+import { Button } from '@antseed/ui';
 import { ConnectWalletAction } from './ConnectWalletAction';
 
 interface AuthorizeWalletModalProps {
@@ -22,7 +22,8 @@ export function AuthorizeWalletModal({
   onClose,
   onAuthorized,
 }: AuthorizeWalletModalProps) {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, connector } = useAccount();
+  const { disconnect, isPending: disconnecting, error: disconnectError } = useDisconnect();
   const walletConnected = isConnected && Boolean(address);
   const { run, running, success, error, reset } = useSetOperator(config);
 
@@ -77,7 +78,7 @@ export function AuthorizeWalletModal({
             style={{ top: tooltipPos.top, left: tooltipPos.left }}
           >
             <p>
-              Your AntSeed signer lives on this node and authorizes spending, but it
+              Your Antseed signer lives on this node and authorizes spending, but it
               never holds USDC or ANTS. To <strong>withdraw funds</strong>,{' '}
               <strong>claim ANTS rewards</strong>, or{' '}
               <strong>close a channel</strong>, you need to designate an external
@@ -109,7 +110,18 @@ export function AuthorizeWalletModal({
           </div>
         ) : (
           <div className="authorize-wallet-connect">
-            <div className="authorize-wallet-step-label">Connected wallet</div>
+            <div className="authorize-wallet-connected-header">
+              <div className="authorize-wallet-step-label">Connected wallet</div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => disconnect({ connector }, { onSuccess: () => reset() })}
+                disabled={running || disconnecting}
+                title="Disconnect from this page. This does not revoke on-chain authorization."
+              >
+                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
             <div className="authorize-wallet-addr">{address}</div>
           </div>
         )}
@@ -118,7 +130,7 @@ export function AuthorizeWalletModal({
           <Button
             fullWidth
             onClick={() => void run()}
-            disabled={!walletConnected || running || !config}
+            disabled={!walletConnected || running || disconnecting || !config}
           >
             {running ? 'Authorizing…' : 'Authorize this wallet'}
           </Button>
@@ -133,6 +145,7 @@ export function AuthorizeWalletModal({
         </div>
 
         {error && <div className="status-msg status-error">{error}</div>}
+        {disconnectError && <div role="alert" className="status-msg status-error">Could not disconnect: {disconnectError.message}</div>}
       </div>
     </ActionModal>
   );

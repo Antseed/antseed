@@ -4,7 +4,7 @@ import { getBalance, getConfig } from './api';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { PayPage, type PayPageAction, type PayPagePopup } from './views/PayPage';
 
-const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'diem', 'close-channel']);
+const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'close-channel', 'share-free-tier']);
 
 /**
  * The portal dashboard is retired — every view lives in the desktop app (or
@@ -17,11 +17,12 @@ function parsePayPageFromUrl(): { action: PayPageAction; amount: string | null; 
   // Legacy compat: old app builds linked portal tabs — map them to the
   // nearest signing action instead of a dead dashboard.
   const tab = params.get('tab') ?? params.get('modal') ?? '';
+  // (DIEM staking rewards are claimed on diemantseed.com now, so the old
+  // 'diem-rewards' tab folds into the network-rewards claim page.)
   const legacy: PayPageAction | null =
-    tab === 'rewards' || tab === 'emissions' ? 'claim'
-      : tab === 'diem-rewards' ? 'diem'
-        : tab ? 'deposit'
-          : null;
+    tab === 'rewards' || tab === 'emissions' || tab === 'diem-rewards' ? 'claim'
+      : tab ? 'deposit'
+        : null;
   const action = PAY_ACTIONS.has(raw as PayPageAction) ? (raw as PayPageAction) : legacy ?? 'deposit';
   // Set by the desktop app: 'app' = the user's real browser in chromeless
   // app mode (extension wallets available); 'win' = Electron popup fallback

@@ -1,6 +1,8 @@
 import type { PeerEndpoint, MetadataResolver } from './metadata-resolver.js';
-import type { PeerMetadata } from './peer-metadata.js';
+import { METADATA_VERSION, METADATA_VERSION_HEADER, type PeerMetadata } from './peer-metadata.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
+
+export const MAX_METADATA_HTTP_RESPONSE_SIZE = 256 * 1024;
 
 export interface HttpMetadataResolverConfig {
   /** Timeout in ms for each metadata fetch. Default: 1500 */
@@ -19,6 +21,8 @@ export interface HttpMetadataResolverConfig {
   recoveryProbeIntervalMs?: number;
   /** Maximum concurrent metadata fetches. Default: 24 */
   maxConcurrent?: number;
+  /** Maximum metadata HTTP response size in bytes. Default: 262144 */
+  maxResponseBytes?: number;
 }
 
 type FailedEndpointState = {
@@ -34,6 +38,7 @@ export class HttpMetadataResolver implements MetadataResolver {
   private readonly maxFailureCooldownMs: number;
   private readonly recoveryProbeIntervalMs: number;
   private readonly maxConcurrent: number;
+  private readonly maxResponseBytes: number;
   private readonly failedEndpoints: Map<string, FailedEndpointState>;
   private activeCount = 0;
   private readonly waiters: Array<() => void> = [];
@@ -48,6 +53,7 @@ export class HttpMetadataResolver implements MetadataResolver {
     );
     this.recoveryProbeIntervalMs = Math.max(0, config?.recoveryProbeIntervalMs ?? 2 * 60_000);
     this.maxConcurrent = Math.max(1, config?.maxConcurrent ?? 24);
+    this.maxResponseBytes = Math.max(1, config?.maxResponseBytes ?? MAX_METADATA_HTTP_RESPONSE_SIZE);
     this.failedEndpoints = new Map<string, FailedEndpointState>();
   }
 
@@ -83,7 +89,12 @@ export class HttpMetadataResolver implements MetadataResolver {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      // Ask for the newest metadata version this build understands; sellers
+      // that predate negotiation ignore the header and send v12.
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { [METADATA_VERSION_HEADER]: String(METADATA_VERSION) },
+      });
 
       if (!response.ok) {
         this.markEndpointFailure(endpointKey);
@@ -91,7 +102,8 @@ export class HttpMetadataResolver implements MetadataResolver {
         return null;
       }
 
-      const metadata = (await response.json()) as PeerMetadata;
+      const body = await readResponseBodyWithLimit(response, this.maxResponseBytes);
+      const metadata = JSON.parse(body) as PeerMetadata;
       const resolvedAtMs = Date.now();
       metadata.resolvedAtMs = resolvedAtMs;
       const serverDateHeader = response.headers.get('date');
@@ -115,7 +127,9 @@ export class HttpMetadataResolver implements MetadataResolver {
         ? 'timeout'
         : err instanceof SyntaxError
           ? 'invalid JSON'
-          : 'network error';
+          : err instanceof RangeError
+            ? err.message
+            : 'network error';
       debugWarn(`[MetadataResolver] Failed to resolve ${url}: ${reason}`);
       return null;
     } finally {
@@ -167,4 +181,40 @@ export class HttpMetadataResolver implements MetadataResolver {
   private getEndpointKey(host: string, port: number): string {
     return `${host}:${port}`;
   }
+}
+
+async function readResponseBodyWithLimit(response: Response, maxBytes: number): Promise<string> {
+  const contentLength = Number(response.headers.get('content-length') ?? '');
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new RangeError(`metadata response exceeds ${maxBytes} bytes`);
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new RangeError(`metadata response exceeds ${maxBytes} bytes`);
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new RangeError(`metadata response exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(value);
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }

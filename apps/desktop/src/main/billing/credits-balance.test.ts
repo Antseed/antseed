@@ -2,57 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  isOpenChannelStatus,
-  pendingSpendFromChannels,
   spendableBalance,
-  unsettledSpend,
+  totalOwnedBalance,
 } from './credits-balance.js';
-
-test('unsettledSpend is what the seller can still claim on a channel', () => {
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '50000', settledUsdc: '20000' }), 30000n);
-  // Fully settled: nothing outstanding.
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '50000', settledUsdc: '50000' }), 0n);
-  // A settle that raced ahead of the local store must not go negative.
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '50000', settledUsdc: '60000' }), 0n);
-});
-
-test('unsettledSpend treats missing and malformed amounts as zero', () => {
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: '', settledUsdc: '' }), 0n);
-  assert.equal(unsettledSpend({ status: 'active', cumulativeSigned: 'nope', settledUsdc: '0' }), 0n);
-});
-
-test('pending counts every status the seller can still settle against', () => {
-  for (const status of ['active', 'open', 'pending', 'closing', 'close_requested', 'withdrawable']) {
-    assert.equal(isOpenChannelStatus(status), true, status);
-    assert.equal(
-      pendingSpendFromChannels([{ status, cumulativeSigned: '10000', settledUsdc: '0' }]),
-      10000n,
-      status,
-    );
-  }
-});
-
-test('pending ignores finished channels — their signatures are spent, not owed', () => {
-  for (const status of ['settled', 'timedout', 'timeout', 'ghost', 'unknown']) {
-    assert.equal(isOpenChannelStatus(status), false, status);
-    assert.equal(
-      pendingSpendFromChannels([{ status, cumulativeSigned: '10000', settledUsdc: '0' }]),
-      0n,
-      status,
-    );
-  }
-});
-
-test('pending sums the open channels and skips the rest', () => {
-  const pending = pendingSpendFromChannels([
-    { status: 'active', cumulativeSigned: '30000', settledUsdc: '10000' },
-    { status: 'closing', cumulativeSigned: '5000', settledUsdc: '0' },
-    { status: 'settled', cumulativeSigned: '90000', settledUsdc: '90000' },
-    { status: 'active', cumulativeSigned: 'garbage', settledUsdc: '0' },
-  ]);
-  assert.equal(pending, 25000n);
-  assert.equal(pendingSpendFromChannels([]), 0n);
-});
 
 test('spendable is the deposit less what has been authorized away', () => {
   // $10 deposited, $5 reserved into a channel, $0.30 signed for so far.
@@ -64,4 +16,9 @@ test('spendable is the deposit less what has been authorized away', () => {
 test('spendable clamps at zero when pending briefly outruns the on-chain total', () => {
   assert.equal(spendableBalance(1_000n, 5_000n), 0n);
   assert.equal(spendableBalance(0n, 0n), 0n);
+});
+
+test('total owned includes USDC waiting in the buyer wallet', () => {
+  assert.equal(totalOwnedBalance(39_110_000n, 10_000_000n), 49_110_000n);
+  assert.equal(totalOwnedBalance(39_110_000n, 0n), 39_110_000n);
 });

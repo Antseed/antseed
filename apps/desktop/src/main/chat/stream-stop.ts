@@ -1,6 +1,9 @@
-// Note: `payment_required` is part of this union but is intentionally never
-// produced by `classifyChatStreamFailure`. Payment-required stops are emitted
-// via the dedicated `emitPaymentRequiredStreamError` path in pi-chat-engine.
+import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
+import { FREE_TIER_EXHAUSTED_ERROR_ID, readFreeTierLimit, type FreeTierLimit } from '@antseed/node';
+
+// Note: `payment_required` is part of this union but is never produced by
+// `classifyChatStreamFailure`; `toGatewayStopReason` maps the gateway's 402s
+// (and insufficient-funds bodies) onto it.
 // This type is also mirrored (for IPC) in:
 //   - apps/desktop/src/main/preload.cts (ChatAiStreamStopReason)
 //   - apps/desktop/src/renderer/types/bridge.ts (ChatAiStreamStopReason)
@@ -28,7 +31,24 @@ export type ChatStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: FreeTierLimit;
 };
+
+/** The buyer's free-tier 429 body inside an error message, or null. */
+function extractFreeTierLimit(raw: string): FreeTierLimit | null {
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd < jsonStart || !raw.includes(FREE_TIER_EXHAUSTED_ERROR_ID)) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as Record<string, unknown>;
+    const error = parsed.error && typeof parsed.error === 'object' ? parsed.error as Record<string, unknown> : null;
+    if (error?.code !== FREE_TIER_EXHAUSTED_ERROR_ID || !parsed.free_tier) return null;
+    return readFreeTierLimit(parsed);
+  } catch {
+    return null;
+  }
+}
 
 type ClassifyChatStreamFailureInput = {
   error?: unknown;
@@ -37,6 +57,9 @@ type ClassifyChatStreamFailureInput = {
 };
 
 const COMMON_HTTP_STATUS_TEXT: Record<number, string> = {
+  401: 'Unauthorized',
+  402: 'Payment Required',
+  403: 'Forbidden',
   408: 'Request Timeout',
   429: 'Too Many Requests',
   500: 'Internal Server Error',
@@ -44,6 +67,12 @@ const COMMON_HTTP_STATUS_TEXT: Record<number, string> = {
   503: 'Service Unavailable',
   504: 'Gateway Timeout',
 };
+
+const DEFAULT_FAILURE_MESSAGE = 'The request ended unexpectedly.';
+const PROTOCOL_PEER_ERROR_MARKERS = [
+  'Antseed is a peer-to-peer network.',
+  'Original Response:',
+];
 
 function collectErrorSignals(
   value: unknown,
@@ -103,7 +132,7 @@ function collectErrorSignals(
     }
   }
 
-  for (const key of ['code', 'errorCode', 'name']) {
+  for (const key of ['code', 'errorCode', 'name', 'type']) {
     const field = record[key];
     if (typeof field === 'string' && field.trim().length > 0) {
       state.errorCodes.push(field.trim());
@@ -141,7 +170,8 @@ function parseStatusCodeFromText(text: string): number | undefined {
     /\bstatus(?:\s+code)?\s*(?:=|:)?\s*(\d{3})\b/i,
     /\bhttp\s*(\d{3})\b/i,
     /\bresponse failed:\s*(\d{3})\b/i,
-    /\b(\d{3})\s+(?:bad gateway|gateway timeout|service unavailable|too many requests|request timeout|internal server error)\b/i,
+    /"status"\s*:\s*(\d{3})\b/i,
+    /\b(\d{3})\s+(?:bad gateway|gateway timeout|service unavailable|too many requests|request timeout|internal server error|forbidden|unauthorized)\b/i,
   ];
 
   for (const pattern of patterns) {
@@ -167,11 +197,118 @@ function describeHttpStatus(statusCode: number): string {
   return COMMON_HTTP_STATUS_TEXT[statusCode] ?? 'HTTP Error';
 }
 
+type EmbeddedErrorBody = {
+  message: string;
+  /** The body's error identifier (`error` string, or nested `code`/`type`). */
+  errorId?: string;
+};
+
+/**
+ * Error identifiers the buyer proxy / payment negotiator author themselves.
+ * Only these bodies get their `message` displayed verbatim outside the
+ * marker-gated buyer-fault branch — an arbitrary seller error body must not
+ * be able to put attacker-chosen prose into the chat as a system message.
+ */
+const BUYER_AUTHORED_ERROR_IDS = new Set([
+  ANTSEED_BUYER_FAULT_ERROR_CODE,
+  'payment_negotiation_failed',
+  'buyer_payments_inactive',
+  'payment_required',
+]);
+
+/**
+ * Pull the human-readable `message` field (and the error identifier) out of
+ * an error body embedded in the failure text — agents wrap proxy JSON bodies
+ * as "unexpected status 503 {json}". The buyer proxy and negotiator author
+ * these messages for display; prefer them over generic HTTP boilerplate or a
+ * raw JSON blob.
+ */
+function extractEmbeddedErrorBody(raw: string): EmbeddedErrorBody | undefined {
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as Record<string, unknown>;
+      const nested = parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error)
+        ? parsed.error as Record<string, unknown>
+        : undefined;
+      const message = [nested?.message, parsed.message].find(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+      );
+      const errorId = [parsed.error, nested?.code, nested?.type, parsed.code]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      if (message && !message.trimStart().startsWith('{')) {
+        return { message: message.trim(), ...(errorId ? { errorId } : {}) };
+      }
+    } catch {
+      // Truncated or wrapped JSON — fall through to the field regexes.
+    }
+  }
+  const messageMatch = /"message"\s*:\s*"((?:[^"\\]|\\.)+)"/.exec(raw);
+  if (!messageMatch) return undefined;
+  try {
+    const decoded = (JSON.parse(`"${messageMatch[1]}"`) as string).trim();
+    if (decoded.length === 0) return undefined;
+    const idMatch = /"(?:error|code|type)"\s*:\s*"([A-Za-z0-9_.-]+)"/.exec(raw);
+    return { message: decoded, ...(idMatch ? { errorId: idMatch[1] } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Buyer-side faults the proxy reports as a structured 503 rather than a
+ * peer-blaming 502. Matched on the codes the proxy and negotiator emit.
+ */
+function isBuyerFault(errorCodes: string[]): boolean {
+  return errorCodes.some((code) => code.toLowerCase() === ANTSEED_BUYER_FAULT_ERROR_CODE);
+}
+
+/** The buyer-fault code as a JSON field, as it appears in a stringified proxy error body. */
+const BUYER_FAULT_JSON_MARKER = new RegExp(
+  `"(?:code|type|errorCode)"\\s*:\\s*"${ANTSEED_BUYER_FAULT_ERROR_CODE}"`,
+  'i',
+);
+
+function buildBuyerFaultMessage(normalized: string, statusCode: number): string {
+  if (/chain[-_ ]rpc|rpc (?:url|endpoint)|could not reach.*rpc|unreachable.*rpc/i.test(normalized)) {
+    return 'Could not reach the chain RPC to check your deposits. '
+      + 'Check your network and the RPC URL in chain settings, then retry.';
+  }
+  if (/deposit|balance is too low|insufficient buyer/i.test(normalized)) {
+    return 'Your deposit balance is too low to open a payment channel. '
+      + 'Top up your deposits and retry.';
+  }
+  return `The request failed on this device (HTTP ${String(statusCode)}). `
+    + 'This is a buyer-side problem, not the peer — check your deposits, network and chain settings.';
+}
+
 function buildHttpErrorMessage(statusCode: number, retryable: boolean): string {
   const statusText = describeHttpStatus(statusCode);
   return retryable
     ? `The stream stopped with HTTP ${String(statusCode)} (${statusText}). You can retry.`
     : `The stream stopped with HTTP ${String(statusCode)} (${statusText}).`;
+}
+
+function isSafeHttpErrorMessage(message: string): boolean {
+  if (message.length === 0 || /<\/?(?:html|head|body|script|style)\b/i.test(message)) {
+    return false;
+  }
+  if (!/[{}]/.test(message)) {
+    return true;
+  }
+  return PROTOCOL_PEER_ERROR_MARKERS.every((marker) => message.includes(marker));
+}
+
+function extractHttpErrorMessage(rawMessage: string, statusCode: number): string | undefined {
+  const statusPrefix = new RegExp(
+    `^\\s*(?:(?:unexpected\\s+)?(?:http\\s+)?status(?:\\s+code)?\\s*[:=-]?\\s*)?${String(statusCode)}\\b\\s*[:=-]?\\s*`,
+    'i',
+  );
+  const message = rawMessage
+    .replace(statusPrefix, '')
+    .replace(/,\s*url:\s*\S+\s*$/i, '')
+    .trim();
+  return isSafeHttpErrorMessage(message) ? message : undefined;
 }
 
 export function classifyChatStreamFailure({
@@ -184,10 +321,23 @@ export function classifyChatStreamFailure({
     signals.messages.push(message.trim());
   }
 
-  const rawMessage = uniqueStrings(signals.messages).join(' | ') || 'The stream stopped before completion.';
+  const rawMessage = uniqueStrings(signals.messages).join(' | ') || DEFAULT_FAILURE_MESSAGE;
   const normalized = rawMessage.toLowerCase();
+  const embedded = extractEmbeddedErrorBody(rawMessage);
+  // Outside the marker-gated buyer-fault branch, only display messages from
+  // bodies the buyer side authors itself — never arbitrary seller prose.
+  const buyerAuthoredMessage = embedded?.errorId && BUYER_AUTHORED_ERROR_IDS.has(embedded.errorId)
+    ? embedded.message
+    : undefined;
   const statusCode = signals.statusCodes[0] ?? parseStatusCodeFromText(rawMessage);
   const errorCode = signals.errorCodes.find(Boolean) ?? parseErrorCodeFromText(rawMessage);
+  // Agents often surface the proxy's JSON body as plain text, so also detect
+  // the buyer-fault marker as a JSON code field inside the message. Matching
+  // the JSON field (not the bare word) matters: the proxy scrubs these code
+  // fields from peer-authored bodies, so a seller echoing the marker as prose
+  // cannot spoof buyer-fault classification.
+  const buyerFault = isBuyerFault(signals.errorCodes)
+    || BUYER_FAULT_JSON_MARKER.test(rawMessage);
 
   // Keep the text-based abort match narrow so transport-side aborts (e.g.
   // "connection aborted by remote") aren't misclassified as user-initiated.
@@ -223,13 +373,55 @@ export function classifyChatStreamFailure({
     };
   }
 
+  // The buyer rewrites a seller's free-tier 429 from its numbers, so its
+  // message is safe to show; retrying would only hit the same limit.
+  const freeTier = extractFreeTierLimit(rawMessage);
+  if (freeTier) {
+    return {
+      kind: 'http_error',
+      source: 'upstream',
+      retryable: false,
+      message: embedded?.message ?? 'This seller\'s free limit is used up.',
+      statusCode: 429,
+      errorCode: FREE_TIER_EXHAUSTED_ERROR_ID,
+      freeTier,
+    };
+  }
+
+  if (buyerFault) {
+    const buyerStatusCode = statusCode ?? 503;
+    return {
+      kind: 'http_error',
+      source: 'transport',
+      retryable: false,
+      // The proxy/negotiator author their fault messages for display — show
+      // them verbatim; fall back to the curated heuristics otherwise. This
+      // branch is gated on the buyer-fault marker (which the proxy scrubs
+      // from peer bodies), so the embedded message is buyer-authored.
+      message: embedded?.message ?? buildBuyerFaultMessage(normalized, buyerStatusCode),
+      statusCode: buyerStatusCode,
+      ...(errorCode ? { errorCode } : {}),
+    };
+  }
+
   if (typeof statusCode === 'number') {
-    const retryable = statusCode >= 500 || statusCode === 429;
+    // 503 from the buyer proxy means the fault is on our side — empty deposits,
+    // an unreachable chain RPC, bad config. Retrying, or worse failing over to
+    // another peer, would walk the whole peer list while hiding the one thing
+    // the user actually needs to fix.
+    // 401/403 are seller-level rejections (the seller's upstream revoked or
+    // blocked it) — the buyer proxy re-routes those to another seller, so a
+    // retry goes somewhere new instead of repeating the same refusal.
+    const retryable = statusCode >= 500 || statusCode === 429 || statusCode === 403 || statusCode === 401;
+    const embeddedWithHint = buyerAuthoredMessage && retryable && !/\bretry\b/i.test(buyerAuthoredMessage)
+      ? `${buyerAuthoredMessage} You can retry.`
+      : buyerAuthoredMessage;
+    const surfacedMessage = extractHttpErrorMessage(rawMessage, statusCode);
     return {
       kind: 'http_error',
       source: 'upstream',
       retryable,
-      message: buildHttpErrorMessage(statusCode, retryable),
+      message: embeddedWithHint ?? surfacedMessage ?? buildHttpErrorMessage(statusCode, retryable),
       statusCode,
       ...(errorCode ? { errorCode } : {}),
     };
@@ -259,9 +451,7 @@ export function classifyChatStreamFailure({
       kind: 'stream_error',
       source: 'upstream',
       retryable: false,
-      message: rawMessage === 'The stream stopped before completion.'
-        ? rawMessage
-        : `The stream stopped before completion: ${rawMessage}`,
+      message: buyerAuthoredMessage ?? rawMessage,
       ...(errorCode ? { errorCode } : {}),
     };
   }
@@ -270,11 +460,21 @@ export function classifyChatStreamFailure({
     kind: 'unknown',
     source: 'unknown',
     retryable: false,
-    message: rawMessage === 'The stream stopped before completion.'
-      ? rawMessage
-      : `The stream stopped before completion: ${rawMessage}`,
+    message: buyerAuthoredMessage ?? rawMessage,
     ...(errorCode ? { errorCode } : {}),
   };
+}
+
+/**
+ * A free-tier refusal never clears on retry, so cancel the agent's automatic
+ * backoff and show the limit notice at once. Call from `auto_retry_start`:
+ * the agent arms its abort signal right after emitting it, so the cancel runs
+ * on the next microtask. Returns whether the retry was cancelled.
+ */
+export function cancelFreeTierRetry(reason: ChatStreamStopReason, session: { abortRetry(): void }): boolean {
+  if (!reason.freeTier && reason.kind !== 'payment_required') return false;
+  queueMicrotask(() => session.abortRetry());
+  return true;
 }
 
 export function formatChatStreamStopForLog(reason: ChatStreamStopReason): string {
@@ -287,4 +487,71 @@ export function formatChatStreamStopForLog(reason: ChatStreamStopReason): string
   }
   parts.push(reason.retryable ? 'retryable' : 'non-retryable');
   return `${parts.join(', ')}: ${reason.message}`;
+}
+
+/** Gateway error identifiers that mean "this key cannot pay for the request". */
+const GATEWAY_FUNDS_ERROR_IDS = new Set([
+  'payment_required',
+  'insufficient_quota',
+  'insufficient_funds',
+  'insufficient_balance',
+  'insufficient_deposits',
+  'spend_limit_reached',
+]);
+
+// "out of Antseed credits": the buyer's and the gateway's own wording, which can arrive without the 402.
+const FUNDS_TEXT = /\binsufficient[ _-]?(?:funds|balance|credits?|quota|deposits)\b|\bpayment[ _-]required\b|\bbalance is too low\b|\bout of Antseed credits\b/i;
+
+export const GATEWAY_FUNDS_MESSAGE = 'Your balance is too low for this request. Add funds and try again.';
+
+/**
+ * Reframes a classified failure for a gateway client. A 402 or an
+ * insufficient-funds body becomes `payment_required` (never retried; the chat
+ * offers "Add funds"), keeping the gateway's own message — it names the spend
+ * limit that was hit. A 401 means the gateway no longer accepts our key.
+ */
+export function toGatewayStopReason(reason: ChatStreamStopReason, rawMessage = ''): ChatStreamStopReason {
+  if (reason.kind === 'aborted' || reason.kind === 'payment_required') return reason;
+  const embedded = rawMessage ? extractEmbeddedErrorBody(rawMessage) : undefined;
+  const fundsErrorId = embedded?.errorId && GATEWAY_FUNDS_ERROR_IDS.has(embedded.errorId) ? embedded.errorId : undefined;
+  const errorIdInText = !fundsErrorId
+    ? [...GATEWAY_FUNDS_ERROR_IDS].find((id) => rawMessage.includes(`"${id}"`))
+    : undefined;
+  if (reason.statusCode === 402 || fundsErrorId || errorIdInText || FUNDS_TEXT.test(rawMessage)) {
+    const errorCode = fundsErrorId ?? errorIdInText ?? reason.errorCode;
+    return {
+      kind: 'payment_required',
+      source: 'billing',
+      retryable: false,
+      // Only a key spend limit keeps the gateway's wording (it names the
+      // limit); the buyer's own out-of-funds text points at the CLI.
+      message: errorCode === 'spend_limit_reached' && embedded?.message ? embedded.message : GATEWAY_FUNDS_MESSAGE,
+      ...(reason.statusCode ? { statusCode: reason.statusCode } : {}),
+      ...(errorCode ? { errorCode } : {}),
+    };
+  }
+  if (reason.statusCode === 401) {
+    return {
+      ...reason,
+      retryable: false,
+      message: 'The gateway rejected the API key (HTTP 401). Check the gateway key in Settings.',
+    };
+  }
+  return reason;
+}
+
+export const REPLY_CUT_OFF_MESSAGE = 'The connection dropped, so this reply may be incomplete. You can ask to continue.';
+
+/**
+ * Text with no output tokens counted: a stream's last chunk, which carries the
+ * usage, may never have come. Only a hint, since some sellers report no usage
+ * at all; the caller checks whether the stream reached its end.
+ */
+export function isReplyCutOff(message: {
+  stopReason: string;
+  content: ReadonlyArray<{ type: string; text?: string }>;
+  usage: { output: number };
+}): boolean {
+  if (message.stopReason !== 'stop' || message.usage.output > 0) return false;
+  return message.content.some((block) => block.type === 'text' && (block.text ?? '').trim().length > 0);
 }

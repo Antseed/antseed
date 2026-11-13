@@ -1,258 +1,278 @@
-# Join AntSeed as a Buyer (Client)
+---
+name: join-buyer
+description: Set the user up with their own Antseed gateway, run as the Gateway Console at http://localhost:8379/console, and connect their tools to it with an Antseed API key. Use when the user asks to install Antseed, become an Antseed buyer, use Antseed from the CLI, route a tool or agent through Antseed, or fund Antseed.
+---
 
-Help the user set up an AntSeed buyer node to consume AI services from the peer-to-peer network. Walk them through installation, funding, and connecting their existing tools (Aider, Continue.dev, Cursor, or any OpenAI-compatible client) through the local proxy.
+# Join Antseed with a Gateway
 
-## Overview
+Set the user up to consume AI models from the Antseed peer-to-peer network through their own **gateway**. This file is also served at https://antseed.com/skill.md. Per-tool setup pages live at https://antseed.com/integrations.
 
-A **buyer** (client) routes AI requests through the AntSeed network instead of directly to an API provider. A local HTTP proxy intercepts requests and forwards them to the best available peer. The buyer pays per-token in USDC via on-chain payment channels. From the tool's perspective, it's just hitting a different base URL.
+The result is an OpenAI- and Anthropic-compatible API at `http://localhost:8379/v1` (or `https://<domain>/v1` on a server), protected by Antseed API keys, plus a web console at `/console` where the user funds the wallet, creates keys, picks models and reads the request log.
 
-**Requirements:**
-- Node.js 20+
-- An EVM wallet funded with USDC (for payments) and ETH (for gas) on Base
+## Picture
 
-## Step 1: Install the CLI
+```
+Your tool / agent  →  gateway :8379 (API keys, budgets, console)  →  buyer :8377  →  Antseed P2P  →  Provider peer
+```
+
+- The gateway checks the API key, applies budgets and routing policies, logs the request, and hands it to the buyer. `antseed gateway start` starts the buyer too.
+- The buyer discovers providers over the DHT, opens a payment channel per provider and signs a per-request voucher. Providers do all on-chain work; the wallet never needs ETH.
+- Payment is per request in USDC on Base, from the workspace's wallet. Funds can come from a card checkout in the console or from USDC sent on Base. Nothing is prepaid to Antseed.
+
+## Prerequisites
+
+- macOS or Linux, Node.js 20+ and `npm` (the installer handles a Linux server with systemd itself).
+- No account. Models that a seller serves for free need no funds; for a user without funds, follow **Free models only** in Step 3.
+
+## Parameters
+
+Use these values; ask the user only for what you cannot infer:
+
+- `where` — `local` (default: this computer) or `server` (always-on Linux host)
+- `domain` — for `server`: a hostname whose DNS points at the server, to serve HTTPS. Without it, the gateway listens only on the server.
+- `tool` — what to connect: `claude-code`, `codex`, `opencode`, `hermes`, `openclaw`, `cursor`, `python`, `curl`, or `any` (default: any OpenAI-compatible client)
+
+Run the steps in order. Steps 2 and 3 need the user in a browser; wait for them.
+
+## Step 1: Install and start the gateway
+
+One line:
+
+```bash
+curl -fsSL https://antseed.com/install.sh | bash
+```
+
+- **macOS**: installs `@antseed/cli` with npm, starts `antseed gateway start` in the background and prints the console setup link.
+- **Linux desktop session or WSL**: same as macOS (per-user, no sudo). Add `--local` to force this anywhere: `curl -fsSL https://antseed.com/install.sh | bash -s -- --local`.
+- **Linux with systemd and no desktop session (e.g. over SSH), or with any server option**: runs the server installer with `sudo`, which installs the gateway and buyer as services. Add `--server` to force it. For HTTPS at a hostname: `curl -fsSL https://antseed.com/install.sh | bash -s -- --domain <host>`. The server installer prints a summary with the base URL, a first API key labelled `admin` (shown once), the wallet address, the console URL and the setup link. See https://antseed.com/docs/gateway/server.
+
+Manual alternative (any machine with Node.js):
 
 ```bash
 npm install -g @antseed/cli
+antseed gateway start          # also starts the buyer; keep it running
 ```
 
-Verify with `antseed --version`.
+```
+API-key gateway listening on http://127.0.0.1:8379/v1
+Console: http://localhost:8379/console
+The console has no owner yet. Get a one-time setup link with `antseed gateway console-link`.
+```
 
-## Step 2: Decide whether you need custom config
-
-You do **not** need a pre-existing `~/.antseed/config.json` to start as a buyer. `antseed buyer start` works with built-in defaults:
-
-- router: `local`
-- proxy port: `8377`
-- buyer pricing caps from the CLI defaults
-
-Only create `~/.antseed/config.json` if you want advanced customization such as max pricing, bootstrap nodes, or chain settings.
-
-## Step 3: Set the identity
-
-The buyer needs an EVM private key. This key is used for P2P identity, on-chain deposits, and signing payment messages.
-
-Set it via environment variable:
+Then, in another terminal:
 
 ```bash
-export ANTSEED_IDENTITY_HEX=<64-char-hex-private-key>
+antseed gateway console-link
+# Console setup link (single use, valid for 1 hour):
+#   http://localhost:8379/console/setup#…
 ```
 
-The key can optionally include a `0x` prefix. The EVM address derived from this key becomes the buyer's Peer ID and wallet address.
+Installs take 1–3 minutes; use a long timeout. Run `antseed gateway start` as a background process or service and keep it running after setup. On a server installed with an encrypted wallet passphrase, run CLI commands as `sudo antseed …`.
 
-For persistent setups, add it to a `.env` file. **Never commit the private key to version control.**
+## Step 2: The user claims the console
 
-## Step 4: Optional config customization
+Give the user the setup link and ask them to open it. **Do not open it or register a passkey yourself**: whoever claims the console becomes the owner and controls the workspace wallets.
 
-If you want non-default behavior, create or edit `~/.antseed/config.json`:
+1. The page says **Set up your Antseed console**.
+2. The user clicks **Create a passkey** (or **Sign in with a wallet**).
 
-```json
-{
-  "buyer": {
-    "minPeerReputation": 50,
-    "maxPricing": {
-      "defaults": {
-        "inputUsdPerMillion": 25,
-        "cachedInputUsdPerMillion": 12,
-        "outputUsdPerMillion": 75
-      }
-    }
-  },
-  "payments": {
-    "preferredMethod": "crypto",
-    "crypto": {
-      "chainId": "base-mainnet"
-    }
-  }
-}
-```
+The link works once and expires after one hour; `antseed gateway console-link` prints a fresh one. If the console already has an owner, the command prints the console URL instead; `antseed gateway console-link --recover` gives a recovery link.
 
-Supported chains:
-- `base-mainnet` — Base L2 (production)
-- `base-sepolia` — Base Sepolia testnet (for testing)
-
-## Step 5: Fund your account when you need payments
-
-The buyer needs USDC deposited into the AntSeed deposits contract to pay for requests.
+Passkeys are bound to the hostname they were made on. They work on `localhost` and `https://` hostnames, not on bare IP addresses or plain-HTTP hostnames. A passkey made on `localhost` does not work at the server's domain later, and all gateways on `localhost` share passkeys. For a server without `--domain`, have the user forward the port and open the link on their machine:
 
 ```bash
-# Check wallet and deposit balance
-antseed buyer balance
-
-# Deposit USDC into the deposits contract
-antseed buyer deposit 10
+ssh -N -L 8379:127.0.0.1:8379 <user>@<server>
 ```
 
-The balance command shows:
-- **Wallet USDC** — USDC in your EVM wallet
-- **Deposited** — USDC in the deposits contract (available for payments)
-- **Reserved** — USDC locked in active payment channels
-- **Available** — deposited minus reserved (can be used for new channels)
+## Step 3: The user adds funds
 
-You can withdraw unused deposits at any time:
+Skip this if the user only wants free models, and set up **Free models only** below instead.
+
+The user opens **Wallet & Funding** and clicks **Add funds**, then either:
+
+- **Deposit by card**: a Crossmint checkout inside the console ($1–$200 per payment; not available in every region), or
+- **Quick deposit**: send USDC on Base to the workspace's address (QR code shown), from an exchange withdrawal or another wallet. The first deposit into a wallet must be at least $1.
+
+The balance updates by itself once funds arrive. **Never send funds yourself and never suggest an amount**; the user decides. Details: https://antseed.com/docs/gateway/funding.
+
+### Free models only
+
+Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of Antseed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host. Save the current gateway policy first, then add the caps with `--merge`, which keeps any sellers, models, TEE or other rules already set:
 
 ```bash
-antseed buyer withdraw 5
+antseed gateway routing show --json > ~/routing-before-free.json
+echo '{"maxInputUsdPerMillion":0,"maxOutputUsdPerMillion":0,"maxCachedInputUsdPerMillion":0,"maxImageUsdPerImage":0}' > ~/free-only-caps.json
+antseed gateway routing set --merge --file ~/free-only-caps.json
 ```
 
-## Step 6: Optional buyer preferences
+Without `--merge`, `routing set` replaces the whole policy. The token caps cover text models, and `maxImageUsdPerImage` covers image models (it has no CLI flag, so the caps go in a file). A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. What the caps don't make free:
+
+- Video and speech models are priced per second or per character, not per token, so the caps refuse every video and speech seller, free ones included.
+- Routing services (`<routerPeerId>@<routerServiceId>`) charge per ranking and no cap applies to them. Don't use one for a user without funds.
+ When the user adds funds and wants paid models, put the saved policy back:
 
 ```bash
-# Max pricing (USD per 1M tokens) — reject peers charging more
-antseed config buyer set maxPricing.defaults.inputUsdPerMillion 25
-antseed config buyer set maxPricing.defaults.cachedInputUsdPerMillion 12
-antseed config buyer set maxPricing.defaults.outputUsdPerMillion 75
-
-# Minimum peer reputation score (0-100, higher = stricter)
-antseed config buyer set minPeerReputation 50
-
+antseed gateway routing set --file ~/routing-before-free.json
 ```
 
-These settings are optional. Skip them if the defaults are fine.
+Pick a model with a free seller in Step 5.
 
-Advanced: if you intentionally want a non-default proxy port:
+Headless only (no browser available): the Default workspace pays from the buyer's `default` wallet, so `antseed buyer deposit --no-watch` prints its address and a QR code. For another workspace, `antseed gateway workspace show <workspace>` prints its wallet address. The running buyer deposits incoming USDC automatically. Card checkout is only in the console.
+
+## Step 4: Create an API key
+
+Preferred: the user opens **Keys**, clicks **Create key**, enters a **Name** and copies the secret (`antseed_…`). It is shown once.
+
+On the gateway host you can create one instead:
 
 ```bash
-antseed config buyer set proxyPort 8888
+antseed gateway key create --label "<tool name>"
+# Optional: --workspace <name>, --daily-limit / --weekly-limit / --monthly-limit / --total-limit <usd>, --expires-in-days <n>
 ```
 
-## Step 7: Verify readiness
+It prints `API key: antseed_…` once. Put the secret straight into the tool's config or an environment variable (`ANTSEED_API_KEY`) and do not echo it again, log it or paste it into chat output. `antseed gateway key list` shows keys without secrets; `antseed gateway key revoke <keyId>` revokes one.
+
+## Step 5: Point the tool at the gateway
+
+Use the base URL shown in the console's top bar: `http://localhost:8379/v1` locally, `https://<domain>/v1` on a server. The key is always sent as `Authorization: Bearer <key>`.
+
+Models: copy ids from the console's **Models** page. A bare id (`deepseek-v4-flash`, `kimi-k2.6`, `gpt-oss-120b`) lets the gateway pick the best provider and fail over. `<peerId>@deepseek-v4-flash` pins one provider; use it only when the user asks to pin.
+
+Without funds, use a model with a free seller. This lists the ones automatic routing will use (free, and at or above the default minimum trust score of 60):
 
 ```bash
-antseed buyer status
+curl -s http://localhost:8379/v1/models -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  | jq -r '.data[] | select(.type == "text" and any(.peers[]; .inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.effectiveReputationScore // 0) >= 60)) | .id'
 ```
 
-Checks:
-- Identity exists
-- Deposits contract balance > 0
-- Chain config resolved
+The list changes as sellers come and go. `antseed gateway routing preview --model <id>` shows which seller a request would go to and its price. Free sellers can limit requests (`429 free_tier_exhausted`), and a model named `…-free-for-stakers` is free only to buyers staked on that seller. The examples below use `deepseek-v4-flash`, which had a free seller when this was written; swap in a model from the list if it is not there.
 
-## Step 8: Start the proxy
+### Any OpenAI-compatible tool or SDK (Cursor, Python, JS)
 
 ```bash
-antseed buyer start
+export OPENAI_BASE_URL=http://localhost:8379/v1
+export OPENAI_API_KEY="$ANTSEED_API_KEY"
 ```
-
-This will:
-1. Join the P2P network via DHT bootstrap nodes
-2. Discover available providers matching buyer preferences
-3. Start a local HTTP proxy on port 8377
-4. Automatically negotiate payment channels with providers
-
-Advanced: custom port override for the current run only:
-
-```bash
-antseed buyer start -p 8888
-```
-
-If you already put `proxyPort` in `config.json`, you can still just run `antseed buyer start` with no extra flags.
-
-## Step 9: Point your tools at the proxy
-
-The proxy is API-compatible with the OpenAI chat completions format. Set environment variables so your tools route through AntSeed:
-
-### Any OpenAI-compatible tool
-
-```bash
-export OPENAI_BASE_URL=http://localhost:8377
-export OPENAI_API_KEY=antseed
-```
-
-### Aider
-
-```bash
-export OPENAI_BASE_URL=http://localhost:8377
-export OPENAI_API_KEY=antseed
-aider --model openai/kimi-k2.5
-```
-
-### Continue.dev (VS Code)
-
-In `.continue/config.json`:
-
-```json
-{
-  "models": [{
-    "provider": "openai",
-    "model": "deepseek-v3.1",
-    "apiBase": "http://localhost:8377",
-    "apiKey": "antseed"
-  }]
-}
-```
-
-### Cursor
-
-Set the API base URL to `http://localhost:8377` and API key to `antseed` in Cursor's OpenAI model settings.
-
-### Python / direct HTTP
 
 ```python
+import os
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8377", api_key="antseed")
-response = client.chat.completions.create(
-    model="kimi-k2.5",
-    messages=[{"role": "user", "content": "Hello"}]
-)
+client = OpenAI(base_url="http://localhost:8379/v1", api_key=os.environ["ANTSEED_API_KEY"])
+r = client.chat.completions.create(model="deepseek-v4-flash", messages=[{"role": "user", "content": "Hello"}])
 ```
 
-The API key value doesn't matter when going through the proxy — set it to any non-empty string.
+### Anthropic-format clients (Claude Code, Anthropic SDK)
 
-## Step 10: Browse available services and pick a peer
-
-The buyer proxy does not auto-select peers — every request returns `no_peer_pinned` until you pin one. Browse the network, pick a peer that offers the service you want, and pin it:
+The base URL has **no** `/v1`. Use a bearer token (`ANTHROPIC_AUTH_TOKEN` / `authToken`), not `ANTHROPIC_API_KEY`, which is sent as `x-api-key` and rejected by the gateway.
 
 ```bash
-antseed network browse                              # peers + their services
-antseed network peer <peerId>                       # full pricing/metadata for one peer
-antseed buyer connection set --peer <peerId>        # pin for this session (survives restart)
+export ANTHROPIC_BASE_URL=http://localhost:8379
+export ANTHROPIC_AUTH_TOKEN="$ANTSEED_API_KEY"
+export ANTHROPIC_MODEL=deepseek-v4-flash
+claude
 ```
 
-Or pass `x-antseed-pin-peer: <peerId>` as a per-request header if the caller can inject headers.
+### Codex
 
-## Step 11: Monitor usage
+Prefer a preset as the model: `@preset/<slug>`, a model with default parameters and a routing policy, from the console's **Presets** page. A new gateway has no presets, so create one on the gateway host first:
 
 ```bash
-# View payment channels and spending
-antseed buyer channels
-
-# View per-peer metering
-# (available via the proxy while connected)
-curl http://localhost:8377/_antseed/metering/<peer-id>
-
-# Launch the web dashboard
-antseed dashboard
+antseed gateway preset create --slug coder --name Coder --model deepseek-v4-flash
 ```
 
-## Payment flow (automatic)
+Then add a provider to `~/.codex/config.toml`:
 
-The payment flow is fully automatic — no manual intervention needed:
+```toml
+model = "@preset/coder"
+model_provider = "antseed"
 
-1. Buyer sends a request through the proxy
-2. Provider responds with `402 Payment Required`
-3. Buyer signs a `ReserveAuth` (locks USDC in escrow)
-4. Provider calls `reserve()` on-chain
-5. For each request, buyer signs a `SpendingAuth` (cumulative amount)
-6. Provider settles or closes the channel when done
+[model_providers.antseed]
+name = "Antseed gateway"
+base_url = "http://localhost:8379/v1"
+env_key = "ANTSEED_API_KEY"
+wire_api = "responses"
+```
 
-All signing happens with the identity key. No additional wallets or browser extensions needed.
+The `antseed claude | codex | opencode` wrappers target the local buyer proxy by default and send a placeholder key. Against the gateway, configure the tools directly as above.
+
+### Hermes and OpenClaw
+
+Use the dedicated skills, which cover their provider schemas: `skills/hermes-antseed` and `skills/openclaw-antseed` in the Antseed repository. Give them the gateway base URL and API key. See https://antseed.com/docs/agents.
+
+### Agents on another machine
+
+A local gateway is only reachable on its own machine. For agents elsewhere, run the gateway on a server with `--domain` (Step 1), or move the local one there: https://antseed.com/docs/gateway/migrate.
+
+## Step 6: Verify
+
+```bash
+curl -s http://localhost:8379/v1/models -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'
+
+curl http://localhost:8379/v1/chat/completions \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Then have the user open **Logs** in the console: the request is at the top with its model, provider, status and cost (cost can show `pending` for a moment). `curl -s http://localhost:8379/v1/key -H "Authorization: Bearer $ANTSEED_API_KEY"` shows the key's usage and limits.
+
+## Without a gateway (local buyer proxy only)
+
+For a single local tool with no keys, budgets or console, run just the buyer:
+
+```bash
+npm install -g @antseed/cli
+antseed buyer start             # OpenAI/Anthropic API at http://localhost:8377, no API key
+antseed buyer deposit           # paid models only: funding address + QR for USDC on Base
+antseed claude --model deepseek-v4-flash
+```
+
+For free text models only, start the buyer with its token price caps at zero, so it never routes a text request to a paid seller: `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`. These caps don't cover image models, which can still go to a paid seller, so for a free-only setup that includes images, use the gateway and its caps above.
+
+The wrappers `antseed claude | codex | opencode` work against it unchanged. Full guide: https://antseed.com/docs/api.
+
+## Safety and Output Rules
+
+- Never print, paste or log API key secrets beyond writing them into the user's tool config, and never print wallet private keys, `identity.key`, `ANTSEED_IDENTITY_HEX`, `ANTSEED_PASSPHRASE`, `/etc/antseed/wallet.env` or config files that hold them. Refer to them by path.
+- Never open a setup, recovery or invite link yourself, and never register a passkey or wallet sign-in for the user.
+- Do not expose ports 8379 or 8377 beyond loopback: no `--host 0.0.0.0`, port forwards or ad-hoc reverse proxies. For remote access use the server installer with `--domain`, a Cloudflare tunnel, or an SSH forward.
+- Never send funds, never invent funding amounts, and never send USDC anywhere except a workspace address shown by the console or the CLI, on Base only.
+- Do not construct `<peerId>@<model>` unless the user asks to pin a provider. For a user without funds, use the free-only cap in Step 3 rather than pins.
+- Long-running commands (`curl … | bash`, `npm install -g`, `antseed gateway start`) need a long timeout or a background process. Keep the gateway running after setup.
+- After setup, tell the user the base URL, the console URL, the tool configuration you applied (without the secret) and whether funds are needed.
 
 ## Verification checklist
 
 - [ ] `antseed --version` prints a version
-- [ ] `antseed buyer balance` shows deposited USDC > 0
-- [ ] `antseed buyer status` shows the proxy is ready
-- [ ] `antseed buyer start` starts without errors
-- [ ] `curl http://localhost:8377/v1/models` returns available models
-- [ ] Tools work with `OPENAI_BASE_URL=http://localhost:8377`
+- [ ] `antseed gateway start` logs `API-key gateway listening on http://127.0.0.1:8379/v1`
+- [ ] The user claimed the console and can sign in
+- [ ] For paid models: **Wallet & Funding** shows an available balance
+- [ ] `GET /v1/models` with the key lists models
+- [ ] The user's tool answers a prompt, and the request appears in **Logs**
 
 ## Troubleshooting
 
-- **"Payment setup failed"**: Check `antseed buyer balance` — you need deposited USDC. Run `antseed buyer deposit <amount>`.
-- **"No peers found"**: The network may be sparse. Try `antseed network browse` to check. Add bootstrap nodes to config if needed.
-- **`no_peer_pinned`**: Pin a peer with `antseed buyer connection set --peer <peerId>` (see Step 10) or send the `x-antseed-pin-peer` header.
-- **"Lock confirmation timed out"**: The provider's on-chain reserve is slow. This is usually a testnet issue — retry the request.
-- **"Connection refused on 8377"**: Make sure `antseed buyer start` is still running.
-- **Tool says "invalid API key"**: Set the API key env var to any non-empty value (e.g., `antseed`).
-- **Slow first request**: The first request discovers and connects to a peer via DHT (5-10s). Subsequent requests reuse the connection.
-- **"existing_channel_still_active"**: A previous channel wasn't cleanly closed. Restart `antseed buyer start` to reset state.
+- **`401 invalid_api_key` / `key_revoked` / `key_expired`**: wrong, revoked or expired key, or the wrong base URL. Check the `Authorization: Bearer` header; create a new key on **Keys**.
+- **`402 antseed_buyer_fault` / `insufficient_deposits`** ("You are out of Antseed credits"): the request went to a paid seller and the wallet has no funds. Have the user add funds (Step 3), or set the free-only cap in Step 3 and use a model with a free seller.
+- **`502 model_not_found`** ("No policy-allowed peer currently serves model …"): no seller that your routing policy allows serves the model. With the free-only cap, the model has no free seller; pick one from the free list in Step 5. Right after `antseed gateway start` the buyer is still discovering sellers; wait a minute and retry.
+- **`429 free_tier_exhausted`**: a free seller's rate limit, or a model that is free only to stakers. Wait, or use another free model.
+- **`402 spend_limit_reached`**: a key, member or workspace budget ran out; `error.limit` says which and `resets_at`. Wait, or have an admin raise it.
+- **`403 model_not_allowed`**: a routing policy allows only certain models. Use an allowed model; the **Routing** page shows the effective policy.
+- **`502 buyer_unavailable` / `503 spend_tracking_unavailable`**: the buyer isn't running or doesn't match the gateway. Run both from `antseed gateway start` with the same `--data-dir`.
+- **No "Sign in with a passkey" button / passkey refused**: the console is open on an IP, plain HTTP, or a different hostname than the passkey's. Open it at `http://localhost:8379` or its HTTPS domain, or sign in with a wallet.
+- **"This link is not valid"**: the setup link was used, expired or replaced. Run `antseed gateway console-link` again.
+- **"Identity at … is encrypted"**: run CLI commands on the server as `sudo antseed …`.
+- **Connection refused on 8379**: the gateway isn't running, or runs on another `--port`.
+- **Slow first request**: the first request discovers and connects to a provider (5–10s); later ones reuse the connection.
+
+More: https://antseed.com/docs/gateway/troubleshooting.
+
+## References
+
+- Quickstart: https://antseed.com/docs/quickstart
+- The gateway: https://antseed.com/docs/gateway
+- Calling the API: https://antseed.com/docs/gateway/api
+- Funding: https://antseed.com/docs/gateway/funding
+- Gateway on a server: https://antseed.com/docs/gateway/server
+- Local buyer proxy API: https://antseed.com/docs/api
+- Agents: https://antseed.com/docs/agents

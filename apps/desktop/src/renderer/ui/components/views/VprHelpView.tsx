@@ -4,6 +4,7 @@ import {
   ArrowRight01Icon,
   ArrowUpRight01Icon,
   Copy01Icon,
+  GithubIcon,
   NewTwitterIcon,
   TelegramIcon,
 } from '@hugeicons/core-free-icons';
@@ -18,241 +19,214 @@ declare const __APP_VERSION__: string;
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 
 const TELEGRAM_URL = 'https://t.me/antseed';
-const X_URL = 'https://x.com/antseedai';
+const X_URL = 'https://x.com/antseed';
 const DOCS_BASE_URL = 'https://antseed.com/docs';
+const GATEWAY_DOCS_URL = `${DOCS_BASE_URL}/gateway`;
+const DESKTOP_DOCS_URL = `${DOCS_BASE_URL}/desktop`;
+const GITHUB_ISSUES_URL = 'https://github.com/Antseed/antseed/issues/new';
 
-type HelpSection = { heading: string; body: string };
+type HelpLink = { label: string; url: string };
+type HelpSection = { heading: string; body: string; link?: HelpLink };
 type HelpArticle = {
   key: string;
   label: string;
-  /** Lead paragraph shown before the titled sections. */
   intro: string;
   sections: HelpSection[];
-  /** Docs path (appended to DOCS_BASE_URL) for the "Read more" link. */
-  docsPath: string;
+  links?: HelpLink[];
 };
 type HelpTopic = { key: string; label: string; articles: HelpArticle[] };
 
 const HELP_TOPICS: HelpTopic[] = [
   {
-    key: 'how-to',
-    label: 'How to use AntSeed',
+    key: 'getting-started',
+    label: 'Getting started',
     articles: [
       {
         key: 'what-is',
-        label: 'What is AntSeed?',
-        intro: 'AntSeed is a peer-to-peer network of AI sellers. Instead of subscribing to a single provider, your requests are routed to the best available seller for the model you choose, and you pay only for the tokens you use.',
+        label: 'What this app does',
+        intro: 'Antseed runs an AI gateway for you and connects your tools to it. Requests are served by the Antseed peer-to-peer network and paid from your balance.',
         sections: [
           {
-            heading: 'Your local router',
-            body: 'The VPR (Virtual Peer Router) runs on your machine. It discovers sellers, compares their prices and reputation, opens a payment channel with the one it picks, and forwards your app traffic to it — all locally, with your keys.',
+            heading: 'Your gateway',
+            body: 'The app runs a gateway on this computer (or uses one someone runs for you). It has an OpenAI- and Anthropic-compatible API and an API key, like any AI provider.',
           },
           {
-            heading: 'Start and stop',
-            body: 'The power button on the main screen starts and stops the router. The status strip at the bottom shows network health, your port, and how many peers and services are currently visible.',
+            heading: 'Connected apps',
+            body: 'Connect coding agents and AI clients from Agents & apps. Each app is pointed at your gateway with its key and lists the gateway’s models in its own model picker.',
+          },
+          {
+            heading: 'Usage, keys and limits',
+            body: 'Spend, request history, API keys and limits live in your gateway’s console. Use API keys at the top of the window to open it.',
           },
         ],
-        docsPath: '/getting-started/intro',
+        links: [
+          { label: 'Gateway and console', url: GATEWAY_DOCS_URL },
+          { label: 'Desktop app guide', url: DESKTOP_DOCS_URL },
+        ],
       },
       {
-        key: 'models',
-        label: 'Choose a model and seller',
-        intro: 'Open Models to browse every model available on the network, with live prices and expected savings against retail. Tap a model to see its sellers, their reputation scores, and per-token prices.',
+        key: 'console',
+        label: 'Sign in to your gateway',
+        intro: 'The first time you open your gateway’s console, you claim it: add a passkey or connect a wallet once, and sign in with it from then on.',
         sections: [
           {
-            heading: 'Set the new session model',
-            body: 'Use sets the model new sessions start on: everything you connect routes through it. With Auto select on, AntSeed keeps re-picking the best seller for that model based on your price and trust preferences.',
+            heading: 'First sign-in',
+            body: 'Manage API keys opens a one-time setup link while the console has no owner. Finish the setup in your browser; the app does not keep a password.',
           },
           {
-            heading: 'Pin a seller',
-            body: 'Prefer a specific seller? Tap it in the sellers list to pin it. Pinned sellers stay fixed until you unpin them from the model page or Preferences.',
+            heading: 'After that',
+            body: 'The same buttons open the console, where you sign in with the passkey or wallet you added.',
           },
         ],
-        docsPath: '/guides/pricing',
-      },
-      {
-        key: 'apps',
-        label: 'Connect your apps',
-        intro: 'On the main screen, click any app under "Use it on your favorite app" to connect it in one click. The app keeps its normal interface, but its AI requests now route through AntSeed.',
-        sections: [
-          {
-            heading: 'Restarts',
-            body: 'Some apps read a config file and need a restart to pick up the change — the Apps page offers a restart button next to those.',
-          },
-          {
-            heading: 'App pills and the pop-out',
-            body: 'Each connected app shows a pill on the main screen. The pop-out button detaches a small floating window you can keep above the app you are working in.',
-          },
-        ],
-        docsPath: '/getting-started/configuration',
-      },
-      {
-        key: 'float',
-        label: 'The floating window',
-        intro: 'The floating pill stays on top of other windows and follows you across desktops. It shows the routed model and live token and cost totals for the current payment channel.',
-        sections: [
-          {
-            heading: 'Switch model or pin a chat',
-            body: 'Click the model name to open the list: the New session model row changes the global route, and each recent chat can pin its own model. A chat that is receiving traffic shows a green pulse next to its name.',
-          },
-          {
-            heading: 'Back to the main window',
-            body: 'Click the AntSeed icon to bring the main window back, or the X to close the pill.',
-          },
-        ],
-        docsPath: '/faq',
-      },
-      {
-        key: 'balance',
-        label: 'Balance and payments',
-        intro: 'AntSeed is pay-per-use: you deposit USDC once, and each request is settled from a payment channel between you and the seller. There are no subscriptions and no lock-in.',
-        sections: [
-          {
-            heading: 'Add and track balance',
-            body: 'Add balance from the Profile screen with a card or USDC on Base. Your balance, reserved funds, and per-channel spending are all visible there, and unused credits can be withdrawn at any time.',
-          },
-          {
-            heading: 'How sellers get paid',
-            body: 'Sellers are paid only for what they serve, with signed vouchers per request — if a seller disappears, your remaining balance stays yours.',
-          },
-        ],
-        docsPath: '/guides/payments',
-      },
-      {
-        key: 'preferences',
-        label: 'Routing preferences',
-        intro: 'Preferences control how Auto select picks sellers for every model set to Auto.',
-        sections: [
-          {
-            heading: 'Trust, price and free peers',
-            body: 'Minimum trust score filters out sellers rated below your bar. Price preference caps what you are willing to pay per million input tokens. Prefer free peers makes no-cost sellers win ties.',
-          },
-          {
-            heading: 'Pausing auto select',
-            body: 'Turning Auto select off pauses routing decisions everywhere — connected apps stay on their last picked seller.',
-          },
-        ],
-        docsPath: '/guides/pricing',
+        links: [{ label: 'Console sign-in', url: `${GATEWAY_DOCS_URL}/sign-in` }],
       },
     ],
   },
   {
-    key: 'cannot-connect',
-    label: "I can't get connected",
+    key: 'apps',
+    label: 'Connected apps',
     articles: [
       {
-        key: 'no-peers',
-        label: 'No peers or models listed',
-        intro: 'Make sure the router is running — the power button on the main screen should be green and the status strip should read Healthy.',
+        key: 'connect',
+        label: 'Connect an app',
+        intro: 'Open Agents & apps and click Connect. The app’s own config file gets your gateway’s address and API key; Disconnect restores the original (a backup is kept next to it).',
         sections: [
           {
-            heading: 'Give discovery a moment',
-            body: 'Peer discovery can take a few seconds after startup. If the Models list stays empty, use its Refresh models button.',
+            heading: 'Choose models in the app',
+            body: 'Connected apps list your gateway’s models. Pick and switch models inside each app, the way you normally would.',
           },
           {
-            heading: 'Check your firewall',
-            body: 'If the network still looks empty, your firewall may be blocking peer-to-peer connections. AntSeed uses WebRTC data channels; allow the app through your firewall and try again.',
+            heading: 'Restart after connecting',
+            body: 'A running app keeps the settings it read at launch. Restart it, or start a new session, so it uses the gateway.',
+          },
+          {
+            heading: 'Zed',
+            body: 'Zed keeps API keys in its own keychain. After connecting, open Agents & apps → Zed’s settings, copy the API key, paste it into the Antseed provider in Zed, then choose I’ve pasted it.',
           },
         ],
-        docsPath: '/faq',
       },
       {
-        key: 'app-connect',
-        label: "An app won't connect",
-        intro: 'Try disconnecting and reconnecting the app from the Apps page. Watch the status line under the app for the current connection state and request count.',
+        key: 'other-tools',
+        label: 'Use any other tool',
+        intro: 'Any tool that accepts an OpenAI- or Anthropic-compatible base URL and API key works with your gateway.',
         sections: [
           {
-            heading: 'Config-file apps need a restart',
-            body: 'Apps that are configured through a config file (rather than a proxy) need to be restarted after connecting — use the restart button that appears on their row.',
+            heading: 'URL and key',
+            body: 'Agents & apps → Use with any other tool shows the base URL and key to paste into the tool’s settings. Send the key as a Bearer token (Authorization header).',
           },
           {
-            heading: 'Check for overrides',
-            body: 'If the app was already running with its own API settings, check it is not overriding the base URL AntSeed configured.',
+            heading: 'Cursor',
+            body: 'Cursor calls models from its own servers, so it cannot reach a gateway on this computer. It works with a gateway that has a public URL: set one in Settings → Gateway.',
           },
         ],
-        docsPath: '/getting-started/configuration',
-      },
-      {
-        key: 'trust-ca',
-        label: 'Trust the local certificate',
-        intro: 'Apps connected through the local proxy need to trust the certificate AntSeed generates, so it can serve their API domains locally.',
-        sections: [
-          {
-            heading: 'Trust the CA from Apps',
-            body: 'If requests fail with TLS or certificate errors, open Apps and use the Trust CA button that appears on the affected app when the certificate is not yet trusted.',
-          },
-          {
-            heading: 'What macOS asks for',
-            body: 'macOS asks for your password once to add the certificate to your keychain. Nothing leaves your machine — the certificate is generated locally and only used for local interception.',
-          },
-        ],
-        docsPath: '/faq',
+        links: [{ label: 'Gateway API', url: `${GATEWAY_DOCS_URL}/api` }],
       },
     ],
   },
   {
-    key: 'connected-problem',
-    label: 'I can connect but there is a problem',
+    key: 'gateway',
+    label: 'Gateway and keys',
     articles: [
       {
-        key: 'payments',
-        label: 'Requests fail with payment errors',
-        intro: 'Payment errors usually mean your available balance is too low to reserve a channel with the seller. Check the Profile screen and add balance.',
+        key: 'local-remote',
+        label: 'Local or remote gateway',
+        intro: 'By default the gateway runs on this computer and starts with the app. Settings → Gateway can point the app at a gateway someone else runs instead.',
         sections: [
           {
-            heading: 'Channel switchovers',
-            body: 'When a channel is exhausted mid-session, AntSeed settles it and opens a new one automatically — a single failed request may just be that switchover; retry it.',
+            heading: 'This computer',
+            body: 'The local gateway pays from this app’s balance and stops when you quit. Connected apps are disconnected while it is stopped and reconnected at launch.',
           },
           {
-            heading: 'Reserved funds',
-            body: 'Funds reserved for open channels are released back to your balance when channels settle or close.',
+            heading: 'Remote',
+            body: 'Enter the gateway’s URL and an API key it issued. Chat and connected apps use it directly, and keep working while this app is closed. Funding and keys are managed in that gateway’s console.',
           },
         ],
-        docsPath: '/guides/payments',
       },
       {
-        key: 'model-not-served',
-        label: '"Model is not served by this peer"',
-        intro: 'This means a request reached a seller that does not offer the requested model — usually after routing changed while an app kept its old model list.',
+        key: 'keys',
+        label: 'API keys',
+        intro: 'The app creates an API key on your local gateway and gives it to the chat and your connected apps.',
         sections: [
           {
-            heading: 'Re-select the model',
-            body: 'Re-select your model (main screen dropdown, model page, or the floating window) — this re-syncs every connected app to the new route.',
+            heading: 'One key or a key per app',
+            body: 'By default every app shares one key. Turn on A key per app in Settings to give each connected app its own key, so the console shows usage and limits per app.',
           },
           {
-            heading: 'Still stuck?',
-            body: 'If it persists, disconnect and reconnect the app from the Apps page.',
+            heading: 'Replace keys',
+            body: 'Replace keys revokes the current keys, creates new ones and updates every connected app. Running apps restart to pick up the new key.',
           },
         ],
-        docsPath: '/faq',
+        links: [{ label: 'Budgets and limits', url: `${GATEWAY_DOCS_URL}/budgets` }],
+      },
+    ],
+  },
+  {
+    key: 'payments',
+    label: 'Funding',
+    articles: [
+      {
+        key: 'funds',
+        label: 'Add funds',
+        intro: 'Add funds by card or USDC on Base. Sellers are paid from this balance as you use them.',
+        sections: [
+          {
+            heading: 'In the app',
+            body: 'Home → Add funds opens the card checkout or a USDC deposit address. Deposits land in your balance automatically.',
+          },
+          {
+            heading: 'In your gateway',
+            body: 'Balance, spend and limits are shown in your gateway’s console, which can also add funds.',
+          },
+        ],
+        links: [{ label: 'Funding', url: `${GATEWAY_DOCS_URL}/funding` }],
       },
       {
-        key: 'slow',
-        label: 'Responses are slow or time out',
-        intro: 'Seller performance varies. Open the model page and try a different seller — reputation reflects reliability, and you can pin any seller you like.',
+        key: 'signer',
+        label: 'Your signer key',
+        intro: 'The signer key authorizes payments to sellers for requests from this computer. Back it up from Settings → Wallet, or import one you already use.',
         sections: [
           {
-            heading: 'Automatic retries',
-            body: 'Timeouts are retried on another route automatically when possible. Frequent timeouts on one seller lower its score for future routing.',
-          },
-          {
-            heading: 'Large requests',
-            body: 'Very large requests take longer to upload over peer-to-peer connections; the floating window pulse shows when data is actually moving.',
+            heading: 'Keep a backup',
+            body: 'Anyone with the signer key can spend its balance. Store the backup somewhere safe and never share it.',
           },
         ],
-        docsPath: '/faq',
+      },
+    ],
+  },
+  {
+    key: 'troubleshooting',
+    label: 'Troubleshooting',
+    articles: [
+      {
+        key: 'no-response',
+        label: 'An app gets no response',
+        intro: 'Check Home: it says whether your gateway is running and reachable.',
+        sections: [
+          {
+            heading: 'Gateway not running',
+            body: 'The local gateway starts with the app and can take a minute while it finds peers. If it stays stopped, open Developer mode → Live logs from this page.',
+          },
+          {
+            heading: 'App still uses its old settings',
+            body: 'Restart the app or start a new session. Agents & apps shows Restart required next to apps that started before they were connected.',
+          },
+          {
+            heading: 'Out of funds',
+            body: 'Paid requests fail when the balance runs out. Add funds from Home, or check the key’s limits in your gateway.',
+          },
+        ],
+        links: [{ label: 'Gateway troubleshooting', url: `${GATEWAY_DOCS_URL}/troubleshooting` }],
       },
       {
-        key: 'withdraw',
-        label: 'Withdraw unused credits',
-        intro: 'Your deposit stays yours. Open Profile and use "Withdraw unused credits" to move available balance back to your wallet.',
+        key: 'report',
+        label: 'Report a problem',
+        intro: 'Bugs and questions are welcome on GitHub and in the community chat.',
         sections: [
           {
-            heading: 'Reserved funds',
-            body: 'Funds reserved by open channels become available after the channels settle or close; if a seller is unresponsive, a channel can be force-closed after a grace period.',
+            heading: 'What to include',
+            body: 'Include the app version, operating system, affected app, expected result, actual result, and redacted diagnostics.',
           },
         ],
-        docsPath: '/guides/payments',
       },
     ],
   },
@@ -272,7 +246,6 @@ function nextArticle(topicKey: string, articleKey: string): { topicKey: string; 
 
 /** Diagnostic screens surfaced from Help — the only entry point for them. */
 const DIAGNOSTIC_ROUTES: Array<{ view: import('../../types').ViewName; label: string }> = [
-  { view: 'peers', label: 'Available peers' },
   { view: 'connection', label: 'Connection details' },
   { view: 'config', label: 'Configuration' },
 ];
@@ -304,10 +277,8 @@ export function VprHelpView({ onSelectView }: Props) {
   const snap = useUiSelector((state) => ({
     connectBadgeLabel: state.connectBadge.label,
     networkHealth: state.ovDhtHealth,
-    proxyPort: state.ovProxyPort,
     peers: state.ovPeers,
     serviceCount: state.ovServiceCount,
-    modelLabel: state.vprRouteSelection.model?.label ?? null,
     devMode: state.devMode,
     configFormData: state.configFormData,
     configSaving: state.configSaving,
@@ -367,7 +338,7 @@ export function VprHelpView({ onSelectView }: Props) {
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
   );
   useEffect(() => {
-    window.antseedDesktop?.getAppVersion?.().then(setAppVersion).catch(() => {});
+    window.antseedDesktop?.getAppVersion?.()?.then(setAppVersion).catch(() => {});
   }, []);
 
   // Developer mode is the single switch for diagnostics: it enables debug
@@ -383,10 +354,9 @@ export function VprHelpView({ onSelectView }: Props) {
       .map((event) => `[${event.mode}] ${event.line}`)
       .join('\n');
     const report = [
-      `AntSeed VPR v${appVersion}`,
-      `Status: ${snap.networkHealth} | ${snap.connectBadgeLabel} | Port ${snap.proxyPort}`,
+      `Antseed desktop v${appVersion}`,
+      `Status: ${snap.networkHealth} | Gateway ${snap.connectBadgeLabel}`,
       `Network: ${snap.peers} peers, ${snap.serviceCount} services`,
-      `Model: ${snap.modelLabel ?? 'none selected'}`,
       '',
       '--- Recent logs ---',
       recentLogs,
@@ -401,25 +371,42 @@ export function VprHelpView({ onSelectView }: Props) {
   function renderArticlePage(topic: HelpTopic, article: HelpArticle) {
     const next = nextArticle(topic.key, article.key);
     return (
-      <VprPage title={topic.label} onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{article.label}</h2>
+      <VprPage title={article.label} large onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard className={styles.articleCard}>
           <p className={styles.paragraph}>{article.intro}</p>
           {article.sections.map((section) => (
             <div key={section.heading} className={styles.articleSection}>
               <h3 className={styles.articleHeading}>{section.heading}</h3>
               <p className={styles.paragraph}>{section.body}</p>
+              {section.link && (
+                <button
+                  type="button"
+                  className={styles.docsLink}
+                  onClick={() => openExternal(section.link!.url)}
+                >
+                  <span>{section.link.label}</span>
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={2} />
+                </button>
+              )}
             </div>
           ))}
-          <button
-            type="button"
-            className={styles.docsLink}
-            onClick={() => openExternal(`${DOCS_BASE_URL}${article.docsPath}`)}
-          >
-            <span>Read more in the docs</span>
-            <HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={2} />
-          </button>
+          {article.links && article.links.length > 0 && (
+            <div className={styles.resourceLinks}>
+              <span className={styles.resourceLabel}>Related resources</span>
+              {article.links.map((link) => (
+                <button
+                  key={link.url}
+                  type="button"
+                  className={styles.docsLink}
+                  onClick={() => openExternal(link.url)}
+                >
+                  <span>{link.label}</span>
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={2} />
+                </button>
+              ))}
+            </div>
+          )}
         </VprCard>
         {next && (
           <button
@@ -441,9 +428,8 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderTopicPage(topic: HelpTopic) {
     return (
-      <VprPage title="Help & Support" onBack={() => goTo({ topicKey: null, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{topic.label}</h2>
+      <VprPage title={topic.label} large onBack={() => goTo({ topicKey: null, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard>
           {topic.articles.map((entry) => (
             <button
@@ -464,8 +450,8 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderRootPage() {
     return (
-      <VprPage title="Help & Support" backFallback="home">
-      <div className={styles.stack}>
+      <VprPage title="Help & Support" backFallback="preferences" subtitle="Ask the community, report a bug, or read the guides.">
+      <div className={`${styles.stack} ${styles.columns}`}>
 
         <div className={styles.section}>
           <p className={styles.sectionLabel}>Community</p>
@@ -483,11 +469,19 @@ export function VprHelpView({ onSelectView }: Props) {
               <span className={styles.rowLabel}>Follow us on X</span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>
+            <button type="button" className={styles.row} onClick={() => openExternal(GITHUB_ISSUES_URL)}>
+              <HugeiconsIcon icon={GithubIcon} size={18} strokeWidth={1.8} className={styles.rowIcon} />
+              <span className={styles.rowText}>
+                <span className={styles.rowLabel}>Report a bug on GitHub</span>
+                <span className={styles.rowHint}>Include redacted diagnostics when possible</span>
+              </span>
+              <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
+            </button>
           </VprCard>
         </div>
 
         <div className={styles.section}>
-          <p className={styles.sectionLabel}>VPR</p>
+          <p className={styles.sectionLabel}>Guides</p>
           <VprCard>
             {HELP_TOPICS.map((entry) => (
               <button
@@ -500,6 +494,13 @@ export function VprHelpView({ onSelectView }: Props) {
                 <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
               </button>
             ))}
+            <button type="button" className={styles.row} onClick={() => openExternal(DESKTOP_DOCS_URL)}>
+              <span className={styles.rowText}>
+                <span className={styles.rowLabel}>Desktop app guide</span>
+                <span className={styles.rowHint}>Setup, connected apps, funding and troubleshooting</span>
+              </span>
+              <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
+            </button>
           </VprCard>
         </div>
 
@@ -558,7 +559,7 @@ export function VprHelpView({ onSelectView }: Props) {
         <div className={styles.section}>
           <p className={styles.sectionLabel}>Legal</p>
           <VprCard>
-            <button type="button" className={styles.row} onClick={() => openExternal('https://antseed.com/terms-of-service#16-privacy-and-data')}>
+            <button type="button" className={styles.row} onClick={() => openExternal('https://antseed.com/terms-of-service#62-sharing-data-with-ai-services')}>
               <span className={styles.rowLabel}>Privacy Policy</span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>
@@ -572,7 +573,7 @@ export function VprHelpView({ onSelectView }: Props) {
         <div className={styles.section}>
           <p className={styles.sectionLabel}>App details</p>
           <VprCard>
-            <button type="button" className={styles.row} onClick={() => openExternal('https://github.com/AntSeed/antseed/blob/main/CHANGELOG.md')}>
+            <button type="button" className={styles.row} onClick={() => openExternal('https://github.com/Antseed/antseed/blob/main/CHANGELOG.md')}>
               <span className={styles.rowLabel}>Changelog</span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>

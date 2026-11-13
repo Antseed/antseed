@@ -1,6 +1,10 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 
-export type ButtonVariant = "primary" | "outline" | "ghost" | "danger";
+/**
+ * `link` renders as inline text (underlined), for quiet actions inside a sentence.
+ * `brand` is the Antseed green pill (the website's download button): at most one per screen, for its main action.
+ */
+export type ButtonVariant = "primary" | "brand" | "outline" | "ghost" | "danger" | "link";
 export type ButtonSize = "sm" | "md";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -10,6 +14,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
   trailingIcon?: ReactNode;
   variant?: ButtonVariant;
+  /** Renders a link styled as a button (for downloads, external pages, redirects). */
+  href?: string;
+  download?: AnchorHTMLAttributes<HTMLAnchorElement>["download"];
+  target?: AnchorHTMLAttributes<HTMLAnchorElement>["target"];
+  rel?: AnchorHTMLAttributes<HTMLAnchorElement>["rel"];
 }
 
 export function Button({
@@ -21,6 +30,10 @@ export function Button({
   trailingIcon,
   type = "button",
   variant = "primary",
+  href,
+  download,
+  target,
+  rel,
   ...rest
 }: ButtonProps) {
   const classes = [
@@ -33,8 +46,8 @@ export function Button({
     .filter(Boolean)
     .join(" ");
 
-  return (
-    <button type={type} className={classes} {...rest}>
+  const content = (
+    <>
       {leadingIcon && (
         <span className="as-button__icon" aria-hidden="true">
           {leadingIcon}
@@ -46,6 +59,33 @@ export function Button({
           {trailingIcon}
         </span>
       )}
+    </>
+  );
+
+  // A disabled link renders as a disabled <button> below: it must not navigate,
+  // and it picks up the same disabled styling as any other button.
+  if (href !== undefined && !rest.disabled) {
+    // Drop the attributes that only mean something on a <button>; everything
+    // else (handlers, aria-*, data-*, title, style...) applies to the link.
+    const { disabled, form, formAction, formEncType, formMethod, formNoValidate, formTarget, name, value, ...anchorProps } = rest;
+    const safeRel = target === "_blank" ? rel ?? "noopener noreferrer" : rel;
+    return (
+      <a
+        {...(anchorProps as AnchorHTMLAttributes<HTMLAnchorElement>)}
+        className={classes}
+        href={href}
+        download={download}
+        target={target}
+        rel={safeRel}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <button type={type} className={classes} {...rest}>
+      {content}
     </button>
   );
 }

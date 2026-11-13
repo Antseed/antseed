@@ -1,0 +1,30 @@
+name = "antseed-download-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# Retain per-request logs (the JSON telemetry lines from events.ts) in
+# Workers Logs, queryable from the dashboard — without this, logs exist only
+# while someone runs `wrangler tail`.
+[observability]
+enabled = true
+
+# download.antseed.com must be a zone (or subdomain of a zone) on the same
+# Cloudflare account. Remove this block to deploy on the workers.dev subdomain
+# while DNS is being set up.
+[[routes]]
+pattern = "download.antseed.com"
+custom_domain = true
+
+[vars]
+GITHUB_REPO = "Antseed/antseed"
+# GA4 Measurement ID of the antseed.com web property (not a secret). Leave
+# empty to disable GA4 reporting — events are still logged to the console
+# (visible via `wrangler tail` / Workers Logs).
+GA4_MEASUREMENT_ID = "G-DF97Q4KV2X"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+#   GITHUB_TOKEN    — optional; raises the GitHub API rate limit for the
+#                     latest-release lookup (fine-grained token, public repo
+#                     read-only is enough).
+#   GA4_API_SECRET  — Measurement Protocol API secret for the GA4 property;
+#                     required for GA4 reporting.

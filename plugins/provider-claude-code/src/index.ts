@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider, ServiceApiProtocol } from '@antseed/node';
-import { BaseProvider } from '@antseed/provider-core';
+import { BaseProvider, parseServiceCapabilitiesJson } from '@antseed/provider-core';
 import { ClaudeCodeTokenProvider } from './claude-code-token.js';
 
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
@@ -30,6 +30,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_CACHED_INPUT_USD_PER_MILLION', label: 'Cached Input Price', type: 'number', required: false, description: 'Cached input price in USD per 1M tokens (defaults to input price)' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 10, description: 'Max concurrent requests' },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Allowed Services', type: 'string[]', required: false, description: 'Service allow-list' },
+    { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Service Capabilities JSON', type: 'string', required: false, description: 'Per-service model capability JSON' },
   ],
 
   createProvider(config: Record<string, string>): Provider {
@@ -52,12 +53,14 @@ const plugin: AntseedProviderPlugin = {
 
     const tokenProvider = new ClaudeCodeTokenProvider();
     const serviceApiProtocols = buildServiceApiProtocols(allowedServices, 'anthropic-messages');
+    const serviceCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
 
     return new BaseProvider({
       name: 'claude-code',
       services: allowedServices,
       pricing,
       ...(serviceApiProtocols ? { serviceApiProtocols } : {}),
+      ...(serviceCapabilities ? { serviceCapabilities } : {}),
       relay: {
         baseUrl: 'https://api.anthropic.com',
         authHeaderName: 'authorization',

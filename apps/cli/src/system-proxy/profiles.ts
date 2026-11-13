@@ -76,10 +76,13 @@ function normalizeConfigPatch(value: unknown, profileName: string): SystemProxyC
     throw new Error(`configPatch for ${profileName} must be an object`)
   }
   const raw = value as Record<string, unknown>
+  const providerKey = optionalString(raw, 'providerKey')
   return {
     ...raw,
     configPath: requiredString(raw, 'configPath', profileName),
-    providerKey: requiredString(raw, 'providerKey', profileName),
+    // The desktop applies patches; the CLI passes the payload through. Not
+    // every format carries a provider entry (claude-desktop does not).
+    ...(providerKey ? { providerKey } : {}),
   }
 }
 

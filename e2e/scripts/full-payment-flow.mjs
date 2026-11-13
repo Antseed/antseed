@@ -282,6 +282,8 @@ async function main() {
       [
         "script",
         "script/Deploy.s.sol",
+        // The deploy needs none of the contract tests, which are most of the compile.
+        "--skip", "test",
         "--rpc-url", RPC_URL,
         "--broadcast",
       ],
@@ -290,6 +292,7 @@ async function main() {
         env: {
           DEPLOYER_PRIVATE_KEY,
         },
+        timeout: 600_000,
       }
     );
 
@@ -414,7 +417,6 @@ async function main() {
         paymentMethod: "crypto",
         settlementIdleMs: 5_000,
         defaultDepositAmountUSDC: "1000000",
-        platformFeeRate: 0.05,
         rpcUrl: RPC_URL,
         depositsAddress: DEPOSITS_ADDRESS,
         channelsAddress: CHANNELS_ADDRESS,
@@ -450,7 +452,6 @@ async function main() {
         paymentMethod: "crypto",
         settlementIdleMs: 5_000,
         defaultDepositAmountUSDC: "1000000",
-        platformFeeRate: 0.05,
         rpcUrl: RPC_URL,
         depositsAddress: DEPOSITS_ADDRESS,
         channelsAddress: CHANNELS_ADDRESS,

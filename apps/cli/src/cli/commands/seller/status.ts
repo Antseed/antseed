@@ -5,7 +5,16 @@ import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import { resolveEffectiveSellerConfig } from '../../../config/effective.js';
 import { getNodeStatus } from '../../../status/node-status.js';
-import { loadCryptoContext } from '../../payment-utils.js';
+import {
+  createSellerPoolsClient,
+  formatUsdc,
+  loadCryptoContext,
+  resolveCliContractStack,
+} from '../../payment-utils.js';
+import { resolveConfigPath } from '../../../config/loader.js';
+import { readSellerRegistration } from '../../../seller-monitor/standing.js';
+import { sellerMonitorFor } from './monitor.js';
+import type { SellerGasRefuel, SellerModelHealth } from '../../../gateway/console-api/types.js';
 import { formatEarnings, formatTokens } from '../../formatters.js';
 
 type SellerNodeState = 'seeding' | 'connected' | 'idle';
@@ -43,6 +52,48 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
           };
         });
 
+        // Registration and stake: the ants `seller` read the dashboard's Reputation page uses, over the shared provider.
+        let onChain: Record<string, unknown> | null = null;
+        let onChainError: string | null = null;
+        if (walletAddress) {
+          try {
+            const [registration, stack] = await Promise.all([
+              readSellerRegistration({ address: walletAddress, configPath: resolveConfigPath(globalOpts.config) }),
+              resolveCliContractStack(config),
+            ]);
+            // Pool positions are optional: legacy chains have no pool contracts, and the registration still shows.
+            const positionCount = await (async () => {
+              try {
+                return await createSellerPoolsClient(config).stakerPositionCount(walletAddress);
+              } catch {
+                return null;
+              }
+            })();
+            onChain = {
+              mode: stack.mode,
+              agentId: registration.agentId,
+              registryBound: registration.registryBound,
+              eligible: registration.eligible,
+              legacyStake: registration.legacyStake,
+              activePoolStake: registration.poolActiveStake,
+              minPoolStake: registration.minPoolStake,
+              positionCount,
+            };
+          } catch (error) {
+            onChainError = `${(error as Error).name}: ${(error as Error).message}`;
+          }
+        }
+        // Model health, gas and alerts from the running seller, as the dashboard shows them.
+        const monitor = sellerMonitorFor(sellerCmd);
+        const { status: health, rpc } = await monitor.statusWithRpc();
+        // The daemon state never tracked today's totals; the metering ledger does.
+        const todayStart = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+        const today = (await monitor.usage(1).catch(() => null))?.days.find((day) => day.day === todayStart);
+        if (today) {
+          status.earningsToday = today.revenueUsd.toFixed(2);
+          status.tokensToday = today.tokens;
+        }
+
         if (options.json) {
           console.log(JSON.stringify({
             state: status.state,
@@ -52,8 +103,13 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
             activeChannels: status.activeChannels,
             uptime: status.uptime,
             walletAddress,
+            notices: status.notices,
             providers: providerSummary,
-          }, null, 2));
+            onChain,
+            onChainError,
+            health,
+            rpc,
+          }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
           return;
         }
 
@@ -64,6 +120,9 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
         };
         const colorFn = stateColors[status.state] ?? chalk.white;
         console.log(chalk.bold('Seller Status: ') + colorFn(status.state.toUpperCase()));
+        for (const notice of status.notices) {
+          console.log(chalk.yellow(`⚠ ${notice}`));
+        }
         console.log('');
 
         const table = new Table({
@@ -87,10 +146,59 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
             : chalk.dim('(none)'),
         ]);
 
+        if (onChain) {
+          table.push(
+            ['On-chain mode', String(onChain.mode)],
+            ['Agent ID', `${onChain.agentId}${onChain.registryBound ? '' : chalk.dim(' (not bound)')}`],
+            ['Legacy USDC stake', `${formatUsdc(BigInt(String(onChain.legacyStake)))} USDC`],
+            ['Pool active stake', `${formatAntsForStatus(BigInt(String(onChain.activePoolStake)))} ANTS`],
+            ['Seller eligible', String(onChain.eligible)],
+            ['Pool positions', onChain.positionCount === null ? '—' : String(onChain.positionCount)],
+          );
+        } else if (onChainError) {
+          table.push(['On-chain warning', chalk.yellow(onChainError)]);
+        }
+        if (health.available && !health.running) {
+          // A seller that crashed or was killed leaves its last state behind: not live health.
+          table.push(['Health', chalk.dim('not running; models, gas and alerts show once it is')]);
+        } else if (health.available) {
+          table.push(
+            ['Models', describeModelHealth(health.models)],
+            ['Gas', health.gas?.balanceEth == null ? chalk.dim('no gas checks') : `${health.gas.balanceEth} ETH${health.gas.depleted ? chalk.yellow(' (below minimum, advertising paused)') : ''}`],
+            ['Gas auto-refuel', refuelLine(health.gas?.refuel ?? null)],
+            ['Alerts', health.alerts?.channels.length ? health.alerts.channels.join(', ') : chalk.dim('off (antseed seller alerts set)')],
+          );
+        }
+        const rpcLine = Object.entries(health.available && health.running ? rpc.daemon ?? {} : {}).map(([source, usage]) => `${source} ${usage.perMinute}/min`).join(', ');
+        if (rpcLine) table.push(['Chain RPC (seller)', rpcLine]);
+
         console.log(table.toString());
       } catch (err) {
         console.error(chalk.red(`Error: ${(err as Error).message}`));
         process.exitCode = 1;
       }
     });
+}
+
+function formatAntsForStatus(amount: bigint): string {
+  const whole = amount / 10n ** 18n;
+  const fraction = (amount % 10n ** 18n).toString().padStart(18, '0').slice(0, 4).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : String(whole);
+}
+
+function refuelLine(refuel: SellerGasRefuel | null): string {
+  if (!refuel) return chalk.dim('off (antseed seller settings set --refuel on)');
+  const parts = [`below ${refuel.triggerBalanceEth} ETH swap ${refuel.swapUsdc} USDC; ${refuel.usdcLast24h}/${refuel.maxUsdcPerDay} USDC in 24h`];
+  if (refuel.lastRefuel) parts.push(`last ${new Date(refuel.lastRefuel.at).toISOString()} (tx ${refuel.lastRefuel.txHash})`);
+  if (refuel.lastError) return `${parts.join(' · ')}\n${chalk.yellow(`last attempt failed: ${refuel.lastError}`)}`;
+  if (refuel.skipped) return `${parts.join(' · ')}\n${chalk.yellow(`skipped: ${refuel.skipped.replaceAll('_', ' ')}`)}`;
+  return parts.join(' · ');
+}
+
+function describeModelHealth(models: SellerModelHealth[]): string {
+  if (models.length === 0) return chalk.dim('no health data yet');
+  const failing = models.filter((model) => model.status === 'failing');
+  if (failing.length === 0) return `${models.length} healthy or unchecked`;
+  const names = failing.map((model) => `${model.service} (${model.reason ?? model.lastStatusCode ?? model.lastDetail ?? 'failing'})`);
+  return chalk.yellow(`${failing.length} failing: ${names.join(', ')}`);
 }

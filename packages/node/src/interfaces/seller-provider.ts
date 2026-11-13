@@ -1,5 +1,7 @@
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '../types/http.js';
 import type { ServiceApiProtocol } from '../types/service-api.js';
+import type { ServiceUnitBillingModelsV1 } from '../types/billing.js';
+import type { ServiceCapabilities, ServiceHealth } from '../discovery/peer-metadata.js';
 
 export interface ProviderTokenPricingUsdPerMillion {
   inputUsdPerMillion: number;
@@ -28,12 +30,19 @@ export interface Provider {
   services: string[];
 
   /**
-   * Runtime health availability. The model health checker sets this to false
-   * when every configured service has been removed, allowing discovery to
-   * omit the provider instead of interpreting an empty service list as a
-   * wildcard. Undefined means available for providers without health checks.
+   * False when the provider failed to initialize (e.g. an OAuth refresh
+   * failure) and is retained only so a later health check can recover it.
+   * The model health checker announces its services as failing until a
+   * check passes, then sets this back to true.
    */
   healthCheckAvailable?: boolean;
+
+  /**
+   * The seller's self health check result per service, written by the model
+   * health checker and signed into metadata (v13+). Absent services have not
+   * been checked yet.
+   */
+  serviceHealth?: Record<string, ServiceHealth>;
 
   /** Seller pricing in USD per 1M tokens (defaults + optional per-service overrides). */
   pricing: ProviderPricing;
@@ -44,6 +53,12 @@ export interface Provider {
   /** Optional per-service API protocol support advertised via discovery metadata. */
   serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
 
+  /** Optional per-service/protocol unit billing model support advertised via discovery metadata. */
+  serviceUnitBillingModels?: ServiceUnitBillingModelsV1;
+
+  /** Optional per-service model capability hints advertised via discovery metadata. */
+  serviceCapabilities?: Record<string, ServiceCapabilities>;
+
   /** Maximum concurrent requests this provider can handle */
   maxConcurrency: number;
 
@@ -53,11 +68,21 @@ export interface Provider {
   handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse>;
 
   /**
+   * Optional local check of a request the provider would refuse anyway,
+   * without calling the upstream: for example a video whose paid `duration`
+   * is not the length of its inline source. The seller runs it before any
+   * payment step, so a refused request opens no payment channel and costs the
+   * buyer nothing. Returns null to serve the request.
+   */
+  checkRequest?(req: SerializedHttpRequest): ProviderRequestRefusal | null;
+
+  /**
    * Optional streaming request handler. Implementations should call
    * `callbacks.onResponseStart` once, then `callbacks.onResponseChunk`
    * zero or more times (including a final `done=true` chunk).
    *
-   * Must resolve with the complete reconstructed response body.
+   * Must resolve with the complete reconstructed response body, except negotiated
+   * video downloads, whose body is hashed incrementally by the node.
    */
   handleRequestStream?(
     req: SerializedHttpRequest,
@@ -69,9 +94,54 @@ export interface Provider {
 
   /** Return current and maximum concurrent request counts */
   getCapacity(): { current: number; max: number };
+
+  /**
+   * Optional free check of each service the request probe skips, because
+   * every request generates and charges for media (image and video): is the
+   * model still offered upstream? Implementations call only free upstream
+   * endpoints (for example a model list) and answer for each requested
+   * service. The model health checker calls it once per sweep.
+   */
+  checkServiceHealth?(services: string[]): Promise<Record<string, ServiceHealthStatus>>;
+
+  /**
+   * Optional free check of the seller's upstream account: is the key valid
+   * and the account funded? Called once per sweep, separately from the model
+   * check. `unavailable` counts as a failed check for every image and video
+   * service of this provider.
+   */
+  checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+}
+
+/**
+ * Result of `Provider.checkServiceHealth` for one service. `unknown` (the
+ * check itself failed or can't tell) never counts against the service.
+ */
+export type ServiceHealthStatus =
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'unknown'; reason?: string };
+
+/**
+ * Result of `Provider.checkUpstreamAccount`. `balanceUsd` is the upstream
+ * account balance when the provider can read it.
+ */
+export type UpstreamAccountStatus =
+  | { status: 'available'; balanceUsd?: number }
+  /** `outOfCredit`: the account's balance is the cause (the seller alerts it as a billing problem). */
+  | { status: 'unavailable'; reason: string; outOfCredit?: boolean }
+  | { status: 'unknown'; reason?: string };
+
+/** Result of `Provider.checkRequest`: sent to the buyer as `{ error: { code, message } }`. */
+export interface ProviderRequestRefusal {
+  /** A 4xx status. */
+  statusCode: number;
+  code: string;
+  message: string;
 }
 
 export interface ProviderStreamCallbacks {
+  signal?: AbortSignal;
   onResponseStart: (response: SerializedHttpResponse) => void;
-  onResponseChunk: (chunk: SerializedHttpResponseChunk) => void;
+  onResponseChunk: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }

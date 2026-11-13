@@ -68,6 +68,26 @@ describe('loadOrCreateIdentity', () => {
     expect(bytesToHex(second.privateKey)).toBe(bytesToHex(first.privateKey));
     expect(second.wallet.address).toBe(first.wallet.address);
   });
+
+  it('refuses to create a second identity beside an app-encrypted identity', async () => {
+    const dir = tmpDir();
+    dirsToClean.push(dir);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'identity.enc'), randomBytes(64));
+
+    await expect(loadOrCreateIdentity(dir)).rejects.toThrow(/app-encrypted identity already exists/);
+    await expect(fs.access(path.join(dir, 'identity.key'))).rejects.toThrow();
+  });
+
+  it('refuses to replace an invalid existing plaintext identity', async () => {
+    const dir = tmpDir();
+    dirsToClean.push(dir);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'identity.key'), 'invalid');
+
+    await expect(loadOrCreateIdentity(dir)).rejects.toThrow(/Existing identity is invalid/);
+    expect(await fs.readFile(path.join(dir, 'identity.key'), 'utf8')).toBe('invalid');
+  });
 });
 
 describe('signData / verifySignature', () => {

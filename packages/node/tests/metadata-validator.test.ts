@@ -10,11 +10,12 @@ import {
   MAX_DOMAIN_VERIFICATION_CLAIMS,
   MAX_GITHUB_VERIFICATION_CLAIMS,
   MAX_PUBLIC_ADDRESS_LENGTH,
+  MAX_SERVICE_CATEGORIES_PER_SERVICE,
   MAX_SERVICE_CATEGORY_LENGTH,
   MAX_SERVICE_API_PROTOCOLS_PER_SERVICE,
   MAX_PEER_CAPABILITIES,
 } from '../src/discovery/metadata-validator.js';
-import { METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
+import { METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
 
 function validMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
   return {
@@ -41,6 +42,58 @@ function validMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 
 
 describe('validateMetadata', () => {
+  it('validates announced service health', () => {
+    const metadata = validMetadata();
+    metadata.providers[0]!.serviceHealth = {
+      'claude-3-opus': { status: 'failing', reason: 'timeout', consecutiveFailures: 3, failingSince: 1, checkedAt: 2, source: 'probe', httpStatus: 504 },
+    };
+    expect(validateMetadata(metadata)).toEqual([]);
+    metadata.providers[0]!.serviceHealth = {
+      'claude-3-opus': { status: 'broken' as never, reason: 'nope' as never, consecutiveFailures: -1, checkedAt: 1.5, httpStatus: 42 },
+      'other-model': { status: 'healthy' },
+    };
+    expect(validateMetadata(metadata).map((error) => error.message)).toEqual(expect.arrayContaining([
+      'Unsupported service health status "broken"',
+      'Unsupported service health reason "nope"',
+      'consecutiveFailures must be an integer 0..65535',
+      'checkedAt must be a Unix ms timestamp between 0 and 8640000000000000',
+      'httpStatus must be an HTTP status code',
+      'Service health must reference a service listed in providers[].services',
+    ]));
+    metadata.providers[0]!.serviceHealth = { 'claude-3-opus': { status: 'failing', failingSince: 9e15 } };
+    expect(validateMetadata(metadata).map((error) => error.message))
+      .toContain('failingSince must be a Unix ms timestamp between 0 and 8640000000000000');
+    expect(validateMetadata({ ...validMetadata(), version: 12, providers: [{ ...validMetadata().providers[0]!, serviceHealth: { 'claude-3-opus': { status: 'healthy' } } }] })
+      .map((error) => error.message)).toContain('Service health requires metadata version 13');
+  });
+
+  it('validates announced video options', () => {
+    const metadata = validMetadata();
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: { video: { durationsSeconds: [0, 5, 5], resolutions: ['bad value'], inputs: [], requiredInputs: ['first_frame'] } } };
+    expect(validateMetadata(metadata).map(error => error.message)).toEqual(expect.arrayContaining([
+      'Invalid video.durationsSeconds value 0',
+      'Duplicate video.durationsSeconds value 5',
+      'Invalid video.resolutions value "bad value"',
+      'video.requiredInputs must also be listed in video.inputs',
+    ]));
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: {
+      video: { durationsSeconds: [5] },
+    } };
+    expect(validateMetadata({ ...metadata, version: 12 })).toEqual([]);
+  });
+
+  it('accepts native video unit pricing and video output capabilities', () => {
+    const metadata = validMetadata();
+    const provider = metadata.providers[0]!;
+    provider.provider = 'venice';
+    provider.services = ['video'];
+    provider.serviceApiProtocols = { video: ['venice-video'] };
+    provider.serviceCapabilities = { video: { inputs: ['text'], outputs: ['video'] } };
+    provider.serviceUnitBillingModels = { video: {
+      'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
+    } };
+    expect(validateMetadata(metadata)).toEqual([]);
+  });
   it('should return no errors for valid metadata', () => {
     const errors = validateMetadata(validMetadata());
     expect(errors).toEqual([]);
@@ -232,6 +285,219 @@ describe('validateMetadata', () => {
       })
     );
     expect(errors.some((e) => e.field.includes('servicePricing.m.outputUsdPerMillion'))).toBe(true);
+  });
+
+  it('allows services to combine token pricing with image unit billing', () => {
+    const tokenOnlyErrors = validateMetadata(validMetadata({
+      providers: [
+        {
+          provider: 'openai',
+          services: ['gpt-4.1'],
+          defaultPricing: {
+            inputUsdPerMillion: 1,
+            outputUsdPerMillion: 2,
+          },
+          servicePricing: {
+            'gpt-4.1': {
+              inputUsdPerMillion: 3,
+              outputUsdPerMillion: 4,
+            },
+          },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        },
+      ],
+    }));
+    expect(tokenOnlyErrors).toEqual([]);
+
+    const unitOnlyProvider = {
+      provider: 'openai',
+      services: ['gpt-image-1'],
+      defaultPricing: {
+        inputUsdPerMillion: 0,
+        outputUsdPerMillion: 0,
+      },
+      serviceApiProtocols: {
+        'gpt-image-1': ['openai-images'],
+      },
+      serviceUnitBillingModels: {
+        'gpt-image-1': {
+          'openai-images': {
+            version: 1,
+            components: [
+              { unit: 'output_images', priceUsd: 0.04 },
+            ],
+          },
+        },
+      },
+      maxConcurrency: 1,
+      currentLoad: 0,
+    } satisfies PeerMetadata['providers'][number];
+
+    const unitOnlyErrors = validateMetadata(validMetadata({
+      version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+      providers: [unitOnlyProvider],
+    }));
+    expect(unitOnlyErrors).toEqual([]);
+
+    const bothErrors = validateMetadata(validMetadata({
+      version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+      providers: [
+        {
+          ...unitOnlyProvider,
+          servicePricing: {
+            'gpt-image-1': {
+              inputUsdPerMillion: 1,
+              outputUsdPerMillion: 1,
+            },
+          },
+        },
+      ],
+    }));
+    expect(bothErrors).toEqual([]);
+  });
+
+  it('rejects unit billing for unsupported chat protocols', () => {
+    const errors = validateMetadata(validMetadata({
+      version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+      providers: [
+        {
+          provider: 'openai',
+          services: ['gpt-4.1'],
+          defaultPricing: {
+            inputUsdPerMillion: 0,
+            outputUsdPerMillion: 0,
+          },
+          serviceApiProtocols: {
+            'gpt-4.1': ['openai-chat-completions'],
+          },
+          serviceUnitBillingModels: {
+            'gpt-4.1': {
+              'openai-chat-completions': {
+                version: 1,
+                components: [
+                  { unit: 'requests', priceUsd: 1 } as any,
+                ],
+              },
+            },
+          },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        },
+      ],
+    }));
+
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'providers[0].serviceUnitBillingModels.gpt-4.1.openai-chat-completions',
+          message: 'Unit billing is not supported for openai-chat-completions',
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceUnitBillingModels.gpt-4.1.openai-chat-completions',
+          message: expect.stringContaining('components[0].unit is unsupported'),
+        }),
+      ]),
+    );
+  });
+
+  it('accepts valid service capabilities and rejects malformed ones', () => {
+    const capsProvider = {
+      provider: 'openai',
+      services: ['gpt-5.5'],
+      defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      serviceCapabilities: {
+        'gpt-5.5': {
+          contextWindow: 200_000,
+          maxOutputTokens: 16_384,
+          inputs: ['text', 'image'],
+          outputs: ['text'],
+          reasoning: true,
+          supportedParameters: ['seed', 'temperature'],
+        },
+      },
+      maxConcurrency: 1,
+      currentLoad: 0,
+    } satisfies PeerMetadata['providers'][number];
+
+    expect(validateMetadata(validMetadata({
+      version: SERVICE_CAPABILITIES_METADATA_VERSION,
+      providers: [capsProvider],
+    }))).toEqual([]);
+
+    const badErrors = validateMetadata(validMetadata({
+      version: SERVICE_CAPABILITIES_METADATA_VERSION,
+      providers: [
+        {
+          ...capsProvider,
+          serviceCapabilities: {
+            'gpt-5.5': {
+              contextWindow: -5,
+              inputs: ['text', 'hologram' as any, 'text'],
+              outputs: ['hologram' as any],
+              supportedParameters: ['Output_Format' as any, 'seed', 'seed'],
+            },
+            'not-announced': { contextWindow: 1000 },
+          },
+        },
+      ],
+    }));
+    expect(badErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('contextWindow'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('hologram'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('Duplicate'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('output modality "hologram"'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('"Output_Format" must be lowercase snake_case'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.gpt-5.5',
+          message: expect.stringContaining('Duplicate supported parameter "seed"'),
+        }),
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities.not-announced',
+          message: expect.stringContaining('must reference a service'),
+        }),
+      ]),
+    );
+  });
+
+  it('rejects service capabilities on pre-v12 metadata', () => {
+    const errors = validateMetadata(validMetadata({
+      version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+      providers: [
+        {
+          provider: 'openai',
+          services: ['gpt-5.5'],
+          defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+          serviceCapabilities: { 'gpt-5.5': { contextWindow: 1000 } },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        },
+      ],
+    }));
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'providers[0].serviceCapabilities',
+          message: expect.stringContaining('require metadata version 12'),
+        }),
+      ]),
+    );
   });
 
   it('should reject maxConcurrency < 1', () => {
@@ -618,10 +884,12 @@ describe('validateMetadata', () => {
 
 describe('constants', () => {
   it('should export reasonable constant values', () => {
-    expect(MAX_METADATA_SIZE).toBe(1400);
+    expect(MAX_METADATA_SIZE).toBe(128 * 1024);
     expect(MAX_PROVIDERS).toBe(10);
-    expect(MAX_SERVICES_PER_PROVIDER).toBe(20);
+    expect(MAX_SERVICES_PER_PROVIDER).toBe(512);
     expect(MAX_SERVICE_NAME_LENGTH).toBe(64);
     expect(MAX_REGION_LENGTH).toBe(32);
+    expect(MAX_SERVICE_CATEGORIES_PER_SERVICE).toBe(64);
+    expect(MAX_SERVICE_API_PROTOCOLS_PER_SERVICE).toBe(4);
   });
 });

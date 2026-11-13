@@ -5,7 +5,6 @@ import { formatEther, parseEther } from 'viem';
 
 import { DiemLogo } from './icons';
 import { FlowDiagram } from './FlowDiagram';
-import { useAntstationDownload } from '../lib/antstation';
 
 import {
   useDiemAllowance,
@@ -22,6 +21,7 @@ import {
   useFlush,
   useClaimUnstakeBatch,
   useClaimUsdc,
+  useClaimAnts,
 } from '../lib/actions';
 import {
   fmtDiem,
@@ -45,6 +45,14 @@ const DIEM_TERMS_URL = 'https://diemantseed.com/terms-of-service.html';
 function formatDiemInput(value: bigint): string {
   const formatted = formatEther(value);
   return formatted.includes('.') ? formatted.replace(/0+$/, '').replace(/\.$/, '') : formatted;
+}
+
+// viem errors carry the full request dump (calldata hex and all) in
+// `message`; `shortMessage` is the human-readable first line.
+function errorText(err: Error | null | undefined): string {
+  if (!err) return 'Transaction failed';
+  const short = (err as { shortMessage?: string }).shortMessage;
+  return short || err.message || 'Transaction failed';
 }
 
 export interface StakeCardProps {
@@ -92,6 +100,16 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
     if (next === 'stake') setAmt(stakeDefaultAmt);
     if (next === 'unstake') setAmt(user.stakedDiem ? formatDiemInput(user.stakedDiem) : '0');
   };
+
+  // Lets sections outside the card (e.g. the claim banner) open the Claim tab.
+  useEffect(() => {
+    const openClaim = () => {
+      setTab('claim');
+      setAmtEdited(false);
+    };
+    window.addEventListener('diem:open-claim', openClaim);
+    return () => window.removeEventListener('diem:open-claim', openClaim);
+  }, []);
 
   const diemValue = parseFloat(amt) || 0;
   const poolDiem = toDiemNumber(pool.totalStaked);
@@ -349,7 +367,7 @@ function StakePanel(props: StakePanelProps) {
 
       {(stake.error || approve.error) && (
         <div className="claim-note" style={{ color: '#c62828' }}>
-          {(stake.error ?? approve.error)?.message ?? 'Transaction failed'}
+          {errorText(stake.error ?? approve.error)}
         </div>
       )}
     </div>
@@ -445,7 +463,7 @@ function UnstakePanel(props: UnstakePanelProps) {
           )}
           {initiate.error && (
             <div className="claim-note" style={{ color: '#c62828' }}>
-              {initiate.error.message}
+              {errorText(initiate.error)}
             </div>
           )}
         </>
@@ -528,7 +546,7 @@ function UnstakeStateView({
               : 'Start cooldown →'}
         </button>
         {flush.error && (
-          <div className="claim-note" style={{ color: '#c62828' }}>{flush.error.message}</div>
+          <div className="claim-note" style={{ color: '#c62828' }}>{errorText(flush.error)}</div>
         )}
       </div>
     );
@@ -570,7 +588,7 @@ function UnstakeStateView({
         {claim.isPending ? 'Finalising…' : `Withdraw ${amountDiem} $DIEM →`}
       </button>
       {claim.error && (
-        <div className="claim-note" style={{ color: '#c62828' }}>{claim.error.message}</div>
+        <div className="claim-note" style={{ color: '#c62828' }}>{errorText(claim.error)}</div>
       )}
     </div>
   );
@@ -587,7 +605,7 @@ interface ClaimPanelProps {
 
 function ClaimPanel(props: ClaimPanelProps) {
   const claimUsdc = useClaimUsdc();
-  const { href: antstationHref, platform: antstationPlatform } = useAntstationDownload();
+  const claimAnts = useClaimAnts();
 
   const pendingUsdcNum = toUsdcNumber(props.pendingUsdc);
   const pendingAntsNum = toAntsNumber(props.pendingAnts);
@@ -597,11 +615,11 @@ function ClaimPanel(props: ClaimPanelProps) {
   return (
     <div className="claim-panel-v2">
       <div className="claim-intro">
-        <span className="claim-intro-kicker">Claims destination</span>
-        <h3>Claim USDC here. Claim $ANTS in AntStation.</h3>
+        <span className="claim-intro-kicker">Claims</span>
+        <h3>Claim USDC and $ANTS right here.</h3>
         <p>
-          Your wallet may have two allocation types. USDC is claimed from this Program page;
-          eligible $ANTS incentives are claimed from the AntSeed desktop app’s Payments portal.
+          Your wallet may have two allocation types. Both are claimed from this Program page:
+          USDC whenever it is available, and eligible $ANTS incentives by completed epoch.
         </p>
       </div>
 
@@ -638,10 +656,10 @@ function ClaimPanel(props: ClaimPanelProps) {
       <div className="claim-destination-card ants-destination">
         <div className="claim-destination-copy">
           <div className="claim-destination-top">
-            <span className="destination-tag green">AntStation app</span>
+            <span className="destination-tag green">This page</span>
             <span className="destination-type">$ANTS emissions</span>
           </div>
-          <div className="destination-main ants-main">
+          <div className="destination-main">
             <div>
               <span className="destination-label">Pending $ANTS</span>
               <strong>{fmtNum(pendingAntsNum)}</strong>
@@ -649,53 +667,52 @@ function ClaimPanel(props: ClaimPanelProps) {
                 {claimableEpochs > 0 ? `${claimableEpochs} unprocessed epoch${claimableEpochs === 1 ? '' : 's'}` : 'No unprocessed epochs'}
               </span>
             </div>
+            <div className="mini-route" aria-hidden="true">
+              <span>epochs</span>
+              <i />
+              <span>wallet</span>
+            </div>
           </div>
-          <ol className="antstation-flow">
-            <li><span>01</span> Install AntStation</li>
-            <li><span>02</span> Open Payments</li>
-            <li><span>03</span> Connect this wallet</li>
-            <li><span>04</span> Claim $ANTS</li>
-          </ol>
           {props.isConnected ? (
-            <a
-              href={antstationHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="stake-cta ghost ants-download-cta"
+            <button
+              className="stake-cta brand-fill"
+              disabled={claimableEpochs === 0 || claimAnts.isPending}
+              onClick={() => claimAnts.run(props.claimableAntsEpochs)}
             >
-              {antstationPlatform === 'mac'
-                ? 'Install AntStation for Mac →'
-                : antstationPlatform === 'win'
-                  ? 'Install AntStation for Windows →'
-                  : 'Install AntStation to claim $ANTS →'}
-            </a>
+              {claimAnts.isPending
+                ? 'Claiming $ANTS…'
+                : claimableEpochs === 0
+                  ? 'No $ANTS epochs to claim'
+                  : pendingAntsNum > 0
+                    ? `Claim ${fmtNum(pendingAntsNum)} $ANTS →`
+                    : `Process ${claimableEpochs} epoch${claimableEpochs === 1 ? '' : 's'} →`}
+            </button>
           ) : null}
-        </div>
-        <div className="antstation-window" aria-hidden="true">
-          <div className="window-bar"><span /><span /><span /></div>
-          <div className="window-title">AntStation · Payments</div>
-          <div className="window-row"><span>wallet</span><strong>same as Program</strong></div>
-          <div className="window-row"><span>$ANTS</span><strong>ready</strong></div>
-          <div className="window-claim">claim emissions →</div>
         </div>
       </div>
 
       {props.hasMoreClaimableAntsEpochs && (
         <div className="claim-note ants-claim-note">
-          More $ANTS epochs may be available in AntStation after this batch.
+          More $ANTS epochs may become claimable here after this batch is processed.
         </div>
       )}
 
       {claimableEpochs > 0 && props.pendingAnts === 0n && (
         <div className="claim-note ants-claim-note">
-          Some claimable epochs may have no $ANTS payout, but AntStation can still clear
-          them so later epochs appear.
+          Some claimable epochs may have no $ANTS payout, but processing them still clears
+          the queue so later epochs appear.
         </div>
       )}
 
       {claimUsdc.error && (
         <div className="claim-note" style={{ color: '#c62828' }}>
-          {claimUsdc.error.message}
+          {errorText(claimUsdc.error)}
+        </div>
+      )}
+
+      {claimAnts.error && (
+        <div className="claim-note" style={{ color: '#c62828' }}>
+          {errorText(claimAnts.error)}
         </div>
       )}
 

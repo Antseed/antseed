@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Antseed Web SDK — Example</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      max-width: 780px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+    }
+    h1 { font-size: 1.3rem; }
+    fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; padding: 0.8rem 1rem; }
+    legend { font-weight: 600; padding: 0 0.4rem; }
+    label { display: block; font-size: 0.85rem; margin-top: 0.6rem; }
+    input, textarea, select {
+      width: 100%; box-sizing: border-box; margin-top: 0.2rem; padding: 0.45rem;
+      font: inherit; border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit;
+    }
+    textarea { min-height: 4.5rem; }
+    button {
+      margin-top: 0.7rem; margin-right: 0.5rem; padding: 0.45rem 1rem; font: inherit;
+      border: 1px solid #8886; border-radius: 6px; cursor: pointer; background: transparent; color: inherit;
+    }
+    button:hover { background: #8882; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #sellers { margin-top: 0.6rem; }
+    .seller {
+      display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+      border-top: 1px solid #8883; padding: 0.4rem 0; font-size: 0.85rem;
+    }
+    .seller code { word-break: break-all; }
+    #status { font-size: 0.85rem; white-space: pre-wrap; margin-top: 0.6rem; opacity: 0.85; }
+    #output {
+      white-space: pre-wrap; border: 1px solid #8884; border-radius: 8px;
+      padding: 0.8rem 1rem; min-height: 6rem; margin-top: 0.8rem; font-size: 0.9rem;
+    }
+    .hint { font-size: 0.8rem; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <h1>Antseed Web SDK — Example buyer</h1>
+  <p class="hint">
+    Needs a reachable <code>@antseed/relay</code> (run one locally with
+    <code>node apps/relay/dist/index.js</code>) and at least one seller it can discover.
+    Serve this page via <code>pnpm --filter @antseed/web-sdk run example</code>,
+    then open <code>http://127.0.0.1:8974/example.html</code>.
+  </p>
+
+  <fieldset>
+    <legend>1 · Identity &amp; relay</legend>
+    <label>Relay URL
+      <input id="relayUrl" value="http://127.0.0.1:8917" />
+    </label>
+    <label>Buyer private key <span class="hint">(hot wallet — its address is your peerId; an ephemeral key works for free requests)</span>
+      <input id="privateKey" placeholder="0x…" />
+    </label>
+    <button id="generate">Generate ephemeral key</button>
+    <button id="listSellers">List sellers</button>
+    <div id="status"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2 · Sellers</legend>
+    <div id="sellers" class="hint">No sellers loaded yet.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3 · Request</legend>
+    <label>Provider <span class="hint">(x-antseed-provider; leave empty for the seller's default)</span>
+      <input id="provider" placeholder="openai" />
+    </label>
+    <label>Model
+      <input id="model" value="gpt-oss-120b" />
+    </label>
+    <label>Prompt
+      <textarea id="prompt">Say hello from the Antseed network in one sentence.</textarea>
+    </label>
+    <button id="send" disabled>Send streaming chat request</button>
+    <div id="output" class="hint">Connect to a seller first.</div>
+  </fieldset>
+
+  <script type="module" src="./dist/main.js"></script>
+</body>
+</html>

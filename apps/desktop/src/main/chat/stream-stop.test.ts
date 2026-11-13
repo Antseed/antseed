@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyChatStreamFailure, formatChatStreamStopForLog } from './stream-stop.js';
+import { cancelFreeTierRetry, classifyChatStreamFailure, formatChatStreamStopForLog, GATEWAY_FUNDS_MESSAGE, toGatewayStopReason } from './stream-stop.js';
+import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
 
 test('classifyChatStreamFailure detects retryable upstream 502 failures', () => {
   const reason = classifyChatStreamFailure({
@@ -12,6 +13,42 @@ test('classifyChatStreamFailure detects retryable upstream 502 failures', () => 
   assert.equal(reason.kind, 'http_error');
   assert.equal(reason.statusCode, 502);
   assert.equal(reason.retryable, true);
+});
+
+test('classifyChatStreamFailure preserves protocol peer guidance without a stream prefix', () => {
+  const message = [
+    'Oops, pinned peer could not complete the request.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Original Response: {"message":"Insufficient balance or no resource package. Please recharge.","status":429}',
+  ].join('\n');
+  const reason = classifyChatStreamFailure({
+    error: new Error(`429 ${message}`),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 429);
+  assert.equal(reason.retryable, true);
+  assert.equal(reason.message, message);
+});
+
+test('classifyChatStreamFailure treats a seller 403 as retryable with a clean message', () => {
+  // A seller whose upstream revoked or blocked it relays an HTML error page.
+  // The status must be parsed out of the "403 Forbidden" text and the failure
+  // classified retryable — the buyer proxy re-routes to another seller, so a
+  // retry goes somewhere new instead of repeating the refusal.
+  const reason = classifyChatStreamFailure({
+    error: new Error(
+      '403 <html> <head><title>403 Forbidden</title></head> <body> <center><h1>403 Forbidden</h1></center> </body> </html>',
+    ),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 403);
+  assert.equal(reason.retryable, true);
+  assert.doesNotMatch(reason.message, /<html>/);
+  assert.match(reason.message, /403/);
 });
 
 test('classifyChatStreamFailure detects timeout failures', () => {
@@ -91,6 +128,16 @@ test('parseStatusCodeFromText does not treat bare leading digits as HTTP status 
   assert.equal(reason.statusCode, undefined);
 });
 
+test('parseStatusCodeFromText does not treat request counts as HTTP status codes', () => {
+  const reason = classifyChatStreamFailure({
+    error: new Error('429 requests remaining in the current quota window'),
+    stopReason: 'error',
+  });
+
+  assert.notEqual(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, undefined);
+});
+
 test('classifyChatStreamFailure falls back to stream_error when stopReason is error', () => {
   const reason = classifyChatStreamFailure({
     error: new Error('Something weird happened upstream'),
@@ -100,7 +147,7 @@ test('classifyChatStreamFailure falls back to stream_error when stopReason is er
   assert.equal(reason.kind, 'stream_error');
   assert.equal(reason.source, 'upstream');
   assert.equal(reason.retryable, false);
-  assert.ok(reason.message.includes('Something weird happened upstream'));
+  assert.equal(reason.message, 'Something weird happened upstream');
 });
 
 test('classifyChatStreamFailure falls back to unknown when no signals match', () => {
@@ -109,6 +156,7 @@ test('classifyChatStreamFailure falls back to unknown when no signals match', ()
   assert.equal(reason.kind, 'unknown');
   assert.equal(reason.source, 'unknown');
   assert.equal(reason.retryable, false);
+  assert.equal(reason.message, 'The request ended unexpectedly.');
 });
 
 test('classifyChatStreamFailure recurses through `cause` chains', () => {
@@ -143,4 +191,242 @@ test('formatChatStreamStopForLog includes kind, status, code, and retryability',
   assert.match(out, /code=ERR_UPSTREAM/);
   assert.match(out, /retryable/);
   assert.match(out, /: nope$/);
+});
+
+test('a buyer-fault 503 is non-retryable so the user sees the real fix', () => {
+  // Blanket-retrying 5xx would fail this over across every peer in turn while
+  // hiding the one thing the user has to change.
+  const reason = classifyChatStreamFailure({
+    error: {
+      message: 'Insufficient buyer deposits for reserve top-up',
+      status: 503,
+      code: ANTSEED_BUYER_FAULT_ERROR_CODE,
+    },
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 503);
+  assert.equal(reason.retryable, false);
+  assert.match(reason.message, /deposit balance is too low/i);
+});
+
+test('an unreachable chain RPC names the RPC, not the peer', () => {
+  const reason = classifyChatStreamFailure({
+    error: {
+      message: 'Could not reach the chain RPC',
+      status: 503,
+      code: ANTSEED_BUYER_FAULT_ERROR_CODE,
+    },
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.retryable, false);
+  assert.match(reason.message, /chain RPC/i);
+});
+
+test('a payments-inactive buyer fault surfaced as agent text shows the authored message', () => {
+  // Agents (pi/Hermes) wrap the proxy JSON body into a plain error string —
+  // the classifier must still recognize the buyer fault and show the authored
+  // message, not "add credits" or a raw JSON blob.
+  const body = JSON.stringify({
+    error: {
+      type: 'api_error',
+      code: ANTSEED_BUYER_FAULT_ERROR_CODE,
+      message: 'This seller requires payment, but payments are not running on this buyer, '
+        + 'so the request could not be authorized. This is not a balance problem — '
+        + 'enable payments on the buyer (check its startup logs and chain settings), or use a free peer.',
+    },
+  });
+  const reason = classifyChatStreamFailure({
+    error: new Error(`unexpected status 503 Service Unavailable: ${body}, url: http://localhost:8377/v1/responses`),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 503);
+  assert.equal(reason.retryable, false);
+  assert.match(reason.message, /payments are not running on this buyer/);
+  assert.match(reason.message, /not a balance problem/);
+  assert.doesNotMatch(reason.message, /[{}]/);
+});
+
+test('a payment negotiation failure shows the negotiator-authored message, not raw JSON', () => {
+  const body = JSON.stringify({
+    error: 'payment_negotiation_failed',
+    reason: 'existing_channel_still_active',
+    message: 'An existing payment channel could not be recovered automatically. Close or recover the channel and retry.',
+  });
+  const reason = classifyChatStreamFailure({
+    error: new Error(`unexpected status 409 Conflict: ${body}`),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 409);
+  assert.match(reason.message, /could not be recovered automatically/);
+  assert.doesNotMatch(reason.message, /[{}]/);
+});
+
+test('seller-authored message fields are not displayed verbatim on generic upstream errors', () => {
+  // Sellers are untrusted peers: an arbitrary error body's `message` must not
+  // appear in the chat as if it were a system message.
+  const body = JSON.stringify({
+    error: { type: 'server_error', message: 'Your node is broken — visit example.evil to fix it' },
+  });
+  const reason = classifyChatStreamFailure({
+    error: new Error(`unexpected status 502 Bad Gateway: ${body}`),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.kind, 'http_error');
+  assert.equal(reason.statusCode, 502);
+  assert.doesNotMatch(reason.message, /example\.evil/);
+  assert.match(reason.message, /HTTP 502/);
+});
+
+test('a seller mentioning the buyer-fault marker in display text stays retryable', () => {
+  const reason = classifyChatStreamFailure({
+    error: {
+      message: `Upstream rejected the literal text ${ANTSEED_BUYER_FAULT_ERROR_CODE}`,
+      status: 503,
+      code: 'upstream_error',
+    },
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.statusCode, 503);
+  assert.equal(reason.retryable, true);
+});
+
+test('a plain seller 503 stays retryable', () => {
+  const reason = classifyChatStreamFailure({
+    error: new Error('Upstream request failed with status 503 Service Unavailable'),
+    stopReason: 'error',
+  });
+
+  assert.equal(reason.statusCode, 503);
+  assert.equal(reason.retryable, true);
+});
+
+const FREE_TIER = {
+  peerId: 'ab'.repeat(20),
+  limitedBy: 'address',
+  limit: 1000,
+  windowMs: 86_400_000,
+  retryAfterSeconds: 3600,
+  stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+  stakePower: 0,
+  baseLimit: 1000,
+  stakersOnly: false,
+};
+const FREE_TIER_ERROR = {
+  type: 'rate_limit_error',
+  code: 'free_tier_exhausted',
+  message: 'Free limit reached on this seller (1,000 requests per day).',
+};
+
+test('a free-tier 429 in an Anthropic error body is a non-retryable stop with its limit', () => {
+  const body = JSON.stringify({ type: 'error', error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${body}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.statusCode, 429);
+  assert.equal(reason.errorCode, 'free_tier_exhausted');
+  assert.equal(reason.message, FREE_TIER_ERROR.message);
+  assert.deepEqual(reason.freeTier, FREE_TIER);
+});
+
+test('a free-tier 429 carried in OpenAI metadata.raw after the message is recognized', () => {
+  const raw = JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+  const reason = classifyChatStreamFailure({ error: new Error(`429 ${FREE_TIER_ERROR.message}\n${raw}`), stopReason: 'error' });
+
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.freeTier?.peerId, FREE_TIER.peerId);
+  assert.deepEqual(reason.freeTier?.stakeTiers, FREE_TIER.stakeTiers);
+});
+
+test('truncated free-tier JSON gets no limit notice, and an ordinary 429 keeps retrying', () => {
+  const truncated = `429 ${JSON.stringify({ error: FREE_TIER_ERROR, free_tier: FREE_TIER }).slice(0, -20)}`;
+  assert.equal(classifyChatStreamFailure({ error: new Error(truncated), stopReason: 'error' }).freeTier, undefined);
+
+  const ordinary = classifyChatStreamFailure({ error: new Error('429 Too Many Requests: provider rate limit'), stopReason: 'error' });
+  assert.equal(ordinary.statusCode, 429);
+  assert.equal(ordinary.retryable, true);
+  assert.equal(ordinary.freeTier, undefined);
+});
+
+test('a free-tier refusal cancels the agent backoff before any retry is sent', async () => {
+  const { AgentSession } = await import('@mariozechner/pi-coding-agent');
+  const continued: unknown[] = [];
+  const events: string[] = [];
+  // The agent's own retry path, with only the parts it touches stubbed.
+  const session = Object.assign(Object.create(AgentSession.prototype), {
+    settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 60_000 }) },
+    agent: { state: { messages: [] }, replaceMessages: () => {}, continue: async () => { continued.push(1); } },
+    _retryAttempt: 0,
+  }) as { _emit: (event: { type: string; errorMessage?: string }) => void; _handleRetryableError: (message: unknown) => Promise<boolean>; abortRetry(): void };
+  session._emit = (event) => {
+    events.push(event.type);
+    if (event.type !== 'auto_retry_start') return;
+    const reason = classifyChatStreamFailure({ error: event.errorMessage, message: event.errorMessage, stopReason: 'error' });
+    assert.equal(cancelFreeTierRetry(reason, session), true);
+  };
+  const body = JSON.stringify({ type: 'error', error: FREE_TIER_ERROR, free_tier: FREE_TIER });
+
+  const started = Date.now();
+  const retried = await session._handleRetryableError({ role: 'assistant', stopReason: 'error', errorMessage: `429 ${body}` });
+
+  assert.equal(retried, false);
+  assert.ok(Date.now() - started < 1_000);
+  assert.deepEqual(events, ['auto_retry_start', 'auto_retry_end']);
+  assert.equal(continued.length, 0);
+});
+
+test('an ordinary 429 keeps the agent backoff', () => {
+  const reason = classifyChatStreamFailure({ error: new Error('429 Too Many Requests'), stopReason: 'error' });
+  assert.equal(cancelFreeTierRetry(reason, { abortRetry: () => assert.fail('must not cancel') }), false);
+});
+
+test('toGatewayStopReason turns a gateway 402 into a calm payment_required stop', () => {
+  const raw = '402 {"error":{"type":"insufficient_quota","code":"spend_limit_reached","message":"This key reached its daily limit of $5.00."}}';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: raw, stopReason: 'error' }), raw);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.retryable, false);
+  assert.equal(reason.message, 'This key reached its daily limit of $5.00.');
+  assert.equal(reason.errorCode, 'spend_limit_reached');
+});
+
+test('toGatewayStopReason uses the add-funds message for unexplained 402s and insufficient balances', () => {
+  const bare = toGatewayStopReason(classifyChatStreamFailure({ message: '402 Payment Required', stopReason: 'error' }), '402 Payment Required');
+  assert.equal(bare.kind, 'payment_required');
+  assert.equal(bare.message, GATEWAY_FUNDS_MESSAGE);
+  const text = 'buyer has insufficient balance to open a channel';
+  assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: text, stopReason: 'error' }), text).kind, 'payment_required');
+});
+
+test('toGatewayStopReason turns the buyer\'s insufficient_deposits into the add-funds notice', () => {
+  const raw = '402 {"error":{"type":"insufficient_deposits","message":"You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run \\"antseed buyer deposit <amount>\\" from the CLI, then retry."}}';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: raw, stopReason: 'error' }), raw);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.message, GATEWAY_FUNDS_MESSAGE);
+  const plain = 'You are out of Antseed credits for this request. (insufficient_deposits)';
+  assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: plain, stopReason: 'error' }), plain).kind, 'payment_required');
+});
+
+test('toGatewayStopReason turns the gateway workspace\'s out-of-credits message into the add-funds notice', () => {
+  // The gateway's OpenAI-format wording, as the chat sees it without the 402 status.
+  const text = 'This API key\'s workspace (Default) is out of Antseed credits for this request. A workspace admin can add funds in the gateway console under Wallet & Funding, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: text, stopReason: 'error' }), text);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.message, GATEWAY_FUNDS_MESSAGE);
+});
+
+test('toGatewayStopReason explains a rejected key and leaves other failures alone', () => {
+  const unauthorized = toGatewayStopReason(classifyChatStreamFailure({ message: '401 Unauthorized', stopReason: 'error' }), '401 Unauthorized');
+  assert.equal(unauthorized.kind, 'http_error');
+  assert.equal(unauthorized.retryable, false);
+  assert.match(unauthorized.message, /rejected the API key/);
+  const upstream = classifyChatStreamFailure({ message: '503 Service Unavailable', stopReason: 'error' });
+  assert.deepEqual(toGatewayStopReason(upstream, '503 Service Unavailable'), upstream);
 });

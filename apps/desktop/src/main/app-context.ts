@@ -7,15 +7,38 @@
  * not assignable by importers anyway.
  */
 import { app } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { desktopInstanceName, desktopUserDataDir, isMultiInstanceDevelopment } from './dev-instance.js';
 import { ASSETS_DIR, RENDERER_INDEX_PATH } from './paths.js';
+import { moveUserDataDir } from './app-rename.js';
+import { moveLegacyBundle, openBundleAfterExit } from './bundle-rename.js';
+import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
+import { SAFE_STORAGE_EXPORT_NAME_ENV, SAFE_STORAGE_EXPORT_USER_DATA_ENV } from './safe-storage-export-protocol.js';
+import { isIsolatedProfile, secretStoreSwitches } from './runtime/attach-only.js';
 
 export const isDev = Boolean(process.env['VITE_DEV_SERVER_URL']);
 export const rendererUrl = process.env['VITE_DEV_SERVER_URL'] ?? `file://${RENDERER_INDEX_PATH}`;
 
-export const INTERNAL_APP_NAME = 'AntStation Desktop';
-export const APP_NAME = 'AntSeed VPR';
+/** The runtime name before the move to "Antseed Desktop" (see app-rename.ts). */
+export const LEGACY_INTERNAL_APP_NAME = 'AntStation Desktop';
+/**
+ * Development instances share ~/.antseed with an installed app, so they keep
+ * the legacy name (and its safeStorage key) unless the rename itself is being
+ * tested: migrating there would re-encrypt the installed app's identity.
+ */
+export const RENAME_TEST_ENV = 'ANTSEED_DESKTOP_RENAME_TEST';
+const keepLegacyName = isMultiInstanceDevelopment() && !isTruthyEnv(process.env[RENAME_TEST_ENV]);
+/**
+ * Runtime name (app.setName): picks the macOS keychain entry of the
+ * safeStorage key ("<name> Safe Storage") and the default userData folder.
+ * Changing it again needs another migration like app-rename.ts.
+ */
+export const INTERNAL_APP_NAME = keepLegacyName ? LEGACY_INTERNAL_APP_NAME : 'Antseed Desktop';
+/** True when this launch moved from the legacy name and must migrate its encrypted stores. */
+export const RENAMED_FROM_LEGACY = INTERNAL_APP_NAME !== LEGACY_INTERNAL_APP_NAME;
+const devInstanceName = isMultiInstanceDevelopment() ? desktopInstanceName() : '';
+export const APP_NAME = devInstanceName ? `Antseed Desktop [${devInstanceName}]` : 'Antseed Desktop';
 export const DESKTOP_DEBUG_ENV = 'ANTSEED_DESKTOP_DEBUG';
 export const DESKTOP_DEBUG_FLAGS = new Set(['--debug-runtime', '--desktop-debug']);
 
@@ -70,13 +93,13 @@ export function getMacUpdateInstallHint(): string | undefined {
 
   const executablePath = process.execPath;
   if (executablePath.includes('/AppTranslocation/')) {
-    return 'Quit AntSeed, move it to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it to Applications, reopen, and try again.';
   }
   if (executablePath.startsWith('/Volumes/')) {
-    return 'Quit AntSeed, move it from the disk image to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it from the disk image to Applications, reopen, and try again.';
   }
   if (executablePath.includes('.app/') && !executablePath.startsWith('/Applications/')) {
-    return 'Quit AntSeed, move it to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it to Applications, reopen, and try again.';
   }
   return undefined;
 }
@@ -105,7 +128,38 @@ export const TRAY_ICON_PATH = resolveAssetPath('antseed-mark.png', 'antseed-dock
 // Set the internal app name as early as possible — before any safeStorage use,
 // since it determines the macOS keychain entry. On macOS dev runs some surfaces
 // may still show "Electron" because the underlying bundle is Electron.app.
-app.setName(INTERNAL_APP_NAME);
+// Must run before any safeStorage use: testbench desktops (isolated profile and
+// attach-only) never read or write the developer's login keychain or keyring.
+for (const [name, value] of secretStoreSwitches()) {
+  app.commandLine.appendSwitch(name, value);
+}
+const userDataDir = desktopUserDataDir();
+if (IS_SAFE_STORAGE_EXPORT) {
+  // The export helper reads with the old name's key (app-rename.ts).
+  app.setName(process.env[SAFE_STORAGE_EXPORT_NAME_ENV] || LEGACY_INTERNAL_APP_NAME);
+  const helperUserData = process.env[SAFE_STORAGE_EXPORT_USER_DATA_ENV];
+  if (helperUserData) app.setPath('userData', helperUserData);
+} else {
+  // A bundle still under a pre-rename name moves to "Antseed Desktop.app" and
+  // restarts from there before anything else runs (bundle-rename.ts).
+  const restartFrom = process.platform === 'darwin' && app.isPackaged
+    ? moveLegacyBundle(process.execPath, (line) => console.log(`[desktop] ${line}`))
+    : null;
+  if (restartFrom) {
+    openBundleAfterExit(restartFrom);
+    app.exit(0);
+  }
+  // The first launch under the new name brings the old userData folder along,
+  // before Electron opens it.
+  if (RENAMED_FROM_LEGACY && !userDataDir) {
+    moveUserDataDir(app.getPath('appData'), LEGACY_INTERNAL_APP_NAME, INTERNAL_APP_NAME, (line) => console.log(`[desktop] ${line}`));
+  }
+  app.setName(INTERNAL_APP_NAME);
+}
+if (!IS_SAFE_STORAGE_EXPORT && (isMultiInstanceDevelopment() || isIsolatedProfile()) && userDataDir) {
+  mkdirSync(userDataDir, { recursive: true });
+  app.setPath('userData', userDataDir);
+}
 
 /** Verbose runtime logging, toggled from the renderer's developer settings. */
 let desktopDebugEnabled = isTruthyEnv(process.env[DESKTOP_DEBUG_ENV]) || hasDesktopDebugFlag(process.argv);

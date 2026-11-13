@@ -2,6 +2,13 @@ import { readFile } from 'node:fs/promises';
 import { net } from 'electron';
 import { DEFAULT_BUYER_STATE_PATH } from '../constants.js';
 import { resolveBuyerProxyPort } from './active-config.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
+import { readPeerHealth, type RawPeerHealth } from './peer-health.js';
+import { computePeerSignature } from './peer-signature.js';
+import { deriveNetworkLifecycleObservation } from './network-lifecycle.js';
+
+export { readPeerHealth } from './peer-health.js';
+export type { RawPeerHealth } from './peer-health.js';
 
 export type DashboardNetworkPeer = {
   peerId: string;
@@ -10,6 +17,13 @@ export type DashboardNetworkPeer = {
   port: number;
   providers: string[];
   services: string[];
+  /**
+   * Services this peer actually serves for $0 (cached tokens included), from
+   * its per-service pricing matrix — present only once the peer's metadata
+   * has been fetched, unlike the headline default prices which fall back to 0
+   * when unknown.
+   */
+  freeServices: string[];
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
   capacityMsgPerHour: number;
@@ -24,7 +38,24 @@ export type DashboardNetworkPeer = {
   lastReachedAt: number | null;
   source: 'dht' | 'daemon';
   online: boolean;
+  /**
+   * Buyer-proxy cooldown: peers that recently failed are deprioritized by auto
+   * routing until this passes. Null when the peer has no cooldown. Advisory —
+   * a cooling-down peer is still reachable if a request names it.
+   */
+  cooldownUntil: number | null;
+  failureStreak: number;
+  lastFailureReason: string | null;
 };
+
+/** Join a peer with its health entry. */
+export function mergePeerHealthIntoPeer(
+  peer: DashboardNetworkPeer,
+  raw: RawPeerHealth | undefined,
+  now: number,
+): DashboardNetworkPeer {
+  return { ...peer, ...readPeerHealth(raw, now) };
+}
 
 export type DashboardNetworkStats = {
   totalPeers: number;
@@ -62,6 +93,7 @@ type NetworkHealthProbe = {
   proxyReachable: boolean;
   /** null = proxy running but status endpoint unavailable (older CLI). */
   dhtNodeCount: number | null;
+  peerCount: number | null;
   consecutiveEmptyDiscoveries: number;
   proxyUptimeMs: number | null;
   internetOnline: boolean;
@@ -91,6 +123,7 @@ async function refreshNetworkHealth(): Promise<void> {
           lastHealthProbe = {
             proxyReachable: true,
             dhtNodeCount: Number(payload['dhtNodeCount']) || 0,
+            peerCount: Number(payload['peerCount']) || 0,
             consecutiveEmptyDiscoveries: Number(payload['consecutiveEmptyDiscoveries']) || 0,
             proxyUptimeMs: Number.isFinite(Number(payload['uptimeMs'])) ? Number(payload['uptimeMs']) : null,
             internetOnline,
@@ -98,12 +131,12 @@ async function refreshNetworkHealth(): Promise<void> {
           return;
         }
         // Older CLI without the status endpoint: reachable, DHT state unknown.
-        lastHealthProbe = { proxyReachable: true, dhtNodeCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
+        lastHealthProbe = { proxyReachable: true, dhtNodeCount: null, peerCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
       } finally {
         clearTimeout(timer);
       }
     } catch {
-      lastHealthProbe = { proxyReachable: false, dhtNodeCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
+      lastHealthProbe = { proxyReachable: false, dhtNodeCount: null, peerCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
     }
   })().finally(() => {
     healthProbeInFlight = null;
@@ -120,18 +153,8 @@ export function onPeersChanged(listener: () => void): () => void {
   };
 }
 
-function computePeerSignature(): string {
-  // Fast hash: sorted peer IDs + their service lists.
-  const parts: string[] = [];
-  for (const [id, peer] of peerCache) {
-    parts.push(`${id}:${peer.services.join(',')}:${peer.onChainReputationScore ?? ''}`);
-  }
-  parts.sort();
-  return parts.join('|');
-}
-
 function emitIfChanged(): void {
-  const sig = computePeerSignature();
+  const sig = computePeerSignature(peerCache);
   if (sig !== peerCacheLastSignature) {
     peerCacheLastSignature = sig;
     for (const listener of peersChangedListeners) {
@@ -178,6 +201,27 @@ export function parsePeerFromRaw(pr: Record<string, unknown>): DashboardNetworkP
     ? (pr.services as unknown[]).filter((s): s is string => typeof s === 'string')
     : [];
 
+  // Per-service $0 offers from the announced pricing matrix. Every service
+  // listed there carries explicit prices, so a zero here means the seller
+  // really serves it free — the same judgement the routing free-gate makes.
+  const freeServices: string[] = [];
+  if (pr.providerPricing && typeof pr.providerPricing === 'object') {
+    for (const entry of Object.values(pr.providerPricing as Record<string, unknown>)) {
+      const serviceMap = (entry as { services?: unknown } | null)?.services;
+      if (!serviceMap || typeof serviceMap !== 'object') continue;
+      for (const [service, pricing] of Object.entries(serviceMap as Record<string, unknown>)) {
+        const p = pricing as { inputUsdPerMillion?: unknown; outputUsdPerMillion?: unknown; cachedInputUsdPerMillion?: unknown } | null;
+        if (!p) continue;
+        const input = Number(p.inputUsdPerMillion);
+        const output = Number(p.outputUsdPerMillion);
+        const cached = p.cachedInputUsdPerMillion === undefined || p.cachedInputUsdPerMillion === null
+          ? 0
+          : Number(p.cachedInputUsdPerMillion);
+        if (input === 0 && output === 0 && cached <= 0) freeServices.push(service);
+      }
+    }
+  }
+
   return {
     peerId: pr.peerId as string,
     displayName,
@@ -185,6 +229,7 @@ export function parsePeerFromRaw(pr: Record<string, unknown>): DashboardNetworkP
     port: peerPort,
     providers,
     services,
+    freeServices,
     inputUsdPerMillion: Number(pr.defaultInputUsdPerMillion) || 0,
     outputUsdPerMillion: Number(pr.defaultOutputUsdPerMillion) || 0,
     capacityMsgPerHour: (Number(pr.maxConcurrency) || 0) * 60,
@@ -196,6 +241,9 @@ export function parsePeerFromRaw(pr: Record<string, unknown>): DashboardNetworkP
     lastReachedAt: Number(pr.lastReachedAt) || null,
     source: 'dht',
     online: true,
+    cooldownUntil: null,
+    failureStreak: 0,
+    lastFailureReason: null,
   };
 }
 
@@ -219,11 +267,15 @@ export async function refreshPeerCache(): Promise<void> {
     const raw = await readFile(DEFAULT_BUYER_STATE_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const rawPeers = Array.isArray(parsed.discoveredPeers) ? parsed.discoveredPeers : [];
+    const rawHealth = parsed.peerHealth && typeof parsed.peerHealth === 'object' && !Array.isArray(parsed.peerHealth)
+      ? parsed.peerHealth as Record<string, RawPeerHealth>
+      : {};
 
     for (const p of rawPeers) {
       if (!p || typeof p !== 'object') continue;
-      const peer = parsePeerFromRaw(p as Record<string, unknown>);
-      if (!peer) continue;
+      const parsedPeer = parsePeerFromRaw(p as Record<string, unknown>);
+      if (!parsedPeer) continue;
+      const peer = mergePeerHealthIntoPeer(parsedPeer, rawHealth[parsedPeer.peerId], now);
       // Skip legacy (non-EVM) peer IDs — EVM addresses are 40 hex chars
       if (peer.peerId.length !== 40) continue;
 
@@ -232,6 +284,7 @@ export async function refreshPeerCache(): Promise<void> {
         peer.displayName = peer.displayName ?? existing.displayName;
         peer.providers = peer.providers.length > 0 ? peer.providers : existing.providers;
         peer.services = peer.services.length > 0 ? peer.services : existing.services;
+        peer.freeServices = peer.freeServices.length > 0 ? peer.freeServices : existing.freeServices;
         peer.inputUsdPerMillion = peer.inputUsdPerMillion || existing.inputUsdPerMillion;
         peer.outputUsdPerMillion = peer.outputUsdPerMillion || existing.outputUsdPerMillion;
         peer.capacityMsgPerHour = peer.capacityMsgPerHour || existing.capacityMsgPerHour;
@@ -260,6 +313,26 @@ export async function refreshPeerCache(): Promise<void> {
   }
 
   emitIfChanged();
+
+  const onlinePeers = Array.from(peerCache.values()).filter((peer) => peer.online);
+  const observation = deriveNetworkLifecycleObservation(
+    lastHealthProbe,
+    onlinePeers.length,
+    new Set(onlinePeers.flatMap((peer) => peer.services)).size,
+  );
+  if (observation.runtimeStarted) {
+    const telemetry = getTelemetryService();
+    void telemetry?.recordNetworkRuntimeStarted();
+    if (observation.dhtRoutingNodeCount !== null) {
+      void telemetry?.recordDhtStarted(observation.dhtRoutingNodeCount);
+    }
+    if (observation.discoveredPeerCount > 0) {
+      void telemetry?.recordPeersDiscovered(
+        observation.discoveredPeerCount,
+        observation.discoveredServiceCount,
+      );
+    }
+  }
 }
 
 export function getNetworkSnapshot(): DashboardNetworkResult {
@@ -304,22 +377,3 @@ export function getNetworkSnapshot(): DashboardNetworkResult {
   };
 }
 
-/**
- * Mark a peer as recently active and online (e.g. after a chat response).
- */
-export function touchPeer(peerId: string): boolean {
-  const peer = peerCache.get(peerId);
-  if (peer) {
-    const now = Date.now();
-    peer.lastSeen = now;
-    peer.lastReachedAt = now;
-    peer.online = true;
-    return true;
-  }
-  return false;
-}
-
-/** Look up a peer by ID from the in-memory cache. */
-export function lookupPeer(peerId: string): DashboardNetworkPeer | null {
-  return peerCache.get(peerId) ?? null;
-}

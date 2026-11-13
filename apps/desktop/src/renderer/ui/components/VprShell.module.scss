@@ -1,20 +1,26 @@
-@use './vpr/chip';
-
 .shell {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) 24px;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   color: var(--text-primary);
+  transition: background-color 0.15s ease, grid-template-columns 0.18s ease;
 }
 
-/* Chat mode inserts the conversation-list panel between the nav rail
-   and the main pane. The status strip spans all columns either way. */
-.shellWithPanel {
-  grid-template-columns: 88px var(--sidebar-width) minmax(0, 1fr);
+.shellCollapsed {
+  grid-template-columns: var(--sidebar-collapsed-width, 80px) minmax(0, 1fr);
+}
+
+/* A bar notice (update, network, deposit) is fixed over the window's last
+   rows; while one shows, the layout ends right above it (BottomNotice sets
+   its height) so the composer's pickers and the sidebar's last buttons stay
+   reachable. Matched from the body: a deposit notice is portaled there, outside the shell. */
+:global(body):has([data-bottom-notice='bar']) .shell {
+  box-sizing: border-box;
+  padding-bottom: var(--bottom-notice-height, 0px);
 }
 
 .dragStrip {
@@ -30,47 +36,201 @@
 }
 
 .sidebar {
-  grid-row: 1;
-  width: 88px;
-  min-width: 88px;
-  /* Top clearance for the macOS hidden-inset traffic lights (y:16). */
-  padding: 64px 8px 8px;
+  min-width: 0;
+  min-height: 0;
+  /* Top clearance for the macOS hidden-inset traffic lights. */
+  padding: 46px 12px 8px;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 6px;
-  border-right: 1px solid var(--border);
   background: var(--bg-secondary);
-  /* The rail behind the nav buttons doubles as a window-drag handle;
-     the buttons themselves are no-drag via the global rule. */
+  transition: background-color 0.15s ease;
+  /* The sidebar's background doubles as a window-drag handle; its controls
+     are no-drag via the global rule. */
   -webkit-app-region: drag;
 }
 
-.navGroup {
-  display: grid;
+.brandRow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  margin: 0 0 12px 6px;
+  min-width: 0;
 }
 
-.navBottom {
-  margin-top: auto;
-  display: grid;
-  gap: 8px;
+.logo {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+}
+
+.sidebarToggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebarToggle:hover,
+.sidebarToggle:focus-visible {
+  background: var(--bg-sidebar-active);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.railSpacer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Collapsed rail: the mark, icon-only buttons, a compact balance. */
+.shellCollapsed .sidebar {
+  padding-left: 10px;
+  padding-right: 10px;
+  align-items: center;
+}
+
+.shellCollapsed .brandRow {
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.shellCollapsed .navLabel,
+.shellCollapsed .statusItem,
+.shellCollapsed .statusVersion {
+  display: none;
+}
+
+.shellCollapsed .navGroup {
+  width: 100%;
   justify-items: center;
 }
 
-.navButton {
-  position: relative;
-  width: 100%;
-  padding: 8px 4px;
+.shellCollapsed .navButton {
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.shellCollapsed .navDot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin: 0;
+}
+
+/* The gateway line shrinks to a status dot; its text is in the tooltip. */
+.shellCollapsed .status {
+  justify-content: center;
+  margin: 2px 0 0;
+}
+
+.shellCollapsed .status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green, #10b981);
+}
+
+.shellCollapsed .status:has(.statusWarn)::before {
+  background: var(--accent-yellow);
+}
+
+/* On the rail, Chat's new-chat button becomes its own icon under Chat. */
+.shellCollapsed .navRow {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 4px;
-  border-radius: 12px;
-  color: var(--text-muted);
+  width: 40px;
+}
+
+.shellCollapsed .navButtonWithAction {
+  padding-right: 0;
+}
+
+.shellCollapsed .navAction {
+  position: static;
+  width: 40px;
+  height: 40px;
+  transform: none;
+}
+
+/* Chat's row carries a new-chat button at its right edge. */
+.navRow {
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.navButtonWithAction {
+  padding-right: 40px;
+}
+
+.navAction {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  width: 28px;
+  height: 28px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
   background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+
+  svg {
+    flex: 0 0 auto;
+  }
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    outline: none;
+  }
+}
+
+.navGroup {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.navButton {
+  flex: 0 0 auto;
+  position: relative;
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
   cursor: pointer;
 }
 
@@ -86,25 +246,49 @@
 }
 
 .navLabel {
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .navDot {
-  position: absolute;
-  top: 5px;
-  right: 12px;
-  width: 12px;
-  height: 12px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--danger);
 }
 
-.navIconOnly {
-  width: 44px;
-  min-height: 44px;
-  justify-self: center;
+.status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 10px 0;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.statusItem {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusWarn {
+  color: var(--accent-yellow);
+  font-weight: 600;
+}
+
+.statusVersion {
+  flex: 0 0 auto;
+  color: var(--text-faint);
 }
 
 .mainPane {
@@ -112,11 +296,15 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* The content pane floats on the sidebar colour, as one rounded card. */
+  margin: 8px 8px 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
   background: var(--bg-primary);
   /* Lifts the active view's --active-view-scroll timeline up to where the
-     credits pill (a sibling of the scroller) can attach to it. While a slide
+     toolbar (a sibling of the scroller) can attach to it. While a slide
      transition has two views mounted, the duplicate names make the timeline
-     inactive and the pill holds its base position — exactly what we want. */
+     inactive and the toolbar holds its base position — exactly what we want. */
   timeline-scope: --active-view-scroll;
 }
 
@@ -128,21 +316,16 @@
   top: 16px;
   right: 16px;
   max-width: calc(100% - 28px);
+  /* Floats over the field art on Home, so it needs its own glass. */
+  padding: 4px 6px;
+  border-radius: 99px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(14px) saturate(1.3);
   /* Sits inside the hidden-inset title-bar drag strip — keep it clickable.
      The carve-out must live on this static wrapper, not the animated pill:
      compositor-animated elements don't reliably register app-region rects. */
   -webkit-app-region: no-drag;
-}
-
-.creditsPill {
-  @include chip.chip-text;
-  display: block;
-  max-width: 180px;
-}
-
-.creditsPill:hover,
-.creditsPill:focus-visible {
-  @include chip.chip-hover;
 }
 
 /* Scroll-away: the pill tracks the view's first 56px of scroll (its top
@@ -171,49 +354,4 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-
-.statusStrip {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 16px;
-  -webkit-app-region: drag;
-  overflow: hidden;
-}
-
-.statusItem {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.statusItem:last-child {
-  color: var(--text-faint);
-}
-
-.statusWarn {
-  color: var(--accent-yellow);
-  font-weight: 600;
-}
-
-.statusBad {
-  color: var(--danger);
-  font-weight: 600;
-}
-
-.statusSep {
-  flex: 0 0 auto;
-  color: var(--text-faint);
-  user-select: none;
 }
