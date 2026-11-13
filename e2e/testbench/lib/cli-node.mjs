@@ -7,6 +7,7 @@ import { mkdir, symlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isAddressInUse, isolatedEnv } from './env.mjs';
+import { FAILPOINTS_FILE_ENV } from './failpoints.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** SIGTERM to SIGKILL, as in the stress harness (Proc.stop). */
@@ -26,10 +27,17 @@ export function cliArgs(repo, dataDir, command) {
  * Environment of a CLI node: isolated like every testbench process, with the debug logs the payment oracle reads
  * (`Cost recorded`), and unhandled rejections logged rather than fatal, as under the stress harness: the crash scan
  * finds them in the log. `tree` is the checkout the process runs from, whose bootstrap list the preload empties.
+ * `failpointsFile` (a node of a topology with `failpoints: true`) also preloads the fail point handler, which reads
+ * its spec from that file; without it nothing installs a handler and the node's fail points do nothing.
  */
-export function cliNodeEnv(env, home, extra = {}, tree) {
-  const preload = pathToFileURL(join(here, 'isolate-preload.mjs')).href;
-  return isolatedEnv(env, home, { ANTSEED_DEBUG: '1', ANTSEED_NO_UPDATE_CHECK: '1', NODE_OPTIONS: `--unhandled-rejections=warn --import ${preload}`, ...(tree ? { ANTSEED_TESTBENCH_NODE_DIST: join(tree, 'packages/node/dist') } : {}), ...extra });
+export function cliNodeEnv(env, home, extra = {}, tree, { failpointsFile } = {}) {
+  const preloads = ['isolate-preload.mjs', ...(failpointsFile ? ['failpoint-preload.mjs'] : [])].map((file) => `--import ${pathToFileURL(join(here, file)).href}`);
+  return isolatedEnv(env, home, {
+    ANTSEED_DEBUG: '1', ANTSEED_NO_UPDATE_CHECK: '1', NODE_OPTIONS: `--unhandled-rejections=warn ${preloads.join(' ')}`,
+    ...(tree ? { ANTSEED_TESTBENCH_NODE_DIST: join(tree, 'packages/node/dist') } : {}),
+    ...extra,
+    ...(failpointsFile ? { [FAILPOINTS_FILE_ENV]: failpointsFile } : {}),
+  });
 }
 
 /** Symlinks workspace plugins into <home>/.antseed/plugins, where the CLI's plugin loader looks for them. */

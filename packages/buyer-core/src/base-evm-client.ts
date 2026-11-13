@@ -15,6 +15,7 @@ import {
   type TransactionRequest,
   type TransactionResponse,
 } from 'ethers';
+import { hitFailpoint } from './failpoints.js';
 
 const FALLBACK_STALL_TIMEOUT_MS = 750;
 
@@ -102,6 +103,9 @@ const nonceLocks = new Map<string, Promise<void>>();
 const nonceOwners = new Map<string, object>();
 const MAX_NONCE_OWNERS = 1_024;
 
+/** The channel operations whose transactions carry fail points (`chain.<op>.*` in failpoints.ts). */
+export type ChainFailpointOp = 'reserve' | 'top-up' | 'settle' | 'close' | 'request-close' | 'withdraw';
+
 export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
@@ -154,8 +158,13 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
-    const receipt = await this._sendAndWait(connected, signerAddress, populated, maxFeePerGasWei);
+    const receipt = await this._sendAndWait(connected, signerAddress, populated, maxFeePerGasWei, this._failpointOp(method));
     return receipt.hash;
+  }
+
+  /** The fail point operation a contract method's transaction belongs to; null (the default) for a write without fail points. */
+  protected _failpointOp(_method: string): ChainFailpointOp | null {
+    return null;
   }
 
   /**
@@ -187,14 +196,19 @@ export abstract class BaseEvmClient {
     signerAddress: string,
     populated: TransactionRequest,
     maxFeePerGasWei: bigint | null = null,
+    failpointOp: ChainFailpointOp | null = null,
   ): Promise<TransactionReceipt> {
     const owner = {};
+    if (failpointOp) await hitFailpoint(`chain.${failpointOp}.before-send`);
     const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
+    if (failpointOp) await hitFailpoint(`chain.${failpointOp}.after-send`);
     const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
-    return this._waitForReceipt(
+    const receipt = await this._waitForReceipt(
       tx,
       replaceable ? () => this._speedUp(connected, signerAddress, populated, owner, maxFeePerGasWei) : undefined,
     );
+    if (failpointOp) await hitFailpoint(`chain.${failpointOp}.after-receipt`);
+    return receipt;
   }
 
   /**

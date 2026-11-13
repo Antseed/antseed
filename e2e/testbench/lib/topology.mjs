@@ -4,14 +4,17 @@ import { sanitizeConfig, stableStringify } from './config.mjs';
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
 export const TARGET_CAPABILITIES = {
-  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults']),
-  local: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults', 'sourceContracts']),
+  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults', 'failpoints']),
+  local: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults', 'failpoints', 'sourceContracts']),
   mainnet: new Set(['desktop', 'realFunds']),
 };
 /** How nodes run: `sdk` builds them from the SDK (the buyer inside the supervisor), `cli` runs real `antseed` CLI processes. */
 export const TESTBENCH_MODES = new Set(['sdk', 'cli']);
-/** Capabilities a mode cannot offer whatever the target: fault hooks reach into an in-process buyer. */
-const MODE_LACKS = { sdk: new Set(), cli: new Set(['buyerFaults']) };
+/**
+ * Capabilities a mode cannot offer whatever the target: fault hooks reach into an in-process buyer, and fail points
+ * are armed by a preload in a node's own process, which can then be killed and restarted alone.
+ */
+const MODE_LACKS = { sdk: new Set(['failpoints']), cli: new Set(['buyerFaults']) };
 
 export function assertMode(mode, label = 'mode') {
   if (!TESTBENCH_MODES.has(mode)) throw new Error(`${label} must be one of ${[...TESTBENCH_MODES].join(', ')}`);
@@ -79,7 +82,7 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   if (!RPC_PROFILES.has(rpc)) throw new Error(`chain.rpc must be one of ${[...RPC_PROFILES].join(', ')}`);
   // Base-like RPCs come with Base's 2 s blocks unless the topology says otherwise; direct RPCs keep Anvil's automine.
   const blockTimeSec = chainIn.blockTimeSec ?? (rpc === 'base' ? 2 : undefined);
-  if (blockTimeSec !== undefined && !(Number.isInteger(blockTimeSec) && blockTimeSec >= 1 && blockTimeSec <= 30)) throw new Error('chain.blockTimeSec must be 1-30');
+  if (blockTimeSec !== undefined && !(Number.isInteger(blockTimeSec) && blockTimeSec >= 1 && blockTimeSec <= MAX_BLOCK_TIME_SEC)) throw new Error(`chain.blockTimeSec must be 1-${MAX_BLOCK_TIME_SEC}`);
   const contracts = overrides.contracts ?? chainIn.contracts ?? DEFAULT_CONTRACT_LAYOUT;
   if (!CONTRACT_LAYOUTS.includes(contracts)) throw new Error(`chain.contracts must be one of ${CONTRACT_LAYOUTS.join(', ')}`);
   const topUpThresholdBps = chainIn.topUpThresholdBps;
@@ -88,15 +91,26 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   for (const key of ['maxReserveUsdc', 'maxPerRequestUsdc']) {
     if (buyerIn[key] !== undefined) caps[key.replace('Usdc', 'Micros')] = String(microsFromUsdc(buyerIn[key], `buyer.${key}`));
   }
+  // `antseed buyer start` reads buyer.requestTimeoutMs from its config; the in-process buyer has no such setting here.
+  const requestTimeoutMs = buyerIn.requestTimeoutMs;
+  if (requestTimeoutMs !== undefined) {
+    if (!(Number.isInteger(requestTimeoutMs) && requestTimeoutMs >= 1000 && requestTimeoutMs <= 600_000)) throw new Error('buyer.requestTimeoutMs must be 1000-600000');
+    if (mode !== 'cli') throw new Error('buyer.requestTimeoutMs needs mode cli: `antseed buyer start` reads it from the buyer config');
+  }
+  if (topology.failpoints !== undefined && typeof topology.failpoints !== 'boolean') throw new Error('topology.failpoints must be true or false');
+  if (topology.failpoints && mode !== 'cli') throw new Error('topology.failpoints needs mode cli: the fail point handler is preloaded into a node\'s own process');
   return {
     mode,
     ...(overrides.trees ? { trees: overrides.trees } : {}),
+    // Left out unless set, so topologies (and their fingerprints) from before fail points read the same.
+    ...(topology.failpoints ? { failpoints: true } : {}),
     sellers,
     buyer: {
       depositMicros: String(microsFromUsdc(depositUsdc, 'depositUsdc')),
       routingPreferences: { ...(source.buyer.routingPreferences ?? {}), ...(buyerIn.routingPreferences ?? {}) },
       ...(buyerIn.maxPricing ?? source.buyer.maxPricing ? { maxPricing: structuredClone(buyerIn.maxPricing ?? source.buyer.maxPricing) } : {}),
       ...caps,
+      ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
       ...(buyerIn.env ? { env: normalizeEnv(buyerIn.env, 'buyer') } : {}),
     },
     chain: {
@@ -159,6 +173,12 @@ export const DEFAULT_CONTRACT_LAYOUT = 'full';
 /** Mock upstream usage: `fixed` answers 10 in + 8 out tokens instantly (exact costs); `load` sizes usage like real traffic. */
 export const MOCK_USAGE_MODES = new Set(['fixed', 'load']);
 
+/** The slowest the testbench chain may mine (chain.blockTimeSec, tb.setBlockTime). */
+export const MAX_BLOCK_TIME_SEC = 30;
+
+/** The longest a mock may hold one response (latencyMs, slowMs). */
+export const MAX_MOCK_LATENCY_MS = 60_000;
+
 const LOAD_MOCK_DEFAULTS = { latencyRangeMs: [50, 3000], outTokens: [100, 4000] };
 
 function range(value, label, max) {
@@ -181,6 +201,12 @@ export function normalizeMock(mock, id) {
   const usage = mock.usage ?? 'fixed';
   if (!MOCK_USAGE_MODES.has(usage)) throw new Error(`seller ${id} mock.usage must be one of ${[...MOCK_USAGE_MODES].join(', ')}`);
   const normalized = { latencyMs, usage, fault500Rate: rate(mock.fault500Rate, `seller ${id} mock.fault500Rate`), disconnectRate: rate(mock.disconnectRate, `seller ${id} mock.disconnectRate`) };
+  // Left out unless set, so topologies (and their fingerprints) from before the slow fault read the same.
+  if (mock.slowRate !== undefined || mock.slowMs !== undefined) {
+    normalized.slowRate = rate(mock.slowRate, `seller ${id} mock.slowRate`);
+    normalized.slowMs = mock.slowMs ?? 0;
+    if (!Number.isInteger(normalized.slowMs) || normalized.slowMs < 0 || normalized.slowMs > MAX_MOCK_LATENCY_MS) throw new Error(`seller ${id} mock.slowMs must be 0-${MAX_MOCK_LATENCY_MS}`);
+  }
   if (usage === 'load') {
     normalized.latencyRangeMs = range(mock.latencyRangeMs ?? LOAD_MOCK_DEFAULTS.latencyRangeMs, `seller ${id} mock.latencyRangeMs`, 60_000);
     normalized.outTokens = range(mock.outTokens ?? LOAD_MOCK_DEFAULTS.outTokens, `seller ${id} mock.outTokens`, 100_000);
@@ -217,7 +243,8 @@ export function validateScenarioModule(mod, name) {
   if (!Array.isArray(requires)) throw new Error(`Scenario ${name} meta.requires must be an array`);
   const budgets = mod.topology?.budgets ?? {};
   for (const [key, max] of Object.entries(budgets)) if (!(Number.isFinite(max) && max > 0)) throw new Error(`Scenario ${name} topology.budgets.${key} must be a positive number`);
-  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, budgets, run: mod.run };
+  if (mod.failpointPlan !== undefined && typeof mod.failpointPlan !== 'function') throw new Error(`Scenario ${name} failpointPlan must be a function of the run seed`);
+  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, budgets, run: mod.run, ...(mod.failpointPlan ? { failpointPlan: mod.failpointPlan } : {}) };
 }
 
 export function assertScenarioSupported(scenario, target, mode = 'sdk') {
@@ -227,7 +254,7 @@ export function assertScenarioSupported(scenario, target, mode = 'sdk') {
   const missing = scenario.requires.filter((capability) => !capabilities.has(capability));
   if (missing.length) throw new Error(`Target ${target} lacks ${missing.join(', ')} required by ${scenario.name}`);
   const unavailable = scenario.requires.filter((capability) => MODE_LACKS[assertMode(mode)].has(capability));
-  if (unavailable.length) throw new Error(`Mode ${mode} lacks ${unavailable.join(', ')} required by ${scenario.name}; run it with --mode sdk`);
+  if (unavailable.length) throw new Error(`Mode ${mode} lacks ${unavailable.join(', ')} required by ${scenario.name}; run it with --mode ${mode === 'sdk' ? 'cli' : 'sdk'}`);
 }
 
 /**

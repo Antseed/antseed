@@ -44,14 +44,16 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  * Both modes keep a delivery ledger keyed by the `[req:TAG]` marker in the prompt (or `untagged-N`): whether any
  * byte of the response reached the wire, how it ended (ok, 500, disconnect, client-gone) and what it cost at the
  * seller's price. That ledger is the independent judge of what the buyer owes. `fault500Rate` and
- * `disconnectRate` inject upstream errors and mid-response disconnects on tagged requests; change them with setFaults.
+ * `disconnectRate` inject upstream errors and mid-response disconnects on tagged requests; `slowRate` makes that share
+ * of tagged requests take `slowMs` instead of their drawn latency (an upstream slower than the buyer waits). Change
+ * them with setFaults.
  *
  * `random` only seeds the mock: each request draws from its own stream keyed by tag and attempt, so what a request
  * gets does not depend on the order concurrent requests arrive in. The ledger records the drawn `latencyMs`.
  */
-export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, pricing = {}, random = Math.random }) {
+export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, slowRate = 0, slowMs = 0, pricing = {}, random = Math.random }) {
   const png = await readFile(FIXTURE_PNG);
-  const state = { latencyMs, faults: { fault500Rate, disconnectRate }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
+  const state = { latencyMs, faults: { fault500Rate, disconnectRate, slowRate, slowMs }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
   const known = new Set(models);
   const streamSeed = Math.floor(random() * 2 ** 32);
   const between = (draw, [min, max]) => min + draw() * (max - min);
@@ -74,7 +76,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const load = usage === 'load';
     const prompt = load ? Math.max(1, Math.ceil(content.length / 4)) : MOCK_USAGE.prompt_tokens;
     const completion = load ? betweenInt(draw, outTokens) : MOCK_USAGE.completion_tokens;
-    const totalMs = load ? between(draw, latencyRangeMs) : state.latencyMs;
+    let totalMs = load ? between(draw, latencyRangeMs) : state.latencyMs;
     const stream = body.stream === true;
     const entry = record(tag, { status: 'pending', started: false, stream, model: body.model, prompt, completion, latencyMs: totalMs, cost: String(usageCost(pricing[body.model], { prompt, completion })) });
     const usageBody = { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
@@ -92,6 +94,12 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       return;
     }
     const disconnect = tagged && draw() < state.faults.disconnectRate;
+    // Drawn only while the fault is on and after the older draws, so a seed's other draws stay what they were.
+    if (tagged && state.faults.slowRate > 0 && draw() < state.faults.slowRate) {
+      totalMs = state.faults.slowMs;
+      entry.slow = true;
+      entry.latencyMs = totalMs;
+    }
     if (!stream) {
       await sleep(totalMs);
       if (gone()) { entry.status = 'client-gone'; return; }
@@ -193,8 +201,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     state,
     setLatency(ms) { state.latencyMs = ms; },
     /** Changes the fault rates for requests that arrive from now on. */
-    setFaults({ fault500Rate: nextFault500 = state.faults.fault500Rate, disconnectRate: nextDisconnect = state.faults.disconnectRate } = {}) {
-      state.faults = { fault500Rate: nextFault500, disconnectRate: nextDisconnect };
+    setFaults(next = {}) {
+      state.faults = { ...state.faults, ...Object.fromEntries(Object.entries(next).filter(([key, value]) => key in state.faults && value !== undefined)) };
       return state.faults;
     },
     chatCount() { return state.requests.filter((entry) => entry.path === '/v1/chat/completions').length; },
@@ -209,17 +217,20 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
 
 /**
  * Totals over a delivery ledger. `deliveredCost` sums responses delivered in full (what a fault-free run must
- * settle exactly); `startedCost` sums every response that put any byte on the wire (the most the buyer can owe).
+ * settle exactly); `startedCost` sums every response that put any byte on the wire (the most the buyer can owe);
+ * `slow` counts the requests the slow fault held back.
  */
 export function summarizeDeliveries(deliveries, { active = 0, maxActive = 0 } = {}) {
   const byTag = Object.fromEntries(deliveries);
   const counts = {};
   let deliveredCost = 0n;
   let startedCost = 0n;
+  let slow = 0;
   for (const entry of deliveries.values()) {
     counts[entry.status] = (counts[entry.status] ?? 0) + 1;
+    if (entry.slow) slow += 1;
     if (entry.status === 'ok') deliveredCost += BigInt(entry.cost);
     if (entry.started) startedCost += BigInt(entry.cost);
   }
-  return { byTag, counts, deliveredCost: String(deliveredCost), startedCost: String(startedCost), active, maxActive };
+  return { byTag, counts, slow, deliveredCost: String(deliveredCost), startedCost: String(startedCost), active, maxActive };
 }

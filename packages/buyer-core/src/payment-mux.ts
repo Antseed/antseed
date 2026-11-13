@@ -16,6 +16,7 @@ import { encodeFrame } from '@antseed/protocol/framing';
 import type { FramedMessage } from '@antseed/protocol/messages';
 import * as codec from '@antseed/protocol/payment-codec';
 import { debugLog } from './debug.js';
+import { hitFailpointSync } from './failpoints.js';
 
 const MESSAGE_TYPE_NAME: Record<number, string> = {
   [MessageType.SpendingAuth]: 'SpendingAuth',
@@ -95,8 +96,15 @@ export class PaymentMux {
   }
 
   // --- Sending ---
+  /**
+   * Every SpendingAuth and ReserveAuth frame the buyer sends goes through here. A frame with a reserve
+   * ceiling is a ReserveAuth (the opening reserve or a top-up); anything else is a SpendingAuth.
+   */
   sendSpendingAuth(payload: SpendingAuthPayload): void {
+    const kind = payload.reserveMaxAmount !== undefined ? 'reserve-auth' : 'spending-auth';
+    hitFailpointSync(`buyer.${kind}.before-send`, `${payload.channelId}:${payload.cumulativeAmount}`);
     this._send(MessageType.SpendingAuth, codec.encodeSpendingAuth(payload));
+    hitFailpointSync(`buyer.${kind}.after-send`, `${payload.channelId}:${payload.cumulativeAmount}`);
   }
   sendAuthAck(payload: AuthAckPayload): void {
     this._send(MessageType.AuthAck, codec.encodeAuthAck(payload));

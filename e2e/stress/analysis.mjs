@@ -60,7 +60,8 @@ export function analyzePayments({ sellerRowsPre, sellerRowsPost, buyerRowsPost, 
     settledMinusExpected: overpay.toString(), spentMinusExpected: (sumSpent - expected).toString(),
   };
   // Mock records: all fully-delivered ok responses were billed? Allow rounding.
-  const faultFree = sc.fault500Rate === 0 && sc.disconnectRate === 0 && sc.abortRatio === 0 && !sc.restart;
+  // slowRate: an upstream slower than the buyer waits, so the buyer gives up on work the seller may still finish.
+  const faultFree = sc.fault500Rate === 0 && sc.disconnectRate === 0 && sc.abortRatio === 0 && !sc.restart && !sc.slowRate;
   if (faultFree && sumSpent !== expected) violations.push({ kind: 'seller-spent!=delivered-cost(fault-free)', spent: sumSpent.toString(), expected: expected.toString() });
   // In every scenario, independent of the seller's own books: each response
   // the client received in full was delivered by the upstream and paid for.

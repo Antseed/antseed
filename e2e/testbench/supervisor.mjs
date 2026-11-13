@@ -4,8 +4,8 @@
 import assert from 'node:assert/strict';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createWriteStream } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile } from 'node:fs/promises';
+import { createWriteStream, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmod, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBuyerRouter } from './lib/buyer-router.mjs';
@@ -17,6 +17,7 @@ import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, startupDecision, STARTUP_WATCH_INTERVAL_MS, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
 import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
+import { crashStateAfterKill, crashStateAfterRestart, emptyCrashState, failpointCrashOfExit, failpointFileName, failpointJournalPath, failpointSharedStatePath, graceFor, normalizeFailpointSpec, parseJournal, restartDelayFor } from './lib/failpoints.mjs';
 import { anvilExitMessage, assertLocalUrl, freePort, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
@@ -25,7 +26,7 @@ import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig, testb
 import { resetRunState, testbenchPaths } from './lib/paths.mjs';
 import { logOffsets, peerLogs } from './lib/stress.mjs';
 import { createPrng, derive } from './lib/prng.mjs';
-import { buyerRoutingPreferences } from './lib/topology.mjs';
+import { buyerRoutingPreferences, MAX_BLOCK_TIME_SEC, MAX_MOCK_LATENCY_MS } from './lib/topology.mjs';
 import { startRpcProxy } from '../stress/rpc-proxy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -70,7 +71,34 @@ const state = {
   // Chain links per node ('buyer', 'seller:<id>') when the topology asks for Base-like RPCs.
   rpcLinks: new Map(),
   // What the payment stress harness fails a run on besides money: crashes, unexpected exits, stops that needed SIGKILL.
-  health: { unexpectedExits: [], forcedStops: [], unhandledRejections: [] },
+  // failpointCrashes: nodes a fail point killed (expected, and restarted by the supervisor), kept apart from unexpectedExits.
+  health: { unexpectedExits: [], forcedStops: [], unhandledRejections: [], failpointCrashes: [] },
+  // Seller start specs by id, and the restart in progress per node ('buyer', 'seller:<id>') after a fail point crash.
+  sellerSpecs: new Map(),
+  failpointRestarts: new Map(),
+};
+/** How long a node killed by a fail point stays down before the supervisor starts it again, unless its spec draws the time (restartDelayMs). */
+const FAILPOINT_RESTART_DELAY_MS = 1000;
+const failpointsOn = cliMode && plan.topology.failpoints === true;
+const failpointsDir = join(paths.dir, 'failpoints');
+/** A node's fail point spec file (its journal lies next to it); undefined unless the topology turns fail points on. */
+const failpointsFile = (who) => (failpointsOn ? join(failpointsDir, failpointFileName(who)) : undefined);
+const readFailpointJournal = (who) => {
+  try { return parseJournal(readFileSync(failpointJournalPath(failpointsFile(who)), 'utf8')); } catch { return []; }
+};
+/**
+ * The crash state all armed nodes share (lib/failpoints.mjs, crashBlocked): who a fail point killed and is not back
+ * yet, and until when the grace window after the latest restart runs. Written whole, then moved into place.
+ */
+let crashState = emptyCrashState();
+const noteCrashState = (next) => {
+  crashState = next;
+  if (!failpointsOn) return;
+  const file = failpointSharedStatePath(join(failpointsDir, 'x.json'));
+  try {
+    writeFileSync(`${file}.tmp`, `${JSON.stringify(crashState)}\n`, { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  } catch { /* the handlers then see the state before this change */ }
 };
 /** How long the shutdown after a failed start may take before the supervisor exits regardless. */
 const FAILED_START_SHUTDOWN_MS = 90_000;
@@ -258,11 +286,86 @@ function trackSeller(id, child, info) {
   const entry = { child, info, process: { pid: child.pid, startedAt: processStartTime(child.pid) }, stopping: false };
   child.on('exit', (code, signal) => {
     log(`Seller ${cliMode ? 'process' : 'worker'} ${id} (${child.pid}) exited (${code ?? signal})`);
-    if (!entry.stopping && !shuttingDown) state.health.unexpectedExits.push({ who: `seller:${id}`, code, signal, at: new Date().toISOString() });
     if (state.workers.get(id) === entry) state.workers.delete(id);
+    if (!entry.stopping && !shuttingDown) nodeExited(`seller:${id}`, child.pid, { code, signal });
   });
   state.workers.set(id, entry);
   return entry;
+}
+
+/**
+ * A node exited on its own. When it died of SIGKILL and its fail point journal holds a crash trigger of this very
+ * process that no earlier record stands for, the exit is expected: it goes to health.failpointCrashes (with `spec`,
+ * the id of the arming that killed it) and the node is started again. Anything else is an unexpected exit.
+ */
+function nodeExited(who, pid, { code, signal }) {
+  const crash = failpointsOn ? failpointCrashOfExit(readFailpointJournal(who), { pid, signal }, state.health.failpointCrashes) : null;
+  if (!crash) {
+    state.health.unexpectedExits.push({ who, code, signal, at: new Date().toISOString() });
+    return;
+  }
+  const crashNumber = state.health.failpointCrashes.filter((entry) => entry.who === who).length + 1;
+  const armed = readFailpointSpec(failpointsFile(who));
+  const restartDelayMs = restartDelayFor(armed, { who, crashNumber, specId: crash.spec, fallbackMs: FAILPOINT_RESTART_DELAY_MS });
+  const graceMs = graceFor(armed, { who, crashNumber, specId: crash.spec });
+  // The handlers read the shared state before a crash, but two nodes can decide in the same instant (or a spec can
+  // ask for it): a crash while another node is down is recorded as such, never hidden.
+  const alsoDown = Object.keys(crashState.down).filter((other) => other !== who);
+  const record = {
+    who, point: crash.point, hit: crash.hit, at: crash.at, pid, ...(crash.spec !== undefined ? { spec: crash.spec } : {}), ...(crash.key !== undefined ? { key: crash.key } : {}),
+    restartDelayMs, graceMs, ...(alsoDown.length ? { overlapped: true, alsoDown } : {}),
+  };
+  state.health.failpointCrashes.push(record);
+  noteCrashState(crashStateAfterKill(crashState, who, crash.at));
+  log(`Fail point ${crash.point} (hit ${crash.hit}) killed ${who} (${pid})${alsoDown.length ? ` while ${alsoDown.join(', ')} was down` : ''}; restarting it in ${restartDelayMs} ms`);
+  const restart = restartAfterFailpoint(who, record).finally(() => {
+    if (state.failpointRestarts.get(who) === restart) state.failpointRestarts.delete(who);
+  });
+  state.failpointRestarts.set(who, restart);
+}
+
+/**
+ * Starts a node a fail point killed, the way the control routes start one. Never rejects: a node that does not come
+ * back is recorded on its crash (`restartError`), which tb.assertNoCrashes() fails on. The control routes and the
+ * shutdown wait for a restart in progress (failpointRestartDone), so a node is never started twice or left behind.
+ */
+async function restartAfterFailpoint(who, record) {
+  try {
+    await new Promise((resolveWait) => setTimeout(resolveWait, record.restartDelayMs));
+    if (shuttingDown) return;
+    if (who === 'buyer') {
+      if (!state.buyer) await startBuyerAgain();
+    } else {
+      const id = who.slice('seller:'.length);
+      if (!state.workers.has(id)) await startSellerAgain(id);
+    }
+    record.restartedAt = new Date().toISOString();
+    noteCrashState(crashStateAfterRestart(crashState, who, Date.parse(record.restartedAt), record.graceMs));
+    log(`Restarted ${who} after fail point ${record.point}${record.graceMs ? `; no fail point crash for ${record.graceMs} ms` : ''}`);
+  } catch (error) {
+    record.restartError = error.message;
+    log(`Restart of ${who} after fail point ${record.point} failed: ${error.message}`);
+  }
+}
+
+/** Resolves once no fail point restart of `who` (or, without it, of any node) is in progress. */
+async function failpointRestartDone(who) {
+  await Promise.all(who ? [state.failpointRestarts.get(who)] : [...state.failpointRestarts.values()]);
+}
+
+/** Starts a stopped seller on its spec and lets the buyer find it again (POST /sellers/:id/start, a fail point restart). */
+async function startSellerAgain(id) {
+  const worker = await startSeller(state.sellerSpecs.get(id));
+  await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === id ? { ...seller, process: worker.process, online: true, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort } : seller)) });
+  await discover([id]);
+}
+
+/** Starts the buyer again on its proxy port and rediscovers the online sellers (POST /buyer/start, a fail point restart). */
+async function startBuyerAgain() {
+  await startBuyer(manifest.proxyPort);
+  const status = await (await fetch(`${manifest.proxyUrl}/_antseed/status`)).json();
+  await writeManifest({ buyerOnline: true, buyerStartedAt: status.startedAt });
+  await discover(manifest.sellers.filter((seller) => state.workers.has(seller.id)).map((seller) => seller.id));
 }
 
 /** Records a CLI process as soon as it exists, so `down --force` finds it even if the supervisor dies during startup. */
@@ -298,7 +401,7 @@ async function startSellerProcess(seller) {
   const { node, value: daemon } = await launchCliNode({
     who: `seller:${seller.id}`,
     args: cliArgs(plan.trees.seller.path, seller.dataDir, ['seller', 'start', '--no-dashboard', ...ports]),
-    env: cliNodeEnv(baseEnv, sellerHome, seller.env, plan.trees.seller.path),
+    env: cliNodeEnv(baseEnv, sellerHome, seller.env, plan.trees.seller.path, { failpointsFile: failpointsFile(`seller:${seller.id}`) }),
     logPath: join(paths.logs, `seller-${seller.id}.log`),
   }, async (candidate) => sellerReady(candidate.output(), await readJson(statePath).catch(() => null), candidate.child.pid));
   assertSellerPaymentsOn(node.output(), `seller:${seller.id}`);
@@ -343,6 +446,21 @@ async function crashSellerWorker(id) {
 }
 
 let buyerRuntime = null;
+let failpointArmings = 0;
+
+/** The spec file of the node a /failpoints request names; 409 unless this testbench's nodes carry the fail point handler. */
+function failpointTarget(who) {
+  if (!cliMode) throw Object.assign(new Error('Fail points are armed in a node\'s own process; this testbench runs its nodes inside the supervisor and its workers (--mode sdk), use --mode cli'), { statusCode: 409 });
+  if (!failpointsOn) throw Object.assign(new Error('This testbench\'s nodes were started without the fail point handler; its topology needs failpoints: true'), { statusCode: 409 });
+  const file = failpointsFile(who);
+  const known = who === 'buyer' || state.sellerSpecs.has(who.slice('seller:'.length));
+  if (!known) throw Object.assign(new Error(`Unknown node ${who}`), { statusCode: 404 });
+  return file;
+}
+
+function readFailpointSpec(file) {
+  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; }
+}
 
 /**
  * Fault hook behind POST /faults/buyer/need-auth-loss: the buyer drops the next N NeedAuth frames from
@@ -369,12 +487,12 @@ function injectNeedAuthLoss(bpm) {
 async function startBuyerProcess(port) {
   const { peerId, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
   const launch = async (candidatePort) => {
-    await saveJson(manifest.buyerConfig, assertCliConfig(cliBuyerConfig({ proxyPort: candidatePort, routingPreferences, maxPricing: plan.topology.buyer.maxPricing, chain, bootstrapNodes, payments }), 'buyer'));
+    await saveJson(manifest.buyerConfig, assertCliConfig(cliBuyerConfig({ proxyPort: candidatePort, routingPreferences, maxPricing: plan.topology.buyer.maxPricing, requestTimeoutMs: plan.topology.buyer.requestTimeoutMs, chain, bootstrapNodes, payments }), 'buyer'));
     const url = `http://127.0.0.1:${candidatePort}`;
     const { node } = await launchCliNode({
       who: 'buyer',
       args: cliArgs(plan.trees.buyer.path, paths.buyer, ['buyer', 'start', '--port', String(candidatePort), '--no-verifier']),
-      env: cliNodeEnv(baseEnv, paths.home, plan.topology.buyer.env, plan.trees.buyer.path),
+      env: cliNodeEnv(baseEnv, paths.home, plan.topology.buyer.env, plan.trees.buyer.path, { failpointsFile: failpointsFile('buyer') }),
       logPath: join(paths.logs, 'buyer.log'),
     }, async (candidate) => {
       if (!buyerProxyListening(candidate.output(), candidatePort)) return false;
@@ -392,8 +510,8 @@ async function startBuyerProcess(port) {
     };
     node.child.on('exit', (code, signal) => {
       log(`Buyer process (${node.child.pid}) exited (${code ?? signal})`);
-      if (!entry.stopping && !shuttingDown) state.health.unexpectedExits.push({ who: 'buyer', code, signal, at: new Date().toISOString() });
       if (state.buyer === entry) state.buyer = null;
+      if (!entry.stopping && !shuttingDown) nodeExited('buyer', node.child.pid, { code, signal });
     });
     return entry;
   };
@@ -590,6 +708,8 @@ async function shutdown(reason) {
       try { await action(); } catch (error) { errors.push(`${label}: ${error.message}`); log(`${label} failed: ${error.message}`); }
     };
     if (manifest?.running) await writeManifest({ running: false, stoppingAt: new Date().toISOString() });
+    // A node being restarted after a fail point crash is tracked only once it is up: wait, so it is stopped below.
+    await failpointRestartDone();
     if (state.buyer && state.reader && manifest?.sellers) {
       await stopStep('settle and close channels', async () => {
         // Every seller, so a stopped one with an open channel is named (seller-offline) instead of timing out the wait.
@@ -645,6 +765,10 @@ async function main() {
   for (const dir of [paths.home, join(paths.home, '.antseed'), sellerHome, join(sellerHome, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
+  // Specs and journals of an earlier run would arm this one's nodes and explain exits that are not theirs.
+  await rm(failpointsDir, { recursive: true, force: true });
+  if (failpointsOn) await mkdir(failpointsDir, { recursive: true, mode: 0o700 });
+  noteCrashState(emptyCrashState());
   log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
   // Secrets (fork URL, live keys) were read above; sellers get their keys from bindUpstream, nobody else needs them.
   envs = supervisorEnvs(process.env, paths.home, { verbose: Boolean(plan.verbose), buyerEnv: plan.topology.buyer.env, liveKeys: plan.liveKeys, cliMode });
@@ -779,7 +903,8 @@ async function main() {
     rpcLinks: Object.fromEntries([...state.rpcLinks].map(([who, link]) => [who, link.url])),
     desktopInstance: name.slice(0, 40),
   });
-  const specs = new Map(sellers.map((seller) => [seller.id, seller.spec]));
+  const specs = state.sellerSpecs;
+  for (const seller of sellers) specs.set(seller.id, seller.spec);
   /** A seller's Base-like RPC link; only `chain.rpc: 'base'` has one. */
   const sellerRpcLink = (id) => {
     if (!specs.has(id)) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
@@ -818,39 +943,45 @@ async function main() {
         await state.reader.warp(seconds);
         return { block: await state.reader.provider.getBlockNumber() };
       },
+      'POST /chain/block-time': async ({ body }) => {
+        const seconds = Number(body.seconds);
+        if (!Number.isInteger(seconds) || seconds < 1 || seconds > MAX_BLOCK_TIME_SEC) throw Object.assign(new Error(`seconds must be 1..${MAX_BLOCK_TIME_SEC}`), { statusCode: 400 });
+        await state.reader.provider.send('evm_setIntervalMining', [seconds]);
+        log(`Anvil mines a block every ${seconds}s (control request)`);
+        return { blockTimeSec: seconds };
+      },
       'POST /sellers/:id/stop': async ({ params }) => {
         if (!specs.has(params.id)) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        await failpointRestartDone(`seller:${params.id}`);
         const stopped = await stopSellerWorker(params.id);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: undefined, online: false } : seller)) });
         return { stopped };
       },
       'POST /sellers/:id/crash': async ({ params }) => {
         if (!specs.has(params.id)) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        await failpointRestartDone(`seller:${params.id}`);
         const crashed = await crashSellerWorker(params.id);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: undefined, online: false } : seller)) });
         return { crashed };
       },
       'POST /sellers/:id/start': async ({ params }) => {
-        const spec = specs.get(params.id);
-        if (!spec) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        if (!specs.has(params.id)) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        await failpointRestartDone(`seller:${params.id}`);
         if (state.workers.has(params.id)) return { started: false };
-        const worker = await startSeller(spec);
-        await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: worker.process, online: true, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort } : seller)) });
-        await discover([params.id]);
+        await startSellerAgain(params.id);
         return { started: true };
       },
       'POST /buyer/stop': async () => {
+        await failpointRestartDone('buyer');
         const stopped = await stopBuyer();
         await writeManifest({ buyerOnline: false });
         log('Buyer node and proxy stopped (control request)');
         return { stopped };
       },
       'POST /buyer/start': async () => {
+        await failpointRestartDone('buyer');
         if (state.buyer) return { started: false };
-        await startBuyer(manifest.proxyPort);
-        const status = await (await fetch(`${manifest.proxyUrl}/_antseed/status`)).json();
-        await writeManifest({ buyerOnline: true, buyerStartedAt: status.startedAt });
-        await discover(manifest.sellers.filter((seller) => state.workers.has(seller.id)).map((seller) => seller.id));
+        await startBuyerAgain();
         log('Buyer node and proxy restarted on the same port');
         return { started: true };
       },
@@ -864,6 +995,18 @@ async function main() {
         log(`Fault: the buyer loses the next ${count} NeedAuth frame(s) (control request)`);
         return state.needAuthLoss;
       },
+      'GET /failpoints/:who': ({ params }) => {
+        const file = failpointTarget(params.who);
+        return { spec: readFailpointSpec(file), journal: readFailpointJournal(params.who) };
+      },
+      'POST /failpoints/:who': async ({ params, body }) => {
+        const file = failpointTarget(params.who);
+        const spec = body.clear === true ? null : { ...normalizeFailpointSpec(body.spec), id: `${Date.now()}-${(failpointArmings += 1)}` };
+        // Written whole, then moved into place: the node re-reads the file when it changes and must never see half of it.
+        await saveJson(file, spec ?? { points: {} });
+        log(spec ? `Fail points armed on ${params.who}: ${JSON.stringify(spec.points)} seed=${spec.seed} id=${spec.id}${spec.maxCrashes ? ` maxCrashes=${spec.maxCrashes}` : ''}${spec.graceMs !== undefined ? ` graceMs=${[spec.graceMs].flat().join('-')}` : ''}${spec.ignoreOthers ? ' ignoreOthers' : ''}${spec.restartDelayMs ? ` restartDelayMs=${spec.restartDelayMs.join('-')}` : ''} (control request)` : `Fail points cleared on ${params.who} (control request)`);
+        return { spec };
+      },
       'POST /sellers/:id/mock': ({ params, body }) => {
         const mock = state.mocks.get(params.id);
         if (!mock) throw Object.assign(new Error(`No mock for seller ${params.id}`), { statusCode: 404 });
@@ -874,10 +1017,14 @@ async function main() {
           mock.setLatency(latencyMs);
         }
         const faults = {};
-        for (const key of ['fault500Rate', 'disconnectRate']) {
+        for (const key of ['fault500Rate', 'disconnectRate', 'slowRate']) {
           if (body[key] === undefined) continue;
           if (typeof body[key] !== 'number' || !(body[key] >= 0 && body[key] <= 1)) throw bad(`${key} must be 0..1`);
           faults[key] = body[key];
+        }
+        if (body.slowMs !== undefined) {
+          if (!Number.isInteger(body.slowMs) || body.slowMs < 0 || body.slowMs > MAX_MOCK_LATENCY_MS) throw bad(`slowMs must be 0..${MAX_MOCK_LATENCY_MS}`);
+          faults.slowMs = body.slowMs;
         }
         if (Object.keys(faults).length) log(`Mock ${params.id} faults ${JSON.stringify(mock.setFaults(faults))} (control request)`);
         return { latencyMs: mock.state.latencyMs, faults: mock.state.faults };

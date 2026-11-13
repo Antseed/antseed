@@ -316,7 +316,8 @@ describe('scenario modules', () => {
       if (name.startsWith('issue-')) assert.equal(group, 'issues', `${name} belongs in scenarios/issues/`);
       if (name.startsWith('mainnet-')) assert.equal(group, 'mainnet', `${name} belongs in scenarios/mainnet/`);
       const scenario = validateScenarioModule(await import(pathToFileURL(file).href), name);
-      for (const target of scenario.targets) assertScenarioSupported(scenario, target);
+      // In the mode the scenario's own topology asks for: that is the mode a plain `run` starts it in.
+      for (const target of scenario.targets) assertScenarioSupported(scenario, target, requestedMode(undefined, scenario.topology));
       assert.ok(scenario.description, `${name} needs a description`);
     }
   });

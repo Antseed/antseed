@@ -331,6 +331,11 @@ const SELLER_PATTERNS = {
   topUpPermanentFail: /Top-up on-chain failed permanently/,
   topUpDeferred: /Top-up (threshold not met|transaction backpressure)/,
   topUpCompleted: /Top-up completed/,
+  topUpVerified: /Top-up verified/,
+  // At the reserve ceiling with the next top-up already mining: the seller waits again, and answers a retryable 503
+  // when its wait budget runs out first (seller-request-handler.ts, TOP_UP_WAIT_MS).
+  stillAtCeiling: /Still at the ceiling after a top-up/,
+  topUpPendingAtBudget: /Top-up still mining at the wait budget/,
   catchUpBeforeWait: /catch-up-before-wait/,
   fullyExhausted: /Session fully exhausted/,
   cannotReserveReplacement: /Cannot reserve replacement channel/,
@@ -357,6 +362,7 @@ const BUYER_PATTERNS = {
   closeCoop: /Cooperative close/,
   needAuthUnknownChannel: /NeedAuth for unknown channel/,
   needAuthUnknownSeller: /NeedAuth for unknown seller/,
+  requestTimedOut: /\[BuyerRequest\] Request \S+ timed out/,
   crash: /Unhandled|uncaught|UnhandledPromiseRejection|FATAL|Segmentation/i,
   typeError: /TypeError|ReferenceError|RangeError/,
 };

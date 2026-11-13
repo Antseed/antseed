@@ -33,3 +33,13 @@ export function scenarioFiles(dir = SCENARIOS_DIR) {
 export function scenarioFile(name, dir = SCENARIOS_DIR) {
   return scenarioFiles(dir).find((scenario) => scenario.name === name)?.file ?? null;
 }
+
+/**
+ * What a scenario arms at fail points for a run seed, as JSON text: its `failpointPlan(seed)` (the drawn plan and
+ * every spec, seeds included). It needs no testbench, and two prints of one seed are identical, so they can be diffed.
+ * What a run then does with the plan is not replayed: the nodes are real processes on a real clock.
+ */
+export function failpointPlanText(scenario, seed) {
+  if (typeof scenario.failpointPlan !== 'function') throw new Error(`Scenario ${scenario.name} arms no seeded fail point plan (it exports no failpointPlan)`);
+  return JSON.stringify({ scenario: scenario.name, seed, ...scenario.failpointPlan(seed) }, null, 2);
+}

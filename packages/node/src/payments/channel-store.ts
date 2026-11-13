@@ -27,6 +27,7 @@ import {
   type StoredChannel,
   type StoredChannelServiceTotal,
 } from '@antseed/buyer-core/channel-store-types';
+import { hitFailpointSync } from '@antseed/buyer-core/failpoints';
 
 export interface StoredReceipt {
   id?: number;
@@ -57,6 +58,8 @@ export interface BuyerServiceUsageTotal {
 
 export class ChannelStore {
   private _db: Database.Database;
+  /** True while a write method runs, so the writes it is made of do not count as writes of their own. */
+  private _writing = false;
 
   // ── Cached prepared statements (compiled once, reused every call) ──
   /** Cached transaction function for updateDeliveredAndInsertReceipt (compiled once). */
@@ -284,10 +287,29 @@ export class ChannelStore {
     };
   }
 
+  /**
+   * Runs one write with a fail point on each side. A write made of other writes (a transaction) is
+   * one write: only the outermost call reaches the points.
+   */
+  private _write(write: () => void): void {
+    if (this._writing) {
+      write();
+      return;
+    }
+    this._writing = true;
+    try {
+      hitFailpointSync('store.before-write');
+      write();
+      hitFailpointSync('store.after-write');
+    } finally {
+      this._writing = false;
+    }
+  }
+
   // ── Channel CRUD ──────────────────────────────────────────────
 
   upsertChannel(channel: StoredChannel): void {
-    this._stmts.upsert.run({
+    this._write(() => this._stmts.upsert.run({
       sessionId: channel.sessionId,
       peerId: channel.peerId,
       role: channel.role,
@@ -321,7 +343,7 @@ export class ChannelStore {
       oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
-    });
+    }));
   }
 
   getChannel(sessionId: string): StoredChannel | null {
@@ -377,15 +399,17 @@ export class ChannelStore {
 
   updateChannelStatus(sessionId: string, status: ChannelStatus, settledAmount?: string): void {
     const now = Date.now();
-    if (settledAmount !== undefined) {
-      this._stmts.updateStatusWithAmount.run(status, now, settledAmount, now, sessionId);
-    } else {
-      this._stmts.updateStatus.run(status, now, sessionId);
-    }
+    this._write(() => {
+      if (settledAmount !== undefined) {
+        this._stmts.updateStatusWithAmount.run(status, now, settledAmount, now, sessionId);
+      } else {
+        this._stmts.updateStatus.run(status, now, sessionId);
+      }
+    });
   }
 
   updateTokensDelivered(sessionId: string, tokens: string, requestCount: number): void {
-    this._stmts.updateTokens.run(tokens, requestCount, Date.now(), sessionId);
+    this._write(() => this._stmts.updateTokens.run(tokens, requestCount, Date.now(), sessionId));
   }
 
   getMaxNonce(role: ChannelRole): number {
@@ -544,7 +568,7 @@ export class ChannelStore {
   // ── Receipt CRUD ──────────────────────────────────────────────
 
   insertReceipt(receipt: Omit<StoredReceipt, 'id'>): void {
-    this._stmts.insertReceipt.run({
+    this._write(() => this._stmts.insertReceipt.run({
       sessionId: receipt.sessionId,
       runningTotal: receipt.runningTotal,
       requestCount: receipt.requestCount,
@@ -552,7 +576,7 @@ export class ChannelStore {
       sellerSig: receipt.sellerSig,
       buyerAckSig: receipt.buyerAckSig,
       createdAt: receipt.createdAt,
-    });
+    }));
   }
 
   getReceipts(sessionId: string): StoredReceipt[] {
@@ -567,26 +591,26 @@ export class ChannelStore {
     requestCount: number,
     receipt: Omit<StoredReceipt, 'id'>,
   ): void {
-    this._updateDeliveredAndInsertReceiptTxn(sessionId, tokens, requestCount, receipt);
+    this._write(() => this._updateDeliveredAndInsertReceiptTxn(sessionId, tokens, requestCount, receipt));
   }
 
   /** Update receipt ack directly by composite key (no load-all-then-filter). */
   updateReceiptAck(sessionId: string, runningTotal: string, requestCount: number, buyerAckSig: string): void {
-    this._stmts.updateReceiptAck.run(buyerAckSig, sessionId, runningTotal, requestCount);
+    this._write(() => this._stmts.updateReceiptAck.run(buyerAckSig, sessionId, runningTotal, requestCount));
   }
 
   // ── Service total CRUD ────────────────────────────────────────
 
   replaceServiceTotals(sessionId: string, totals: Omit<StoredChannelServiceTotal, 'sessionId' | 'updatedAt'>[]): void {
     const updatedAt = Date.now();
-    this._replaceServiceTotalsTxn(
+    this._write(() => this._replaceServiceTotalsTxn(
       sessionId,
       totals.map((total) => ({
         sessionId,
         ...total,
         updatedAt,
       })),
-    );
+    ));
   }
 
   replaceMetadataServiceTotals(sessionId: string, services: readonly SpendingAuthServiceMetadata[] = []): void {
@@ -604,7 +628,7 @@ export class ChannelStore {
       ...total,
       updatedAt,
     }));
-    this._commitAuthorizationTxn(channel, totals);
+    this._write(() => this._commitAuthorizationTxn(channel, totals));
   }
 
   getServiceTotals(sessionId: string): StoredChannelServiceTotal[] {

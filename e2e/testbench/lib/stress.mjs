@@ -17,7 +17,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 /** Load shape defaults: the stress harness's BASE (e2e/stress/scenarios.mjs), minus what the topology owns. */
 export const LOAD_DEFAULTS = {
   concurrency: 8, requests: 100, streamRatio: 0.5, abortRatio: 0, imageRatio: 0,
-  minInTokens: 1000, maxInTokens: 20_000, restart: null,
+  minInTokens: 1000, maxInTokens: 20_000, restart: null, hold: null,
+  // Share of chats sent without `max_tokens`, as many OpenAI clients do: the seller then has no output cap to estimate from.
+  omitMaxTokensRatio: 0,
 };
 
 /**
@@ -29,9 +31,37 @@ export const GATES = {
   faults: { minOk: 0.7, allowedFailures: /^(500:server_error|502:Upstream error: fetch failed|stream-truncated)$/ },
   'restart-buyer': { minOk: 0.85, restart: true },
   'restart-seller': { minOk: 0.75, restart: true },
+  // A killed seller is a restart the seller had no say in: the same floor and window as a graceful one.
+  'crash-seller': { minOk: 0.75, restart: true },
+  // A node killed at a fail point is a crash at the worst moment: the same floor and window, whichever node it is.
+  'failpoint-crash': { minOk: 0.75, restart: true },
+  // At the ceiling with a top-up still mining the seller answers a retryable 503 by design; nothing else may fail.
+  'slow-topups': { minOk: 0.85, allowedFailures: /^503:top_up_pending$/ },
+  // A request the buyer gave up on reaches the client as a 502; nothing else may fail.
+  'buyer-timeout': { minOk: 0.85, allowedFailures: /^502:upstream_error$/ },
   'restart-seller-topup': { minOk: 0.75, restart: true },
   'issue-1050': { minOk: 0.95 },
 };
+
+/** Requests a run with fail point crashes may lose beyond the ones in flight at each crash. */
+export const CRASHES_GATE_SLACK = 8;
+
+/**
+ * The gate of a load that fail points crashed `crashes` times: nothing may fail outside a restart window, and the ok
+ * share must be at least `1 - (crashes x concurrency + slack) / requests`. A node killed mid-load fails the requests
+ * in flight, at most `concurrency` of them (measured: exactly that many per crash at 16-way), and `slack` covers a
+ * request that fails once more while the supervisor has not yet recorded the crash. No crash, no allowance but the
+ * slack. `crashes` counts the crashes that fired while the load ran.
+ */
+export function crashesGate({ crashes, concurrency, requests, slack = CRASHES_GATE_SLACK }) {
+  if (![crashes, concurrency, requests, slack].every((value) => Number.isInteger(value) && value >= 0) || requests === 0) throw new Error('crashesGate needs whole numbers: crashes, concurrency, slack and requests > 0');
+  return { minOk: Math.max(0, 1 - (crashes * concurrency + slack) / requests), restart: true, crashes };
+}
+
+/** The fail point crash records that fired while a load ran (from its first request to its last answer). */
+export function crashesDuringLoad(crashes, run) {
+  return crashes.filter((crash) => Date.parse(crash.at) >= run.startedAt && Date.parse(crash.at) <= run.startedAt + run.loadMs);
+}
 
 /** Log lines that mean a peer crashed (e2e/stress/harness.mjs SELLER_PATTERNS.crash / BUYER_PATTERNS.crash). */
 export const CRASH_PATTERN = /Unhandled|uncaught|UnhandledPromiseRejection|FATAL|Segmentation/i;
@@ -48,6 +78,11 @@ export const SELLER_PATTERNS = {
   topUpPermanentFail: /Top-up on-chain failed permanently/,
   topUpDeferred: /Top-up (threshold not met|transaction backpressure)/,
   topUpCompleted: /Top-up completed/,
+  topUpVerified: /Top-up verified/,
+  // At the reserve ceiling with the next top-up already mining: the seller waits again, and answers a retryable 503
+  // when its wait budget runs out first (seller-request-handler.ts, TOP_UP_WAIT_MS).
+  stillAtCeiling: /Still at the ceiling after a top-up/,
+  topUpPendingAtBudget: /Top-up still mining at the wait budget/,
   catchUpBeforeWait: /catch-up-before-wait/,
   fullyExhausted: /Session fully exhausted/,
   cannotReserveReplacement: /Cannot reserve replacement channel/,
@@ -76,6 +111,7 @@ export const BUYER_PATTERNS = {
   closeCoop: /Cooperative close/,
   needAuthUnknownChannel: /NeedAuth for unknown channel/,
   needAuthUnknownSeller: /NeedAuth for unknown seller/,
+  requestTimedOut: /\[BuyerRequest\] Request \S+ timed out/,
   crash: CRASH_PATTERN,
   typeError: /TypeError|ReferenceError|RangeError/,
 };
@@ -124,10 +160,12 @@ async function chatRequest({ proxyUrl, model, load }, index, results, { tag, ran
   const abort = random() < load.abortRatio;
   const inTokens = Math.floor(load.minInTokens + random() * (load.maxInTokens - load.minInTokens));
   const filler = 'lorem ipsum dolor sit amet '.repeat(Math.ceil((inTokens * 4) / 27)).slice(0, inTokens * 4);
-  const body = { model, stream, max_tokens: 4096, messages: [{ role: 'user', content: `[req:${tag}] ${filler}` }] };
+  // Drawn only when the option is on, so a seed's other draws stay what they were.
+  const noMaxTokens = load.omitMaxTokensRatio > 0 && random() < load.omitMaxTokensRatio;
+  const body = { model, stream, ...(noMaxTokens ? {} : { max_tokens: 4096 }), messages: [{ role: 'user', content: `[req:${tag}] ${filler}` }] };
   const started = Date.now();
   const controller = new AbortController();
-  const record = { i: index, tag, stream, abort, start: started };
+  const record = { i: index, tag, stream, abort, ...(noMaxTokens ? { noMaxTokens } : {}), start: started };
   results.push(record);
   try {
     const response = await fetch(`${proxyUrl}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
@@ -181,6 +219,8 @@ async function chatRequest({ proxyUrl, model, load }, index, results, { tag, ran
  * flight finish or fail on their own. With `when` (a promise) in place of `atFraction`, the restart starts once it
  * resolves during the load, and never after. Returns the per-request records, the client summary and restart timing.
  * Each request's tag and draws are fixed up front by its index, so which worker sends it, and when, cannot change them.
+ * `hold(record)` is asked by each worker before its next request, with its last result: a promise it returns is
+ * awaited first. That is how a load waits out a restart it did not start itself (a node killed by a fail point).
  */
 export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, random = Math.random, onRequest }) {
   const load = { ...LOAD_DEFAULTS, ...shape };
@@ -204,15 +244,20 @@ export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, r
   };
   load.restart?.when?.then(() => { if (!restart && !finished) startRestart(); }, () => {});
   const worker = async () => {
+    let last = null;
     while (next < load.requests) {
       // Back to the limit check after a pause: the workers that waited may outnumber the requests left.
       if (paused) { await paused; continue; }
+      const held = load.hold?.(last);
+      last = null;
+      if (held) { await held; continue; }
       const index = next;
       next += 1;
       const plan = plans[index];
       const record = load.imageRatio > 0 && plan.random() < load.imageRatio
         ? await imageRequest({ proxyUrl, model: imageModel }, index, results, plan)
         : await chatRequest({ proxyUrl, model, load }, index, results, plan);
+      last = record;
       done += 1;
       onRequest?.(record);
       if (done === restartAt && !restart) startRestart();
@@ -247,8 +292,9 @@ function okPerSecond(results, okCount) {
 /**
  * Outcome counts, throughput, estimated cost and latency percentiles over successful requests, overall and split into
  * streamed (with time to first byte) and non-streamed; with a restart, failures inside and outside its window (plus 15 s).
+ * `restarts` (a list) gives one window per restart: a failure is inside when it overlaps any of them.
  */
-export function clientSummary(results, { startedAt, restart } = {}) {
+export function clientSummary(results, { startedAt, restart, restarts } = {}) {
   const ok = results.filter((entry) => !entry.error && !entry.clientAborted);
   const latencies = (entries) => latencyPercentiles(entries.map((entry) => entry.ms));
   const streamed = ok.filter((entry) => entry.stream);
@@ -258,34 +304,60 @@ export function clientSummary(results, { startedAt, restart } = {}) {
   const summary = {
     total: results.length, ok: ok.length, clientAborted: results.filter((entry) => entry.clientAborted).length,
     failed: results.filter((entry) => entry.error).length, failures,
+    noMaxTokens: results.filter((entry) => entry.noMaxTokens).length,
     ...latencies(ok),
     streamed: { count: streamed.length, ...latencies(streamed), ttfb: latencyPercentiles(streamed.map((entry) => entry.ttfbMs)) },
     nonStreamed: { count: nonStreamed.length, ...latencies(nonStreamed) },
     okPerSecond: okPerSecond(results, ok.length),
     estimatedCostUsd: estimatedCostUsd(results),
   };
-  if (restart && startedAt !== undefined) {
-    const windowStart = restart.stoppedAt;
-    const windowEnd = restart.stoppedAt + restart.downMs + 15_000;
-    const inWindow = results.filter((entry) => entry.error && entry.start - startedAt <= windowEnd && entry.start - startedAt + entry.ms >= windowStart);
+  const windows = (restarts ?? (restart ? [restart] : [])).map((entry) => ({ start: entry.stoppedAt, end: entry.stoppedAt + entry.downMs + 15_000 }));
+  if (windows.length && startedAt !== undefined) {
+    const inWindow = results.filter((entry) => entry.error && windows.some((window) => entry.start - startedAt <= window.end && entry.start - startedAt + entry.ms >= window.start));
     summary.failedInRestartWindow = inWindow.length;
     summary.failedOutsideRestartWindow = summary.failed - inWindow.length;
+    summary.failuresOutsideRestartWindow = {};
+    const inWindowSet = new Set(inWindow);
+    for (const entry of results) if (entry.error && !inWindowSet.has(entry)) summary.failuresOutsideRestartWindow[entry.error] = (summary.failuresOutsideRestartWindow[entry.error] ?? 0) + 1;
   }
   return summary;
 }
 
-/** Problems a client summary has against a gate (empty when it passes): the e2e/stress/ci.mjs evaluate rules. */
+/**
+ * Problems a client summary has against a gate (empty when it passes): the e2e/stress/ci.mjs evaluate rules. A gate
+ * with both `restart` and `allowedFailures` (a restart on top of injected faults) lets anything fail inside the
+ * restart window and only the allowed kinds outside it; a summary without a restart counts every failure as outside.
+ */
 export function gateProblems(client, gate = GATES.default) {
   const problems = [];
   const okShare = client.ok / Math.max(1, client.total - client.clientAborted);
   if (okShare < gate.minOk) problems.push(`${client.ok}/${client.total} ok, below the ${Math.round(gate.minOk * 100)}% floor`);
-  if (gate.allowedFailures) {
+  if (gate.allowedFailures && gate.restart) {
+    const outside = client.failuresOutsideRestartWindow ?? client.failures;
+    for (const kind of Object.keys(outside)) {
+      if (!gate.allowedFailures.test(kind)) problems.push(`unexpected failure kind outside the restart window: ${kind} (${outside[kind]})`);
+    }
+  } else if (gate.allowedFailures) {
     for (const kind of Object.keys(client.failures)) {
       if (!gate.allowedFailures.test(kind)) problems.push(`unexpected failure kind: ${kind} (${client.failures[kind]})`);
     }
-  }
-  if (gate.restart && client.failedOutsideRestartWindow) problems.push(`${client.failedOutsideRestartWindow} failures outside the restart window`);
+  } else if (gate.restart && client.failedOutsideRestartWindow) problems.push(`${client.failedOutsideRestartWindow} failures outside the restart window`);
   return problems;
+}
+
+/**
+ * One gate for a run that injects several things at once: the lowest floor of the parts, the failure kinds any part
+ * allows, and a restart window when a part has one. A part without `allowedFailures` adds no kinds, so the result is
+ * never looser than its parts taken together.
+ */
+export function composeGate(gates) {
+  if (gates.length === 0) return GATES.default;
+  const allowed = gates.map((gate) => gate.allowedFailures).filter(Boolean);
+  return {
+    minOk: Math.min(...gates.map((gate) => gate.minOk)),
+    ...(allowed.length ? { allowedFailures: new RegExp(allowed.map((pattern) => `(?:${pattern.source})`).join('|')) } : {}),
+    ...(gates.some((gate) => gate.restart) ? { restart: true } : {}),
+  };
 }
 
 let Database;
@@ -427,9 +499,10 @@ const DEBUG_ENV = { ANTSEED_DEBUG: '1' };
  * Overrides merge per section.
  */
 // Stress shapes run the real `antseed` processes (cli mode) by default, like the e2e/stress harness they replace.
-export function stressTopology({ mode = 'cli', seller = {}, buyer = {}, chain = {}, payments = {}, budgets } = {}) {
+export function stressTopology({ mode = 'cli', seller = {}, buyer = {}, chain = {}, payments = {}, budgets, failpoints } = {}) {
   return {
     mode,
+    ...(failpoints ? { failpoints: true } : {}),
     ...(budgets ? { budgets } : {}),
     sellers: [{
       id: 'seller',
@@ -458,9 +531,12 @@ export function stressTopology({ mode = 'cli', seller = {}, buyer = {}, chain = 
   };
 }
 
-/** One small paid request that must succeed before the load (opens the channel), retried while the network settles. */
-export async function warmUp(tb, model = STRESS_MODEL) {
-  const random = tb.prng('warm-up');
+/**
+ * One small paid request that must succeed before the load (opens the channel), retried while the network settles.
+ * `label` names the seed stream its tag is drawn from: a second warm-up in one run needs its own, or the tags collide.
+ */
+export async function warmUp(tb, model = STRESS_MODEL, label = 'warm-up') {
+  const random = tb.prng(label);
   return tb.waitFor(async () => {
     try {
       return await tb.chat({ model, prompt: `[req:warm-${randomTag(random, 8)}] hi` });
@@ -468,6 +544,18 @@ export async function warmUp(tb, model = STRESS_MODEL) {
       return false;
     }
   }, 'a warm-up request to succeed', { timeoutMs: 120_000, intervalMs: 2000 });
+}
+
+/**
+ * Closes every channel, repeated until the buyer reaches the seller: after a seller restart no request reconnects the
+ * two, the buyer does not look up a seller it just failed to reach for about 30 s, and a cooperative close needs the
+ * seller found. Resolves with `{ closed, attempts, lastError }`; `closed` false when it never could within `timeoutMs`
+ * (the oracle's own close then fails and says why).
+ */
+export async function closeWhenReachable(tb, { timeoutMs = 120_000, intervalMs = 5000 } = {}) {
+  const errors = [];
+  const closed = await tb.waitFor(() => tb.closeAll().then(() => true, (error) => { errors.push(error.message); return false; }), 'the buyer to reach the restarted seller and close the channel', { timeoutMs, intervalMs }).catch(() => false);
+  return { closed, attempts: errors.length + (closed ? 1 : 0), lastError: errors.at(-1) ?? null };
 }
 
 /** What one load measured, flat, for tb.timings and drift. */
@@ -480,31 +568,90 @@ export function loadTimings({ client, restart, loadMs }) {
   };
 }
 
+/** A mock ledger's outcome counts and slow responses over the deliveries recorded after `skip` (a snapshot's deliveredTags). */
+export function deliveryCounts(ledgers, skip = new Set()) {
+  const counts = { slow: 0 };
+  for (const ledger of ledgers) {
+    for (const [tag, entry] of Object.entries(ledger.byTag ?? {})) {
+      if (skip.has(tag)) continue;
+      counts[entry.status] = (counts[entry.status] ?? 0) + 1;
+      if (entry.slow) counts.slow += 1;
+    }
+  }
+  return counts;
+}
+
+/**
+ * Proof that everything a run injected actually happened, one entry per injected thing: the mock answered 500s, cut
+ * responses and held some back, the client aborted, chats went out without max_tokens, the peer was restarted (and,
+ * for a crash, really killed). A fault that never fired would let a scenario pass without reaching its path.
+ * `deliveries` is deliveryCounts() over the run, `client` the load's summary, `restart` its restart record.
+ */
+export function injectedEvidence({ faults = {}, load = {}, client, restart, deliveries }) {
+  const entries = [];
+  const add = (name, count) => entries.push({ name: `fault path ran: ${name}`, ok: count > 0, detail: { count } });
+  if (faults.fault500Rate > 0) add('the upstream answered 500s', deliveries['500'] ?? 0);
+  if (faults.disconnectRate > 0) add('the upstream cut responses midway', deliveries.disconnect ?? 0);
+  if (faults.slowRate > 0) add('the upstream held responses back', deliveries.slow ?? 0);
+  if (load.abortRatio > 0) add('clients aborted requests', client.clientAborted);
+  if (load.omitMaxTokensRatio > 0) add('chats went out without max_tokens', client.noMaxTokens ?? 0);
+  if (load.restart) {
+    const { who, crash } = load.restart;
+    const ran = restart?.who === who && (!crash || restart.crashed === true);
+    entries.push({ name: `fault path ran: the ${who} was ${crash ? 'killed and started again' : 'restarted'} mid-load`, ok: Boolean(ran), detail: restart ?? 'no restart recorded' });
+  }
+  return entries;
+}
+
 /**
  * A payment stress scenario end to end on the testbench: snapshot, warm-up, faults on, load, faults off, then the
- * payment oracle, the crash and isolation checks, the load gate and `topology.budgets`. `faults` are mock fault rates for the load phase
- * only. A failed gate or check never hides another: every verdict is recorded before the run fails.
+ * payment oracle, the crash and isolation checks, the proof that every injected fault fired (injectedEvidence, plus
+ * the scenario's own `evidence`), the load gate and `topology.budgets`. `faults` are mock fault rates for the load
+ * phase only. `followUp` ({ load, gate }) is a second, fault-free load after the faults are off: what the faults left
+ * behind must not break later requests, and the oracle judges both loads together. `evidence` ({ run, followUp,
+ * deliveries, logPatterns }) returns more `{ name, ok, detail }` entries for a path only that scenario knows.
+ * `afterLoad(run)` runs once the load is over and before anything is judged, and returns the run to judge: a scenario
+ * whose fault restarts a node behind the load's back waits for it there and adds the restart it observed.
+ * `quiesceMs` is how long the oracle waits for in-flight payments before it reads the books (default 10 s; a shape
+ * with slow blocks needs more than one block).
+ * A failed gate or check never hides another: every verdict is recorded before the run fails.
  */
-export async function stressRun(tb, { load, faults, gate = GATES.default, sellerId = 'seller' }) {
+export async function stressRun(tb, { load, faults, gate = GATES.default, sellerId = 'seller', followUp, evidence, afterLoad, quiesceMs }) {
   const before = await tb.paymentSnapshot();
   await warmUp(tb);
   let run;
+  let later;
+  const model = (shape) => ({ model: STRESS_MODEL, ...(shape.imageRatio ? { imageModel: STRESS_IMAGE_MODEL } : {}) });
+  const recordAll = (entries) => runAll(entries.map((entry) => () => tb.check(entry.name, entry.ok, entry.detail)));
   await runAll([
     async () => {
       try {
         if (faults) await tb.setMockFaults(sellerId, faults);
-        run = await tb.load({ model: STRESS_MODEL, ...(load.imageRatio ? { imageModel: STRESS_IMAGE_MODEL } : {}), gate, ...load });
+        run = await tb.load({ ...model(load), gate, ...load });
+        if (afterLoad) run = await afterLoad(run);
       } finally {
-        if (faults) await tb.setMockFaults(sellerId, { fault500Rate: 0, disconnectRate: 0 });
+        // Rates back to zero; slowMs is only how long a slow response takes.
+        if (faults) await tb.setMockFaults(sellerId, { fault500Rate: 0, disconnectRate: 0, ...(faults.slowRate !== undefined ? { slowRate: 0 } : {}) });
       }
+      if (followUp) later = await tb.load({ ...model(followUp.load), gate: followUp.gate ?? GATES.default, ...followUp.load });
     },
     // A load that threw left no results to judge; the crash scan can still say why.
-    () => run && tb.assertDeliveredWorkPaid({ before, results: run.results, injected: { ...(faults ?? {}), abortRatio: load.abortRatio ?? 0, restart: load.restart ?? null } }),
+    () => run && tb.assertDeliveredWorkPaid({ before, results: [...run.results, ...(later?.results ?? [])], injected: { ...(faults ?? {}), abortRatio: load.abortRatio ?? 0, restart: load.restart ?? run.restart ?? null }, ...(quiesceMs ? { quiesceMs } : {}) }),
     () => tb.assertNoCrashes(),
+    async () => {
+      if (!run) return;
+      const deliveries = deliveryCounts([await tb.deliveries(sellerId)], new Set(before.deliveredTags ?? []));
+      const logPatterns = tb.summary().metrics.logPatterns ?? { seller: {}, buyer: {} };
+      await recordAll([
+        ...injectedEvidence({ faults, load, client: run.client, restart: run.restart, deliveries }),
+        ...((await evidence?.({ run, followUp: later, deliveries, logPatterns })) ?? []),
+      ]);
+    },
     () => run && tb.checkGate(run),
+    () => later && tb.checkGate(later),
     () => run && tb.timings(loadTimings(run)),
   ]);
-  return run;
+  return run && later ? { ...run, followUp: later } : run;
 }
 
 /** Finds the first numeric `key` anywhere in a JSON value. */

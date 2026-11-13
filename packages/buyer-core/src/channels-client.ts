@@ -1,5 +1,5 @@
 import { type AbstractSigner, Contract, ethers } from 'ethers';
-import { BaseEvmClient } from './base-evm-client.js';
+import { BaseEvmClient, type ChainFailpointOp } from './base-evm-client.js';
 
 export interface ChannelsClientConfig {
   rpcUrl: string;
@@ -50,6 +50,15 @@ const CHANNELS_ABI = [
 const SELLER_FACADE_PROBE_ABI = [
   'function channelsAddress() external view returns (address)',
 ] as const;
+
+const FAILPOINT_OPS: Record<string, ChainFailpointOp | undefined> = {
+  reserve: 'reserve',
+  topUp: 'top-up',
+  settle: 'settle',
+  close: 'close',
+  requestClose: 'request-close',
+  withdraw: 'withdraw',
+};
 
 export interface CloseRequestedEvent {
   channelId: string;
@@ -143,6 +152,10 @@ export class ChannelsClient extends BaseEvmClient {
     });
     this._readAddressPromise = valuePromise;
     return valuePromise;
+  }
+
+  protected override _failpointOp(method: string): ChainFailpointOp | null {
+    return Object.hasOwn(FAILPOINT_OPS, method) ? FAILPOINT_OPS[method]! : null;
   }
 
   /** The resolved underlying channels address. Triggers the probe if not yet resolved. */

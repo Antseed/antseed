@@ -24,6 +24,7 @@ import {
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
+import { hitFailpoint } from './failpoints.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import type { PeerMetadata } from '@antseed/protocol/peer-metadata';
@@ -807,11 +808,7 @@ export class BuyerPaymentManager {
       metadataHash,
     };
 
-    const spendingAuthSig = await signSpendingAuth(
-      this._signer,
-      this._channelsDomain,
-      metadataMsg,
-    );
+    const spendingAuthSig = await this._signSpendingAuth(metadataMsg);
     const encodedMetadata = encodeMetadata(currentMeta);
     // A capped close authorization is below the signed high-water mark; keep
     // the persisted latest authorization consistent with authMax.
@@ -1130,7 +1127,7 @@ export class BuyerPaymentManager {
     const sanitizedMetadata = this._sanitizeMetadata(metadata);
     const metadataHash = computeMetadataHash(sanitizedMetadata);
     const encodedMetadata = encodeMetadata(sanitizedMetadata);
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, {
+    const spendingAuthSig = await this._signSpendingAuth({
       channelId: channel.sessionId,
       cumulativeAmount,
       metadataHash,
@@ -1339,7 +1336,7 @@ export class BuyerPaymentManager {
     deadline: number,
   ): Promise<NonNullable<SpendingAuthPayload['reserveBatch']>> {
     const metadataHash = computeMetadataHash(metadata);
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, { channelId, cumulativeAmount, metadataHash });
+    const spendingAuthSig = await this._signSpendingAuth({ channelId, cumulativeAmount, metadataHash });
     return {
       cumulativeAmount: cumulativeAmount.toString(),
       metadataHash,
@@ -1353,6 +1350,16 @@ export class BuyerPaymentManager {
 
   private _authDeadline(): number {
     return Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
+  }
+
+  /**
+   * Every SpendingAuth the buyer signs. The fail point sits after the signature exists and before
+   * anything is done with it: persisting it comes first, sending it after that.
+   */
+  private async _signSpendingAuth(message: SpendingAuthMessage): Promise<string> {
+    const signature = await signSpendingAuth(this._signer, this._channelsDomain, message);
+    await hitFailpoint('buyer.spending-auth.after-sign', `${message.channelId}:${message.cumulativeAmount}`);
+    return signature;
   }
 
   private _signReserveAuth(channelId: string, maxAmount: bigint, deadline: number): Promise<string> {
@@ -1826,13 +1833,12 @@ export class BuyerPaymentManager {
     const encodedMetadata = encodeMetadata(newMeta);
 
     // Sign EIP-712 SpendingAuth
-    const channelsDomain = this._channelsDomain;
     const metadataMsg: SpendingAuthMessage = {
       channelId: session.sessionId,
       cumulativeAmount: newAmount,
       metadataHash: metadataHashHex,
     };
-    const spendingAuthSig = await signSpendingAuth(this._signer, channelsDomain, metadataMsg);
+    const spendingAuthSig = await this._signSpendingAuth(metadataMsg);
 
     // Persist updated cumulative values to BuyerChannelStore
     const outcome = await this._commitLive({

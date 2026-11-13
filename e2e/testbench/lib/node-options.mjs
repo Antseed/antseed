@@ -85,12 +85,13 @@ export function cliSellerConfig({ id, providers, chain, bootstrapNodes, payments
 }
 
 /** config.json of `antseed buyer start`: the settings the in-process buyer gets, spelled as CLI config. */
-export function cliBuyerConfig({ proxyPort, routingPreferences, maxPricing, chain, bootstrapNodes, payments }) {
+export function cliBuyerConfig({ proxyPort, routingPreferences, maxPricing, requestTimeoutMs, chain, bootstrapNodes, payments }) {
   return {
     identity: { displayName: 'testbench-buyer' },
     buyer: {
       proxyPort, minPeerReputation: 0, routingPreferences, peerRefreshIntervalMs: 60_000, autoSweep: false,
       ...(maxPricing ? { maxPricing } : {}),
+      ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
     },
     payments: {
       preferredMethod: 'crypto',

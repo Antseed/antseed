@@ -33,6 +33,7 @@ import {
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
+import { hitFailpointSync } from '@antseed/buyer-core/failpoints';
 import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -1238,6 +1239,7 @@ export class SellerRequestHandler {
             spm.recordSpend(session.sessionId, costUsdc);
             const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
             debugLog(`[SellerHandler] Cost recorded: buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc} cumulative=${cumulativeSpend} (in=${usage.inputTokens} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`);
+            hitFailpointSync('seller.response.after-cost-recorded', `${session.sessionId}:${cumulativeSpend}`);
 
             const accepted = spm.getAcceptedCumulative(session.sessionId);
             const requiredAmount = cumulativeSpend;
@@ -1897,7 +1899,9 @@ export class SellerRequestHandler {
     phase: 'budget-catch-up' | 'catch-up-before-wait' | 'post-response' | 'video-delivered',
   ): void {
     try {
+      hitFailpointSync('seller.need-auth.before-send', `${payload.channelId}:${payload.requiredCumulativeAmount}`);
       paymentMux.sendNeedAuth(payload);
+      hitFailpointSync('seller.need-auth.after-send', `${payload.channelId}:${payload.requiredCumulativeAmount}`);
     } catch (err) {
       debugWarn(
         `[SellerHandler] NeedAuth send skipped (${phase}) for ${buyerPeerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`,
