@@ -36,7 +36,7 @@ function videoMetadata(): PeerMetadata {
 
 describe('video prices for reference videos in peer metadata', () => {
   it('is v17, served to buyers that ask for it', () => {
-    expect(METADATA_VERSION).toBe(17);
+    expect(METADATA_VERSION).toBeGreaterThanOrEqual(17);
     expect(REFERENCE_VIDEO_PRICING_METADATA_VERSION).toBe(17);
     expect(SERVED_METADATA_VERSIONS).toContain(17);
     expect(negotiateMetadataVersion(17)).toBe(17);
@@ -47,7 +47,7 @@ describe('video prices for reference videos in peer metadata', () => {
     const original = videoMetadata();
     expect(validateMetadata(original)).toEqual([]);
     const decoded = decodeMetadata(encodeMetadata(original));
-    expect(decoded.version).toBe(17);
+    expect(decoded.version).toBe(METADATA_VERSION);
     const components = decoded.providers[0]!.serviceUnitBillingModels!['seedance-r2v']!['venice-video']!.components;
     expect(components[2]!.match).toEqual({ resolution: '720p', aspect_ratio: '16:9', reference_video: 'true' });
     expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));

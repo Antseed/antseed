@@ -28,13 +28,13 @@ async function askUntilValid<T>(
   }
 }
 
-function parseTokenCount(field: 'contextWindow' | 'maxOutputTokens'): (raw: string) => { value: number } | { error: string } {
+function parseTokenCount(field: 'contextWindow' | 'maxPromptTokens' | 'maxOutputTokens'): (raw: string) => { value: number } | { error: string } {
   return (raw) => {
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value <= 0) {
       return { error: 'Enter a positive integer, or press enter to skip.' };
     }
-    const candidate: ServiceCapabilities = field === 'contextWindow' ? { contextWindow: value } : { maxOutputTokens: value };
+    const candidate: ServiceCapabilities = { [field]: value };
     const errors = validateServiceCapabilityFields(candidate);
     if (errors.length > 0) return { error: errors.join('; ') };
     return { value };
@@ -111,6 +111,8 @@ export async function promptServiceCapabilities(rl: Prompt, kind: ServiceKind = 
   } else {
     const contextWindow = await askUntilValid(rl, '  Context window (tokens): ', parseTokenCount('contextWindow'));
     if (contextWindow !== undefined) caps.contextWindow = contextWindow;
+    const maxPromptTokens = await askUntilValid(rl, '  Max prompt tokens accepted (optional, e.g. a free/limited tier; usually skip): ', parseTokenCount('maxPromptTokens'));
+    if (maxPromptTokens !== undefined) caps.maxPromptTokens = maxPromptTokens;
     const maxOutputTokens = await askUntilValid(rl, '  Max output tokens: ', parseTokenCount('maxOutputTokens'));
     if (maxOutputTokens !== undefined) caps.maxOutputTokens = maxOutputTokens;
     const inputs = await askUntilValid(rl, `  Input modalities (comma-separated: ${MODALITY_HINT}): `, parseModalities('inputs'));
