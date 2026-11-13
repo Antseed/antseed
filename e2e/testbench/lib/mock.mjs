@@ -26,10 +26,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Micro-USDC for `usage` at a model's price: USD per million tokens is micro-USDC per token, rounded once
- * over the total like the seller's metering. Images add their unit price per image.
+ * over the total like the seller's metering. `prompt` counts fresh input tokens only; `cached` tokens cost the
+ * cached-input price, or the input price when the model has none. Images add their unit price per image.
  */
-export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 } = {}) {
-  const tokens = prompt * (price.inputUsdPerMillion ?? 0) + completion * (price.outputUsdPerMillion ?? 0);
+export function usageCost(price = {}, { prompt = 0, completion = 0, cached = 0, images = 0 } = {}) {
+  const input = price.inputUsdPerMillion ?? 0;
+  const tokens = prompt * input + cached * (price.cachedInputUsdPerMillion ?? input) + completion * (price.outputUsdPerMillion ?? 0);
   return BigInt(Math.max(0, Math.round(tokens))) + BigInt(Math.round((price.imageUsd ?? 0) * 1_000_000)) * BigInt(images);
 }
 
@@ -39,6 +41,7 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  * `usage: 'fixed'` (default) answers 10 in + 8 out tokens after `latencyMs`, so receipts and settlement are exact.
  * `usage: 'load'` behaves like real traffic (the e2e/stress mock): prompt tokens from the request size, a random
  * completion within `outTokens`, latency within `latencyRangeMs`, streams chunked over that time.
+ * `cachedPromptTokens` adds that many cached prompt tokens to every chat's usage, on top of the prompt.
  *
  * Both modes keep a delivery ledger keyed by the `[req:TAG]` marker in the prompt (or `untagged-N`): whether any
  * byte of the response reached the wire, how it ended (ok, 500, disconnect, client-gone) and what it cost at the
@@ -48,7 +51,7 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  * `random` only seeds the mock: each request draws from its own stream keyed by tag and attempt, so what a request
  * gets does not depend on the order concurrent requests arrive in. The ledger records the drawn `latencyMs`.
  */
-export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, pricing = {}, random = Math.random }) {
+export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, cachedPromptTokens = 0, pricing = {}, random = Math.random }) {
   const png = await readFile(FIXTURE_PNG);
   const state = { latencyMs, faults: { fault500Rate, disconnectRate }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
   const known = new Set(models);
@@ -75,8 +78,10 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const completion = load ? betweenInt(draw, outTokens) : MOCK_USAGE.completion_tokens;
     const totalMs = load ? between(draw, latencyRangeMs) : state.latencyMs;
     const stream = body.stream === true;
-    const entry = record(tag, { status: 'pending', started: false, stream, model: body.model, prompt, completion, latencyMs: totalMs, cost: String(usageCost(pricing[body.model], { prompt, completion })) });
-    const usageBody = { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+    const entry = record(tag, { status: 'pending', started: false, stream, model: body.model, prompt, completion, latencyMs: totalMs, cost: String(usageCost(pricing[body.model], { prompt, completion, cached: cachedPromptTokens })) });
+    const usageBody = cachedPromptTokens > 0
+      ? { prompt_tokens: prompt + cachedPromptTokens, completion_tokens: completion, total_tokens: prompt + cachedPromptTokens + completion, prompt_tokens_details: { cached_tokens: cachedPromptTokens } }
+      : { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);

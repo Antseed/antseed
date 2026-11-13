@@ -16,6 +16,7 @@ import type { ProxyMux } from './proxy-mux.js';
 import { PaymentMux } from './payment-mux.js';
 import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { BuyerPaymentNegotiator, SelectedBillingRoute } from './buyer-payment-negotiator.js';
+import { paymentNegotiationFailureResponse, PRICE_MISMATCH_MESSAGE } from './buyer-payment-negotiator.js';
 import { debugLog, debugWarn } from './debug.js';
 import type { VerificationMux } from './verification-mux.js';
 import type { ResponseAuthSink } from './interfaces.js';
@@ -228,10 +229,14 @@ export class BuyerRequestHandler {
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
+    // Free by its announced price (a retrieve is free to send, but its job is paid).
+    const isFreeRoute = isFreeService && videoRoute?.action !== 'retrieve';
     // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
     if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
       if (isFreeService) {
+        // Nothing is owed on a route priced at zero: a seller's charge for this request is refused.
+        if (isFreeRoute) negotiator.bpm?.markRequestCovered(peer.peerId, req.requestId);
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
         try {
           await negotiator.prepareFreeUsageOpen(peer, conn, delegationsHeader);
@@ -550,6 +555,16 @@ export class BuyerRequestHandler {
         `[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... requires payment but payments are not running on this buyer — returning buyer-fault error`,
       );
       return buyerPaymentsInactiveResponse(response, peer.peerId);
+    }
+
+    if (negotiator && isFreeRoute && startsPaymentNegotiation(response)) {
+      // The buyer prices this route at zero, so it opens no channel and signs
+      // nothing for it: the seller's price and its announcement disagree.
+      debugWarn(
+        `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
+        `which it announces as free — refusing instead of negotiating`,
+      );
+      return adaptPeerResponse(paymentNegotiationFailureResponse(response, 'price_mismatch', PRICE_MISMATCH_MESSAGE));
     }
 
     if (negotiator && startsPaymentNegotiation(response)) {

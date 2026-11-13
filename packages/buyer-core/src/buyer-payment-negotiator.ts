@@ -181,6 +181,38 @@ function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
 /** The session a payment call started on was retired or replaced while it awaited. */
 class SessionReplacedError extends AntseedRequestError {}
 
+/** What the caller reads when a seller asks to be paid for something it announced as free. */
+export const PRICE_MISMATCH_MESSAGE = 'This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it. '
+  + 'Use another seller, or retry once the seller announces the price it charges.';
+
+/** What the caller reads when the seller is short of a cost the buyer refused on the open channel. */
+const REFUSED_CLAIM_MESSAGE = 'This seller charged for a response that is free at the prices it announces. The buyer refused that charge '
+  + 'and signs nothing more on this payment channel, so the seller no longer serves it. Use another seller, and close the channel to release its reserve.';
+
+/** A buyer-authored answer for a payment negotiation that was not completed. */
+export function paymentNegotiationFailureResponse(
+  response: SerializedHttpResponse,
+  reason: string,
+  message: string,
+  statusCode = 409,
+): SerializedHttpResponse {
+  return {
+    ...response,
+    statusCode,
+    headers: {
+      ...response.headers,
+      'content-type': 'application/json',
+      // A 503 is transient: tell clients when to retry.
+      ...(statusCode === 503 ? { 'retry-after': '2' } : {}),
+    },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: 'payment_negotiation_failed',
+      reason,
+      message,
+    })),
+  };
+}
+
 export class BuyerPaymentNegotiator {
   private readonly _bpm: BuyerPaymentManager;
   private readonly _depositsClient: DepositsClient | null;
@@ -887,24 +919,7 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] Auto-negotiation failed for ${peer.peerId.slice(0, 12)}... — ` +
         `${reason}; returning non-payment error to caller`,
       );
-      return {
-        action: 'return',
-        response: {
-          ...response,
-          statusCode,
-          headers: {
-            ...response.headers,
-            'content-type': 'application/json',
-            // A 503 is transient: tell clients when to retry.
-            ...(statusCode === 503 ? { 'retry-after': '2' } : {}),
-          },
-          body: new TextEncoder().encode(JSON.stringify({
-            error: 'payment_negotiation_failed',
-            reason,
-            message,
-          })),
-        },
-      };
+      return { action: 'return', response: paymentNegotiationFailureResponse(response, reason, message, statusCode) };
     };
 
     const oneOffPlan = directPaymentBody?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
@@ -1001,6 +1016,13 @@ export class BuyerPaymentNegotiator {
     }
 
     const hasActiveSession = hadLockedSession || session != null;
+
+    // The seller wants more signed, and what it is short of includes a cost
+    // the buyer refused. Signing its target would pay that cost, and a fresh
+    // channel would give the same seller a new overdraft window.
+    if (hasActiveSession && this._bpm.refusedClaimTotal(peer.peerId) > 0n) {
+      return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
+    }
 
     if (channelExhausted && hasActiveSession) {
       debugLog(

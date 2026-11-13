@@ -77,6 +77,7 @@ import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbou
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
+  ProviderPricing,
   ProviderStreamCallbacks,
 } from "./interfaces/seller-provider.js";
 import type { Router } from "./interfaces/buyer-router.js";
@@ -2272,13 +2273,7 @@ export class AntseedNode extends EventEmitter {
           servicePerformance: () => this._servicePerformance.snapshot(p.name, p.services),
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
-          pricing: {
-            defaults: {
-              inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-              outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-            },
-            ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
-          },
+          pricing: announcedPricing(p.pricing),
           };
         }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
@@ -2289,13 +2284,7 @@ export class AntseedNode extends EventEmitter {
         pricing: new Map(
           this._providers.map((p) => [
             announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
-            {
-              defaults: {
-                inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-                outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-              },
-              ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
-            },
+            announcedPricing(p.pricing),
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
@@ -3239,6 +3228,24 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * The prices a seller announces: every price it bills by. A buyer prices each
+ * response from these, so a default the seller charges but does not announce
+ * is a cost the buyer cannot see.
+ */
+/** @internal Exported for tests. */
+export function announcedPricing(pricing: ProviderPricing): ProviderPricing {
+  const { inputUsdPerMillion, outputUsdPerMillion, cachedInputUsdPerMillion } = pricing.defaults;
+  return {
+    defaults: {
+      inputUsdPerMillion,
+      outputUsdPerMillion,
+      ...(cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion } : {}),
+    },
+    ...(pricing.services ? { services: { ...pricing.services } } : {}),
+  };
 }
 
 /**

@@ -171,12 +171,13 @@ describe('BuyerRequestHandler payment mux wiring', () => {
     const trackFreeUsageRequestService = vi.fn();
     const prepareFreeUsageOpen = vi.fn(async () => {});
     const estimateCostFromResponse = vi.fn();
+    const markRequestCovered = vi.fn();
     const handler = new BuyerRequestHandler(
       {},
       {
         localPeerId: 'a'.repeat(40) as PeerId,
         negotiator: {
-          bpm: { trackRequestService, releaseRequestCoverage: vi.fn() },
+          bpm: { trackRequestService, releaseRequestCoverage: vi.fn(), markRequestCovered },
           getOrCreatePaymentMux: vi.fn().mockReturnValue({}),
           prepareFreeUsageOpen,
           trackFreeUsageRequestService,
@@ -204,6 +205,8 @@ describe('BuyerRequestHandler payment mux wiring', () => {
     expect(prepareFreeUsageOpen).toHaveBeenCalledWith(peer, conn, null);
     expect(trackRequestService).not.toHaveBeenCalled();
     expect(estimateCostFromResponse).not.toHaveBeenCalled();
+    // Nothing is owed for it, so a later charge for this request is refused.
+    expect(markRequestCovered).toHaveBeenCalledWith(peer.peerId, 'req-free-usage');
   });
 
   it('continues zero-price requests when free usage setup is unavailable', async () => {
@@ -246,7 +249,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
       {
         localPeerId: 'a'.repeat(40) as PeerId,
         negotiator: {
-          bpm: { trackRequestService: vi.fn(), releaseRequestCoverage: vi.fn() },
+          bpm: { trackRequestService: vi.fn(), releaseRequestCoverage: vi.fn(), markRequestCovered: vi.fn() },
           getOrCreatePaymentMux: vi.fn().mockReturnValue({}),
           prepareFreeUsageOpen,
           trackFreeUsageRequestService: vi.fn(),

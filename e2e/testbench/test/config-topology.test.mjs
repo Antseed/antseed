@@ -200,6 +200,7 @@ describe('topology', () => {
       'chain.blockTimeSec': { chain: { blockTimeSec: 3 } },
       'sellers.0.mock.latencyMs': { sellers: [{ id: 'seller', mock: { latencyMs: 250 } }] },
       'sellers.0.mock.fault500Rate': { sellers: [{ id: 'seller', mock: { fault500Rate: 0.1 } }] },
+      'sellers.0.mock.cachedPromptTokens': { sellers: [{ id: 'seller', mock: { cachedPromptTokens: 1000 } }] },
       'sellers.0.env': { sellers: [{ id: 'seller', env: { ANTSEED_DEBUG: '1' } }] },
     };
     for (const [path, topology] of Object.entries(variants)) {

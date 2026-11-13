@@ -128,8 +128,22 @@ describe('mock delivery ledger', () => {
     }
   });
 
+  it('reports cached prompt tokens on top of the prompt and prices them in the ledger', async () => {
+    const mock = await startMock({ models: ['m'], cachedPromptTokens: 100_000, pricing: { m: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75 } } });
+    try {
+      const { usage } = await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:c1] hi' }] })).json();
+      assert.deepEqual(usage, { prompt_tokens: 100_010, completion_tokens: 8, total_tokens: 100_018, prompt_tokens_details: { cached_tokens: 100_000 } });
+      assert.equal(mock.deliveries().byTag.c1.cost, '75000');
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('prices images per image plus prompt tokens', () => {
     assert.equal(usageCost({ inputUsdPerMillion: 3, imageUsd: 0.04 }, { prompt: 10, images: 2 }), 30n + 80_000n);
+    // Cached prompt tokens cost the cached-input price, or the input price without one.
+    assert.equal(usageCost({ inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.75 }, { prompt: 10, completion: 8, cached: 100_000 }), 30n + 120n + 75_000n);
+    assert.equal(usageCost({ inputUsdPerMillion: 3 }, { prompt: 10, cached: 100 }), 330n);
     const totals = summarizeDeliveries(new Map([['a', { status: 'ok', started: true, cost: '5' }], ['b', { status: 'client-gone', started: true, cost: '7' }]]));
     assert.deepEqual([totals.deliveredCost, totals.startedCost, totals.counts], ['5', '12', { ok: 1, 'client-gone': 1 }]);
   });

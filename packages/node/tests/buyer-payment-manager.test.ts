@@ -903,6 +903,85 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths).toHaveLength(2);
   });
 
+  it('never signs a cost claimed for a request sent on a route priced at zero: not from the overdraft window, a 402 retry or a close', async () => {
+    const sellerPeerId = fakePeerId('seller-free-route-claim');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    const frame = { channelId, currentAcceptedCumulative: '0', deposit: '1000000' };
+    const lastSigned = () => (mux.sentSpendingAuths.at(-1) as Record<string, unknown> | undefined)?.cumulativeAmount;
+    // What the request path does for a route it classified as free.
+    manager.markRequestCovered(sellerPeerId, 'free-request');
+
+    // The seller bills the response anyway.
+    await manager.handleNeedAuth(sellerPeerId, {
+      ...frame, requestId: 'free-request', requiredCumulativeAmount: '75000',
+      lastRequestCost: '75000', inputTokens: '100010', cachedInputTokens: '100000', outputTokens: '8',
+    }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+
+    // NeedAuth path: its prompt before the next request asks for the refused cost. It fits the overdraft window.
+    await manager.handleNeedAuth(sellerPeerId, { ...frame, requiredCumulativeAmount: '85000' }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+
+    // 402 path: the buyer's own retry does not sign it either, with one request in flight or several.
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 85_000n, 'next-request');
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 85_000n, 'next-request', 3);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
+
+    // A response the buyer did receive and price is still paid, exactly: no window on top.
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request', {
+      costUsdc: 20_010n, service: 'gpt-test', usage: { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 1334n },
+    });
+    await manager.handleNeedAuth(sellerPeerId, {
+      ...frame, requestId: 'paid-request', requiredCumulativeAmount: '105010',
+      lastRequestCost: '20010', inputTokens: '0', outputTokens: '1334',
+    }, mux);
+    expect(lastSigned()).toBe('20010');
+
+    // Signing before a close: nothing above the verified cost.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: new Uint8Array(0), outputBytes: new Uint8Array(0), requestId: 'free-request',
+    });
+    expect(payload.cumulativeAmount).toBe('20010');
+    expect((await manager.buildCloseChannelRequest(sellerPeerId)).cumulativeAmount).toBe('20010');
+
+    // A new channel with the seller starts with a window again.
+    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(75_000n);
+    manager.cleanupSession(sellerPeerId);
+    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(0n);
+  });
+
+  it('refuses a cost claimed for a response whose usage the buyer read and priced at zero, and signs it from no window', async () => {
+    const sellerPeerId = fakePeerId('seller-zero-priced-claim');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    const frame = { channelId, currentAcceptedCumulative: '0', deposit: '1000000' };
+    const claim = { lastRequestCost: '75000', inputTokens: '100010', cachedInputTokens: '100000', outputTokens: '8' };
+    manager.recordDeliveredResponse(sellerPeerId, 'zero-priced', {
+      costUsdc: 0n, service: 'gpt-test', usage: { inputTokens: 100_010n, cachedInputTokens: 100_000n, outputTokens: 8n },
+    });
+
+    await manager.handleNeedAuth(sellerPeerId, { ...frame, ...claim, requestId: 'zero-priced', requiredCumulativeAmount: '75000' }, mux);
+    await manager.handleNeedAuth(sellerPeerId, { ...frame, requiredCumulativeAmount: '85000' }, mux);
+
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
+    expect(manager.refusedClaimTotal(sellerPeerId)).toBe(75_000n);
+
+    // A response that shows no usage is not priced at zero: the buyer cannot price it, and its
+    // cost is still signed from the overdraft window.
+    const otherSellerPeerId = fakePeerId('seller-no-usage-claim');
+    const otherChannelId = await manager.authorizeSpending(otherSellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    manager.recordDeliveredResponse(otherSellerPeerId, 'no-usage', {
+      costUsdc: 0n, service: 'gpt-test', usage: { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 0n },
+    });
+    await manager.handleNeedAuth(otherSellerPeerId, { ...frame, ...claim, channelId: otherChannelId, requestId: 'no-usage', requiredCumulativeAmount: '75000' }, mux);
+    expect(manager.getCumulativeAmount(otherSellerPeerId)).toBe(75_000n);
+    expect(manager.refusedClaimTotal(otherSellerPeerId)).toBe(0n);
+  });
+
   it('handleNeedAuth propagates durable persistence failures without transmitting', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-persist-fail');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

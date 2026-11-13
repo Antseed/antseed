@@ -51,6 +51,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
+    refusedClaimTotal: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     replayReserveAmount: vi.fn().mockReturnValue(100_000n),
@@ -438,6 +439,20 @@ describe('BuyerPaymentNegotiator', () => {
         (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
           (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
         });
+      });
+
+      it('signs nothing and opens no replacement when the seller is short of a cost the buyer refused', async () => {
+        setSigned(5_000_000n);
+        (bpm.refusedClaimTotal as ReturnType<typeof vi.fn>).mockReturnValue(75_000n);
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(result.action).toBe('return');
+        const answer = (result as { response: SerializedHttpResponse }).response;
+        expect(answer.statusCode).toBe(409);
+        expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+        for (const fn of [bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.authorizeSpending, bpm.retireSession]) {
+          expect(fn).not.toHaveBeenCalled();
+        }
       });
 
       it('resends the current authorization instead of raising the signed cumulative', async () => {
