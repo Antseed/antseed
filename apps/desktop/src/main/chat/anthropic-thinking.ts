@@ -145,10 +145,30 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+/** pi-ai's thinking budget per level (`adjustMaxTokensForThinking`), for a request it built in another form. */
+const LEVEL_BUDGET_TOKENS: Record<LibraryThinkingLevel, number> = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 };
+/** The API's minimum budget, and the room left for the answer when the budget has to shrink. */
+const MIN_BUDGET_TOKENS = 1024;
+
+/**
+ * The `budget_tokens` for an older model: the budget pi-ai set, else the
+ * level's, cut to leave room under `max_tokens`. Null when no budget of at
+ * least 1024 tokens fits below `max_tokens`, which the API requires.
+ */
+function thinkingBudget(piThinking: Record<string, unknown> | null, level: LibraryThinkingLevel, maxTokens: unknown): number | null {
+  if (typeof maxTokens !== 'number') return null;
+  const piBudget = piThinking?.['type'] === 'enabled' && typeof piThinking['budget_tokens'] === 'number' ? piThinking['budget_tokens'] : null;
+  const wanted = piBudget ?? LEVEL_BUDGET_TOKENS[level];
+  const budget = wanted < maxTokens ? wanted : maxTokens - MIN_BUDGET_TOKENS;
+  return budget >= MIN_BUDGET_TOKENS ? budget : null;
+}
+
 /**
  * The request body with the thinking the model takes: none when the sellers
  * do not reason, thinking is off or the model is not recognised; adaptive
- * with an effort and summarized display; or the budget the library already set for an older model.
+ * with an effort and summarized display; or `enabled` with a budget for an
+ * older model. The form pi-ai chose does not decide: it matches model ids
+ * loosely (`claude-sonnet-4-64k` reads as Sonnet 4.6 to it).
  * Other fields are left as they are.
  */
 export function shapeAnthropicThinking(payload: unknown, { modelId, reasoning, level }: AnthropicThinkingOptions): unknown {
@@ -166,10 +186,8 @@ export function shapeAnthropicThinking(payload: unknown, { modelId, reasoning, l
       output_config: { ...otherConfig, effort: anthropicEffort(level, modelId) },
     };
   }
-  if (mode === 'budget' && record(thinking)?.['type'] === 'enabled') {
-    return { ...rest, thinking, ...keptConfig };
-  }
-  return { ...rest, ...keptConfig };
+  const budget = mode === 'budget' && level !== 'off' ? thinkingBudget(record(thinking), level, rest['max_tokens']) : null;
+  return { ...rest, ...(budget === null ? {} : { thinking: { type: 'enabled', budget_tokens: budget } }), ...keptConfig };
 }
 
 /**

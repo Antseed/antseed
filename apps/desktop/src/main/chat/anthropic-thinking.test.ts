@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { streamSimple } from '@mariozechner/pi-ai';
-import { AuthStorage, compact, generateSummary, ModelRegistry } from '@mariozechner/pi-coding-agent';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { AuthStorage, compact, createAgentSession, generateSummary, ModelRegistry, SessionManager, SettingsManager } from '@mariozechner/pi-coding-agent';
 
 import { anthropicEffort, anthropicThinkingMode, registerGatewayAnthropic, shapeAnthropicThinking, type AnthropicGatewayModel, type ThinkingLevel } from './anthropic-thinking.js';
 import { GATEWAY_PROVIDER_ID, makeGatewayModel } from './gateway-model.js';
@@ -115,6 +118,61 @@ test('an older Claude model keeps its thinking budget', async () => {
     assert.equal('display' in thinking, false, modelId);
     assert.ok(thinking.budget_tokens >= 1024 && thinking.budget_tokens < Number(body['max_tokens']), modelId);
     assert.equal('output_config' in body, false, modelId);
+  }
+});
+
+test('an older model whose id pi reads as a 4.6 model still gets a thinking budget, not adaptive thinking or none', async () => {
+  // pi-ai matches `opus-4-6` and `sonnet-4-6` anywhere in the id, so it builds adaptive thinking for these.
+  // The budget a model pi places correctly gets at the same level.
+  const older = await chatRequestBody('claude-opus-4-5', { reasoning: true, level: 'medium' });
+  for (const modelId of ['claude-opus-4-64k', 'claude-sonnet-4-64k']) {
+    const body = await chatRequestBody(modelId, { reasoning: true, level: 'medium' });
+    const thinking = body['thinking'] as { type: string; budget_tokens: number } | undefined;
+    assert.deepEqual(thinking, older['thinking'], modelId);
+    assert.ok(thinking && thinking.type === 'enabled' && thinking.budget_tokens >= 1024 && thinking.budget_tokens < Number(body['max_tokens']), modelId);
+    assert.equal('output_config' in body, false, modelId);
+  }
+});
+
+test('a thinking budget is at least 1024 tokens and below max_tokens, or it is left out', () => {
+  const shaped = (maxTokens: number, level: ThinkingLevel, thinking?: Record<string, unknown>) => (shapeAnthropicThinking(
+    { model: 'claude-haiku-4-5', max_tokens: maxTokens, ...(thinking ? { thinking } : {}) },
+    { modelId: 'claude-haiku-4-5', reasoning: true, level },
+  ) as Record<string, unknown>)['thinking'];
+  // pi-ai's own budget is kept; without one the level decides.
+  assert.deepEqual(shaped(32_000, 'medium', { type: 'enabled', budget_tokens: 7168 }), { type: 'enabled', budget_tokens: 7168 });
+  assert.deepEqual(shaped(32_000, 'low', { type: 'adaptive' }), { type: 'enabled', budget_tokens: 2048 });
+  assert.deepEqual(shaped(32_000, 'xhigh'), { type: 'enabled', budget_tokens: 16_384 });
+  // A budget that does not fit shrinks to leave 1024 tokens for the answer.
+  assert.deepEqual(shaped(4096, 'high'), { type: 'enabled', budget_tokens: 3072 });
+  assert.deepEqual(shaped(8192, 'medium', { type: 'enabled', budget_tokens: 8192 }), { type: 'enabled', budget_tokens: 7168 });
+  // No valid budget fits: no thinking field.
+  assert.equal(shaped(2000, 'medium'), undefined);
+  assert.equal(shaped(32_000, 'off', { type: 'disabled' }), undefined);
+});
+
+test('a resumed chat keeps its saved thinking level, off included, whether or not its sellers reason', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chat-thinking-level-'));
+  const resumedLevel = async (saved: ThinkingLevel, reasoning: boolean): Promise<string> => {
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage({ role: 'user', content: 'hello', timestamp: 0 });
+    sessionManager.appendThinkingLevelChange(saved);
+    const authStorage = AuthStorage.inMemory();
+    authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, ENDPOINT.apiKey);
+    const modelRegistry = ModelRegistry.inMemory(authStorage);
+    registerGatewayAnthropic(modelRegistry, GATEWAY_PROVIDER_ID);
+    const model = gatewayModel('claude-haiku-5-5', reasoning);
+    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, sessionManager, settingsManager: SettingsManager.inMemory(), authStorage, modelRegistry, model });
+    await session.setModel(model);
+    return session.thinkingLevel;
+  };
+  try {
+    assert.deepEqual(
+      [await resumedLevel('off', true), await resumedLevel('off', false), await resumedLevel('high', false), await resumedLevel('high', true)],
+      ['off', 'off', 'high', 'high'],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
