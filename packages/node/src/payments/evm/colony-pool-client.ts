@@ -1,4 +1,4 @@
-import { Contract, type AbstractSigner } from 'ethers';
+import { Contract, getBytes, type AbstractSigner } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
 
 export interface ColonyPoolClientConfig {
@@ -11,6 +11,8 @@ export interface ColonyPoolClientConfig {
 export const COLONY_POOL_ABI = [
   'function claimUsdc() external',
   'function claimAnts(uint256[] epochs) external',
+  'function claimAntsFor(address worker, uint256[] epochs) external',
+  'function payoutDigest(address worker, address payout, uint256 deadline) external view returns (bytes32)',
   'function claimEpochEmissions(uint256[] epochs) external',
   'function setPayout(address worker, address payout, uint256 deadline, bytes signature) external',
   'function usdcBalance(address account) external view returns (uint256)',
@@ -33,6 +35,12 @@ export interface WorkerPayoutAuthorization {
 }
 
 const LINK_PREFIX = 'antseed-link:';
+
+/** The `antseed-link:<base64url JSON>` code the ANTS dashboard submits (Rewards → Link a Mac). */
+export function encodeWorkerPayoutLink(authorization: WorkerPayoutAuthorization): string {
+  const { chainId, pool, worker, payout, deadline, signature } = authorization;
+  return LINK_PREFIX + Buffer.from(JSON.stringify({ chainId, pool, worker, payout, deadline, signature }), 'utf-8').toString('base64url');
+}
 
 /** Parse the `antseed-link:<base64url JSON>` code the Mac app copies. Returns null when malformed. */
 export function parseWorkerPayoutLink(code: string): WorkerPayoutAuthorization | null {
@@ -108,6 +116,24 @@ export class ColonyPoolClient extends BaseEvmClient {
 
   async claimAnts(signer: AbstractSigner, epochs: number[]): Promise<string> {
     return this._execWrite(signer, COLONY_POOL_ABI, 'claimAnts', epochs);
+  }
+
+  /** Pay a linked worker's own ANTS for `epochs` (older than its link moved) to its payout wallet (anyone may call). */
+  async claimAntsFor(signer: AbstractSigner, worker: string, epochs: number[]): Promise<string> {
+    return this._execWrite(signer, COLONY_POOL_ABI, 'claimAntsFor', worker, epochs);
+  }
+
+  /**
+   * The worker `signer` signs an instruction to pay its earnings to `payout`,
+   * valid until `deadline` (unix seconds): the digest is the pool's own, so it
+   * binds this chain, this pool and the worker's current nonce. Nothing is sent.
+   */
+  async signPayoutAuthorization(signer: AbstractSigner, payout: string, deadline: number): Promise<WorkerPayoutAuthorization> {
+    const worker = await signer.getAddress();
+    const digest = await this.read().getFunction('payoutDigest')(worker, payout, deadline) as string;
+    const signature = await signer.signMessage(getBytes(digest));
+    const { chainId } = await this._provider.getNetwork();
+    return { chainId: Number(chainId), pool: this._contractAddress, worker, payout, deadline, signature };
   }
 
   async setPayout(signer: AbstractSigner, authorization: WorkerPayoutAuthorization): Promise<string> {

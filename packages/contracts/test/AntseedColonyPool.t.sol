@@ -921,6 +921,46 @@ contract AntseedColonyPoolTest is Test {
         assertEq(pool.epochWeight(e0, wallet), 0);
     }
 
+    function test_claimAntsFor_paysOlderWorkerSharesToPayout() public {
+        address mac = vm.addr(MAC_PK);
+        address wallet = address(0xAB0);
+        bytes32 ch = _reserve(bytes32(uint256(73)), 1000e6);
+        uint256 e0 = emissions.currentEpoch();
+        _settle(ch, 100e6, _e1(mac, 100e6));
+        vm.warp(block.timestamp + (pool.MAX_EPOCHS_PER_CLAIM() + 2) * EPOCH_DURATION);
+        pool.claimEpochEmissions(_epochs1(e0));
+        _setPayout(wallet, block.timestamp + 1 hours);
+        uint256 owed = pool.pendingAnts(mac, _epochs1(e0));
+        assertGt(owed, 0, "the share outside the window stays with the worker");
+
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit AntseedColonyPool.AntsClaimedFor(mac, wallet, _epochs1(e0), owed);
+        vm.prank(address(0xD00D));
+        pool.claimAntsFor(mac, _epochs1(e0));
+        assertEq(ants.balanceOf(wallet), owed, "paid to the linked wallet");
+        assertEq(ants.balanceOf(address(0xD00D)), 0);
+        assertEq(ants.balanceOf(mac), 0);
+        assertEq(pool.pendingAnts(mac, _epochs1(e0)), 0);
+
+        // Paid once: neither path pays it again.
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
+        pool.claimAntsFor(mac, _epochs1(e0));
+        vm.prank(mac);
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
+        pool.claimAnts(_epochs1(e0));
+    }
+
+    function test_claimAntsFor_requiresALinkedPayout() public {
+        address mac = vm.addr(MAC_PK);
+        bytes32 ch = _reserve(bytes32(uint256(74)), 1000e6);
+        uint256 e0 = emissions.currentEpoch();
+        _settle(ch, 100e6, _e1(mac, 100e6));
+        vm.warp(block.timestamp + EPOCH_DURATION);
+        pool.claimEpochEmissions(_epochs1(e0));
+        vm.expectRevert(AntseedColonyPool.NoPayout.selector);
+        pool.claimAntsFor(mac, _epochs1(e0));
+    }
+
     function test_setPayout_replayFails() public {
         address mac = vm.addr(MAC_PK);
         uint256 deadline = block.timestamp + 1 hours;

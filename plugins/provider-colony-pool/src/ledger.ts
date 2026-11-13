@@ -72,7 +72,6 @@ export class WorkerLedger {
                COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output
         FROM earnings WHERE worker = ?
       `),
-      paidTotal: this.db.prepare('SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM payouts WHERE worker = ?'),
       connectedMs: this.db.prepare(`
         SELECT COALESCE(SUM(MIN(COALESCE(disconnected_at, ?), ?) - MAX(connected_at, ?)), 0) AS ms
         FROM connections WHERE worker = ? AND COALESCE(disconnected_at, ?) > ?
@@ -143,15 +142,12 @@ export class WorkerLedger {
     startOfDay.setUTCHours(0, 0, 0, 0);
     const weekAgo = now - 7 * DAY_MS;
     const totals = this.stmts.earningTotals.get(startOfDay.getTime(), weekAgo, address) as { earned: number; today: number; week: number; requests: number; input: number; output: number };
-    const paid = (this.stmts.paidTotal.get(address) as { total: number }).total;
     const connected = (this.stmts.connectedMs.get(now, now, weekAgo, address, now, weekAgo) as { ms: number }).ms;
     return {
       address,
       earnedToday: String(totals.today),
       earnedLast7Days: String(totals.week),
       earnedTotal: String(totals.earned),
-      paidTotal: String(paid),
-      pending: String(Math.max(0, totals.earned - paid)),
       requestsTotal: totals.requests,
       inputTokensTotal: totals.input,
       outputTokensTotal: totals.output,

@@ -14,6 +14,19 @@ struct ColonyRewards: Equatable, Sendable {
     /// Finished epochs the wallet has weight in whose emissions the pool hasn't pulled yet: claiming
     /// first pulls them (claimEpochEmissions), so more ANTS may come than `ants` shows.
     var unpulledEpochs: [Int]
+    /// Epochs whose ANTS are still the worker key's own after it linked a payout wallet (older than
+    /// setPayout moves): counted in `ants`, and paid to the payout wallet with claimAntsFor.
+    var workerAntsEpochs: [Int] = []
+
+    /// The payout wallet's rewards plus what the linked worker key still holds itself.
+    func adding(worker: ColonyRewards) -> ColonyRewards {
+        // Its USDC always moves with the link (and later credit goes to the payout), so only ANTS stay behind.
+        var merged = self
+        merged.ants += worker.ants
+        merged.workerAntsEpochs = worker.antsEpochs
+        merged.unpulledEpochs = Array(Set(unpulledEpochs + worker.unpulledEpochs)).sorted()
+        return merged
+    }
 
     var isEmpty: Bool { usdc == 0 && ants == 0 && unpulledEpochs.isEmpty }
 

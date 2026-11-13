@@ -3,13 +3,15 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { Wallet } from 'ethers';
+import { isAddress, Wallet } from 'ethers';
+import { encodeWorkerPayoutLink } from '@antseed/node/payments';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
 import { parseWorkerModels, PoolWorker, queryWorkerStats } from './worker.js';
-import { workerChannelsDomain, workerChannelVerifier, workerPoolCreditReader } from './worker-chain.js';
+import { workerChannelsDomain, workerChannelVerifier, workerPoolClient, workerPoolCreditReader } from './worker-chain.js';
 import { fileLedgerStore } from './worker-ledger-store.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
+       antseed-pool-worker --link-payout <wallet> --pool-contract <address> [--key-file, --chain-id, --rpc-url]
 
 Joins an Antseed colony pool and serves its requests from a local
 OpenAI-compatible model server (mlx_lm.server, Ollama, llama.cpp).
@@ -32,7 +34,16 @@ Options:
   --channels-address <address>
                         Channels contract to read instead of the chain's default
   --stats               Print this worker's earnings and exit
+  --link-payout <wallet>
+                        Sign a link of this worker's earnings to <wallet> and print
+                        its code; submit it from that wallet in the ANTS dashboard
+                        (Rewards, Link a Mac). Needs --pool-contract. Sends nothing.
+  --pool-contract <address>
+                        The pool's contract (its seller address, from its operator)
 `;
+
+/** A link code is valid this long: long enough to open the dashboard, short enough not to linger. */
+const PAYOUT_LINK_TTL_SECONDS = 7 * 24 * 3600;
 
 function loadOrCreateKey(path: string): string {
   if (existsSync(path)) return readFileSync(path, 'utf-8').trim();
@@ -74,9 +85,24 @@ async function main(): Promise<void> {
       'chain-id': { type: 'string', default: 'base-mainnet' },
       'channels-address': { type: 'string' },
       stats: { type: 'boolean', default: false },
+      'link-payout': { type: 'string' },
+      'pool-contract': { type: 'string' },
       help: { type: 'boolean', default: false },
     },
   });
+  if (values['link-payout'] !== undefined) {
+    const wallet = values['link-payout'];
+    const pool = values['pool-contract'];
+    if (!isAddress(wallet)) throw new Error('--link-payout must be a wallet address (0x…)');
+    if (!pool || !isAddress(pool)) throw new Error('--link-payout needs --pool-contract <address>');
+    const signer = new Wallet(loadOrCreateKey(values['key-file']!));
+    const deadline = Math.floor(Date.now() / 1000) + PAYOUT_LINK_TTL_SECONDS;
+    const link = await workerPoolClient(values['chain-id']!, pool, values['rpc-url']).signPayoutAuthorization(signer, wallet, deadline);
+    console.log(`worker ${link.worker} → payout ${link.payout} (valid 7 days)`);
+    console.log('Submit this code from that wallet in the ANTS dashboard (Rewards, Link a Mac):');
+    console.log(encodeWorkerPayoutLink(link));
+    return;
+  }
   if (values.help || !values.pool || (!values.services && !values.stats)) {
     process.stdout.write(USAGE);
     process.exit(values.help ? 0 : 1);
@@ -84,9 +110,9 @@ async function main(): Promise<void> {
   if (values.stats) {
     const stats = await queryWorkerStats(values.pool, loadOrCreateKey(values['key-file']!));
     const usdc = (units: string): string => (Number(units) / 1e6).toFixed(6);
-    console.log(`worker address (payouts go here): ${stats.address}`);
+    console.log(`worker address: ${stats.address}`);
     console.log(`earned today ${usdc(stats.earnedToday)} · 7 days ${usdc(stats.earnedLast7Days)} · total ${usdc(stats.earnedTotal)} USDC`);
-    console.log(`paid ${usdc(stats.paidTotal)} · pending ${usdc(stats.pending)} USDC · ${stats.requestsTotal} requests`);
+    console.log(`${stats.requestsTotal} requests · earnings are the pool's estimates; claimable USDC is on the pool contract`);
     return;
   }
   const concurrency = Number.parseInt(values.concurrency!, 10);
@@ -108,7 +134,7 @@ async function main(): Promise<void> {
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });
-  console.log(`worker address (payouts go here): ${worker.address}`);
+  console.log(`worker address: ${worker.address} (earnings go here until you link a payout wallet with --link-payout)`);
   worker.start();
 
   const shutdown = (): void => {

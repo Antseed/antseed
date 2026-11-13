@@ -773,6 +773,30 @@ export class BuyerPaymentManager {
    */
   recordWorkerDelivery(requestId: string, usage: WorkerUsage | null, worker?: string | null): void {
     this._workerDeliveries.recordDelivery(requestId, usage, worker);
+    const sellerPeerId = this._workerDeliveries.get(requestId)?.sellerPeerId;
+    if (sellerPeerId) this._priceFromWorkerUsage(sellerPeerId, requestId);
+  }
+
+  /**
+   * A verified worker answer is owed what the worker authenticated, never the
+   * buyer's estimate from the response it parsed: its ledger record is priced
+   * (and its usage set) from the authenticated usage, at the request's own
+   * pricing. An answer that authenticated no usage owes nothing.
+   */
+  private _priceFromWorkerUsage(sellerPeerId: string, requestId: string): void {
+    const record = this._requestLedgers.get(sellerPeerId)?.get(requestId);
+    const delivery = this._workerDeliveries.get(requestId);
+    // Unit-billed answers are judged by their unit usage, as any other.
+    if (!record || record.cutOff || record.costCounted || record.usage?.unitUsage || !delivery?.usage
+      || delivery.state !== 'verified' || delivery.sellerPeerId !== sellerPeerId) return;
+    const usage = delivery.usage;
+    const pricing = this.getRequestBilling(requestId)?.tokenPricing ?? this.getSessionPricing(sellerPeerId, record.service);
+    const fresh = usage.inputTokens > usage.cachedInputTokens ? usage.inputTokens - usage.cachedInputTokens : 0n;
+    const authenticated = pricing
+      ? computeCostUsdc(Number(fresh), Number(usage.outputTokens), pricing, Number(usage.cachedInputTokens))
+      : fresh + usage.outputTokens + usage.cachedInputTokens > 0n ? record.costUsdc : 0n;
+    record.costUsdc = authenticated < record.costUsdc ? authenticated : record.costUsdc;
+    record.usage = { inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens };
   }
 
   private _getCeiling(sellerPeerId: string): bigint {
@@ -1781,7 +1805,8 @@ export class BuyerPaymentManager {
         }
       }
     }
-    ledger.set(requestId, delivered);
+    ledger.set(requestId, { ...delivered });
+    this._priceFromWorkerUsage(sellerPeerId, requestId);
   }
 
   /**

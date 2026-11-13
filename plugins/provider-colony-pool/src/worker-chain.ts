@@ -66,6 +66,16 @@ export function workerChannelVerifier(
   return trustedChannelVerifier((channel) => client.getSession(channel));
 }
 
+/** The pool contract `pool` on the worker's chain, read through its RPC endpoints. */
+export function workerPoolClient(
+  chainId: string,
+  pool: string,
+  rpcUrl?: string,
+  chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
+): ColonyPoolClient {
+  return new ColonyPoolClient({ ...resolveWorkerChain(chainId, rpcUrl, chains).rpc, contractAddress: pool });
+}
+
 /**
  * Reads a pool contract's settlement of a channel and its credit to a worker
  * there, in one call (`workerCredit`), on the same RPC endpoints the worker
@@ -76,12 +86,11 @@ export function workerPoolCreditReader(
   rpcUrl?: string,
   chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
 ): PoolCreditReader {
-  const resolved = resolveWorkerChain(chainId, rpcUrl, chains);
   const clients = new Map<string, ColonyPoolClient>();
   return (pool, channel, worker) => {
     let client = clients.get(pool.toLowerCase());
     if (!client) {
-      client = new ColonyPoolClient({ ...resolved.rpc, contractAddress: pool });
+      client = workerPoolClient(chainId, pool, rpcUrl, chains);
       clients.set(pool.toLowerCase(), client);
     }
     return client.workerCredit(channel, worker);

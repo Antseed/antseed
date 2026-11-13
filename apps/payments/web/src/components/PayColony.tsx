@@ -12,6 +12,7 @@ const COLONY_POOL_ABI = parseAbi([
   'function setPayout(address worker, address payout, uint256 deadline, bytes signature)',
   'function claimUsdc()',
   'function claimAnts(uint256[] epochs)',
+  'function claimAntsFor(address worker, uint256[] epochs)',
   'function claimEpochEmissions(uint256[] epochs)',
 ]);
 
@@ -57,7 +58,8 @@ function usePoolTransaction(config: PaymentConfig | null) {
     pool: string,
     call: { functionName: 'setPayout'; args: readonly [Address, Address, bigint, Hex] }
       | { functionName: 'claimUsdc'; args?: undefined }
-      | { functionName: 'claimAnts' | 'claimEpochEmissions'; args: readonly [readonly bigint[]] },
+      | { functionName: 'claimAnts' | 'claimEpochEmissions'; args: readonly [readonly bigint[]] }
+      | { functionName: 'claimAntsFor'; args: readonly [Address, readonly bigint[]] },
   ): Promise<Hex> => {
     await ensureCorrectNetwork();
     const hash = await writeContractAsync({ address: pool as Address, abi: COLONY_POOL_ABI, chainId: expectedChainId, ...call } as Parameters<typeof writeContractAsync>[0]);
@@ -193,6 +195,11 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
         setStep('Claiming ANTS…');
         last = await send(pool, { functionName: 'claimAnts', args: [epochs.map(BigInt)] });
       }
+      // ANTS from before the link stay with the Mac's key; the pool sends them to this wallet.
+      for (const epochs of batches(fresh?.claim?.workerAntsEpochs ?? [], MAX_EPOCHS_PER_CLAIM)) {
+        setStep('Claiming this Mac’s earlier ANTS…');
+        last = await send(pool, { functionName: 'claimAntsFor', args: [colony.worker as Address, epochs.map(BigInt)] });
+      }
       if (!last) throw new Error('Nothing to claim yet.');
       onDone(last);
     } catch (err) {
@@ -201,6 +208,15 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
       setRunning(false);
       setStep(null);
     }
+  };
+
+  const claimLabel = (): string => {
+    if (isSwitchingChain) return `Switching to ${targetChainName}…`;
+    if (wrongChain) return `Switch to ${targetChainName}`;
+    if (running) return step ?? 'Confirm in your wallet…';
+    if (nothing) return 'Nothing to claim yet';
+    const antsLabel = ants > 0n ? ` + ${formatAnts(ants)} ANTS` : '';
+    return `Claim $${formatUsd(Number(formatUnits(usdc, 6)))} USDC${antsLabel}`;
   };
 
   return (
@@ -223,11 +239,7 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
         disabled={running || isSwitchingChain || !payout || wrongWallet || nothing}
       >
         {running && <span className="pc-pay-spinner" aria-hidden="true" />}
-        {isSwitchingChain ? `Switching to ${targetChainName}…`
-          : wrongChain ? `Switch to ${targetChainName}`
-            : running ? (step ?? 'Confirm in your wallet…')
-              : nothing ? 'Nothing to claim yet'
-                : `Claim $${formatUsd(Number(formatUnits(usdc, 6)))} USDC${ants > 0n ? ` + ${formatAnts(ants)} ANTS` : ''}`}
+        {claimLabel()}
       </button>
       <p className="pc-pay-fineprint">
         You&apos;ll confirm one transaction per step: USDC, then ANTS{unpulled.length > 0 ? ' (after pulling the pool’s ANTS for finished epochs)' : ''}.

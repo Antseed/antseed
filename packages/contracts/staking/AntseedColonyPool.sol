@@ -136,6 +136,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     event UsdcClaimed(address indexed account, uint256 amount);
     event EpochEmissionsClaimed(uint256 indexed epoch, uint256 antsAmount);
     event AntsClaimed(address indexed account, uint256[] epochs, uint256 amount);
+    event AntsClaimedFor(address indexed worker, address indexed payout, uint256[] epochs, uint256 amount);
     event OrphanUsdcSwept(address indexed recipient, uint256 amount);
     event PayoutSet(address indexed worker, address indexed payout, uint256 nonce);
     event EarningsMoved(address indexed from, address indexed to, uint256 usdcAmount);
@@ -150,6 +151,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     error InvalidSignature();
     error NotAgentOwner();
     error EmissionsLocked();
+    error NoPayout();
 
     /// @param _registry AntSeed address book.
     /// @param initialOperator First operator; also the initial operator-fee
@@ -243,19 +245,37 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     /// @notice Claim the caller's ANTS share of funded `epochs`.
     /// @dev Intentionally not pausable: the owner cannot freeze credited funds.
     function claimAnts(uint256[] calldata epochs) external nonReentrant {
+        uint256 total = _markAntsClaimed(msg.sender, epochs);
+        IERC20(registry.antsToken()).safeTransfer(msg.sender, total);
+        emit AntsClaimed(msg.sender, epochs, total);
+    }
+
+    /// @notice Pay a linked `worker`'s own ANTS share of funded `epochs` to its
+    ///         payout wallet: the shares `setPayout` left with the worker key
+    ///         (epochs older than its migration window). Callable by anyone,
+    ///         since the ANTS only ever go where the worker itself linked.
+    /// @dev Intentionally not pausable, like `claimAnts`.
+    function claimAntsFor(address worker, uint256[] calldata epochs) external nonReentrant {
+        address payout = payoutOf[worker];
+        if (payout == address(0) || payout == worker) revert NoPayout();
+        uint256 total = _markAntsClaimed(worker, epochs);
+        IERC20(registry.antsToken()).safeTransfer(payout, total);
+        emit AntsClaimedFor(worker, payout, epochs, total);
+    }
+
+    /// @dev Records `account`'s pending ANTS for `epochs` as claimed and returns
+    ///      the total (checks and effects before the caller's transfer).
+    function _markAntsClaimed(address account, uint256[] calldata epochs) internal returns (uint256 total) {
         uint256 len = epochs.length;
         if (len == 0 || len > MAX_EPOCHS_PER_CLAIM) revert InvalidEpochs();
-        uint256 total;
         for (uint256 i = 0; i < len; i++) {
             uint256 epoch = epochs[i];
-            uint256 owed = _pendingAnts(msg.sender, epoch);
+            uint256 owed = _pendingAnts(account, epoch);
             if (owed == 0) continue;
-            antsClaimed[epoch][msg.sender] += owed;
+            antsClaimed[epoch][account] += owed;
             total += owed;
         }
         if (total == 0) revert NothingToClaim();
-        IERC20(registry.antsToken()).safeTransfer(msg.sender, total);
-        emit AntsClaimed(msg.sender, epochs, total);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -269,7 +289,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///         What the worker earned before the change moves to `payout`
     ///         too: its unclaimed USDC, and its ANTS share of the current
     ///         epoch and the `MAX_EPOCHS_PER_CLAIM` before it. Older ANTS
-    ///         shares stay claimable by the worker key.
+    ///         shares stay with the worker key: it claims them itself, or
+    ///         anyone sends them to `payout` with `claimAntsFor`.
     function setPayout(address worker, address payout, uint256 deadline, bytes calldata signature) external {
         if (worker == address(0) || payout == address(0)) revert InvalidAddress();
         if (block.timestamp > deadline) revert SignatureExpired();

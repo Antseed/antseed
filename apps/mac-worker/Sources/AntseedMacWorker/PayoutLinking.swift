@@ -12,7 +12,8 @@ final class WorkerPayoutController: ObservableObject {
     /// records it or it expires, so its code can be copied again after a restart.
     @Published private(set) var pendingLink: PayoutAuthorization?
     @Published private(set) var linkError: String?
-    /// What the pool owes the payout wallet (this Mac's key until one is linked); nil until read.
+    /// What the pool owes the payout wallet (this Mac's key until one is linked), with the ANTS the
+    /// linked key still holds itself (epochs older than linking moves); nil until read.
     @Published private(set) var rewards: ColonyRewards?
     /// Why the last rewards read failed, if it did.
     @Published private(set) var rewardsError: String?
@@ -23,6 +24,8 @@ final class WorkerPayoutController: ObservableObject {
     private let log: (String) -> Void
     /// `--link-payout` signs once per launch, not on every reconnect.
     private var linkRequested = false
+    /// The pool contract the published state is for: reads that finish after a switch are dropped.
+    private var pool: String?
 
     init(config: WorkerConfig, keys: WorkerKeys, log: @escaping (String) -> Void) {
         self.config = config
@@ -35,7 +38,16 @@ final class WorkerPayoutController: ObservableObject {
     private var address: String { keys.ethereum.address }
 
     /// Joined `pool`: read its payout record, and sign `--link-payout`'s link once per launch.
+    /// Another pool's payout, rewards and unsubmitted link are not this one's: they go.
     func joined(pool: String?) {
+        if pool?.lowercased() != self.pool?.lowercased() {
+            self.pool = pool
+            payout = nil
+            rewards = nil
+            rewardsError = nil
+            linkError = nil
+        }
+        if let link = pendingLink, link.pool.lowercased() != pool?.lowercased() { setPendingLink(nil) }
         refresh(pool: pool)
         if let wallet = config.linkPayoutTo, !linkRequested {
             linkRequested = true
@@ -51,14 +63,18 @@ final class WorkerPayoutController: ObservableObject {
 
     /// `refresh`, finished before it returns: the rewards page reads the result right after.
     func refreshNow(pool: String?) async {
-        guard !config.rpcURLs.isEmpty, let pool else { return }
+        guard !config.rpcURLs.isEmpty, let pool, isCurrent(pool) else { return }
+        let read: String?
         do {
-            payout = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
+            read = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
         } catch {
             return
         }
+        guard isCurrent(pool) else { return }
+        payout = read
         if let link = pendingLink,
-           link.payout.lowercased() == payout?.lowercased() || link.deadline <= UInt64(Date().timeIntervalSince1970) {
+           link.pool.lowercased() != pool.lowercased() || link.payout.lowercased() == payout?.lowercased()
+            || link.deadline <= UInt64(Date().timeIntervalSince1970) {
             setPendingLink(nil)
         }
         await refreshRewards(pool: pool)
@@ -66,14 +82,24 @@ final class WorkerPayoutController: ObservableObject {
 
     /// Read what the pool owes the payout wallet (this Mac's key until one is linked).
     func refreshRewards(pool: String?) async {
-        guard !config.rpcURLs.isEmpty, let pool else { return }
+        guard !config.rpcURLs.isEmpty, let pool, isCurrent(pool) else { return }
+        let chain = Chain(rpcURLs: config.rpcURLs, timeout: 10)
+        let linked = payout.flatMap { $0.lowercased() == address.lowercased() ? nil : $0 }
         do {
-            rewards = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).colonyRewards(pool: pool, account: payout ?? address)
+            var read = try await chain.colonyRewards(pool: pool, account: linked ?? address)
+            // Linking moves only recent epochs' ANTS: older ones stay with this key, still this owner's to claim.
+            if linked != nil { read = read.adding(worker: try await chain.colonyRewards(pool: pool, account: address)) }
+            guard isCurrent(pool) else { return }
+            rewards = read
             rewardsError = nil
         } catch {
+            guard isCurrent(pool) else { return }
             rewardsError = "Could not read rewards: \(error.localizedDescription)"
         }
     }
+
+    /// Whether `pool` is still the one joined (any pool counts before the first join).
+    private func isCurrent(_ pool: String) -> Bool { self.pool == nil || self.pool?.lowercased() == pool.lowercased() }
 
     private func setPendingLink(_ link: PayoutAuthorization?) {
         pendingLink = link

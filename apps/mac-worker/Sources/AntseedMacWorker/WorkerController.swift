@@ -7,8 +7,6 @@ struct PoolStats: Equatable {
     var earnedToday: UInt64 = 0
     var earnedLast7Days: UInt64 = 0
     var earnedTotal: UInt64 = 0
-    var paidTotal: UInt64 = 0
-    var pending: UInt64 = 0
     var requestsTotal = 0
     var outputTokensTotal = 0
     var connectedSecondsLast7Days = 0
@@ -93,6 +91,8 @@ final class WorkerController: ObservableObject {
     private let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
+    /// The pending reconnect, if one is waiting out its backoff; any new connection cancels it.
+    private var reconnectTask: Task<Void, Never>?
     private var active: [String: Task<Void, Never>] = [:]
     /// Streamed answers that have sent response-start.
     private var startedStreams = Set<String>()
@@ -108,12 +108,15 @@ final class WorkerController: ObservableObject {
     /// What each channel's buyer owes this Mac for its answers, and has paid; kept across restarts.
     private lazy var payments = WorkerPaymentLedger(file: config.dataDirectory.appendingPathComponent("payments.json"))
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
-    /// Its verdicts are for `poolSeller`; a challenge naming another pool starts a fresh one.
-    private lazy var channels = makeChannelVerdicts()
+    /// Its verdicts are for `verdictsSeller` only: a challenge naming another pool seller starts a fresh one,
+    /// whatever happened to the connection in between.
+    private lazy var channels = makeChannelVerdicts(for: nil)
+    private var verdictsSeller: String?
 
-    private func makeChannelVerdicts() -> ChannelVerdicts {
+    /// Verdicts on channels with `seller`'s pool; every lookup checks that seller, even one still running after a switch.
+    private func makeChannelVerdicts(for seller: String?) -> ChannelVerdicts {
         let verdicts = ChannelVerdicts { [weak self] channel, buyer in
-            guard let self, !self.config.rpcURLs.isEmpty, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
+            guard let self, !self.config.rpcURLs.isEmpty, let pool = seller, let trusted = self.trustedChannels else { return nil }
             let state = try await Chain(rpcURLs: self.config.rpcURLs, timeout: 2).channelState(channel: channel, buyer: buyer, pool: pool, channels: trusted)
             if state.belongs == true {
                 if self.channelDeposits.count >= 10_000 { self.channelDeposits.removeAll() }
@@ -330,7 +333,7 @@ final class WorkerController: ObservableObject {
         let claim: Any = payouts.rewards.map {
             [
                 "usdc": ColonyRewards.integerString($0.usdc), "ants": ColonyRewards.integerString($0.ants),
-                "antsEpochs": $0.antsEpochs, "unpulledEpochs": $0.unpulledEpochs,
+                "antsEpochs": $0.antsEpochs, "unpulledEpochs": $0.unpulledEpochs, "workerAntsEpochs": $0.workerAntsEpochs,
             ] as [String: Any]
         } ?? NSNull()
         return ["pool": poolSeller ?? NSNull(), "worker": address, "payout": payouts.payout ?? NSNull(), "claim": claim]
@@ -362,8 +365,10 @@ final class WorkerController: ObservableObject {
         connect()
     }
 
-    /// Leave the current pool connection, cancelling its requests.
+    /// Leave the current pool connection, cancelling its requests and any pending reconnect.
     private func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         for task in active.values { task.cancel() }
         active.removeAll()
         let previous = socket
@@ -373,6 +378,9 @@ final class WorkerController: ObservableObject {
     }
 
     private func connect() {
+        // This connection supersedes a reconnect still waiting: it must not replace this socket later.
+        reconnectTask?.cancel()
+        reconnectTask = nil
         guard let poolURL else {
             status = .needsPool
             return
@@ -438,9 +446,13 @@ final class WorkerController: ObservableObject {
         status = .connecting
         let delay = backoff
         backoff = min(backoff * 2, 60)
-        Task {
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-            connect()
+            // Cancelled by a join, rejoin or disconnect while waiting: that connection stands.
+            guard !Task.isCancelled, let self else { return }
+            self.reconnectTask = nil
+            self.connect()
         }
     }
 
@@ -473,11 +485,12 @@ final class WorkerController: ObservableObject {
         case "challenge":
             guard let pool = frame["pool"] as? String, let nonce = frame["nonce"] as? String,
                   let seller = frame["seller"] as? String else { return }
-            if seller.lowercased() != poolSeller?.lowercased() {
-                // Verdicts say "this buyer's channel with that pool": none carry over to another pool.
-                if poolSeller != nil { channels = makeChannelVerdicts() }
-                poolSeller = seller
+            // Verdicts say "this buyer's channel with that pool": none carry over to another pool seller.
+            if seller.lowercased() != verdictsSeller {
+                channels = makeChannelVerdicts(for: seller)
+                verdictsSeller = seller.lowercased()
             }
+            poolSeller = seller
             guard refreshProtection() else { socket?.cancel(with: .goingAway, reason: nil); return }
             do {
                 let keyHex = keys.encryptionKeyHex
@@ -813,7 +826,7 @@ final class WorkerController: ObservableObject {
         func amount(_ key: String) -> UInt64 { UInt64(raw[key] as? String ?? "0") ?? 0 }
         stats = PoolStats(
             earnedToday: amount("earnedToday"), earnedLast7Days: amount("earnedLast7Days"), earnedTotal: amount("earnedTotal"),
-            paidTotal: amount("paidTotal"), pending: amount("pending"), requestsTotal: raw["requestsTotal"] as? Int ?? 0,
+            requestsTotal: raw["requestsTotal"] as? Int ?? 0,
             outputTokensTotal: raw["outputTokensTotal"] as? Int ?? 0, connectedSecondsLast7Days: raw["connectedSecondsLast7Days"] as? Int ?? 0
         )
     }

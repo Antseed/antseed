@@ -319,6 +319,8 @@ export interface ColonyState {
     antsEpochs: number[];
     /** Finished epochs the pool earned ANTS for but hasn't pulled from emissions yet (claimEpochEmissions). */
     unpulledEpochs: number[];
+    /** Epochs whose ANTS stayed with the Mac's key when it linked (older than the link moves); claimAntsFor sends them to the payout. Counted in `ants`. */
+    workerAntsEpochs?: number[];
   } | null;
 }
 

@@ -14,7 +14,7 @@ import Security
 /// site can read or forge (browsers don't let pages set it cross-origin).
 @MainActor
 final class PayServer {
-    struct Request {
+    struct Request: Equatable {
         let method: String
         let path: String
         let headers: [String: String]
@@ -122,9 +122,11 @@ final class PayServer {
                 guard let self else { connection.cancel(); return }
                 var buffer = buffer
                 if let data { buffer.append(data) }
-                if buffer.count > 1_048_576 { return self.send(.error(413, "Request too large"), on: connection) }
-                if let request = Self.parse(buffer) {
-                    return self.send(await self.respond(to: request), on: connection)
+                if buffer.count > Self.maxRequestBytes { return self.send(.error(413, "Request too large"), on: connection) }
+                switch Self.parse(buffer) {
+                case .request(let request): return self.send(await self.respond(to: request), on: connection)
+                case .malformed: return self.send(.error(400, "Bad request"), on: connection)
+                case .incomplete: break
                 }
                 if done || error != nil { return connection.cancel() }
                 self.receive(on: connection, buffer: buffer)
@@ -132,24 +134,35 @@ final class PayServer {
         }
     }
 
-    /// An HTTP/1.1 request once its headers and body have arrived; nil while incomplete.
-    nonisolated static func parse(_ buffer: Data) -> Request? {
-        guard let end = buffer.range(of: Data("\r\n\r\n".utf8)),
-              let head = String(data: buffer[buffer.startIndex..<end.lowerBound], encoding: .utf8) else { return nil }
+    nonisolated static let maxRequestBytes = 1_048_576
+
+    enum Parsed: Equatable {
+        case incomplete
+        case malformed
+        case request(Request)
+    }
+
+    /// An HTTP/1.1 request once its headers and body have arrived.
+    nonisolated static func parse(_ buffer: Data) -> Parsed {
+        guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
+        guard let head = String(data: buffer[buffer.startIndex..<end.lowerBound], encoding: .utf8) else { return .malformed }
         var lines = head.components(separatedBy: "\r\n")
         let start = lines.removeFirst().split(separator: " ")
-        guard start.count >= 2 else { return nil }
+        guard start.count >= 2 else { return .malformed }
         var headers: [String: String] = [:]
         for line in lines {
             guard let colon = line.firstIndex(of: ":") else { continue }
             headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        let length = Int(headers["content-length"] ?? "0") ?? 0
+        // Digits only, within the size limit: a sign, garbage or an overflow is a bad request, never a length.
+        let declared = headers["content-length"] ?? "0"
+        guard !declared.isEmpty, declared.allSatisfy(\.isASCII), declared.allSatisfy(\.isNumber),
+              let length = Int(declared), length <= maxRequestBytes else { return .malformed }
         let body = buffer[end.upperBound...]
-        guard body.count >= length else { return nil }
+        guard body.count >= length else { return .incomplete }
         let target = String(start[1])
         let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? target
-        return Request(method: String(start[0]), path: path, headers: headers, body: Data(body.prefix(length)))
+        return .request(Request(method: String(start[0]), path: path, headers: headers, body: Data(body.prefix(length))))
     }
 
     private func respond(to request: Request) async -> Response {

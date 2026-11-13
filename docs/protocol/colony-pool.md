@@ -762,9 +762,13 @@ keccak256(abi.encode(keccak256("antseed-worker-payout/v1"), chainid, pool, worke
 on each change, so a link cannot be replayed. Linking also moves what the
 worker already earned: its unclaimed USDC, and its ANTS weight (with what it
 already claimed) for the current epoch and the `MAX_EPOCHS_PER_CLAIM` before
-it. Older ANTS shares stay claimable by the worker key.
+it. Older ANTS shares stay with the worker key: it can claim them itself, or
+anyone can send them to the worker's payout wallet with
+`claimAntsFor(worker, epochs)` (which reverts while no payout is linked).
+Antseed Colony adds those epochs to its claim, so the owner's Claim pays them too.
 
-Antseed Colony signs this and copies a link code,
+Antseed Colony signs this and copies a link code (the Node.js worker prints
+one with `--link-payout <wallet> --pool-contract <address>`),
 `antseed-link:<base64url JSON {chainId, pool, worker, payout, deadline, signature}>`.
 The owner pastes it in the ANTS dashboard (Rewards → Link a Mac), which checks
 the chain and that the connected wallet is `payout`, submits `setPayout`, and

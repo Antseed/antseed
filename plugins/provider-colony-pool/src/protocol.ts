@@ -182,15 +182,16 @@ export type WorkerFrame =
   | StatsHelloFrame
   | AttestationFrame;
 
-/** A worker's earnings as the pool's ledger records them. Amounts are USDC base units (6 decimals) as strings. */
+/**
+ * A worker's earnings as the pool's ledger records them. Amounts are USDC base
+ * units (6 decimals) as strings, estimated when each answer was served: what the
+ * worker can claim is on the pool contract (`usdcBalance`), not here.
+ */
 export interface WorkerStats {
   address: string;
   earnedToday: string;
   earnedLast7Days: string;
   earnedTotal: string;
-  paidTotal: string;
-  /** earnedTotal − paidTotal. */
-  pending: string;
   requestsTotal: number;
   inputTokensTotal: number;
   outputTokensTotal: number;

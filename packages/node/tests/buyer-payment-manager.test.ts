@@ -903,6 +903,30 @@ describe('BuyerPaymentManager', () => {
       expect(mux.sentSpendingAuths).toHaveLength(0);
     });
 
+    it('signs nothing after the response for a worker answer that authenticated no usage, whatever the buyer estimated', async () => {
+      const { sellerPeerId, answered } = await setup('seller-pool-zero-usage');
+      const before = manager.getCumulativeAmount(sellerPeerId);
+      // The buyer's own parse priced the response at 9000; the worker authenticated nothing.
+      answered({ inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 0n }, 9000n);
+      const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, requestId: 'req-pool',
+      });
+      expect(BigInt(payload.cumulativeAmount)).toBe(before);
+      expect(decodeWorkerTail(payload.metadata)).toBeNull();
+    });
+
+    it('prices a worker answer after the response from its authenticated usage, not a higher estimate', async () => {
+      const { sellerPeerId, answered } = await setup('seller-pool-authenticated-price');
+      const before = manager.getCumulativeAmount(sellerPeerId);
+      // 1000 in + 400 out = 9000 authenticated; the buyer's parse said 20000.
+      answered(usage, 20_000n);
+      const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, requestId: 'req-pool',
+      });
+      expect(BigInt(payload.cumulativeAmount)).toBe(before + 9000n);
+      expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
+    });
+
     it('lets concurrent requests credit no more workers than a channel holds, counting ones still in flight', async () => {
       const sellerPeerId = fakePeerId('seller-pool-slots');
       const w = (i: number) => `0x${i.toString(16).padStart(40, '0')}`;
@@ -3397,7 +3421,8 @@ describe('BuyerPaymentManager', () => {
     await manager.extendCurrentSpendingAuth(sellerPeerId, 1n, mux, 15_000n);
     expect(manager.getCumulativeAmount(sellerPeerId)).toBe(15_000n);
     const sent = mux.sentSpendingAuths[0] as { metadata: string };
-    expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 5_000n }]);
+    // Credited at what the worker authenticated (1000 in + 100 out = 4500), not the 5000 recorded.
+    expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 4_500n }]);
     // Paid by the catch-up: a claim for it now is refused.
     await manager.handleNeedAuth(sellerPeerId, {
       channelId, requestId: 'req-pool-402', requiredCumulativeAmount: '20000', currentAcceptedCumulative: '15000',

@@ -39,10 +39,22 @@ On first run the worker creates its key in `~/.antseed-worker/key`. That key's a
 | `--rpc-url <url>` | RPC the worker checks each request's channel on (default: the chain's public RPC). Requests whose channel can't be checked are refused |
 | `--chain-id <id>` | `base-mainnet` (default), `base-sepolia` or `base-local` |
 | `--channels-address <address>` | Channels contract to read instead of the chain's default |
-| `--stats` | Print this worker's earnings and exit |
+| `--stats` | Print this worker's earnings, as the pool estimated them, and exit |
+| `--link-payout <wallet>` | Sign a link of this worker's earnings to your wallet and print its code (needs `--pool-contract`; sends nothing) |
+| `--pool-contract <address>` | The pool's contract address, from its operator |
 
 ## Getting paid
 
-The worker serves a channel only while the buyer's signed payment covers its earlier answers there, at most one answer behind, and counts that payment only up to what the pool contract can still pay it. Claims and payout links work as for the Mac app: see [Link your wallet](/docs/local-ai/mac#link-your-wallet) and [Claim](/docs/local-ai/mac#claim).
+The worker serves a channel only while the buyer's signed payment covers its earlier answers there, at most one answer behind, and counts that payment only up to what the pool contract can still pay it.
+
+The pool contract credits what the worker earns to the worker's own address until you link a wallet. To link one, sign a link with the worker's key:
+
+```bash
+antseed-pool-worker --link-payout 0xYourWallet --pool-contract 0xPoolContract
+```
+
+It prints an `antseed-link:…` code, valid for 7 days. In the ANTS dashboard (`antseed ants`), connect that wallet, open **Rewards**, choose **Link a Mac** and paste the code. The wallet submits the link, which also moves the worker's unclaimed USDC and its recent ANTS. From then on the worker's earnings go to that wallet, and you claim them from the dashboard's colony pool card.
+
+ANTS the worker earned more than 32 epochs before you linked stay with the worker's address. Anyone can send them to your wallet with the pool contract's `claimAntsFor(worker, epochs)`, and the pool never pays them anywhere else.
 
 The Node.js worker attests no hardening, so buyers that require Apple-verified Macs never route to it. See [Privacy and verification](/docs/local-ai/privacy).

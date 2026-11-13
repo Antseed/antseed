@@ -26,6 +26,12 @@ export * from './protocol.js';
 export { NanoMdmAttestor, parseDeviceBindings, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';
 
 /** provider-core's parser, with an empty setting meaning the default. */
+function parseBasisPoints(raw: string | undefined, key: string, fallback: number): number {
+  const value = parseNonNegativeNumber(raw, key, fallback);
+  if (!Number.isInteger(value) || value > 10_000) throw new Error(`${key} must be a whole number from 0 to 10000`);
+  return value;
+}
+
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
   return parseSharedNonNegativeNumber(raw === '' ? undefined : raw, key, fallback);
 }
@@ -100,14 +106,8 @@ const plugin: AntseedProviderPlugin = {
     if (rpcUrl && config['COLONY_POOL_WORKER_SHARE_BPS']) {
       throw new Error('COLONY_POOL_WORKER_SHARE_BPS is read from the pool contract\'s operator fee when COLONY_POOL_RPC_URL is set; remove it');
     }
-    const workerShareBps = parseNonNegativeNumber(config['COLONY_POOL_WORKER_SHARE_BPS'], 'COLONY_POOL_WORKER_SHARE_BPS', 9000);
-    if (!Number.isInteger(workerShareBps) || workerShareBps > 10_000) {
-      throw new Error('COLONY_POOL_WORKER_SHARE_BPS must be a whole number from 0 to 10000');
-    }
-    const protocolFeeBps = parseNonNegativeNumber(config['COLONY_POOL_PROTOCOL_FEE_BPS'], 'COLONY_POOL_PROTOCOL_FEE_BPS', 200);
-    if (!Number.isInteger(protocolFeeBps) || protocolFeeBps > 10_000) {
-      throw new Error('COLONY_POOL_PROTOCOL_FEE_BPS must be a whole number from 0 to 10000');
-    }
+    const workerShareBps = parseBasisPoints(config['COLONY_POOL_WORKER_SHARE_BPS'], 'COLONY_POOL_WORKER_SHARE_BPS', 9000);
+    const protocolFeeBps = parseBasisPoints(config['COLONY_POOL_PROTOCOL_FEE_BPS'], 'COLONY_POOL_PROTOCOL_FEE_BPS', 200);
     const maxConcurrency = parseNonNegativeNumber(config['ANTSEED_MAX_CONCURRENCY'], 'ANTSEED_MAX_CONCURRENCY', 64);
     const port = parseNonNegativeNumber(config['COLONY_POOL_PORT'], 'COLONY_POOL_PORT', 8790);
     const certPath = config['COLONY_POOL_TLS_CERT'];
