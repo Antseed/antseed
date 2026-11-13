@@ -79,8 +79,10 @@ test('an image model keeps each seller\'s price per image for the seller picker'
       { peerId: '0xAB12CD34', minImageUsdPerImage: 0.04 },
       { peerId: 'ef56ab78', minImageUsdPerImage: 0.05 },
       { peerId: 'cd90ef12' },
+      { peerId: '12ab34cd', minImageUsdPerImage: 0 },
     ],
   } as unknown as GatewayModelEntry);
-  assert.deepEqual(model.imageUsdBySeller, { ab12cd34: 0.04, ef56ab78: 0.05 });
+  // A free seller keeps its $0, next to the paid ones.
+  assert.deepEqual(model.imageUsdBySeller, { ab12cd34: 0.04, ef56ab78: 0.05, '12ab34cd': 0 });
   assert.equal(toChatModel({ id: 'glm-5.3-flash', peers: [{ peerId: 'ab12cd34', inputUsdPerMillion: 0.3 }] } as unknown as GatewayModelEntry).imageUsdBySeller, undefined);
 });

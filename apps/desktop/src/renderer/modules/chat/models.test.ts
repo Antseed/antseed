@@ -247,7 +247,8 @@ test('a dated variant is another model', () => {
 });
 
 test('the seller picker prices an image model\'s sellers per image', () => {
-  const prices = { ab12cd34: 0.04 };
+  const prices = { ab12cd34: 0.04, '12ab34cd': 0 };
   assert.equal(sellerImagePriceLabel(prices, '0xAB12CD34'), '$0.04 per image');
+  assert.equal(sellerImagePriceLabel(prices, '12ab34cd'), 'Free');
   assert.equal(sellerImagePriceLabel(prices, 'ef56ab78'), null);
 });

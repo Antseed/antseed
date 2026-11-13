@@ -99,7 +99,7 @@ function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string,
   const prices: Record<string, number> = {};
   for (const peer of peers) {
     const price = finiteNumber(peer['minImageUsdPerImage']);
-    if (typeof peer['peerId'] === 'string' && price !== null && price > 0) prices[normalizeSellerId(peer['peerId'])] = price;
+    if (typeof peer['peerId'] === 'string' && price !== null && price >= 0) prices[normalizeSellerId(peer['peerId'])] = price;
   }
   return prices;
 }

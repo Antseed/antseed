@@ -87,8 +87,9 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
   // An image model charges per image; its token prices read $0.
   const imagePrices = useUiSelector((state) => findChatModel(state.chatModels, listedId)?.imageUsdBySeller);
   const priceTag = (offer: ChatRouteCandidate) => {
-    if (imagePrices) return sellerImagePriceLabel(imagePrices, offer.peerId);
-    const label = offerPriceLabel(offer, stakersOnlyFreeIds?.includes(offer.peerId) ?? false);
+    const label = imagePrices
+      ? sellerImagePriceLabel(imagePrices, offer.peerId)
+      : offerPriceLabel(offer, stakersOnlyFreeIds?.includes(offer.peerId) ?? false);
     if (label === 'Free') return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
     return label === 'Free for stakers' ? <span className={styles.tag}>{label}</span> : label;
   };
