@@ -65,7 +65,9 @@
   transition: opacity 600ms ease;
 }
 
-.active {
+/* .screen.active, not .active alone: the production CSS minifier merges a
+   lone .active into an earlier rule, where .screen's opacity: 0 overrides it */
+.screen.active {
   opacity: 1;
 }
 
@@ -89,7 +91,7 @@
   cursor: pointer;
 }
 
-.tabActive {
+.tab.tabActive {
   background: #FFFFFF;
   color: var(--as-heading);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
