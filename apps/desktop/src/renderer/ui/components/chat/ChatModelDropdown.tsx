@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { ArrowDown01Icon } from '@hugeicons/core-free-icons';
+import { ArrowDown01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
 import type { ChatModel } from '../../../types/bridge';
 import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
@@ -59,6 +59,11 @@ export function holdEnterInSearch(event: { key: string; preventDefault: () => vo
   if (event.key === 'Enter') event.preventDefault();
 }
 
+/** The menu scroll that centers an item below the sticky filters, never above the top. */
+export function centeredScrollTop(itemTop: number, itemHeight: number, menuHeight: number, headerHeight = 0): number {
+  return Math.max(0, itemTop - headerHeight - (menuHeight - headerHeight - itemHeight) / 2);
+}
+
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -78,6 +83,7 @@ export function ChatModelDropdown({
   const [query, setQuery] = useState('');
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
@@ -96,7 +102,15 @@ export function ChatModelDropdown({
       setFilter(null);
       return undefined;
     }
-    const frame = requestAnimationFrame(() => searchRef.current?.focus());
+    const frame = requestAnimationFrame(() => {
+      searchRef.current?.focus();
+      // Open on the model in use, not at the top of a long list. Only the
+      // menu scrolls: scrollIntoView would move the chat behind it too.
+      const menu = menuRef.current;
+      const item = menu?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+      const header = menu?.querySelector<HTMLElement>(`.${styles.modelDropdownFilters}`)?.offsetHeight ?? 0;
+      if (menu && item) menu.scrollTop = centeredScrollTop(item.offsetTop, item.offsetHeight, menu.clientHeight, header);
+    });
     return () => cancelAnimationFrame(frame);
   }, [open]);
 
@@ -126,6 +140,7 @@ export function ChatModelDropdown({
         <span className={styles.itemTopRow}>
           <span className={styles.itemNameGroup}>
             <span className={styles.itemName}>{model.label}</span>
+            {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
           </span>
           <span className={styles.itemPrice}>{renderModelPrice(model)}</span>
         </span>
@@ -170,6 +185,7 @@ export function ChatModelDropdown({
         <div
           className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
+          ref={menuRef}
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
           {(showSearch || hasFree || hasRouters) && (

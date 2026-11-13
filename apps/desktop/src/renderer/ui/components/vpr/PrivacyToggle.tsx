@@ -305,6 +305,7 @@ export function PrivacySwitchDialog() {
     ? `the chat and ${listNames(apps)}`
     : 'the chat and every app you connect through Antseed';
 
+  // Three buttons need the wider dialog to stay on one row.
   const footer = pending.privateHistory ? (
     <>
       <Button variant="ghost" onClick={() => finish(null)}>Cancel</Button>
@@ -319,7 +320,7 @@ export function PrivacySwitchDialog() {
   );
 
   return (
-    <Modal isOpen onClose={() => finish(null)} title={`Switch to ${label}?`} size="sm" footer={footer}>
+    <Modal isOpen onClose={() => finish(null)} title={`Switch to ${label}?`} size={pending.privateHistory ? 'md' : 'sm'} footer={footer}>
       <div className={styles.switchDialog}>
         {pending.explain ? (
           <>
