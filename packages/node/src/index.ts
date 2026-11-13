@@ -277,7 +277,6 @@ export { PositionInitClient, type PositionInitClientConfig } from './payments/ev
 export { EmissionsGateClient, GATE_MINTERS, gateMinterId, type EmissionsGateClientConfig, type GateMinter } from './payments/evm/emissions-gate-client.js';
 export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type InviteFailure, type InvitePreview } from './payments/evm/referrals-client.js';
 export {
-  INVITE_DEEP_LINK_BASE,
   INVITE_LINK_BASE,
   INVITE_VALIDITY_EPOCHS,
   REFEREE_BONUS_EPOCHS,

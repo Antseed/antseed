@@ -16,9 +16,9 @@ import type { InviteFailure, ReferralsClient } from './evm/referrals-client.js';
  *   bytes 4-35   r
  *   bytes 36-67  vs (EIP-2098 compact: s with the y-parity in the top bit)
  *
- * 91 characters, URL-safe, shared as https://antseed.com/invite/<invite> or
- * antseed://invite/<invite>. The referrer is not in the string: it is
- * recovered from the signature with the chain's referrals contract.
+ * 91 characters, URL-safe, shared as https://antseed.com/invite/<invite>. The
+ * referrer is not in the string: it is recovered from the signature with the
+ * chain's referrals contract.
  */
 
 /** Epochs an invite stays usable, counting its issue epoch (AntseedReferrals.INVITE_VALIDITY_EPOCHS). */
@@ -26,7 +26,6 @@ export const INVITE_VALIDITY_EPOCHS = 4;
 /** Epochs after the binding in which the referee earns its half (AntseedReferrals.REFEREE_BONUS_EPOCHS). */
 export const REFEREE_BONUS_EPOCHS = 12;
 export const INVITE_LINK_BASE = 'https://antseed.com/invite/';
-export const INVITE_DEEP_LINK_BASE = 'antseed://invite/';
 
 const INVITE_FORMAT_VERSION = 1;
 const INVITE_BYTES = 68;

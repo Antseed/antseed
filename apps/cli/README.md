@@ -494,9 +494,8 @@ otherwise 3, plus one more per 10 USDC, up to 20 a week.
 **Invite.** `antseed referral invite` signs an invite with the node wallet,
 off-chain and free: a 91-character base64url string holding the issue week, an
 index and the 64-byte signature, shared as
-`https://antseed.com/invite/<invite>` (Desktop also opens
-`antseed://invite/<invite>`). Each invite works once and stays valid for 4
-weeks, counting the week it was created.
+`https://antseed.com/invite/<invite>`. Each invite works once and stays valid
+for 4 weeks, counting the week it was created.
 
 ```text
 $ antseed referral invite

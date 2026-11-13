@@ -1,13 +1,13 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import {
-  AntsContext,
   InviteQuotaError,
   NO_INVITE_QUOTA_MESSAGE,
   issueInvite,
   refereeBonusFromExplorer,
   referral,
   type AntsChainConfig,
+  type AntsContext,
   type CreatedInviteView,
   type RefereeView,
   type ReferralView,
@@ -23,11 +23,8 @@ import {
   type ReferralState,
   type ReferralsClient,
 } from '@antseed/node'
-import { getGlobalOptions } from './types.js'
-import { loadConfig } from '../../config/loader.js'
-import { loadCryptoContext, requireCryptoConfig } from '../payment-utils.js'
 import { referralLookups, referralScope, shortWallet } from '../referral-state.js'
-import { ants, printJson } from './ants/shared.js'
+import { ants, loadAntsContext, printJson } from './ants/shared.js'
 
 /**
  * `antseed referral`: invite-only, two-sided referrals (AntseedReferrals).
@@ -45,11 +42,8 @@ export type ReferralCommandContext = {
 const NOT_AVAILABLE = 'Referrals are not available on this network.'
 
 /** Without an RPC probe: invite and redeem make at most a few single view calls, status none. */
-async function loadReferralContext(command: Command): Promise<ReferralCommandContext> {
-  const { config: configPath, dataDir } = getGlobalOptions(command)
-  const chain = requireCryptoConfig(await loadConfig(configPath)) as unknown as AntsChainConfig
-  const { wallet } = await loadCryptoContext(dataDir)
-  return { ctx: new AntsContext({ chain, address: wallet.address, signer: wallet }), chain, dataDir }
+function loadReferralContext(command: Command): Promise<ReferralCommandContext> {
+  return loadAntsContext(command, { selectRpc: false })
 }
 
 function requireReferrals(context: ReferralCommandContext): ReferralsClient {

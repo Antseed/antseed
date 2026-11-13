@@ -132,7 +132,6 @@ export { UsageRewardsClient } from './evm/usage-rewards-client.js';
 export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
 export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type InviteFailure, type InvitePreview } from './evm/referrals-client.js';
 export {
-  INVITE_DEEP_LINK_BASE,
   INVITE_LINK_BASE,
   INVITE_VALIDITY_EPOCHS,
   REFEREE_BONUS_EPOCHS,
