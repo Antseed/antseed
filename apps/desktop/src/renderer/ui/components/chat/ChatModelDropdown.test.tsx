@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../../types/bridge';
-import { cardFits, centeredScrollTop, holdEnterInSearch, initialPickerTab, modelInlineDetails, modelLab, modelSummary, pickerLists, pickerTabFor } from './ChatModelDropdown';
+import { cardFits, centeredScrollTop, holdEnterInSearch, initialPickerTab, skillPrompt, modelInlineDetails, modelLab, modelSummary, pickerLists, pickerTabFor } from './ChatModelDropdown';
 
 test('Enter in the model search does not submit the composer form around it', () => {
   const pressed = (key: string) => {
@@ -88,4 +88,26 @@ test('without room for the card, a row\'s second line adds only what its tags do
   // Capabilities stay visible too; Free and TEE are the row's own tags.
   const qwen = model({ id: 'qwen-4-235b', label: 'Qwen 4 235B', tee: true, supportsImages: true, reasoning: true, toolUse: true, freeForStakers: true });
   assert.equal(modelInlineDetails(qwen), 'Qwen · Free for stakers · Vision · Reasoning · Tools');
+});
+
+test('video and decision models get tabs of their own, searched like the rest', () => {
+  const video = model({ id: 'alibaba/wan-3.0/text-to-video', label: 'Wan 3.0 text to video', type: 'video' });
+  const decision = model({ id: 'jev-latest', label: 'Jev', type: 'decision' });
+  assert.equal(pickerTabFor(video), 'video');
+  assert.equal(pickerTabFor(decision), 'decision');
+  const lists = pickerLists([video, decision, model({ id: 'glm', label: 'GLM' })], 'wan', false);
+  assert.deepEqual(lists.video, [video]);
+  assert.deepEqual(lists.decision, []);
+  assert.deepEqual(lists.text, []);
+});
+
+test('a video or decision model starts a prompt for the chat model, naming its skill', () => {
+  assert.equal(skillPrompt(model({ id: 'alibaba/wan-3.0/text-to-video', type: 'video' })), 'Make a video with the model alibaba/wan-3.0/text-to-video (antseed-videos skill) of: ');
+  assert.equal(skillPrompt(model({ id: 'jev-latest', type: 'decision' })), 'Use the decision model jev-latest (antseed-decisions skill) to answer: ');
+});
+
+test('TEE tags read as the gateway console does: Full when sealed end to end, Partial otherwise', () => {
+  assert.match(modelSummary(model({ tee: true, teeEndToEnd: true })), /Full TEE/);
+  assert.match(modelSummary(model({ tee: true })), /Partial TEE/);
+  assert.doesNotMatch(modelSummary(model({})), /TEE/);
 });
