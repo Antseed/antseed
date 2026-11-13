@@ -71,14 +71,18 @@ function isClaudeFamily(name: string | undefined): name is ClaudeFamily {
   return name !== undefined && Object.hasOwn(THINKING_THRESHOLDS, name);
 }
 
-// `claude-<family>-<major>[-<minor>]`, with any vendor prefix and any release
-// date or `latest` after it. A date is not read as a version: it has more
-// than two digits. Same shape as the seller-side Anthropic relay's matcher.
-const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?!\d)/;
+// An optional vendor prefix (`anthropic/`, `us.anthropic.`), then the Claude id
+// from its start: an agent's own name that only contains one
+// (`my-agent-claude-opus-4-7`) is not a Claude model.
+const VENDOR_PREFIX = String.raw`^(?:[a-z0-9-]+[./])*`;
+// `claude-<family>-<major>[-<minor>]`, with any release date or `latest` after
+// it. A date is not read as a version: it has more than two digits, and
+// neither is a size suffix such as `-32k`. Same rule as the seller-side
+// Anthropic relay's matcher.
+const CLAUDE_MODEL_RE = new RegExp(String.raw`${VENDOR_PREFIX}claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?![\da-z])`);
 // Claude 3 ids name the version first: `claude-3-7-sonnet-20250219`, `claude-3-opus-latest`.
-const VERSION_FIRST_CLAUDE_RE = /claude[-._](\d)(?:[-._](\d))?[-._](opus|sonnet|haiku)(?![a-z])/;
-// Mythos Preview has no version in its id.
-const MYTHOS_PREVIEW_RE = /claude[-._]mythos[-._]preview(?![\da-z])/;
+const VERSION_FIRST_CLAUDE_RE = new RegExp(String.raw`${VENDOR_PREFIX}claude[-._](\d)(?:[-._](\d))?[-._](opus|sonnet|haiku)(?![a-z])`);
+const MYTHOS_PREVIEW_RE = new RegExp(String.raw`${VENDOR_PREFIX}claude[-._]mythos[-._]preview(?![\da-z])`);
 
 function claudeVersion(modelId: string): { family: ClaudeFamily; version: Version } | null {
   const id = splitPinnedModel(modelId).modelId.trim().toLowerCase();

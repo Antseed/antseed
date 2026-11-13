@@ -166,6 +166,17 @@ test('the thinking form follows the per-model table', () => {
     // Mythos Preview has no version in its id.
     ['claude-mythos-preview', 'adaptive'],
     ['anthropic.claude-mythos-preview', 'adaptive'],
+    ['us.anthropic.claude-haiku-5-5', 'adaptive'],
+    ['anthropic/claude-opus-4.7', 'adaptive'],
+    ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'budget'],
+    // A size suffix is not a minor version.
+    ['claude-opus-4-32k', 'budget'],
+    ['claude-sonnet-4-64k', 'budget'],
+    // An agent's own name that contains a Claude id is not that model.
+    ['my-agent-claude-opus-4-7', null],
+    ['helper-claude-3-7-sonnet', null],
+    ['team-claude-mythos-preview', null],
+    ['claude-mythos-previews', null],
     ['gpt-5.5', null],
   ];
   for (const [modelId, mode] of cases) assert.equal(anthropicThinkingMode(modelId), mode, modelId);
