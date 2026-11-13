@@ -430,12 +430,15 @@ final class WorkerController: ObservableObject {
             poolShareBps = frame["workerShareBps"] as? Int ?? 0
             prices = ((frame["prices"] as? [String: Any]) ?? [:]).compactMapValues { WorkerPayment.Price($0) }
             notePoolModels(frame["models"] as? [String: String] ?? [:])
+            if choice == nil && poolModels.isEmpty {
+                // The pool pins nothing to pick from: run the built-in model, then join again with it.
+                log("pool \(poolURL?.host ?? "") pins no models; running \(ModelChoice.fallback.model)")
+                choose(.fallback)
+                return
+            }
             if let choice {
                 // Still loading: the progress stays; the app rejoins with the model once it is ready.
                 if checkpoint != nil { status = .joined(sharing: sharing, service: choice.service, rejected: frame["rejected"] as? [String] ?? []) }
-            } else if poolModels.isEmpty {
-                // The pool pins nothing to pick from: run the built-in model.
-                choose(.fallback)
             } else {
                 status = .choosingModel
             }
