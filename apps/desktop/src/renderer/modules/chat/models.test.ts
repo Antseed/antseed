@@ -50,7 +50,30 @@ test('the dropdown lists free models first and can show only them', () => {
   const paid = { ...model('paid'), free: false } as ChatModel;
   const free = { ...model('free'), free: true } as ChatModel;
   assert.deepEqual(filterChatModels([paid, free], '').text.map((m) => m.id), ['free', 'paid']);
-  assert.deepEqual(filterChatModels([paid, free], '', true).text.map((m) => m.id), ['free']);
+  assert.deepEqual(filterChatModels([paid, free], '', 'free').text.map((m) => m.id), ['free']);
+});
+
+test('routers list on their own, first, and Auto shows only them', () => {
+  const router = { ...model('<peerId>@example-router', 'text', 'Example Router'), router: { sellerName: 'Example Seller', priceUsdPerRequest: 0.0001, models: 12 } } as ChatModel;
+  const free = { ...model('free'), free: true } as ChatModel;
+  const all = filterChatModels([free, router], '');
+  assert.deepEqual(all.routers.map((m) => m.id), ['<peerId>@example-router']);
+  assert.deepEqual(all.text.map((m) => m.id), ['free']);
+  assert.deepEqual(filterChatModels([free, router], '', 'routers'), { routers: [router], text: [], image: [] });
+  assert.deepEqual(filterChatModels([free, router], '', 'free').routers, []);
+  assert.deepEqual(filterChatModels([free, router], 'example seller').routers, [router]);
+  // Found whole, not as a pinned model, and never the default.
+  assert.equal(findChatModel([free, router], '<peerId>@example-router'), router);
+  assert.equal(chooseDefaultChatModel([router, free], null), 'free');
+});
+
+test('switching to Private keeps a router the gateway still lists, and never moves to one', () => {
+  const router = { ...model('<peerId>@example-router'), router: { sellerName: null, priceUsdPerRequest: 0.0001, models: 3 } } as ChatModel;
+  const paidTee = { ...model('paid-tee'), tee: true, toolUse: true, inputUsdPerMillion: 1, outputUsdPerMillion: 2 } as ChatModel;
+  assert.equal(chooseModelForPrivate([router, paidTee], '<peerId>@example-router', true), null);
+  // Once it's gone from the list the chat moves to a model, not to another router.
+  assert.equal(chooseModelForPrivate([paidTee], '<peerId>@example-router', true), 'paid-tee');
+  assert.equal(chooseModelForPrivate([router, paidTee], 'gone-model', true), 'paid-tee');
 });
 
 test('the dropdown search matches ids and labels and splits text from image models', () => {

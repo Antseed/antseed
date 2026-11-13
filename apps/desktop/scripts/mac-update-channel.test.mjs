@@ -78,3 +78,13 @@ test('renames artifacts to channel URLs and excludes builder metadata', () => {
     rmSync(releaseDir, { recursive: true, force: true });
   }
 });
+
+test('accepts a zip-only channel for the bridge build', () => {
+  const bridgeX64 = { url: 'Antseed-Desktop-Bridge-0.2.31-x64-mac.zip', sha512: 'bx64' };
+  const bridgeArm64 = { url: 'Antseed-Desktop-Bridge-0.2.31-arm64-mac.zip', sha512: 'barm64' };
+  const channel = normalizeMacUpdateChannel({ version: '0.2.31', files: [bridgeArm64, bridgeX64] }, { dmg: false });
+
+  assert.deepEqual(channel.files, [bridgeX64, bridgeArm64]);
+  assert.equal(channel.path, bridgeX64.url);
+  assert.throws(() => normalizeMacUpdateChannel({ files: [bridgeX64] }, { dmg: false }), /arm64 zip$/);
+});

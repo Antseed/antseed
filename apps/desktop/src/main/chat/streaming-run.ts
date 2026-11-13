@@ -433,7 +433,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     let finalAssistantCreatedAt: number | undefined;
     let replyCutOff = false;
-    let servedPeer: { peerId: string; peerName?: string } | null = null;
+    let servedPeer: { peerId: string; peerName?: string; servedModel?: string } | null = null;
     const sentUnder = protect ? 'private' : modeAtSend;
     const routeMeta = (): AiMessageMeta => ({ ...(servedPeer ?? {}), ...(sentUnder ? { privacy: sentUnder } : {}) });
     const replyModel = splitPinnedModel(serviceId).modelId;
@@ -820,9 +820,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       // during session setup lands here.
       if (signal.aborted) throw Object.assign(new Error('Request aborted'), { name: 'AbortError' });
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
-      const chatRun = trackChatRun((peerId) => {
+      const chatRun = trackChatRun((peerId, servedModel) => {
         const peerName = sellerName(peerId);
-        servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
+        servedPeer = { peerId, ...(peerName ? { peerName } : {}), ...(servedModel ? { servedModel } : {}) };
         answeringPeerId = peerId;
         emitRunEvent('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
       }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
