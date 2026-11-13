@@ -1,27 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { streamSimple } from '@mariozechner/pi-ai';
+import { streamSimple, type Model } from '@mariozechner/pi-ai';
+import { AuthStorage, compact, generateSummary, ModelRegistry } from '@mariozechner/pi-coding-agent';
 
-import { anthropicEffort, anthropicThinkingMode, shapeAnthropicThinking, type ThinkingLevel } from './anthropic-thinking.js';
-import { makeGatewayModel } from './gateway-model.js';
+import { anthropicEffort, anthropicThinkingMode, registerGatewayAnthropic, shapeAnthropicThinking, type ThinkingLevel } from './anthropic-thinking.js';
+import { GATEWAY_PROVIDER_ID, makeGatewayModel } from './gateway-model.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
 const STOP = 'stop before sending';
 
+// As the chat does for a session over Anthropic Messages: from here on pi sends
+// every request for that protocol through the chat's stream function.
+registerGatewayAnthropic(ModelRegistry.inMemory(AuthStorage.inMemory()), GATEWAY_PROVIDER_ID);
+
+function gatewayModel(modelId: string, reasoning: boolean): Model<'anthropic-messages'> {
+  return makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, reasoning }) as Model<'anthropic-messages'>;
+}
+
 /**
- * The Messages body the chat sends: pi-ai builds it for the gateway model,
- * then the chat's `before_provider_request` hook shapes it. Nothing is sent:
- * the capture stops the request before it leaves.
+ * The Messages body a chat turn sends, built the way pi's agent sends a turn
+ * (`streamSimple` with its level). Nothing is sent: the capture stops the
+ * request before it leaves.
  */
 async function chatRequestBody(modelId: string, { reasoning, level }: { reasoning: boolean; level: ThinkingLevel }): Promise<Record<string, unknown>> {
-  const model = makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, reasoning });
   let body: Record<string, unknown> | undefined;
-  const stream = streamSimple(model, { messages: [{ role: 'user', content: 'hello', timestamp: 0 }] }, {
+  const stream = streamSimple(gatewayModel(modelId, reasoning), { messages: [{ role: 'user', content: 'hello', timestamp: 0 }] }, {
     apiKey: ENDPOINT.apiKey,
     // How pi's agent passes its level: `off` is no reasoning option.
     ...(level === 'off' ? {} : { reasoning: level }),
     onPayload: (payload) => {
-      body = shapeAnthropicThinking(payload, { modelId, reasoning: model.reasoning, level }) as Record<string, unknown>;
+      body = payload as Record<string, unknown>;
       throw new Error(STOP);
     },
   });
@@ -31,6 +39,55 @@ async function chatRequestBody(modelId: string, { reasoning, level }: { reasonin
   assert.ok(body, 'the request body was built');
   return body;
 }
+
+/**
+ * The Messages bodies pi's own compaction sends, in the order they left. It
+ * calls the provider directly, outside a chat turn, so the only place to see
+ * them is the wire: fetch is replaced and answers 400, and nothing leaves.
+ */
+async function compactionRequestBodies(run: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+  const bodies: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: STOP } }), { status: 400, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(run, new RegExp(STOP));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return bodies;
+}
+
+const HISTORY = [{ role: 'user' as const, content: 'hello', timestamp: 0 }];
+
+test('a compaction summary for a current Claude model asks for adaptive thinking, never a thinking budget', async () => {
+  const model = gatewayModel('claude-haiku-5-5', true);
+  const [body] = await compactionRequestBodies(() => generateSummary(HISTORY, model, 16_384, ENDPOINT.apiKey));
+  assert.ok(body, 'the summary request was built');
+  assert.deepEqual(body['thinking'], { type: 'adaptive', display: 'summarized' });
+  // pi asks for its summaries at `high`.
+  assert.deepEqual(body['output_config'], { effort: 'high' });
+});
+
+test('a split-turn compaction sends no `disabled` thinking, which current models reject', async () => {
+  const model = gatewayModel('claude-opus-5-5', true);
+  const bodies = await compactionRequestBodies(() => compact({
+    firstKeptEntryId: 'entry-1',
+    messagesToSummarize: HISTORY,
+    turnPrefixMessages: HISTORY,
+    isSplitTurn: true,
+    tokensBefore: 0,
+    fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+    settings: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+  }, model, ENDPOINT.apiKey));
+  // The history summary (`high`) and the turn-prefix summary (no level).
+  assert.equal(bodies.length, 2);
+  const thinking = bodies.map((body) => body['thinking']);
+  assert.equal(thinking.some((value) => (value as { type?: string } | undefined)?.type === 'disabled'), false, JSON.stringify(thinking));
+  assert.deepEqual(thinking.filter(Boolean), [{ type: 'adaptive', display: 'summarized' }]);
+});
 
 test('a current Claude model gets adaptive thinking with an effort and its summary shown, never a thinking budget', async () => {
   const body = await chatRequestBody('claude-haiku-5-5', { reasoning: true, level: 'medium' });

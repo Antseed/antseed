@@ -69,7 +69,7 @@ import {
   type ChatModel,
 } from './gateway-model.js';
 import { modelAcceptsImages, modelReasons, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
-import { anthropicThinkingExtension, DEFAULT_CHAT_THINKING_LEVEL } from './anthropic-thinking.js';
+import { DEFAULT_CHAT_THINKING_LEVEL, registerGatewayAnthropic } from './anthropic-thinking.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
 import { grantShellGateway } from './gateway-shell-relay.js';
 import { resolveSystemPrompt } from './system-prompt.js';
@@ -320,6 +320,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, endpoint.apiKey);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
+    if (protocol === 'anthropic-messages') registerGatewayAnthropic(modelRegistry, GATEWAY_PROVIDER_ID);
 
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a
@@ -387,10 +388,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
       additionalSkillPaths: resolveBundledChatSkillPaths(),
-      extensionFactories: [
-        toolApprovalExtension,
-        ...(protocol === 'anthropic-messages' ? [anthropicThinkingExtension({ modelId: serviceId, reasoning: gatewayModel.reasoning })] : []),
-      ],
+      extensionFactories: [toolApprovalExtension],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });
     await resourceLoader.reload();

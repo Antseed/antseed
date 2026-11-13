@@ -5,7 +5,9 @@
  * budget_tokens }` for every model except the few it knows by name, and as
  * `{ type: "disabled" }` when thinking is off. Current Claude models return a
  * 400 for both. This module decides the field from the model id and the
- * seller's reasoning flag, and rewrites the request body before it is sent.
+ * seller's reasoning flag, and rewrites the request body before it is sent,
+ * in the stream function every Anthropic Messages request of the chat goes
+ * through: its turns, and the summaries pi writes on its own (compaction).
  *
  * Which Claude models take which form follows Anthropic's per-model thinking
  * table (platform.claude.com/docs/en/build-with-claude/thinking). Leaving
@@ -13,11 +15,12 @@
  * recognise gets no field at all.
  */
 
-import type { ThinkingLevel as LibraryThinkingLevel } from '@mariozechner/pi-ai';
-import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
+import type { Model, SimpleStreamOptions, StreamFunction, ThinkingLevel as LibraryThinkingLevel } from '@mariozechner/pi-ai';
+import { streamSimpleAnthropic } from '@mariozechner/pi-ai/anthropic';
+import type { ModelRegistry } from '@mariozechner/pi-coding-agent';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 
-/** The chat session's thinking level (`ExtensionAPI.getThinkingLevel`). */
+/** A request's thinking level: pi sends its level as the `reasoning` option, and none for `off`. */
 export type ThinkingLevel = 'off' | LibraryThinkingLevel;
 
 /** pi-coding-agent's default level (`DEFAULT_THINKING_LEVEL`, not exported), used when settings name none. */
@@ -155,9 +158,32 @@ export function shapeAnthropicThinking(payload: unknown, { modelId, reasoning, l
   return { ...rest, ...keptConfig };
 }
 
-/** The pi extension hook: `before_provider_request` replaces the body with the shaped one. */
-export function anthropicThinkingExtension(options: Omit<AnthropicThinkingOptions, 'level'>): (pi: ExtensionAPI) => void {
-  return (pi) => {
-    pi.on('before_provider_request', (event) => shapeAnthropicThinking(event.payload, { ...options, level: pi.getThinkingLevel() }));
-  };
+/**
+ * pi's Anthropic stream function with the request body shaped for the model.
+ * A request's level is its `reasoning` option: the chat's level on a turn,
+ * `high` on a compaction summary, none on a split-turn summary.
+ */
+export const streamGatewayAnthropic: StreamFunction<'anthropic-messages', SimpleStreamOptions> = (model, context, options) =>
+  streamSimpleAnthropic(model, context, {
+    ...options,
+    onPayload: async (payload, payloadModel) => {
+      const shaped = shapeAnthropicThinking(payload, {
+        modelId: model.id,
+        reasoning: model.reasoning,
+        level: options?.reasoning ?? 'off',
+      });
+      return (await options?.onPayload?.(shaped, payloadModel)) ?? shaped;
+    },
+  });
+
+/**
+ * Sends every Anthropic Messages request of this registry's sessions through
+ * `streamGatewayAnthropic`. A session hook would miss the requests pi makes
+ * outside a turn (compaction and branch summaries call the provider directly).
+ */
+export function registerGatewayAnthropic(modelRegistry: ModelRegistry, provider: string): void {
+  modelRegistry.registerProvider(provider, {
+    api: 'anthropic-messages',
+    streamSimple: (model, context, options) => streamGatewayAnthropic(model as Model<'anthropic-messages'>, context, options),
+  });
 }
