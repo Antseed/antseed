@@ -57,8 +57,11 @@ struct MenuPanel: View {
             .font(.system(size: 11))
             Divider()
             PoolView(worker: worker, snapshot: snapshot)
-            Divider()
-            PayoutLinkView(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
+            // A payout link names the pool contract, so it is signed once the app has joined one.
+            if worker.poolSeller != nil {
+                Divider()
+                PayoutLinkView(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
+            }
             HStack {
                 Spacer()
                 if snapshot {
