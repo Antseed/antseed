@@ -27,6 +27,8 @@ curl -fsSL https://antseed.com/install.sh | bash
 
 It needs Node.js 20 or later (on macOS with Homebrew it installs Node.js for you), installs `@antseed/cli` with npm without sudo, logs to `~/.antseed/gateway.log` and prints how to stop the gateway. Set `ANTSEED_CLI_VERSION` to install a specific CLI version. [Read the script](https://antseed.com/install.sh) before running it.
 
+On Linux with systemd you get this install from a desktop session or WSL. Elsewhere, for example over SSH, `install.sh` runs the [server installer](#on-a-server) instead. Add `--local` to force the install for your user: `curl -fsSL https://antseed.com/install.sh | bash -s -- --local`.
+
 Or install the CLI (Node.js 20 or later) yourself, then start the gateway:
 
 ```bash
@@ -34,7 +36,7 @@ npm install -g @antseed/cli
 antseed gateway start
 ```
 
-This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself.
+This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself. To run it in the background instead, starting at login and restarting if it stops, use `antseed gateway service install` (a launchd agent on macOS, a systemd user service on Linux, no root).
 
 The console has no owner yet. Get a one-time setup link, open it, and register a passkey or connect a wallet to become the owner:
 
@@ -52,19 +54,19 @@ One command installs the buyer and the gateway as systemd services on a Linux se
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-On Linux with systemd, `install.sh` runs the server installer as root. See [Run a gateway on a server](/docs/gateway/server).
+On Linux with systemd, `install.sh` runs the server installer as root when you pass an option such as `--domain`, or when there is no desktop session (over SSH, or from cloud-init). Add `--server` to force it. See [Run a gateway on a server](/docs/gateway/server).
 
 Next: [Quickstart](/docs/quickstart).
 
 ## Desktop app
 
-The desktop app (AI VPN) bundles the buyer, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/AntSeed/antseed/releases/latest).
+Antseed Desktop bundles a local gateway, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
 
 - **macOS**: `.dmg` for Apple Silicon and Intel, signed and notarized.
 - **Windows**: `.exe` installer for x64, code-signed.
 - **Linux**: `.AppImage` and `.deb`.
 
-No account is needed. Free models work right away; for paid models, add credits by card or USDC from **Profile → Add Credits**.
+No account is needed. Free models work right away; for paid models, add funds by card or USDC from **Add funds** on the app's Home.
 
 Next: [Desktop app](/docs/desktop).
 

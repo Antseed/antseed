@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore' | 'points';
+  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore' | 'points' | 'seedtunnel';
 };
 
 type Resource = {
@@ -134,13 +134,27 @@ const projects: EcosystemProject[] = [
     category: 'Data provider',
     oneLiner: 'Live data for your agent, served as models on Antseed by Sippar.',
     description:
-      'Ask any model in the AI VPN to use the X, Reddit, LinkedIn, news, jobs, flight, hotel or Amazon model. It fetches the live data when you ask and names the source in its answer.',
+      'Ask any model in Antseed Desktop to use the X, Reddit, LinkedIn, news, jobs, flight, hotel or Amazon model. It fetches the live data when you ask and names the source in its answer.',
     glyph: 'SS',
     status: 'Live',
     color: '#d4a074',
     colorSoft: 'rgba(212, 160, 116, 0.2)',
     logo: 'https://sippar.network/seedstore/sippar-mark-diamond-512.png',
     theme: 'seedstore',
+  },
+  {
+    name: 'SeedTunnel',
+    href: 'https://sippar.network/seedtunnel/',
+    category: 'Onboarding',
+    oneLiner: 'The easy way into Antseed for teams: top AI models and live data, in your own gateway or in the AI you already use.',
+    description:
+      "Run your team's own Antseed gateway: one API for your apps, and a console to give each person a key, set a spending limit and pay one bill for every model. Or use Antseed inside Claude, ChatGPT or Gemini through the Sippar MCP Connector, and start with the prepaid Antseed Unlock card.",
+    glyph: 'ST',
+    status: 'Live',
+    color: '#8a6242',
+    colorSoft: 'rgba(138, 98, 66, 0.18)',
+    logo: 'https://sippar.network/connector/sippar-mark-diamond-512.png',
+    theme: 'seedtunnel',
   },
 ];
 
@@ -230,11 +244,25 @@ function ProductPreview({project}: {project: EcosystemProject}) {
     return (
       <div className={`${styles.preview} ${styles.previewSeed}`}>
         <div className={styles.previewTop}><span>SeedStore</span><i>Any model</i></div>
-        <div className={styles.seedAsk}>Use the flight model on AntSeed to find New York to London for two</div>
+        <div className={styles.seedAsk}>Use the flight model on Antseed to find New York to London for two</div>
         <div className={styles.seedSteps}>
           <span><b>✓</b>Finds sippar-flight-search</span>
           <span><b>✓</b>Pays for the answer</span>
           <span><b>✓</b>Source: Google Flights</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (project.theme === 'seedtunnel') {
+    return (
+      <div className={`${styles.preview} ${styles.previewTunnel}`}>
+        <div className={styles.previewTop}><span>SeedTunnel</span><i>Powered by Antseed</i></div>
+        <div className={styles.tunnelHead}>Unlock Shared Intelligence</div>
+        <div className={styles.tunnelRows}>
+          <span><b>As an API</b><em>Your own gateway</em></span>
+          <span><b>Inside your AI</b><em>Claude, ChatGPT, Gemini</em></span>
+          <span><b>Unlock card</b><em>Prepaid</em></span>
         </div>
       </div>
     );

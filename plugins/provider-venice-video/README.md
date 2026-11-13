@@ -5,9 +5,11 @@ Relays native Venice video requests to the Venice API.
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-venice-video
 export VENICE_VIDEO_API_KEY=<seller-api-key>
+antseed config seller add-provider video --plugin venice-video
 ```
+
+`add-provider` installs the plugin.
 
 - `VENICE_VIDEO_API_KEY`: Venice API key, sent as a bearer token
 - `VENICE_VIDEO_BASE_URL`: optional, defaults to `https://api.venice.ai`
@@ -33,7 +35,33 @@ Venice's model list does not say which image-to-video models accept a last frame
 
 With `antseed seller start`, set this per service as `seller.providers.<name>.services.<id>.capabilities`.
 
-At startup the seller reads Venice's video model list (`GET /api/v1/models?type=video`) and announces the queue fields each model takes as `supportedParameters`: `prompt`, `duration`, `resolution` and `aspect_ratio` when the model lists values, `audio` when it is configurable, and the frame fields for the `video.inputs` you announce (`image_url`, `end_image_url`, `reference_image_urls`). When you announce none, image-to-video models get `image_url`, plus `end_image_url` when the startup check says the model takes a last frame. Buyers send only the fields listed. A service that sets `supportedParameters` itself keeps it. If the list cannot be read or does not include the model, the service is announced without it.
+At startup the seller reads Venice's video model list (`GET /api/v1/models?type=video`) and announces the queue fields each model takes as `supportedParameters`: `prompt`, `duration`, `resolution` and `aspect_ratio` when the model lists values, `audio` when it is configurable, and the frame fields for the `video.inputs` you announce (`image_url`, `end_image_url`, `reference_image_urls`, `reference_video_urls`). A model announced with `audio` and `reference_image` or `reference_video` also gets `reference_audio_urls` (Venice takes reference audio only next to a reference image or video). When you announce none, image-to-video models get `image_url`, plus `end_image_url` when the startup check says the model takes a last frame. Buyers send only the fields listed. A service that sets `supportedParameters` itself keeps it. If the list cannot be read or does not include the model, the service is announced without it.
+
+### Aspect ratio and audio
+
+Venice prices a clip by its aspect ratio and audio as well as its resolution and duration (for example Seedance 2.5 at 480p for 4 s: $0.51 at 16:9, $0.67 at 21:9; Veo 3.1 costs less without audio). Price them with components that match `aspect_ratio` and `audio` (`"true"` / `"false"`) next to `resolution` (metadata v16, up to 64 components per model), for example:
+
+```json
+{ "unit": "video_seconds", "priceUsd": 0.0701, "match": { "resolution": "480p", "aspect_ratio": "16:9", "audio": "true" } }
+```
+
+Buyers price a create that leaves out `aspect_ratio` at the first announced one, and one that leaves out `audio` at `video.audio`, and the plugin sends Venice the same:
+
+- `video.aspectRatios`: a create with another `aspect_ratio` is answered `422 unsupported_video_option` before payment and without calling Venice. A create without one is sent with the first listed.
+- `video.audio`: `false` (a silent service) refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default). While Venice's model list hasn't been read (or lacks the model), a create without `audio` is refused instead, so it must say `audio: false`.
+
+A service with `video.audio: true` accepts `audio: false`; give it its own price if Venice charges less. Options you don't announce are relayed as sent.
+
+### Reference videos
+
+Venice bills `reference_video_urls` by their length on top of the clip (Seedance 2.5 R2V, 10 s at 720p: $2.89 alone, $4.32 with 15 s of reference video; `POST /api/v1/video/quote` takes `reference_video_total_duration`). A create that sends reference videos is priced with `reference_video: "true"` (metadata v17): add a flat `video_generations` charge for the most reference video Venice takes (30 s in total), set at the shortest clip, where it adds the most (720p 16:9: +$4.72 at 4 s, +$1.70 at 30 s), plus a $0 `video_generations` component so creates without one still match:
+
+```json
+{ "unit": "video_generations", "priceUsd": 0 },
+{ "unit": "video_generations", "priceUsd": 4.72, "match": { "resolution": "720p", "reference_video": "true" } }
+```
+
+Without such a component matching the create (resolution, aspect ratio and audio included), a create that sends `reference_video_urls` is answered `400 unsupported_video_input` before payment and without calling Venice. Reference images and audio don't change Venice's price.
 
 ### Video edits
 
@@ -41,6 +69,6 @@ Models Venice marks `video_input` (for example `minimax-h3-max-recast`, `kling-v
 
 The buyer pays for `duration`. Venice bills an edit listing only `Auto` durations for the whole source, and an output shorter than `duration` is never charged, so for every edit model the seller measures the source and answers `422 invalid_video_duration`, before payment and without calling Venice, unless `duration` is the source length in whole seconds, rounded down (for example `"6s"` for a 6.2 s source). The source must be inline (`data:video/mp4;base64,...`). Otherwise the seller does not check the source; Venice does. A job Venice rejects after it was queued (for example motion control or Recast on a video without a person, or a source that is too short) is answered on retrieve with a JSON `400`/`422`. The plugin turns that into `{"status":"FAILED","error":"<reason>"}`, so the job's payment channel is closed at once instead of when it expires. Venice answers a body above 32.5 MB with an HTML `413`; the plugin turns that into a JSON `413 request_too_large`.
 
-The plugin relays `POST /api/v1/video/queue` unchanged and handles `POST /api/v1/video/retrieve` by returning Venice JSON status or streaming the finished MP4 through the seller. For private models, Venice returns a short-lived `download_url` on queue; the plugin removes it from the buyer's response, keeps it for 24 hours, and streams the file from it once retrieve reports `COMPLETED`. Kept URLs are saved in the seller's data directory (`venice-video-download-urls.json`, set through `ANTSEED_DATA_DIR`, which `antseed seller start` passes automatically), so they survive a seller restart. Other Venice model metadata is not enforced. `POST /api/v1/video/complete` is not relayed.
+The plugin relays `POST /api/v1/video/queue` unchanged, apart from the announced options above, and handles `POST /api/v1/video/retrieve` by returning Venice JSON status or streaming the finished MP4 through the seller. For private models, Venice returns a short-lived `download_url` on queue; the plugin removes it from the buyer's response, keeps it for 24 hours, and streams the file from it once retrieve reports `COMPLETED`. Kept URLs are saved in the seller's data directory (`venice-video-download-urls.json`, set through `ANTSEED_DATA_DIR`, which `antseed seller start` passes automatically), so they survive a seller restart. Other Venice model metadata is not enforced. `POST /api/v1/video/complete` is not relayed.
 
-Check that Venice's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
+Check that Venice's terms allow your offering. Antseed sellers must add value rather than resell raw API access.

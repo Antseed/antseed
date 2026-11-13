@@ -172,7 +172,8 @@ function RunFirstBanner() {
           <ul className={styles.glossaryList}>
             <li>
               <strong>Gateway</strong> - the API server you run with{' '}
-              <code>antseed gateway start</code> or the server installer, at{' '}
+              <code>antseed gateway start</code> (or in the background with{' '}
+              <code>antseed gateway service install</code>) or the server installer, at{' '}
               <code>/v1</code> on port 8379. It gives every tool its own API key with
               budgets, routing policy and usage logs, and passes requests to a buyer.
               Reach it locally, on your network, behind a{' '}
@@ -191,7 +192,7 @@ function RunFirstBanner() {
               <code>/v1/responses</code> (OpenAI Responses), and{' '}
               <code>/v1/completions</code> (legacy) - and translates between them via{' '}
               <a
-                href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+                href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
                 target="_blank"
                 rel="noreferrer">
                 <code>@antseed/api-adapter</code>
@@ -264,9 +265,8 @@ function RunFirstBanner() {
                 with <code>curl -fsSL https://antseed.com/install.sh | bash</code> and use{' '}
                 <code>http://localhost:8379/v1</code>. Its keys only work while the computer
                 is on, and other machines can't reach it unless you publish it with a{' '}
-                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>,
-                or <strong>Agents → Internet-accessible endpoint</strong> in the{' '}
-                <Link to="/install">desktop app</Link>) or, on a network you trust, start it
+                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>)
+                or, on a network you trust, start it
                 with <code>--host 0.0.0.0</code>. You can{' '}
                 <Link to="/docs/gateway/migrate">move it to a server</Link> later with its
                 keys and wallets. See the <Link to="/docs/quickstart">quickstart</Link>.
@@ -485,7 +485,7 @@ function RunFirstBanner() {
                 snippet={`"deepseek-v4-flash"
 "gpt-oss-120b"
 "gemma-3-27b"
-"qwen3-coder-480b"
+"glm-5.2"
 "kimi-k2.6"
 "minimax-m2.7"`}
               />
@@ -659,7 +659,7 @@ function WireFormatPanel({i}: {i: Integration}) {
         <li>
           <strong>What happens when protocols don't match:</strong> Antseed's{' '}
           <a
-            href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+            href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
             target="_blank"
             rel="noreferrer">
             <code>@antseed/api-adapter</code>

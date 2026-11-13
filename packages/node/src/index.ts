@@ -16,7 +16,7 @@ export {
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
 export type { Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
-export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
+export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER, ANTSEED_REQUIRE_TEE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
@@ -179,6 +179,8 @@ export {
   type SpeechOptions,
   type AudioSpeechProtocol,
   SPEECH_METADATA_VERSION,
+  VIDEO_OPTION_PRICING_METADATA_VERSION,
+  REFERENCE_VIDEO_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -298,6 +300,7 @@ export {
 export { signData, verifySignature, signUtf8, verifyUtf8 } from './p2p/identity.js';
 export {
   getDebugFilters,
+  isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
@@ -473,7 +476,7 @@ export {
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
-export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
+export { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER } from './interfaces/plugin.js'
 
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';
@@ -551,3 +554,4 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

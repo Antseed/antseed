@@ -170,6 +170,8 @@ test('requireTee excludes sellers without the TEE capability, independent of ver
   assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts()), ['no TEE'])
   assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts({ teeCapable: true, unverifiedReason: 'not verified (verification disabled on this buyer)' })), [])
   assert.deepEqual(pinnedPeerExclusionReasons({ requireTee: true }, facts(), 'gpt-5'), ['no TEE'])
+  assert.deepEqual(policyExclusionReasons({ requireTee: true }, facts({ teeCapable: false, teeFailure: 'not an approved TEE seller build' })),
+    ['TEE attestation failed: not an approved TEE seller build'])
 })
 
 test('model routes and allowedModels match like the gateway: case, variants, peer@model', () => {

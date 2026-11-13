@@ -6,7 +6,7 @@ import type { SerializedHttpRequest } from '../types/http.js';
 import type { MeteringEvent, SessionMetrics, TokenCount } from '../types/metering.js';
 import type { MeteringStorage } from './storage.js';
 import type { ReceiptGenerator } from './receipt-generator.js';
-import { debugLog, debugWarn } from '../utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
 import { computeCostUsdc } from '../payments/pricing.js';
 
@@ -398,10 +398,14 @@ export class SellerSessionTracker {
 /** Upper bound on a stored request error; enough for an upstream message, never a whole body. */
 const MAX_EVENT_ERROR_CHARS = 300;
 
-/** The message of an error response (`error.message`, `error`, or `message`), else its text, shortened. */
+/**
+ * The message of an error response (`error.message`, `error`, or `message`), else its text,
+ * shortened. In content-free mode only its error code: upstreams quote requests in messages.
+ */
 export function summarizeErrorBody(body: Uint8Array): string | null {
   const text = new TextDecoder().decode(body.subarray(0, 4096)).trim();
   if (!text) return null;
+  if (isContentFreeLogging()) return upstreamErrorCode(text);
   let message = text;
   try {
     const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };

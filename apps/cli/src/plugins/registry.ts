@@ -10,6 +10,7 @@ export interface TrustedPlugin {
 export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
   { name: 'venice-video', type: 'provider', description: 'Venice video API', package: '@antseed/provider-venice-video' },
   { name: 'fal-video', type: 'provider', description: 'fal.ai video models (queue API)', package: '@antseed/provider-fal-video' },
+  { name: 'fal-image', type: 'provider', description: 'fal.ai image models (OpenAI Images API)', package: '@antseed/provider-fal-image' },
   { name: 'alibaba-video', type: 'provider', description: 'Alibaba Cloud Model Studio video models (Wan, HappyHorse)', package: '@antseed/provider-alibaba-video' },
   {
     name: 'anthropic',
@@ -82,7 +83,7 @@ export const TRUSTED_VERIFIER_PLUGINS: TrustedPlugin[] = [
     type: 'verifier',
     description: 'TEE attestation verifier + prover (Intel TDX, DCAP)',
     package: '@antseed/antseed-verifier',
-    version: '0.1.0',
+    version: '0.1.8',
   },
 ]
 

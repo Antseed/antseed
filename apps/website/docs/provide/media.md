@@ -34,7 +34,7 @@ A unit billing model maps a protocol key to a list of priced components:
 }
 ```
 
-A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality` and `resolution`, compared with the request's values. Every billed unit must match a component: a request that matches none is refused, not served for free.
+A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality`, `resolution`, and for video `aspect_ratio`, `audio` and `reference_video` (`"true"` or `"false"`), compared with the request's values. Components that match add up. A model holds up to 64 components (8 for buyers on metadata before v16; services using `aspect_ratio`, `audio` or more than 8 components need v16, and `reference_video` needs v17). Every billed unit must match a component: a request that matches none is refused, not served for free.
 
 Image, video and speech services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is announced as failing, so buyers skip it, and as healthy again once they pass.
 
@@ -207,6 +207,31 @@ antseed config seller add-service video seedance-2-5-reference-to-video-basic \
 
 Don't confuse it with `audio`, a `true`/`false` request field that turns on generated sound for models that make their own.
 
+### Prices by aspect ratio and audio
+
+Some upstreams charge differently for the same resolution and length depending on the aspect ratio or on generated sound (on Venice, Seedance at 480p for 4 s costs $0.51 at 16:9 and $0.67 at 21:9, and Veo costs less without audio). Match `aspect_ratio` and `audio` next to `resolution` to charge each its own price:
+
+```json
+{"venice-video":{"version":1,"components":[
+  {"unit":"video_seconds","priceUsd":0.0701,"match":{"resolution":"480p","aspect_ratio":"16:9","audio":"true"}},
+  {"unit":"video_seconds","priceUsd":0.0921,"match":{"resolution":"480p","aspect_ratio":"21:9","audio":"true"}}]}}
+```
+
+A create that leaves out `aspect_ratio` is priced at the first entry of `capabilities.video.aspectRatios`, and one that leaves out `audio` at `capabilities.video.audio`. The `venice-video` plugin sends Venice those same values, and refuses an aspect ratio you don't list (`422 unsupported_video_option`, before payment), so every create it serves has a price. On `fal-video` nothing is filled in: a create is priced by the options it names, so one that leaves out an option your components require is refused. A request no component matches is refused, not served for free.
+
+### Reference videos
+
+Reference-to-video models (Seedance 2.5 R2V on Venice and fal) take reference images, audio and videos. Upstreams don't charge for reference images or audio, but they do bill reference videos by their length, on top of the output: on Venice a 10 s 720p Seedance clip quotes $2.89 alone and $4.32 with 15 s of reference video, and fal bills the input video's seconds with the output's. A create that sends reference videos (`reference_video_urls`, or fal's `video_urls`) is priced with `reference_video: "true"`, and any other create with `"false"`. Price that as a flat charge per video for the most reference video the upstream takes (30 s in total for Seedance 2.5 on both Venice and fal), at the shortest clip, where it adds the most: on Venice, 30 s of reference video adds $4.72 to a 4 s 720p clip but $1.70 to a 30 s one. Add a $0 charge that prices creates without reference videos, because every create counts one video generation and must match a component. At Venice's cost for 720p 16:9:
+
+```json
+{"venice-video":{"version":1,"components":[
+  {"unit":"video_seconds","priceUsd":0.29,"match":{"resolution":"720p"}},
+  {"unit":"video_generations","priceUsd":0},
+  {"unit":"video_generations","priceUsd":4.72,"match":{"resolution":"720p","reference_video":"true"}}]}}
+```
+
+The `venice-video` and `fal-video` plugins refuse a create that sends reference videos when no `reference_video: "true"` component matches it, for example a 480p create when only 720p has one (`400 unsupported_video_input`, before payment), so they are never served below cost. That covers every clip from 4 s ($1.16 + $4.72 = $5.88, Venice's quote) to 30 s ($8.70 + $4.72 against $10.37). Services that price `reference_video` need metadata v17; buyers on older releases don't see them. A buyer refuses a video above its `payments.maxVideoRequestUsdc` ($5 by default), so a reference-video charge priced for 30 s may need buyers to raise it.
+
 ### fal.ai models
 
 The `fal-video` plugin relays fal's queue API. The service ID must be the fal endpoint ID (at most 64 characters), and every service needs `fal-video` pricing:
@@ -315,6 +340,7 @@ Components can match the request's `resolution`:
 - Buyers pay only when the finished video is delivered: a complete MP4 at least 90% of the requested duration and at most 64 MiB.
 - `video_seconds` needs an explicit `duration` in the request. Use `video_generations` if buyers may send `auto`.
 - Buyers refuse video requests priced above $5.00.
+- Each paid create opens a payment channel, and you pay its gas before your upstream sees the create. To stop a buyer spending that on videos that never get paid for, a buyer with 16 channels that ended unpaid in the last day, and no paid video since, gets `429 one_off_channel_backoff` with `Retry-After` instead of another channel. The wait starts at a minute and grows to an hour. More than 16 creates starting at once get the same answer with a 5-second wait.
 
 ### Video capabilities
 

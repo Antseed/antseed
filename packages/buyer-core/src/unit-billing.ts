@@ -14,8 +14,10 @@ import {
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
+  nativeVideoAttributes,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type {
   UnitBillingContext,
   UnitBillingMatchKeyV1,
@@ -66,6 +68,8 @@ export interface CaptureUnitBillingArgs {
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
   request: SerializedHttpRequest;
+  /** The service's announced video options: what an omitted aspect ratio or audio setting means. */
+  videoOptions?: VideoOptions;
 }
 
 export interface UnitBillingAdapter {
@@ -239,7 +243,7 @@ function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
       service: args.service,
       serviceApiProtocol: args.serviceApiProtocol,
       unitLimits: requestUsage.units,
-      attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) },
+      attributes: videoAttributes(args.service, video, args.videoOptions),
     },
     requestUsage,
     requestFacts: { kind: 'video', video },
@@ -348,6 +352,15 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
       ...(facts.requestedImages !== undefined ? { output_images: facts.requestedImages } : {}),
     },
   };
+}
+
+/** The attributes a video create is priced by (see `nativeVideoAttributes`). */
+export function videoAttributes(
+  service: string,
+  video: NativeVideoFacts,
+  options: VideoOptions | undefined,
+): Partial<Record<UnitBillingMatchKeyV1, string>> {
+  return nativeVideoAttributes(service, video, options);
 }
 
 function imageAttributes(

@@ -202,7 +202,7 @@ const config: Config = {
           name: 'Antseed',
           url: 'https://antseed.com',
           sameAs: [
-            'https://github.com/AntSeed/antseed',
+            'https://github.com/Antseed/antseed',
             'https://x.com/antseed',
             'https://t.me/antseed',
           ],
@@ -214,12 +214,12 @@ const config: Config = {
           'Reputation-based provider scoring',
           'TEE attestation for privacy-preserving inference',
           'AI agents with on-demand knowledge and custom tools',
-          'Desktop app (AI VPN)',
+          'Antseed Desktop',
           'Agent-to-agent commerce support',
         ],
-        downloadUrl: 'https://github.com/AntSeed/antseed/releases',
+        downloadUrl: 'https://github.com/Antseed/antseed/releases',
         softwareVersion: desktopPkg.version,
-        license: 'https://github.com/AntSeed/antseed/blob/main/LICENSE',
+        license: 'https://github.com/Antseed/antseed/blob/main/LICENSE',
       }),
     },
   ],
@@ -283,6 +283,11 @@ const config: Config = {
               type: 'html',
               value:
                 '<a class="usecase" href="/coding"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="12" rx="3"/><path d="M6 9l2.5 2L6 13"/><path d="M10.5 13h3.5"/></svg></span><span class="usecase__body"><span class="usecase__title">For coding apps</span><span class="usecase__desc">Claude Code, Codex, OpenCode</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
             },
             {
               type: 'html',

@@ -127,6 +127,7 @@ export function seed() {
     tee: index === 2 || index === 1 || index === 4,
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
+    ...(index === 2 ? { teeUpstreams: ['inference.gamma.example'] } : index === 1 ? { teeUpstreams: ['api.beta.example'] } : {}),
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     agentId: 86_900 + index,
     // Delta's free models come with the default staked tiers.

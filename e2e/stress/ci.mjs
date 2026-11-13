@@ -2,15 +2,15 @@
 // Runs the payment stress scenarios once each and fails when a run breaks a
 // payment invariant or serves fewer requests than its floor. See README.md.
 //
-// usage: node e2e/stress/ci.mjs [--scenarios c32,c64,...] [--parallel N] [--out <dir>] [--tree <repo>]
-//                               [--port-base N]
+// usage: node e2e/stress/ci.mjs [--scenarios c32,c64,...] [--shard I/N] [--parallel N] [--out <dir>]
+//                               [--tree <repo>] [--port-base N]
 import { spawn } from 'node:child_process';
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareChainState } from './chain.mjs';
-import { SCENARIOS } from './scenarios.mjs';
+import { SCENARIOS, shardOf } from './scenarios.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
@@ -27,6 +27,7 @@ const GATES = {
   // Requests in flight while a peer restarts may fail; none outside that window.
   'restart-buyer': { minOk: 0.85, restart: true },
   'restart-seller': { minOk: 0.75, restart: true },
+  'restart-seller-topup': { minOk: 0.75, restart: true },
   'issue-1050': { minOk: 0.95 },
 };
 
@@ -90,8 +91,11 @@ function report(rows) {
 }
 
 async function main() {
-  const names = arg('scenarios', Object.keys(GATES).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
-  for (const name of names) if (!SCENARIOS[name]) throw new Error(`unknown scenario ${name}; have ${Object.keys(SCENARIOS).join(', ')}`);
+  const listed = arg('scenarios', Object.keys(GATES).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+  for (const name of listed) if (!SCENARIOS[name]) throw new Error(`unknown scenario ${name}; have ${Object.keys(SCENARIOS).join(', ')}`);
+  const names = shardOf(listed, arg('shard'));
+  if (names.length === 0) throw new Error(`--shard ${arg('shard')} selects none of the ${listed.length} scenarios`);
+  console.log(`scenarios: ${names.join(', ')}`);
   const parallel = Math.max(1, Number(arg('parallel', '1')));
   const out = resolve(arg('out', join(tmpdir(), 'antseed-stress-ci')));
   // The checkout whose CLI seller and buyer run; contracts always come from this one.

@@ -31,7 +31,7 @@ export function track(event: string, params: Record<string, unknown> = {}): void
 /**
  * Any link that points at our download proxy (download.antseed.com, see
  * apps/download-proxy), a release asset, or the latest-release fallback
- * counts as an AI VPN download — the proxy URL is the normal per-platform CTA
+ * counts as an Antseed Desktop download — the proxy URL is the normal per-platform CTA
  * target, and /releases/latest is what `useLatestDesktopDownload` returns
  * when detection fails. The bare /releases list (the "all platforms &
  * versions" escape hatch) is deliberately excluded: browsing versions is not
@@ -40,7 +40,7 @@ export function track(event: string, params: Record<string, unknown> = {}): void
 export function isDownloadUrl(href: string): boolean {
   return (
     /^https?:\/\/download\.antseed\.com(\/|$)/i.test(href) ||
-    /^https?:\/\/(www\.)?github\.com\/AntSeed\/antseed\/releases\/(latest|download)(\/|$)/i.test(href)
+    /^https?:\/\/(www\.)?github\.com\/Antseed\/antseed\/releases\/(latest|download)(\/|$)/i.test(href)
   );
 }
 

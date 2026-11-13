@@ -2,7 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { useRetainedState } from '../../hooks/useRetainedState';
-import { VprBackTitle, VprCard, VprSettingRow, VprToggle } from '../vpr/VprKit';
+import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
 import styles from './ConfigView.module.scss';
 
 type ConfigViewProps = {
@@ -123,10 +123,9 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
   const baseInstalled = voiceStatus?.models.some((model) => model.id === 'base' && model.installed) ?? false;
 
   return (
-    <section className={`view view-config ${styles.view}`} role="tabpanel">
+    <section className="view view-config view-pinned-header" role="tabpanel">
+      <VprPage title="Configuration" backFallback="help" subtitle="Buyer, payments and voice transcription.">
       <div className={styles.stack}>
-        <VprBackTitle title="Configuration" fallback="help" />
-
         <VprCard className={styles.card}>
           <span className={styles.cardTitle}>Buyer</span>
           <VprSettingRow
@@ -246,6 +245,7 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
           </p>
         ) : null}
       </div>
+      </VprPage>
     </section>
   );
 }

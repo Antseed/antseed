@@ -1,6 +1,6 @@
 {
   "name": "@antseed/telemetry",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Privacy-safe product telemetry shared by the Antseed desktop app, gateway and buyer: buckets, failure classifiers, a strict sanitizer, consent resolution and a bounded PostHog transport",
   "type": "module",
   "files": [

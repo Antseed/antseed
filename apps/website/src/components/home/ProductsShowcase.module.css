@@ -1,5 +1,5 @@
 /* ============================================================
-   PRODUCTS — gateway (ink card) then AI VPN (tinted card)
+   PRODUCTS — gateway (ink card) then Antseed Desktop (tinted card)
    ============================================================ */
 .section {
   position: relative;
@@ -241,7 +241,7 @@
   background: #0B0B0B;
 }
 
-/* ---------- AI VPN demo ---------- */
+/* ---------- Antseed Desktop demo ---------- */
 .vpnVisual {
   flex: 1.2 1 440px;
   min-width: 0;

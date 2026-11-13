@@ -2,12 +2,12 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
-import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
+import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, narrowPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
@@ -17,7 +17,8 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
+import { keySavings, savingsJson } from './key-savings.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -36,6 +37,11 @@ import {
   type X402Facilitator,
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
+import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
+import type { RetailPriceMap } from '@antseed/node/retail-prices'
+
+/** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
+const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -43,6 +49,9 @@ import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRou
  * loopback only. Stripped from everything forwarded to the buyer.
  */
 export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
+
+/** How long an out-of-credits 402 waits for the buyer's live wallet address before leaving it out. */
+const OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS = 1_000
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -75,7 +84,7 @@ const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const BUYER_RESTART_HOLD_MS = 120_000
 const BUYER_RETRY_INTERVAL_MS = 500
 /** On shutdown, requests in flight get this long to finish before they are closed. */
-const SHUTDOWN_DRAIN_MS = 60_000
+const SHUTDOWN_DRAIN_MS = GATEWAY_SHUTDOWN_DRAIN_MS
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
@@ -89,6 +98,8 @@ const SPEECH_PATH = '/v1/audio/speech'
 /** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
 const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
+const KEY_REWARDS_PATH = '/v1/key/rewards'
+const KEY_SAVINGS_PATH = '/v1/key/savings'
 
 /**
  * `paid` routes reach a seller; the others are answered by the buyer for
@@ -97,6 +108,8 @@ const TOPUP_PATH = '/v1/key/topup'
 const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean; local?: boolean }> = [
   { method: 'GET', prefix: KEY_INFO_PATH, paid: false, local: true },
   { method: 'POST', prefix: TOPUP_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_REWARDS_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_SAVINGS_PATH, paid: false, local: true },
   { method: 'GET', prefix: '/v1/models', paid: false },
   { method: 'POST', prefix: '/v1/messages', paid: true },
   { method: 'POST', prefix: '/v1/messages/count_tokens', paid: false },
@@ -104,6 +117,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Decision models (SystemOne): JSON with a `model`, answered like any model request.
+  { method: 'POST', prefix: '/v1/systemone', paid: true },
   // Text to speech: JSON in, the audio file streamed back as it is.
   { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
@@ -149,12 +164,50 @@ interface ForwardedRequest {
   remainingUsdc: number | null
 }
 
+/** A buyer wallet's deposits, as decimal USDC strings. */
+export interface KeyWalletBalance {
+  available: string
+  reserved: string
+  /** Signed to sellers but not settled on-chain yet: still in `reserved`, no longer the buyer's to spend. */
+  pending: string
+  /** USDC in the wallet itself, not yet swept into deposits; null when unread. */
+  wallet: string | null
+  /** The most the wallet may hold in deposits; null when unread. */
+  creditLimit: string | null
+  /** The wallet's AntseedDeposits operator (withdrawals and rewards go there); null when none. */
+  operator: string | null
+  /** The buyer couldn't reach the chain; these are its last known values. */
+  stale: boolean
+}
+
+/** Buyer ANTS rewards for a key's paying wallet, on the gateway's chain. */
+export interface KeyRewards {
+  /** False when the chain has no rewards contracts. */
+  available: boolean
+  pendingAnts: string
+  currentEpoch: number | null
+  transfersEnabled: boolean
+}
+
+/** Retail vs paid for a key's requests with a retail price match, in USD. */
+export interface KeySavings {
+  retailUsd: number
+  paidUsd: number
+  matchedRequests: number
+}
+
 export interface GatewayServerOptions {
   store: GatewayStore
   accounting: GatewayAccounting
   buyerPort: number
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
+  /** What the wallet paying for a key holds in deposits; `GET /v1/key` reports it. */
+  identityBalance?: (buyerIdentity: string, options?: { fresh?: boolean }) => Promise<KeyWalletBalance | null>
+  /** Rewards for a wallet address on the gateway's chain; `GET /v1/key/rewards` reports them. */
+  walletRewards?: (address: string) => Promise<KeyRewards | null>
+  /** Retail prices by canonical model key; `GET /v1/key/savings` compares them with what a key paid. Null when unreadable. */
+  retailPrices?: () => Promise<RetailPriceMap | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   /**
@@ -287,6 +340,11 @@ export class GatewayServer {
     const method = req.method ?? 'GET'
     const path = req.url ?? '/'
     const pathname = path.split('?')[0]!
+    // Keyless, so a liveness check doesn't read as a failed sign-in in the log.
+    if (method === 'GET' && pathname === '/healthz') {
+      sendJson(res, 200, { status: 'ok' })
+      return
+    }
     if (this._options.console && (pathname === '/console' || pathname.startsWith('/console/'))) {
       if (await this._options.console.handle(req, res)) return
     }
@@ -301,8 +359,11 @@ export class GatewayServer {
     const { key, context } = authenticated
 
     if (route.local) {
+      const fresh = new URLSearchParams(path.split('?')[1] ?? '').get('fresh') === '1'
       if (route.prefix === TOPUP_PATH) await this._topup(req, res, key)
-      else sendJson(res, 200, { data: await this._keyInfo(key) })
+      else if (route.prefix === KEY_REWARDS_PATH) sendJson(res, 200, { data: await this._keyRewards(key) })
+      else if (route.prefix === KEY_SAVINGS_PATH) sendJson(res, 200, { data: await this._keySavings(key) })
+      else sendJson(res, 200, { data: await this._keyInfo(key, fresh) })
       return
     }
 
@@ -342,7 +403,7 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model)
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -478,8 +539,11 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
+    requested: RoutingPolicy | null = null,
   ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
-    const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
+    const resolved = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace }).policy
+    // The request's own requirements only narrow its key's.
+    const policy = requested ? narrowPolicy(resolved, requested) : resolved
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
         ? `Model "${model}" is not allowed for this API key`
@@ -568,6 +632,39 @@ export class GatewayServer {
     const job = videoJobKey(video.protocol, video.resourceId)
     if (outcome.retired) accounting.dropVideo(job)
     else if (outcome.delivered) accounting.videoDelivered(job)
+  }
+
+  /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
+  private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
+    // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
+    const parsed = parseBuyerOutOfCredits(body)
+    if (!parsed) return null
+    try {
+      const workspace = this._options.store.getWorkspace(key.workspaceId)
+      if (!workspace) return null
+      // Name a transfer address only when the key pays from the workspace's wallet, and only as the
+      // running buyer reports it: the address cached on the workspace is for display and can be stale
+      // (a replaced identity, or one the buyer was handed in its environment). No live answer in time,
+      // no address: the console instructions still apply.
+      const walletAddress = key.buyerIdentity === workspace.buyerIdentity
+        ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
+        : null
+      return renderWorkspaceOutOfCredits(parsed, { name: workspace.name, walletAddress })
+    } catch (error) {
+      this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
+      return null
+    }
+  }
+
+  /** The buyer's live address for an identity, or null when it fails or takes longer than `timeoutMs`. */
+  private async _liveIdentityAddress(buyerIdentity: string, timeoutMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    try {
+      return await Promise.race([this._options.identityAddress(buyerIdentity).catch(() => null), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   /**
@@ -742,6 +839,37 @@ export class GatewayServer {
               const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
               res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
               res.end(listing)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          // The buyer's out-of-credits answer names the desktop app and the CLI; here the funds are the workspace's.
+          // Only a small body can be that answer; a larger one streams through unchanged, with backpressure.
+          if (status === 402 && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= OUT_OF_CREDITS_REWRITE_MAX_BYTES) return
+              passThrough = true
+              upstreamRes.off('data', collect)
+              res.writeHead(status, responseHeaders)
+              res.write(Buffer.concat(chunks))
+              upstreamRes.pipe(res)
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', async () => {
+              if (passThrough) {
+                finish!(status, buyerRequestId)
+                return
+              }
+              const original = Buffer.concat(chunks)
+              const answer = await this._workspaceOutOfCredits(key, original) ?? original
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(answer.length) })
+              res.end(answer)
               finish!(status, buyerRequestId)
             })
             return
@@ -956,10 +1084,39 @@ export class GatewayServer {
     }
   }
 
-  private async _keyInfo(key: ApiKeyRecord) {
+  /** `GET /v1/key/rewards`: the paying wallet's buyer rewards; null when they can't be read. */
+  private async _keyRewards(key: ApiKeyRecord) {
+    const address = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    if (!address || !this._options.walletRewards) return null
+    const rewards = await this._options.walletRewards(address).catch(() => null)
+    if (!rewards) return null
+    return {
+      available: rewards.available,
+      address,
+      pending_ants: rewards.pendingAnts,
+      current_epoch: rewards.currentEpoch,
+      transfers_enabled: rewards.transfersEnabled,
+    }
+  }
+
+  /**
+   * `GET /v1/key/savings`: this key's requests at retail prices vs what it
+   * paid, over the models with a retail price. Null when prices can't be read
+   * or nothing matched.
+   */
+  private async _keySavings(key: ApiKeyRecord) {
+    const prices = this._options.retailPrices ? await this._options.retailPrices().catch(() => null) : null
+    if (!prices) return null
+    return savingsJson(keySavings(this._options.store.usageByModel(key.id), prices))
+  }
+
+  private async _keyInfo(key: ApiKeyRecord, fresh = false) {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
-    const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    const [buyerAddress, balance] = await Promise.all([
+      this._options.identityAddress(key.buyerIdentity).catch(() => null),
+      this._options.identityBalance?.(key.buyerIdentity, { fresh }).catch(() => null) ?? Promise.resolve(null),
+    ])
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
@@ -979,6 +1136,19 @@ export class GatewayServer {
       topup_enabled: key.topupEnabled && key.buyerIdentity !== DEFAULT_BUYER_IDENTITY && Boolean(this._options.topup),
       // The wallet that pays sellers for this key's requests.
       buyer_address: buyerAddress,
+      // Its deposits (public on-chain for that address), so an app on this key
+      // can show the balance it spends from. Null when the buyer can't say.
+      balance: balance
+        ? {
+            available_usd: balance.available,
+            reserved_usd: balance.reserved,
+            pending_usd: balance.pending,
+            wallet_usd: balance.wallet,
+            credit_limit_usd: balance.creditLimit,
+            operator: balance.operator,
+            stale: balance.stale,
+          }
+        : null,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),
@@ -1078,6 +1248,48 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
   } catch {
     return null
   }
+}
+
+/** What a gateway key holder is told when the workspace wallet cannot pay a seller. */
+export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAddress: string | null }): string {
+  const send = workspace.walletAddress ? `, or send USDC on Base to the workspace wallet ${workspace.walletAddress}` : ''
+  return `This API key's workspace (${workspace.name}) is out of Antseed credits for this request. `
+    + `A workspace admin can add funds in the gateway console under Wallet & Funding${send}, then retry. `
+    + 'Free sellers need no funds: pin one as <peerId>@<model>.'
+}
+
+/** The buyer's out-of-credits 402, parsed: its JSON root, the error object and which API format it is in. */
+type BuyerOutOfCredits = { root: Record<string, unknown>; error: Record<string, unknown>; anthropic: boolean }
+
+/** Parses `body` as the buyer's 402 for a wallet with too few credits; null for any other body. */
+function parseBuyerOutOfCredits(body: Buffer): BuyerOutOfCredits | null {
+  const root = parseJsonBody(body, undefined)
+  const error = jsonObject(root?.['error'])
+  const message = typeof error?.['message'] === 'string' ? error['message'] : null
+  if (!root || !error || message === null) return null
+  // OpenAI format: code antseed_buyer_fault, param insufficient_deposits.
+  // Anthropic format: type antseed_buyer_fault, the reason in brackets at the end of the message.
+  const openAi = error['code'] === ANTSEED_BUYER_FAULT_ERROR_CODE && error['param'] === 'insufficient_deposits'
+  const anthropic = error['type'] === ANTSEED_BUYER_FAULT_ERROR_CODE && message.endsWith('(insufficient_deposits)')
+  if (!openAi && !anthropic) return null
+  return { root, error, anthropic }
+}
+
+/**
+ * The parsed out-of-credits 402 with its message pointed at the workspace's funding instead of the
+ * desktop app and the CLI. Only the message changes: the status, type, code and param stay as the
+ * buyer sent them.
+ */
+function renderWorkspaceOutOfCredits(parsed: BuyerOutOfCredits, workspace: { name: string; walletAddress: string | null }): Buffer {
+  const text = workspaceOutOfCreditsMessage(workspace)
+  parsed.error['message'] = parsed.anthropic ? `${text} (insufficient_deposits)` : text
+  return Buffer.from(JSON.stringify(parsed.root))
+}
+
+/** The buyer's out-of-credits 402 rewritten for the workspace (see renderWorkspaceOutOfCredits). Null for any other body. */
+export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+  const parsed = parseBuyerOutOfCredits(body)
+  return parsed ? renderWorkspaceOutOfCredits(parsed, workspace) : null
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
@@ -1192,6 +1404,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  ANTSEED_REQUIRE_TEE_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',

@@ -830,6 +830,8 @@ export interface Peer {
    * seller is not TEE-capable or the buyer has not verified it yet.
    */
   teeScope: PeerTeeScope | null
+  /** Hosts a TEE-verified seller node sends prompts to, from its attested config; absent when unknown. */
+  teeUpstreams?: string[]
   stakeAnts: string | null
   /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
   agentId: number | null
@@ -1031,6 +1033,8 @@ export interface RoutePreview {
     reasons: string[]
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
+    /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+    cachedInputUsdPerMillion: number | null
     /** Trust for this model, as routing judges it: cut to 10% by a live DIFF model check. */
     trustScore: number | null
     /** The seller's trust before that cut; present only when one applies. */

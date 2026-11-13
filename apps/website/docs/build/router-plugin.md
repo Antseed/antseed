@@ -130,4 +130,4 @@ You can reuse these pieces in your own router: `@antseed/router-core` exports `s
 
 If an application that embeds the SDK sets no router, the node's built-in default picks the cheapest seller at or above a minimum reputation (default `0`), then the higher trust score, then the lower latency.
 
-A starting template lives in [`docs/protocol/templates/router-plugin`](https://github.com/AntSeed/antseed/tree/main/docs/protocol/templates/router-plugin).
+A starting template lives in [`docs/protocol/templates/router-plugin`](https://github.com/Antseed/antseed/tree/main/docs/protocol/templates/router-plugin).

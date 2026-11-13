@@ -1,141 +1,121 @@
 ---
 slug: /desktop
-title: Desktop app (AI VPN)
-sidebar_label: Desktop app
-description: Use the Antseed desktop app to pick models and sellers, connect local AI tools, chat, add credits and troubleshoot.
+title: Antseed Desktop
+sidebar_label: Antseed Desktop
+description: Use Antseed Desktop to run a local gateway, connect your AI tools to it, chat, add funds and troubleshoot.
 ---
 
-# Desktop app (AI VPN)
+# Antseed Desktop
 
-The desktop app (AI VPN) runs an Antseed buyer on your computer and puts a UI on it. Your AI tools connect to one local endpoint, and the app picks a seller for each request, pays it from your credits, and lets you change models without reconfiguring every tool.
+Antseed Desktop runs an Antseed [gateway](/docs/gateway) on your computer and connects your AI tools to it. Each tool talks to the gateway with an API key, and the gateway routes requests to sellers on the network and pays them from your balance.
 
-:::tip Desktop app or Gateway Console?
-Use the desktop app when one person wants a UI and one-click setup for coding tools on their own computer. Use the [Gateway Console](/docs/quickstart) when you need API keys, budgets per person or app, usage logs, or access from other machines. Both run the same buyer.
-:::
+Usage, history, API keys, limits and routing policy live in the gateway's [Gateway Console](/docs/gateway), which the app opens in your browser. The app itself handles the gateway, your balance, your connected apps and a chat.
 
-## Start the router
+## The local gateway
 
-Open **AI VPN** in the sidebar and use the power button to start or stop the local router. When it runs, the status area shows network health, the local proxy port, and how many peers and services are visible.
+The app starts a local gateway when it opens and stops it when it quits. It is the same gateway as `antseed gateway start`: its API is at `http://127.0.0.1:8379/v1` and its console at `http://127.0.0.1:8379/console`. The gateway supervises the buyer on port 8377 by default, or on `buyer.proxyPort` if you set one in your config.
 
-Discovery takes a few seconds. If **Models** is still empty, open it and select **Refresh models**.
+The gateway uses the same `~/.antseed` data directory and wallet the app used before, so an existing balance carries over.
 
-## Choose a model and seller
+The app creates an API key named **Desktop** on the gateway and gives it to the chat and to your connected apps. Keys are sent as `Authorization: Bearer <key>`.
 
-Open **Models** to browse what sellers currently offer, with live prices and expected savings where a retail comparison exists. Selecting a model sets the route for new sessions; existing conversations keep theirs.
+### Use a remote gateway instead
 
-On a model's page, leave **Auto select seller** on to let the app pick a seller that passes your minimum trust score, weighing price against speed and reliability (sellers that recently failed are tried last), and fail over after retryable errors. Select a seller to pin it instead. A pin is hard: it never fails over, so remove it before troubleshooting availability.
+In **Settings → Gateway**, choose **Remote gateway** and enter the gateway's URL and an API key that gateway issued. The URL must use `https://`, except for an address on your own machine or private network. The app checks the gateway with that key before switching. Nothing runs locally then: the chat and connected apps use the remote gateway, and funding and keys are managed in that gateway's console.
 
-In **Preferences**, **Price or trust** sets how much a seller's trust counts in that choice; at the far left it counts only for the minimum. **Price limit** tries sellers above that input price only after those within it.
+Seller routing is managed in the Gateway Console. In its **Settings → Buyer**, **Price or trust** sets how much a seller's trust counts in automatic routing; at the far left it counts only for the minimum. The soft input price limit tries sellers above that input price only after those within it. See [Routing policies](/docs/gateway/routing).
 
-A seller's trust score is a routing input, not a guarantee of quality, privacy or availability. See [Reputation](/docs/reputation).
+### API keys
 
-## Set routing preferences
+In **Settings → Gateway**:
 
-Select **Settings** in the header to open **Preferences**:
+- **A key per app** gives each connected app its own key, labelled `Desktop · <App>`, so the console shows usage per app. Off by default: every app shares the **Desktop** key.
+- **Replace keys** revokes the app's keys, creates new ones and updates every connected app with them.
 
-- **Auto select seller** turns automatic seller selection on or off.
-- **Prefer free peers when available** gives zero-cost offers a strong ranking advantage.
-- **Minimum trust score** excludes sellers below the threshold.
-- **Price preference** ranks offers above your preferred input price lower.
+## Home
 
-These preferences are saved to the same buyer config the CLI uses, so connected apps, the in-app chat and direct API calls all follow them. See [Buyer configuration](/docs/buyer-config#routing-preferences).
+The app opens in one window you can resize, down to 920×600. Home has:
 
-## Chat
+- **Anonymous / Private**, above the prompt. **Anonymous** (the default) routes to any seller your routing policy allows; sellers see a pseudonymous address, never your name or email. **Private** adds **TEE sellers only** to the owner routing policy of the app's **Desktop** key, so the chat and every app using that key go only to sellers that advertise TEE attestation, and the model pickers list only models a TEE seller serves. Other settings on that key's policy are kept, and the key's admin policy is never changed. With a remote gateway, set this in its console. See [Verify a seller's TEE](/docs/verify-tee) for what the attestation checks.
+- **The prompt**, in the middle: pick a model and, optionally, a seller (only sellers your gateway's routing policy allows), type and press Enter to start a chat.
+- **Use it with your agent** (also in **Agents & apps**, along with [connected apps](#connect-an-ai-app)): add Antseed's skills to an AI agent you already use, so it keeps its own model and calls Antseed only when you ask, for example "using Antseed, generate an image of…", "make a video of…" or "ask Kimi on Antseed for a second opinion". Select an agent (Claude Code, Codex, OpenCode, Pi, Hermes or Droid) to add the `antseed-ask`, `antseed-images` and `antseed-videos` skills to its skills folder; select it again to remove them. The skills use your gateway: its URL is written into them and its API key is saved in `~/.antseed/agent-skills.key`, readable only by you. Start a new agent session after adding them. **Copy for any agent** copies instructions with the gateway URL and key to paste into any other agent.
 
-Open **Chat** to talk to network models without another tool. The model picker in the chat header controls the current conversation. If it already has messages, the app asks whether to continue on the new model or start a new chat. **View chats** opens your conversation list.
+The sidebar has **New chat** (⌘N or Ctrl+N), your recent chats with search, your balance with **Add funds**, and **Settings**. The top right of each page has **Help** and **API keys**, which opens the Gateway Console in your browser.
 
-## Connect an AI app
+### Claim the console
 
-Open **Apps** (the **Connected apps** page) and connect a detected tool. Depending on the tool, the app either edits its configuration file or routes its API traffic through the local proxy. The tool keeps its normal interface.
-
-- When a row shows **Restart**, restart the tool before testing.
-- The gear on a row lets you choose which installed application opens, set the client names used to attribute conversations, or remove the integration. Disconnecting restores the configuration the app changed.
-- Some tools need HTTPS interception. For those, the app creates a local certificate authority whose private key never leaves your computer. If a tool reports a certificate error, expand **HTTPS certificate**, trust the current certificate and restart the tool.
-
-Tool-specific guides are in the [Integrations directory](/integrations).
-
-### Conversations from connected apps
-
-Requests from connected apps appear under **Recent chats** on the home screen and in **Connected apps**. Each conversation keeps the model that served it, so two sessions of the same tool can use different models. Open a conversation to:
-
-- change only that conversation's model,
-- leave **Auto select seller** on, or pin one seller for that conversation only,
-- rename it, open the app it belongs to, or delete its entry. An active tool session reappears on its next request.
-
-## Floating window
-
-The floating window stays above other apps and shows your balance, the active model, and token and cost activity. Its dot is red when routing is stopped and pulses while traffic flows. From its menu you can change the default model, change one conversation's model, or open the app behind a conversation. Closing it does not stop the router.
-
-In **Preferences → Floating window**, **Show on traffic** opens it when a connected app starts sending requests, and **Show routed peer** shows which seller served each conversation.
-
-## Use the local API
-
-While the router runs, the app serves the local buyer API at `http://localhost:8377/v1`. Send `"model": "antseed"` to follow the model picked in the app, a model id for automatic routing, or `<peerId>@<model>` to pin a seller. See [Use the local buyer proxy](/docs/api) for endpoints, headers and examples.
-
-For agents or clients on other machines, open **Agents** and set up an **Internet-accessible endpoint**; see [Tunnels](/docs/tunnels) and [Connect agents](/docs/agents). The endpoint also publishes a Gateway Console at `/console`. Claim it straight away: while the tunnel runs, the endpoint window shows **Gateway console** under **Connection details**; click **Claim console** to open a one-time setup link in your browser, then register a passkey or connect a wallet. Once claimed, the same row shows **Open console**. From the CLI, `antseed gateway console-link` on the same computer does the same. The console's **Settings → General → Updates** shows the app's version, with the same two steps as the app's own banner: **Download** has the app download the newest release, and **Restart & update** restarts the app into it, so you can update it from another machine. The console is unreachable while the app restarts.
-
-## TEE sellers
-
-In **Models**, choose **TEE advertised** in the seller filter to see only sellers that advertise TEE attestation. This only filters the list; it does not change routing. On a model's seller list, a **TEE** badge appears after your buyer has checked that seller and the check passed. The app runs these checks in the background. See [Verify a seller's TEE](/docs/verify-tee) for what the badge means and how to require verification.
-
-## Privacy
-
-There is no Antseed account or platform API key. Sellers see a pseudonymous peer address, not your name or email, but a standard seller can read the prompts it serves. Your configuration, signing key (encrypted with the operating system keychain), connected-app setup and activity stay on your device. Traffic between nodes is encrypted; see [Transport](/docs/transport) and [Security](/docs/security).
-
-## Credits and payments
-
-Usage is pay per request from your credits. There is no subscription.
-
-### Add credits
-
-Open **Profile** and select **Add Credits**, or select the balance in the header. Pay by card checkout, where available in your region, or send USDC on Base to the address or QR code shown. One credit is one USDC, held for your app's identity in the Antseed deposits contract.
-
-### Payment channels
-
-When a paid session starts, the app signs a capped authorization for one seller and that amount shows as **reserved**. Each request raises a running total you sign; the seller can only settle up to that total. Unspent reserve returns to your available balance when the channel settles or closes. See [Payments](/docs/payments) for the protocol details.
-
-In **Profile**, the **Payment channels** card opens **Activity**, which lists channels, spending history and close actions.
-
-### Withdraw
-
-Open **Profile** and select **Withdraw unused credits**. Only available balance can be withdrawn; reserved amounts are released when their channels settle or close.
+The first time, **API keys** opens the local gateway's one-time owner setup link. Add a passkey or connect a wallet there once; after that, sign in with it. See [Sign-in and access](/docs/gateway/sign-in).
 
 ## Rewards
 
-Open **Rewards** to see ANTS attributed to your usage and to open **Manage staking** in your browser. A pending amount is not a promise of value or future eligibility. See [Recognized usage](/docs/recognized-usage).
+**Rewards** shows the $ANTS your gateway's wallet earned from usage. Claiming needs the wallet's operator signature, so **View rewards in your gateway** opens the Gateway Console's Rewards page, where you claim and see each epoch.
+
+## Add funds
+
+Select your balance in the top bar, or **Add funds** in **Settings → Wallet**. Pay by card checkout, where available in your region, or send USDC on Base to the address or QR code shown, for example from an exchange withdrawal or another wallet. You do not need to own crypto beforehand. Usage is pay per request from your balance; there is no subscription.
+
+For withdrawals and payment channels, use the Gateway Console; see [Funding](/docs/gateway/funding) and [Payments](/docs/payments).
+
+## Connect an AI app
+
+Open **Agents & apps** and connect a detected tool. The app edits the tool's own configuration file so it points at the gateway (base URL and a real API key) and lists the gateway's text models. Pick and switch models inside each tool, as you normally would.
+
+- When a row shows **Restart**, restart the tool before testing.
+- **Disconnect** restores the tool's original configuration.
+- With the local gateway, the app removes its changes when it quits and applies them again at launch. With a remote gateway, the changes stay.
+- **Zed** keeps API keys in its keychain, so the app can't add the key for you. Its row shows **Paste key in Zed** until you copy the key from Zed's settings here, paste it into the Antseed provider in Zed, and choose **I've pasted it**. The row asks again if the key or the gateway changes.
+- **Claude Code** is not in this list: its model list only takes Claude-named models, so it can't offer the network's. If an earlier version connected it, the app restores its original settings. You can still add Antseed's skills to it under **Use it with your agent**.
+- **Codex** gets its model list from a catalog the app writes next to its config. A Codex inside WSL keeps its own list.
+- **Telegram Bot** lets you message the agent on your computer from your phone. Create a bot with [@BotFather](https://t.me/BotFather), paste its token in the **Telegram Bot** row, then open the pairing link; the bot answers only you. It uses `/new`, `/model` and `/stop`, asks you in Telegram before running a tool, and only answers while the app is open. Its chats are billed like any chat in the app and follow your Anonymous or Private choice.
+- **Claude Desktop** is no longer supported: its model picker only lists Claude's own model names, so it cannot offer the network's models. If an earlier version connected it, the app restores Claude Desktop's original configuration at launch.
+
+### Use with any other tool
+
+The **Use with any other tool** card copies the gateway's base URL (ending in `/v1`) and an API key, for any tool that speaks the OpenAI or Anthropic API. See [Gateway API](/docs/gateway/api) and the [Integrations directory](/integrations).
+
+## Chat
+
+Open **Chat** to talk to network models without another tool. The chat is a plain client of the gateway: it uses the same base URL and key, and its model dropdown lists the gateway's models from `/v1/models`.
+
+## Settings
+
+**Settings** is at the bottom of the sidebar:
+
+- **Gateway**: local or remote gateway, **A key per app** and **Replace keys**.
+- **Wallet**: **Add funds**, back up or import the signer key, and codes for the [staked free tier](/docs/staked-free-tier).
+- **Privacy**, **Appearance** and **Help**.
+
+## Updating from an earlier version
+
+The first launch after the update:
+
+- re-points apps you had connected to the gateway, with the new key,
+- restores the operating system's proxy setting if an earlier version left it pointing at its system proxy (`127.0.0.1:8378`).
+
+The floating window and the thin window, the HTTPS interception and **Add custom app**, the **Internet-accessible endpoint** and **Agents**, staking, the **Models** and model pages, **Peers**, **Activity**, **Profile** and the power button were removed. Seller routing preferences (minimum trust, price, allow and block lists) are now the gateway's routing policy, set in the Gateway Console. Connected tools no longer follow a model or seller picked in the app; choose the model in each tool. Chats in the app keep their model, and a chat that was pinned to a seller before the update keeps that seller.
+
+## Privacy
+
+There is no Antseed account or platform API key. Sellers see a pseudonymous peer address, not your name or email, but a standard seller can read the prompts it serves. Your configuration, signing key (encrypted with the operating system keychain) and connected-app setup stay on your device. Traffic between nodes is encrypted; see [Transport](/docs/transport) and [Security](/docs/security).
 
 ## Troubleshooting
 
-### No peers or models
-
-1. Check that the router is on and the status area is healthy.
-2. Wait a few seconds, then select **Refresh models** in **Models**.
-3. Check that security software is not blocking the app's network connections.
-4. Select **Help** in the header, enable **Developer mode**, and open **Available peers** to inspect discovery.
-
 ### A connected app sends no requests
 
-1. Disconnect and reconnect it in **Connected apps**.
-2. Restart it if its row shows **Restart**.
-3. Check that the tool is not overriding the base URL or API settings the app wrote.
-4. Check that the selected model supports the tool's API format.
+1. Check the gateway status at the bottom of the window.
+2. Disconnect and reconnect the app in **Agents & apps**.
+3. Restart it if its row shows **Restart**.
+4. Check that the tool is not overriding the base URL or API key the app wrote.
+5. Check that the model you picked in the tool supports the tool's API format.
 
-### Payment errors
+### A key stopped working
 
-Open **Profile** and compare available and reserved balance. A new channel cannot open without enough available balance for its cap. Use **Activity** to close channels that stay open.
+Select **Replace keys** in **Settings → Gateway**. With a remote gateway, check that the key is still active in that gateway's console.
 
-### "Model is not served by this peer"
+### Usage, limits or routing
 
-The tool sent a model the selected seller no longer offers. Select the model again in the app, or remove the seller pin so automatic routing can choose another seller.
-
-### Slow or timed-out responses
-
-Try another seller on the model's page, or remove a hard pin so automatic routing can fail over.
-
-### Collect diagnostics
-
-Select **Help**, enable **Developer mode**, and use **Live logs**, **Available peers**, **Connection details**, **Configuration** or **Copy diagnostic report**. Remove secrets from the report before posting it.
+Open **API keys**. Usage, history, per-key limits and routing policy are in the Gateway Console.
 
 ## Get support
 
-Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/AntSeed/antseed/issues/new) with the app version, operating system, affected tool, what you expected, what happened, and a redacted diagnostic report.
+Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/Antseed/antseed/issues/new) with the app version, operating system, affected tool, what you expected, what happened, and a redacted diagnostic report.

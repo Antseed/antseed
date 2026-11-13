@@ -587,6 +587,18 @@ describe('upstream credit', () => {
     expect(events.at(-1)!.status).toBe('out_of_credit');
     checker.reportUpstreamResponse(provider, 200, '');
     expect(events.map((event) => event.status)).toEqual(['low_balance', 'out_of_credit', 'funded', 'out_of_credit', 'funded']);
+    expect(events.at(-2)!.detail).toContain('You need positive balance');
+    // Content-free mode keeps the billing message itself, nothing else from the body.
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"Insufficient credits. Top up at example.com","code":"insufficient_credits"},"echo":"tell me a secret"}');
+      expect(events.at(-1)).toMatchObject({ status: 'out_of_credit', detail: 'HTTP 402: Insufficient credits. Top up at example.com' });
+      checker.reportUpstreamResponse(provider, 200, '');
+      checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"Cannot answer: tell me a secret","code":"payment_required"}}');
+      expect(events.at(-1)).toMatchObject({ status: 'out_of_credit', detail: 'HTTP 402: payment_required' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

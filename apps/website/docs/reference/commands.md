@@ -47,6 +47,9 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed gateway start` | Run the gateway and its console locally; also starts a buyer | `--port` (8379), `--host` (127.0.0.1), `--public-url <url>`, `--no-buyer`, `--buyer-port`, `--no-console`, `--x402-facilitator <url\|cdp\|payai>`, `--topup-min-usd` (2), `--topup-max-usd` (500) |
+| `antseed gateway service install` | Run `gateway start` as a background service that starts at login and restarts if it exits: a launchd agent on macOS, a systemd user service on Linux; no root. Run it again to update the service | `--port` (8379), `--wait <seconds>` (120; 0 to not wait) |
+| `antseed gateway service status` | Whether the service is installed, running and answering; exits 1 when it isn't answering | `--port` (8379) |
+| `antseed gateway service uninstall` | Stop the service and remove it; keys, wallets and settings stay | |
 | `antseed gateway console-link` | Print the one-time owner setup link, or the console URL once it has an owner | `--recover`, `--member <id\|email>`, `--public-url`, `--port` |
 | `antseed gateway peers` | Sellers the running buyer knows, with trust, TEE, prices and this gateway's 24 h stats | `--model <id>`, `--tee` |
 | `antseed gateway settings show` | Show buyer and observability settings | `--reveal` |
@@ -69,6 +72,7 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | `antseed gateway key topup <id> on\|off` | Allow or stop x402 top-ups of the key's wallet | |
 | `antseed gateway key rotate <id>` | Issue a new secret; the old one stops working | |
 | `antseed gateway key revoke <id>` | Revoke a key immediately | |
+| `antseed gateway key usage <ids...>` | Requests, spend and savings summed over keys, revoked ones included | `--json` |
 | `antseed gateway key policy show <id>` | Show both policy layers and the effective policy | `--preset <slug>` |
 | `antseed gateway key policy set <id>` | Set a key's routing policy | `--layer admin\|owner`, [policy flags](#routing-policy-flags) |
 | `antseed gateway key policy clear <id>` | Remove a key's policy at one layer | `--layer admin\|owner` |
@@ -241,6 +245,7 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 | `antseed seller status` | Show node status and readiness | `--json` |
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |
 | `antseed seller doctor` | Diagnose the announced seller endpoint | `--timeout-ms` (3000), `--json` |
+| `antseed seller forward` | Public entry point for a seller without a reachable IP (e.g. a TEE seller on Phala Cloud): carries buyers' TCP over TLS to its gateway and announces it on the DHT | `--to <host[:port]>`, `--peer <peerId>`, `--port` (6882), `--dht-port` (6881), `--max-connections` (4096); closes a connection idle for 2 minutes |
 | `antseed seller dashboard` | Open the local seller dashboard: the running seller's, or one served by this command | `--port` (3120), `--host` (127.0.0.1), `--no-open` |
 | `antseed seller events` | Recent seller events: starts and stops, models failing or recovered, gas, alerts | `--limit` (25), `--json` |
 | `antseed seller usage` | Requests, tokens and revenue per UTC day | `--days` (14, up to 30), `--json` |
@@ -357,7 +362,7 @@ Browse sellers and run network infrastructure. Guides: [Routing and catalog](/do
 |---|---|---|
 | `antseed network browse` | Browse peers: prices, services and on-chain settlements | `--service <name>`, `--tag <tags>`, `--services`, `--sort score\|volume\|sessions\|price\|recent`, `--top` (20), `--json` |
 | `antseed network peer <peerId>` | Full details for one peer | `--tag <tags>`, `--json` |
-| `antseed peer <peerId>` | Show a peer's profile | |
+| `antseed peer <peerId>` | Not implemented yet: prints the ID and a notice, without looking the peer up. Use `antseed network peer <peerId>` | |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node (no provider, no payments) | `--port` (6881), `--bootstrap <host:port,...>` |
 
 </CommandTable>
@@ -412,7 +417,6 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed metrics serve` | Serve Prometheus metrics ([guide](/docs/provide/metrics)) | `--role buyer\|seller\|both\|auto`, `--host` (127.0.0.1), `--port` (9108), `--path` (/metrics), `--instance`, `--include-chain` |
-| `antseed dev` | Run a seller and a buyer locally for development | `--port <buyerPort>` |
 | `antseed agent dev <agentDir>` | Test an ant agent locally in an interactive chat | `--endpoint <url>`, `--api-key`, `--model` |
 | `antseed update` | Install the latest CLI the way this copy was installed ([details](#updating)) | `--check` (only report), `--json` |
 | `antseed help [command]` | Show help for a command | |

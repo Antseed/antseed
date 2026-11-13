@@ -9,11 +9,22 @@ export const UNIT_BILLING_UNITS_V1 = [
   'input_characters',
 ] as const;
 
+/**
+ * Request attributes a billing component can match. Wire ids follow this
+ * order, so new keys are appended. `aspect_ratio` and `audio` (`"true"` or
+ * `"false"`) price a video create by the options the upstream bills by; only
+ * metadata v16+ documents may name them. `reference_video` (`"true"` or
+ * `"false"`) is whether the create sends reference videos, which upstreams
+ * bill on top of the output; only metadata v17+ documents may name it.
+ */
 export const UNIT_BILLING_MATCH_KEYS_V1 = [
   'model',
   'size',
   'quality',
   'resolution',
+  'aspect_ratio',
+  'audio',
+  'reference_video',
 ] as const;
 
 export type UnitBillingUnitV1 = (typeof UNIT_BILLING_UNITS_V1)[number];

@@ -135,7 +135,7 @@ test('loadConfig rejects invalid model routing peer ids', async () => {
   );
 });
 
-test('loadConfig keeps imageEditModel only on Venice openai providers', async () => {
+test('loadConfig keeps imageEditModel only on Venice openai and fal-image providers', async () => {
   const sellerWith = (plugin: string, baseUrl?: string) => JSON.stringify({
     seller: {
       providers: {
@@ -155,8 +155,29 @@ test('loadConfig keeps imageEditModel only on Venice openai providers', async ()
     await withTempConfig(sellerWith(plugin, baseUrl), async (configPath) => {
       await assert.rejects(
         () => loadConfig(configPath),
-        /images\.services\.cover-art\.imageEditModel requires the openai plugin with a Venice baseUrl/,
+        /images\.services\.cover-art\.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl/,
       );
+    });
+  }
+});
+
+test('loadConfig accepts the fal-image README configuration with an edit endpoint', async () => {
+  const pricing = { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.06 }] } };
+  for (const plugin of ['fal-image', '@antseed/provider-fal-image']) {
+    await withTempConfig(JSON.stringify({
+      seller: {
+        providers: {
+          'fal-images': {
+            plugin,
+            apiKeyEnv: 'FAL_API_KEY',
+            services: { 'openai/gpt-image-2': { imageEditModel: 'openai/gpt-image-2/edit', categories: ['image', 'creative'], unitBillingModels: pricing } },
+          },
+        },
+      },
+    }), async (configPath) => {
+      const config = await loadConfig(configPath);
+      const service = config.seller.providers['fal-images']?.services['openai/gpt-image-2'];
+      assert.equal(service?.imageEditModel, 'openai/gpt-image-2/edit');
     });
   }
 });
