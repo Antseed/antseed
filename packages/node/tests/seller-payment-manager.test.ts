@@ -152,7 +152,8 @@ describe('SellerPaymentManager', () => {
       chainId: CHAIN_ID,
       dataDir: tempDir,
     };
-    manager = new SellerPaymentManager(sellerIdentity, config, store);
+    // The node's live payment connection for the buyer: `mux`, created below.
+    manager = new SellerPaymentManager(sellerIdentity, config, store, (peerId) => (peerId === buyerIdentity.peerId ? mux : undefined));
 
     vi.spyOn(manager.channelsClient, 'reserve').mockResolvedValue('0xreserve-hash');
     vi.spyOn(manager.channelsClient, 'settle').mockResolvedValue('0xsettle-hash');

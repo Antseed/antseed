@@ -782,7 +782,7 @@ export class SellerRequestHandler {
               // a moment to apply instead of a 402 for spend the buyer signed.
               if (!caughtUp && spent > accepted && spent > ceiling && Date.now() < topUpDeadline) {
                 if (spm.isTopUpRunning(session.sessionId)) {
-                  await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()), spent);
+                  await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()));
                 }
                 const raised = spm.getEffectiveReserveMax(session.sessionId);
                 if (raised > ceiling) {

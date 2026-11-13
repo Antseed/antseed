@@ -185,8 +185,7 @@ export class SellerPaymentManager {
    */
   private readonly _activeBuyers = new Set<string>();
   private readonly _buyerDisconnectMarkers = new Map<string, object>();
-  /** buyerPeerId -> the payment connection of its latest SpendingAuth, to prompt it after a top-up lands. */
-  private readonly _buyerPaymentMuxes = new Map<string, PaymentMux>();
+  private readonly _paymentMuxFor: ((buyerPeerId: string) => PaymentMux | undefined) | undefined;
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
@@ -299,8 +298,15 @@ export class SellerPaymentManager {
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
 
-  constructor(identity: Identity, config: SellerPaymentConfig, channelStore: ChannelStore) {
+  constructor(
+    identity: Identity,
+    config: SellerPaymentConfig,
+    channelStore: ChannelStore,
+    /** The buyer's live payment connection, if it is connected; the node owns these. */
+    paymentMuxFor?: (buyerPeerId: string) => PaymentMux | undefined,
+  ) {
     this._config = config;
+    this._paymentMuxFor = paymentMuxFor;
     this._signer = identity.wallet;
     const channelsClient = new ChannelsClient({
       rpcUrl: config.rpcUrl,
@@ -608,7 +614,6 @@ export class SellerPaymentManager {
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
-    this._buyerPaymentMuxes.set(buyerPeerId, paymentMux);
     const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer. A one-off
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
@@ -1787,7 +1792,7 @@ export class SellerPaymentManager {
    * the rest stays unsigned until the next request, or the close, asks.
    */
   private _promptCatchUpAfterTopUp(buyerPeerId: string, channelId: string): void {
-    const paymentMux = this._buyerPaymentMuxes.get(buyerPeerId);
+    const paymentMux = this._paymentMuxFor?.(buyerPeerId);
     if (!paymentMux || this._connectionsClosed) return;
     const spent = this._spent.get(channelId) ?? 0n;
     const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
@@ -2272,7 +2277,6 @@ export class SellerPaymentManager {
   // ── Disconnect handling ───────────────────────────────────────
 
   onBuyerDisconnect(buyerPeerId: string): void {
-    this._buyerPaymentMuxes.delete(buyerPeerId);
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) return;
     this._buyerDisconnectMarkers.set(buyerPeerId, {});
