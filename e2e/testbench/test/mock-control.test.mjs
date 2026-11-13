@@ -17,7 +17,7 @@ describe('mock upstream', () => {
       assert.match(chat.choices[0].message.content, /seller s1.*m2/);
       assert.deepEqual(chat.usage, MOCK_USAGE);
 
-      const stream = await post('/v1/chat/completions', { model: 'm1', stream: true, messages: [] });
+      const stream = await post('/v1/chat/completions', { model: 'm1', stream: true, stream_options: { include_usage: true }, messages: [] });
       assert.match(stream.headers.get('content-type'), /text\/event-stream/);
       const parsed = parseSse(await stream.text());
       assert.equal(parsed.done, true);

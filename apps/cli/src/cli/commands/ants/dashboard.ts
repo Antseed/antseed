@@ -3,6 +3,7 @@ import { getAddress, ZeroAddress } from 'ethers';
 import chalk from 'chalk';
 import { createAntsServer } from '@antseed/ants';
 import { loadAntsContext } from './shared.js';
+import { redact } from '../../../proxy/chain-rpc.js';
 
 export const DEFAULT_ANTS_PORT = 3119;
 
@@ -44,7 +45,7 @@ export function registerAntsDashboardAction(antsCmd: Command): void {
         console.log('');
         console.log(chalk.bold('ANTS staking dashboard'));
         console.log(selectedAddress ? `  Selected account: ${selectedAddress}` : `  Buyer account: ${ctx.address}`);
-        console.log(`  Chain:   ${chain.chainId} (${chain.rpcUrl})`);
+        console.log(`  Chain:   ${chain.chainId} (${redact(chain.rpcUrl)})`);
         console.log(`  URL:     ${chalk.cyan(url)}`);
         console.log(chalk.dim('  The URL carries a one-time session token; connect your wallet in the browser to approve transactions.'));
         console.log(chalk.dim('  Every dashboard action has a CLI equivalent: antseed ants --help. Press Ctrl+C to stop.'));
