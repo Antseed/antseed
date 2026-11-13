@@ -16,7 +16,7 @@ const DESCRIPTION =
 const PATHS = [
   {
     title: 'Join a pool with your Mac',
-    body: 'Download the Antseed Mac app. It joins a colony pool, answers encrypted requests on a local model, and pays your share to your wallet. No open ports, no staking.',
+    body: 'Download Antseed Colony. It joins a colony pool, answers encrypted requests on a local model, and pays your share to your wallet. No open ports, no staking.',
     cta: 'Earn with your Mac',
     to: '/docs/local-ai/mac',
   },
@@ -42,10 +42,10 @@ const STEPS = [
   {n: '4', title: 'You claim', body: 'The pool contract splits each settlement between its workers. Claim your USDC and ANTS to your own wallet.'},
 ];
 
-const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/mac-worker-v0.2.0/Antseed-Worker-0.2.0.dmg';
+const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/colony-v0.2.0/Antseed-Colony-0.2.0.dmg';
 
 const INSTALL = [
-  {title: 'Install', body: 'Open the DMG and drag Antseed Worker to Applications. It runs in the menu bar.'},
+  {title: 'Install', body: 'Open the DMG and drag Antseed Colony to Applications. It runs in the menu bar.'},
   {title: 'Join a pool', body: 'Paste the pool’s wss:// address and choose Join. The app downloads its model and starts serving.'},
   {title: 'Link your wallet', body: 'Enter your wallet, copy the link code, and paste it under Rewards → Link a Mac.'},
 ];

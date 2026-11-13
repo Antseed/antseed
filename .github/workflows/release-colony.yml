@@ -1,14 +1,14 @@
-name: Release Mac app
+name: Release Antseed Colony
 
-# Builds the Antseed Mac app (apps/mac-worker, "Antseed Worker.app"), signs it
+# Builds Antseed Colony (apps/mac-worker, "Antseed Colony.app"), signs it
 # with the same Developer ID and notarizes it with the same App Store Connect
 # API key as the desktop release, and publishes a DMG on a GitHub release
-# tagged mac-worker-v<version> (version from apps/mac-worker/VERSION). The
+# tagged colony-v<version> (version from apps/mac-worker/VERSION). The
 # release is never marked Latest, so the desktop app's update checks and
 # download links keep pointing at the desktop release.
 #
 # Triggers:
-#   - Push of a `mac-worker-v*` tag (must match apps/mac-worker/VERSION).
+#   - Push of a `colony-v*` tag (must match apps/mac-worker/VERSION).
 #   - Manual dispatch from the Actions tab; dry_run builds without publishing.
 #
 # Secrets (shared with release-desktop.yml): MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD,
@@ -26,13 +26,13 @@ on:
         default: true
   push:
     tags:
-      - 'mac-worker-v*'
+      - 'colony-v*'
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-mac-worker-${{ github.ref }}
+  group: release-colony-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           version=$(tr -d '[:space:]' < apps/mac-worker/VERSION)
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "mac-worker-v${version}" ]; then
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "colony-v${version}" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match apps/mac-worker/VERSION (${version})" >&2
             exit 1
           fi
@@ -101,14 +101,14 @@ jobs:
         working-directory: apps/mac-worker
         run: |
           set -euo pipefail
-          spctl --assess --type execute --verbose "build/Antseed Worker.app"
-          spctl --assess --type open --context context:primary-signature --verbose "build/Antseed-Worker-${{ steps.version.outputs.version }}.dmg"
+          spctl --assess --type execute --verbose "build/Antseed Colony.app"
+          spctl --assess --type open --context context:primary-signature --verbose "build/Antseed-Colony-${{ steps.version.outputs.version }}.dmg"
 
       - name: Upload the DMG as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: antseed-worker-${{ steps.version.outputs.version }}
-          path: apps/mac-worker/build/Antseed-Worker-${{ steps.version.outputs.version }}.dmg
+          path: apps/mac-worker/build/Antseed-Colony-${{ steps.version.outputs.version }}.dmg
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -118,13 +118,13 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          tag="mac-worker-v${VERSION}"
-          dmg="apps/mac-worker/build/Antseed-Worker-${VERSION}.dmg"
-          notes="Antseed Mac app ${VERSION}: serve a colony pool's encrypted requests on a local model and earn from them. Apple silicon, macOS 14 or later. Signed with Developer ID and notarized. Guide: https://antseed.com/docs/local-ai/mac"
+          tag="colony-v${VERSION}"
+          dmg="apps/mac-worker/build/Antseed-Colony-${VERSION}.dmg"
+          notes="Antseed Colony ${VERSION}: serve a colony pool's encrypted requests on a local model and earn from them. Apple silicon, macOS 14 or later. Signed with Developer ID and notarized. Guide: https://antseed.com/docs/local-ai/mac"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$dmg" --clobber
           else
-            gh release create "$tag" "$dmg" --target "$GITHUB_SHA" --title "Antseed Mac app ${VERSION}" --notes "$notes" --latest=false
+            gh release create "$tag" "$dmg" --target "$GITHUB_SHA" --title "Antseed Colony ${VERSION}" --notes "$notes" --latest=false
           fi
 
       - name: Remove signing material

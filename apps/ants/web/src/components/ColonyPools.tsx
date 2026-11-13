@@ -10,7 +10,7 @@ import { Input } from './Field';
 import { Card } from './ui';
 
 /**
- * Earnings from Macs this wallet is the payout address for (Antseed Mac app),
+ * Earnings from Macs this wallet is the payout address for (Antseed Colony),
  * and linking a new Mac with the code the app copies.
  */
 export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
@@ -53,7 +53,7 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
 
   // Most wallets run no Mac: keep the page as it is until one does.
   if (pools.length === 0 && !linking) {
-    return <p className="hint">Running the Antseed Mac app? <button className="link-button" onClick={() => setLinking(true)}>Link a Mac</button> to receive its earnings here.</p>;
+    return <p className="hint">Running Antseed Colony? <button className="link-button" onClick={() => setLinking(true)}>Link a Mac</button> to receive its earnings here.</p>;
   }
 
   return (
@@ -111,7 +111,7 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
       {forgetError ? <p className="error-text" role="alert">{forgetError}</p> : null}
       <div className="hero-actions">
         <Input label="Link a Mac" placeholder="antseed-link:…" value={code} onChange={(event) => setCode(event.target.value)} width="lg"
-          hint="In the Antseed Mac app, enter this wallet and press Link, then paste the code here." />
+          hint="In Antseed Colony, enter this wallet and press Link, then paste the code here." />
         <ActionButton
           label="Link Mac"
           size="sm"
@@ -120,7 +120,7 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
           body={linkBody}
           disabled={refreshing}
           disabledReason={refreshReason}
-          validate={() => (code.trim().startsWith('antseed-link:') ? null : 'Paste the code from the Antseed Mac app.')}
+          validate={() => (code.trim().startsWith('antseed-link:') ? null : 'Paste the code from Antseed Colony.')}
         />
       </div>
     </Card>

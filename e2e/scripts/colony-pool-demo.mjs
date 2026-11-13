@@ -322,7 +322,7 @@ async function main() {
 
   // ── workers ──
   await step(EXPECT_WORKERS > LOCAL_WORKERS
-    ? 'Macs join the pool: one local worker, plus the Antseed Mac app on another Mac (TensorFold)'
+    ? 'Macs join the pool: one local worker, plus Antseed Colony on another Mac (TensorFold)'
     : 'Two Macs join the pool (each with its own key and a local model)');
   const workers = [];
   for (const name of ['worker-a', 'worker-b'].slice(0, LOCAL_WORKERS)) {

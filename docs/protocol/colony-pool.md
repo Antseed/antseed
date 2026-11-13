@@ -489,7 +489,7 @@ workers serve requests it never pays for.
 
 ## Hardened Macs
 
-The Antseed Mac app runs models on the bundled TensorFold engine, a separate
+Antseed Colony runs models on the bundled TensorFold engine, a separate
 process it reaches over an owner-only Unix socket, with no TCP port, and only
 after checking that the process on the other end is the engine it started. The
 decrypted prompt therefore never crosses a network interface, but it still
@@ -756,7 +756,7 @@ worker already earned: its unclaimed USDC, and its ANTS weight (with what it
 already claimed) for the current epoch and the `MAX_EPOCHS_PER_CLAIM` before
 it. Older ANTS shares stay claimable by the worker key.
 
-The Antseed Mac app signs this and copies a link code,
+Antseed Colony signs this and copies a link code,
 `antseed-link:<base64url JSON {chainId, pool, worker, payout, deadline, signature}>`.
 The owner pastes it in the ANTS dashboard (Rewards → Link a Mac), which checks
 the chain and that the connected wallet is `payout`, submits `setPayout`, and

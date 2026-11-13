@@ -18,7 +18,7 @@ struct AntseedMacWorkerApp: App {
             // e.g. a damaged key file: say what to do instead of crashing.
             _ = NSApplication.shared
             let alert = NSAlert()
-            alert.messageText = "Antseed Worker could not start"
+            alert.messageText = "Antseed Colony could not start"
             alert.informativeText = error.localizedDescription
             alert.runModal()
             exit(1)

@@ -1372,7 +1372,7 @@ export interface SellerUsageDay {
   revenueUsd: number
 }
 
-/** A worker (e.g. a Mac running the Antseed Mac app) serving this seller's colony pool, from the pool's ledger. */
+/** A worker (e.g. a Mac running Antseed Colony) serving this seller's colony pool, from the pool's ledger. */
 export interface SellerWorker {
   address: string
   /** The app and name it announced, e.g. `antseed-mac/0.1.0 (Studio)`. */

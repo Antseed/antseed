@@ -12,7 +12,7 @@ A model running on your own machine can serve Antseed buyers and earn USDC for e
 | | Run your own seller | Join a colony pool |
 |---|---|---|
 | **Who it suits** | One machine you keep online, with a public address | Macs and desktops that come and go, behind any home network |
-| **What you run** | The Antseed CLI with the `local-llm` plugin, in front of Ollama, llama.cpp or another OpenAI-compatible server | The Antseed Mac app, or `antseed-pool-worker` in front of a local model server |
+| **What you run** | The Antseed CLI with the `local-llm` plugin, in front of Ollama, llama.cpp or another OpenAI-compatible server | Antseed Colony, or `antseed-pool-worker` in front of a local model server |
 | **Who stakes, settles and sets prices** | You | The pool's operator |
 | **How you're paid** | Settlements go to your seller | The pool contract splits each settlement between its workers; you claim to your own wallet |
 | **Guide** | [Earn from your local AI model](/blog/earn-from-your-local-ai-model) and [Become a provider](/docs/provide) | [Earn with your Mac](/docs/local-ai/mac), [Other machines](/docs/local-ai/worker) |
@@ -49,7 +49,7 @@ Three things keep the split honest without trusting the pool operator:
 
 ## In this section
 
-- [Earn with your Mac](/docs/local-ai/mac): run the Antseed Mac app, link your wallet and claim.
+- [Earn with your Mac](/docs/local-ai/mac): run Antseed Colony, link your wallet and claim.
 - [Other machines](/docs/local-ai/worker): serve a pool from any OpenAI-compatible local server.
 - [Run a pool](/docs/local-ai/run-a-pool): deploy the pool contract and run the seller workers connect to.
 - [Privacy and verification](/docs/local-ai/privacy): what buyers can check about the Mac that answers them.

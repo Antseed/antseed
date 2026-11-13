@@ -1,12 +1,12 @@
 #!/bin/bash
-# Builds "Antseed Worker.app".
+# Builds "Antseed Colony.app".
 #
 #   SIGN_IDENTITY="Developer ID Application: … (TEAMID)"  sign with the hardened runtime (no debugger, no injection)
 #   PROVISIONING_PROFILE=path/to/profile.provisionprofile  embed it and the keychain entitlement that binds the
 #                                                         Secure Enclave keys to this app (needed to attest hardened)
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
 #   NOTARY_KEY=AuthKey.p8 NOTARY_KEY_ID=… NOTARY_ISSUER=…  or notarize with an App Store Connect API key (CI)
-#   DMG=1                                                  also package build/Antseed-Worker-<version>.dmg,
+#   DMG=1                                                  also package build/Antseed-Colony-<version>.dmg,
 #                                                          signed and notarized like the app
 #
 # The version comes from ../VERSION; BUILD_NUMBER (default: the commit count) is CFBundleVersion.
@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."
 BUNDLE_ID=com.antseed.macworker
 VERSION=$(tr -d '[:space:]' < VERSION)
 BUILD_NUMBER=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
-APP="${OUT:-build/Antseed Worker.app}"
+APP="${OUT:-build/Antseed Colony.app}"
 # The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
 TENSORFOLD_VERSION=1.2.6
 TENSORFOLD_SHA256=4b50317bfdc00cd34a2c43d02f06eefbdd537b847747bcfa0f6cef6d19386751
@@ -52,7 +52,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Antseed Worker</string>
+<key>CFBundleName</key><string>Antseed Colony</string>
 <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleExecutable</key><string>AntseedMacWorker</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -109,19 +109,19 @@ notarize() {
 }
 
 if ((${#NOTARY[@]})); then
-  ZIP=$(mktemp -d)/AntseedWorker.zip
+  ZIP=$(mktemp -d)/AntseedColony.zip
   ditto -c -k --keepParent "$APP" "$ZIP"
   notarize "$ZIP"
   xcrun stapler staple "$APP"
 fi
 
 if [ -n "${DMG:-}" ]; then
-  DMG_PATH="build/Antseed-Worker-$VERSION.dmg"
+  DMG_PATH="build/Antseed-Colony-$VERSION.dmg"
   STAGE=$(mktemp -d)
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
   rm -f "$DMG_PATH"
-  hdiutil create -volname "Antseed Worker" -srcfolder "$STAGE" -format UDZO -ov "$DMG_PATH"
+  hdiutil create -volname "Antseed Colony" -srcfolder "$STAGE" -format UDZO -ov "$DMG_PATH"
   rm -rf "$STAGE"
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
   if ((${#NOTARY[@]})); then

@@ -184,7 +184,7 @@ final class WorkerController: ObservableObject {
         Task {
             do {
                 status = .loadingModel(0)
-                log("Antseed Mac app \(config.name) · payout address \(address)")
+                log("Antseed Colony \(config.name) · payout address \(address)")
                 log("loading \(config.modelId) with TensorFold…")
                 checkpoint = try await model.load { progress in
                     Task { @MainActor in self.status = .loadingModel(progress) }

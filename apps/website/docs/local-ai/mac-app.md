@@ -2,12 +2,12 @@
 title: Earn with your Mac
 slug: /local-ai/mac
 sidebar_label: Earn with your Mac
-description: Run the Antseed Mac app to serve a colony pool's encrypted requests on a local model, link your wallet and claim your USDC and ANTS.
+description: Run Antseed Colony to serve a colony pool's encrypted requests on a local model, link your wallet and claim your USDC and ANTS.
 ---
 
 # Earn with your Mac
 
-The Antseed Mac app is a menu bar app that joins a [colony pool](/docs/local-ai) and answers its buyers' requests on a model running on your Mac. It shows today's estimated earnings, and you claim what you earn to your own wallet.
+Antseed Colony is a menu bar app that joins a [colony pool](/docs/local-ai) and answers its buyers' requests on a model running on your Mac. It shows today's estimated earnings, and you claim what you earn to your own wallet.
 
 ## Requirements
 
@@ -18,9 +18,9 @@ The Antseed Mac app is a menu bar app that joins a [colony pool](/docs/local-ai)
 
 ## Install
 
-1. [Download the Antseed Mac app](https://github.com/Antseed/antseed/releases/download/mac-worker-v0.2.0/Antseed-Worker-0.2.0.dmg) (`Antseed-Worker-0.2.0.dmg`). It is signed with Antseed's Developer ID and notarized by Apple.
-2. Open the DMG and drag **Antseed Worker** to **Applications**.
-3. Open **Antseed Worker**. It runs in the menu bar (the ant icon), not the Dock.
+1. [Download Antseed Colony](https://github.com/Antseed/antseed/releases/download/colony-v0.2.0/Antseed-Colony-0.2.0.dmg) (`Antseed-Colony-0.2.0.dmg`). It is signed with Antseed's Developer ID and notarized by Apple.
+2. Open the DMG and drag **Antseed Colony** to **Applications**.
+3. Open **Antseed Colony**. It runs in the menu bar (the ant icon), not the Dock.
 
 On first launch the app creates its keys and downloads its model. It serves `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX), pinned to one Hugging Face revision, with the bundled [TensorFold](https://github.com/ashhart/TensorFold) engine.
 
@@ -35,7 +35,7 @@ The panel shows the app's status, today's estimated earnings, the model and what
 You don't need these to earn. They are for pool operators and for running a Mac with no one at the screen:
 
 ```bash
-open -a "Antseed Worker" --args --pool wss://pool.example.com:8790 --name studio-mac
+open -a "Antseed Colony" --args --pool wss://pool.example.com:8790 --name studio-mac
 ```
 
 | Option | What it does |
@@ -79,7 +79,7 @@ Developers can build the app from the [Antseed repository](https://github.com/An
 git clone https://github.com/Antseed/antseed.git
 cd antseed/apps/mac-worker
 scripts/build-app.sh
-open "build/Antseed Worker.app"
+open "build/Antseed Colony.app"
 ```
 
 Without a Developer ID the build is signed ad hoc, which is enough to run it on your own Mac.
