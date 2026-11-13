@@ -131,6 +131,16 @@ export function VprHomeView({ onSelectView }: Props) {
                     onRetry={() => void actions.refreshChatModels(true)}
                     menuMaxHeight={320}
                     menuAnchor="container"
+                    onUsePrompt={(prompt) => {
+                      // The chat model runs it: leave image mode, or Send would make an image.
+                      if (snap.chatImageModelId) actions.selectChatModel(snap.chatSelectedModelId);
+                      setDraft(prompt);
+                      requestAnimationFrame(() => {
+                        const input = inputRef.current;
+                        input?.focus();
+                        input?.setSelectionRange(prompt.length, prompt.length);
+                      });
+                    }}
                   />
                   {!snap.chatImageModelId && snap.chatSelectedModelId && !findChatModel(models, snap.chatSelectedModelId)?.router ? (
                     <ChatSellerPicker
