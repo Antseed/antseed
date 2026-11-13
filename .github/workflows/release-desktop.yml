@@ -1,11 +1,12 @@
 name: Release Desktop
 
-# Builds and publishes the AntSeed Desktop Electron app for macOS,
+# Builds and publishes the Antseed Desktop Electron app for macOS,
 # Windows, and Linux in parallel, attaching artifacts to the same GitHub
 # Release (tagged v<version>, read from apps/desktop/package.json).
 #
 # macOS: DMG + zip, arm64 + x64, code-signed with Developer ID and
-#        notarized via Apple App Store Connect API key.
+#        notarized via Apple App Store Connect API key, plus bridge zips
+#        for installs from before the bundle rename (scripts/release-mac.mjs).
 # Windows: NSIS installer, x64 + arm64. Optional code signing via the
 #          CA's cloud signing API if the WIN_SIGN_* secrets are set
 #          (see apps/desktop/scripts/win-sign.cjs).
@@ -101,7 +102,7 @@ jobs:
     # Tag-push always runs every platform.
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'mac'
     needs: create-draft
-    runs-on: macos-14  # Apple Silicon; electron-builder cross-builds x64
+    runs-on: macos-15  # Apple Silicon; electron-builder cross-builds x64
     timeout-minutes: 60
 
     steps:
@@ -113,7 +114,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -156,8 +157,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           # electron-builder accepts base64-encoded content directly in CSC_LINK.
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -181,7 +180,10 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.blockmap
-            apps/desktop/release/latest*.yml
+            apps/desktop/release/desktop-mac.yml
+            apps/desktop/release-bridge/*.zip
+            apps/desktop/release-bridge/*.blockmap
+            apps/desktop/release-bridge/latest-mac.yml
           if-no-files-found: warn
           retention-days: 14
 
@@ -212,7 +214,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       # windows-latest ships with Python + VS Build Tools, needed by
@@ -261,8 +263,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           # WIN_SIGN_EMAIL comes from the job-level env; both are read by
           # apps/desktop/scripts/win-sign.cjs (the win.sign hook).
           WIN_SIGN_OTP: ${{ secrets.WIN_SIGN_OTP }}
@@ -342,7 +342,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -370,8 +370,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           USE_SYSTEM_FPM: ${{ matrix.arch == 'arm64' }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then

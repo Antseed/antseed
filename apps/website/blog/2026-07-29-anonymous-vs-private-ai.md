@@ -57,9 +57,9 @@ The uncomfortable truth is that you frequently get one and not the other, and th
 
 This is also where we will say the unglamorous thing. If your actual requirement is a signed data-processing agreement, audit logs, and a named vendor your compliance team can subpoena, an anonymous network is the wrong tool. Anonymity and accountability trade against each other on purpose. A private enterprise deployment beats an anonymous one when what you need is a paper trail.
 
-## Where AntSeed sits on the map
+## Where Antseed sits on the map
 
-AntSeed is a peer-to-peer network, so anonymity is structural rather than a policy. There is no account, no signup, and requests reach providers without carrying your identity. That puts the default experience in the bottom-left box: identity unknown, content readable by whichever provider serves the request.
+Antseed is a peer-to-peer network, so anonymity is structural rather than a policy. There is no account, no signup, and requests reach providers without carrying your identity. That puts the default experience in the bottom-left box: identity unknown, content readable by whichever provider serves the request.
 
 To move up into the "content unreadable" row, the network supports TEE providers, where inference runs inside an attested enclave the operator cannot read. That combination, unlinkable and unreadable over the network, is the corner that is hard to reach any other way. If you want the practical walkthrough, we covered how to [run frontier models with no account or identity attached](/blog/use-claude-deepseek-llama-privately), and the fastest path is to [install the local proxy](/docs/install) and route through it.
 

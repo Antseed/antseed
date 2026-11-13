@@ -38,10 +38,19 @@ export class StaticTokenProvider implements TokenProvider {
 // OAuthTokenProvider
 // ---------------------------------------------------------------------------
 
-interface OAuthState {
+export class OAuthRefreshError extends Error {
+  readonly code = 'ANTSEED_OAUTH_REFRESH_FAILED';
+}
+
+export interface OAuthState {
   accessToken: string;
   refreshToken: string;
   expiresAt: number; // epoch ms
+}
+
+export interface OAuthStateStore {
+  load(): OAuthState;
+  save(state: OAuthState): void;
 }
 
 type RefreshRequestEncoding = 'form' | 'json';
@@ -56,6 +65,10 @@ export class OAuthTokenProvider implements TokenProvider {
   private readonly tokenEndpoint: string;
   private readonly requestEncoding: RefreshRequestEncoding;
   private readonly clientId: string | undefined;
+  private readonly stateStore: OAuthStateStore | undefined;
+  private hasUnsavedCredentials = false;
+  private failures = 0;
+  private retryAt = 0;
 
   constructor(opts: {
     accessToken: string;
@@ -64,6 +77,7 @@ export class OAuthTokenProvider implements TokenProvider {
     tokenEndpoint?: string;
     requestEncoding?: RefreshRequestEncoding;
     clientId?: string;
+    stateStore?: OAuthStateStore;
   }) {
     this.state = {
       accessToken: opts.accessToken,
@@ -73,29 +87,65 @@ export class OAuthTokenProvider implements TokenProvider {
     this.tokenEndpoint = opts.tokenEndpoint ?? DEFAULT_OAUTH_TOKEN_ENDPOINT;
     this.requestEncoding = opts.requestEncoding ?? 'form';
     this.clientId = opts.clientId;
+    this.stateStore = opts.stateStore;
   }
 
   async getToken(): Promise<string> {
-    if (!this.isExpiringSoon()) {
-      return this.state.accessToken;
-    }
-    // Deduplicate concurrent refresh calls
-    if (!this.refreshPromise) {
-      this.refreshPromise = this.refresh().finally(() => {
-        this.refreshPromise = null;
-      });
-    }
-    return this.refreshPromise;
+    return this.getOrRefresh(false);
   }
 
   async forceRefresh(): Promise<string> {
-    // Deduplicate with any in-flight refresh
-    if (!this.refreshPromise) {
-      this.refreshPromise = this.refresh().finally(() => {
-        this.refreshPromise = null;
-      });
+    return this.getOrRefresh(true);
+  }
+
+  private async getOrRefresh(force: boolean): Promise<string> {
+    if (this.refreshPromise) return this.refreshPromise;
+    // Persist an already-rotated token before trying another refresh. Never
+    // reload stale disk state after a failed save.
+    if (this.hasUnsavedCredentials) this.persist();
+    if (this.stateStore) {
+      const saved = this.stateStore.load();
+      if (saved.accessToken !== this.state.accessToken || saved.refreshToken !== this.state.refreshToken
+        || saved.expiresAt !== this.state.expiresAt) {
+        this.state = saved;
+        this.failures = 0;
+        this.retryAt = 0;
+      }
     }
+    if (!force && !this.isExpiringSoon()) return this.state.accessToken;
+    if (Date.now() < this.retryAt) {
+      throw new OAuthRefreshError('OAuth refresh temporarily unavailable; retry is deferred');
+    }
+    this.refreshPromise = this.refreshWithBackoff().finally(() => {
+      this.refreshPromise = null;
+    });
     return this.refreshPromise;
+  }
+
+  private async refreshWithBackoff(): Promise<string> {
+    try {
+      const token = await this.refresh();
+      this.failures = 0;
+      this.retryAt = 0;
+      return token;
+    } catch (err) {
+      if (err instanceof OAuthRefreshError) {
+        this.failures = Math.min(this.failures + 1, 7);
+        const delayMs = Math.min(1000 * 2 ** (this.failures - 1), 60_000);
+        this.retryAt = Date.now() + delayMs;
+      }
+      throw err;
+    }
+  }
+
+  private persist(): void {
+    if (!this.stateStore) return;
+    try {
+      this.stateStore.save({ ...this.state });
+      this.hasUnsavedCredentials = false;
+    } catch {
+      throw new OAuthRefreshError('OAuth credential persistence failed; check credential file permissions and storage');
+    }
   }
 
   stop(): void {}
@@ -131,58 +181,55 @@ export class OAuthTokenProvider implements TokenProvider {
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
-    let res: Response;
     try {
-      res = await fetch(this.tokenEndpoint, {
+      const res = await fetch(this.tokenEndpoint, {
         method: 'POST',
         headers,
         body,
         signal: controller.signal,
       });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error(
-          `OAuth refresh timed out after ${timeoutMs}ms while reaching ${this.tokenEndpoint}. ` +
-            'Check network/proxy/firewall access or use apikey auth.'
-        );
+
+      if (!res.ok) {
+        await res.body?.cancel();
+        // Upstream response bodies may echo credentials. Never log them.
+        throw new OAuthRefreshError(`OAuth refresh failed (${res.status})`);
       }
-      throw new Error(`OAuth refresh request failed: ${message}`);
+
+      const data = (await res.json()) as {
+        access_token?: string;
+        accessToken?: string;
+        refresh_token?: string;
+        refreshToken?: string;
+        expires_in?: number;
+        expires_at?: number;
+        expiresAt?: number;
+      };
+
+      const accessToken = data.access_token ?? data.accessToken;
+      const refreshToken = data.refresh_token ?? data.refreshToken ?? this.state.refreshToken;
+      const expiresAt = data.expires_at ?? data.expiresAt
+        ?? (data.expires_in !== undefined ? Date.now() + data.expires_in * 1000 : this.state.expiresAt);
+      if (typeof accessToken !== 'string' || !accessToken) {
+        throw new OAuthRefreshError('OAuth refresh response missing access token');
+      }
+      if (typeof refreshToken !== 'string' || !refreshToken
+        || typeof expiresAt !== 'number' || !Number.isFinite(expiresAt) || expiresAt <= 0) {
+        throw new OAuthRefreshError('OAuth refresh response contains invalid credential fields');
+      }
+
+      this.state = { accessToken, refreshToken, expiresAt };
+      this.hasUnsavedCredentials = this.stateStore !== undefined;
+      this.persist();
+      return this.state.accessToken;
+    } catch (err) {
+      if (err instanceof OAuthRefreshError) throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new OAuthRefreshError(`OAuth refresh timed out after ${timeoutMs}ms; check network/proxy access`);
+      }
+      throw new OAuthRefreshError('OAuth refresh request failed or returned an invalid response');
     } finally {
       clearTimeout(timeoutHandle);
     }
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`OAuth refresh failed (${res.status}): ${text}`);
-    }
-
-    const data = (await res.json()) as {
-      access_token?: string;
-      accessToken?: string;
-      refresh_token?: string;
-      refreshToken?: string;
-      expires_in?: number;
-      expires_at?: number;
-      expiresAt?: number;
-    };
-
-    const newAccess = data.access_token ?? data.accessToken;
-    if (!newAccess) {
-      throw new Error('OAuth refresh response missing access token');
-    }
-
-    this.state.accessToken = newAccess;
-    if (data.refresh_token ?? data.refreshToken) {
-      this.state.refreshToken = (data.refresh_token ?? data.refreshToken)!;
-    }
-    if (data.expires_at ?? data.expiresAt) {
-      this.state.expiresAt = (data.expires_at ?? data.expiresAt)!;
-    } else if (data.expires_in) {
-      this.state.expiresAt = Date.now() + data.expires_in * 1000;
-    }
-
-    return this.state.accessToken;
   }
 }
 

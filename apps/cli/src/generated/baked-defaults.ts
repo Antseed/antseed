@@ -13,3 +13,13 @@
  * disables the baseline entirely).
  */
 export const BAKED_COMPARABLE_PRICES_URL: string | null = null;
+
+/**
+ * Public PostHog ingestion configuration for CLI, buyer and gateway product
+ * telemetry (docs/telemetry.md). Null in source builds, which therefore send
+ * nothing. Release builds bake them with
+ * `node scripts/bake-desktop-telemetry-config.mjs`. POSTHOG_HOST and
+ * POSTHOG_PROJECT_API_KEY override them at runtime.
+ */
+export const BAKED_POSTHOG_HOST: string | null = null;
+export const BAKED_POSTHOG_PROJECT_API_KEY: string | null = null;

@@ -54,7 +54,7 @@ const COLORS = {
 
 const EMISSION_LEDGER = [
   {label: 'Contributors', shareLabel: '15%', shareValue: TEAM_SHARE, color: COLORS.team},
-  {label: 'AntSeed Foundation', shareLabel: '15%', shareValue: RESERVE_SHARE, color: COLORS.reserve},
+  {label: 'Antseed Foundation', shareLabel: '15%', shareValue: RESERVE_SHARE, color: COLORS.reserve},
   {label: 'Verification', shareLabel: '10%', shareValue: VERIFICATION_SHARE, color: COLORS.verification},
   {label: 'Seller-pool stakers', shareLabel: '2-40%', shareValue: STAKER_MAX_SHARE, color: COLORS.stakers},
   {label: 'Sellers / operators', shareLabel: '5-10%', shareValue: SELLER_MAX_SHARE, color: COLORS.sellers},
@@ -557,7 +557,7 @@ function WeeklyEmissionStackedAreas() {
     {label: 'Sellers', color: COLORS.sellers, get: (row: ModelRow) => row.sellers},
     {label: 'Buyers', color: COLORS.buyers, get: (row: ModelRow) => row.buyers},
     {label: 'Verification', color: COLORS.verification, get: (row: ModelRow) => row.verification},
-    {label: 'AntSeed Foundation', color: COLORS.reserve, get: (row: ModelRow) => row.baseReserve},
+    {label: 'Antseed Foundation', color: COLORS.reserve, get: (row: ModelRow) => row.baseReserve},
     {label: 'Contributors', color: COLORS.team, get: (row: ModelRow) => row.team},
   ];
   const cumulative = rows.map(() => 0);
@@ -592,7 +592,7 @@ function WeeklyEmissionStackedAreas() {
     <figure className={styles.chartCard}>
       <figcaption>
         <span className={styles.chartTitle}>Weekly emission routing</span>
-        <span className={styles.chartSubtitle}>The filled bands start from the full weekly emission. Dynamic-budget remainders route through burn first, then the AntSeed Foundation.</span>
+        <span className={styles.chartSubtitle}>The filled bands start from the full weekly emission. Dynamic-budget remainders route through burn first, then the Antseed Foundation.</span>
       </figcaption>
       <svg className={styles.distributionChart} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Weekly emission routing as stacked areas">
         <title>Weekly emission routing as stacked areas</title>
@@ -651,7 +651,7 @@ export function SellerPoolsOverviewChart() {
         {label: 'Sellers', color: COLORS.sellers, values: rows.map((row) => ALREADY_EMITTED_SELLERS + row.sellersTotal)},
         {label: 'Buyers', color: COLORS.buyers, values: rows.map((row) => ALREADY_EMITTED_BUYERS + row.buyersTotal)},
         {label: 'Verification', color: COLORS.verification, values: rows.map((row) => row.verificationTotal)},
-        {label: 'AntSeed Foundation', color: COLORS.reserve, values: rows.map((row) => ALREADY_EMITTED_RESERVE + row.fixedReserveTotal - START_RESERVE)},
+        {label: 'Antseed Foundation', color: COLORS.reserve, values: rows.map((row) => ALREADY_EMITTED_RESERVE + row.fixedReserveTotal - START_RESERVE)},
         {label: 'Contributors', color: COLORS.team, values: rows.map((row) => ALREADY_EMITTED_TEAM + row.teamTotal - START_TEAM)},
       ]}
     />
@@ -683,7 +683,7 @@ export function SellerPoolsAllocationChart() {
         ))}
       </div>
       <p className={styles.formula}>
-        Fixed: 15 contributors + 15 AntSeed Foundation + 10 verification. Dynamic: stakers 2-40, buyers 5-10, sellers/operators 5-10, with usage ranges based on recognized settled USDC volume.
+        Fixed: 15 contributors + 15 Antseed Foundation + 10 verification. Dynamic: stakers 2-40, buyers 5-10, sellers/operators 5-10, with usage ranges based on recognized settled USDC volume.
       </p>
       <p className={styles.projectionNote}>{PROJECTION_NOTE}</p>
     </figure>

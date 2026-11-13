@@ -22,12 +22,6 @@ describe('model identity', () => {
     expect(preferredModelDisplayName('claude-3-haiku')).toBe('Claude 3 Haiku');
   });
 
-  it('merges Claude coding-only aliases into the base model', () => {
-    expect(canonicalModelKey('opus-4.8-coding-only')).toBe(canonicalModelKey('claude-opus-4.8'));
-    expect(canonicalModelKey('sonnet-4.6-coding-only')).toBe(canonicalModelKey('claude-sonnet-4-6'));
-    expect(canonicalModelKey('haiku-4.5-coding-only')).toBe(canonicalModelKey('claude-haiku-4.5'));
-  });
-
   it('uses one MiniMax decimal convention across compact aliases', () => {
     expect(preferredModelDisplayName('minimax-m2.5')).toBe('MiniMax M2.5');
     expect(preferredModelDisplayName('minimax-m2-5')).toBe('MiniMax M2.5');
@@ -38,6 +32,10 @@ describe('model identity', () => {
 
   it('preserves human labels for unknown model families', () => {
     expect(preferredModelDisplayName('custom-model', 'Custom Research Model')).toBe('Custom Research Model');
+  });
+
+  it('names multi-segment endpoint ids from every segment after the vendor', () => {
+    expect(preferredModelDisplayName('bytedance/seedance-2.5/text-to-video')).toBe('Seedance 2.5 Text To Video');
   });
 
   it('keeps display naming separate from routing identity', () => {

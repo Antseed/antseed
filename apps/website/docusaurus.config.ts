@@ -1,7 +1,8 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import docsSearchPlugin from './plugins/docs-search';
+import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
@@ -37,8 +38,8 @@ const gtmPlugin: PluginConfig[] = GTM_CONTAINER_ID
   : [];
 
 const config: Config = {
-  title: 'AntSeed',
-  tagline: 'The open market for AI inference. No gatekeepers.',
+  title: 'Antseed',
+  tagline: 'Run your agents on your terms. No gatekeepers.',
   favicon: 'logo.svg',
   url: 'https://antseed.com',
   baseUrl: '/',
@@ -78,7 +79,7 @@ const config: Config = {
         blog: {
           showLastUpdateTime: true,
           showReadingTime: true,
-          blogTitle: 'AntSeed Blog',
+          blogTitle: 'Antseed Blog',
           blogDescription: 'Insights on OpenRouter alternatives, P2P AI networks, and the future of AI inference.',
           postsPerPage: 10,
           blogSidebarCount: 'ALL',
@@ -107,15 +108,34 @@ const config: Config = {
     // here rather than in deploy config, and the site works without anyone
     // setting an env var. GTM_CONTAINER_ID still overrides it for staging or a
     // throwaway test container. Set it to an empty string to disable GTM.
-    //
-    // GA4 (G-DF97Q4KV2X) is configured as a tag *inside* this container, not
-    // loaded here, so there is one tag on the page and no double-counting.
     ...gtmPlugin,
     [
       '@docusaurus/plugin-client-redirects',
       {
         redirects: [
           {from: '/lightpaper', to: '/docs/lightpaper'},
+          // Docs restructure: the apps, CLI and older posts link to these.
+          {from: '/docs/guides/gateway-console', to: '/docs/gateway'},
+          {from: '/docs/guides/gateway-server', to: '/docs/gateway/server'},
+          {from: '/docs/guides/gateway-api-keys', to: '/docs/gateway/api'},
+          {from: '/docs/guides/vpr', to: '/docs/desktop'},
+          {from: '/docs/guides/verify-tee', to: '/docs/verify-tee'},
+          {from: '/docs/guides/using-the-api', to: '/docs/api'},
+          {from: '/docs/pricing', to: '/docs/api/routing'},
+          {from: '/docs/guides/agents', to: '/docs/agents'},
+          {from: '/docs/guides/public-tunnels', to: '/docs/tunnels'},
+          {from: '/docs/config', to: '/docs/buyer-config'},
+          {from: '/docs/guides/become-a-provider', to: '/docs/provide'},
+          {from: '/docs/guides/tee-provider', to: '/docs/provide/tee'},
+          {from: '/docs/guides/payments', to: '/docs/provide/payments'},
+          {from: '/docs/guides/staking', to: '/docs/provide/staking'},
+          {from: '/docs/guides/metrics', to: '/docs/provide/metrics'},
+          {from: '/docs/guides/metadata-v12-upgrade', to: '/docs/metadata-v12-upgrade'},
+          {from: '/docs/create-plugin', to: '/docs/provider-api'},
+          {from: '/docs/metering', to: '/docs/payments'},
+          {from: '/docs/protocol/legacy-emissions', to: '/docs/legacy-emissions'},
+          {from: '/docs/protocol/recognized-usage', to: '/docs/recognized-usage'},
+          {from: '/docs/protocol/reward-policies', to: '/docs/reward-policies'},
           // /connect was renamed to /integrations — keep old links working.
           {from: '/connect', to: '/integrations'},
           ...integrationEntries.map((i) => ({
@@ -127,6 +147,8 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    // Docs search index for src/theme/SearchBar (the ⌘K modal).
+    docsSearchPlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).
@@ -138,6 +160,10 @@ const config: Config = {
   ],
 
   headTags: [
+    // The General Sans stylesheet comes from api.fontshare.com and its font
+    // files from cdn.fontshare.com: open both connections up front.
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://api.fontshare.com'}},
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://cdn.fontshare.com', crossorigin: 'anonymous'}},
     // Second Search Console owner. A site can carry several verification tags,
     // one per Google account, and removing one un-verifies that account — so
     // this is additive, not a replacement for the token in themeConfig.metadata.
@@ -159,10 +185,10 @@ const config: Config = {
       innerHTML: JSON.stringify({
         '@context': 'https://schema.org',
         '@type': 'SoftwareApplication',
-        name: 'AntSeed',
+        name: 'Antseed',
         url: 'https://antseed.com',
         description:
-          'The open market for AI inference. Serve or consume AI peer-to-peer. Pay per request in USDC. Anonymous by design, with independent providers and no central account.',
+          'Run your agents on your terms. Serve or consume AI peer-to-peer. Pay per request in USDC. Anonymous by design, with independent providers and no central account.',
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'macOS, Linux, Windows',
         offers: {
@@ -173,10 +199,10 @@ const config: Config = {
         },
         creator: {
           '@type': 'Organization',
-          name: 'AntSeed',
+          name: 'Antseed',
           url: 'https://antseed.com',
           sameAs: [
-            'https://github.com/AntSeed/antseed',
+            'https://github.com/Antseed/antseed',
             'https://x.com/antseed',
             'https://t.me/antseed',
           ],
@@ -188,31 +214,41 @@ const config: Config = {
           'Reputation-based provider scoring',
           'TEE attestation for privacy-preserving inference',
           'AI agents with on-demand knowledge and custom tools',
-          'Desktop app (VPR)',
+          'Antseed Desktop',
           'Agent-to-agent commerce support',
         ],
-        downloadUrl: 'https://github.com/AntSeed/antseed/releases',
+        downloadUrl: 'https://github.com/Antseed/antseed/releases',
         softwareVersion: desktopPkg.version,
-        license: 'https://github.com/AntSeed/antseed/blob/main/LICENSE',
+        license: 'https://github.com/Antseed/antseed/blob/main/LICENSE',
       }),
     },
   ],
 
   themeConfig: {
+    announcementBar: {
+      // A new id, so people who closed the previous bar still see this one.
+      id: 'antseed-points-launch',
+      content:
+        '<a class="funding-announcement" href="https://antseedpoints.com" target="_blank" rel="noopener noreferrer"><strong>Antseed Points are live: get rewarded for using AI.</strong><span>Visit antseedpoints.com <span aria-hidden="true">↗</span></span></a>',
+      backgroundColor: '#001E12',
+      textColor: '#FFFFFF',
+      isCloseable: true,
+    },
     metadata: [
       {name: 'google-site-verification', content: '09pzs5Q9kHdpQSNSBpr0vNh9SMq-T8lzhBgH5Zgm6ug'},
-      {name: 'description', content: 'The open market for AI inference. Every model, no middleman. Anonymous, best price, works with the tools you already use. Owned by no one.'},
-      {property: 'og:title', content: 'Every AI model, best price, no middleman'},
-      {property: 'og:description', content: 'AntSeed is the open market for AI inference. Every model, no middleman. Anonymous. Best price. Works with the tools you already use. Owned by no one. Available to everyone.'},
+      {name: 'description', content: 'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
+      {property: 'og:title', content: 'Run your agents on your terms'},
+      {property: 'og:description', content: 'Antseed lets you run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
       {property: 'og:type', content: 'website'},
-      {property: 'og:site_name', content: 'AntSeed'},
+      {property: 'og:site_name', content: 'Antseed'},
       {name: 'twitter:card', content: 'summary_large_image'},
       {name: 'twitter:site', content: '@antseed'},
-      {name: 'twitter:image', content: 'https://antseed.com/og-image.png'},
-      {property: 'og:image', content: 'https://antseed.com/og-image.png'},
+      {name: 'twitter:image', content: 'https://antseed.com/og-image-open-market.png'},
+      {property: 'og:image', content: 'https://antseed.com/og-image-open-market.png'},
+      {property: 'og:image:type', content: 'image/png'},
       {property: 'og:image:width', content: '1200'},
       {property: 'og:image:height', content: '630'},
-      {property: 'og:image:alt', content: 'AntSeed, the open market for AI inference'},
+      {property: 'og:image:alt', content: 'Antseed, run your agents on your terms'},
     ],
     colorMode: {
       defaultMode: 'light',
@@ -222,24 +258,55 @@ const config: Config = {
     navbar: {
       title: '',
       logo: {
-        alt: 'AntSeed',
+        alt: 'Antseed',
         src: 'logo-light.svg',
         srcDark: 'logo-dark.svg',
         width: 104,
         height: 36,
       },
       items: [
+        {to: '/network', label: 'Network', position: 'left'},
+        {
+          // "Use it for" — audience pages. Rich rows (icon, title, one-line
+          // description) via html items; styled in custom.css (.usecase).
+          type: 'dropdown',
+          label: 'Use it for',
+          position: 'left',
+          className: 'header-usecases',
+          items: [
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/agents"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="14" height="10" rx="3"/><path d="M10 6V3.5"/><circle cx="10" cy="2.5" r="1"/><circle cx="7.5" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="11" r="1" fill="currentColor" stroke="none"/></svg></span><span class="usecase__body"><span class="usecase__title">For agents</span><span class="usecase__desc">Hermes, OpenClaw, Codex, your own</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/coding"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="12" rx="3"/><path d="M6 9l2.5 2L6 13"/><path d="M10.5 13h3.5"/></svg></span><span class="usecase__body"><span class="usecase__title">For coding apps</span><span class="usecase__desc">Claude Code, Codex, OpenCode</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/privacy"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5l6 2.5v4.5c0 3.6-2.6 6.3-6 7.5-3.4-1.2-6-3.9-6-7.5V5l6-2.5z"/><path d="M7.5 10l1.8 1.8L12.8 8"/></svg></span><span class="usecase__body"><span class="usecase__title">For privacy</span><span class="usecase__desc">No sign-up, runs on your machine</span></span></a>',
+            },
+          ],
+        },
+        {to: '/providers', label: 'Providers', position: 'left'},
+        {to: '/ecosystem', label: 'Ecosystem', position: 'left'},
         {
           href: 'https://antseedstats.com/network',
-          label: 'Pricing',
+          label: 'Live prices',
           position: 'left',
           target: '_blank',
           rel: 'noopener noreferrer',
           className: 'header-pricing-link',
         },
-        {to: '/integrations', label: 'Integrations', position: 'left'},
-        {to: '/providers', label: 'Providers', position: 'left'},
-        {to: '/ecosystem', label: 'Ecosystem', position: 'left'},
+        {type: 'search', position: 'right'},
         {
           type: 'docSidebar',
           sidebarId: 'docs',
@@ -255,31 +322,20 @@ const config: Config = {
           className: 'header-github-link',
         },
         {
-          href: 'https://x.com/antseed',
-          'aria-label': 'X',
-          position: 'right',
-          className: 'header-x-link',
-        },
-        {
-          href: 'https://t.me/antseed',
-          'aria-label': 'Telegram',
-          position: 'right',
-          className: 'header-telegram-link',
-        },
-        {
           // Custom item (src/theme/NavbarItem/DownloadNavbarItem.tsx): links
           // straight to the installer for the visitor's OS/arch, falling back
           // to the releases page when detection fails.
           type: 'custom-download',
-          label: 'Download VPR',
+          label: 'Desktop app',
           position: 'right',
           className: 'header-download-link',
         },
+        {to: '/docs/quickstart', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
       ],
     },
     prism: {
-      theme: prismThemes.nightOwl,
-      darkTheme: prismThemes.nightOwl,
+      theme: prismTheme,
+      darkTheme: prismTheme,
       additionalLanguages: ['bash', 'json', 'typescript'],
     },
   } satisfies Preset.ThemeConfig,

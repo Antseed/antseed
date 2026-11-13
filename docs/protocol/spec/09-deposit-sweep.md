@@ -1,7 +1,7 @@
 # 09 — Deposit Sweep Protocol
 
 Decentralized gasless funding of a buyer's `AntseedDeposits` balance. The buyer
-hot wallet is signing-only — it never holds ETH. USDC arriving at the hot
+hot wallet does not need ETH for the relayed sweep. USDC arriving at the hot
 wallet (QR deposits, onramp deliveries) is moved into the deposits contract by
 **permissionless relayers** (sellers by default), compensated by a fixed USDC
 fee taken from the swept amount. No centralized paymaster, bundler, or relayer
@@ -23,8 +23,8 @@ sweepDeposit(
    (`to` is pinned to the relay contract, so only the relay can redeem the
    authorization; the 3009 nonce makes it single-use).
 2. Credits `amount - FEE` to the **buyer's** `AntseedDeposits` balance via
-   `deposit(from, amount - FEE)` — the buyer address itself never receives
-   tokens (iron rule). Requires `amount > FEE`, and mirrors both Deposits
+   `deposit(from, amount - FEE)` — the swept tokens move from the hot wallet
+   through the relay into contract custody. Requires `amount > FEE`, and mirrors both Deposits
    guards with clear errors for simulating relayers: a first-time buyer's net
    must clear `MIN_BUYER_DEPOSIT`, and the credited balance must not exceed
    `getBuyerCreditLimit(from)`. Buyers should size sweeps to their remaining

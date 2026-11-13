@@ -1,13 +1,11 @@
 /**
- * IPC surface for the buyer/connect runtime: process control, logs, the peer
- * network, plugins, and dashboard config.
+ * IPC surface for the local gateway runtime: process control, logs, the peer
+ * network, and config.
  */
+import { isAttachOnly, preserveTestbenchRouting } from '../runtime/attach-only.js';
 import { ipcMain } from 'electron';
-import { isMultiInstanceDevelopment } from '../dev-instance.js';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
-import { resolveBuyerProxyPort } from '../runtime/active-config.js';
-import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
 
 /** Shape every dashboard-style handler answers with. */
 export type ApiResult = {
@@ -25,10 +23,7 @@ export type ApiResult = {
 export type RuntimeIpcDeps = {
   processManager: ProcessManager;
   logBuffer: LogEvent[];
-  appendLog: (mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', line: string) => void;
   getCombinedProcessState: () => RuntimeProcessState[];
-  killOrphanBuyerProxy: () => Promise<void>;
-  requestBuyerPeerRefresh: () => Promise<void>;
 };
 
 const DASHBOARD_CONFIG_ALLOWED_KEYS = new Set([
@@ -49,16 +44,7 @@ function sanitizeDashboardConfigPayload(raw: unknown): Record<string, unknown> {
   }
   return safe;
 }
-import {
-  isDesktopDebugEnabled,
-} from '../app-context.js';
-import {
-  invalidateOnChainEnrichmentCache,
-} from '../chat/service-discovery.js';
-import {
-  ensureSecureIdentity,
-  secureIdentityEnv,
-} from '../identity.js';
+import { ensureLocalGateway, stopLocalGateway } from '../gateway/service.js';
 import {
   invalidateChainClients,
 } from '../payments/credits.js';
@@ -75,101 +61,40 @@ import {
 } from '../runtime/config-io.js';
 import {
   getNetworkSnapshot,
-  lookupPeer,
   refreshPeerCache,
-  touchPeer,
 } from '../runtime/peer-cache.js';
-import {
-  type InstalledPlugin,
-  installPluginDependency,
-  isSafePluginPackageName,
-  listInstalledPlugins,
-  normalizePluginPackageName,
-  resolveLegacyPluginPackage,
-  resolveLocalPluginSource,
-  toFileInstallSpec,
-  toNpmAliasInstallSpec,
-} from '../runtime/plugins.js';
-import {
-  type RuntimeMode,
-  type StartOptions,
-} from '../runtime/process-manager.js';
-
 export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   const {
-    appendLog,
     getCombinedProcessState,
-    killOrphanBuyerProxy,
     logBuffer,
     processManager,
-    requestBuyerPeerRefresh,
   } = deps;
 
-  ipcMain.handle('runtime:get-state', async () => {
-    if (isMultiInstanceDevelopment() && processManager.isAttached('connect')) {
-      const port = await resolveBuyerProxyPort();
-      await refreshSharedBuyerAttachment(processManager, port);
-    }
-    return {
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-      logs: [...logBuffer],
-    };
+  const runtimeSnapshot = () => ({
+    processes: getCombinedProcessState(),
+    daemonState: processManager.getDaemonStateSnapshot(),
   });
 
-  ipcMain.handle('runtime:start', async (_event, options: StartOptions) => {
-    if (options.mode === 'connect' && isMultiInstanceDevelopment()) {
-      const port = await resolveBuyerProxyPort();
-      if (await isCompatibleSharedBuyer(port)) {
-        const state = processManager.attach('connect');
-        appendLog('connect', 'system', `Reusing shared buyer proxy on 127.0.0.1:${port}.`);
-        return {
-          state,
-          processes: getCombinedProcessState(),
-          daemonState: processManager.getDaemonStateSnapshot(),
-        };
-      }
+  ipcMain.handle('runtime:get-state', () => ({ ...runtimeSnapshot(), logs: [...logBuffer] }));
+
+  // Starts the local gateway (no-op with a remote one) and waits until it serves.
+  ipcMain.handle('runtime:start', async () => {
+    try {
+      await ensureLocalGateway();
+      return { ok: true, ...runtimeSnapshot() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err), ...runtimeSnapshot() };
     }
-
-    await ensureSecureIdentity();
-
-    const startOptions: StartOptions = {
-      ...options,
-      ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
-      env: {
-        ...(options.env ?? {}),
-        ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...secureIdentityEnv(),
-      },
-    };
-    if (isDesktopDebugEnabled()) {
-      appendLog(startOptions.mode, 'system', 'Desktop debug mode enabled (ANTSEED_DEBUG=1, --verbose).');
-    }
-
-    const state = await processManager.start(startOptions);
-    return {
-      state,
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-    };
   });
 
-  ipcMain.handle('runtime:stop', async (_event, mode: RuntimeMode) => {
-    const preserveSharedBuyer = mode === 'connect' && isMultiInstanceDevelopment();
-    const state = await processManager.stop(mode, preserveSharedBuyer);
-    if (mode === 'connect') {
-      // Normal Stop must silence the buyer proxy, not just our child. Named
-      // development instances instead release shared ownership so one test
-      // window cannot break every other window and connected tool.
-      if (!isMultiInstanceDevelopment()) {
-        await killOrphanBuyerProxy();
-      }
+  ipcMain.handle('runtime:restart', async () => {
+    try {
+      await stopLocalGateway();
+      await ensureLocalGateway();
+      return { ok: true, ...runtimeSnapshot() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err), ...runtimeSnapshot() };
     }
-    return {
-      state,
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-    };
   });
 
   ipcMain.handle('runtime:clear-logs', async () => {
@@ -177,111 +102,9 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
     return { ok: true };
   });
 
-  ipcMain.handle('plugins:list', async () => {
-    try {
-      const plugins = await listInstalledPlugins();
-      return { ok: true, plugins, error: null };
-    } catch (err) {
-      return {
-        ok: false,
-        plugins: [] as InstalledPlugin[],
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  });
-
-  ipcMain.handle('plugins:install', async (_event, packageName: string) => {
-    const normalized = typeof packageName === 'string' ? normalizePluginPackageName(packageName) : '';
-    if (!normalized || !isSafePluginPackageName(normalized)) {
-      return {
-        ok: false,
-        package: normalized,
-        plugins: [] as InstalledPlugin[],
-        error: `Invalid plugin package name: ${packageName}`,
-      };
-    }
-
-    try {
-      appendLog('connect', 'system', `Installing plugin "${normalized}"...`);
-      await installPluginDependency(normalized);
-      const plugins = await listInstalledPlugins();
-      appendLog('connect', 'system', `Installed plugin "${normalized}".`);
-      return { ok: true, package: normalized, plugins, error: null };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const legacyPackageName = resolveLegacyPluginPackage(normalized);
-
-      if (legacyPackageName) {
-        try {
-          const aliasSpec = toNpmAliasInstallSpec(normalized, legacyPackageName);
-          appendLog('connect', 'system', `Registry install failed; retrying via legacy alias: ${aliasSpec}`);
-          await installPluginDependency(aliasSpec);
-          const plugins = await listInstalledPlugins();
-          appendLog('connect', 'system', `Installed plugin "${normalized}" using legacy package alias "${legacyPackageName}".`);
-          return { ok: true, package: normalized, plugins, error: null };
-        } catch (legacyErr) {
-          const legacyMessage = legacyErr instanceof Error ? legacyErr.message : String(legacyErr);
-          appendLog('connect', 'system', `Legacy alias install failed for "${normalized}": ${legacyMessage}`);
-        }
-      }
-
-      const localSource = await resolveLocalPluginSource(normalized);
-
-      if (localSource) {
-        try {
-          appendLog('connect', 'system', `Registry install failed; retrying from local source: ${localSource}`);
-          await installPluginDependency(toFileInstallSpec(normalized, localSource));
-          const plugins = await listInstalledPlugins();
-          appendLog('connect', 'system', `Installed plugin "${normalized}" from local source.`);
-          return { ok: true, package: normalized, plugins, error: null };
-        } catch (localErr) {
-          const localMessage = localErr instanceof Error ? localErr.message : String(localErr);
-          appendLog('connect', 'system', `Local plugin install failed for "${normalized}": ${localMessage}`);
-          return {
-            ok: false,
-            package: normalized,
-            plugins: await listInstalledPlugins(),
-            error: `Registry install failed: ${message}\nLocal fallback failed: ${localMessage}`,
-          };
-        }
-      }
-
-      appendLog('connect', 'system', `Plugin install failed for "${normalized}": ${message}`);
-      return {
-        ok: false,
-        package: normalized,
-        plugins: await listInstalledPlugins(),
-        error: message,
-      };
-    }
-  });
-
-  ipcMain.handle('runtime:get-network', async () => {
-    await refreshPeerCache();
-    return getNetworkSnapshot();
-  });
-
-  ipcMain.handle('runtime:lookup-peer', async (_event, peerId: string) => {
-    if (typeof peerId !== 'string' || peerId.trim().length === 0) {
-      return { ok: false, peer: null, error: 'Invalid peerId' };
-    }
-    await refreshPeerCache();
-    const peer = lookupPeer(peerId.trim());
-    return { ok: Boolean(peer), peer, error: peer ? null : 'Peer not found' };
-  });
-
-  ipcMain.handle('runtime:touch-peer', (_event, peerId: string) => {
-    if (typeof peerId !== 'string' || peerId.trim().length === 0) return { ok: false };
-    return { ok: touchPeer(peerId.trim()) };
-  });
-
   ipcMain.handle(
     'runtime:get-data',
-    async (
-      _event,
-      endpoint: string,
-      _options?: { port?: number; query?: Record<string, unknown> },
-    ) => {
+    async (_event, endpoint: string) => {
       // Serve status, config, and network directly from files — no dashboard needed.
       if (endpoint === 'status') {
         try {
@@ -331,40 +154,23 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   ipcMain.handle(
     'runtime:update-config',
     async (_event, config: Record<string, unknown>): Promise<ApiResult> => {
-      const safeConfig = sanitizeDashboardConfigPayload(config);
+      const existing = isAttachOnly() ? await readConfig(ACTIVE_CONFIG_PATH).catch(() => ({})) : {};
+      const safeConfig = preserveTestbenchRouting(sanitizeDashboardConfigPayload(config), existing);
       if (Object.keys(safeConfig).length === 0) {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }
       try {
         const merged = await mergeConfig(safeConfig, ACTIVE_CONFIG_PATH);
+        await stopPaymentsPortal();
         // Drop cached clients and the RPC backoff so the next read uses the
-        // new chain config instead of answers from the old chain.
-        invalidateChainClients();
-        invalidateOnChainEnrichmentCache();
-        // Restart payments portal if running so it picks up new contract/chain config
-        void stopPaymentsPortal().catch(() => {});
+        // new chain config instead of answers from the old chain. Only the
+        // payments section names the chain; other saves (e.g. the routing
+        // preferences synced at every launch) must not reset chain reads.
+        if ('payments' in safeConfig) invalidateChainClients();
         return { ok: true, data: { config: merged }, error: null, status: 200 };
       } catch (err) {
         return { ok: false, data: null, error: err instanceof Error ? err.message : String(err), status: null };
       }
     },
   );
-
-  ipcMain.handle('runtime:scan-network', async () => {
-    try {
-      await requestBuyerPeerRefresh();
-      await refreshPeerCache();
-      const snapshot = getNetworkSnapshot();
-      return { ok: snapshot.ok, data: snapshot, error: snapshot.error, status: 200 };
-    } catch (err) {
-      await refreshPeerCache();
-      const snapshot = getNetworkSnapshot();
-      return {
-        ok: false,
-        data: snapshot,
-        error: err instanceof Error ? err.message : String(err),
-        status: null,
-      };
-    }
-  });
 }

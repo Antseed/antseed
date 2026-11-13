@@ -631,7 +631,7 @@
       transition: background 0.1s, border-color 0.1s;
 
       &:hover {
-        background: rgba(31, 216, 122, 0.08);
+        background: rgba(var(--accent-rgb), 0.08);
         border-color: var(--accent);
       }
     }
@@ -941,6 +941,24 @@
   margin-left: -4px;
 }
 
+.routedModel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+
+  svg { flex-shrink: 0; }
+  span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
 .fileAttachment {
   display: flex;
   align-items: center;
@@ -1041,6 +1059,43 @@ button.fileAttachment {
   height: auto;
   max-height: 520px;
   object-fit: contain;
+}
+
+.generatedVideoWrap {
+  position: relative;
+  max-width: min(640px, 100%);
+  margin: 8px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #000;
+}
+
+.generatedVideo {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  background: #000;
+}
+
+.generatedVideoOpen {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, #fff 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, #000 58%, transparent);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+
+  .generatedVideoWrap:hover &,
+  &:focus-visible {
+    opacity: 1;
+  }
 }
 
 .copyResponseBtn {

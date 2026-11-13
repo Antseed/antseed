@@ -1,5 +1,5 @@
-import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
-import { extractRequestBodyFields, parseJsonObject } from '@antseed/api-adapter'
+import { isRouterOptions, shouldEmitDebugLine, type PeerInfo, type RouterOptions, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
@@ -42,6 +42,7 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
 }
 
 export function extractRequestedService(request: SerializedHttpRequest): string | null {
+  if (nativeVideoRoute(request)) return requestService(request) ?? null
   const contentType = getHeader(request.headers, 'content-type').toLowerCase()
   if (!contentType.includes('application/json') && !contentType.startsWith('multipart/form-data')) {
     return null
@@ -304,7 +305,7 @@ export function substituteRoutedModelAlias(
  * Marker header the system proxy stamps on requests whose `model` field IT
  * rewrote from the connect-time route — intercepted tools (Claude Code
  * talking to api.anthropic.com through the MITM proxy) send upstream model
- * names, not an AntSeed route, so the model on such requests is AntSeed
+ * names, not an Antseed route, so the model on such requests is Antseed
  * plumbing rather than a client choice. The buyer treats those models like
  * the routed-model alias for per-chat routing: a chat's pinned model
  * overrides the proxy-resolved route. Internal — stripped before dispatch.
@@ -315,6 +316,15 @@ export const SYSTEM_ROUTED_MODEL_HEADER = 'x-antseed-system-routed'
     traffic is attributed to the Connected App profile that captured it,
     rather than to a generic SDK User-Agent. Stripped before dispatch. */
 export const SYSTEM_PROXY_SOURCE_HEADER = 'x-antseed-system-proxy-source'
+
+/** Names the stored buyer identity (wallet) that pays for a request; absent
+    means the default identity. Local to the buyer — stripped before dispatch. */
+export const BUYER_IDENTITY_HEADER = 'x-antseed-buyer-identity'
+
+/** The most a video create may cost, in USDC base units (the gateway sends what
+    is left of the key's spend limits). Can only lower the buyer's own video
+    limit. Local to the buyer — stripped before dispatch. */
+export const MAX_VIDEO_COST_HEADER = 'x-antseed-max-video-usdc'
 
 /**
  * Replace a proxy-assigned model with the chat's pinned route. Only used for
@@ -350,20 +360,70 @@ function encodeRewrittenJsonBody(
   headers: Record<string, string>,
 ): { body: Uint8Array; headers: Record<string, string> } {
   const rewritten = new TextEncoder().encode(JSON.stringify(obj))
+  return { body: rewritten, headers: withContentLength(headers, rewritten.length) }
+}
+
+function withContentLength(headers: Record<string, string>, length: number): Record<string, string> {
   const updatedHeaders = { ...headers }
   if ('content-length' in updatedHeaders) {
-    updatedHeaders['content-length'] = String(rewritten.length)
+    updatedHeaders['content-length'] = String(length)
   } else if ('Content-Length' in updatedHeaders) {
-    updatedHeaders['Content-Length'] = String(rewritten.length)
+    updatedHeaders['Content-Length'] = String(length)
   }
-  return { body: rewritten, headers: updatedHeaders }
+  return updatedHeaders
+}
+
+/**
+ * Rewrites a multipart form's `peerId@model` text field to the bare model,
+ * e.g. on `/v1/images/edits`. Only that field's bytes change: the boundary and
+ * every other part, file parts included, are kept as sent.
+ */
+function rewritePeerPinnedMultipartModel(
+  body: Uint8Array,
+  headers: Record<string, string>,
+): { body: Uint8Array; headers: Record<string, string>; pinnedPeerId: string | null } {
+  const unchanged = { body, headers, pinnedPeerId: null }
+  const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(getHeader(headers, 'content-type').trim())
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim()
+  if (!boundary) return unchanged
+
+  // latin1 maps each byte to one char, so string offsets are byte offsets.
+  const text = new TextDecoder('latin1').decode(body)
+  const delimiter = `--${boundary}`
+  let index = text.indexOf(delimiter)
+  while (index !== -1) {
+    index += delimiter.length
+    if (text.startsWith('--', index)) break
+    const headerEnd = text.indexOf('\r\n\r\n', index)
+    if (headerEnd === -1) break
+    const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4)
+    if (next === -1) break
+    const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(text.slice(index, headerEnd))?.[1]
+    if (params !== undefined && !/filename\s*=/i.test(params) && /(?:^|;)\s*name="model"/i.test(params)) {
+      const start = headerEnd + 4
+      const parsed = parsePeerPinnedService(new TextDecoder().decode(body.subarray(start, next)).trim())
+      if (!parsed) return unchanged
+      const service = new TextEncoder().encode(parsed.service)
+      const rewritten = new Uint8Array(body.length - (next - start) + service.length)
+      rewritten.set(body.subarray(0, start))
+      rewritten.set(service, start)
+      rewritten.set(body.subarray(next), start + service.length)
+      return { body: rewritten, headers: withContentLength(headers, rewritten.length), pinnedPeerId: parsed.peerId }
+    }
+    index = next + 2
+  }
+  return unchanged
 }
 
 export function rewritePeerPinnedServiceInBody(
   body: Uint8Array,
   headers: Record<string, string>,
 ): { body: Uint8Array; headers: Record<string, string>; pinnedPeerId: string | null } {
-  if (!getHeader(headers, 'content-type').toLowerCase().includes('application/json') || body.length === 0) {
+  const contentType = getHeader(headers, 'content-type').toLowerCase()
+  if (body.length > 0 && contentType.startsWith('multipart/form-data')) {
+    return rewritePeerPinnedMultipartModel(body, headers)
+  }
+  if (!contentType.includes('application/json') || body.length === 0) {
     return { body, headers, pinnedPeerId: null }
   }
   const obj = parseJsonObject(body)
@@ -394,4 +454,35 @@ export function rewritePeerPinnedServiceInBody(
 
   const { body: rewritten, headers: updatedHeaders } = encodeRewrittenJsonBody(obj, headers)
   return { body: rewritten, headers: updatedHeaders, pinnedPeerId: parsed.peerId }
+}
+
+/**
+ * Per-request router settings: the body's optional `routing` object, in the serving router's
+ * protocol terms (for `irp-suggest`: `{ "cost_quality_tradeoff": 0-10 }`). They are checked
+ * against that router's protocol only once the request is known to go through a router.
+ */
+export type RequestRoutingOptions = RouterOptions
+
+/**
+ * Reads and removes the body's `routing` object, so it never reaches a seller.
+ * It only applies when the request is served through a routing service. A malformed one is
+ * still removed; `invalid` carries the error for the caller to report only when a router is
+ * used, so other requests drop it silently.
+ */
+export function takeRoutingOptions(
+  request: SerializedHttpRequest,
+): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions; invalid?: string } {
+  if (!getHeader(request.headers, 'content-type').toLowerCase().includes('application/json') || request.body.length === 0) {
+    return { kind: 'none' }
+  }
+  const obj = parseJsonObject(request.body)
+  if (!obj || !('routing' in obj)) return { kind: 'none' }
+  const routing = obj['routing']
+  delete obj['routing']
+  const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
+  const stripped = { ...request, body, headers }
+  if (routing === null || routing === undefined) return { kind: 'options', request: stripped, options: {} }
+  return isRouterOptions(routing)
+    ? { kind: 'options', request: stripped, options: { ...routing } }
+    : { kind: 'options', request: stripped, options: {}, invalid: '`routing` must be an object of router settings with string, number or boolean values.' }
 }

@@ -1,18 +1,17 @@
 /**
  * IPC surface for app-level queries: version and locale, first-run setup
- * state, the signing identity, voice transcription, and price references.
+ * state, the signing identity, and voice transcription.
  */
 import { ipcMain } from 'electron';
+import { stopPaymentsPortal } from '../payments/portal.js';
+import { restartLocalGatewayForNewIdentity } from '../gateway/service.js';
+import { identityImportRefusal } from '../runtime/identity-import.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
 import {
-  getOpenRouterReferencePrices,
-} from '../billing/openrouter-catalog.js';
-import {
   ensureSecureIdentity,
   exportIdentityPrivateKeyHex,
-  getSecureIdentity,
   importIdentityPrivateKeyHex,
 } from '../identity.js';
 import {
@@ -21,6 +20,9 @@ import {
 import {
   getTelemetryService,
 } from '../telemetry/runtime.js';
+import { watchConnectedAppFirstRequest } from '../telemetry/connected-app-watch.js';
+import { syncBuyerTelemetryConsent } from '../telemetry/buyer-consent.js';
+import { setDesktopTelemetryChoiceInConfig } from '../telemetry/host-env.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -40,7 +42,10 @@ import {
 import {
   TELEMETRY_ACTION_SURFACES,
   TELEMETRY_APP_NAMES,
+  TELEMETRY_DEPOSIT_METHODS,
+  TELEMETRY_RENDERER_DEPOSIT_STEPS,
   TELEMETRY_USER_ACTIONS,
+  type DepositStepSignal,
   type TelemetryStatusUpdateResult,
   type UserActionSignal,
 } from '../../shared/telemetry.js';
@@ -85,7 +90,18 @@ export function registerAppIpc(): void {
     if (!telemetry) {
       return { ok: false, error: 'Telemetry service not initialized' };
     }
+    const previouslyOptedOut = telemetry.isUserOptedOut();
     await telemetry.setUserOptedOut(!enabled);
+    // The buyer re-reads `telemetry.enabled` from its config within a second.
+    // If that file cannot be written the buyer would keep its old choice, so
+    // put the desktop back too and report the failure instead of a switch
+    // that says one thing while the buyer does another.
+    if (!(await syncBuyerTelemetryConsent(Boolean(enabled)))) {
+      await telemetry.setUserOptedOut(previouslyOptedOut);
+      return { ok: false, error: 'Could not update the buyer config; telemetry setting unchanged' };
+    }
+    setDesktopTelemetryChoiceInConfig(true);
+    if (enabled) await telemetry.recordTelemetryTurnedOn();
     return {
       ok: true,
       available: telemetry.available,
@@ -109,26 +125,34 @@ export function registerAppIpc(): void {
       surface: candidate.surface as UserActionSignal['surface'],
       ...(candidate.app !== undefined ? { app: candidate.app as UserActionSignal['app'] } : {}),
     });
+    if (candidate.action === 'app_connect' && candidate.app !== undefined) {
+      const app = candidate.app as NonNullable<UserActionSignal['app']>;
+      void telemetry.recordConnectedAppConnected(app);
+      if (telemetry.enabled) watchConnectedAppFirstRequest(app);
+    }
     return { ok: true };
   });
 
-  ipcMain.handle('openrouter:reference-prices', () => getOpenRouterReferencePrices());
-
-  ipcMain.handle('identity:get', async () => {
-    try {
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      if (!identity) {
-        return { ok: false, data: null, error: 'Identity not available (safeStorage may not be ready)' };
-      }
-      return {
-        ok: true,
-        data: { peerId: identity.peerId },
-        error: null,
-      };
-    } catch (err) {
-      return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
+  // Deposit funnel steps from the Add credits view. Only fixed enums and a
+  // finite amount cross; main buckets the amount before anything is sent.
+  ipcMain.handle('telemetry:deposit-step', (_event, payload: unknown) => {
+    const candidate = payload as Partial<DepositStepSignal> | null;
+    if (!candidate
+      || !TELEMETRY_RENDERER_DEPOSIT_STEPS.includes(candidate.step as never)
+      || (candidate.method !== undefined && !TELEMETRY_DEPOSIT_METHODS.includes(candidate.method as never))) {
+      return { ok: false };
     }
+    const telemetry = getTelemetryService();
+    if (!telemetry) return { ok: false };
+    const amount = typeof candidate.amountUsdc === 'number' && Number.isFinite(candidate.amountUsdc)
+      ? candidate.amountUsdc
+      : undefined;
+    void telemetry.recordDepositStep({
+      step: candidate.step as DepositStepSignal['step'],
+      ...(candidate.method !== undefined ? { method: candidate.method } : {}),
+      ...(amount !== undefined ? { amountUsdc: amount } : {}),
+    });
+    return { ok: true };
   });
 
   ipcMain.handle('identity:export-key', async () => {
@@ -162,11 +186,17 @@ export function registerAppIpc(): void {
       if (typeof rawKey !== 'string') {
         return { ok: false, error: 'Private key must be a string' };
       }
+      // Before any staking reset or identity work: attach-only desktops never replace a signer.
+      const refused = identityImportRefusal();
+      if (refused) return refused;
       await ensureSecureIdentity();
       const result = await importIdentityPrivateKeyHex(rawKey);
       if (result.ok) {
+        await stopPaymentsPortal();
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();
+        const blocked = await restartLocalGatewayForNewIdentity();
+        if (blocked) return { ok: false, error: blocked };
       }
       return result;
     } catch (err) {

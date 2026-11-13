@@ -1,63 +1,74 @@
 ---
-sidebar_position: 2
 slug: /discovery
-title: Peer Discovery
+title: Peer discovery
 sidebar_label: Discovery
+description: How sellers announce themselves on the DHT and how buyers fetch and validate signed seller metadata.
 hide_title: true
 ---
 
-# Peer Discovery
+# Peer discovery
 
-The discovery protocol uses a DHT network (built on BEP 5) as a decentralized directory of seller nodes, combined with an HTTP metadata endpoint for retrieving provider details and Skills. All nodes bootstrap through dedicated AntSeed infrastructure.
+Discovery uses a DHT (built on BEP 5) as a decentralized directory of seller nodes, plus an HTTP metadata endpoint on each seller that returns its signed service catalog, prices, and capabilities. Nodes bootstrap through Antseed-run DHT bootstrap nodes; after that, discovery is peer to peer.
 
-## DHT Topic Hashing
+## DHT topic hashing
 
 Sellers announce multiple topic types. Each topic is SHA1-hashed for DHT lookup.
 
-| Topic Type | Plain Topic String | Key Normalization |
+| Topic type | Plain topic string | Key normalization |
 |---|---|---|
-| Provider | `antseed:{provider}` | `trim + lowercase` |
-| Model (canonical) | `antseed:service:{model}` | `trim + lowercase` |
-| Model (search fallback) | `antseed:service-search:{model}` | `trim + lowercase`, then remove spaces, `-`, `_` (keep `.`) |
-| Capability | `antseed:{capability}` or `antseed:{capability}:{name}` | `trim + lowercase` |
+| Wildcard | `antseed:*` | Fixed topic; also supports older buyers |
+| Subnet | `antseed:subnet:{index}` | First byte of normalized peer ID modulo 16 |
+| Peer | `antseed:peer:{peerId}` | Lowercase hex without the `0x` prefix |
+| Optional capability | `antseed:{capability}` or `antseed:{capability}:{name}` | `trim + lowercase`; announced for configured offerings |
 
-`model-search` topics are announced only when the compact key differs from the canonical key.
+Each seller announces the wildcard, exactly one subnet topic, its per-peer topic,
+and any configured capability topics. There are no per-service, model-search, or
+provider-name topics. The signed metadata document carries the full service
+catalog, keeping the announcement count independent of the number of services.
 
-Example:
+### Enumeration and local service matching
 
-- `kimi 2.5` -> canonical `antseed:service:kimi 2.5`, search `antseed:service-search:kimi2.5`
-- `kimi-2.5` -> canonical `antseed:service:kimi-2.5`, search `antseed:service-search:kimi2.5`
-- `kimi_2.5` -> canonical `antseed:service:kimi_2.5`, search `antseed:service-search:kimi2.5`
+1. Query `SHA1("antseed:*")` to enumerate endpoints and warm the routing table.
+2. Query subnet topics sequentially, not in parallel. A foreground time budget
+   can limit the scan; subsequent scans rotate through the remaining subnets.
+   The background sweep completes all subnets and can emit incremental results.
+3. Deduplicate endpoints by `host:port` and fetch `GET /metadata` from each.
+4. Validate metadata schema, signature, and freshness. Deduplicate accepted
+   results by peer identity when constructing the buyer's peer list.
+5. Match the requested service against the metadata catalog locally, then apply
+   routing eligibility and ranking.
 
-Buyer model discovery queries canonical model topic first, then also queries `model-search` when keys differ.
+A known peer can be resolved directly through `antseed:peer:{peerId}`.
+Capability-specific lookup is also available separately. Neither requires
+reintroducing per-model announcements.
 
-## Bootstrap Nodes
+## Bootstrap nodes
 
 | Host | Port |
 |---|---|
 | `dht1.antseed.com` | 6881 |
 | `dht2.antseed.com` | 6881 |
 
-## DHT Configuration
+## DHT configuration
 
 | Parameter | Value |
 |---|---|
 | Port | 6881 |
-| Re-announce interval | 15 minutes |
-| Operation timeout | 10 seconds |
+| Re-announce interval | 5 minutes |
+| Operation timeout | 25 seconds |
+| Subnet count | 16 |
 
-## Metadata Endpoint
+## Metadata endpoint
 
-Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-serialized `PeerMetadata` with pricing, capacity, and optional metadata tags/protocol hints.  
-By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataPortOffset = 0`).
+Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-serialized `PeerMetadata` with pricing, capacity, and optional tags and protocol hints. By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataPortOffset = 0`).
 
 ## PeerMetadata
 
 ```json title="metadata structure"
 {
-  "peerId": "a1b2c3d4...40 hex chars (EVM address)",
-  "version": 12,
-  "displayName": "Acme Inference - us-east-1",
+  "peerId": "<peerId>",
+  "version": 16,
+  "displayName": "Example Inference",
   "publicAddress": "peer.example.com:6882",
   "providers": [{
     "provider": "openai",
@@ -93,7 +104,7 @@ By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataP
   "region": "us-east",
   "timestamp": 1708272000000,
   "capabilities": ["verification.response-auth.v1"],
-  "sellerContract": "1f228613116e2d08014dfdcc198377c8dedf18c9",
+  "sellerContract": "<seller contract address>",
   "verifications": {
     "domains": [
       { "domain": "provider.example.com", "methods": ["dns-txt"] }
@@ -102,7 +113,7 @@ By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataP
       { "username": "example-org", "repository": "antseed-verification" }
     ]
   },
-  "signature": "eip191...130 hex chars"
+  "signature": "<EIP-191 signature, 130 hex chars>"
 }
 ```
 
@@ -112,9 +123,9 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 
 ```json
 {
-  "serviceApiProtocols": { "flux.1-schnell": ["openai-images"] },
+  "serviceApiProtocols": { "qwen-image": ["openai-images"] },
   "serviceUnitBillingModels": {
-    "flux.1-schnell": {
+    "qwen-image": {
       "openai-images": {
         "version": 1,
         "components": [
@@ -124,7 +135,7 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
     }
   },
   "serviceCapabilities": {
-    "flux.1-schnell": {
+    "qwen-image": {
       "inputs": ["text", "image"],
       "outputs": ["image"],
       "supportedParameters": ["background", "output_format", "quality", "size"]
@@ -133,83 +144,45 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 }
 ```
 
-Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, or `resolution`. Discovery only includes capability and billing entries for services currently advertised by the provider.
+Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, `resolution`, (metadata v16+) a video create's `aspect_ratio` and `audio`, and (metadata v17+) `reference_video`, whether the create sends reference videos. Discovery only includes capability and billing entries for services currently advertised by the provider.
 
-Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged — the upstream provider remains the authority on which parameters it accepts.
+Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-:::warning Metadata version compatibility
-Buyers reject metadata versions newer than they understand. A v10/v11 buyer therefore drops a v12 seller, while a v12 buyer continues to accept v10 and v11 sellers. Upgrade buyers before sellers using the [metadata v12 migration guide](/docs/guides/metadata-v12-upgrade).
-:::
+Buyers accept metadata versions from 10 up to the newest version their release understands, and reject newer ones. Version 13 added `serviceHealth`, the seller's own health check result for each service, version 14 added `servicePerformance`, how each service served the seller's buyers in the last hour, and version 15 adds speech services (the `openai-audio-speech` protocol, the `input_characters` billing unit and a `speech` capability block; see [Speech services](/docs/provide/media#speech-services)), and version 16 adds video prices by aspect ratio and audio (`aspect_ratio` and `audio` match keys, and up to 64 components per billing model instead of 8; see [Prices by aspect ratio and audio](/docs/provide/media#prices-by-aspect-ratio-and-audio)), and version 17 adds the `reference_video` match key (see [Reference videos](/docs/provide/media#reference-videos)). The newest version is `METADATA_VERSION` in [`packages/protocol/src/peer-metadata.ts`](https://github.com/Antseed/antseed/blob/main/packages/protocol/src/peer-metadata.ts); it is 17 in current releases.
+
+```json
+"serviceHealth": {
+  "gpt-6-sol": { "status": "failing", "reason": "timeout", "consecutiveFailures": 3, "failingSince": 1793327880000, "checkedAt": 1793328180000, "source": "probe" },
+  "gpt-6-terra": { "status": "healthy", "checkedAt": 1793328100000, "source": "traffic" }
+}
+```
+
+A healthy entry says when the service last succeeded and how: `source: "traffic"` when a paid buyer request got a successful answer, `"probe"` when the seller's own check passed. `checkedAt` moves forward with each success, but buyers see the new value only with the seller's next announcement. The HTTP status of a success is not announced; `httpStatus` appears only on a failing entry. A seller's own upstream account is not announced: when the upstream is out of credit or rejects the seller's key, the entry says `reason: "upstream_error"` (the upstream is unavailable) with no `httpStatus`, and a request whose upstream answers with an account error (a rejected key, a 402 or a billing error) gets `503` with `error.code: "upstream_unavailable"` instead of the upstream's error. The seller's own dashboard, logs and alerts keep the real reason.
+
+A seller keeps failing services announced with this status instead of withdrawing them. Buyers leave failing services out of model lists and automatic routing; a request pinned to that seller still goes through. If it fails, the seller answers `503` with `error.code: "seller_self_health_failing"`, and the error says the seller's self health check is failing and why. When every seller of a model reports it failing, a buyer asking for that model gets the same error instead of "model not found".
+
+```json
+"servicePerformance": {
+  "gpt-6-terra": { "requests": 312, "successRate": 0.9712, "firstTokenMsP50": 420, "firstTokenMsP90": 1250, "tokensPerSecondP50": 78 }
+}
+```
+
+The seller measures these on its own buyer traffic over the last hour: every buyer request it relayed upstream (`requests`), and the share the upstream answered without a server-side error, rate limit, timeout or an error reported inside the stream (`successRate`, 0 to 1). For streamed answers it adds the median and 90th percentile time from receiving the request to the first generated token (start events and empty deltas do not count) and the median output speed in tokens per second (to within about 5%: the seller keeps running histograms rather than every request). A client error such as a malformed request does not count against it, and health probes and video jobs are not counted. A service with no buyer requests in the last hour has no entry.
+
+Buyers use these figures as their starting point for a seller they have not used yet. Without them, a new seller is assumed to succeed 80% of the time and to be as fast as the sellers the buyer has measured. With them, the buyer starts from the reported success rate (once it covers at least 10 requests, and never above 95%, since sellers grade themselves) and the reported speed. A seller reporting failures is tried after healthier ones from the first request. The buyer's own requests quickly outweigh what the seller reports.
+
+Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign one document for each version they serve (`SERVED_METADATA_VERSIONS`, currently v12 to v16) and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing. Each older document leaves out what its version can't carry, such as speech services before v15 or video option prices before v16.
 
 `publicAddress` is optional. When present, buyers should prefer it over the raw host learned from the DHT announcement. This is intended for deployments where DHT traffic exits from one IP but buyers must connect to another address, such as a Kubernetes load balancer.
 
 `sellerContract` is optional. When present, buyers use the contract as the on-chain seller address and verify separately that the peer identity is an authorized operator of that contract.
 
-`verifications` is optional. It carries external ownership claims that are included in the signed metadata. Domain and GitHub proofs bind to `peerId` — not to `sellerContract` — because the peer identity is the key that signs discovery metadata and operates the node.
+`verifications` is optional. It carries external ownership claims that are included in the signed metadata. Domain and GitHub proofs bind to `peerId`, not to `sellerContract`, because the peer identity is the key that signs discovery metadata and operates the node.
 
-## Domain and GitHub Verification Claims
+## Domain and GitHub verification claims
 
-Domain verification supports two proof transports:
+The optional `verifications` field carries domain claims (proved by a DNS TXT record at `_antseed.<domain>` or an HTTPS well-known file at `/.well-known/antseed.json`) and GitHub claims (proved by an `antseed.json` file in a public repository). Proofs bind to `peerId`, not `sellerContract`, and verifiers reject redirected proof URLs. For the exact record and file formats and how to publish them, see [Verified identity](/docs/provide/verified-identity).
 
-- DNS TXT at `_antseed.<domain>` with value `antseed-peer=<peer-id-without-0x>`
-- HTTPS well-known JSON at `https://<domain>/.well-known/antseed.json`
+## Matching and ranking
 
-A DNS-backed claim looks like:
-
-```json
-{
-  "domain": "provider.example.com",
-  "methods": ["dns-txt"]
-}
-```
-
-The matching DNS record is:
-
-```text
-_antseed.provider.example.com TXT "antseed-peer=a1b2c3d4...40hex"
-```
-
-An HTTPS well-known proof uses this JSON shape:
-
-```json
-{
-  "type": "antseed-domain-verification",
-  "peerId": "a1b2c3d4...40hex",
-  "domain": "provider.example.com"
-}
-```
-
-GitHub verification fetches a public file from:
-
-```text
-https://raw.githubusercontent.com/<username>/<repository>/HEAD/antseed.json
-```
-
-The proof file shape is:
-
-```json
-{
-  "type": "antseed-github-verification",
-  "peerId": "a1b2c3d4...40hex",
-  "username": "example-org"
-}
-```
-
-The repository name is part of the metadata claim, not the proof file. If no repository is provided, verifiers use the profile repository named after the username.
-
-Verifiers reject redirected proof URLs. Domain and GitHub proofs must be served directly from the claimed domain or GitHub account path.
-
-## Peer Scoring
-
-| Dimension | Weight | Description |
-|---|---|---|
-| Price | 0.30 | Lower price scores higher (inverted min-max) |
-| Latency | 0.25 | Lower latency scores higher (EMA-based) |
-| Capacity | 0.20 | More available capacity scores higher |
-| Reputation | 0.10 | Higher reputation scores higher (0-100) |
-| Freshness | 0.10 | Recently seen peers score higher |
-| Reliability | 0.05 | Lower failure rate and streak scores higher |
-
-All factors are min-max normalized across the eligible candidate pool. By default there is no minimum reputation gate (`minPeerReputation: 0`); buyers can explicitly raise it to exclude lower-reputation peers before scoring. Peers in a failure cooldown (exponential backoff) are also excluded.
-
-Buyers can filter by capability, Skill, minimum reputation, and price ceiling.
+Buyers match the requested service against each seller's catalog locally, then filter and rank eligible sellers. The trust score is described in [Reputation](/docs/reputation). Routing weights, defaults, and filters are documented only in the [router plugin API](/docs/router-api).

@@ -194,6 +194,22 @@ export function encodeHttpResponse(resp: SerializedHttpResponse): Uint8Array {
 }
 
 /**
+ * Encode every HTTP response field before the body bytes, using the supplied
+ * body length. Streaming callers hash this prefix and then append body chunks.
+ */
+export function encodeHttpResponsePrefix(
+  resp: Omit<SerializedHttpResponse, 'body'>,
+  bodyLength: number,
+): Uint8Array {
+  if (!Number.isInteger(bodyLength) || bodyLength < 0 || bodyLength > 0xffff_ffff) {
+    throw new RangeError('HTTP response body length must fit in uint32');
+  }
+  const encoded = encodeHttpResponse({ ...resp, body: new Uint8Array(0) });
+  new DataView(encoded.buffer).setUint32(encoded.length - 4, bodyLength);
+  return encoded;
+}
+
+/**
  * Decode binary data into a SerializedHttpResponse.
  */
 export function decodeHttpResponse(data: Uint8Array): SerializedHttpResponse {

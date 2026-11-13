@@ -1,19 +1,37 @@
 import { join } from 'node:path';
+import chalk from 'chalk';
 import {
   DepositsClient,
   ChannelsClient,
   StakingClient,
   DepositRelayClient,
   loadOrCreateIdentity,
+  reconcileStoredChannels,
   resolveChainConfig,
+  resolveContractStack,
+  resolveLegacyContractAddresses,
+  type ContractStackResolution,
+  type LivePaymentSessions,
 } from '@antseed/node';
 import {
   IdentityClient,
   EmissionsClient,
+  UsageAccountingClient,
+  UsageRewardsClient,
+  PositionInitClient,
+  EmissionsGateClient,
   ChannelStore,
+  CHANNEL_KIND,
+  CHANNEL_ROLE,
+  VerifierClient,
+  ANTSTokenClient,
+  SellerPoolsClient,
+  SellerPoolsRewardsClient,
+  SellerRegistryClient,
 } from '@antseed/node/payments';
 import type { Identity } from '@antseed/node';
 import type { AntseedConfig } from '../config/types.js';
+import { isBuyerProcessAlive } from '../status/node-status.js';
 
 export const ANTSEED_BASE_RPC_URL_ENV = 'ANTSEED_BASE_RPC_URL';
 
@@ -71,6 +89,23 @@ export function formatAnts(baseUnits: bigint): string {
   return `${whole}.${fracStr}`;
 }
 
+export function formatAntsExact(baseUnits: bigint): string {
+  const whole = baseUnits / 10n ** 18n;
+  const fraction = (baseUnits % 10n ** 18n).toString().padStart(18, '0').replace(/0+$/, '') || '0';
+  return `${whole}.${fraction}`;
+}
+
+/** Parse a positive human-readable ANTS amount into 18-decimal base units. */
+export function parseAntsToBaseUnits(amount: string): bigint {
+  const match = amount.trim().match(/^(\d+)(?:\.(\d{1,18}))?$/);
+  if (!match) throw new Error('Amount must be a positive number with at most 18 decimals.');
+  const whole = BigInt(match[1] ?? '0');
+  const fraction = (match[2] ?? '').padEnd(18, '0');
+  const baseUnits = whole * 10n ** 18n + BigInt(fraction || '0');
+  if (baseUnits <= 0n) throw new Error('Amount must be a positive number.');
+  return baseUnits;
+}
+
 /** Format USDC base units (6 decimals) to human-readable string. */
 export function formatUsdc(baseUnits: bigint): string {
   const whole = baseUnits / 1_000_000n;
@@ -106,7 +141,27 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   stakingContractAddress?: string;
   identityRegistryAddress?: string;
   emissionsContractAddress?: string;
+  verificationContractAddress?: string;
+  verificationResultsAddress?: string;
+  verificationDeployBlock?: number;
+  legacyEmissionsContractAddress?: string;
+  legacyStakingContractAddress?: string;
+  legacyEmissionsV1ContractAddress?: string;
+  antsTokenAddress?: string;
+  registryContractAddress?: string;
+  emissionsGateAddress?: string;
+  sellerPoolsAddress?: string;
+  sellerRegistryAddress?: string;
+  positionInitAddress?: string;
+  usageAccountingAddress?: string;
+  usageRewardsAddress?: string;
+  sellerPoolsRewardsAddress?: string;
+  legacyEmissionsEscrowAddress?: string;
+  washTradingRegistryAddress?: string;
+  pointsPolicyRegistryAddress?: string;
+  verificationPointsPolicyAddress?: string;
   depositRelayAddress?: string;
+  explorerApiUrl?: string;
   evmChainId: number;
 };
 
@@ -153,10 +208,55 @@ export function requireCryptoConfig(
     channelsContractAddress: crypto.channelsContractAddress || resolved.channelsContractAddress,
     stakingContractAddress: crypto.stakingContractAddress || resolved.stakingContractAddress,
     emissionsContractAddress: crypto.emissionsContractAddress || resolved.emissionsContractAddress,
+    legacyEmissionsContractAddress: crypto.legacyEmissionsContractAddress || resolved.legacyEmissionsContractAddress,
+    legacyStakingContractAddress: crypto.legacyStakingContractAddress || resolved.legacyStakingContractAddress,
+    legacyEmissionsV1ContractAddress: crypto.legacyEmissionsV1ContractAddress || resolved.legacyEmissionsV1ContractAddress,
+    antsTokenAddress: crypto.antsTokenAddress || (crypto.chainId === 'base-local' ? '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0' : resolved.antsTokenAddress),
+    registryContractAddress: crypto.registryContractAddress || (crypto.chainId === 'base-local' ? '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9' : resolved.registryContractAddress),
+    emissionsGateAddress: crypto.emissionsGateAddress || resolved.emissionsGateAddress,
+    sellerPoolsAddress: crypto.sellerPoolsAddress || resolved.sellerPoolsAddress,
+    sellerRegistryAddress: crypto.sellerRegistryAddress || resolved.sellerRegistryAddress,
+    positionInitAddress: crypto.positionInitAddress || resolved.positionInitAddress,
+    usageAccountingAddress: crypto.usageAccountingAddress || resolved.usageAccountingAddress,
+    usageRewardsAddress: crypto.usageRewardsAddress || resolved.usageRewardsAddress,
+    sellerPoolsRewardsAddress: crypto.sellerPoolsRewardsAddress || resolved.sellerPoolsRewardsAddress,
+    legacyEmissionsEscrowAddress: crypto.legacyEmissionsEscrowAddress || resolved.legacyEmissionsEscrowAddress,
+    washTradingRegistryAddress: crypto.washTradingRegistryAddress || resolved.washTradingRegistryAddress,
+    pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
+    verificationPointsPolicyAddress: crypto.verificationPointsPolicyAddress || resolved.verificationPointsPolicyAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
+    verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
+    // The results address belongs to the KBF contract it was deployed with: a custom KBF address
+    // discovers its own unless it is set too.
+    verificationResultsAddress: crypto.verificationResultsAddress
+      || (crypto.verificationContractAddress ? undefined : resolved.verificationResultsAddress),
+    // The built-in deploy block only describes the built-in address; a custom
+    // address must bring its own block (or scans need an explicit fromBlock).
+    verificationDeployBlock: crypto.verificationDeployBlock
+      ?? (crypto.verificationContractAddress ? undefined : resolved.verificationDeployBlock),
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
     evmChainId: resolved.evmChainId,
+    explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
   };
+}
+
+export function requireContractAddress(
+  crypto: ReturnType<typeof requireCryptoConfig>,
+  field: keyof ReturnType<typeof requireCryptoConfig>,
+  name: string,
+): string {
+  const address = crypto[field];
+  if (typeof address !== 'string' || !address) {
+    throw new Error(`\`${name}\` address not configured for chain \`${crypto.chainId}\``);
+  }
+  return address;
+}
+
+export function resolveCliContractStack(
+  config: AntseedConfig,
+  overrides?: CryptoConfigOverrides,
+): Promise<ContractStackResolution> {
+  return resolveContractStack(requireCryptoConfig(config, overrides));
 }
 
 function fallbackClientOpts(crypto: ReturnType<typeof requireCryptoConfig>) {
@@ -241,6 +341,94 @@ export function createEmissionsClient(config: AntseedConfig, overrides?: CryptoC
   });
 }
 
+function contractClientConfig(crypto: ReturnType<typeof requireCryptoConfig>, contractAddress: string) {
+  return {
+    rpcUrl: crypto.rpcUrl,
+    ...fallbackClientOpts(crypto),
+    contractAddress,
+    evmChainId: crypto.evmChainId,
+  };
+}
+
+export function createUsageAccountingClient(config: AntseedConfig): UsageAccountingClient {
+  const crypto = requireCryptoConfig(config);
+  return new UsageAccountingClient(contractClientConfig(crypto, requireContractAddress(crypto, 'usageAccountingAddress', 'usageAccounting')));
+}
+
+export function createUsageRewardsClient(config: AntseedConfig): UsageRewardsClient {
+  const crypto = requireCryptoConfig(config);
+  return new UsageRewardsClient(contractClientConfig(crypto, requireContractAddress(crypto, 'usageRewardsAddress', 'usageRewards')));
+}
+
+export function createSellerPoolsClient(config: AntseedConfig): SellerPoolsClient {
+  const crypto = requireCryptoConfig(config);
+  return new SellerPoolsClient({
+    ...contractClientConfig(crypto, requireContractAddress(crypto, 'sellerPoolsAddress', 'sellerPools')),
+    antsTokenAddress: requireContractAddress(crypto, 'antsTokenAddress', 'antsToken'),
+  });
+}
+
+export function createSellerPoolsRewardsClient(config: AntseedConfig): SellerPoolsRewardsClient {
+  const crypto = requireCryptoConfig(config);
+  return new SellerPoolsRewardsClient(contractClientConfig(crypto, requireContractAddress(crypto, 'sellerPoolsRewardsAddress', 'sellerPoolsRewards')));
+}
+
+export function createSellerRegistryClient(config: AntseedConfig): SellerRegistryClient {
+  const crypto = requireCryptoConfig(config);
+  return new SellerRegistryClient(contractClientConfig(crypto, requireContractAddress(crypto, 'sellerRegistryAddress', 'sellerRegistry')));
+}
+
+export function createPositionInitClient(config: AntseedConfig): PositionInitClient {
+  const crypto = requireCryptoConfig(config);
+  return new PositionInitClient(contractClientConfig(crypto, requireContractAddress(crypto, 'positionInitAddress', 'positionInit')));
+}
+
+export function createEmissionsGateClient(config: AntseedConfig): EmissionsGateClient {
+  const crypto = requireCryptoConfig(config);
+  return new EmissionsGateClient(contractClientConfig(crypto, requireContractAddress(crypto, 'emissionsGateAddress', 'emissionsGate')));
+}
+
+export function createAntsTokenClient(config: AntseedConfig): ANTSTokenClient {
+  const crypto = requireCryptoConfig(config);
+  return new ANTSTokenClient(contractClientConfig(crypto, requireContractAddress(crypto, 'antsTokenAddress', 'antsToken')));
+}
+
+export function createLegacyEmissionsClient(config: AntseedConfig): EmissionsClient {
+  const crypto = requireCryptoConfig(config);
+  const legacy = { ...crypto, ...resolveLegacyContractAddresses(crypto) };
+  return new EmissionsClient(contractClientConfig(legacy, requireContractAddress(legacy, 'legacyEmissionsContractAddress', 'legacyEmissions')));
+}
+
+export function createLegacyStakingClient(config: AntseedConfig): StakingClient {
+  const crypto = requireCryptoConfig(config);
+  const legacy = { ...crypto, ...resolveLegacyContractAddresses(crypto) };
+  return new StakingClient({
+    ...contractClientConfig(legacy, requireContractAddress(legacy, 'legacyStakingContractAddress', 'legacyStaking')),
+    usdcAddress: crypto.usdcContractAddress,
+  });
+}
+
+const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
+
+/**
+ * Create a VerifierClient from the CLI config.
+ */
+export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
+  const crypto = requireCryptoConfig(config, overrides);
+  if (!crypto.verificationContractAddress) {
+    throw new Error('No KBF audits contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+  }
+  return new VerifierClient({
+    rpcUrl: crypto.rpcUrl,
+    ...fallbackClientOpts(crypto),
+    contractAddress: crypto.verificationContractAddress,
+    ...(crypto.verificationResultsAddress ? { resultsAddress: crypto.verificationResultsAddress } : {}),
+    evmChainId: crypto.evmChainId,
+    logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
+    ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
+  });
+}
+
 /**
  * Create a DepositRelayClient from the CLI config.
  */
@@ -263,4 +451,48 @@ export function createDepositRelayClient(config: AntseedConfig, overrides?: Cryp
  */
 export function openChannelStore(dataDir: string): ChannelStore {
   return new ChannelStore(join(dataDir, 'payments'));
+}
+
+/**
+ * A running buyer holds each seller's current channel in memory and retires it
+ * itself. Beside it, the CLI only retires rows no seller session uses.
+ */
+const RUNNING_BUYER_SESSIONS: LivePaymentSessions = {
+  mayEndSession: () => false,
+  sessionEnded: () => {},
+  oneOffEnded: () => {},
+};
+
+/**
+ * Retire this data dir's buyer channel rows that the chain shows can never
+ * move money again, for every buyer wallet in the store, so a count read next
+ * is right. While a buyer process runs on this data dir, each seller's current
+ * channel is left to it. When the chain cannot be read the rows stay as they
+ * are and one warning goes to stderr.
+ */
+export async function reconcileLocalBuyerChannels(store: ChannelStore, config: AntseedConfig, dataDir: string): Promise<void> {
+  const buyers = new Set(
+    [CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF]
+      .flatMap((kind) => store.getActiveChannels(CHANNEL_ROLE.BUYER, kind))
+      .map((row) => row.buyerEvmAddr),
+  );
+  if (buyers.size === 0) return;
+
+  const sessions = await isBuyerProcessAlive(dataDir) ? RUNNING_BUYER_SESSIONS : undefined;
+  let problem: string | undefined;
+  try {
+    const channels = createChannelsClient(config);
+    for (const buyerEvmAddr of buyers) {
+      const { readError } = await reconcileStoredChannels({ store, channels, buyerEvmAddr, sessions });
+      if (readError !== undefined) {
+        problem = readError;
+        break;
+      }
+    }
+  } catch (err) {
+    problem = (err as Error).message;
+  }
+  if (problem !== undefined) {
+    console.warn(chalk.yellow(`Could not check payment channels on-chain (${problem}). Channels that already closed may still count as active.`));
+  }
 }

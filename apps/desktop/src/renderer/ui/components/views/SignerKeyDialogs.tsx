@@ -143,7 +143,7 @@ export function ImportSignerKeyDialog({ isOpen, onClose, onImported }: ImportPro
             New signer imported: <strong>{shortAddress(importedAddress)}</strong>.
           </p>
           <p className={styles.body}>
-            Restart AntSeed to finish switching to the new key. Your previous key was backed up on
+            Restart Antseed to finish switching to the new key. Your previous key was backed up on
             this machine.
           </p>
           <div className={styles.actions}>

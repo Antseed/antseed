@@ -3,7 +3,7 @@ slug: proof-of-prior-delivery
 title: "Proof of Prior Delivery"
 authors: [antseed]
 tags: [protocol, payments, cryptography, proof-of-delivery, reputation, open-network]
-description: How AntSeed's SpendingAuth signature serves as both payment authorization and cryptographic proof of delivery — building an open, verifiable record of what every seller has delivered.
+description: How Antseed's SpendingAuth signature serves as both payment authorization and cryptographic proof of delivery — building an open, verifiable record of what every seller has delivered.
 keywords: [proof of delivery, SpendingAuth, EIP-712, payment protocol, P2P payments, cumulative voucher, payment negotiation, on-chain stats, agentic AI, open network]
 image: /og-image.jpg
 date: 2026-03-27
@@ -13,7 +13,7 @@ In peer-to-peer compute markets, proving service delivery is the hard problem. N
 
 Most decentralized compute projects sidestep this. They use self-reported metrics (trivially gameable), trusted validators (re-introducing centralization), or optimistic assumptions with dispute windows (which require honest majorities). These are reasonable tradeoffs, but they're not proofs. They're social mechanisms dressed up as cryptographic ones.
 
-AntSeed's answer is the **metadataHash** — a hash of delivery metrics that the buyer signs into every payment authorization. When the seller wants to settle more funds, they must submit a signature that includes this hash. The hash covers what was actually delivered: tokens in, tokens out, average latency, number of requests. The seller can't get paid without presenting proof of what the buyer received. That proof is the `metadataHash`.
+Antseed's answer is the **metadataHash** — a hash of delivery metrics that the buyer signs into every payment authorization. When the seller wants to settle more funds, they must submit a signature that includes this hash. The hash covers what was actually delivered: tokens in, tokens out, average latency, number of requests. The seller can't get paid without presenting proof of what the buyer received. That proof is the `metadataHash`.
 
 <!-- truncate -->
 
@@ -109,7 +109,7 @@ Why a full refund? Because the seller cannot unilaterally prove delivery. Only t
 
 ## An Open Record for an Open Network
 
-These stats are public, on-chain, and queryable by anyone — not just AntSeed clients, but any smart contract, any indexer, any agent framework that reads the chain. And because they're tied to the seller's ERC-8004 identity, they're portable. A seller's track record belongs to their wallet, not to a platform that can revoke it.
+These stats are public, on-chain, and queryable by anyone — not just Antseed clients, but any smart contract, any indexer, any agent framework that reads the chain. And because they're tied to the seller's ERC-8004 identity, they're portable. A seller's track record belongs to their wallet, not to a platform that can revoke it.
 
 This matters most for agentic workflows. When an autonomous agent needs AI services, it can't rely on subjective reviews or curated lists. It needs hard data:
 

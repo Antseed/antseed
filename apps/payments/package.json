@@ -1,14 +1,15 @@
 {
   "name": "@antseed/payments",
-  "version": "0.1.44",
-  "description": "Buyer payments portal for AntSeed",
+  "version": "0.1.107",
+  "description": "Buyer payments portal for Antseed",
   "files": [
     "dist"
   ],
   "type": "module",
   "main": "dist/index.js",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./card-link": "./dist/card-link.js"
   },
   "scripts": {
     "build": "npm run build:server && npm run build:web",
@@ -19,7 +20,7 @@
     "dev:server": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json"
   },
   "dependencies": {
     "@antseed/node": "workspace:*",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@antseed/ui": "workspace:*",
+    "@antseed/wallet-config": "workspace:*",
     "@metamask/sdk": "^0.34.0",
     "@rainbow-me/rainbowkit": "^2.2.10",
     "@tanstack/react-query": "^5.94.5",

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { test } from 'vitest';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from './BrandIcon.js';
+import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
 
 test('model family wins over the transport provider slug', () => {
   // Sellers advertise models over a protocol whose provider slug ("openai",
@@ -99,4 +99,9 @@ test('tunnel providers resolve their bundled brand marks', () => {
   assert.equal(resolveBrandKey('ngrok'), 'ngrok');
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'cloudflare' })), /cloudflare\.svg/);
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'ngrok' })), /ngrok\.svg/);
+});
+
+test('Prime Agent gets its own app icon, not a model family', () => {
+  assert.equal(resolveBrandKey('prime-agent', 'Prime Agent'), 'prime-agent');
+  assert.equal(resolveBrandKey('prime-intellect', 'INTELLECT-3'), 'generic');
 });

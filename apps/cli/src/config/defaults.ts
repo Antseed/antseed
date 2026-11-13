@@ -5,6 +5,8 @@ export const DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS = 5 * 60_000;
 export const DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS = 1500;
 export const DEFAULT_BUYER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_BUYER_MAX_STREAM_DURATION_MS = 30 * 60_000;
+/** Restricted jurisdictions named in the Terms of Use; sellers refuse their IPs unless they opt out. */
+export const DEFAULT_RESTRICTED_COUNTRIES = ['CU', 'IR', 'KP', 'SY', 'RU'];
 
 /**
  * Create a default Antseed configuration with sensible defaults.
@@ -45,7 +47,6 @@ export function createDefaultConfig(): AntseedConfig {
     },
     payments: {
       preferredMethod: 'crypto',
-      platformFeeRate: 0.05,
       crypto: {
         chainId: 'base-mainnet',
       },
@@ -55,6 +56,28 @@ export function createDefaultConfig(): AntseedConfig {
     },
     network: {
       bootstrapNodes: [],
+    },
+    verifier: {
+      probeRequestTimeoutMs: 120_000,
+      responseAuthWaitTimeoutMs: 35_000,
+      auditMaxConcurrentModels: 6,
+      auditMaxConcurrentPeersPerModel: 4,
+      auditMaxConcurrentBatches: 24,
+      auditMaxConcurrentBatchesPerPeer: 2,
+      auditConcurrencyPromotionLatencyMs: 30_000,
+      auditPeerTimeoutMs: 600_000,
+      auditPeerMaxTimeoutMs: 3_600_000,
+      contrastSelection: {
+        inputWeight: 0.9,
+        maxPriceRatio: 0.3,
+        maxModels: 3,
+      },
+      referenceMaxConcurrentRequests: 4,
+      referenceMaxConcurrentRequestsPerModel: 3,
+      referenceMinimumProbeCount: 100,
+      referenceMaximumProbeCount: 500,
+      referenceProbeStep: 10,
+      referenceMinimumStatisticalPower: 0.9,
     },
   };
 }
