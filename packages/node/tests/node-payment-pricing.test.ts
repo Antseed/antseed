@@ -1835,7 +1835,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const send = async (covered: boolean, colonyPool = false) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
       if (colonyPool) provider.peerCapabilities = [WORKER_E2E_CAPABILITY];
-      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
       const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
       const sendPaymentRequired = vi.fn();
@@ -1874,6 +1874,8 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['x-antseed-free-tier']).toBe('covered');
       expect(sendNeedAuth).not.toHaveBeenCalled();
+      // The buyer pays nothing for it, and the body's price says the same.
+      expect(JSON.parse(new TextDecoder().decode(response.body)).usage.estimated_cost).toBe(0);
     });
 
     it('never covers a colony pool\'s answer, which its worker is paid for only by the buyer', async () => {

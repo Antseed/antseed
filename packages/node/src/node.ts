@@ -1743,8 +1743,7 @@ export class AntseedNode extends EventEmitter {
   getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
-      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE)
+    return this._channelStore.getBuyerPaymentChannelsByStatus(buyerAddress, CHANNEL_STATUS.ACTIVE)
       .map((channel) => this._buyerChannelSummary(channel, paymentManager));
   }
 

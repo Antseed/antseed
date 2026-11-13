@@ -77,6 +77,8 @@ extraResources:
     to: skills/antseed-videos
   - from: ../../skills/antseed-ask
     to: skills/antseed-ask
+  - from: ../../skills/antseed-decisions
+    to: skills/antseed-decisions
   - from: cli-dist/
     to: cli-dist/
     filter:

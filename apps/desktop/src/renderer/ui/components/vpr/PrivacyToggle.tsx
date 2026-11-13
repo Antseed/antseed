@@ -27,14 +27,14 @@ const OPTIONS: PrivacyOption[] = [
     mode: 'private',
     label: 'Private',
     iconClass: styles.iconPrivate,
-    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. Some pass requests on to a model provider outside a TEE; models marked “TEE end to end” are sealed all the way.',
+    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. Some pass requests on to a model provider outside a TEE; models marked “Full TEE” are sealed all the way.',
   },
 ];
 
 /** What the switch dialog says about each mode: the option's description, cut to its claims. */
 const SWITCH_SUMMARY: Record<GatewayPrivacyMode, string> = {
   anonymous: 'Providers never see your name or email, only an anonymous address. Every model is open to you.',
-  private: 'Providers can’t read your chats: your app checks each one runs on sealed hardware (a TEE) first. Only models marked “TEE end to end” are sealed all the way.',
+  private: 'Providers can’t read your chats: your app checks each one runs on sealed hardware (a TEE) first. Only models marked “Full TEE” are sealed all the way.',
 };
 
 function optionHint(option: PrivacyOption): string {

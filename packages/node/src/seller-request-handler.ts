@@ -34,7 +34,6 @@ import {
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
-import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   DEFAULT_FIRST_SIGN_CAP,
@@ -47,7 +46,7 @@ import {
 } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
+import { ANTSEED_STREAMING_RESPONSE_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
@@ -62,7 +61,9 @@ import {
   detectRequestServiceApiProtocol,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
-import { parseResponseUsage } from './utils/response-usage.js';
+import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
+import { exposedResponseHeaders } from './utils/response-headers.js';
+import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, type BilledRequestBody } from './requested-service.js';
@@ -1074,7 +1075,12 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          let response = await this._executeRequest(provider, request, {
+          // Token-priced services show the buyer the seller's own price in the body; a per-unit
+          // charge (images, video) is settled on delivery, so no estimate is shown for those. A request
+          // served free (a free service or the free allowance) costs the buyer nothing, and says so.
+          const sellerCost: SellerCost | undefined = unitBillingModel ? undefined
+            : isServedFree ? () => 0 : (usage) => tokenCostUsd(usage, requestPricing);
+          let response = await this._executeRequest(provider, request, sellerCost, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
               markFreeAllowance(streamResponseStart.headers, coveredByAllowance);
@@ -1101,7 +1107,7 @@ export class SellerRequestHandler {
               if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
               mux.sendProxyChunk(chunk);
             },
-          });
+          }, isDownload);
           if (!streamedResponseStarted) {
             response = { ...response, headers: { ...response.headers } };
             markFreeAllowance(response.headers, coveredByAllowance);
@@ -1579,7 +1585,7 @@ export class SellerRequestHandler {
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
+      return { ...response, requestId: request.requestId, headers: exposedResponseHeaders(response.headers) };
     } catch (error) {
       return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1925,12 +1931,32 @@ export class SellerRequestHandler {
   private async _executeRequest(
     provider: Provider,
     request: SerializedHttpRequest,
+    sellerCost?: SellerCost,
     streamCallbacks?: ProviderStreamCallbacks,
+    isDownload = false,
   ): Promise<SerializedHttpResponse> {
-    // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
+    // Every provider's response goes through here, so no plugin can expose its
+    // upstream's own headers or costs: the body's cost is the seller's price.
+    const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
+      ({ ...response, headers: exposedResponseHeaders(response.headers) });
+    // A video download (a retrieval the router recognized, not just the buyer's header)
+    // is the provider's own bytes, hashed as they pass; it carries no usage.
     if (streamCallbacks && provider.handleRequestStream) {
-      // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.
+      // An event stream is rewritten as it passes. A JSON body can only be rewritten
+      // whole, so it is held back and sent as the returned response instead.
+      let mode = 'passthrough' as 'events' | 'held' | 'passthrough';
+      let events = null as ExposedSseStream | null;
+      // A streamed 429 is held back so its upstream body can be replaced before the buyer sees it.
       let heldRateLimit = false;
+      const sent: Uint8Array[] = [];
+      // A provider that fails mid-stream leaves its last line or event held here: it is sent
+      // (rewritten) before the failure, so the buyer has every byte and the error frame follows them.
+      const sendHeld = (): void => {
+        const rest = events?.flush();
+        if (!rest?.length) return;
+        sent.push(rest);
+        streamCallbacks.onResponseChunk({ requestId: request.requestId, data: rest, done: false });
+      };
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
         onResponseStart: (start) => {
@@ -1938,14 +1964,39 @@ export class SellerRequestHandler {
             heldRateLimit = true;
             return;
           }
-          streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) });
+          if (isDownload) return streamCallbacks.onResponseStart(withHeaders(start));
+          if (contentTypeOf(start.headers).includes('json')) {
+            mode = 'held';
+            return;
+          }
+          if (!isEventStream(request, start)) return streamCallbacks.onResponseStart(withHeaders(start));
+          mode = 'events';
+          events = new ExposedSseStream(sellerCost);
+          const body = start.body?.length ? events.push(start.body) : start.body;
+          if (body?.length) sent.push(body);
+          streamCallbacks.onResponseStart({ ...withHeaders(start), body });
         },
-        onResponseChunk: (chunk) => (heldRateLimit ? undefined : streamCallbacks.onResponseChunk(chunk)),
+        onResponseChunk: (chunk) => {
+          if (heldRateLimit || mode === 'held') return;
+          if (!events) return streamCallbacks.onResponseChunk(chunk);
+          const data = chunk.done ? concatBytes([events.push(chunk.data), events.flush()]) : events.push(chunk.data);
+          sent.push(data);
+          if (!chunk.done && data.length === 0) return;
+          return streamCallbacks.onResponseChunk({ ...chunk, data });
+        },
+      }).catch((err: unknown) => {
+        sendHeld();
+        throw err;
       });
-      return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
+      // The returned body is what the buyer was sent, so usage and payment read the same bytes.
+      if (events) return { ...withHeaders(response), body: concatBytes(sent) };
+      if (isDownload) return withHeaders(response);
+      // Held JSON goes out as one complete response, which a streaming marker would leave the buyer waiting on.
+      const whole = mode === 'held' || heldRateLimit ? withoutStreamingMarker(response) : response;
+      return withExposedBody(request, withHeaders(whole), sellerCost);
     }
-    const response = await provider.handleRequest(request);
-    return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
+    const response = withHeaders(await provider.handleRequest(request));
+    return isDownload ? response : withExposedBody(request, response, sellerCost);
   }
 
   private _sendNeedAuthBestEffort(
@@ -2027,4 +2078,61 @@ export class SellerRequestHandler {
       debugWarn(`[SellerHandler] Failed to send ResponseAuth for ${request.requestId.slice(0, 8)}: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+function contentTypeOf(headers: Record<string, string>): string {
+  return headerOf(headers, 'content-type').toLowerCase();
+}
+
+/**
+ * Whether a response is a server-sent event stream: its content type says so,
+ * or it is a successful response without one that its provider marked as
+ * streaming (HttpRelay streams a typeless response to a request it sent
+ * accepting events) or whose request accepts events.
+ */
+function isEventStream(request: SerializedHttpRequest, response: Pick<SerializedHttpResponse, 'statusCode' | 'headers'>): boolean {
+  const contentType = contentTypeOf(response.headers);
+  if (contentType) return contentType.includes('text/event-stream');
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
+  return headerOf(response.headers, ANTSEED_STREAMING_RESPONSE_HEADER) === '1'
+    || headerOf(request.headers, 'accept').toLowerCase().includes('text/event-stream');
+}
+
+function withoutStreamingMarker(response: SerializedHttpResponse): SerializedHttpResponse {
+  const headers = Object.fromEntries(Object.entries(response.headers).filter(([name]) => name.toLowerCase() !== ANTSEED_STREAMING_RESPONSE_HEADER));
+  return { ...response, headers };
+}
+
+function headerOf(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
+/** A whole JSON or event-stream response priced at the seller's own cost, without the upstream's. */
+function withExposedBody(request: SerializedHttpRequest, response: SerializedHttpResponse, sellerCost?: SellerCost): SerializedHttpResponse {
+  if (!response.body?.length) return response;
+  if (isEventStream(request, response)) {
+    const events = new ExposedSseStream(sellerCost);
+    return { ...response, body: concatBytes([events.push(response.body), events.flush()]) };
+  }
+  if (!contentTypeOf(response.headers).includes('json')) return response;
+  const body = exposedJsonBody(response.body, sellerCost);
+  return body === response.body ? response : { ...response, body };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+/** What the seller charges for these tokens, in USD: `computeCostUsdc` before rounding to USDC units. */
+function tokenCostUsd(usage: ResponseUsage, pricing: ProviderTokenPricing): number {
+  const cachedPrice = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion;
+  return (usage.freshInputTokens * pricing.inputUsdPerMillion
+    + usage.cachedInputTokens * cachedPrice
+    + usage.outputTokens * pricing.outputUsdPerMillion) / 1_000_000;
 }

@@ -227,6 +227,7 @@ export {
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   inferServiceProtocol,
   resolveServiceProtocol,
   type BuildNetworkServiceOffersOptions,
@@ -304,6 +305,7 @@ export {
   isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { exposedResponseHeaders, isExposedResponseHeader } from './utils/response-headers.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {
   signSpendingAuth,
