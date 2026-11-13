@@ -2817,14 +2817,11 @@ export class SellerPaymentManager {
     }
 
     // Anything served but not yet signed for is unclaimable — ask for the
-    // catch-up auth rather than closing at a loss.
+    // catch-up auth rather than closing at a loss. Ask before waiting: the
+    // buyer may not know about the spend (e.g. its NeedAuth was lost to a
+    // seller restart), so without the request the wait can only time out.
     let spent = this._spent.get(channelId) ?? 0n;
     let best = this._getSettleParams(channelId);
-    if (spent > best.amount) {
-      await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
-      spent = this._spent.get(channelId) ?? 0n;
-      best = this._getSettleParams(channelId);
-    }
     if (spent > best.amount) {
       const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
       try {
@@ -2837,6 +2834,11 @@ export class SellerPaymentManager {
       } catch (err) {
         debugWarn(`[SellerPayment] Failed to send catch-up NeedAuth before close: ${this._formatError(err)}`);
       }
+      await this.awaitAcceptedAtLeast(channelId, spent, CLOSE_CATCH_UP_WAIT_MS);
+      spent = this._spent.get(channelId) ?? 0n;
+      best = this._getSettleParams(channelId);
+    }
+    if (spent > best.amount) {
       return reject('pending_auth', `unsigned spend outstanding (spent=${spent} signed=${best.amount})`, {
         retryAfterMs: CLOSE_RETRY_AFTER_MS,
         requiredCumulativeAmount: spent.toString(),
