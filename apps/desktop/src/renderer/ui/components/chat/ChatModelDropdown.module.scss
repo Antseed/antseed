@@ -231,22 +231,9 @@
   }
 }
 
-.model-dropdown-filters {
-  // Stays in view while the list scrolls, also when it opens on a model far down.
-  position: sticky;
-  top: -4px;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 0 2px;
-  padding: 4px 4px 6px;
-  background: var(--bg-card);
-}
-
 .free-filter {
   flex: none;
-  height: 32px;
+  height: 34px;
   padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -266,22 +253,6 @@
   border-color: rgba(var(--accent-green-rgb), 0.35);
   background: rgba(var(--accent-green-rgb), 0.1);
   color: var(--accent-green);
-}
-
-.model-dropdown-search {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-input, transparent);
-  color: var(--text-primary);
-  font-size: 13px;
-
-  &:focus-visible {
-    outline: none;
-    border-color: var(--text-muted);
-  }
 }
 
 .model-dropdown-status {
@@ -366,4 +337,249 @@
   &:hover {
     background: none;
   }
+}
+
+/* The model picker: search and kind tabs on top, one line per model, and a
+   detail card beside the menu for the row under the pointer. */
+.picker-menu {
+  padding: 0 4px 4px;
+}
+
+.picker-header {
+  // Stays in view while the list scrolls, also when it opens on a model far down.
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -4px 4px;
+  padding: 8px 8px 0;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.picker-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker-search {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  cursor: text;
+
+  &:focus-within {
+    border-color: var(--text-muted);
+  }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+
+    &:focus-visible {
+      outline: none;
+    }
+  }
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.picker-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    border-color: var(--border-strong);
+  }
+}
+
+.picker-tab-on {
+  border-color: var(--border-strong);
+  background: var(--surface-chip);
+  color: var(--text-primary);
+}
+
+.picker-tab-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    background: var(--bg-hover);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+}
+
+.picker-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  color: var(--text-secondary);
+}
+
+.picker-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-tags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.picker-card {
+  position: fixed;
+  z-index: 210;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.picker-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.picker-card-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+}
+
+.picker-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.picker-card-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-card-byline {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.picker-card-id {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-card-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.picker-card-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+
+  strong {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+  }
+}
+
+/* The price is the longest figure: a row of its own. */
+.picker-card-price {
+  grid-column: 1 / -1;
 }

@@ -7,6 +7,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ## Unreleased
 
 ### Added
+- Desktop chat: a new model picker. Each model shows its lab's logo on one line, with Free and TEE tags. Tabs sort the list into **Auto** (routers), **Text** and **Image**; it opens on the tab and row of the model in use, and while searching each tab shows how many models match. Pointing at a model shows a card beside the menu with its tags, model id, context, sellers and price, and for a router who runs it and how many models it picks from.
 
 - Desktop chat: the model picker lists the routing services your gateway can use, under **Routers** at the top, and an **Auto** filter beside **Free** shows only them. A router picks the model for each message; each row shows what one pick costs and how many models it picks from, and the chat sends to it as `<peerId>@<serviceId>`. The list comes from the gateway's `GET /v1/models?type=router` under the key's routing policy; a gateway that doesn't answer it lists no routers.
 

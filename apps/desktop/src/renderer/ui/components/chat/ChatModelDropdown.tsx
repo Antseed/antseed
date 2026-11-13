@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { ArrowDown01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
+import { ArrowDown01Icon, Route01Icon, Search01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
+import { BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
 import type { ChatModel } from '../../../types/bridge';
 import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
 
-/** Show the search box once the list is long enough to need it. */
-const SEARCH_THRESHOLD = 8;
+/** Width of the detail card beside the menu, and the gap between them. */
+const CARD_WIDTH = 280;
+const CARD_GAP = 8;
 
 type ChatModelDropdownProps = {
   models: ChatModel[];
@@ -64,6 +66,43 @@ export function centeredScrollTop(itemTop: number, itemHeight: number, menuHeigh
   return Math.max(0, itemTop - headerHeight - (menuHeight - headerHeight - itemHeight) / 2);
 }
 
+export type PickerTab = 'auto' | 'text' | 'image';
+
+/** The tab a model is listed under: routers under Auto, then by type. */
+export function pickerTabFor(model: ChatModel | null | undefined): PickerTab {
+  if (model?.router) return 'auto';
+  return model?.type === 'image' ? 'image' : 'text';
+}
+
+/** The lab whose mark a row shows, or null for a model no known lab makes. */
+export function modelLab(model: ChatModel): string | null {
+  if (model.router) return null;
+  return modelFamilyLabel({ provider: model.id, label: model.label });
+}
+
+function ModelMark({ model, size }: { model: ChatModel; size: number }) {
+  if (model.router) return <HugeiconsIcon icon={Route01Icon} size={size} strokeWidth={1.6} />;
+  // Only labs' marks: an app or tool name inside a model id says nothing about who made it.
+  return <BrandIcon brand={modelLab(model) ? resolveBrandKey(model.id, model.label) : 'generic'} size={size} />;
+}
+
+/** Tags for the detail card, most telling first. */
+function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'tee'; title?: string }> {
+  return [
+    model.router ? { label: 'Router', title: 'Picks the model for each message' } : null,
+    model.free ? { label: 'Free', tone: 'free' as const } : null,
+    model.tee ? (model.teeEndToEnd
+      ? { label: 'TEE end to end', tone: 'tee' as const, title: 'Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE' }
+      : { label: 'TEE', tone: 'tee' as const, title: 'Some of its sellers run in a verified TEE; their model provider may not' }) : null,
+    model.freeForStakers ? { label: 'Free for stakers', title: 'Some sellers serve it free to their stakers' } : null,
+    model.type === 'text' && model.supportsImages ? { label: 'Vision' } : null,
+    model.reasoning ? { label: 'Reasoning' } : null,
+    model.toolUse ? { label: 'Tools' } : null,
+  ].filter((tag): tag is NonNullable<typeof tag> => tag !== null);
+}
+
+type Hovered = { model: ChatModel; top: number; left: number };
+
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -84,84 +123,140 @@ export function ChatModelDropdown({
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
-  const [filter, setFilter] = useState<'free' | 'routers' | null>(null);
-  const { routers, text, image } = useMemo(() => filterChatModels(models, query, filter), [models, query, filter]);
+  const [freeOnly, setFreeOnly] = useState(false);
+  const [tab, setTab] = useState<PickerTab>('text');
+  const [hovered, setHovered] = useState<Hovered | null>(null);
+  const lists = useMemo(() => {
+    const { routers, text, image } = filterChatModels(models, query, freeOnly ? 'free' : null);
+    return { auto: routers, text, image };
+  }, [models, query, freeOnly]);
+  // Tabs for the kinds the gateway lists at all, so a filter can't hide a tab.
+  const tabs = useMemo(() => {
+    const kinds = new Set(models.map(pickerTabFor));
+    return ([['auto', 'Auto'], ['text', 'Text'], ['image', 'Image']] as const).filter(([key]) => kinds.has(key));
+  }, [models]);
   const hasFree = useMemo(() => models.some((model) => model.free), [models]);
-  const hasRouters = useMemo(() => models.some((model) => model.router), [models]);
-  const toggleFilter = (next: 'free' | 'routers') => setFilter((value) => (value === next ? null : next));
-  const showSearch = models.length >= SEARCH_THRESHOLD;
+  const shown = lists[tab];
 
   useDropdownDismiss(ref, open, setOpen);
 
   useEffect(() => {
     if (!open) {
       setQuery('');
-      setFilter(null);
-      return undefined;
+      setFreeOnly(false);
+      setHovered(null);
+      return;
     }
+    // Open on the tab of the model in use.
+    setTab(pickerTabFor(selected));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- only when it opens
+
+  useEffect(() => {
+    if (!open) return undefined;
     const frame = requestAnimationFrame(() => {
       searchRef.current?.focus();
       // Open on the model in use, not at the top of a long list. Only the
       // menu scrolls: scrollIntoView would move the chat behind it too.
       const menu = menuRef.current;
       const item = menu?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
-      const header = menu?.querySelector<HTMLElement>(`.${styles.modelDropdownFilters}`)?.offsetHeight ?? 0;
-      if (menu && item) menu.scrollTop = centeredScrollTop(item.offsetTop, item.offsetHeight, menu.clientHeight, header);
+      if (menu && item) menu.scrollTop = centeredScrollTop(item.offsetTop, item.offsetHeight, menu.clientHeight, headerRef.current?.offsetHeight ?? 0);
     });
     return () => cancelAnimationFrame(frame);
-  }, [open]);
+  }, [open, tab]);
+
+  // Keep the detail card on screen once its height is known.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card || !hovered) return;
+    const maxTop = window.innerHeight - card.offsetHeight - CARD_GAP;
+    if (hovered.top > maxTop) card.style.top = `${Math.max(CARD_GAP, maxTop)}px`;
+  }, [hovered]);
+
+  /** Shows the detail card beside the menu, on whichever side has room; none without room. */
+  function showDetails(model: ChatModel, row: HTMLElement) {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const menuRect = menu.getBoundingClientRect();
+    const right = menuRect.right + CARD_GAP;
+    const left = right + CARD_WIDTH <= window.innerWidth - CARD_GAP ? right : menuRect.left - CARD_GAP - CARD_WIDTH;
+    setHovered(left >= CARD_GAP ? { model, top: row.getBoundingClientRect().top, left } : null);
+  }
 
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');
 
   function renderModel(model: ChatModel) {
     const active = model === selected;
-    const meta = model.router ? [
-      model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null,
-      model.router.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
-    ].filter(Boolean) : [
-      model.id !== model.label ? model.id : null,
-      model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
-    ].filter(Boolean);
     return (
       <button
         key={model.id}
         type="button"
-        className={`${styles.modelDropdownItem}${active ? ` ${styles.active}` : ''}`}
+        className={`${styles.pickerRow}${active ? ` ${styles.active}` : ''}`}
         role="option"
         aria-selected={active}
+        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
+        onFocus={(event) => showDetails(model, event.currentTarget)}
         onClick={() => {
           setOpen(false);
           if (!active) onSelect(model.id);
         }}
       >
-        <span className={styles.itemTopRow}>
-          <span className={styles.itemNameGroup}>
-            <span className={styles.itemName}>{model.label}</span>
-            {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
-          </span>
-          <span className={styles.itemPrice}>{renderModelPrice(model)}</span>
+        <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
+        <span className={styles.pickerName}>{model.label}</span>
+        <span className={styles.pickerTags}>
+          {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
+          {model.tee && <span className={`${styles.tag} ${styles.tagTee}`}>{model.teeEndToEnd ? 'TEE end to end' : 'TEE'}</span>}
+          {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
         </span>
-        <span className={styles.itemTags}>
-          {model.router && <span className={styles.tag} title="Picks the model for each message">Router</span>}
-          {model.type === 'image' && <span className={`${styles.tag} ${styles.tagBrand}`}>Image</span>}
-          {model.tee && (model.teeEndToEnd
-            ? <span className={`${styles.tag} ${styles.tagTee}`} title="Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE">TEE end to end</span>
-            : <span className={`${styles.tag} ${styles.tagTee}`} title="Some of its sellers run in a verified TEE; their model provider may not">TEE</span>)}
-          {model.freeForStakers && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
-          {model.type === 'text' && model.supportsImages && <span className={styles.tag}>Vision</span>}
-          {model.reasoning && <span className={styles.tag}>Reasoning</span>}
-          {model.toolUse && <span className={styles.tag}>Tools</span>}
-          {model.sellers > 0 && !model.router && <span className={styles.itemSellers}>{model.sellers} seller{model.sellers === 1 ? '' : 's'}</span>}
-        </span>
-        {meta.length > 0 && <span className={styles.itemMeta}>{meta.map((part) => <span key={part}>{part}</span>)}</span>}
       </button>
     );
   }
 
-  const empty = routers.length === 0 && text.length === 0 && image.length === 0;
+  function renderDetails({ model, top, left }: Hovered) {
+    const lab = modelLab(model);
+    const byline = model.router
+      ? (model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null)
+      : lab;
+    const price = renderModelPrice(model);
+    const stats = [
+      model.contextWindow ? { value: `${Math.round(model.contextWindow / 1000)}k`, label: 'context' } : null,
+      model.router?.models ? { value: String(model.router.models), label: `model${model.router.models === 1 ? '' : 's'} it picks from` } : null,
+      !model.router && model.sellers > 0 ? { value: String(model.sellers), label: `seller${model.sellers === 1 ? '' : 's'}` } : null,
+    ].filter((stat): stat is NonNullable<typeof stat> => stat !== null);
+    return (
+      <div ref={cardRef} className={styles.pickerCard} style={{ top, left, width: CARD_WIDTH }} aria-hidden>
+        <div className={styles.pickerCardHead}>
+          <span className={styles.pickerCardMark}><ModelMark model={model} size={24} /></span>
+          <span className={styles.pickerCardTitle}>
+            <span className={styles.pickerCardName}>{model.label}</span>
+            {byline && <span className={styles.pickerCardByline}>{byline}</span>}
+          </span>
+        </div>
+        <div className={styles.itemTags}>
+          {modelTags(model).map((tag) => (
+            <span key={tag.label} title={tag.title} className={`${styles.tag}${tag.tone === 'free' ? ` ${styles.tagFree}` : tag.tone === 'tee' ? ` ${styles.tagTee}` : ''}`}>{tag.label}</span>
+          ))}
+        </div>
+        {model.id !== model.label && <code className={styles.pickerCardId}>{model.id}</code>}
+        {(stats.length > 0 || price) && (
+          <div className={styles.pickerCardStats}>
+            {stats.map((stat) => (
+              <span key={stat.label} className={styles.pickerCardStat}><strong>{stat.value}</strong>{stat.label}</span>
+            ))}
+            {price && <span className={`${styles.pickerCardStat} ${styles.pickerCardPrice}`}><strong>{price}</strong>{model.router ? 'routing fee' : 'price'}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const emptyText = loading ? 'Loading models…'
+    : query || freeOnly ? 'No models match.'
+      : models.length === 0 ? 'The gateway lists no models yet.' : 'No models here.';
 
   return (
     <div className={`${styles.modelDropdown}${menuAnchor === 'container' ? ` ${styles.anchorContainer}` : ''}`} ref={ref}>
@@ -177,53 +272,64 @@ export function ChatModelDropdown({
         aria-expanded={open}
         title={selected ? selected.id : undefined}
       >
+        {selected && <span className={styles.pickerMark}><ModelMark model={selected} size={16} /></span>}
         <span className={styles.modelDropdownLabel}>{triggerLabel}</span>
         {selectionIsFree(selected, selectedModelId) && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
         <HugeiconsIcon icon={ArrowDown01Icon} size={16} strokeWidth={1.5} />
       </button>
       {open && (
         <div
-          className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
+          className={`${styles.modelDropdownMenu} ${styles.pickerMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           ref={menuRef}
+          onScroll={() => setHovered(null)}
+          onMouseLeave={() => setHovered(null)}
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
-          {(showSearch || hasFree || hasRouters) && (
-            <div className={styles.modelDropdownFilters}>
-              {showSearch && (
+          <div className={styles.pickerHeader} ref={headerRef}>
+            <div className={styles.pickerSearchRow}>
+              <label className={styles.pickerSearch}>
+                <HugeiconsIcon icon={Search01Icon} size={15} strokeWidth={1.6} aria-hidden />
                 <input
                   ref={searchRef}
-                  className={styles.modelDropdownSearch}
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={holdEnterInSearch}
                   placeholder="Search models…"
                   aria-label="Search models"
                 />
-              )}
-              {hasRouters && (
+              </label>
+              {hasFree && tab !== 'auto' && (
                 <button
                   type="button"
-                  className={`${styles.freeFilter}${filter === 'routers' ? ` ${styles.freeFilterOn}` : ''}`}
-                  aria-pressed={filter === 'routers'}
-                  title="Routers pick the model for each message"
-                  onClick={() => toggleFilter('routers')}
-                >
-                  Auto
-                </button>
-              )}
-              {hasFree && (
-                <button
-                  type="button"
-                  className={`${styles.freeFilter}${filter === 'free' ? ` ${styles.freeFilterOn}` : ''}`}
-                  aria-pressed={filter === 'free'}
-                  onClick={() => toggleFilter('free')}
+                  className={`${styles.freeFilter}${freeOnly ? ` ${styles.freeFilterOn}` : ''}`}
+                  aria-pressed={freeOnly}
+                  onClick={() => setFreeOnly((value) => !value)}
                 >
                   Free
                 </button>
               )}
             </div>
-          )}
+            {tabs.length > 1 && (
+              <div className={styles.pickerTabs} role="tablist">
+                {tabs.map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === key}
+                    className={`${styles.pickerTab}${tab === key ? ` ${styles.pickerTabOn}` : ''}`}
+                    title={key === 'auto' ? 'Routers pick the model for each message' : undefined}
+                    onClick={() => { setTab(key); setHovered(null); }}
+                  >
+                    {label}
+                    {/* While searching, where the matches are. */}
+                    {query && <span className={styles.pickerTabCount}>{lists[key].length}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {error && (
             <div className={styles.modelDropdownStatus} role="alert">
               {error}
@@ -232,17 +338,9 @@ export function ChatModelDropdown({
               )}
             </div>
           )}
-          {!error && empty && (
-            <div className={styles.modelDropdownStatus}>
-              {loading ? 'Loading models…' : query || filter ? 'No models match.' : 'The gateway lists no models yet.'}
-            </div>
-          )}
-          {routers.length > 0 && <div className={styles.modelDropdownSection}>Routers</div>}
-          {routers.map(renderModel)}
-          {text.length > 0 && (image.length > 0 || routers.length > 0) && <div className={styles.modelDropdownSection}>Text models</div>}
-          {text.map(renderModel)}
-          {image.length > 0 && <div className={styles.modelDropdownSection}>Image models</div>}
-          {image.map(renderModel)}
+          {!error && shown.length === 0 && <div className={styles.modelDropdownStatus}>{emptyText}</div>}
+          {shown.map(renderModel)}
+          {hovered && renderDetails(hovered)}
         </div>
       )}
     </div>
