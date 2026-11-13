@@ -277,10 +277,17 @@ async function main() {
   });
   const ledger = new WorkerLedger(join(sellerDir, 'colony-pool.db'));
   const PRICE = { inputUsdPerMillion: 20, outputUsdPerMillion: 80 };
+  // DEMO_MODELS=service=repo@commit,… pins models (COLONY_POOL_MODELS); Antseed Colony offers them to pick from.
+  const pins = new Map((process.env.DEMO_MODELS ?? '').split(',').filter(Boolean).map((entry) => {
+    const at = entry.indexOf('=');
+    return [entry.slice(0, at), entry.slice(at + 1)];
+  }));
+  const catalog = [...new Set([SERVICE, ...pins.keys()])];
   const colonyPool = new ColonyPool({
     // Workers are told the price, to check buyers' payments cover their answers at it.
-    poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog: [SERVICE], prices: { [SERVICE]: PRICE }, workerShareBps: 9000, ledger,
+    poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog, prices: Object.fromEntries(catalog.map((service) => [service, PRICE])), workerShareBps: 9000, ledger,
     port: POOL_PORT, host: BIND, verifyOnJoin: true, log: (line) => logTo('pool', line),
+    ...(pins.size ? { models: pins } : {}),
     // DEMO_ATTEST_INTERVAL_MS shortens re-attestation.
     ...(process.env.DEMO_ATTEST_INTERVAL_MS ? { attestationIntervalMs: Number(process.env.DEMO_ATTEST_INTERVAL_MS) } : {}),
   });

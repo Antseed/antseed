@@ -322,6 +322,25 @@ describe('colony pool', () => {
     expect((await assign()).worker).toBe(right.address.toLowerCase());
   });
 
+  it('tells each joining worker the model every pinned service runs, so one without a model can pick', async () => {
+    const pinned = `mlx-community/Qwen3-30B-A3B-4bit@${'a'.repeat(40)}#${'b'.repeat(64)}`;
+    await setup({ verifyOnJoin: false, models: new Map([[SERVICE, pinned]]) });
+    const worker = startWorker({ paused: true });
+    const welcomeOf = () => (worker as unknown as { welcome: { models?: Record<string, string> } | null }).welcome;
+    await waitFor(() => welcomeOf() !== null);
+    const welcome = welcomeOf()!;
+    expect(welcome.models).toEqual({ [SERVICE]: pinned });
+  });
+
+  it('sends no models when the pool pins none', async () => {
+    await setup({ verifyOnJoin: false });
+    const worker = startWorker({ paused: true });
+    const welcomeOf = () => (worker as unknown as { welcome: { models?: Record<string, string> } | null }).welcome;
+    await waitFor(() => welcomeOf() !== null);
+    const welcome = welcomeOf()!;
+    expect(welcome.models).toBeUndefined();
+  });
+
   it('routes a service pinned with a files digest only from workers attesting that checkpoint, and stops when one no longer does', async () => {
     const model = 'mlx-community/Qwen3-30B-A3B-4bit@0123456789abcdef';
     const digest = 'ab'.repeat(32);

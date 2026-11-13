@@ -7,10 +7,9 @@ import Security
 struct WorkerConfig {
     /// The pool to join: `--pool`, else the one the owner entered in the app; nil until there is one.
     var poolURL: URL?
-    /// Service name the pool sells.
-    var service = "qwen3.5-2b"
-    /// Hugging Face checkpoint that serves it, pinned to a revision the engine was checked with.
-    var modelId = "mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3"
+    /// The service this Mac sells and the checkpoint behind it: `--service`/`--model`, else the owner's
+    /// choice from the pool's pins (saved in the data directory); nil until there is one.
+    var choice: ModelChoice?
     /// The TensorFold engine; `scripts/build-app.sh` bundles it.
     var engineURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tensorfold/bin/tensorfold-native")
     /// RPCs that request channels (and the payout wallet) are read on, in the
@@ -40,21 +39,17 @@ struct WorkerConfig {
         return parts[1].count == 40 && parts[1].allSatisfy(\.isHexDigit)
     }
 
-    /// The model's short name, for display.
-    var modelName: String {
-        let repository = modelId.split(separator: "@", maxSplits: 1).first.map(String.init) ?? modelId
-        return repository.split(separator: "/").last.map(String.init) ?? repository
-    }
-
     static func fromCommandLine(_ arguments: [String] = CommandLine.arguments) -> WorkerConfig {
         var config = WorkerConfig()
+        var service: String?
+        var model: String?
         var iterator = arguments.dropFirst().makeIterator()
         while let flag = iterator.next() {
             guard let value = iterator.next() else { break }
             switch flag {
             case "--pool": config.poolURL = URL(string: value)
-            case "--service": config.service = value
-            case "--model": config.modelId = value
+            case "--service": service = value
+            case "--model": model = value
             case "--engine": config.engineURL = URL(fileURLWithPath: value)
             case "--rpc": config.rpcURLs = URL(string: value).map { [$0] } ?? []
             case "--channels": config.channelsAddress = value
@@ -67,6 +62,11 @@ struct WorkerConfig {
             }
         }
         if config.poolURL == nil { config.poolURL = PoolAddress.saved(in: config.dataDirectory) }
+        if service != nil || model != nil {
+            config.choice = ModelChoice(service: service ?? ModelChoice.fallback.service, model: model ?? ModelChoice.fallback.model)
+        } else {
+            config.choice = ModelChoice.saved(in: config.dataDirectory)
+        }
         return config
     }
 }

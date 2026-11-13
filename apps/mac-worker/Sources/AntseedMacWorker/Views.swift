@@ -43,12 +43,7 @@ struct MenuPanel: View {
                 Text(usd(worker.stats.earnedToday)).monospacedDigit()
             }
             .font(.system(size: 12))
-            HStack {
-                Text("Model").foregroundStyle(.secondary)
-                Spacer()
-                Text(worker.config.modelName).lineLimit(1)
-            }
-            .font(.system(size: 12))
+            ModelView(worker: worker, snapshot: snapshot)
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: worker.protection.hardened ? "lock.fill" : "lock.open")
                     .foregroundStyle(worker.protection.hardened ? Color.green : Color.orange)
@@ -73,6 +68,74 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 280)
+    }
+}
+
+/// The model this Mac runs, and the pool's models to pick from.
+struct ModelView: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    @State private var picking = false
+
+    var body: some View {
+        if let choice = worker.choice, !picking {
+            HStack {
+                Text("Model").foregroundStyle(.secondary)
+                Spacer()
+                Text(choice.displayName).lineLimit(1).truncationMode(.middle)
+            }
+            .font(.system(size: 12))
+            if worker.poolModels.contains(where: { $0 != choice }) {
+                link("Change model") { picking = true }
+            }
+        } else if !worker.poolModels.isEmpty {
+            Text("Choose the model this Mac runs").font(.system(size: 12)).foregroundStyle(.secondary)
+            ForEach(worker.poolModels, id: \.self) { offer in
+                row(offer)
+            }
+            if picking { link("Cancel") { picking = false } }
+        } else {
+            HStack {
+                Text("Model").foregroundStyle(.secondary)
+                Spacer()
+                Text("Chosen from the pool you join").foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 12))
+        }
+    }
+
+    private func row(_ offer: ModelChoice) -> some View {
+        let size = worker.modelSizes[offer.model]
+        let fits = size.map { ModelSize.fits($0) } ?? true
+        let current = offer == worker.choice
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(offer.service).font(.system(size: 12, weight: .medium))
+                Text(offer.displayName).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                if let size { Text(ModelSize.label(size)).font(.system(size: 11)).monospacedDigit() }
+                if !fits { Text("needs more memory").font(.system(size: 10)).foregroundStyle(.orange) }
+                if current { Text("running").font(.system(size: 10)).foregroundStyle(.green) }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(current ? 0.6 : 0.25)))
+        .opacity(fits ? 1 : 0.5)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard fits, !snapshot else { return }
+            picking = false
+            worker.choose(offer)
+        }
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func link(_ title: String, action: @escaping () -> Void) -> some View {
+        Text(title).font(.system(size: 11)).foregroundStyle(Color.accentColor)
+            .onTapGesture { if !snapshot { action() } }
+            .accessibilityAddTraits(.isButton)
     }
 }
 

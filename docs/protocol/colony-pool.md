@@ -256,6 +256,14 @@ seal under its response key.
 
   The pool also logs each digest a worker attests, so an operator can pin the
   one a known-good Mac reports.
+- The pool's `welcome` lists its pins as `models` (service →
+  `repo@revision`, with `#<sha256>` when pinned), absent when it pins none.
+  Antseed Colony joins without a model the first time, offers the pins
+  pinned to a full commit to its owner (with each checkpoint's download size
+  from the Hugging Face API, and refusing ones whose weights exceed half the
+  Mac's memory), downloads the one picked and joins again with it; it keeps
+  the choice in `model.json` in its data directory. A pool without pins gets
+  the app's built-in model.
 - Both the report and the attestation are the worker's own, so they catch
   misconfiguration, a wrong revision and upstream drift, not a modified
   worker; only a test whose answers depend on the weights catches that. The

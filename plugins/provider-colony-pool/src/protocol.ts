@@ -44,6 +44,13 @@ export interface WelcomeFrame {
    * earlier answers there at these prices.
    */
   prices: Record<string, ServicePrice>;
+  /**
+   * The model each pinned service must run (`COLONY_POOL_MODELS`): service →
+   * `repo@revision`, with `#<sha256>` when the pool pins the files' digest. A
+   * worker that has no model yet (Antseed Colony on first join) offers these
+   * to its owner and runs the one picked. Absent when the pool pins none.
+   */
+  models?: Record<string, string>;
 }
 
 /** A service's token prices, as buyers pay them. */
@@ -252,7 +259,7 @@ const WORKER_FRAMES: FrameShapes<WorkerFrame> = {
 
 const POOL_FRAMES: FrameShapes<PoolFrame> = {
   challenge: { version: isNumber, pool: isString, nonce: isString, seller: isString },
-  welcome: { workerId: isString, accepted: isStringArray, rejected: isStringArray, workerShareBps: isNumber, prices: isPrices },
+  welcome: { workerId: isString, accepted: isStringArray, rejected: isStringArray, workerShareBps: isNumber, prices: isPrices, models: optional(isStringRecord) },
   request: { id: isString, method: isString, path: isString, headers: isStringRecord, body: isString },
   cancel: { id: isString },
   stats: { id: isString, stats: isRecord },

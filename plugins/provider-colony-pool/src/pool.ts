@@ -809,7 +809,9 @@ export class ColonyPool {
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
     // Every catalog price, not only the services offered now: a worker that joined paused offers none, and resumes on this welcome.
-    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps, prices: this.opts.prices ?? {} });
+    // And the model each pinned service runs, so a worker without one can let its owner pick.
+    const models = this.opts.models?.size ? { models: Object.fromEntries(this.opts.models) } : {};
+    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps, prices: this.opts.prices ?? {}, ...models });
     this.log(`worker ${address} joined (${worker.agent}${hardened ? ', reports a hardened Mac' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
     this.noteAttestedModels(worker, null);
     this.noteAttested();

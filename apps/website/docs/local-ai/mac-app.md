@@ -22,11 +22,17 @@ Antseed Colony is a menu bar app that joins a [colony pool](/docs/local-ai) and 
 2. Open the DMG and drag **Antseed Colony** to **Applications**.
 3. Open **Antseed Colony**. It runs in the menu bar (the ant icon), not the Dock.
 
-On first launch the app creates its keys and downloads its model. It serves `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX), pinned to one Hugging Face revision, with the bundled [TensorFold](https://github.com/ashhart/TensorFold) engine.
+On first launch the app creates its keys. Models run on the bundled [TensorFold](https://github.com/ashhart/TensorFold) engine.
 
 ## Join a pool
 
 Click the ant icon, enter the pool's address from its operator (`wss://…`) under **Pool address**, and choose **Join**. The app keeps the address for later launches; **Change pool** switches to another one.
+
+## Choose a model
+
+Once joined, the app lists the models the pool runs: each service it sells, the exact model pinned for it, and its download size. Pick one. The app downloads that pinned model, checks its files and starts serving it. Models whose weights take more than half your Mac's memory are marked **needs more memory** and can't be picked.
+
+The app keeps your choice for later launches. **Change model** switches to another of the pool's models; the app stops serving while the new one downloads. A pool that pins no models gets the built-in one, `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX).
 
 The panel shows the app's status, today's estimated earnings, the model and what protects the prompts it serves. The switch at the top pauses sharing without leaving the pool.
 
@@ -41,8 +47,8 @@ open -a "Antseed Colony" --args --pool wss://pool.example.com:8790 --name studio
 | Option | What it does |
 |---|---|
 | `--pool <url>` | The pool to join, instead of the one saved in the app |
-| `--service <id>` | The service name the pool sells (default `qwen3.5-2b`) |
-| `--model <repo@commit>` | The model that serves it, pinned to a full 40-character commit. The app refuses an unpinned model, since it could change under the service name |
+| `--service <id>` | The service to serve, instead of the one chosen in the app (default `qwen3.5-2b`) |
+| `--model <repo@commit>` | The model that serves it, pinned to a full 40-character commit, instead of the one chosen in the app. The app refuses an unpinned model, since it could change under the service name |
 | `--name <text>` | The name the pool's operator sees (default: your Mac's name) |
 | `--rpc <url>` | The Base RPC the app checks channels and your payout wallet on (default: Base's public RPC and its fallbacks) |
 | `--channels <address>` | The Channels contract to check requests against, for a chain other than Base mainnet or Base Sepolia |

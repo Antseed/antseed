@@ -70,7 +70,7 @@ Apple-verified Macs add the `COLONY_POOL_MDM_*` settings below.
 
 ## Pin the model
 
-Workers report the model each service runs, and the Mac app attests a hash of its model files at every launch. With `COLONY_POOL_MODELS`, the pool routes a service only to workers reporting exactly that `repo@revision`. Add `#<sha256>` to require the attested files too. The pool logs each digest a worker attests, so you can pin the one a known-good Mac reports, or compute it from the model's snapshot:
+Workers report the model each service runs, and Antseed Colony attests a hash of its model files at every launch. With `COLONY_POOL_MODELS`, the pool routes a service only to workers reporting exactly that `repo@revision`. It also sends these pins to every worker that joins, and Antseed Colony offers them to the Mac's owner to pick from, so list each service you want Macs to run, pinned to a full 40-character commit. Add `#<sha256>` to require the attested files too. The pool logs each digest a worker attests, so you can pin the one a known-good Mac reports, or compute it from the model's snapshot:
 
 ```bash
 cd ~/.cache/huggingface/hub/models--ORG--REPO/snapshots/REVISION

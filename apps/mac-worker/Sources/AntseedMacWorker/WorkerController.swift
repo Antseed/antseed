@@ -18,6 +18,7 @@ enum WorkerStatus: Equatable {
     case starting
     case loadingModel(Double)
     case needsPool
+    case choosingModel
     case connecting
     case serving
     case paused
@@ -28,6 +29,7 @@ enum WorkerStatus: Equatable {
         case .starting: "Starting"
         case .loadingModel(let p): p > 0 && p < 1 ? "Downloading model \(Int(p * 100))%" : "Loading model"
         case .needsPool: "Enter a pool to join"
+        case .choosingModel: "Choose a model to run"
         case .connecting: "Connecting to pool"
         case .serving: "Sharing this Mac"
         case .paused: "Paused"
@@ -62,6 +64,12 @@ final class WorkerController: ObservableObject {
     @Published private(set) var poolSeller: String?
     /// The pool this Mac joins; nil until the owner enters one.
     @Published private(set) var poolURL: URL?
+    /// The service this Mac sells and its checkpoint; nil until the owner picks one.
+    @Published private(set) var choice: ModelChoice?
+    /// The models the pool pins that this app can run, for the owner to pick from.
+    @Published private(set) var poolModels: [ModelChoice] = []
+    /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
+    @Published private(set) var modelSizes: [String: UInt64] = [:]
     /// When the pool connection last showed signs of life.
     private var liveness = PoolLiveness()
     /// The owner's payout wallet and the link that sets it.
@@ -76,8 +84,8 @@ final class WorkerController: ObservableObject {
     let keys: WorkerKeys
     private let identity: Protection.CodeIdentity
     private let debuggerDenied: Bool
-    private let model: LocalModel
-    /// The checkpoint behind `config.service` and the digest of its files, attested to the pool once loaded.
+    private var model: LocalModel?
+    /// The checkpoint behind `choice` and the digest of its files, attested to the pool once loaded.
     private var checkpoint: LocalModel.Checkpoint?
     private let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     private var socket: URLSessionWebSocketTask?
@@ -143,9 +151,9 @@ final class WorkerController: ObservableObject {
     init(config: WorkerConfig) throws {
         self.config = config
         self.poolURL = config.poolURL
+        self.choice = config.choice
         let keys = try WorkerKeys.loadOrCreate(in: config.dataDirectory)
         self.keys = keys
-        self.model = LocalModel(modelId: config.modelId, engine: config.engineURL, directory: config.dataDirectory)
         let identity = Protection.codeIdentity()
         self.identity = identity
         // Signed builds refuse debuggers for the life of the process; development builds stay debuggable.
@@ -168,7 +176,7 @@ final class WorkerController: ObservableObject {
 
     func start() {
         log(protection.summary)
-        guard WorkerConfig.isPinned(config.modelId) else {
+        if let choice, !WorkerConfig.isPinned(choice.model) {
             status = .failed("--model must pin a revision: repo@<40-character commit>")
             return
         }
@@ -181,26 +189,74 @@ final class WorkerController: ObservableObject {
         signal(SIGTERM, SIG_IGN)
         terminationSignal.setEventHandler { NSApplication.shared.terminate(nil) }
         terminationSignal.resume()
+        log("Antseed Colony \(config.name) · payout address \(address)")
+        startPolling()
         Task {
-            do {
-                status = .loadingModel(0)
-                log("Antseed Colony \(config.name) · payout address \(address)")
-                log("loading \(config.modelId) with TensorFold…")
-                checkpoint = try await model.load { progress in
-                    Task { @MainActor in self.status = .loadingModel(progress) }
-                }
-                log("model ready on TensorFold (Apple GPU) · files sha256 \(checkpoint?.sha256 ?? "")")
-                startPolling()
-                if poolURL == nil { status = .needsPool } else { connect() }
-            } catch {
-                status = .failed("Model failed to load: \(error.localizedDescription)")
-            }
+            // Without a model yet, it joins to learn which models the pool runs, and serves once one is picked.
+            if let choice, !(await load(choice)) { return }
+            rejoin()
         }
+    }
+
+    /// Download (first time), hash and start the chosen checkpoint. False when it failed to load.
+    private func load(_ choice: ModelChoice) async -> Bool {
+        let local = LocalModel(modelId: choice.model, engine: config.engineURL, directory: config.dataDirectory)
+        model = local
+        checkpoint = nil
+        status = .loadingModel(0)
+        log("loading \(choice.model) with TensorFold…")
+        do {
+            let loaded = try await local.load { progress in
+                Task { @MainActor in self.status = .loadingModel(progress) }
+            }
+            guard model === local else { return false } // another pick replaced it meanwhile
+            checkpoint = loaded
+            log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
+            return true
+        } catch {
+            if model === local { status = .failed("Model failed to load: \(error.localizedDescription)") }
+            return false
+        }
+    }
+
+    /// Run `offer` from now on (saved for later launches): load it, then rejoin the pool with it.
+    func choose(_ offer: ModelChoice) {
+        guard offer != choice || checkpoint == nil else { return }
+        do {
+            try offer.save(in: config.dataDirectory)
+        } catch {
+            status = .failed("Could not save the model choice: \(error.localizedDescription)")
+            return
+        }
+        log("owner chose \(offer.service) on \(offer.model)")
+        choice = offer
+        // Stop serving the old model while the new one loads.
+        disconnect()
+        Task { if await load(offer) { rejoin() } }
+    }
+
+    /// The services this Mac offers the pool now: its chosen one, once loaded, while sharing.
+    private var offeredServices: [String] {
+        guard sharing, checkpoint != nil, let choice else { return [] }
+        return [choice.service]
     }
 
     /// The checkpoint each service runs, for the attestation: a pool that pins its files' digest routes only on it.
     private var attestedModels: [String: LocalModel.Checkpoint] {
-        checkpoint.map { [config.service: $0] } ?? [:]
+        guard let checkpoint, let choice else { return [:] }
+        return [choice.service: checkpoint]
+    }
+
+    /// The pins the pool's welcome lists, kept for the owner to pick from, with each one's download size.
+    private func notePoolModels(_ pins: [String: String]) {
+        let offers = ModelChoice.offers(from: pins)
+        guard offers != poolModels else { return }
+        poolModels = offers
+        for offer in offers where modelSizes[offer.model] == nil {
+            Task {
+                if let bytes = await ModelSize.bytes(of: offer.model) { modelSizes[offer.model] = bytes }
+            }
+        }
     }
 
     // MARK: pool connection
@@ -218,11 +274,15 @@ final class WorkerController: ObservableObject {
         }
         log("joining pool \(url.host ?? "")")
         poolURL = url
-        guard checkpoint != nil else { return nil } // connects once the model is ready
+        rejoin()
+        return nil
+    }
+
+    /// (Re)connect to the pool, fresh: the hello names the model this Mac runs now.
+    private func rejoin() {
         disconnect()
         backoff = 1
         connect()
-        return nil
     }
 
     /// Leave the current pool connection, cancelling its requests.
@@ -324,7 +384,7 @@ final class WorkerController: ObservableObject {
     }
 
     private func announceServices() {
-        send(["t": "services", "services": sharing ? [config.service] : []])
+        send(["t": "services", "services": offeredServices])
         if case .serving = status, !sharing { status = .paused }
         if case .paused = status, sharing { status = .serving }
     }
@@ -349,10 +409,10 @@ final class WorkerController: ObservableObject {
                     "t": "hello",
                     "address": address,
                     "signature": try keys.ethereum.personalSign("antseed-colony-pool/v1\npool:\(pool)\nnonce:\(nonce)"),
-                    "services": sharing ? [config.service] : [],
+                    "services": offeredServices,
                     "maxConcurrency": RequestGate.maxConcurrency,
                     // The pinned checkpoint behind each service, so a pool can refuse one it didn't expect.
-                    "models": [config.service: config.modelId],
+                    "models": checkpoint == nil ? [:] : choice.map { [$0.service: $0.model] } ?? [:],
                     "encryption": [
                         "key": keyHex,
                         "expires": expires,
@@ -369,7 +429,16 @@ final class WorkerController: ObservableObject {
             backoff = 1
             poolShareBps = frame["workerShareBps"] as? Int ?? 0
             prices = ((frame["prices"] as? [String: Any]) ?? [:]).compactMapValues { WorkerPayment.Price($0) }
-            status = .joined(sharing: sharing, service: config.service, rejected: frame["rejected"] as? [String] ?? [])
+            notePoolModels(frame["models"] as? [String: String] ?? [:])
+            if let choice {
+                // Still loading: the progress stays; the app rejoins with the model once it is ready.
+                if checkpoint != nil { status = .joined(sharing: sharing, service: choice.service, rejected: frame["rejected"] as? [String] ?? []) }
+            } else if poolModels.isEmpty {
+                // The pool pins nothing to pick from: run the built-in model.
+                choose(.fallback)
+            } else {
+                status = .choosingModel
+            }
             log("joined pool \(poolURL?.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
             payouts.joined(pool: poolSeller)
@@ -488,7 +557,9 @@ final class WorkerController: ObservableObject {
         } catch {
             return fail(id, error.localizedDescription)
         }
-        guard sealed.model == config.service, sharing else { return fail(id, "Not serving \(sealed.model)") }
+        guard let model, checkpoint != nil, let service = choice?.service, sealed.model == service, sharing else {
+            return fail(id, "Not serving \(sealed.model)")
+        }
 
         let check: ChannelCheck
         if let buyer = sealed.buyer, let channel = sealed.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
@@ -569,7 +640,7 @@ final class WorkerController: ObservableObject {
 
         let maxTokens = full ? generation.maxTokens : min(generation.maxTokens, checkLimit)
         do {
-            guard let result = try await generateAndSend(id: id, chat: chat, maxTokens: maxTokens, promptLimit: promptLimit,
+            guard let result = try await generateAndSend(id: id, model: model, service: service, chat: chat, maxTokens: maxTokens, promptLimit: promptLimit,
                                                          temperature: generation.temperature, stream: generation.stream,
                                                          sealer: opened.sealer, connection: connection) else {
                 log("the answer could not be sent to the pool; it is not owed")
@@ -589,6 +660,8 @@ final class WorkerController: ObservableObject {
     /// that failed to send can't reach the buyer, so it is not owed and never holds the channel's credit.
     private func generateAndSend(
         id: String,
+        model: LocalModel,
+        service: String,
         chat: [String: Any],
         maxTokens: Int,
         promptLimit: Int?,
@@ -598,7 +671,7 @@ final class WorkerController: ObservableObject {
         connection: URLSessionWebSocketTask?
     ) async throws -> LocalModel.Result? {
         let response = EngineChat.Response(id: "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())",
-                                           created: Int(Date().timeIntervalSince1970), model: config.service)
+                                           created: Int(Date().timeIntervalSince1970), model: service)
         defer { startedStreams.remove(id) }
         let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
             guard stream else { return }
