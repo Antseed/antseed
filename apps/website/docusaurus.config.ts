@@ -214,7 +214,7 @@ const config: Config = {
           'Reputation-based provider scoring',
           'TEE attestation for privacy-preserving inference',
           'AI agents with on-demand knowledge and custom tools',
-          'Desktop app (AI VPN)',
+          'Antseed Desktop',
           'Agent-to-agent commerce support',
         ],
         downloadUrl: 'https://github.com/Antseed/antseed/releases',
@@ -283,6 +283,11 @@ const config: Config = {
               type: 'html',
               value:
                 '<a class="usecase" href="/coding"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="12" rx="3"/><path d="M6 9l2.5 2L6 13"/><path d="M10.5 13h3.5"/></svg></span><span class="usecase__body"><span class="usecase__title">For coding apps</span><span class="usecase__desc">Claude Code, Codex, OpenCode</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
             },
             {
               type: 'html',

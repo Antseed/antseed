@@ -137,7 +137,7 @@ before(async () => {
       body: {
         model: new URL(req.url, 'http://x').searchParams.get('model'),
         candidates: [
-          { peerId: PEER_A, displayName: null, rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: null },
+          { peerId: PEER_A, displayName: null, rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, trustScore: null },
           { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
         ],
         buyer: { minReputation: 40, requireVerified: true },
@@ -577,7 +577,7 @@ test('GET models lists the unfiltered network catalog to members and tokens', as
   const models = await call(router, 'GET', '/models', member) as NetworkModel[]
   assert.deepEqual(models.map((model) => model.id), ['open-model-a', 'open-image-model'])
   assert.equal(models[0]!.offers[0]!.latencyMsP50, 840)
-  const sent = lastRequest(buyer, (url) => url === '/v1/models')
+  const sent = lastRequest(buyer, (url) => url === '/v1/models?scope=network')
   assert.equal(sent?.headers[GATEWAY_CONTROL_HEADER], TEST_SECRET)
   assert.equal(sent?.headers[ROUTING_POLICY_HEADER], undefined, 'no routing policy, like /peers')
   assert.equal(router.match('GET', '/models')!.route.options.allow, router.match('GET', '/peers')!.route.options.allow)
@@ -648,7 +648,7 @@ test('GET routers asks the buyer for routing services without a policy', async (
 
 test('candidate enrichment fills names and trust from the peer list', () => {
   const candidates = enrichCandidates([{ peerId: PEER_A, eligible: true, reasons: [] }, { eligible: true }], PEERS_BODY)
-  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 72, selection: null }])
+  assert.deepEqual(candidates, [{ peerId: PEER_A, displayName: 'Fake TEE Seller', rank: null, eligible: true, reasons: [], inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, trustScore: 72, selection: null }])
 })
 
 test('GET route-preview sends the resolved policy and enriches candidates', async () => {
@@ -660,8 +660,8 @@ test('GET route-preview sends the resolved policy and enriches candidates', asyn
   assert.deepEqual(preview.policy, { allowedModels: ['open-model-a'], blockedPeerIds: [PEER_C], sort: 'price' })
   assert.deepEqual(preview.sources.map((source) => source.level), ['buyer', 'gateway', 'workspace'])
   assert.deepEqual(preview.candidates, [
-    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: 72, selection: null },
-    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40, selection: null },
+    { peerId: PEER_A, displayName: 'Fake TEE Seller', rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1, trustScore: 72, selection: null },
+    { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, cachedInputUsdPerMillion: null, trustScore: 40, selection: null },
   ])
   const sent = lastRequest(buyer, (url) => url.startsWith('/_antseed/route-preview'))
   assert.equal(sent?.url, '/_antseed/route-preview?model=open-model-a')

@@ -26,7 +26,7 @@ export function OwnedByNoOne() {
       <div className={styles.sectionInner}>
         <Reveal>
           <SectionHeader
-            kicker="The network behind the AI VPN"
+            kicker="The network behind Antseed Desktop"
             title={
               <>
                 Owned by no one. <span className={styles.titleAccent}>Available to everyone.</span>

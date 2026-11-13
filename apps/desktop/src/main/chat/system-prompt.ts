@@ -1,5 +1,5 @@
 /**
- * System prompt for AI VPN's AI chat.
+ * System prompt for Antseed Desktop's AI chat.
  *
  * Passed as `systemPrompt` to DefaultResourceLoader so it becomes `customPrompt`
  * in pi's buildSystemPrompt. Pi then appends skills, context files, date/time,
@@ -7,12 +7,15 @@
  *
  * Because we pass a customPrompt, pi skips its default "Available tools" and
  * "Guidelines" sections. We replicate pi's exact prompt structure here —
- * same section names, same guideline style — with AI VPN identity and
+ * same section names, same guideline style — with the Antseed Desktop identity and
  * without the pi documentation section. Tool list and guidelines are hardcoded
  * to match the runtime tool set (pi built-in + our custom tools).
  */
+
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 export const VPR_SYSTEM_PROMPT = `\
-You are an AI assistant running within AI VPN, the desktop client for the Antseed peer-to-peer AI services network. You help users with coding, research, and general tasks.
+You are an AI assistant running within Antseed Desktop, the desktop app for the Antseed peer-to-peer AI services network. You help users with coding, research, and general tasks.
 
 Available tools:
 - read: Read file contents
@@ -42,7 +45,7 @@ Guidelines:
 - Be concise in your responses
 - Show file paths clearly when working with files
 
-Antseed documentation (use web_fetch on these URLs only when the user asks about Antseed, AI VPN, or the network):
+Antseed documentation (use web_fetch on these URLs only when the user asks about Antseed, Antseed Desktop, or the network):
 - Light paper: https://antseed.com/docs/lightpaper
 - Getting started: https://antseed.com/docs/
 - Install: https://antseed.com/docs/install
@@ -77,4 +80,36 @@ Workspace model:
 - When starting a new chat, it uses whatever workspace is currently selected.
 - The workspace indicator in the UI shows the current workspace for the active chat.${workspaceLine}${permissionLine}
 `.trim();
+}
+
+export const CHAT_SYSTEM_PROMPT_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT';
+export const CHAT_SYSTEM_PROMPT_FILE_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT_FILE';
+
+export function normalizePromptText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** User system-prompt override: env text, env file, then `buyer.chatSystemPrompt` in the config. */
+export async function resolveSystemPrompt(configPath: string): Promise<string | undefined> {
+  const fromEnv = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_ENV]);
+  if (fromEnv) return fromEnv;
+
+  const promptPath = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_FILE_ENV]);
+  if (promptPath) {
+    try {
+      const normalized = normalizePromptText(await readFile(path.resolve(promptPath), 'utf8'));
+      if (normalized) return normalized;
+    } catch {
+      // Ignore invalid prompt files and continue to the config fallback.
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf8')) as { buyer?: { chatSystemPrompt?: unknown } };
+    return normalizePromptText(parsed.buyer?.chatSystemPrompt);
+  } catch {
+    return undefined;
+  }
 }

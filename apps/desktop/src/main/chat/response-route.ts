@@ -1,9 +1,13 @@
+/**
+ * Sessions written before the gateway name each reply's model and seller in
+ * custom entries, so old conversations keep showing who answered.
+ */
 import type { AiChatMessage } from './conversation-types.js';
 
 export const RESPONSE_ROUTE_ENTRY = 'antseed-response-route';
 
 export function restoreResponseRoutes(messages: AiChatMessage[], entries: Array<{ type: string; customType?: string; data?: unknown }>): AiChatMessage[] {
-  const routes = new Map<number, { service: string; peerId: string; peerName?: string; router?: string }>();
+  const routes = new Map<number, { service: string; peerId: string; peerName?: string }>();
   for (const entry of entries) {
     if (entry.type !== 'custom' || entry.customType !== RESPONSE_ROUTE_ENTRY || !entry.data || typeof entry.data !== 'object') continue;
     const data = entry.data as Record<string, unknown>;
@@ -11,8 +15,7 @@ export function restoreResponseRoutes(messages: AiChatMessage[], entries: Array<
       || typeof data.service !== 'string' || !data.service.trim()
       || typeof data.peerId !== 'string' || !data.peerId.trim()) continue;
     routes.set(data.createdAt, { service: data.service, peerId: data.peerId,
-      ...(typeof data.peerName === 'string' && data.peerName.trim() ? { peerName: data.peerName } : {}),
-      ...(typeof data.router === 'string' && data.router.trim() ? { router: data.router } : {}) });
+      ...(typeof data.peerName === 'string' && data.peerName.trim() ? { peerName: data.peerName } : {}) });
   }
   return messages.map((message) => {
     const route = message.role === 'assistant' && message.createdAt ? routes.get(message.createdAt) : undefined;

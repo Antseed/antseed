@@ -1,5 +1,5 @@
 /**
- * HeroDemo — the live AI VPN demo animation from the hero prototype
+ * HeroDemo — the live Antseed Desktop demo animation from the hero prototype
  * (antseed-website.vercel.app), ported 1:1 from its Remotion
  * composition: a 2048×1152 scene at 30 fps over 582 frames.
  *
@@ -202,7 +202,7 @@ const asset = (name: string) => `/img/demo/${name}`;
    Mobile composition — one centred column instead of the wide scene.
    The chat windows drop out; what is left is the story of a single
    request, stacked top -> bottom in the order the timeline already
-   tells it: the AI VPN, the price it got, the network it got it from.
+   tells it: Antseed Desktop, the price it got, the network it got it from.
 
    Hierarchy comes from nested widths — card 524 < routing pill 580 <
    network bar 636, in even 56px steps — so the card stays the
@@ -494,7 +494,7 @@ function ChatApp({
 }
 
 /* ============================================================
-   AI VPN card with power button (`av`)
+   Antseed Desktop card with power button (`av`)
    ============================================================ */
 function VprCard({
   left = 1110,
@@ -599,7 +599,7 @@ function VprCard({
             onClick={onToggle}
             onPointerEnter={() => setHover(true)}
             onPointerLeave={() => setHover(false)}
-            aria-label={powerOn > 0.5 ? 'Turn the AI VPN demo off' : 'Turn the AI VPN demo on'}
+            aria-label={powerOn > 0.5 ? 'Turn the Antseed Desktop demo off' : 'Turn the Antseed Desktop demo on'}
             aria-pressed={powerOn > 0.5}
             style={{
               position: 'absolute',
@@ -1003,7 +1003,7 @@ function MobileScene({onToggle}: {onToggle?: () => void}) {
 
   return (
     <div style={{position: 'absolute', inset: 0}}>
-      {/* 1 — the AI VPN itself: 524 wide, centred, the anchor of the column */}
+      {/* 1 — Antseed Desktop itself: 524 wide, centred, the anchor of the column */}
       <VprCard left={M_CX - 262} top={0} onToggle={onToggle} />
 
       {/* 2 — routing + model roulette, sized to cover the card's baked-in
@@ -1036,7 +1036,7 @@ function MobileScene({onToggle}: {onToggle?: () => void}) {
         scale={M_TOKENS_S * tokens.scale}
       />
 
-      {/* 4 — AI VPN -> network, with the anonymous relay sitting on the line.
+      {/* 4 — Antseed Desktop -> network, with the anonymous relay sitting on the line.
              The node stays small enough that the wire still reads either
              side of it — it is a stop on the line, not a break in it. */}
       <StackConnector
@@ -1230,7 +1230,7 @@ export function HeroDemo({
   const shutStartRef = useRef(0);
 
   /**
-   * Power button. While the AI VPN reads as on, a click plays the loop's closing
+   * Power button. While Antseed Desktop reads as on, a click plays the loop's closing
    * beat over the frozen frame and parks the demo off; otherwise it restarts
    * the loop at the button press so the whole opening replays.
    */
