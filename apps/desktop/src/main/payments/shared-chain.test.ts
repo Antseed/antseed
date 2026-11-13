@@ -13,7 +13,7 @@ writeFileSync(configPath, JSON.stringify({ payments: { crypto: { chainId: 'base-
 process.env['ANTSEED_CONFIG_PATH'] = configPath;
 
 const { sharedChainContext, sharedChainProvider, resetSharedChain, withSharedProvider } = await import('./shared-chain.js');
-const { resolveStakingChain } = await import('../staking/configuration.js');
+const { resolveStakingChain } = await import('./chain-config.js');
 
 const chain = resolveStakingChain({ payments: { crypto: { chainId: 'base-local', rpcUrl: LOCAL } } });
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { formatClock } from '../../../core/format';
-import { VprBackTitle, VprCard } from '../vpr/VprKit';
+import { VprCard, VprPage } from '../vpr/VprKit';
 import styles from './DiagnosticsView.module.scss';
 
 type DesktopViewProps = {
@@ -146,11 +146,13 @@ export function DesktopView({ onSelectView }: DesktopViewProps) {
       : JSON.stringify(daemonState.state, null, 2);
 
   return (
-    <section className={`view view-desktop ${styles.view}`} role="tabpanel">
-      <div className={styles.stack}>
-        <div className={styles.headRow}>
-          <VprBackTitle title="Logs" fallback="help" />
-          <div className={`${styles.headActions} ${styles.headActionsLeft}`}>
+    <section className="view view-desktop view-pinned-header" role="tabpanel">
+      <VprPage
+        title="Live logs"
+        backFallback="help"
+        subtitle="Runtime activity as it happens."
+        action={(
+          <div className={styles.headActions}>
             <button
               type="button"
               className={styles.button}
@@ -163,8 +165,9 @@ export function DesktopView({ onSelectView }: DesktopViewProps) {
               Clear
             </button>
           </div>
-        </div>
-
+        )}
+      >
+      <div className={styles.stack}>
         <pre hidden>{daemonText}</pre>
 
         <VprCard className={styles.card}>
@@ -222,6 +225,7 @@ export function DesktopView({ onSelectView }: DesktopViewProps) {
           </div>
         </VprCard>
       </div>
+      </VprPage>
     </section>
   );
 }

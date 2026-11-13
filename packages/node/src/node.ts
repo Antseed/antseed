@@ -505,6 +505,11 @@ const SWEEP_OUTCOME_WATCH_MS = 5 * 60_000;
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
 /** How often a running buyer re-checks its stored channels against the chain. */
 const BUYER_CHANNEL_RECONCILE_INTERVAL_MS = 5 * 60_000;
+/**
+ * How long a stop waits for a seller topUp() being mined. One still pending
+ * after it is kept in the channel store and resubmitted on the next start.
+ */
+const SELLER_STOP_TOP_UP_WAIT_MS = 5_000;
 
 /** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
 export interface ResponseAuthEvent {
@@ -912,6 +917,13 @@ export class AntseedNode extends EventEmitter {
     if (this._connectionManager) {
       this._connectionManager.closeAll();
       this._connectionManager = null;
+    }
+    this._sellerPaymentManager?.markConnectionsClosed();
+
+    // A top-up being mined lifts the ceiling over work already served: give
+    // it a moment to land now that no new work can arrive.
+    if (this._sellerPaymentManager) {
+      await this._sellerPaymentManager.waitForRunningTopUps(SELLER_STOP_TOP_UP_WAIT_MS);
     }
 
     // Stop DHT
@@ -2754,7 +2766,12 @@ export class AntseedNode extends EventEmitter {
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
       };
-      this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
+      this._sellerPaymentManager = new SellerPaymentManager(
+        this._identity,
+        sellerConfig,
+        this._channelStore,
+        (buyerPeerId) => this._paymentMuxes.get(buyerPeerId as PeerId),
+      );
       debugLog(`[Node] SellerPaymentManager initialized`);
 
       // Deposit-sweep relayer (opt-out — ON by default when the chain has a relay)

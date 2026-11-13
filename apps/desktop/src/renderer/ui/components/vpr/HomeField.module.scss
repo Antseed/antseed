@@ -1,0 +1,60 @@
+/* The field fills the pane, bottom-anchored. The art is 16:9 and the ant sits
+   left of centre (its right edge about 32% across), so the crop is computed to
+   keep the ant between the pane's edge and the 720px column: its face stays
+   out from under the cards at the usual window sizes. */
+.field {
+  --art-width: calc(100cqh * 16 / 9);
+  --art-shift: clamp(
+    0px,
+    calc(var(--art-width) * 0.32 - (100cqw - 720px) / 2 - 50px),
+    max(0px, calc(var(--art-width) - 100cqw))
+  );
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  container-type: size;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: calc(var(--art-shift) * -1) 100%;
+  opacity: 1;
+}
+
+.hidden {
+  opacity: 0;
+}
+
+.crossfade {
+  transition: opacity 1s ease;
+}
+
+.clip {
+  opacity: 0;
+  transition: opacity 0.55s ease;
+}
+
+.clipShown {
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+/* Keeps the heading and box legible over the painting. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  transition: background 0.9s ease;
+}
+
+.scrimDay {
+  background: radial-gradient(ellipse 46% 42% at 50% 42%, rgba(251, 250, 246, 0.55) 0%, rgba(251, 250, 246, 0.22) 60%, rgba(251, 250, 246, 0) 100%);
+}
+
+.scrimNight {
+  background: radial-gradient(ellipse 46% 42% at 50% 42%, rgba(10, 15, 34, 0.42) 0%, rgba(10, 15, 34, 0.18) 60%, rgba(10, 15, 34, 0) 100%);
+}
