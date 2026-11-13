@@ -132,7 +132,7 @@ curl -s 'http://localhost:8377/v1/models?type=router' | jq '.data[].peers[] | {m
 
 ### Saved router settings
 
-The buyer can also keep one router as its default, set from the desktop app or with `POST /_antseed/route`:
+The buyer can also keep one router as its default, set with `POST /_antseed/route`:
 
 ```bash
 curl -X POST http://127.0.0.1:8377/_antseed/route \

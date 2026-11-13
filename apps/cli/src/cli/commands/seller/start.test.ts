@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { stripVTControlCharacters } from 'node:util';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('native video runtime configuration maps each video seller endpoint to its credentials', () => {
   for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video'], ['alibaba-video', 'ALIBABA_VIDEO', 'fal-video']] as const) {
@@ -30,6 +34,7 @@ import {
   resolveSellerPaymentsAfterRpcProbe,
   buildSellerRuntimeOverridesFromFlags,
   buildSellerPluginRuntimeEnv,
+  describeBaseRpc,
   getUnsupportedFallbackUpstreamsWarning,
   getImageEditUnitBillingWarning,
   getUnsupportedUnitBillingWarning,
@@ -457,6 +462,35 @@ test('isPublicRpcUrl matches host only and ignores invalid or dedicated RPC URLs
   assert.equal(isPublicRpcUrl('not a url'), false);
 });
 
+test('seller start never prints the secret parts of the Base RPC URL', () => {
+  const cases: Array<{ url: string; secrets: string[]; shown: string }> = [
+    // A one-character key in the path.
+    { url: 'https://lb.drpc.live/Z', secrets: ['Z'], shown: 'https://lb.drpc.live/…' },
+    // A /v1/{chain}/{key} gateway path.
+    { url: 'https://rpc.example.test/v1/base/path-secret-key', secrets: ['path-secret-key', '/v1/base'], shown: 'https://rpc.example.test/…' },
+    // A key only in the query string.
+    { url: 'https://base-rpc.example.test/?apikey=query-secret-key', secrets: ['query-secret-key', 'apikey'], shown: 'https://base-rpc.example.test/…' },
+    // Credentials in the userinfo.
+    { url: 'https://rpc-user-secret:rpc-pass-secret@base.example.test/', secrets: ['rpc-user-secret', 'rpc-pass-secret'], shown: 'https://base.example.test/…' },
+    // Malformed input and a URL that is not http(s) show a fixed placeholder.
+    { url: 'lb.drpc.live/malformed-secret', secrets: ['malformed-secret', 'drpc'], shown: '<invalid RPC URL>' },
+    { url: 'not a url malformed-secret', secrets: ['malformed-secret'], shown: '<invalid RPC URL>' },
+    { url: 'wss://host-secret.example.test/ws-secret', secrets: ['host-secret', 'ws-secret'], shown: '<invalid RPC URL>' },
+  ];
+  for (const { url, secrets, shown } of cases) {
+    const output = describeBaseRpc(url, 'config/default').map((line) => stripVTControlCharacters(line)).join('\n');
+    for (const secret of secrets) assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+    assert.equal(output, `  Base RPC URL: ${shown} (config/default)`);
+  }
+});
+
+test('seller start still warns about a public Base RPC after masking', () => {
+  const lines = describeBaseRpc('https://mainnet.base.org', 'runtime override').map((line) => stripVTControlCharacters(line));
+  assert.equal(lines[0], '  Base RPC URL: https://mainnet.base.org (runtime override)');
+  assert.match(lines[1] ?? '', /^ {2}Warning: using a public Base RPC\./);
+  assert.equal(lines.length, 2);
+});
+
 test('resolveBaseRpcUrlOverride uses flag before ANTSEED_BASE_RPC_URL', () => {
   const env = {
     ANTSEED_BASE_RPC_URL: 'https://env-rpc.example',
@@ -737,6 +771,74 @@ test('assertSellerPrerequisites refuses a priced seller whose RPC did not answer
   assert.match(output, /kimi-k2\.6/);
   assert.match(output, /ANTSEED_ENABLE_SETTLEMENT=false/);
   await assertSellerPrerequisites({ ...input, skipChainChecks: true });
+});
+
+async function capturePrerequisiteErrors(input: Parameters<typeof assertSellerPrerequisites>[0]): Promise<string> {
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    await assert.rejects(assertSellerPrerequisites(input), /seller prerequisites not met/);
+  } finally {
+    console.error = originalError;
+  }
+  return stripVTControlCharacters(errors.join('\n'));
+}
+
+test('the unreachable-RPC prerequisite failure never prints the secret parts of the RPC URLs', async () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } } } },
+  };
+  const output = await capturePrerequisiteErrors({
+    dataDir: '/tmp/no-identity-here',
+    config,
+    effectiveSeller: config.seller,
+    providerNames: ['inference'],
+    paymentsEnabled: true,
+    runtimePricingOverride: false,
+    skipChainChecks: false,
+    unreachableRpc: {
+      urls: ['https://lb.drpc.live/primary-secret-key', 'https://rpc-user-secret:rpc-pass-secret@fallback.example.test/?apikey=fallback-secret-key'],
+      pricedServiceIds: ['kimi-k2.6'],
+    },
+  });
+  assert.match(output, /No answer from https:\/\/lb\.drpc\.live\/…, https:\/\/fallback\.example\.test\/… after/);
+  for (const secret of ['primary-secret-key', 'rpc-user-secret', 'rpc-pass-secret', 'apikey', 'fallback-secret-key']) {
+    assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+  }
+});
+
+test('the on-chain readiness failure never prints the secret parts of the RPC URLs in the chain error', async (t) => {
+  // An RPC that refuses every call, as one does when its key has expired.
+  const server = createServer((_req, res) => { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-prereq-'));
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const config = createDefaultConfig();
+  // One RPC, no fallbacks: ethers puts its URL (`info.requestUrl`) in the error message.
+  config.payments.crypto = { ...config.payments.crypto!, chainId: 'base-local' };
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: { 'kimi-k2.6': { pricing: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } } } },
+  };
+  const output = await capturePrerequisiteErrors({
+    dataDir,
+    config,
+    effectiveSeller: config.seller,
+    providerNames: ['inference'],
+    paymentsEnabled: true,
+    runtimePricingOverride: false,
+    skipChainChecks: false,
+    baseRpcUrlOverride: `${origin}/v2/primary-secret-key?apikey=query-secret-key`,
+  });
+  assert.match(output, /On-chain readiness check failed[\s\S]*401 Unauthorized/);
+  for (const secret of ['primary-secret-key', 'apikey', 'query-secret-key']) {
+    assert.ok(!output.includes(secret), `${JSON.stringify(secret)} leaked in: ${output}`);
+  }
 });
 
 test('a plugin unit price with zero token defaults and no config pricing keeps payments on and fails the prerequisites when the RPC is down', async () => {

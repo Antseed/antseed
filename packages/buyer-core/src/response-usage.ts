@@ -13,24 +13,67 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
   if (parsed) {
     return extractUsage(parsed);
   }
-  const text = new TextDecoder().decode(body);
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let freshInputTokens = 0;
-  let cachedInputTokens = 0;
+  const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  for (const event of readStreamEvents(new TextDecoder().decode(body))) {
+    for (const value of event.values) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const usage = extractUsage(value as Record<string, unknown>);
+      if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
+      if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
+      if (usage.freshInputTokens > 0) total.freshInputTokens = Math.max(total.freshInputTokens, usage.freshInputTokens);
+      if (usage.cachedInputTokens > 0) total.cachedInputTokens = Math.max(total.cachedInputTokens, usage.cachedInputTokens);
+    }
+  }
+  return total;
+}
+
+/** One event of a server-sent event stream: the names its `event:` lines give and the JSON values its data carries. */
+export interface StreamEvent {
+  names: string[];
+  values: unknown[];
+}
+
+const NOT_JSON = Symbol('not JSON');
+
+function parseJson(payload: string): unknown {
+  try {
+    return JSON.parse(payload) as unknown;
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * The events of a server-sent event stream, read the same way by the buyer
+ * and the seller. The data lines of one event are joined with "\n" into one
+ * payload, as the SSE spec says. Lines that do not join into JSON are read one
+ * by one: a stream written with no blank lines between its events. Data that
+ * is not JSON, such as `[DONE]`, is left out.
+ */
+export function* readStreamEvents(text: string): Generator<StreamEvent> {
+  let names: string[] = [];
+  let dataLines: string[] = [];
+  const takeEvent = (): StreamEvent | null => {
+    const joined = dataLines.length > 1 ? parseJson(dataLines.join('\n')) : NOT_JSON;
+    const event = names.length > 0 || dataLines.length > 0
+      ? { names, values: joined === NOT_JSON ? dataLines.map(parseJson).filter((value) => value !== NOT_JSON) : [joined] }
+      : null;
+    names = [];
+    dataLines = [];
+    return event;
+  };
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
+    if (trimmed === '') {
+      const event = takeEvent();
+      if (event) yield event;
+      continue;
+    }
+    if (trimmed.startsWith('event:')) names.push(trimmed.slice(6).trim());
     if (!trimmed.startsWith('data:')) continue;
     const payload = trimmed.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try {
-      const event = JSON.parse(payload) as Record<string, unknown>;
-      const usage = extractUsage(event);
-      if (usage.inputTokens > 0) inputTokens = Math.max(inputTokens, usage.inputTokens);
-      if (usage.outputTokens > 0) outputTokens = Math.max(outputTokens, usage.outputTokens);
-      if (usage.freshInputTokens > 0) freshInputTokens = Math.max(freshInputTokens, usage.freshInputTokens);
-      if (usage.cachedInputTokens > 0) cachedInputTokens = Math.max(cachedInputTokens, usage.cachedInputTokens);
-    } catch { /* skip non-JSON lines */ }
+    if (payload && payload !== '[DONE]') dataLines.push(payload);
   }
-  return { inputTokens, outputTokens, freshInputTokens, cachedInputTokens };
+  const last = takeEvent();
+  if (last) yield last;
 }

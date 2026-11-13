@@ -308,6 +308,55 @@
   color: #d4a074;
 }
 
+.previewTunnel {
+  padding: 14px;
+  background: #f4efe6;
+  color: #131b31;
+}
+
+.previewTunnel .previewTop span {
+  color: #8a6242;
+  font-size: 16px;
+}
+
+.tunnelHead {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: #0e1a38;
+  color: #d4a074;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 20px;
+}
+
+.tunnelRows {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tunnelRows span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 9px;
+  border: 1px solid rgba(19, 27, 49, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  font-family: var(--as-font-data);
+  font-size: 10px;
+}
+
+.tunnelRows b {
+  font-weight: 700;
+}
+
+.tunnelRows em {
+  color: #525c73;
+  font-style: normal;
+}
+
 .previewDiem {
   padding: 16px;
   background:
