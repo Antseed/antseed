@@ -6908,6 +6908,30 @@ test('spreading stays on sellers with an open channel instead of reserving on ne
   assert.deepEqual([...served], [pricier.peerId])
 })
 
+test('listing models reads the open channels once, not once per model', async () => {
+  const { cheap, pricier } = makeModelSellers()
+  const models = ['gpt-5', 'model-b', 'model-c', 'model-d']
+  for (const peer of [cheap, pricier]) {
+    const price = peer.providerPricing!.openai!.services!['gpt-5']!
+    peer.providerPricing!.openai!.services = Object.fromEntries(models.map((model) => [model, price]))
+    peer.providerServiceApiProtocols = { openai: { services: Object.fromEntries(models.map((model) => [model, ['openai-chat-completions']])) } }
+  }
+  let reads = 0
+  const proxy = new BuyerProxy({
+    port: 0, dataDir: '/tmp/antseed-test',
+    node: { router: permissiveRouter(), getActiveBuyerChannels: () => { reads += 1; return [{ peerId: pricier.peerId }] } } as any,
+    routingPreferences: priceAndTrustPreferences,
+  })
+  ;(proxy as any)._getPeers = async () => [cheap, pricier]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+
+  const listed = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))
+  assert.equal(listed.statusCode, 200)
+  const ids = (JSON.parse(listed.body).data as Array<{ id: string }>).map((model) => model.id).sort()
+  assert.deepEqual(ids, [...models].sort())
+  assert.equal(reads, 1)
+})
+
 test('a seller already holding as many of our requests as it advertises it can take is not chosen first', async () => {
   const clock = makeTestClock()
   const { cheap, pricier } = makeModelSellers()

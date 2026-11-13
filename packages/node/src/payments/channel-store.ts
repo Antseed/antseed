@@ -423,6 +423,14 @@ export class ChannelStore {
     return rows.map(rowToChannel);
   }
 
+  /** A buyer's channels in one status, newest first, read through the buyer/status index. */
+  getBuyerPaymentChannelsByStatus(buyerEvmAddr: string, status: string): StoredChannel[] {
+    const rows = this._db.prepare(
+      'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND status = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+    ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, status, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
   /**
    * Channel counts and amounts per status for every channel of a role and the
    * given kinds, summed in SQLite (no history limit, nothing loaded).
