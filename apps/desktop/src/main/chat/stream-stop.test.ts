@@ -414,6 +414,14 @@ test('toGatewayStopReason turns the buyer\'s insufficient_deposits into the add-
   assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: plain, stopReason: 'error' }), plain).kind, 'payment_required');
 });
 
+test('toGatewayStopReason turns the gateway workspace\'s out-of-credits message into the add-funds notice', () => {
+  // The gateway's OpenAI-format wording, as the chat sees it without the 402 status.
+  const text = 'This API key\'s workspace (Default) is out of Antseed credits for this request. A workspace admin can add funds in the gateway console under Wallet & Funding, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
+  const reason = toGatewayStopReason(classifyChatStreamFailure({ message: text, stopReason: 'error' }), text);
+  assert.equal(reason.kind, 'payment_required');
+  assert.equal(reason.message, GATEWAY_FUNDS_MESSAGE);
+});
+
 test('toGatewayStopReason explains a rejected key and leaves other failures alone', () => {
   const unauthorized = toGatewayStopReason(classifyChatStreamFailure({ message: '401 Unauthorized', stopReason: 'error' }), '401 Unauthorized');
   assert.equal(unauthorized.kind, 'http_error');

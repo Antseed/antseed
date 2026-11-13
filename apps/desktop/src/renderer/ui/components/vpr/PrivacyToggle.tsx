@@ -27,9 +27,15 @@ const OPTIONS: PrivacyOption[] = [
     mode: 'private',
     label: 'Private',
     iconClass: styles.iconPrivate,
-    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. Some pass requests on to a model provider outside a TEE; models marked “TEE end to end” are sealed all the way.',
+    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. Some pass requests on to a model provider outside a TEE; models marked “Full TEE” are sealed all the way.',
   },
 ];
+
+/** What the switch dialog says about each mode: the option's description, cut to its claims. */
+const SWITCH_SUMMARY: Record<GatewayPrivacyMode, string> = {
+  anonymous: 'Providers never see your name or email, only an anonymous address. Every model is open to you.',
+  private: 'Providers can’t read your chats: your app checks each one runs on sealed hardware (a TEE) first. Only models marked “Full TEE” are sealed all the way.',
+};
 
 function optionHint(option: PrivacyOption): string {
   return `${option.description} ${PRIVACY_SCOPE_HINT}`;
@@ -299,6 +305,7 @@ export function PrivacySwitchDialog() {
     ? `the chat and ${listNames(apps)}`
     : 'the chat and every app you connect through Antseed';
 
+  // Three buttons need the wider dialog to stay on one row.
   const footer = pending.privateHistory ? (
     <>
       <Button variant="ghost" onClick={() => finish(null)}>Cancel</Button>
@@ -313,15 +320,12 @@ export function PrivacySwitchDialog() {
   );
 
   return (
-    <Modal isOpen onClose={() => finish(null)} title={`Switch to ${label}?`} size="sm" footer={footer}>
+    <Modal isOpen onClose={() => finish(null)} title={`Switch to ${label}?`} size={pending.privateHistory ? 'md' : 'sm'} footer={footer}>
       <div className={styles.switchDialog}>
         {pending.explain ? (
           <>
-            <p>{OPTIONS.find((option) => option.mode === pending.mode)?.description}</p>
-            <p>
-              This is a setting for your whole gateway, not just this chat: it changes where requests from {reach} are sent.
-              {toPrivate ? ' If your model has no seller on sealed hardware, the chat moves to one that does.' : ''}
-            </p>
+            <p>{SWITCH_SUMMARY[pending.mode]}</p>
+            <p>Applies to {reach}.</p>
           </>
         ) : null}
         {pending.privateHistory ? (

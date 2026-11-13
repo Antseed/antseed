@@ -32,7 +32,8 @@ export function saveLastChatModel(modelId: string): void {
  * listing now names differently (the same model by the canonical rule) still finds it.
  */
 export function findChatModel(models: ChatModel[], modelId: string | null | undefined): ChatModel | null {
-  return findListedModel(models, modelId);
+  // A router's id is its `<peerId>@<serviceId>` as a whole, not a pinned model.
+  return models.find((model) => model.router && model.id === modelId) ?? findListedModel(models, modelId);
 }
 
 /**
@@ -56,7 +57,8 @@ export function pickerChatModels(models: ChatModel[], inUse: Array<string | null
 export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string | null): string | null {
   const last = findChatModel(models, lastModelId);
   if (last?.type === 'text') return last.id;
-  const text = models.filter((model) => model.type === 'text');
+  // A router picks models whose prices it doesn't list, so it is never the default.
+  const text = models.filter((model) => model.type === 'text' && !model.router);
   const best = [...text].sort(compareDefaultModels)[0];
   return best?.id ?? null;
 }
@@ -107,8 +109,10 @@ export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | '
  * A pin goes too: the seller it names may not be one Private allows.
  */
 export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: string, hasFunds: boolean): string | null {
+  // A router the gateway still lists under Private stays: the user chose it, and its pick is priced alone.
+  if (privateModels.some((model) => model.router && model.id === selectedId)) return null;
   const { modelId: listedId, peerId } = splitPinnedModel(selectedId);
-  const text = privateModels.filter((model) => model.type === 'text');
+  const text = privateModels.filter((model) => model.type === 'text' && !model.router);
   const selected = findChatModel(text, listedId) ?? undefined;
   if (selected && (hasFunds || selected.free)) return peerId ? selected.id : null;
   // A stand-in shouldn't cost much: the user didn't choose it.
@@ -133,15 +137,20 @@ export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: st
 export function filterChatModels(
   models: ChatModel[],
   query: string,
-  freeOnly = false,
-): { text: ChatModel[]; image: ChatModel[] } {
+  filter: 'free' | 'routers' | null = null,
+): { routers: ChatModel[]; text: ChatModel[]; image: ChatModel[] } {
   const needle = query.trim().toLowerCase();
   const matches = needle
-    ? models.filter((model) => model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle))
+    ? models.filter((model) => model.id.toLowerCase().includes(needle)
+      || model.label.toLowerCase().includes(needle)
+      || (model.router?.sellerName?.toLowerCase().includes(needle) ?? false))
     : models;
-  const shown = freeOnly ? matches.filter((model) => model.free) : matches;
+  const routers = filter === 'free' ? [] : matches.filter((model) => model.router);
+  if (filter === 'routers') return { routers, text: [], image: [] };
+  const shown = matches.filter((model) => !model.router && (filter !== 'free' || model.free));
   const freeFirst = (left: ChatModel, right: ChatModel) => Number(right.free) - Number(left.free);
   return {
+    routers,
     text: shown.filter((model) => model.type === 'text').sort(freeFirst),
     image: shown.filter((model) => model.type === 'image').sort(freeFirst),
   };
@@ -206,6 +215,13 @@ export function formatPriceRange(offer: OfferPrices): string {
 }
 
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
+/** A seller's price per image ("$0.04 per image", "Free"), or null when the listing has none for it. */
+export function sellerImagePriceLabel(prices: Record<string, number>, peerId: string): string | null {
+  const price = prices[normalizeSellerId(peerId)];
+  if (price === undefined) return null;
+  return price === 0 ? 'Free' : `$${price} per image`;
+}
+
 export function offerPriceLabel(
   offer: OfferPrices,
   stakersOnly: boolean,

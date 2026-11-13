@@ -15,7 +15,7 @@ import { homeProgress, useHomeProgress } from '../../../modules/app/home-progres
 import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
 import { modelsForPrivacy } from '../../hooks/usePrivateMode';
-import { pickerChatModels } from '../../../modules/chat/models';
+import { findChatModel, pickerChatModels } from '../../../modules/chat/models';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -44,6 +44,7 @@ export function VprHomeView({ onSelectView }: Props) {
     setPrivacySwitches((count) => count + 1);
   });
   const models = pickerChatModels(modelsForPrivacy(snap.chatModels, privateMode), [snap.chatSelectedModelId, snap.chatImageModelId]);
+  const homePickerModelId = snap.chatImageModelId ?? snap.chatSelectedModelId;
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Someone who chatted before Home tracked progress has sent their first prompt.
@@ -131,13 +132,24 @@ export function VprHomeView({ onSelectView }: Props) {
                     onRetry={() => void actions.refreshChatModels(true)}
                     menuMaxHeight={320}
                     menuAnchor="container"
+                    onUsePrompt={(prompt) => {
+                      // The chat model runs it: leave image mode, or Send would make an image.
+                      if (snap.chatImageModelId) actions.selectChatModel(snap.chatSelectedModelId);
+                      setDraft(prompt);
+                      requestAnimationFrame(() => {
+                        const input = inputRef.current;
+                        input?.focus();
+                        input?.setSelectionRange(prompt.length, prompt.length);
+                      });
+                    }}
                   />
-                  {!snap.chatImageModelId && snap.chatSelectedModelId ? (
+                  {/* Follows the model Send uses, an image model too; a router picks its own seller. */}
+                  {homePickerModelId && !findChatModel(models, homePickerModelId)?.router ? (
                     <ChatSellerPicker
-                      modelId={snap.chatSelectedModelId}
+                      modelId={homePickerModelId}
                       disabled={false}
                       onChange={(peerId) => {
-                        const pinned = joinPinnedModel(snap.chatSelectedModelId, peerId);
+                        const pinned = joinPinnedModel(homePickerModelId, peerId);
                         if (snap.chatActiveConversation) actions.startNewChat();
                         actions.selectChatModel(pinned);
                       }}

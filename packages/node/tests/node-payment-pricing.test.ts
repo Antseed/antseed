@@ -2692,6 +2692,44 @@ describe('a channel at its ceiling while top-ups follow each other', () => {
     expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
   });
 
+  it('serves, not 402, when the catch-up auth was parked behind a top-up that lands during the wait', async () => {
+    // The buyer signed past the old ceiling, so its auth waits for the top-up. On a slow chain the
+    // top-up lands just as the catch-up wait runs out, and the parked auth applies a moment later.
+    let reserveMax = 1_000_000n;
+    let accepted = 1_000_000n;
+    let running = true;
+    const awaitAcceptedAtLeast = vi.fn(async () => {
+      if (awaitAcceptedAtLeast.mock.calls.length === 1) {
+        reserveMax = 2_000_000n;
+        running = false;
+        return false;
+      }
+      accepted = 1_300_000n;
+      return true;
+    });
+    const result = await requestAtCeiling('auth-parked-behind-top-up', {
+      getCumulativeSpend: () => 1_300_000n,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      awaitAcceptedAtLeast,
+    });
+
+    expect({ ...result, waits: awaitAcceptedAtLeast.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
+  });
+
+  it('still answers 402 when the catch-up never arrives and no top-up raised the ceiling', async () => {
+    const awaitAcceptedAtLeast = vi.fn(async () => false);
+    const result = await requestAtCeiling('no-catch-up', {
+      getCumulativeSpend: () => 1_300_000n,
+      getAcceptedCumulative: () => 1_000_000n,
+      getReserveMax: () => 2_000_000n,
+      awaitAcceptedAtLeast,
+    });
+
+    expect({ status: result.status, closed: result.closed, waits: awaitAcceptedAtLeast.mock.calls.length }).toEqual({ status: 402, closed: 0, waits: 1 });
+  });
+
   it('waits for a top-up that starts during the ceiling read when none was running on entry', async () => {
     // Nothing is mining or queued when the request reaches the ceiling. During the chain read the buyer's
     // next ReserveAuth arrives, its top-up starts, and requests that finish push the spend past the ceiling.

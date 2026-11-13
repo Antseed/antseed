@@ -19,6 +19,8 @@ export type ChatModel = {
   free: boolean;
   /** Cheapest price per image for an image model; null otherwise. */
   minImageUsd: number | null;
+  /** An image model's price per image, by seller (lowercase, no 0x): what the seller picker shows. */
+  imageUsdBySeller?: Record<string, number>;
   /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
@@ -43,6 +45,17 @@ export type ChatModel = {
    * defaults pick it last.
    */
   lowTrust?: boolean;
+  /**
+   * A routing service, not a model: it picks the model for each request. Its
+   * id is the `<peerId>@<serviceId>` to send to.
+   */
+  router?: {
+    sellerName: string | null;
+    /** What one pick costs, USD; null when not advertised. */
+    priceUsdPerRequest: number | null;
+    /** How many models it picks from; null when it doesn't say. */
+    models: number | null;
+  };
 };
 
 /** A seller for one model under the key's routing policy, as the gateway's route preview reports it. */
