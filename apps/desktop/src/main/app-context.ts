@@ -12,6 +12,7 @@ import path from 'node:path';
 import { desktopInstanceName, desktopUserDataDir, isMultiInstanceDevelopment } from './dev-instance.js';
 import { ASSETS_DIR, RENDERER_INDEX_PATH } from './paths.js';
 import { moveUserDataDir } from './app-rename.js';
+import { moveLegacyBundle, openBundleAfterExit } from './bundle-rename.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { SAFE_STORAGE_EXPORT_NAME_ENV, SAFE_STORAGE_EXPORT_USER_DATA_ENV } from './safe-storage-export-protocol.js';
 import { isIsolatedProfile, secretStoreSwitches } from './runtime/attach-only.js';
@@ -139,6 +140,15 @@ if (IS_SAFE_STORAGE_EXPORT) {
   const helperUserData = process.env[SAFE_STORAGE_EXPORT_USER_DATA_ENV];
   if (helperUserData) app.setPath('userData', helperUserData);
 } else {
+  // A bundle still under a pre-rename name moves to "Antseed Desktop.app" and
+  // restarts from there before anything else runs (bundle-rename.ts).
+  const restartFrom = process.platform === 'darwin' && app.isPackaged
+    ? moveLegacyBundle(process.execPath, (line) => console.log(`[desktop] ${line}`))
+    : null;
+  if (restartFrom) {
+    openBundleAfterExit(restartFrom);
+    app.exit(0);
+  }
   // The first launch under the new name brings the old userData folder along,
   // before Electron opens it.
   if (RENAMED_FROM_LEGACY && !userDataDir) {
