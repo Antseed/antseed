@@ -365,6 +365,8 @@ export function buildSellerRuntimeOverridesFromFlags(options: {
 
 /** Config-key prefix of a provider plugin package. Other plugins use `OPENAI`. */
 const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
+  '@antseed/provider-anthropic': 'ANTHROPIC',
+  '@antseed/provider-openai-responses': 'OPENAI_RESPONSES',
   '@antseed/provider-local-llm': 'LOCAL_LLM',
   '@antseed/provider-typesafe': 'TYPESAFE',
   '@antseed/provider-venice-video': 'VENICE_VIDEO',
