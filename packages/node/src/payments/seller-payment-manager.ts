@@ -254,7 +254,10 @@ export class SellerPaymentManager {
   private readonly _blockedChannels = new Set<string>();
   /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
   private readonly _idleCloses = new Map<string, Promise<void>>();
-  /** Channels whose waiting close outlasted its wait; closed once the request still running is recorded. */
+  /**
+   * Channels whose waiting close outlasted its wait; closed once the request
+   * still running is recorded. They start no new paid request meanwhile.
+   */
   private readonly _deferredIdleCloses = new Set<string>();
 
   /**
@@ -2282,20 +2285,24 @@ export class SellerPaymentManager {
   }
 
   /**
-   * Whether a close is in flight or waiting to go ahead on this buyer's active
-   * channel. Request admission refuses new billable work while this is true:
-   * the close would remove the session mid-request and its spend would never be
-   * recorded.
+   * Whether a close is in flight, waiting to go ahead, or held until a running
+   * request is recorded on this buyer's active channel. Request admission
+   * refuses new billable work while this is true: the close would remove the
+   * session mid-request and its spend would never be recorded.
    */
   hasClosingChannel(buyerPeerId: string): boolean {
-    if (this._closingChannels.size === 0 && this._idleCloses.size === 0) return false;
+    if (this._closingChannels.size === 0 && this._idleCloses.size === 0 && this._deferredIdleCloses.size === 0) return false;
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-    return session != null && (this._closingChannels.has(session.sessionId) || this._idleCloses.has(session.sessionId));
+    if (!session) return false;
+    const channelId = session.sessionId;
+    return this._closingChannels.has(channelId) || this._idleCloses.has(channelId) || this._deferredIdleCloses.has(channelId);
   }
 
   /**
    * Wait (up to `timeoutMs`) for the close in flight on the buyer's active
-   * channel. Returns whether it finished in time.
+   * channel. Returns whether it finished in time. A close held until a running
+   * request is recorded has nothing to wait for: it returns at once, with the
+   * channel still open.
    */
   async waitForClosingChannel(buyerPeerId: string, timeoutMs: number): Promise<boolean> {
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
@@ -2648,6 +2655,8 @@ export class SellerPaymentManager {
         await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
       }
       if (this.hasInFlightRequests(buyerPeerId)) {
+        // The channel ended another way while the close waited.
+        if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
         // Still serving after the whole wait: do not close under the answer.
         // The close goes ahead once the request still running is recorded.
         this._deferredIdleCloses.add(channelId);
