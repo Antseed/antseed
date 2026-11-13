@@ -14,11 +14,13 @@ import {
   parseUsdcToBaseUnits,
 } from '../../payment-utils.js'
 import { AntseedNode, peerRelaysSweeps } from '@antseed/node'
-import type { SweepReceiptPayload } from '@antseed/node'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildBuyerBootstrapEntries } from './start.js'
 import {
   DepositWatcher,
+  reserveBaseUnits,
+  supersedesSweepReceipt,
+  type AttributedSweepReceipt,
   type DepositWatchEvent,
 } from '../../../proxy/deposit-watcher.js'
 import { daemonDepositsStatus, daemonSetWatchMode } from './daemon.js'
@@ -96,7 +98,14 @@ function renderEvent(spinner: Ora, event: DepositWatchEvent): boolean {
       spinner.text = `Sweeping ${formatUsdc(BigInt(event.amountBaseUnits ?? '0'))} USDC into your deposits balance...`
       return false
     case 'deferred':
-      spinner.text = 'Deposit deferred: your deposits balance is at its credit limit. Funds stay in the wallet and sweep when headroom frees up.'
+      if (event.reason === 'below-minimum') {
+        const have = BigInt(event.amountBaseUnits ?? '0')
+        const need = BigInt(event.minRequiredBaseUnits ?? '0')
+        const shortfall = need > have ? need - have : 0n
+        spinner.text = `Waiting for more USDC: the wallet holds ${formatUsdc(have)} USDC but a deposit needs ${formatUsdc(need)} USDC (minimum plus relay fee). Send ${formatUsdc(shortfall)} USDC more.`
+      } else {
+        spinner.text = 'Deposit deferred: your deposits balance is at its credit limit. Funds stay in the wallet and sweep when headroom frees up.'
+      }
       return false
     case 'error':
       spinner.text = `${event.error ?? 'Sweep attempt failed'} (retrying automatically)`
@@ -235,16 +244,16 @@ async function watchStandalone(
   const { config, address } = ctx
 
   let node: AntseedNode | null = null
-  let latestReceipt: SweepReceiptPayload | null = null
+  let latestReceipt: AttributedSweepReceipt | null = null
   const ensureNode = async (): Promise<AntseedNode> => {
     if (node) return node
     const bootstrapNodes = toBootstrapConfig(
       parseBootstrapList(buildBuyerBootstrapEntries(config.network?.bootstrapNodes)),
     )
-    node = new AntseedNode({ role: 'buyer', bootstrapNodes, allowPrivateIPs: true, dataDir })
+    node = new AntseedNode({ role: 'buyer', bootstrapNodes, allowPrivateIPs: true, dataDir, autoReconcileBuyerChannels: false })
     await node.start()
-    node.on('sweep:receipt', (event: { peerId: string; payload: SweepReceiptPayload }) => {
-      latestReceipt = event.payload
+    node.on('sweep:receipt', (event: AttributedSweepReceipt) => {
+      if (supersedesSweepReceipt(latestReceipt, event)) latestReceipt = event
     })
     const relayers = (await node.discoverPeers()).filter(peerRelaysSweeps)
     await Promise.allSettled(relayers.slice(0, MAX_PEERS_TO_CONNECT).map((peer) => node!.connectToPeer(peer)))
@@ -258,6 +267,7 @@ async function watchStandalone(
     depositsClient: createDepositsClient(config),
     relayClient: createDepositRelayClient(config),
     usdcAddress: crypto.usdcContractAddress,
+    sessionReserveBaseUnits: reserveBaseUnits(config.payments?.maxReserveAmountUsdc),
     evmChainId: crypto.evmChainId,
     depositRelayAddress: crypto.depositRelayAddress,
     dispatch: async (payload) => (await ensureNode()).dispatchSweepRequest(payload),
@@ -267,7 +277,7 @@ async function watchStandalone(
       await Promise.allSettled(relayers.slice(0, MAX_PEERS_TO_CONNECT).map((peer) => n.connectToPeer(peer)))
     },
     getReceipt: async (authNonce) =>
-      latestReceipt && latestReceipt.authNonce === authNonce ? latestReceipt : null,
+      latestReceipt && latestReceipt.payload.authNonce === authNonce ? latestReceipt.payload : null,
     onEvent: (event) => {
       if (renderEvent(spinner, event)) credited = true
     },

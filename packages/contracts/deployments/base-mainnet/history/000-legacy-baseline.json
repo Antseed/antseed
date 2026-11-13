@@ -1,0 +1,11 @@
+{
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453,
+  "release": "000-legacy-baseline",
+  "status": "baseline",
+  "sourceCommit": null,
+  "transactions": [],
+  "notes": "Historical baseline captured before introducing append-only deployment records. See ../current.json for the full reconstructed state.",
+  "contracts": {}
+}

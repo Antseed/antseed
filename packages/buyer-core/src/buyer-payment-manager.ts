@@ -7,6 +7,7 @@ import type {
   AuthAckPayload,
   NeedAuthPayload,
   CloseChannelRequestPayload,
+  OneOffChannelPlan,
 } from '@antseed/protocol/messages';
 import { DepositsClient } from './deposits-client.js';
 import {
@@ -19,16 +20,16 @@ import {
   ZERO_METADATA,
   ZERO_METADATA_HASH,
   computeChannelId,
+  boundServiceMetadata,
 } from '@antseed/protocol/signatures';
-import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import type { PeerMetadata } from '@antseed/protocol/peer-metadata';
-import { BuyerChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store-types.js';
+import { BuyerChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store-types.js';
 import {
   advanceUsageMetadata,
-  CountedRequestTracker,
   normalizeRequestUsageDelta,
   RequestServiceTracker,
 } from './channel-usage-accounting.js';
@@ -37,26 +38,48 @@ import {
   computeCostUsdc,
   type ServicePricing,
 } from './pricing.js';
-import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
-import type { ImageRequestFacts } from '@antseed/api-adapter';
+import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUnitV1, UnitBillingUsage } from '@antseed/protocol/billing';
+import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
+import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
 const DEFAULT_COST_TOLERANCE = 1.4;
-/** Fraction of reserve ceiling at which to signal a top-up is needed.
- *  Trigger well before the contract's TOP_UP_SETTLED_THRESHOLD_BPS (85%)
- *  so that by the time the seller calls topUp() on-chain, enough has been
- *  settled to pass the threshold check. */
-const DEFAULT_TOPUP_THRESHOLD = 0.65;
+/** Remaining headroom that triggers the first top-up (35% of the initial reserve). */
+const INITIAL_TOPUP_HEADROOM_PERCENT = 35n;
+/** Fixed remaining headroom that triggers every later top-up ($0.50). */
+const SUBSEQUENT_TOPUP_HEADROOM_USDC = 500_000n;
+const PERCENT_DENOMINATOR = 100n;
+/**
+ * Paid requests still in flight cost about the channel's average request
+ * each, and are charged after they finish: keep twice that much headroom so
+ * a top-up lands before the work in flight passes the locked reserve.
+ */
+const IN_FLIGHT_HEADROOM_FACTOR = 2n;
+/** Largest load-sized top-up, in multiples of the configured reserve step. */
+const MAX_LOAD_TOPUP_MULTIPLE = 10n;
+/** Default max price of one video generation ($5.00). */
+export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
+/** How long and how many allowance-covered requests are remembered, so a late NeedAuth for one is still refused. */
+const COVERED_REQUEST_TTL_MS = 60 * 60_000;
+const MAX_COVERED_REQUESTS = 10_000;
+const coveredRequestKey = (sellerPeerId: string, requestId: string): string => `${sellerPeerId.toLowerCase()}\n${requestId}`;
+/** Accepted video jobs awaiting delivery are remembered this long (matches job routes). */
+const VIDEO_JOB_TTL_MS = 30 * 24 * 60 * 60_000;
+const MAX_VIDEO_JOBS = 1_000;
 const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
 
-function countOutputImages(usage: UnitBillingUsage | undefined): bigint {
-  return BigInt(Math.max(0, Math.floor(usage?.units.output_images ?? 0)));
+/**
+ * Whole units of `unit` in `usage`, never negative. Speech billing reports no
+ * `input_characters` for undelivered audio.
+ */
+function countUnits(usage: UnitBillingUsage | undefined, unit: UnitBillingUnitV1): bigint {
+  return BigInt(Math.max(0, Math.floor(usage?.units[unit] ?? 0)));
 }
 
 function validateUnitNormalizedCost(
@@ -84,11 +107,72 @@ export interface BuyerPaymentConfig {
   maxPerRequestUsdc: bigint;
   /** Max USDC to reserve per ReserveAuth signature (base units). Default: 1000000 ($1.00). */
   maxReserveAmountUsdc: bigint;
+  /**
+   * Max price of one video generation the buyer will pay for (base units).
+   * Default: 5000000 ($5.00).
+   */
+  maxVideoRequestUsdc?: bigint;
   /** Max ratio of seller-claimed cost to buyer's bytes/4 estimate. Default: 1.4. */
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   dataDir: string;
+}
+
+/** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
+function hasPositiveCost(cost: string | undefined): boolean {
+  try {
+    return BigInt(cost ?? '0') > 0n;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run `run` after everything queued under `key` has finished, whether it
+ * succeeded or not. The queue entry removes itself once it is the last.
+ */
+function runQueued<T>(queues: Map<string, Promise<unknown>>, key: string, run: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const next = previous.then(run, run);
+  const tail = next.catch(() => undefined);
+  queues.set(key, tail);
+  void tail.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  return next;
+}
+
+/** What the buyer saw of a served response, for signPerRequestAuth. */
+export type PerRequestResponseStats = {
+  inputBytes: Uint8Array;
+  outputBytes: Uint8Array;
+  sellerClaimedCost?: bigint;
+  reportedInputTokens?: bigint;
+  reportedOutputTokens?: bigint;
+  reportedCachedInputTokens?: bigint;
+  unitUsage?: UnitBillingUsage;
+  service?: string;
+  requestId?: string;
+};
+
+/** What the buyer made of a seller's answer to a paid request. */
+export interface DeliveredResponse {
+  /**
+   * The buyer's own cost for the response: the usage in the response it
+   * received, at the pricing it agreed to. For an attempt the caller aborted,
+   * the most the seller may bill for it instead: its prompt plus the output it
+   * allows. 0 when nothing verifies what the seller bills: the attempt timed
+   * out, its connection closed, or the buyer cannot price it.
+   */
+  costUsdc: bigint;
+  /** The attempt ended after it was sent, with no answer. */
+  cutOff?: boolean;
+  /** Its cost is counted already (no claim can count it again); only its usage is still to be attributed. */
+  costCounted?: boolean;
+  /** A received response's service and usage, attributed to it if the buyer's signing before a close pays it. */
+  service?: string;
+  usage?: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint; unitUsage?: UnitBillingUsage };
 }
 
 /** Result of signPerRequestAuth — includes the payload and whether a reserve top-up is needed. */
@@ -99,14 +183,50 @@ export interface PerRequestAuthResult {
 
 export interface BuyerRequestBillingEntry {
   context: UnitBillingContext;
-  requestFacts: ImageRequestFacts;
+  /** Absent for requests tracked only for attribution (no unit billing). */
+  requestFacts?: BillingRequestFacts;
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
   observedUnitUsage?: UnitBillingUsage;
+  /** Buyer-computed price of a video create, from the seller's advertised unit pricing. */
+  estimatedCostUsdc?: bigint;
 }
 
 interface StoredBuyerRequestBillingEntry extends BuyerRequestBillingEntry {
   createdAtMs: number;
+  /** Video jobs only: the one-off channel that pays for the job. */
+  oneOffChannelId?: string;
+  /** A video retrieve the buyer did not take as the job's delivery: no NeedAuth for it waits for one. */
+  notDelivered?: boolean;
+}
+
+/** Identity of a not-yet-opened buyer channel: fresh salt, derived channelId, auth deadline. */
+interface NewChannelTerms {
+  sellerPeerId: string;
+  sellerEvmAddr: string;
+  buyerEvmAddr: string;
+  salt: string;
+  channelId: string;
+  deadline: number;
+}
+
+/** In-memory state of a buyer one-off channel (one video). */
+/** An accepted video job as stored on its one-off channel row. */
+interface PersistedVideoJob {
+  protocol: string;
+  jobId: string;
+  createdAtMs: number;
+  entry: BuyerRequestBillingEntry;
+}
+
+interface OneOffChannelState {
+  sellerPeerId: string;
+  requestId: string;
+  /** The video price: the only amount this channel will ever be asked for. */
+  price: bigint;
+  cumulative: bigint;
+  confirmed: boolean;
+  ackWaiters: Array<(confirmed: boolean) => void>;
 }
 
 interface PendingReserveAuthorization {
@@ -116,6 +236,15 @@ interface PendingReserveAuthorization {
   deadline: number;
   confirmedAmount: bigint;
 }
+
+/**
+ * How committing a signed SpendingAuth ended. `superseded`: a concurrent write
+ * committed a higher cumulative while this one was signed, so nothing was
+ * written and its target is already met. `retired`: the channel stopped being
+ * live, before the write or during it.
+ */
+type CommitOutcome = 'committed' | 'superseded' | 'retired';
+type DroppedCommit = Exclude<CommitOutcome, 'committed'>;
 
 /**
  * One request's newly authorized spend, reported as it is signed.
@@ -162,11 +291,29 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> cumulative USDC amount in the latest SpendingAuth */
   private readonly _cumulativeAmount = new Map<string, bigint>();
 
+  /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
+  private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
+
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
 
   /** sellerPeerId -> buyer-verified cumulative cost from bytes/4 */
   private readonly _verifiedCost = new Map<string, bigint>();
+  /** sellerPeerId -> paid requests dispatched and not yet answered */
+  private readonly _inFlightPaidRequests = new Map<string, number>();
+  /** Per seller: the tail of the queue of reserve top-ups (see topUpReserve). */
+  private readonly _topUpLocks = new Map<string, Promise<unknown>>();
+  /** Per seller: top-ups queued or running, so one that waited can tell. */
+  private readonly _topUpsQueued = new Map<string, number>();
+  /** Reads a channel's locked deposit on-chain (set by the negotiator when it has a channels client). */
+  private _readChannelDeposit: ((channelId: string) => Promise<bigint>) | null = null;
+  /**
+   * Per seller: the tail of the queue of signing steps. Reading the signed
+   * amount and verified cost, signing and committing happen one at a time
+   * per seller, so concurrent requests can neither lose a cost nor commit a
+   * lower cumulative after a higher one.
+   */
+  private readonly _sellerLocks = new Map<string, Promise<unknown>>();
 
   /** requestId -> service/model the buyer requested (from its own request body).
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
@@ -180,7 +327,20 @@ export class BuyerPaymentManager {
    * the fact.
    */
   private readonly _requestBillingEntries = new Map<string, StoredBuyerRequestBillingEntry>();
-  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage) => void>>();
+  /**
+   * Requests a seller served from a priced service's free allowance, with when
+   * they were marked. Nothing is owed for them, so a NeedAuth naming one is refused.
+   */
+  private readonly _coveredRequests = new Map<string, number>();
+  /**
+   * sellerPeerId -> requestId -> what the seller can still be paid for on the
+   * active channel: a response the buyer received and priced, or an attempt it
+   * cut off. Counting a request toward verified cost removes it, and a request
+   * with no entry is owed nothing. Only the buyer's own request path adds
+   * entries, and the map is dropped with the seller's verified cost.
+   */
+  private readonly _requestLedgers = new Map<string, Map<string, DeliveredResponse>>();
+  private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
   /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
   private readonly _sessionPricing = new Map<string, { defaults: ServicePricing; services: Record<string, ServicePricing> }>();
@@ -199,6 +359,16 @@ export class BuyerPaymentManager {
 
   /** Latest ReserveAuth awaiting seller acknowledgement, including top-ups. */
   private readonly _pendingReserveAuth = new Map<string, PendingReserveAuthorization>();
+  /**
+   * `${sellerPeerId}\n${protocol}\n${jobId}` -> billing of an accepted video
+   * that has not been delivered yet. Its price is signed only after the buyer
+   * receives the finished video.
+   */
+  private readonly _videoJobs = new Map<string, StoredBuyerRequestBillingEntry>();
+  /** Delivered jobs whose stored copy could not be cleared yet, by job key: their one-off channel. */
+  private readonly _unsavedVideoDeliveries = new Map<string, string>();
+  /** One-off channels keyed by channelId. Never a seller's session channel. */
+  private readonly _oneOffChannels = new Map<string, OneOffChannelState>();
 
   /** Cached EIP-712 domain — static for the lifetime of this manager. */
   private readonly _channelsDomain: ReturnType<typeof makeChannelsDomain>;
@@ -243,6 +413,23 @@ export class BuyerPaymentManager {
     for (const channel of latestByPeer.values()) {
       this._hydrateChannel(channel, true);
     }
+
+    for (const channel of this._channelStore.getActiveChannelsByBuyer(
+      CHANNEL_ROLE.BUYER,
+      this._identity.wallet.address,
+      CHANNEL_KIND.ONE_OFF,
+    )) {
+      if (!channel.oneOffRequestId) continue;
+      this._oneOffChannels.set(channel.sessionId, {
+        sellerPeerId: channel.peerId,
+        requestId: channel.oneOffRequestId,
+        price: BigInt(channel.reserveMaxAmount ?? '0'),
+        cumulative: BigInt(channel.authMax || '0'),
+        confirmed: channel.reserveAuthPending !== true,
+        ackWaiters: [],
+      });
+      this._restoreVideoJob(channel);
+    }
   }
 
   /** Adopt an authorization durably written outside this manager. */
@@ -269,6 +456,7 @@ export class BuyerPaymentManager {
     // Without this, maxSignable = 0 + maxPerRequestUsdc after restart, permanently capping
     // the cumulative and causing non-monotonic SpendingAuth rejections on the seller.
     this._verifiedCost.set(peerId, persistedCumulative);
+    this._requestLedgers.delete(peerId);
     // Stores predating browser recovery (including the current sqlite node
     // store) omit these optional fields. Preserve their historical default
     // ceiling instead of interpreting missing recovery state as a confirmed
@@ -330,18 +518,32 @@ export class BuyerPaymentManager {
     return this._config.costToleranceMultiplier ?? DEFAULT_COST_TOLERANCE;
   }
 
+  /**
+   * A video's price is fixed by the seller's advertised unit pricing, known
+   * before the job starts and reported to callers as its price: it is paid
+   * exactly, never with the tolerance that covers token estimates.
+   */
+  private _costToleranceFor(billing: BuyerRequestBillingEntry | undefined | null): number {
+    return billing?.requestFacts?.kind === 'video' ? 1 : this._costTolerance;
+  }
+
   private get _disableMetadataV2Services(): boolean {
     return this._config.disableMetadataV2Services === true;
   }
 
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
-    if (!this._disableMetadataV2Services) return current;
+    // Bounds service lists persisted before MAX_METADATA_SERVICES existed, so a
+    // channel whose SpendingAuth outgrew the payment frame can be signed again.
+    if (!this._disableMetadataV2Services) return boundServiceMetadata(current);
     return {
       cumulativeInputTokens: current.cumulativeInputTokens,
       cumulativeOutputTokens: current.cumulativeOutputTokens,
       cumulativeRequestCount: current.cumulativeRequestCount,
       cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
+      cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
+      cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
+      cumulativeInputCharacters: current.cumulativeInputCharacters ?? 0n,
       services: [],
     };
   }
@@ -365,8 +567,10 @@ export class BuyerPaymentManager {
   /** Clean up all in-memory state for a seller when the session ends. */
   cleanupSession(sellerPeerId: string): void {
     this._cumulativeAmount.delete(sellerPeerId);
+    this._sellerAccepted.delete(sellerPeerId);
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
+    this._requestLedgers.delete(sellerPeerId);
     this._sessionPricing.delete(sellerPeerId);
     this._currentReserveCeiling.delete(sellerPeerId);
     this._initialReserveAmount.delete(sellerPeerId);
@@ -380,6 +584,35 @@ export class BuyerPaymentManager {
 
   getActiveSession(sellerPeerId: string): StoredChannel | null {
     return this._channelStore.getActiveChannelByPeerAndBuyer(sellerPeerId, CHANNEL_ROLE.BUYER, this._identity.wallet.address);
+  }
+
+  /**
+   * Whether `channel` is still where its writer started: the seller's active
+   * session, or a one-off channel not yet retired. Payment work reads the
+   * channel, awaits, then writes per-seller state; once the session is retired
+   * and replaced during that await, those writes would land on the new channel.
+   */
+  private _isLive(channel: StoredChannel): boolean {
+    return channel.channelKind === CHANNEL_KIND.ONE_OFF
+      ? this._oneOffChannels.has(channel.sessionId)
+      : this.getActiveSession(channel.peerId)?.sessionId === channel.sessionId;
+  }
+
+  /** Commit a SpendingAuth to a live channel, unless a higher one was committed while it was signed. */
+  private async _commitLive(channel: StoredChannel, metadata: SpendingAuthMetadata): Promise<CommitOutcome> {
+    if (!this._isLive(channel)) return 'retired';
+    if (BigInt(channel.authMax) < this.getHighestSignedAmount(channel)) return 'superseded';
+    await this._commitAuthorization(channel, metadata);
+    return this._isLive(channel) ? 'committed' : 'retired';
+  }
+
+  /** The highest cumulative signed on a live channel: in memory, or committed to the store. */
+  getHighestSignedAmount(channel: StoredChannel): bigint {
+    const committed = BigInt(this._channelStore.getChannel(channel.sessionId)?.authMax ?? '0');
+    const inMemory = (channel.channelKind === CHANNEL_KIND.ONE_OFF
+      ? this._oneOffChannels.get(channel.sessionId)?.cumulative
+      : this._cumulativeAmount.get(channel.peerId)) ?? 0n;
+    return committed > inMemory ? committed : inMemory;
   }
 
   retireSession(
@@ -411,7 +644,11 @@ export class BuyerPaymentManager {
     this._rejectedPeers.delete(sellerPeerId);
   }
 
-  async resendCurrentSpendingAuth(
+  resendCurrentSpendingAuth(sellerPeerId: string, paymentMux: PaymentMux): Promise<string> {
+    return this._withSellerLock(sellerPeerId, () => this._resendCurrentSpendingAuth(sellerPeerId, paymentMux));
+  }
+
+  private async _resendCurrentSpendingAuth(
     sellerPeerId: string,
     paymentMux: PaymentMux,
   ): Promise<string> {
@@ -422,31 +659,12 @@ export class BuyerPaymentManager {
 
     const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
     const currentMeta = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
-    const metadataHashHex = computeMetadataHash(currentMeta);
-    const encodedMetadata = encodeMetadata(currentMeta);
+    const spendingAuth = await this._signAndCommitSpendingAuth(session, cumulativeAmount, currentMeta);
+    if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
+    // The higher authorization committed meanwhile was sent by its own writer.
+    if (spendingAuth === 'superseded') return session.sessionId;
 
-    const metadataMsg: SpendingAuthMessage = {
-      channelId: session.sessionId,
-      cumulativeAmount,
-      metadataHash: metadataHashHex,
-    };
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, metadataMsg);
-
-    await this._commitAuthorization({
-      ...session,
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
-
-    paymentMux.sendSpendingAuth({
-      channelId: session.sessionId,
-      cumulativeAmount: cumulativeAmount.toString(),
-      metadataHash: metadataHashHex,
-      metadata: encodedMetadata,
-      spendingAuthSig,
-    });
+    paymentMux.sendSpendingAuth(spendingAuth);
 
     return session.sessionId;
   }
@@ -456,7 +674,26 @@ export class BuyerPaymentManager {
     minBudgetPerRequest: bigint,
     paymentMux: PaymentMux,
     targetCumulative?: bigint,
+    requestId?: string,
+    inFlightRequests = 1,
   ): Promise<string> {
+    const { sessionId, topUp } = await this._withSellerLock(sellerPeerId, () => this._extendCurrentSpendingAuth(
+      sellerPeerId, minBudgetPerRequest, paymentMux, targetCumulative, requestId, inFlightRequests,
+    ));
+    // Sent after the SpendingAuth so the seller processes the higher cumulative
+    // first, meeting the on-chain settle threshold for topUp.
+    if (topUp) await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
+    return sessionId;
+  }
+
+  private async _extendCurrentSpendingAuth(
+    sellerPeerId: string,
+    minBudgetPerRequest: bigint,
+    paymentMux: PaymentMux,
+    targetCumulative: bigint | undefined,
+    requestId: string | undefined,
+    inFlightRequests: number,
+  ): Promise<{ sessionId: string; topUp: boolean }> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
@@ -473,26 +710,36 @@ export class BuyerPaymentManager {
     maxSignable = reopened.maxSignable;
 
     const ceiling = this._getCeiling(sellerPeerId);
-    // Prefer the seller-supplied target when present — a raw
-    // `currentCumulative + minBudgetPerRequest` advance may still fall short
-    // of what the seller has already spent, producing an infinite 402 loop.
+    // A seller catch-up target covers every request served on the channel, so
+    // with several requests in flight allow one per-request window for each,
+    // still capped at the reserve ceiling.
+    if (targetCumulative != null && inFlightRequests > 1) {
+      const catchUpMax = reopened.verifiedCost
+        + this._config.maxPerRequestUsdc * BigInt(Math.floor(inFlightRequests));
+      maxSignable = catchUpMax < ceiling ? catchUpMax : ceiling;
+    }
+    // The seller's target is what it has delivered. Signing more would make
+    // undelivered work claimable on-chain, and signing less than the target
+    // would leave the seller rejecting us in a 402 loop.
     const minAdvance = currentCumulative + minBudgetPerRequest;
-    const requestedAmount = targetCumulative != null && targetCumulative > minAdvance
-      ? targetCumulative
-      : minAdvance;
+    const requestedAmount = targetCumulative ?? minAdvance;
 
     const nextCumulative = requestedAmount < maxSignable ? requestedAmount : maxSignable;
-    const extendNeedsTopUp = this._needsCeilingAdvance(requestedAmount, maxSignable, ceiling);
+    // The top-up still asks for room for the next request: a target at the
+    // ceiling fills the reserve, and the seller closes a full channel as
+    // exhausted. A top-up locks more deposit but makes nothing claimable.
+    const extendNeedsTopUp = this._needsCeilingAdvance(
+      requestedAmount > minAdvance ? requestedAmount : minAdvance,
+      maxSignable,
+      ceiling,
+    );
     if (nextCumulative <= currentCumulative) {
-      // Nothing to sign at current ceiling — try topUp anyway for next round
-      if (extendNeedsTopUp) {
-        await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
-      }
+      // Nothing to sign at current ceiling; a top-up still extends it for the next round.
       debugWarn(
         `[BuyerPayment] Cannot extend active session for ${sellerPeerId.slice(0, 12)}... ` +
         `(current=${currentCumulative} maxSignable=${maxSignable} target=${targetCumulative ?? 'n/a'})`,
       );
-      return session.sessionId;
+      return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
     }
 
     const currentMeta = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
@@ -502,16 +749,25 @@ export class BuyerPaymentManager {
       nextCumulative,
       currentMeta,
     );
+    if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
+    // A SpendingAuth committed while this one was signed already signed past the target.
+    if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
+    // Reopening takes everything signed so far as verified. The seller's 402
+    // asked for all it had served, so the requests recorded before now are
+    // paid: counting one on top later would pay for it twice.
+    if (reopened.verifiedCost !== (this._verifiedCost.get(sellerPeerId) ?? 0n)) this._requestLedgers.delete(sellerPeerId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
+    this._reportSpend({
+      sellerPeerId,
+      requestId: requestId ?? null,
+      amountUsdc: (nextCumulative - currentCumulative).toString(),
+      inputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      outputImages: '0',
+    });
     paymentMux.sendSpendingAuth(spendingAuth);
-
-    // Send topUp AFTER the SpendingAuth so the seller processes the higher
-    // cumulative first, meeting the on-chain settle threshold for topUp.
-    if (extendNeedsTopUp) {
-      await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'extendCurrentSpendingAuth');
-    }
-
-    return session.sessionId;
+    return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
   }
 
   /**
@@ -526,14 +782,19 @@ export class BuyerPaymentManager {
    */
   async buildCloseChannelRequest(
     sellerPeerId: string,
-    { includeAuth = true }: { includeAuth?: boolean } = {},
+    { includeAuth = true, maxCumulative }: { includeAuth?: boolean; maxCumulative?: bigint } = {},
   ): Promise<CloseChannelRequestPayload> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
     }
 
-    const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    const signedCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    // The contract rejects a close above the channel's deposit, so a close
+    // authorization above it could never settle. Capping it there still covers
+    // everything the seller could claim.
+    const capped = maxCumulative != null && signedCumulative > maxCumulative;
+    const cumulativeAmount = capped ? maxCumulative : signedCumulative;
     if (!includeAuth || cumulativeAmount <= 0n) {
       return { version: 1, channelId: session.sessionId };
     }
@@ -552,13 +813,19 @@ export class BuyerPaymentManager {
       metadataMsg,
     );
     const encodedMetadata = encodeMetadata(currentMeta);
-    await this._commitAuthorization({
-      ...session,
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
+    // A capped close authorization is below the signed high-water mark; keep
+    // the persisted latest authorization consistent with authMax.
+    const live = capped
+      ? this._isLive(session)
+      : await this._commitLive({
+        ...session,
+        authMax: cumulativeAmount.toString(),
+        latestBuyerSig: spendingAuthSig,
+        latestSpendingAuthSig: spendingAuthSig,
+        latestMetadata: encodedMetadata,
+        updatedAt: Date.now(),
+      }, currentMeta) === 'committed';
+    if (!live) throw writeDropped(sellerPeerId);
 
     return {
       version: 1,
@@ -568,6 +835,16 @@ export class BuyerPaymentManager {
       metadata: encodedMetadata,
       spendingAuthSig,
     };
+  }
+
+  /** The reserve ceiling `resendReserveAuth` would sign for this seller: what the seller's reserve() then locks. */
+  replayReserveAmount(sellerPeerId: string): bigint {
+    const replayAmount = this._initialReserveAmount.get(sellerPeerId)
+      ?? this._currentReserveCeiling.get(sellerPeerId)
+      ?? this._config.maxReserveAmountUsdc;
+    return replayAmount > this._config.maxReserveAmountUsdc
+      ? this._config.maxReserveAmountUsdc
+      : replayAmount;
   }
 
   async resendReserveAuth(
@@ -583,19 +860,9 @@ export class BuyerPaymentManager {
     // Force a fresh AuthAck after replaying the reserve path.
     this._confirmedPeers.delete(sellerPeerId);
 
-    const replayAmount = this._initialReserveAmount.get(sellerPeerId)
-      ?? this._currentReserveCeiling.get(sellerPeerId)
-      ?? this._config.maxReserveAmountUsdc;
-    const maxAmount = replayAmount > this._config.maxReserveAmountUsdc
-      ? this._config.maxReserveAmountUsdc
-      : replayAmount;
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId: session.sessionId,
-      maxAmount,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, this._channelsDomain, reserveMsg);
+    const maxAmount = this.replayReserveAmount(sellerPeerId);
+    const deadline = this._authDeadline();
+    const reserveAuthSig = await this._signReserveAuth(session.sessionId, maxAmount, deadline);
 
     const pending: PendingReserveAuthorization = {
       signature: reserveAuthSig,
@@ -604,9 +871,10 @@ export class BuyerPaymentManager {
       deadline,
       confirmedAmount: 0n,
     };
-    await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
+    const live = await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
       initialReserveAmount: maxAmount.toString(),
     });
+    if (!live) throw writeDropped(sellerPeerId);
 
     return session.sessionId;
   }
@@ -632,15 +900,11 @@ export class BuyerPaymentManager {
     const now = Math.floor(Date.now() / 1000);
     if (pending.deadline <= now + 30) {
       const deadline = now + this._config.defaultAuthDurationSecs;
-      const signature = await signReserveAuth(this._signer, this._channelsDomain, {
-        channelId: session.sessionId,
-        maxAmount: pending.maxAmount,
-        deadline: BigInt(deadline),
-      });
+      const signature = await this._signReserveAuth(session.sessionId, pending.maxAmount, deadline);
       pending = { ...pending, signature, deadline };
     }
 
-    await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux);
+    if (!await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux)) throw writeDropped(sellerPeerId);
     return session.sessionId;
   }
 
@@ -710,14 +974,6 @@ export class BuyerPaymentManager {
     return requestedAmount > maxSignable && maxSignable >= ceiling;
   }
 
-  /**
-   * Both signPerRequestAuth (buyer-initiated) and handleNeedAuth (seller-initiated)
-   * can fire for the same delivered response. Whichever path accounts for the
-   * response first records its requestId here so the other path does not
-   * duplicate its service amount, token totals, or request count.
-   */
-  private readonly _serviceTokensCounted = new CountedRequestTracker();
-
   private _spendListener: BuyerSpendListener | null = null;
 
   /**
@@ -756,8 +1012,13 @@ export class BuyerPaymentManager {
   }
 
   private _clearRequestBillingForSeller(sellerPeerId: string): void {
+    // A video paid from its own one-off channel outlives the session channel:
+    // keep its job and in-flight retrieve so its delivery can still be signed.
+    for (const [key, job] of this._videoJobs) {
+      if (job.context.sellerPeerId === sellerPeerId && !job.oneOffChannelId) this._videoJobs.delete(key);
+    }
     for (const [requestId, entry] of this._requestBillingEntries) {
-      if (entry.context.sellerPeerId === sellerPeerId) {
+      if (entry.context.sellerPeerId === sellerPeerId && !entry.oneOffChannelId) {
         this.clearRequestBilling(requestId);
       }
     }
@@ -792,19 +1053,24 @@ export class BuyerPaymentManager {
   /**
    * Durably persist a pending ReserveAuth, then transmit it and adopt the new
    * ceiling in memory. Shared by reserve replay, pending-reserve replay, and
-   * reserve top-ups.
+   * reserve top-ups. The reserve fields go over the stored row, not `session`:
+   * a SpendingAuth committed while the ReserveAuth was signed keeps its higher
+   * cumulative, which is also the one sent. False, with nothing sent or
+   * adopted, once the session is no longer live.
    */
   private async _commitAndSendReserveAuth(
     session: StoredChannel,
     sellerPeerId: string,
     pending: PendingReserveAuthorization,
     paymentMux: PaymentMux,
-    options: { cumulativeAmount?: string; initialReserveAmount?: string } = {},
-  ): Promise<void> {
+    options: { initialReserveAmount?: string } = {},
+  ): Promise<boolean> {
+    const current = this._isLive(session) ? this._channelStore.getChannel(session.sessionId) : null;
+    if (!current) return false;
     const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
     const encodedMetadata = encodeMetadata(metadata);
     await this._commitAuthorization({
-      ...session,
+      ...current,
       deadline: pending.deadline,
       latestBuyerSig: pending.signature,
       latestMetadata: encodedMetadata,
@@ -819,11 +1085,12 @@ export class BuyerPaymentManager {
       confirmedReserveAmount: pending.confirmedAmount.toString(),
       updatedAt: Date.now(),
     }, metadata);
+    if (!this._isLive(session)) return false;
     this._pendingReserveAuth.set(sellerPeerId, pending);
 
     paymentMux.sendSpendingAuth({
       channelId: session.sessionId,
-      cumulativeAmount: options.cumulativeAmount ?? session.authMax,
+      cumulativeAmount: current.authMax,
       metadataHash: computeMetadataHash(metadata),
       metadata: encodedMetadata,
       spendingAuthSig: pending.signature,
@@ -832,38 +1099,57 @@ export class BuyerPaymentManager {
       reserveDeadline: pending.deadline,
     });
     this._currentReserveCeiling.set(sellerPeerId, pending.maxAmount);
+    return true;
   }
 
+  /** A dropped commit leaves the per-seller cumulative as it was; see `_commitLive`. */
   private async _commitUpdatedSpendingAuth(
     session: StoredChannel,
     sellerPeerId: string,
     cumulativeAmount: bigint,
     metadata: SpendingAuthMetadata,
-  ): Promise<SpendingAuthPayload> {
+  ): Promise<SpendingAuthPayload | DroppedCommit> {
     const sanitizedMetadata = this._sanitizeMetadata(metadata);
-    const metadataHashHex = computeMetadataHash(sanitizedMetadata);
-    const encodedMetadata = encodeMetadata(sanitizedMetadata);
-    const metadataMsg: SpendingAuthMessage = {
-      channelId: session.sessionId,
+    const spendingAuth = await this._signAndCommitSpendingAuth(
+      session,
       cumulativeAmount,
-      metadataHash: metadataHashHex,
-    };
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, metadataMsg);
+      sanitizedMetadata,
+    );
+    if (typeof spendingAuth === 'string') return spendingAuth;
 
-    await this._commitAuthorization({
-      ...session,
+    this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
+    return spendingAuth;
+  }
+
+  /** See `_commitLive` for a dropped commit. */
+  private async _signAndCommitSpendingAuth(
+    channel: StoredChannel,
+    cumulativeAmount: bigint,
+    metadata: SpendingAuthMetadata,
+  ): Promise<SpendingAuthPayload | DroppedCommit> {
+    const sanitizedMetadata = this._sanitizeMetadata(metadata);
+    const metadataHash = computeMetadataHash(sanitizedMetadata);
+    const encodedMetadata = encodeMetadata(sanitizedMetadata);
+    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, {
+      channelId: channel.sessionId,
+      cumulativeAmount,
+      metadataHash,
+    });
+
+    const outcome = await this._commitLive({
+      ...channel,
       authMax: cumulativeAmount.toString(),
       latestBuyerSig: spendingAuthSig,
       latestSpendingAuthSig: spendingAuthSig,
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, sanitizedMetadata);
+    if (outcome !== 'committed') return outcome;
 
-    this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
     return {
-      channelId: session.sessionId,
+      channelId: channel.sessionId,
       cumulativeAmount: cumulativeAmount.toString(),
-      metadataHash: metadataHashHex,
+      metadataHash,
       metadata: encodedMetadata,
       spendingAuthSig,
     };
@@ -901,9 +1187,7 @@ export class BuyerPaymentManager {
     pricingMap?: { defaults: ServicePricing; services: Record<string, ServicePricing> },
     metadataArg?: PeerMetadata,
   ): Promise<string> {
-    const sellerEvmAddr = this._sellerAddressResolver
-      ? await this._sellerAddressResolver.resolveSellerAddress(sellerPeerId as PeerId, metadataArg)
-      : peerIdToAddress(sellerPeerId);
+    const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
     const reserveAmount = typeof reserveAmountOrPricing === 'bigint'
       ? reserveAmountOrPricing
       : this._config.maxReserveAmountUsdc;
@@ -939,31 +1223,17 @@ export class BuyerPaymentManager {
       });
     }
 
-    // Generate random salt and compute deterministic channelId
-    const salt = hexlify(randomBytes(32));
-    const buyerEvmAddr = this._identity.wallet.address;
-    const channelId = computeChannelId(buyerEvmAddr, sellerEvmAddr, salt);
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
-
+    const { channelId, salt, deadline } = terms;
     debugLog(`[BuyerPayment] authorizeSpending: channel=${channelId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}... amount=${minBudgetPerRequest}`);
 
-    // Sign ReserveAuth — binds channelId, maxAmount, deadline on-chain
-    const channelsDomain = this._channelsDomain;
     const maxAmount = reserveAmount;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId,
-      maxAmount,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, channelsDomain, reserveMsg);
+    const reserveAuthSig = await this._signReserveAuth(channelId, maxAmount, deadline);
+    const initialMetadata = this._sanitizeMetadata({ ...ZERO_METADATA });
 
-    // Initialize state for this session.
-    // Start cumulative at 0 — the initial message is a ReserveAuth (not a SpendingAuth).
-    // The first real SpendingAuth will be sent by handleNeedAuth after the seller serves
-    // the first request and reports its cost.
     this._cumulativeAmount.set(sellerPeerId, 0n);
-    this._metadata.set(sellerPeerId, this._sanitizeMetadata({ ...ZERO_METADATA }));
+    this._metadata.set(sellerPeerId, initialMetadata);
     this._verifiedCost.set(sellerPeerId, 0n);
+    this._requestLedgers.delete(sellerPeerId);
     this._currentReserveCeiling.set(sellerPeerId, 0n);
     this._initialReserveAmount.set(sellerPeerId, maxAmount);
     this._reserveSalt.set(sellerPeerId, salt);
@@ -975,19 +1245,46 @@ export class BuyerPaymentManager {
       confirmedAmount: 0n,
     });
 
-    // Store session
-    const now = Date.now();
-    const initialMetadata = this._sanitizeMetadata({ ...ZERO_METADATA });
-    const encodedInitialMetadata = encodeMetadata(initialMetadata);
-    const session: StoredChannel = {
-      sessionId: channelId,
-      peerId: sellerPeerId,
-      role: CHANNEL_ROLE.BUYER,
+    await this._commitAuthorization(this._newBuyerChannel(terms, maxAmount, reserveAuthSig, initialMetadata), initialMetadata);
+    this._sendOpeningReserveAuth(paymentMux, terms, maxAmount, reserveAuthSig, initialMetadata);
+    this._currentReserveCeiling.set(sellerPeerId, maxAmount);
+
+    return channelId;
+  }
+
+  private async _newChannelTerms(sellerPeerId: string, metadata?: PeerMetadata): Promise<NewChannelTerms> {
+    const sellerEvmAddr = this._sellerAddressResolver
+      ? await this._sellerAddressResolver.resolveSellerAddress(sellerPeerId as PeerId, metadata)
+      : peerIdToAddress(sellerPeerId);
+    const buyerEvmAddr = this._identity.wallet.address;
+    const salt = hexlify(randomBytes(32));
+    return {
+      sellerPeerId,
       sellerEvmAddr,
-      buyerEvmAddr: this._identity.wallet.address,
+      buyerEvmAddr,
+      salt,
+      channelId: computeChannelId(buyerEvmAddr, sellerEvmAddr, salt),
+      deadline: this._authDeadline(),
+    };
+  }
+
+  private _newBuyerChannel(
+    terms: NewChannelTerms,
+    openingReserve: bigint,
+    openingReserveSig: string,
+    metadata: SpendingAuthMetadata,
+    overrides: Partial<StoredChannel> = {},
+  ): StoredChannel {
+    const now = Date.now();
+    return {
+      sessionId: terms.channelId,
+      peerId: terms.sellerPeerId,
+      role: CHANNEL_ROLE.BUYER,
+      sellerEvmAddr: terms.sellerEvmAddr,
+      buyerEvmAddr: terms.buyerEvmAddr,
       nonce: 0,
       authMax: '0',
-      deadline,
+      deadline: terms.deadline,
       previousSessionId: '0x' + '0'.repeat(64),
       previousConsumption: '0',
       tokensDelivered: '0',
@@ -996,40 +1293,94 @@ export class BuyerPaymentManager {
       settledAt: null,
       settledAmount: null,
       status: CHANNEL_STATUS.ACTIVE,
-      latestBuyerSig: reserveAuthSig,
+      latestBuyerSig: openingReserveSig,
       latestSpendingAuthSig: null,
-      latestMetadata: encodedInitialMetadata,
-      reserveSalt: salt,
-      initialReserveAmount: maxAmount.toString(),
-      reserveMaxAmount: maxAmount.toString(),
-      latestReserveAuthSig: reserveAuthSig,
-      latestReserveDeadline: deadline,
+      latestMetadata: encodeMetadata(metadata),
+      reserveSalt: terms.salt,
+      initialReserveAmount: openingReserve.toString(),
+      reserveMaxAmount: openingReserve.toString(),
+      latestReserveAuthSig: openingReserveSig,
+      latestReserveDeadline: terms.deadline,
       reserveAuthPending: true,
       confirmedReserveAmount: '0',
       createdAt: now,
       updatedAt: now,
+      ...overrides,
     };
-    await this._commitAuthorization(session, initialMetadata);
+  }
 
-    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig
+  private _sendOpeningReserveAuth(
+    paymentMux: PaymentMux,
+    terms: NewChannelTerms,
+    openingReserve: bigint,
+    openingReserveSig: string,
+    metadata: SpendingAuthMetadata,
+    extra: Partial<SpendingAuthPayload> = {},
+  ): void {
     paymentMux.sendSpendingAuth({
-      channelId,
+      channelId: terms.channelId,
       cumulativeAmount: '0',
       metadataHash: ZERO_METADATA_HASH,
-      metadata: encodedInitialMetadata,
-      spendingAuthSig: reserveAuthSig,
-      reserveSalt: salt,
-      reserveMaxAmount: maxAmount.toString(),
-      reserveDeadline: deadline,
+      metadata: encodeMetadata(metadata),
+      spendingAuthSig: openingReserveSig,
+      reserveSalt: terms.salt,
+      reserveMaxAmount: openingReserve.toString(),
+      reserveDeadline: terms.deadline,
+      ...extra,
     });
-    this._currentReserveCeiling.set(sellerPeerId, maxAmount);
+  }
 
-    return channelId;
+  /** Sign the threshold SpendingAuth and the final ReserveAuth that let the seller run topUp() right after reserve(). */
+  private async _signReserveBatch(
+    channelId: string,
+    cumulativeAmount: bigint,
+    metadata: SpendingAuthMetadata,
+    maxAmount: bigint,
+    deadline: number,
+  ): Promise<NonNullable<SpendingAuthPayload['reserveBatch']>> {
+    const metadataHash = computeMetadataHash(metadata);
+    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, { channelId, cumulativeAmount, metadataHash });
+    return {
+      cumulativeAmount: cumulativeAmount.toString(),
+      metadataHash,
+      metadata: encodeMetadata(metadata),
+      spendingAuthSig,
+      maxAmount: maxAmount.toString(),
+      deadline,
+      reserveAuthSig: await this._signReserveAuth(channelId, maxAmount, deadline),
+    };
+  }
+
+  private _authDeadline(): number {
+    return Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
+  }
+
+  private _signReserveAuth(channelId: string, maxAmount: bigint, deadline: number): Promise<string> {
+    return signReserveAuth(this._signer, this._channelsDomain, { channelId, maxAmount, deadline: BigInt(deadline) });
+  }
+
+  /** Report a unit-billed charge that carries no token usage. */
+  private _reportUnitSpend(sellerPeerId: string, requestId: string | null, amount: bigint): void {
+    this._reportSpend({
+      sellerPeerId,
+      requestId,
+      amountUsdc: amount.toString(),
+      inputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      outputImages: '0',
+    });
   }
 
   // ── AuthAck handler ───────────────────────────────────────────
 
   async handleAuthAck(sellerPeerId: string, payload: AuthAckPayload): Promise<void> {
+    const oneOff = this._oneOffChannels.get(payload.channelId);
+    if (oneOff) {
+      if (oneOff.sellerPeerId !== sellerPeerId) return;
+      await this._confirmOneOffChannel(payload.channelId, oneOff);
+      return;
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] AuthAck for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
@@ -1135,15 +1486,110 @@ export class BuyerPaymentManager {
     return maxSignable < ceiling ? maxSignable : ceiling;
   }
 
-  /**
-   * Check whether the current cumulative amount is approaching the reserve ceiling
-   * and a top-up should be triggered.
-   */
+  /** Check whether the channel has reached its absolute remaining-headroom threshold. */
   private _needsTopUp(sellerPeerId: string): boolean {
     const ceiling = this._getCeiling(sellerPeerId);
     const current = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
-    const threshold = BigInt(Math.floor(Number(ceiling) * DEFAULT_TOPUP_THRESHOLD));
-    return current >= threshold;
+    const initialReserve = this._initialReserveAmount.get(sellerPeerId)
+      ?? this._config.maxReserveAmountUsdc;
+    const fixedThreshold = ceiling <= initialReserve
+      ? initialReserve * INITIAL_TOPUP_HEADROOM_PERCENT / PERCENT_DENOMINATOR
+      : SUBSEQUENT_TOPUP_HEADROOM_USDC;
+    const loadThreshold = this._inFlightHeadroom(sellerPeerId);
+    const threshold = loadThreshold > fixedThreshold ? loadThreshold : fixedThreshold;
+    const remaining = ceiling > current ? ceiling - current : 0n;
+    return remaining <= threshold;
+  }
+
+  setChannelDepositReader(reader: (channelId: string) => Promise<bigint>): void {
+    this._readChannelDeposit = reader;
+  }
+
+  /**
+   * Whether this seller has a paid request running or a reserve top-up queued
+   * or running. The channel reconcile pass leaves such a seller's session alone.
+   */
+  hasPaymentInFlight(sellerPeerId: string): boolean {
+    return (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) > 0 || (this._topUpsQueued.get(sellerPeerId) ?? 0) > 0;
+  }
+
+  /** Count a paid request to this seller as in flight until endPaidRequest. */
+  beginPaidRequest(sellerPeerId: string): void {
+    this._inFlightPaidRequests.set(sellerPeerId, (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) + 1);
+  }
+
+  /**
+   * The attempt is over. Record what arrived (recordDeliveredResponse) before
+   * this: an attempt that ends with nothing recorded owes nothing when the
+   * seller `answered` it (an error answer, a 402 the buyer retries). When it
+   * did not, the attempt was cut off with nothing the buyer can price: the
+   * seller may still bill it, and only the overdraft window pays for that.
+   */
+  endPaidRequest(sellerPeerId: string, requestId?: string, answered = false): void {
+    if (requestId && !answered && !this._requestLedgers.get(sellerPeerId)?.has(requestId)) {
+      this.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 0n, cutOff: true });
+    }
+    const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
+    if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
+    else this._inFlightPaidRequests.delete(sellerPeerId);
+  }
+
+  /**
+   * The buyer received `sellerPeerId`'s response to paid request `requestId`
+   * and priced it itself, or cut the attempt off (`cutOff`). The seller may
+   * charge for it once, up to that cost, on the channel live now (the ledger
+   * is dropped when a channel starts or ends).
+   */
+  recordDeliveredResponse(sellerPeerId: string, requestId: string, delivered: DeliveredResponse): void {
+    let ledger = this._requestLedgers.get(sellerPeerId);
+    if (!ledger) this._requestLedgers.set(sellerPeerId, ledger = new Map());
+    // Bounded like request billing: forgetting a request only ever pays the seller less.
+    if (ledger.size >= MAX_REQUEST_BILLING_ENTRIES && !ledger.has(requestId)) ledger.delete(ledger.keys().next().value!);
+    ledger.set(requestId, delivered);
+  }
+
+  /**
+   * How much of the current ceiling is a top-up not yet locked on-chain. A
+   * landed top-up the buyer has not heard about is reconciled first, so it is
+   * not counted against the available balance twice. Without a chain read,
+   * the whole pending increase counts. Null when the channel was replaced
+   * during the read.
+   */
+  private async _outstandingTopUp(sellerPeerId: string, channelId: string, ceiling: bigint): Promise<bigint | null> {
+    const pending = this._pendingReserveAuth.get(sellerPeerId);
+    if (!pending || pending.confirmedAmount <= 0n || ceiling <= pending.confirmedAmount) return 0n;
+    let locked = pending.confirmedAmount;
+    if (this._readChannelDeposit) {
+      try {
+        const deposit = await this._readChannelDeposit(channelId);
+        // Only act on the read if nothing replaced the channel or the authorization meanwhile.
+        if (this.getActiveSession(sellerPeerId)?.sessionId !== channelId) return null;
+        if (this._pendingReserveAuth.get(sellerPeerId) !== pending) {
+          return this._outstandingTopUp(sellerPeerId, channelId, this._getCeiling(sellerPeerId));
+        }
+        if (deposit >= pending.maxAmount) {
+          await this.reconcileReserveAmount(sellerPeerId, deposit);
+          return 0n;
+        }
+        if (deposit > locked) locked = deposit;
+      } catch (err) {
+        debugWarn(`[BuyerPayment] topUpReserve: could not read the channel deposit: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return ceiling > locked ? ceiling - locked : 0n;
+  }
+
+  /**
+   * Headroom the paid requests in flight to this seller need: their count
+   * times the channel's average verified cost per request, doubled. Zero until
+   * the channel has served a request, so a fresh channel keeps the fixed rules.
+   */
+  private _inFlightHeadroom(sellerPeerId: string): bigint {
+    const inFlight = BigInt(this._inFlightPaidRequests.get(sellerPeerId) ?? 0);
+    const requests = this._metadata.get(sellerPeerId)?.cumulativeRequestCount ?? 0n;
+    if (inFlight <= 0n || requests <= 0n) return 0n;
+    const averageCost = (this._verifiedCost.get(sellerPeerId) ?? 0n) / requests;
+    return inFlight * averageCost * IN_FLIGHT_HEADROOM_FACTOR;
   }
 
   /**
@@ -1159,19 +1605,16 @@ export class BuyerPaymentManager {
    * @param responseStats Byte counts from the last response and seller's claimed cost.
    * @returns The signed payload and whether a reserve top-up is needed.
    */
-  async signPerRequestAuth(
+  signPerRequestAuth(
     sellerPeerId: string,
-    responseStats: {
-      inputBytes: Uint8Array;
-      outputBytes: Uint8Array;
-      sellerClaimedCost?: bigint;
-      reportedInputTokens?: bigint;
-      reportedOutputTokens?: bigint;
-      reportedCachedInputTokens?: bigint;
-      unitUsage?: UnitBillingUsage;
-      service?: string;
-      requestId?: string;
-    },
+    responseStats: PerRequestResponseStats,
+  ): Promise<PerRequestAuthResult> {
+    return this._withSellerLock(sellerPeerId, () => this._signPerRequestAuth(sellerPeerId, responseStats));
+  }
+
+  private async _signPerRequestAuth(
+    sellerPeerId: string,
+    responseStats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -1193,7 +1636,6 @@ export class BuyerPaymentManager {
     let estimatedCachedInputTokens = 0n;
     let byteEstimatedTokens = false;
     let buyerEstimatedRequestCost: bigint;
-    let verifiedCostDelta = 0n;
 
     const requestBilling = responseStats.requestId != null
       ? this.getRequestBilling(responseStats.requestId)
@@ -1215,7 +1657,6 @@ export class BuyerPaymentManager {
         : 0n;
       const unitCost = validateUnitNormalizedCost(unitBillingModel, requestBilling.context, responseStats.unitUsage);
       buyerEstimatedRequestCost = tokenCost + unitCost;
-      verifiedCostDelta += buyerEstimatedRequestCost;
       debugLog(
         `[BuyerPayment] Hybrid billing-estimated cost=${buyerEstimatedRequestCost} service=${responseStats.service ?? 'unknown'}`,
       );
@@ -1234,13 +1675,11 @@ export class BuyerPaymentManager {
       if (pricing) {
         const cost = computeCostUsdc(Number(freshInputTokens), Number(estimatedOutputTokens), pricing, Number(cachedInputTokens));
         buyerEstimatedRequestCost = cost;
-        verifiedCostDelta += cost;
       } else if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
         // No local pricing available (e.g. after buyer restart before session pricing is restored).
         // Use seller's claimed cost for verifiedCost accumulation so _maxSignable can grow.
         // The seller's claim is still validated against tolerance below.
         buyerEstimatedRequestCost = responseStats.sellerClaimedCost;
-        verifiedCostDelta += responseStats.sellerClaimedCost;
       } else {
         buyerEstimatedRequestCost = 0n;
       }
@@ -1254,9 +1693,6 @@ export class BuyerPaymentManager {
       estimatedInputTokens = estimate ? BigInt(estimate.inputTokens) : 0n;
       estimatedOutputTokens = estimate ? BigInt(estimate.outputTokens) : 0n;
       buyerEstimatedRequestCost = estimate ? estimate.cost : 0n;
-      if (estimate) {
-        verifiedCostDelta += estimate.cost;
-      }
       debugLog(
         `[BuyerPayment] Byte-estimated tokens (no reported): in=${estimatedInputTokens} out=${estimatedOutputTokens} cost=${buyerEstimatedRequestCost}`,
       );
@@ -1265,7 +1701,10 @@ export class BuyerPaymentManager {
     // Image attribution (metadata/stats only — never cost). The count is the
     // buyer's own observation of the delivered response, so it survives a
     // headroom NeedAuth having already consumed the request-billing entry.
-    const estimatedOutputImages = countOutputImages(responseStats.unitUsage);
+    const estimatedOutputImages = countUnits(responseStats.unitUsage, 'output_images');
+    const estimatedVideoGenerations = countUnits(responseStats.unitUsage, 'video_generations');
+    const estimatedVideoSeconds = countUnits(responseStats.unitUsage, 'video_seconds');
+    const estimatedInputCharacters = countUnits(responseStats.unitUsage, 'input_characters');
     if (estimatedOutputImages > 0n) {
       if (byteEstimatedTokens) {
         // Byte estimates of an image response are base64 noise, not tokens.
@@ -1275,7 +1714,7 @@ export class BuyerPaymentManager {
       }
       estimatedOutputTokens += estimatedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (estimatedInputTokens <= 0n) {
-        estimatedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        estimatedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
 
@@ -1286,7 +1725,7 @@ export class BuyerPaymentManager {
     let acceptedCost: bigint;
     if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
       if (buyerEstimatedRequestCost > 0n) {
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costToleranceFor(requestBilling)));
         if (responseStats.sellerClaimedCost > maxAcceptable) {
           debugWarn(
             `[BuyerPayment] Seller claimed ${responseStats.sellerClaimedCost} exceeds ${this._costTolerance}x buyer estimate ${buyerEstimatedRequestCost} — capping at ${maxAcceptable}`,
@@ -1306,34 +1745,74 @@ export class BuyerPaymentManager {
     // If cost is 0, the cumulative amount stays the same — no spending auth needed
     // but we still sign one to keep the seller's session alive.
 
-    // Advance cumulative amount by the accepted cost, then add overdraft headroom
-    // for the next request (so the seller has budget to serve it).
+    // A response with a request ID is owed only while the ledger holds it: with
+    // no open record it was counted already or nothing is owed for it. What is
+    // owed is every response the buyer received whose cost frame never
+    // arrived, each at the buyer's own cost; an attempt the buyer cut off is
+    // paid only through its NeedAuth. A response with no request ID cannot be
+    // recorded, and is paid as reported.
+    const ledger = this._requestLedgers.get(sellerPeerId);
+    const counted = [...ledger ?? []].filter(([, record]) => !record.cutOff);
+    const alreadyCounted = responseStats.requestId != null && !counted.some(([requestId]) => requestId === responseStats.requestId);
+    const reportedCost = responseStats.requestId != null ? 0n : acceptedCost;
+    acceptedCost = reportedCost;
+    for (const [, record] of counted) acceptedCost += record.costUsdc;
+
+    // Sign up to the verified cost once these are counted. A cost a NeedAuth
+    // counted but could not sign (reserve ceiling, pending top-up) is signed
+    // here; what a seller prompt or a 402 retry already signed past verified
+    // cost is not signed again.
     // maxSignable already caps at reserve ceiling, so one cap is sufficient
     const prevAmount = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
-    const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
-    const nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
+    const nextVerifiedCost = (this._verifiedCost.get(sellerPeerId) ?? 0n) + acceptedCost;
     const maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
-    let newAmount = prevAmount + acceptedCost;
+    let newAmount = prevAmount + reportedCost;
+    if (newAmount < nextVerifiedCost) newAmount = nextVerifiedCost;
     if (newAmount > maxSignable) newAmount = maxSignable;
     // A conservative recovery ceiling may temporarily be below an amount we
     // already signed. SpendingAuth is cumulative and must never move backward.
     if (newAmount < prevAmount) newAmount = prevAmount;
     const signedDelta = newAmount - prevAmount;
 
-    // Update cumulative metadata. NeedAuth may have counted this response
-    // first, so deduplicate the response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
-    const newMeta = this._advanceUsageMetadata(
-      this._metadata.get(sellerPeerId),
-      responseStats.service,
-      normalizeRequestUsageDelta({
-        amount: signedDelta,
-        inputTokens: estimatedInputTokens,
-        cachedInputTokens: estimatedCachedInputTokens,
-        outputTokens: estimatedOutputTokens,
+    // Update cumulative metadata, deduplicating usage for a response NeedAuth already counted.
+    // Each other response counted here goes to its own service, with its own usage.
+    let otherMeta = this._metadata.get(sellerPeerId);
+    let othersAmount = 0n;
+    for (const [requestId, { costUsdc, service, usage }] of counted) {
+      if (requestId === responseStats.requestId || !usage) continue;
+      const images = countUnits(usage.unitUsage, 'output_images');
+      otherMeta = this._advanceUsageMetadata(otherMeta, service, {
+        amount: costUsdc,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens + images * OUTPUT_IMAGE_TOKEN_EQUIVALENT,
         requests: 1n,
-        outputImages: estimatedOutputImages,
-      }, { deliveredResponse: true, alreadyCounted }),
+        outputImages: images,
+        videoGenerations: countUnits(usage.unitUsage, 'video_generations'),
+        videoSeconds: countUnits(usage.unitUsage, 'video_seconds'),
+        inputCharacters: countUnits(usage.unitUsage, 'input_characters'),
+      });
+      othersAmount += costUsdc;
+    }
+    const newMeta = this._advanceUsageMetadata(
+      otherMeta,
+      responseStats.service,
+      {
+        ...normalizeRequestUsageDelta({
+          amount: signedDelta,
+          inputTokens: estimatedInputTokens,
+          cachedInputTokens: estimatedCachedInputTokens,
+          outputTokens: estimatedOutputTokens,
+          requests: 1n,
+          outputImages: estimatedOutputImages,
+          videoGenerations: estimatedVideoGenerations,
+          videoSeconds: estimatedVideoSeconds,
+          inputCharacters: estimatedInputCharacters,
+        }, { deliveredResponse: true, alreadyCounted }),
+        // Any remainder of a NeedAuth-counted request is still this service's amount,
+        // as is a cost counted here that a seller prompt had already signed for.
+        amount: (signedDelta > acceptedCost ? signedDelta : acceptedCost) - othersAmount,
+      },
     );
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -1356,7 +1835,7 @@ export class BuyerPaymentManager {
     const spendingAuthSig = await signSpendingAuth(this._signer, channelsDomain, metadataMsg);
 
     // Persist updated cumulative values to BuyerChannelStore
-    await this._commitAuthorization({
+    const outcome = await this._commitLive({
       ...session,
       authMax: newAmount.toString(),
       requestCount: Number(newMeta.cumulativeRequestCount),
@@ -1365,11 +1844,13 @@ export class BuyerPaymentManager {
       latestMetadata: encodedMetadata,
       updatedAt: Date.now(),
     }, newMeta);
+    if (outcome !== 'committed') throw writeDropped(sellerPeerId);
 
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (!alreadyCounted) this._serviceTokensCounted.mark(responseStats.requestId);
+    // Counted: no later NeedAuth may claim a cost for them.
+    for (const [requestId] of counted) ledger!.delete(requestId);
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -1401,15 +1882,61 @@ export class BuyerPaymentManager {
    * against its own token count and signs a new SpendingAuth for the required
    * cumulative amount, capped at the reserve ceiling.
    */
+  private _withSellerLock<T>(sellerPeerId: string, run: () => Promise<T>): Promise<T> {
+    return runQueued(this._sellerLocks, sellerPeerId, run);
+  }
+
   async handleNeedAuth(
     sellerPeerId: string,
     payload: NeedAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<void> {
+    if (this._oneOffChannels.has(payload.channelId)) {
+      await this._handleOneOffNeedAuth(sellerPeerId, payload, paymentMux);
+      return;
+    }
+    const topUp = await this._withSellerLock(sellerPeerId, () => this._signForNeedAuth(sellerPeerId, payload, paymentMux));
+    if (topUp) await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
+  }
+
+  /**
+   * Validates a NeedAuth and signs the next cumulative authorization. Runs
+   * under the seller lock, so it reads the latest signed amount and verified
+   * cost. Returns whether a reserve top-up should follow.
+   */
+  private async _signForNeedAuth(
+    sellerPeerId: string,
+    payload: NeedAuthPayload,
+    paymentMux: PaymentMux,
+  ): Promise<boolean> {
+    // The seller's NeedAuth can legitimately race ahead of the buyer's own
+    // response processing (different muxes). Give the response path a moment
+    // to record a unit-billed delivery before judging the claim. This waits
+    // inside the lock on purpose: NeedAuths must be judged in arrival order,
+    // or a later one signs past this request's cost and this one is dropped
+    // as stale, never counted, and charged again at close.
+    if (
+      payload.billingUsage && payload.requestId && hasPositiveCost(payload.lastRequestCost)
+      && this.getRequestBilling(payload.requestId)?.unitModel
+    ) {
+      await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
-      return;
+      return false;
+    }
+    if (session.sessionId !== payload.channelId) {
+      debugWarn(`[BuyerPayment] NeedAuth for unknown channel ${payload.channelId.slice(0, 18)}... — ignoring`);
+      return false;
+    }
+    if (payload.currentAcceptedCumulative != null) this._recordSellerAccepted(sellerPeerId, session.sessionId, BigInt(payload.currentAcceptedCumulative));
+
+    if (this.isRequestCovered(sellerPeerId, payload.requestId)) {
+      debugWarn(
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} it served from a free allowance`,
+      );
+      return false;
     }
 
     const requestBilling = payload.requestId ? this.getRequestBilling(payload.requestId) : undefined;
@@ -1420,15 +1947,59 @@ export class BuyerPaymentManager {
     const requiredCumulativeAmount = BigInt(payload.requiredCumulativeAmount);
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
 
+    // A cost counts toward verified cost only for a request the buyer holds an
+    // open record of, and only up to the buyer's own cost in that record. The
+    // token counts in the frame are the seller's own, so they prove nothing:
+    // without this any claimed cost would count as verified, for a request
+    // that failed, was never sent, or was already paid.
+    const ledger = this._requestLedgers.get(sellerPeerId);
+    let record = payload.lastRequestCost != null && payload.requestId ? ledger?.get(payload.requestId) : undefined;
+    if (record?.costCounted) record = undefined;
+    if (hasPositiveCost(payload.lastRequestCost) && !record) {
+      debugWarn(
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... claiming a cost for request ` +
+        `${payload.requestId ?? '(none)'}: nothing is owed for it`,
+      );
+      return false;
+    }
+    if (record && hasPositiveCost(payload.lastRequestCost) !== record.costUsdc > 0n) {
+      // One side puts a cost on the request and the other none: the buyer cut
+      // the attempt off with nothing it can price, or the frame is for an
+      // earlier attempt (a retry keeps the request ID). Nothing counts as
+      // verified and the record stays: the frame is answered as a prompt,
+      // signed only while it fits the overdraft window.
+      payload = { ...payload, lastRequestCost: undefined, billingUsage: undefined };
+      record = undefined;
+    } else if (record?.costUsdc === 0n) {
+      // Both sides put no cost on it: nothing is owed for it.
+      ledger!.delete(payload.requestId!);
+      record = undefined;
+    }
+
     // Reject stale/lower NeedAuth (monotonicity guard)
     if (requiredCumulativeAmount <= currentCumulative) {
+      // A catch-up prompt (no response cost) for what is already signed but
+      // not accepted (lost on the wire, or the seller restarted): resend the
+      // same authorization, no higher. A post-response NeedAuth is not
+      // answered this way: its authorization is usually still in flight.
+      const catchUpPrompt = payload.lastRequestCost == null && payload.billingUsage == null;
+      if (catchUpPrompt && payload.currentAcceptedCumulative != null && BigInt(payload.currentAcceptedCumulative) < currentCumulative) {
+        debugLog(
+          `[BuyerPayment] NeedAuth stale but seller accepted ${payload.currentAcceptedCumulative} < signed ${currentCumulative} — resending`,
+        );
+        await this._resendCurrentSpendingAuth(sellerPeerId, paymentMux);
+        return false;
+      }
       debugLog(
         `[BuyerPayment] NeedAuth stale: required=${requiredCumulativeAmount} <= current=${currentCumulative} — ignoring`,
       );
-      return;
+      return false;
     }
     let acceptedServiceCost = 0n;
     let acceptedOutputImages = 0n;
+    let acceptedVideoGenerations = 0n;
+    let acceptedVideoSeconds = 0n;
+    let acceptedInputCharacters = 0n;
     let verifiedCostDelta = 0n;
     const reportedInputTokens = BigInt(payload.inputTokens ?? '0');
     const reportedCachedInputTokens = BigInt(payload.cachedInputTokens ?? '0');
@@ -1466,10 +2037,8 @@ export class BuyerPaymentManager {
           // a moment to record what was actually delivered before judging the
           // claim; a seller claiming delivery that never happens still gets
           // rejected once the wait expires.
-          const observedUnitUsage = requestBilling.observedUnitUsage
-            ?? (sellerTotalCost > 0n && payload.requestId
-              ? await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS)
-              : undefined);
+          // Waited for at the top of _signForNeedAuth.
+          const observedUnitUsage = requestBilling.observedUnitUsage;
           const claimedUnitCost = sellerTotalCost > tokenEstimate
             ? sellerTotalCost - tokenEstimate
             : 0n;
@@ -1478,17 +2047,21 @@ export class BuyerPaymentManager {
             requestBilling.context,
             payload.billingUsage,
             claimedUnitCost,
-            this._costTolerance,
+            this._costToleranceFor(requestBilling),
             observedUnitUsage,
           );
-          acceptedOutputImages = countOutputImages(unitUsageFromReport(payload.billingUsage));
+          const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
+          acceptedOutputImages = countUnits(acceptedUnitUsage, 'output_images');
+          acceptedVideoGenerations = countUnits(acceptedUnitUsage, 'video_generations');
+          acceptedVideoSeconds = countUnits(acceptedUnitUsage, 'video_seconds');
+          acceptedInputCharacters = countUnits(acceptedUnitUsage, 'input_characters');
         }
 
         const buyerEstimate = tokenEstimate + acceptedUnitCost;
         if (sellerTotalCost > 0n && buyerEstimate <= 0n) {
           throw new Error("Positive NeedAuth total cost recomputed to zero");
         }
-        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
+        const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costToleranceFor(requestBilling)));
         if (sellerTotalCost > maxAcceptable) {
           throw new Error(`Seller total cost ${sellerTotalCost} exceeds buyer estimate ${buyerEstimate}`);
         }
@@ -1499,15 +2072,15 @@ export class BuyerPaymentManager {
         );
       } catch (err) {
         debugWarn(`[BuyerPayment] NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
-        return;
+        return false;
       }
     } else if (payload.lastRequestCost) {
       const sellerCost = BigInt(payload.lastRequestCost);
-      if (sellerCost > 0n && unitBillingModel && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+      if (sellerCost > 0n && unitBillingModel && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
         debugWarn(
           `[BuyerPayment] NeedAuth rejected: positive unit cost omitted verifiable billingUsage`,
         );
-        return;
+        return false;
       }
       const sellerIn = reportedInputTokens;
       const sellerOut = reportedOutputTokens;
@@ -1530,17 +2103,17 @@ export class BuyerPaymentManager {
           : sellerIn);
         const buyerEstimate = computeCostUsdc(Number(freshIn), Number(sellerOut), pricing, Number(sellerCached));
         const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
-        if (buyerEstimate <= 0n && sellerCost > 0n && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+        if (buyerEstimate <= 0n && sellerCost > 0n && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
           debugWarn(
             `[BuyerPayment] NeedAuth rejected: positive unit cost recomputed to zero`,
           );
-          return;
+          return false;
         }
         if (buyerEstimate > 0n && sellerCost > maxAcceptable) {
           debugWarn(
             `[BuyerPayment] NeedAuth: seller claimed cost ${sellerCost} exceeds ${this._costTolerance}x buyer estimate ${buyerEstimate} — rejecting`,
           );
-          return;
+          return false;
         }
         debugLog(
           `[BuyerPayment] NeedAuth: seller cost=${sellerCost} buyer estimate=${buyerEstimate} (in=${sellerIn} cached=${sellerCached} out=${sellerOut}) — validated`,
@@ -1555,49 +2128,77 @@ export class BuyerPaymentManager {
       verifiedCostDelta += sellerCost;
     }
 
+    // The most of the claim that counts as verified. A seller can honestly
+    // claim more than the response shows (an agent's internal tool turns, a
+    // different usage report), so the frame is not refused: the rest is signed
+    // only while it fits the overdraft window, like any prompt.
+    const verifiableCost = record
+      ? BigInt(Math.ceil(Number(record.costUsdc) * this._costToleranceFor(requestBilling)))
+      : 0n;
+    if (verifiedCostDelta > verifiableCost) {
+      debugWarn(
+        `[BuyerPayment] NeedAuth from ${sellerPeerId.slice(0, 12)}... claims ${verifiedCostDelta} for request ${payload.requestId}; ` +
+        `the buyer's own cost for it is ${record?.costUsdc ?? 0n}: counting ${verifiableCost}`,
+      );
+      verifiedCostDelta = verifiableCost;
+      if (acceptedServiceCost > verifiableCost) acceptedServiceCost = verifiableCost;
+    }
     // Cap at overdraft limit: verifiedCost + maxPerRequestUsdc, then at reserve ceiling.
     // This prevents a malicious seller from claiming a small cost but requesting the full reserve.
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
-    let nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
-    let maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
+    const nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
+    const maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     const ceiling = this._getCeiling(sellerPeerId);
-    let needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
+    const needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
+    // A cost the buyer cannot sign for in this frame (the overdraft window is
+    // used up, or the reserve ceiling is reached and a top-up is pending)
+    // still counts, once, toward verified cost. The seller's next prompt, or
+    // the buyer's own signing before a close, signs up to it. The record stays,
+    // counted at no cost, so that close still attributes the response's usage.
+    const countUnsigned = (): void => {
+      if (!record) return;
+      ledger!.set(payload.requestId!, { ...record, costUsdc: 0n, costCounted: true });
+      this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
+    };
+    // A NeedAuth never reopens a used-up overdraft window: the seller could
+    // repeat the frame and have the buyer sign one more window each time,
+    // with no work to show for it. Only the buyer's own 402 retry reopens it
+    // (extendCurrentSpendingAuth).
     if (maxSignable <= currentCumulative && !needsTopUp) {
-      const reopened = this._reopenOverdraftWindowIfCollapsed(
-        sellerPeerId,
-        currentCumulative,
-        maxSignable,
-        'handleNeedAuth',
-        nextVerifiedCost,
+      countUnsigned();
+      debugWarn(
+        `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
       );
-      maxSignable = reopened.maxSignable;
-      nextVerifiedCost = reopened.verifiedCost;
-      needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
-      if (maxSignable <= currentCumulative && !needsTopUp) {
-        debugWarn(
-          `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
-        );
-        return;
-      }
+      return false;
     }
 
     // When a topUp is needed, first sign at the current ceiling so the seller
     // has a high-enough settled amount to pass the on-chain TopUpThresholdNotMet
-    // check (contract requires 85% of deposit to be settleable before topUp).
+    // check (contract requires TOP_UP_SETTLED_THRESHOLD_BPS of deposit to be settleable before topUp).
     // We cap at the old ceiling here; the topUp is sent AFTER so the seller
     // processes the SpendingAuth first, then the topUp with adequate settle amount.
-    const effectiveAmount = needsTopUp
+    let effectiveAmount = needsTopUp
       ? (maxSignable > currentCumulative ? maxSignable : currentCumulative)
       : (requiredCumulativeAmount < maxSignable ? requiredCumulativeAmount : maxSignable);
+    // While a top-up is pending, the seller can only accept up to the deposit
+    // locked on-chain, and the contract runs topUp() only once enough of that
+    // deposit is settled. Crossing it in one jump (from below the settle
+    // threshold to above the deposit) leaves the seller with no auth it can
+    // use: it rejects the new one, can never submit the top-up, and the
+    // channel strands work above the deposit. Sign exactly the confirmed
+    // deposit first; the next prompt signs the rest.
+    const confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
+      debugLog(`[BuyerPayment] NeedAuth: signing the confirmed deposit ${confirmedDeposit} first (target ${effectiveAmount}) while a top-up is pending`);
+      effectiveAmount = confirmedDeposit;
+    }
     if (effectiveAmount <= currentCumulative) {
-      // Nothing to sign — trigger topUp anyway to extend ceiling for next round
-      if (needsTopUp) {
-        await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
-      }
+      // Nothing to sign; a top-up still extends the ceiling for the next round.
+      countUnsigned();
       debugWarn(
         `[BuyerPayment] NeedAuth: effectiveAmount=${effectiveAmount} <= currentCumulative=${currentCumulative} — cannot advance`,
       );
-      return;
+      return needsTopUp;
     }
 
     debugLog(`[BuyerPayment] NeedAuth: channel=${session.sessionId.slice(0, 18)}... required=${requiredCumulativeAmount} effective=${effectiveAmount}`);
@@ -1610,16 +2211,13 @@ export class BuyerPaymentManager {
     const serviceAmountDelta = acceptedServiceCost > 0n
       ? (acceptedServiceCost < signedDelta ? acceptedServiceCost : signedDelta)
       : 0n;
-    // If post-response signing counted this response first, deduplicate the
-    // response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
     // Attribution only — never cost; mirrors signPerRequestAuth.
     let attributedInputTokens = reportedInputTokens;
     let attributedOutputTokens = reportedOutputTokens;
     if (acceptedOutputImages > 0n) {
       attributedOutputTokens += acceptedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (attributedInputTokens <= 0n) {
-        attributedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        attributedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
     const newMeta = this._advanceUsageMetadata(
@@ -1632,7 +2230,10 @@ export class BuyerPaymentManager {
         outputTokens: attributedOutputTokens,
         requests: 1n,
         outputImages: acceptedOutputImages,
-      }, { deliveredResponse, alreadyCounted }),
+        videoGenerations: acceptedVideoGenerations,
+        videoSeconds: acceptedVideoSeconds,
+        inputCharacters: acceptedInputCharacters,
+      }, { deliveredResponse, alreadyCounted: false }),
     );
     // Persistence and transport failures must propagate to the connection
     // owner. In particular, swallowing an IndexedDB failure leaves the browser
@@ -1643,33 +2244,35 @@ export class BuyerPaymentManager {
       effectiveAmount,
       newMeta,
     );
+    if (typeof spendingAuth === 'string') return false;
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (deliveredResponse && !alreadyCounted) this._serviceTokensCounted.mark(payload.requestId);
+    if (record) ledger!.delete(payload.requestId!);
     this._reportSpend({
       sellerPeerId,
       requestId: payload.requestId ?? null,
       amountUsdc: signedDelta.toString(),
-      inputTokens: (deliveredResponse && !alreadyCounted ? attributedInputTokens : 0n).toString(),
-      cachedInputTokens: (deliveredResponse && !alreadyCounted ? reportedCachedInputTokens : 0n).toString(),
-      outputTokens: (deliveredResponse && !alreadyCounted ? attributedOutputTokens : 0n).toString(),
-      outputImages: (deliveredResponse && !alreadyCounted ? acceptedOutputImages : 0n).toString(),
+      inputTokens: (deliveredResponse ? attributedInputTokens : 0n).toString(),
+      cachedInputTokens: (deliveredResponse ? reportedCachedInputTokens : 0n).toString(),
+      outputTokens: (deliveredResponse ? attributedOutputTokens : 0n).toString(),
+      outputImages: (deliveredResponse ? acceptedOutputImages : 0n).toString(),
     });
     paymentMux.sendSpendingAuth(spendingAuth);
     debugLog(`[BuyerPayment] NeedAuth responded: new cumulativeAmount=${effectiveAmount}`);
 
     // Send topUp AFTER the SpendingAuth so the seller processes the higher
     // cumulative first — this ensures the on-chain settle amount meets the
-    // contract's TopUpThresholdNotMet requirement (85% of deposit must be
+    // contract's TopUpThresholdNotMet requirement (TOP_UP_SETTLED_THRESHOLD_BPS of deposit must be
     // settleable before topUp is allowed). Also proactively send the top-up
-    // once the signed cumulative reaches the buyer's 65% threshold; the seller
-    // may defer the on-chain topUp until the contract's 85% gate is satisfied.
-    if (needsTopUp || this._needsTopUp(sellerPeerId)) {
-      await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
-    }
-    if (payload.requestId) {
+    // once the signed cumulative reaches the buyer's remaining-headroom
+    // threshold; the seller may defer it until the contract gate is satisfied.
+    // Only a NeedAuth that reports a request's delivered cost is done with its
+    // billing context; a catch-up or headroom prompt may name a request that is
+    // still being served.
+    if (payload.requestId && deliveredResponse) {
       this.clearRequestBilling(payload.requestId);
     }
+    return needsTopUp || this._needsTopUp(sellerPeerId);
   }
 
   // ── Reserve top-up ─────────────────────────────────────────────
@@ -1679,7 +2282,33 @@ export class BuyerPaymentManager {
    * The seller must call reserve() on-chain again with the new signature.
    * Note: requires contract support for top-up (increaseDeposit on existing channelId).
    */
-  async topUpReserve(
+  /**
+   * Top-ups for one seller run one at a time: each reads the chain and the
+   * pending authorization before signing, and a parallel one would budget or
+   * reconcile against state the other is about to replace. Kept apart from the
+   * signing lock so authorizations never wait on these chain reads.
+   */
+  topUpReserve(
+    sellerPeerId: string,
+    paymentMux: PaymentMux,
+  ): Promise<void> {
+    // A top-up that waited behind another is asked for again only if the
+    // channel still needs one: the earlier top-up usually restored headroom.
+    const ahead = this._topUpsQueued.get(sellerPeerId) ?? 0;
+    this._topUpsQueued.set(sellerPeerId, ahead + 1);
+    return runQueued(this._topUpLocks, sellerPeerId, async () => {
+      try {
+        if (ahead > 0 && !this._needsTopUp(sellerPeerId)) return;
+        await this._topUpReserve(sellerPeerId, paymentMux);
+      } finally {
+        const left = (this._topUpsQueued.get(sellerPeerId) ?? 1) - 1;
+        if (left > 0) this._topUpsQueued.set(sellerPeerId, left);
+        else this._topUpsQueued.delete(sellerPeerId);
+      }
+    });
+  }
+
+  private async _topUpReserve(
     sellerPeerId: string,
     paymentMux: PaymentMux,
   ): Promise<void> {
@@ -1689,16 +2318,46 @@ export class BuyerPaymentManager {
       return;
     }
 
+    // A top-up still waiting on-chain will lock its increase from the same
+    // deposits: budget only what is left after it, so stacked top-ups never
+    // authorize more than the buyer holds. One that already landed is out of
+    // the available balance already, so read the deposit before counting it.
+    const firstOutstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
+    if (firstOutstanding === null) {
+      debugWarn(`[BuyerPayment] topUpReserve: channel for ${sellerPeerId.slice(0, 12)}... was replaced; skipping the top-up`);
+      return;
+    }
+    let outstanding = firstOutstanding;
     const prevCeiling = this._getCeiling(sellerPeerId);
-    const newCeiling = prevCeiling + this._config.maxReserveAmountUsdc;
-    const additionalReserve = newCeiling - prevCeiling;
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
+    // Under parallel load one configured step can be smaller than the work in
+    // flight, which then runs past the locked reserve before the next top-up
+    // is allowed: grow by enough to cover it, up to a bound.
+    const step = this._config.maxReserveAmountUsdc;
+    const maxStep = step * MAX_LOAD_TOPUP_MULTIPLE;
+    const loadHeadroom = this._inFlightHeadroom(sellerPeerId);
+    let additionalReserve = step;
+    if (loadHeadroom > step) additionalReserve = loadHeadroom < maxStep ? loadHeadroom : maxStep;
+    const deadline = this._authDeadline();
 
     try {
-      const balance = await this.getBalance();
-      if (balance.available < additionalReserve) {
+      let balance = await this.getBalance();
+      let budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      // The pending top-up may have landed between the two reads, which counts
+      // it twice: read both again before calling the budget short.
+      if (outstanding > 0n && budget < additionalReserve) {
+        const reread = await this._outstandingTopUp(sellerPeerId, session.sessionId, this._getCeiling(sellerPeerId));
+        if (reread === null) return;
+        outstanding = reread;
+        balance = await this.getBalance();
+        budget = balance.available > outstanding ? balance.available - outstanding : 0n;
+      }
+      // A load-sized step shrinks to the budget; the configured step is the floor.
+      if (additionalReserve > step && budget < additionalReserve) {
+        additionalReserve = budget > step ? budget : step;
+      }
+      if (budget < additionalReserve) {
         throw buyerFault(
-          `Insufficient buyer deposits for reserve top-up: available=${balance.available} required=${additionalReserve}`,
+          `Insufficient buyer deposits for reserve top-up: available=${balance.available} pending=${outstanding} required=${additionalReserve}`,
           'buyer-deposits-insufficient',
         );
       }
@@ -1712,34 +2371,27 @@ export class BuyerPaymentManager {
       );
     }
 
+    const newCeiling = prevCeiling + additionalReserve;
     debugLog(`[BuyerPayment] topUpReserve: channel=${session.sessionId.slice(0, 18)}... ceiling ${prevCeiling} → ${newCeiling}`);
 
-    // Sign ReserveAuth with new maxAmount
-    const channelsDomain = this._channelsDomain;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId: session.sessionId,
-      maxAmount: newCeiling,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, channelsDomain, reserveMsg);
+    const reserveAuthSig = await this._signReserveAuth(session.sessionId, newCeiling, deadline);
 
-    const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const salt = this._reserveSalt.get(sellerPeerId) ?? '0x' + '00'.repeat(32);
     const pending: PendingReserveAuthorization = {
       signature: reserveAuthSig,
       salt,
       maxAmount: newCeiling,
       deadline,
-      confirmedAmount: prevCeiling,
+      // Stacked on a top-up still pending: the chain has confirmed only what that one had.
+      confirmedAmount: prevCeiling - outstanding,
     };
 
     // Send ReserveAuth sig with reserve fields (same pattern as initial authorizeSpending).
     // The seller uses this to call topUp() on-chain with the new maxAmount.
-    await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
-      cumulativeAmount: currentCumulative.toString(),
+    const sent = await this._commitAndSendReserveAuth(session, sellerPeerId, pending, paymentMux, {
       initialReserveAmount: session.initialReserveAmount ?? prevCeiling.toString(),
     });
-    debugLog(`[BuyerPayment] topUpReserve sent: newCeiling=${newCeiling}`);
+    if (sent) debugLog(`[BuyerPayment] topUpReserve sent: newCeiling=${newCeiling}`);
   }
 
   // ── Queries ───────────────────────────────────────────────────
@@ -1754,7 +2406,244 @@ export class BuyerPaymentManager {
     return this._config.maxReserveAmountUsdc;
   }
 
-  /** Current buyer-verified cost for a seller. */
+  /** Max price of one video generation from buyer config. */
+  get maxVideoRequestUsdc(): bigint {
+    return this._config.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC;
+  }
+
+  // ── One-off channels ─────────────────────────────────────────
+
+  /**
+   * Open a one-off channel that pays for exactly one video. It is a fresh
+   * on-chain channel (new salt), never this seller's session channel: chat
+   * and image spending cannot touch it, and the seller closes it once the
+   * video is paid or abandoned.
+   *
+   * For a price above the opening reserve, signs the opening ReserveAuth, the
+   * contract-required threshold SpendingAuth (the serious fee, credited toward
+   * the price) and the final ReserveAuth together; the seller runs reserve()
+   * and topUp() before acknowledging. Returns the channelId once persisted
+   * and sent; await `waitForOneOffAck` for the seller's confirmation.
+   */
+  async openOneOffChannel(
+    sellerPeerId: string,
+    requestId: string,
+    plan: OneOffChannelPlan,
+    paymentMux: PaymentMux,
+    metadataArg?: PeerMetadata,
+  ): Promise<string> {
+    const price = BigInt(plan.requestCost);
+    const openingReserve = BigInt(plan.openingReserveAmount);
+    const requiredCumulative = BigInt(plan.requiredCumulativeAmount);
+    const billing = this.getRequestBilling(requestId);
+    const facts = billing?.requestFacts;
+    if (
+      !billing || facts?.kind !== 'video' || facts.video.action !== 'create'
+      || billing.context.sellerPeerId !== sellerPeerId || billing.estimatedCostUsdc !== price
+    ) {
+      throw buyerFault(`[BuyerPayment] One-off channel requires a tracked video create (${requestId})`, 'buyer-session-state');
+    }
+    if (price > this.maxVideoRequestUsdc || requiredCumulative >= price) {
+      throw buyerFault(`[BuyerPayment] Refusing one-off channel: price=${price} fee=${requiredCumulative}`, 'buyer-session-state');
+    }
+    const existing = this.getOneOffChannelForRequest(sellerPeerId, requestId);
+    if (existing) return existing;
+    const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
+    const { channelId, deadline } = terms;
+    const metadata = this._sanitizeMetadata({ ...ZERO_METADATA });
+    const openingReserveSig = await this._signReserveAuth(channelId, openingReserve, deadline);
+    const reserveBatch = requiredCumulative > 0n
+      ? await this._signReserveBatch(channelId, requiredCumulative, metadata, price, deadline)
+      : undefined;
+
+    await this._commitAuthorization(this._newBuyerChannel(terms, openingReserve, openingReserveSig, metadata, {
+      channelKind: CHANNEL_KIND.ONE_OFF,
+      oneOffRequestId: requestId,
+      reserveMaxAmount: price.toString(),
+      ...(reserveBatch ? {
+        authMax: reserveBatch.cumulativeAmount,
+        latestBuyerSig: reserveBatch.spendingAuthSig,
+        latestSpendingAuthSig: reserveBatch.spendingAuthSig,
+        latestReserveAuthSig: reserveBatch.reserveAuthSig,
+      } : {}),
+    }), metadata);
+    this._oneOffChannels.set(channelId, {
+      sellerPeerId,
+      requestId,
+      price,
+      cumulative: requiredCumulative,
+      confirmed: false,
+      ackWaiters: [],
+    });
+
+    this._sendOpeningReserveAuth(paymentMux, terms, openingReserve, openingReserveSig, metadata, {
+      ...(reserveBatch ? { reserveBatch } : {}),
+      oneOffRequestId: requestId,
+    });
+    debugLog(`[BuyerPayment] One-off channel ${channelId.slice(0, 18)}... sent for request ${requestId} (price=${price}, fee=${requiredCumulative})`);
+    return channelId;
+  }
+
+  /** The active one-off channel opened for this request, or null. */
+  getOneOffChannelForRequest(sellerPeerId: string, requestId: string): string | null {
+    for (const [channelId, state] of this._oneOffChannels) {
+      if (state.sellerPeerId === sellerPeerId && state.requestId === requestId) return channelId;
+    }
+    return null;
+  }
+
+  isOneOffChannelConfirmed(channelId: string): boolean {
+    return this._oneOffChannels.get(channelId)?.confirmed === true;
+  }
+
+  /** Resolve true once the seller acknowledges the channel, false on timeout. */
+  waitForOneOffAck(channelId: string, timeoutMs: number): Promise<boolean> {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return Promise.resolve(false);
+    if (state.confirmed) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (confirmed: boolean): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(confirmed);
+      };
+      const timer = setTimeout(() => {
+        state.ackWaiters = state.ackWaiters.filter((waiter) => waiter !== finish);
+        finish(false);
+      }, timeoutMs);
+      timer.unref?.();
+      state.ackWaiters.push(finish);
+    });
+  }
+
+  /** Mark the one-off channel confirmed once its full reserve is seen on-chain. */
+  async confirmOneOffChannelOnChain(channelId: string, onChainDeposit: bigint): Promise<void> {
+    const state = this._oneOffChannels.get(channelId);
+    if (state && onChainDeposit >= state.price) await this._confirmOneOffChannel(channelId, state);
+  }
+
+  /**
+   * Forget a one-off channel locally once it is closed or abandoned. If it is
+   * still open on-chain, the buyer can still requestClose() it.
+   */
+  retireOneOffChannel(channelId: string, status: typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS] = CHANNEL_STATUS.SETTLED): void {
+    if (!this._oneOffChannels.has(channelId)) return;
+    this.forgetOneOffChannel(channelId);
+    this._channelStore.updateChannelStatus(channelId, status);
+  }
+
+  /** Drop a one-off channel's in-memory state, failing anyone still waiting for its AuthAck. The store is not touched. */
+  forgetOneOffChannel(channelId: string): void {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return;
+    this._oneOffChannels.delete(channelId);
+    for (const waiter of state.ackWaiters.splice(0)) waiter(false);
+  }
+
+  /**
+   * Record that a tracked video job ended without a video (the seller
+   * answered FAILED). The seller
+   * closes the job's one-off channel at what the buyer signed so far (the
+   * serious fee, if any); the buyer forgets the job and the channel, but keeps
+   * it stored as active until the close is seen, so it can still be
+   * request-closed if the seller never closes it. True when a tracked job was
+   * ended.
+   */
+  recordVideoFailed(sellerPeerId: string, protocol: string, jobId: string): boolean {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const job = this._videoJobs.get(key);
+    if (!job) return false;
+    this._videoJobs.delete(key);
+    if (job.oneOffChannelId) {
+      this._persistVideoJob(job.oneOffChannelId, null);
+      this.retireOneOffChannel(job.oneOffChannelId, CHANNEL_STATUS.ACTIVE);
+    }
+    debugLog(`[BuyerPayment] Video job ${jobId} failed; its one-off channel is retired`);
+    return true;
+  }
+
+  private async _confirmOneOffChannel(channelId: string, state: OneOffChannelState): Promise<void> {
+    if (!state.confirmed) {
+      const channel = this._channelStore.getChannel(channelId);
+      if (channel) {
+        this._channelStore.upsertChannel({
+          ...channel,
+          reserveAuthPending: false,
+          confirmedReserveAmount: channel.reserveMaxAmount ?? state.price.toString(),
+          updatedAt: Date.now(),
+        });
+        await this._channelStore.flush?.();
+      }
+      // Re-checked after the flush: an AuthAck and an on-chain confirmation
+      // can both get here, and only the first may report the fee.
+      if (!state.confirmed) {
+        state.confirmed = true;
+        // The serious fee counts as spent only once the channel holds it: a
+        // channel the seller never opened (or released at 0) charged nothing.
+        if (state.cumulative > 0n) this._reportUnitSpend(state.sellerPeerId, state.requestId, state.cumulative);
+        debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+      }
+    }
+    for (const waiter of state.ackWaiters.splice(0)) waiter(true);
+  }
+
+  /**
+   * Sign a one-off channel's only charge: the video price, after the buyer
+   * received the finished video. Anything else is refused: the channel never
+   * pays for more than its video, and never before delivery.
+   */
+  private async _handleOneOffNeedAuth(
+    sellerPeerId: string,
+    payload: NeedAuthPayload,
+    paymentMux: PaymentMux,
+  ): Promise<void> {
+    const { channelId, requestId } = payload;
+    const state = this._oneOffChannels.get(channelId);
+    const channel = this._channelStore.getChannel(channelId);
+    if (!state || !channel || state.sellerPeerId !== sellerPeerId) return;
+    const required = BigInt(payload.requiredCumulativeAmount);
+    if (required <= state.cumulative) return;
+    const billing = requestId ? this._requestBillingEntries.get(requestId) : undefined;
+    if (
+      required !== state.price || BigInt(payload.lastRequestCost ?? '0') !== state.price
+      || !requestId || !billing?.unitModel || billing.oneOffChannelId !== channelId || !payload.billingUsage
+    ) {
+      debugWarn(`[BuyerPayment] One-off NeedAuth rejected: request ${requestId ?? 'n/a'} required=${required} price=${state.price}`);
+      return;
+    }
+    let usage: UnitBillingUsage;
+    try {
+      const observed = billing.observedUnitUsage ?? await this._waitForObservedUnitUsage(requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+      validateUnitBillingUsage(billing.unitModel, billing.context, payload.billingUsage, state.price, this._costTolerance, observed);
+      usage = observed ?? unitUsageFromReport(payload.billingUsage);
+    } catch (err) {
+      debugWarn(`[BuyerPayment] One-off NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+
+    const metadata = this._advanceUsageMetadata(this._channelStore.getChannelMetadata(channel), billing.context.service, {
+      amount: state.price,
+      inputTokens: 0n,
+      cachedInputTokens: 0n,
+      outputTokens: 0n,
+      requests: 1n,
+      outputImages: 0n,
+      videoGenerations: countUnits(usage, 'video_generations'),
+      videoSeconds: countUnits(usage, 'video_seconds'),
+      inputCharacters: countUnits(usage, 'input_characters'),
+    });
+    const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
+    if (typeof spendingAuth === 'string') return;
+    this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
+    state.cumulative = state.price;
+    paymentMux.sendSpendingAuth(spendingAuth);
+    this.clearRequestBilling(requestId);
+    // The seller closes the channel on receiving this; it pays for nothing else.
+    this.retireOneOffChannel(channelId);
+  }
+
   getVerifiedCost(sellerPeerId: string): bigint {
     return this._verifiedCost.get(sellerPeerId) ?? 0n;
   }
@@ -1767,6 +2656,18 @@ export class BuyerPaymentManager {
   /** Current cumulative signed amount for a seller. */
   getCumulativeAmount(sellerPeerId: string): bigint {
     return this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+  }
+
+  /** The highest cumulative the seller has reported accepting on the active channel (0 if none yet). */
+  getSellerAcceptedCumulative(sellerPeerId: string): bigint {
+    const accepted = this._sellerAccepted.get(sellerPeerId);
+    return accepted && accepted.channelId === this.getActiveSession(sellerPeerId)?.sessionId ? accepted.amount : 0n;
+  }
+
+  private _recordSellerAccepted(sellerPeerId: string, channelId: string, amount: bigint): void {
+    const known = this._sellerAccepted.get(sellerPeerId);
+    if (known?.channelId === channelId && known.amount >= amount) return;
+    this._sellerAccepted.set(sellerPeerId, { channelId, amount });
   }
 
   /** Live cumulative token counts for a seller (in-memory, always up-to-date). */
@@ -1836,15 +2737,26 @@ export class BuyerPaymentManager {
     }
   }
 
+  /** Nothing was delivered for the request: a NeedAuth waiting for it is judged now, as after the wait. */
+  private _noObservedUnitUsage(requestId: string): void {
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry) entry.notDelivered = true;
+    const waiters = this._observedUsageWaiters.get(requestId);
+    if (!waiters) return;
+    this._observedUsageWaiters.delete(requestId);
+    for (const waiter of waiters) waiter(undefined);
+  }
+
   /** Wait for observed unit usage while the buyer's response path catches up. */
   private _waitForObservedUnitUsage(
     requestId: string,
     timeoutMs: number,
   ): Promise<UnitBillingUsage | undefined> {
-    const existing = this._requestBillingEntries.get(requestId)?.observedUnitUsage;
-    if (existing) return Promise.resolve(existing);
+    const entry = this._requestBillingEntries.get(requestId);
+    if (entry?.observedUnitUsage) return Promise.resolve(entry.observedUnitUsage);
+    if (entry?.notDelivered) return Promise.resolve(undefined);
     return new Promise((resolve) => {
-      const onUsage = (usage: UnitBillingUsage): void => {
+      const onUsage = (usage: UnitBillingUsage | undefined): void => {
         clearTimeout(timer);
         resolve(usage);
       };
@@ -1872,16 +2784,182 @@ export class BuyerPaymentManager {
     return publicEntry;
   }
 
+  /**
+   * The one-off channel a video create was paid from, for ResponseAuth
+   * verification. Only the create itself is signed with that channel; the
+   * seller signs retrieves of the same job with the session channel, so they
+   * return null and fall back to it.
+   */
+  getResponseAuthChannelId(sellerPeerId: string, requestId: string): string | null {
+    return this.getOneOffChannelForRequest(sellerPeerId, requestId);
+  }
+
+  /** Remember an accepted video job; its price is charged on delivery. */
+  trackVideoJob(
+    sellerPeerId: string,
+    protocol: string,
+    jobId: string,
+    entry: BuyerRequestBillingEntry,
+    requestId?: string,
+  ): void {
+    const now = Date.now();
+    for (const [key, job] of this._videoJobs) {
+      if (now - job.createdAtMs > VIDEO_JOB_TTL_MS) this._videoJobs.delete(key);
+    }
+    const oneOffChannelId = requestId ? this.getOneOffChannelForRequest(sellerPeerId, requestId) ?? undefined : undefined;
+    this._videoJobs.set(videoJobKey(sellerPeerId, protocol, jobId), {
+      ...entry,
+      createdAtMs: now,
+      ...(oneOffChannelId ? { oneOffChannelId } : {}),
+    });
+    if (oneOffChannelId) this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
+    while (this._videoJobs.size > MAX_VIDEO_JOBS) {
+      const oldest = this._videoJobs.keys().next().value;
+      if (oldest === undefined) break;
+      const evicted = this._videoJobs.get(oldest);
+      this._videoJobs.delete(oldest);
+      // Gone for good, also after a restart: a job this buyer stopped tracking is never charged, and a later
+      // download of it may already have been taken as delivered.
+      if (evicted?.oneOffChannelId) this._persistVideoJob(evicted.oneOffChannelId, null);
+    }
+  }
+
+  /**
+   * Bind a retrieve request to its accepted job so the seller's delivery
+   * NeedAuth is validated against the job's own billing facts.
+   */
+  trackVideoRetrieve(sellerPeerId: string, protocol: string, jobId: string, requestId: string): boolean {
+    const job = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId));
+    if (!job) return false;
+    const { createdAtMs: _createdAtMs, observedUnitUsage: _observed, oneOffChannelId, ...entry } = job;
+    this.trackRequestBilling(requestId, entry);
+    const tracked = this._requestBillingEntries.get(requestId);
+    if (tracked && oneOffChannelId) tracked.oneOffChannelId = oneOffChannelId;
+    return true;
+  }
+
+  /**
+   * Record that the buyer received the finished video. Only now may the
+   * seller's NeedAuth for the job's price be signed, and only once.
+   * `untracked`: the buyer no longer has the job (it can never be charged).
+   * `unsaved`: the delivery is recorded (the seller's charge is signed, so it
+   * is paid for what it delivered) but the job could not be removed from
+   * storage yet, where a restart would find it again; until that is saved
+   * (see `videoDeliveryUnsaved`) the download is not reported as delivered,
+   * so a gateway keeps the price held until the charge reaches it.
+   */
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): 'recorded' | 'unsaved' | 'untracked' {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const job = this._videoJobs.get(key);
+    // The job's own facts, not the request's cache entry, which other requests may have evicted meanwhile.
+    const facts = job?.requestFacts;
+    if (!job || facts?.kind !== 'video') {
+      this._noObservedUnitUsage(requestId);
+      return 'untracked';
+    }
+    const saved = !job.oneOffChannelId || this._persistVideoJob(job.oneOffChannelId, null);
+    if (!this._requestBillingEntries.has(requestId)) this.trackVideoRetrieve(sellerPeerId, protocol, jobId, requestId);
+    this._videoJobs.delete(key);
+    if (!saved) this._unsavedVideoDeliveries.set(key, job.oneOffChannelId!);
+    this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
+    return saved ? 'recorded' : 'unsaved';
+  }
+
+  /**
+   * Whether a delivered job's stored copy is still to be cleared (retried
+   * now). While it is, a restart could restore the job, so another download
+   * of it is not reported as delivered either; its one-off channel never pays
+   * more than the price already signed.
+   */
+  videoDeliveryUnsaved(sellerPeerId: string, protocol: string, jobId: string): boolean {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const channelId = this._unsavedVideoDeliveries.get(key);
+    if (channelId === undefined) return false;
+    if (!this._persistVideoJob(channelId, null)) return true;
+    this._unsavedVideoDeliveries.delete(key);
+    return false;
+  }
+
+  /** The duration a tracked video job asked for, if it is tracked. */
+  videoJobDuration(sellerPeerId: string, protocol: string, jobId: string): number | undefined {
+    const facts = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId))?.requestFacts;
+    return facts?.kind === 'video' ? facts.video.duration : undefined;
+  }
+
+  /** Store (or clear) the undelivered job on its one-off channel row. */
+  /** Whether the job is stored as given (true too when its channel is gone: nothing can restore the job). */
+  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): boolean {
+    try {
+      const channel = this._channelStore.getChannel(channelId);
+      if (!channel) return true;
+      this._channelStore.upsertChannel({
+        ...channel,
+        oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
+        updatedAt: Date.now(),
+      });
+      return true;
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  private _restoreVideoJob(channel: StoredChannel): void {
+    if (!channel.oneOffVideoJob) return;
+    try {
+      const job = JSON.parse(channel.oneOffVideoJob, (_key, value) => (
+        value && typeof value === 'object' && typeof value.$bigint === 'string' ? BigInt(value.$bigint) : value
+      )) as PersistedVideoJob;
+      if (Date.now() - job.createdAtMs > VIDEO_JOB_TTL_MS) return;
+      this._videoJobs.set(videoJobKey(channel.peerId, job.protocol, job.jobId), {
+        ...job.entry,
+        createdAtMs: job.createdAtMs,
+        oneOffChannelId: channel.sessionId,
+      });
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Ignoring unreadable video job on ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   clearRequestBilling(requestId: string): void {
     this._requestBillingEntries.delete(requestId);
     this._requestService.take(requestId);
   }
 
+  /**
+   * `sellerPeerId` marked `requestId` as covered by a free allowance: forget its
+   * billing and refuse any later NeedAuth from that seller claiming a charge for it.
+   */
+  markRequestCovered(sellerPeerId: string, requestId: string): void {
+    this.clearRequestBilling(requestId);
+    // Nothing is owed for it, even once the covered record below expires.
+    this._requestLedgers.get(sellerPeerId)?.delete(requestId);
+    const key = coveredRequestKey(sellerPeerId, requestId);
+    const now = Date.now();
+    for (const [id, markedAt] of this._coveredRequests) {
+      if (this._coveredRequests.size < MAX_COVERED_REQUESTS && now - markedAt < COVERED_REQUEST_TTL_MS) break;
+      this._coveredRequests.delete(id);
+    }
+    this._coveredRequests.delete(key);
+    this._coveredRequests.set(key, now);
+  }
+
+  /**
+   * A new attempt of `requestId` is going to `sellerPeerId`: a retry keeps the
+   * request ID, and if this attempt is paid its NeedAuth is legitimate even when
+   * an earlier attempt was covered.
+   */
+  releaseRequestCoverage(sellerPeerId: string, requestId: string): void {
+    this._coveredRequests.delete(coveredRequestKey(sellerPeerId, requestId));
+  }
+
+  /** Whether `sellerPeerId` served the current attempt of `requestId` from a free allowance. */
+  isRequestCovered(sellerPeerId: string, requestId: string | undefined): boolean {
+    return requestId !== undefined && this._coveredRequests.has(coveredRequestKey(sellerPeerId, requestId));
+  }
+
   trackRequestBillingContext(requestId: string, context: UnitBillingContext): void {
-    this.trackRequestBilling(requestId, {
-      context,
-      requestFacts: {},
-    });
+    this.trackRequestBilling(requestId, { context });
   }
 
   /** Get the live response token totals for a seller, or null if none recorded this session. */
@@ -1950,4 +3028,20 @@ export class BuyerPaymentManager {
   }
 
   // parseResponseCost removed — cost data now flows through NeedAuth on PaymentMux.
+}
+
+function writeDropped(sellerPeerId: string): Error {
+  return buyerFault(
+    `[BuyerPayment] Authorization for seller ${sellerPeerId.slice(0, 12)}... was dropped: its session was retired, or signed higher, while it was being signed`,
+    'buyer-session-state',
+  );
+}
+
+function videoJobKey(sellerPeerId: string, protocol: string, jobId: string): string {
+  return `${sellerPeerId.toLowerCase()}\n${protocol}\n${jobId}`;
+}
+
+function imagePromptTokens(billing: BuyerRequestBillingEntry | undefined): number {
+  const facts = billing?.requestFacts;
+  return facts?.kind === 'image' ? facts.image.promptTokens ?? 0 : 0;
 }

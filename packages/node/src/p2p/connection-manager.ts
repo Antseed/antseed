@@ -8,6 +8,7 @@ import type {
   DescriptionType as NativeDescriptionType,
 } from "node-datachannel";
 import { type PeerId } from "../types/peer.js";
+import { METADATA_VERSION_HEADER } from "../discovery/peer-metadata.js";
 import { ConnectionState, type ConnectionConfig } from "../types/connection.js";
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -88,11 +89,43 @@ export interface PeerEndpoint {
 }
 
 type TransportMode = "webrtc" | "tcp";
-type MetadataProvider = () => object | null;
+
+/** Reads the metadata version request header from raw HTTP header bytes. */
+export function parseMetadataVersionHeader(headers: Buffer): number | undefined {
+  const text = headers.toString("latin1");
+  const prefix = `${METADATA_VERSION_HEADER}:`;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.length === 0) break;
+    if (line.slice(0, prefix.length).toLowerCase() !== prefix) continue;
+    const value = line.slice(prefix.length).trim();
+    if (!/^\d{1,4}$/.test(value)) return undefined;
+    return Number(value);
+  }
+  return undefined;
+}
+
+/** `requestedVersion` is the newest metadata version the buyer said it understands. */
+type MetadataProvider = (requestedVersion: number | undefined) => object | null;
 
 export interface ConnectionManagerOptions {
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy interop). */
   requireSecureTransport?: boolean;
+  /**
+   * Called with each inbound socket's remote address; returning false answers
+   * the peer with INBOUND_REFUSED_MESSAGE and closes. Default: accept every address.
+   */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /**
+   * Inbound peer connections (buyers that sent an intro or hello) held at once;
+   * past it a new peer is answered with INBOUND_AT_CAPACITY_MESSAGE. Metadata
+   * requests never count against it. Default DEFAULT_MAX_INBOUND_CONNECTIONS.
+   */
+  maxInboundConnections?: number;
+  /**
+   * Inbound sockets accepted from one IP at once. Default DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
+   * raise it for a seller every buyer reaches through one address (a TLS gateway or forwarder).
+   */
+  maxInboundConnectionsPerIp?: number;
 }
 type InitialWireMessage =
   | {
@@ -127,6 +160,14 @@ const LINE_SEPARATOR = "\n";
 const INITIAL_LINE_TIMEOUT_MS = 10_000;
 const MAX_INITIAL_LINE_BYTES = 8 * 1024;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000;
+/**
+ * Most a data channel may hold queued before a send fails the connection. Large
+ * uploads queue far more than SCTP sends at once, so a queued send is normal; only
+ * a channel that stops draining reaches this.
+ */
+const MAX_DATA_CHANNEL_BUFFERED_BYTES = 64 * 1024 * 1024;
+export const INBOUND_REFUSED_MESSAGE = "This seller does not accept connections from your location.";
+export const INBOUND_AT_CAPACITY_MESSAGE = "This seller is at its connection limit. Try again later.";
 const LOCAL_CONNECTION_CAPABILITIES = [
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
@@ -147,6 +188,8 @@ export class PeerConnection extends EventEmitter {
   private _signalingSocket: Socket | null = null;
   private _remoteCapabilities = new Set<string>();
   private _crypto: TransportCrypto | null = null;
+  private _remoteAddress: string | null = null;
+  private _failureReason: Error | null = null;
 
   constructor(config: ConnectionConfig) {
     super();
@@ -157,6 +200,20 @@ export class PeerConnection extends EventEmitter {
 
   get state(): ConnectionState {
     return this._state;
+  }
+
+  /** The error passed to the first fail(), if any. */
+  get failureReason(): Error | null {
+    return this._failureReason;
+  }
+
+  /**
+   * Remote IP of the underlying socket (raw TCP, or the signaling socket for
+   * WebRTC), captured when the socket is attached. Null for connections that
+   * never had a socket attached (tests, unusual transports).
+   */
+  get remoteAddress(): string | null {
+    return this._remoteAddress;
   }
 
   setRemoteCapabilities(capabilities: Iterable<string>): void {
@@ -173,6 +230,7 @@ export class PeerConnection extends EventEmitter {
 
   attachSignalingSocket(socket: Socket): void {
     this._signalingSocket = socket;
+    this._remoteAddress ??= socket.remoteAddress ?? null;
   }
 
   attachDataChannel(channel: NativeDataChannel): void {
@@ -209,6 +267,15 @@ export class PeerConnection extends EventEmitter {
     return this._crypto !== null || this._dataChannel !== null;
   }
 
+  /**
+   * Hex session hash of this encrypted TCP connection, the same on both ends. A TEE seller binds
+   * it into its attestation quote so the buyer knows this connection terminates in the TEE.
+   * Null on WebRTC and plaintext connections.
+   */
+  get channelBinding(): string | null {
+    return this._crypto ? this._crypto.channelBinding.toString("hex") : null;
+  }
+
   get transportDescription(): "webrtc" | "tcp-encrypted" | "tcp-plaintext" {
     if (this._dataChannel !== null) return "webrtc";
     if (this._crypto !== null) return "tcp-encrypted";
@@ -217,6 +284,7 @@ export class PeerConnection extends EventEmitter {
 
   attachRawSocket(socket: Socket, initialData?: Uint8Array, crypto?: TransportCrypto): void {
     this._rawSocket = socket;
+    this._remoteAddress = socket.remoteAddress ?? this._remoteAddress;
     this._crypto = crypto ?? null;
     socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
 
@@ -264,6 +332,7 @@ export class PeerConnection extends EventEmitter {
   }
 
   fail(err: Error): void {
+    this._failureReason ??= err;
     if (this._state !== ConnectionState.Failed && this._state !== ConnectionState.Closed) {
       this.setState(ConnectionState.Failed);
     }
@@ -315,8 +384,9 @@ export class PeerConnection extends EventEmitter {
         this.fail(wrapped);
         throw wrapped;
       }
-      if (!ok) {
-        const err = new Error(`Failed to send data to ${this.remotePeerId}`);
+      // false means the message was queued, not sent yet; it is still delivered.
+      if (!ok && this._dataChannel.bufferedAmount() > MAX_DATA_CHANNEL_BUFFERED_BYTES) {
+        const err = new Error(`Failed to send data to ${this.remotePeerId}: data channel is not draining`);
         this.fail(err);
         throw err;
       }
@@ -398,6 +468,13 @@ export class PeerConnection extends EventEmitter {
   }
 }
 
+/** A `{ type: "refused", reason }` line from a seller, as an Error carrying its reason. */
+function refusalOf(message: unknown): Error | null {
+  const { type, reason } = (message ?? {}) as { type?: unknown; reason?: unknown };
+  if (type !== "refused") return null;
+  return new Error(typeof reason === "string" ? reason.slice(0, 256) : "Connection refused by peer");
+}
+
 function normalizeCapabilities(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const capabilities: string[] = [];
@@ -409,6 +486,24 @@ function normalizeCapabilities(value: unknown): string[] {
   }
   return capabilities;
 }
+
+/**
+ * Inbound sockets a listener accepts from one IP. A buyer node holds one
+ * connection per buyer identity per seller, so a gateway with many identities
+ * opens many connections from the same address.
+ */
+export const DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+/**
+ * Inbound peer connections a listener holds at once by default. A buyer keeps
+ * its connection open between requests, so a busy seller holds one per active buyer.
+ */
+export const DEFAULT_MAX_INBOUND_CONNECTIONS = 2048;
+/**
+ * Inbound sockets not yet known to be a peer: waiting for their first line, or
+ * answering a metadata request. Both end within seconds, so this stays small
+ * however many peers are connected.
+ */
+const MAX_PENDING_INBOUND_SOCKETS = 256;
 
 /** Manages all peer connections and optional inbound listening. */
 export class ConnectionManager extends EventEmitter {
@@ -422,7 +517,12 @@ export class ConnectionManager extends EventEmitter {
   private _transportMode: TransportMode;
   private _metadataProvider: MetadataProvider | null = null;
   private _requireSecureTransport: boolean;
+  private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
+  private readonly _maxInboundConnections: number;
+  private readonly _maxInboundConnectionsPerIp: number;
+  private _pendingInboundSockets = new Set<Socket>();
+  private _inboundPeerSockets = new Set<Socket>();
   private readonly _introReplayGuard = new NonceReplayGuard();
   private static _knownEndpoints = new Map<PeerId, PeerEndpoint>();
   private static _detectedTransportMode: TransportMode | null = null;
@@ -432,6 +532,9 @@ export class ConnectionManager extends EventEmitter {
     this._iceConfig = iceConfig ?? getDefaultIceConfig();
     this._transportMode = ConnectionManager._detectTransportMode();
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
+    this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
+    this._maxInboundConnections = options?.maxInboundConnections ?? DEFAULT_MAX_INBOUND_CONNECTIONS;
+    this._maxInboundConnectionsPerIp = options?.maxInboundConnectionsPerIp ?? DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -503,9 +606,14 @@ export class ConnectionManager extends EventEmitter {
     }
 
     this._server = net.createServer((socket) => {
+      if (this._pendingInboundSockets.size >= MAX_PENDING_INBOUND_SOCKETS) {
+        socket.destroy();
+        return;
+      }
       const ip = socket.remoteAddress ?? 'unknown';
+      const refused = Boolean(this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress));
       const current = this._ipConnectionCounts.get(ip) ?? 0;
-      if (current >= 10) {
+      if (current >= this._maxInboundConnectionsPerIp) {
         socket.destroy();
         return;
       }
@@ -513,7 +621,10 @@ export class ConnectionManager extends EventEmitter {
       // Keepalive set here for all inbound sockets (WebRTC signaling + TCP).
       // TCP ("intro") sockets will have it re-applied in attachRawSocket — harmless.
       socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
+      this._pendingInboundSockets.add(socket);
       socket.once('close', () => {
+        this._pendingInboundSockets.delete(socket);
+        this._inboundPeerSockets.delete(socket);
         const count = this._ipConnectionCounts.get(ip) ?? 1;
         if (count <= 1) {
           this._ipConnectionCounts.delete(ip);
@@ -521,10 +632,8 @@ export class ConnectionManager extends EventEmitter {
           this._ipConnectionCounts.set(ip, count - 1);
         }
       });
-      this._handleInboundSocket(socket);
+      this._handleInboundSocket(socket, refused);
     });
-
-    this._server.maxConnections = 256;
 
     await new Promise<void>((resolve, reject) => {
       this._server!.once("error", reject);
@@ -757,6 +866,12 @@ export class ConnectionManager extends EventEmitter {
           socket.destroy();
           return;
         }
+        const refusal = refusalOf(ack);
+        if (refusal) {
+          conn.fail(refusal);
+          socket.destroy();
+          return;
+        }
 
         const verified = verifyTcpEncAck({
           ack,
@@ -834,7 +949,7 @@ export class ConnectionManager extends EventEmitter {
     socket.on("data", onData);
   }
 
-  private _handleInboundSocket(socket: Socket): void {
+  private _handleInboundSocket(socket: Socket, refused = false): void {
     let buffer = Buffer.alloc(0);
     const timeout = setTimeout(() => {
       socket.destroy();
@@ -866,7 +981,12 @@ export class ConnectionManager extends EventEmitter {
 
       // Detect HTTP requests (metadata endpoint served on signaling port)
       if (line.startsWith("GET ") || line.startsWith("HEAD ")) {
-        this._serveHttpMetadata(socket, line);
+        this._serveHttpMetadata(socket, line, refused, remaining);
+        return;
+      }
+
+      if (refused) {
+        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_REFUSED_MESSAGE }) + LINE_SEPARATOR);
         return;
       }
 
@@ -896,6 +1016,15 @@ export class ConnectionManager extends EventEmitter {
         socket.destroy();
         return;
       }
+
+      // Peers are counted apart from pending sockets, so a full house of buyers never blocks metadata requests.
+      // A peer that is already connected replaces its old connection when accepted, so it needs no new slot.
+      if (this._inboundPeerSockets.size >= this._maxInboundConnections && !this._hasLiveConnection(verified.peerId)) {
+        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_AT_CAPACITY_MESSAGE }) + LINE_SEPARATOR);
+        return;
+      }
+      this._pendingInboundSockets.delete(socket);
+      this._inboundPeerSockets.add(socket);
 
       const remoteCapabilities = normalizeCapabilities(intro.capabilities);
 
@@ -941,40 +1070,69 @@ export class ConnectionManager extends EventEmitter {
     });
   }
 
-  private _serveHttpMetadata(socket: Socket, requestLine: string): void {
+  private _hasLiveConnection(peerId: PeerId): boolean {
+    const existing = this._connections.get(peerId);
+    return existing !== undefined && existing.state !== ConnectionState.Closed && existing.state !== ConnectionState.Failed;
+  }
+
+  private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean, initialData: Buffer): void {
     const MAX_HEADER_SIZE = 8 * 1024; // 8KB
-    let headerBytes = 0;
-    const headerTimeout = setTimeout(() => {
-      socket.destroy();
-    }, 5_000);
+    let headers = initialData;
+    let responded = false;
+    const respond = (): void => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(headerTimeout);
+      socket.off("data", onData);
+      this._sendHttpMetadataResponse(socket, requestLine, refused, parseMetadataVersionHeader(headers));
+    };
+    const headersComplete = (): boolean =>
+      headers.includes(Buffer.from("\r\n\r\n")) || headers.includes(Buffer.from("\n\n"))
+      // A request with no headers ends right after the request line.
+      || headers.subarray(0, 2).toString("latin1") === "\r\n" || headers.subarray(0, 1).toString("latin1") === "\n";
+    // Clients that never finish their headers still get the legacy document.
+    const headerTimeout = setTimeout(respond, 2_000);
 
     const onData = (chunk: Buffer): void => {
-      headerBytes += chunk.length;
-      if (headerBytes > MAX_HEADER_SIZE) {
+      headers = Buffer.concat([headers, chunk]);
+      if (headers.length > MAX_HEADER_SIZE) {
+        responded = true;
         clearTimeout(headerTimeout);
         socket.off("data", onData);
         socket.destroy();
         return;
       }
-      if (chunk.includes(Buffer.from("\r\n\r\n")) || chunk.includes(Buffer.from("\n\n"))) {
-        clearTimeout(headerTimeout);
-        socket.off("data", onData);
-      }
+      if (headersComplete()) respond();
     };
     socket.on("data", onData);
+    if (headers.length > MAX_HEADER_SIZE) {
+      onData(Buffer.alloc(0));
+      return;
+    }
+    if (headersComplete()) respond();
+  }
 
+  private _sendHttpMetadataResponse(
+    socket: Socket,
+    requestLine: string,
+    refused: boolean,
+    requestedVersion: number | undefined,
+  ): void {
     const url = requestLine.split(" ")[1] ?? "";
     let statusLine: string;
     let body: string;
 
-    if (url !== "/metadata") {
+    if (refused) {
+      statusLine = "403 Forbidden";
+      body = JSON.stringify({ error: INBOUND_REFUSED_MESSAGE });
+    } else if (url !== "/metadata") {
       statusLine = "404 Not Found";
       body = JSON.stringify({ error: "not found" });
     } else if (!this._metadataProvider) {
       statusLine = "503 Service Unavailable";
       body = JSON.stringify({ error: "metadata not available" });
     } else {
-      const metadata = this._metadataProvider();
+      const metadata = this._metadataProvider(requestedVersion);
       if (!metadata) {
         statusLine = "503 Service Unavailable";
         body = JSON.stringify({ error: "metadata not available" });
@@ -1250,6 +1408,11 @@ export class ConnectionManager extends EventEmitter {
 
         try {
           const parsed = JSON.parse(line) as SignalingMessage;
+          const refusal = refusalOf(parsed);
+          if (refusal) {
+            onError(refusal);
+            return;
+          }
           onMessage(parsed);
         } catch (err) {
           onError(err instanceof Error ? err : new Error(String(err)));

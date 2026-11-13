@@ -42,6 +42,8 @@ export async function ensureDerivedIdentityDisplayName(input: {
   config: AntseedConfig;
   configPath: string;
   dataDir: string;
+  /** Persists the derived name; by default the whole config is saved to `configPath`. */
+  save?: (displayName: string) => Promise<void>;
 }): Promise<string> {
   if (!shouldDeriveDisplayName(input.config.identity.displayName)) {
     return input.config.identity.displayName.trim();
@@ -50,6 +52,7 @@ export async function ensureDerivedIdentityDisplayName(input: {
   const identity = await loadOrCreateIdentity(input.dataDir);
   const displayName = deriveDisplayNameFromPeerId(identity.peerId);
   input.config.identity.displayName = displayName;
-  await saveConfig(input.configPath, input.config);
+  if (input.save) await input.save(displayName);
+  else await saveConfig(input.configPath, input.config);
   return displayName;
 }

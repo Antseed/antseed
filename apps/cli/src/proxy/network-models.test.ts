@@ -1,9 +1,100 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PeerInfo } from '@antseed/node'
-import { buildNetworkModels, normalizedModelReputationScore, parseModelTypeFilter } from './network-models.js'
+import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
+import { buildNetworkModels, parseModelTypeFilter } from './network-models.js'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
+import { findAdvertisedServiceOffer } from './routing.js'
 
 const NOW_MS = 1_700_000_000_000
+
+test('network model offers preserve advertised verifiers without inferring support', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const teePeer = makePeer({ peerId: 'a'.repeat(40), providers: ['openai'], providerPricing, capabilities: ['verifier.antseed-verifier'] })
+  const legacyPeer = makePeer({ peerId: 'b'.repeat(40), providers: ['openai'], providerPricing })
+  const peers = [
+    teePeer,
+    legacyPeer,
+  ]
+  const [model] = buildNetworkModels(peers, NOW_MS)
+  assert.ok(model)
+  assert.deepEqual(model.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, ['antseed-verifier'])
+  assert.deepEqual(model.peers.find((peer) => peer.peerId === legacyPeer.peerId)?.advertisedVerifierIds, [])
+  // A buyer that checks attestations lists the TEE verifier only for sellers that passed.
+  const unproven = buildNetworkModels(peers, NOW_MS, { teeScope: () => null })[0]
+  assert.deepEqual(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.advertisedVerifierIds, [])
+  assert.equal(unproven?.peers.find((peer) => peer.peerId === teePeer.peerId)?.teeScope, undefined)
+  const proven = buildNetworkModels(peers, NOW_MS, { teeScope: (peer) => (peer.peerId === teePeer.peerId ? 'seller-node' : null) })[0]
+  const provenPeer = proven?.peers.find((peer) => peer.peerId === teePeer.peerId)
+  assert.deepEqual(provenPeer?.advertisedVerifierIds, ['antseed-verifier'])
+  assert.equal(provenPeer?.teeScope, 'seller-node')
+  teePeer.capabilities = []
+  assert.deepEqual(buildNetworkModels(peers, NOW_MS)[0]?.peers[0]?.advertisedVerifierIds, [])
+})
+
+test('network model offers carry the free-tier program they are served under', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'kimi-k3')]
+  const providerPricing = {
+    openai: {
+      defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      services: { 'kimi-k3': { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 }, 'paid-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, 'free-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+    },
+  }
+  const models = buildNetworkModels([makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing, capabilities })], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.deepEqual(offer('kimi-k3')?.freeTier, allowance)
+  // The seller-wide program covers free models only.
+  assert.deepEqual(offer('free-model')?.freeTier, sellerWide)
+  assert.equal(offer('paid-model')?.freeTier, undefined)
+})
+
+test('network model offers carry the seller\'s last self health check and leave out failing ones', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const healthy = makePeer({
+    peerId: 'a'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' } } } },
+  })
+  const failing = makePeer({
+    peerId: 'b'.repeat(40), providers: ['openai'], providerPricing,
+    providerServiceHealth: { openai: { services: { 'gpt-test': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } },
+  })
+  const silent = makePeer({ peerId: 'c'.repeat(40), providers: ['openai'], providerPricing })
+  const [model] = buildNetworkModels([healthy, failing, silent], NOW_MS)
+  assert.deepEqual(model?.peers.map((offer) => offer.peerId).sort(), [healthy.peerId, silent.peerId])
+  assert.deepEqual(model?.peers.find((offer) => offer.peerId === healthy.peerId)?.health, { status: 'healthy', checkedAt: NOW_MS - 60_000, source: 'traffic' })
+  assert.equal(model?.peers.find((offer) => offer.peerId === silent.peerId)?.health, undefined)
+})
+
+test('network model offers carry the performance the seller measured', () => {
+  const providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, firstTokenMsP90: 1250, tokensPerSecondP50: 78 }
+  const seller = makePeer({ peerId: 'a'.repeat(40), providers: ['openai'], providerPricing, providerServicePerformance: { openai: { services: { 'gpt-test': performance } } } })
+  assert.deepEqual(buildNetworkModels([seller], NOW_MS)[0]?.peers[0]?.performance, performance)
+})
+
+test('paid image and video offers never inherit the seller-wide program, and paid video has no allowance', () => {
+  const sellerWide = { base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const allowance = { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000 }, stakeTiers: [] }
+  const capabilities = [...encodeFreeTierCapabilities(sellerWide), ...encodeFreeTierCapabilities(allowance, 'paid-video')]
+  const images = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.01 }] }
+  const video = { version: 1 as const, components: [{ unit: 'video_generations' as const, priceUsd: 0.4 }] }
+  const peer = makePeer({
+    peerId: 'd'.repeat(40),
+    providers: ['fal'],
+    providerPricing: { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceApiProtocols: { fal: { services: { 'paid-image': ['openai-images'], 'paid-video': ['fal-video'] } } },
+    providerServiceUnitBillingModels: { fal: { services: { 'paid-image': { 'openai-images': images }, 'paid-video': { 'fal-video': video } } } },
+    capabilities,
+  })
+  const models = buildNetworkModels([peer], NOW_MS)
+  const offer = (id: string) => models.find((model) => model.id === id)?.peers[0]
+  assert.ok(offer('paid-image'))
+  assert.equal(offer('paid-image')?.freeTier, undefined)
+  // Video is paid through one-off channels, so even its own allowance is never honoured.
+  assert.ok(offer('paid-video'))
+  assert.equal(offer('paid-video')?.freeTier, undefined)
+})
 
 function makePeer(overrides: Omit<Partial<PeerInfo>, 'peerId'> & { peerId: string }): PeerInfo {
   return {
@@ -17,7 +108,6 @@ function makePeer(overrides: Omit<Partial<PeerInfo>, 'peerId'> & { peerId: strin
 const textSeller = makePeer({
   peerId: 'a'.repeat(40),
   displayName: 'Text Seller',
-  onChainTrustScore: 40,
   onChainReputationScore: 35,
   providerPricing: {
     openai: {
@@ -34,7 +124,6 @@ const textSeller = makePeer({
 
 const imageSeller = makePeer({
   peerId: 'b'.repeat(40),
-  onChainTrustScore: 80,
   onChainReputationScore: 75,
   providerPricing: {
     openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
@@ -63,7 +152,6 @@ const imageSeller = makePeer({
 // image model identified only via capability outputs — no protocol announced.
 const mixedSeller = makePeer({
   peerId: 'c'.repeat(40),
-  onChainTrustScore: 90,
   onChainReputationScore: 85,
   providerPricing: {
     'local-llm': { defaults: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 0.7 } },
@@ -85,6 +173,26 @@ test('parseModelTypeFilter maps query values', () => {
   assert.equal(parseModelTypeFilter('Image'), 'image')
   assert.equal(parseModelTypeFilter('text'), 'text')
   assert.equal(parseModelTypeFilter('audio'), 'invalid')
+  assert.equal(parseModelTypeFilter('speech'), 'speech')
+  assert.equal(parseModelTypeFilter('TTS'), 'speech')
+})
+
+test('lists speech models with the voices every offer accepts', () => {
+  const speechSeller = (peerId: string, voices: string[]): PeerInfo => ({
+    peerId,
+    lastSeen: NOW_MS,
+    providers: ['openai'],
+    providerServiceApiProtocols: { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } },
+    providerServiceCapabilities: { openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } } },
+    providerServiceUnitBillingModels: { openai: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000035 }] } } } } },
+  } as unknown as PeerInfo)
+  const [model] = buildNetworkModels([speechSeller('a'.repeat(40), ['af_sky', 'am_adam']), speechSeller('b'.repeat(40), ['af_sky'])], NOW_MS)
+  assert.ok(model)
+  assert.equal(model.type, 'speech')
+  assert.deepEqual(model.supported_protocols, ['openai-audio-speech'])
+  assert.deepEqual(model.voices, ['af_sky'])
+  assert.deepEqual(model.peers.map((peer) => peer.capabilities?.speech?.voices), [['af_sky', 'am_adam'], ['af_sky']])
+  assert.equal(model.peers[0]!.inputUsdPerMillion, undefined)
 })
 
 test('aggregates one entry per model id across peers, case-insensitively', () => {
@@ -101,17 +209,16 @@ test('aggregates one entry per model id across peers, case-insensitively', () =>
   // The missing cached-price penalty reduces reputation without forcing the
   // stronger peer behind a substantially weaker complete offer.
   assert.deepEqual(qwen.peers.map((peer) => peer.peerId), [mixedSeller.peerId, textSeller.peerId])
-  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [90, 40])
+  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [85, 35])
   assert.deepEqual(qwen.peers.map((peer) => peer.effectiveReputationScore), [42.5, 35])
-  assert.deepEqual(qwen.peers.map((peer) => peer.onChainTrustScore), [90, 40])
   assert.deepEqual(qwen.peers.map((peer) => peer.onChainReputationScore), [85, 35])
   assert.deepEqual(qwen.peers.map((peer) => peer.serviceId), ['QWEN3-Coder', 'qwen3-coder'])
 })
 
-test('sorts by normalized on-chain reputation like desktop VPR', () => {
+test('sorts by the buyer trust score, falling back to the seller-reported score', () => {
   const reputationOnlySeller = makePeer({
     peerId: 'f'.repeat(40),
-    onChainReputationScore: 95,
+    reputationScore: 95,
     providerServiceApiProtocols: {
       openai: { services: { 'qwen3-coder': ['openai-chat-completions'] } },
     },
@@ -121,8 +228,27 @@ test('sorts by normalized on-chain reputation like desktop VPR', () => {
   const qwen = models.find((model) => model.id === 'QWEN3-Coder')
   assert.ok(qwen)
   assert.deepEqual(qwen.peers.map((peer) => peer.peerId), [reputationOnlySeller.peerId, mixedSeller.peerId])
-  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [95, 90])
-  assert.deepEqual(qwen.peers.map((peer) => peer.onChainTrustScore), [null, 90])
+  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [95, 85])
+  assert.deepEqual(qwen.peers.map((peer) => peer.onChainReputationScore), [null, 85])
+})
+
+test('the buyer trust score wins over a seller-reported score', () => {
+  const boastful = makePeer({
+    peerId: 'e'.repeat(40),
+    reputationScore: 100,
+    onChainReputationScore: 12,
+    trust: { score: 12, history: null, usage: null, power: null, identity: { score: 12, kind: 'domain', claim: 'example.com' }, freeModels: null, washFlagged: null },
+    providerServiceApiProtocols: {
+      openai: { services: { 'qwen3-coder': ['openai-chat-completions'] } },
+    },
+  })
+
+  const models = buildNetworkModels([boastful, mixedSeller], NOW_MS)
+  const qwen = models.find((model) => model.aliases.includes('qwen3-coder'))
+  assert.ok(qwen)
+  assert.deepEqual(qwen.peers.map((peer) => peer.peerId), [mixedSeller.peerId, boastful.peerId])
+  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [85, 12])
+  assert.deepEqual(qwen.peers.map((peer) => peer.onChainReputationScore), [85, 12])
 })
 
 test('sorts /models peers with the configured Price + Trust preferences', () => {
@@ -208,35 +334,39 @@ test('returns null reputation and sorts unknown scores last', () => {
   const qwen = models.find((model) => model.id === 'qwen3-coder')
   assert.ok(qwen)
   assert.deepEqual(qwen.peers.map((peer) => peer.peerId), [textSeller.peerId, unknownSeller.peerId])
-  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [40, null])
+  assert.deepEqual(qwen.peers.map((peer) => peer.reputationScore), [35, null])
 })
 
-test('derives on-chain reputation from raw persisted stats', () => {
+test('never re-scores from raw on-chain stats; the node-assigned score is authoritative', () => {
+  // Raw signals without a node-assigned score stay unscored in the catalog:
+  // scoring happens once, in the node, not in every consumer.
   const peer = makePeer({
     peerId: '9'.repeat(40),
     providers: ['claude-oauth'],
     providerServiceApiProtocols: {
       'claude-oauth': { services: { 'claude-opus-4-6': ['anthropic-messages'] } },
     },
-    onChainStakeUsdcMicros: 2_000_000,
     onChainChannelCount: 20,
     onChainGhostCount: 0,
     onChainTotalVolumeUsdcMicros: 100_000_000,
-    onChainLastSettledAtSec: Math.floor((NOW_MS - 60_000) / 1000),
-    onChainStakedAtSec: Math.floor((NOW_MS - 40 * 86_400_000) / 1000),
+    onChainUsageEpoch: 22,
+    onChainUsageShareBps: 5_000,
+    onChainPoolPowerShareBps: 5_000,
+    onChainWashFlagged: false,
   })
 
   const [model] = buildNetworkModels([peer], NOW_MS)
   const [offer] = model?.peers ?? []
   assert.ok(offer)
-  assert.ok((offer.onChainReputationScore ?? 0) > 0)
-  assert.equal(offer.reputationScore, offer.onChainReputationScore)
+  assert.equal(offer.onChainReputationScore, null)
+  assert.equal(offer.reputationScore, null)
+  assert.equal(offer.effectiveReputationScore, null)
 })
 
 test('cached-input pricing penalty can change a close reputation ranking', () => {
   const priced = makePeer({
     peerId: '1'.repeat(40),
-    onChainTrustScore: 75,
+    onChainReputationScore: 75,
     providerPricing: {
       openai: {
         defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 },
@@ -251,7 +381,7 @@ test('cached-input pricing penalty can change a close reputation ranking', () =>
   })
   const unpriced = makePeer({
     peerId: '2'.repeat(40),
-    onChainTrustScore: 90,
+    onChainReputationScore: 90,
     providerPricing: {
       openai: {
         defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
@@ -269,10 +399,9 @@ test('cached-input pricing penalty can change a close reputation ranking', () =>
   assert.ok((model?.peers[0]?.effectiveReputationScore ?? 0) > (model?.peers[1]?.effectiveReputationScore ?? 0))
 })
 
-test('cached-input penalty uses normalized reputation instead of raw trust', () => {
+test('cached-input penalty applies to the fractional trust score as-is', () => {
   const flash = makePeer({
     peerId: '3'.repeat(40),
-    onChainTrustScore: 10_425.074,
     onChainReputationScore: 99.93,
     providerServiceApiProtocols: {
       'claude-oauth': { services: { 'claude-opus-4-6': ['anthropic-messages'] } },
@@ -280,7 +409,6 @@ test('cached-input penalty uses normalized reputation instead of raw trust', () 
   })
   const venice = makePeer({
     peerId: '4'.repeat(40),
-    onChainTrustScore: 5_428.609,
     onChainReputationScore: 90.31,
     providerPricing: {
       'claude-oauth': {
@@ -304,7 +432,6 @@ test('cached-input penalty uses normalized reputation instead of raw trust', () 
 test('cached-input pricing penalty does not bury a substantially stronger peer', () => {
   const priced = makePeer({
     peerId: '5'.repeat(40),
-    onChainTrustScore: 20,
     onChainReputationScore: 20,
     providerPricing: {
       openai: {
@@ -320,7 +447,6 @@ test('cached-input pricing penalty does not bury a substantially stronger peer',
   })
   const unpriced = makePeer({
     peerId: '6'.repeat(40),
-    onChainTrustScore: 100,
     onChainReputationScore: 100,
     providerServiceApiProtocols: {
       openai: { services: { 'cache-model': ['openai-chat-completions'] } },
@@ -335,14 +461,14 @@ test('cached-input pricing penalty does not bury a substantially stronger peer',
 test('keeps reputation ordering when no offer reports cached-input pricing', () => {
   const lower = makePeer({
     peerId: '3'.repeat(40),
-    onChainTrustScore: 20,
+    onChainReputationScore: 20,
     providerServiceApiProtocols: {
       openai: { services: { 'no-cache-model': ['openai-chat-completions'] } },
     },
   })
   const higher = makePeer({
     peerId: '4'.repeat(40),
-    onChainTrustScore: 100,
+    onChainReputationScore: 100,
     providerServiceApiProtocols: {
       openai: { services: { 'no-cache-model': ['openai-chat-completions'] } },
     },
@@ -352,8 +478,64 @@ test('keeps reputation ordering when no offer reports cached-input pricing', () 
   assert.deepEqual(model?.peers.map((peer) => peer.peerId), [higher.peerId, lower.peerId])
   assert.deepEqual(
     model?.peers.map((peer) => peer.effectiveReputationScore),
-    [normalizedModelReputationScore(higher, NOW_MS), normalizedModelReputationScore(lower, NOW_MS)],
+    [normalizedModelReputationScore(higher), normalizedModelReputationScore(lower)],
   )
+})
+
+test('a live DIFF verdict cuts the service reputation to 10% even without cached-input pricing', () => {
+  const pricing = (services: string[]) => ({
+    openai: {
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      services: Object.fromEntries(services.map((service) => [service, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }])),
+    },
+  })
+  const flagged = makePeer({
+    peerId: '7'.repeat(40),
+    onChainReputationScore: 90,
+    onChainDiffServices: ['diff-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
+    providerPricing: pricing(['diff-model', 'other-model']),
+  })
+  const clean = makePeer({
+    peerId: '8'.repeat(40),
+    onChainReputationScore: 40,
+    providerPricing: pricing(['diff-model']),
+  })
+
+  const models = buildNetworkModels([flagged, clean], NOW_MS)
+  const diffModel = models.find((model) => model.id === 'diff-model')
+  assert.deepEqual(diffModel?.peers.map((peer) => peer.peerId), [clean.peerId, flagged.peerId])
+  assert.ok(Math.abs((diffModel?.peers[1]?.effectiveReputationScore ?? 0) - 9) < 1e-9)
+  // The raw score is unchanged; only the effective one is cut.
+  assert.equal(diffModel?.peers[1]?.reputationScore, 90)
+  // Per service: the seller's other service keeps its full reputation.
+  assert.equal(models.find((model) => model.id === 'other-model')?.peers[0]?.effectiveReputationScore, 90)
+  // A DIFF list from a read 15 minutes old or more (the contract has been unreadable since) no longer cuts.
+  const stale = buildNetworkModels([flagged, clean], NOW_MS + 15 * 60_000)
+  assert.equal(stale.find((model) => model.id === 'diff-model')?.peers.find((peer) => peer.peerId === flagged.peerId)?.effectiveReputationScore, 90)
+})
+
+test('a live DIFF verdict compounds with the missing cached-input penalty', () => {
+  const flagged = makePeer({
+    peerId: '9'.repeat(40),
+    onChainReputationScore: 100,
+    onChainDiffServices: ['cache-model'],
+    onChainVerificationFetchedAt: NOW_MS - 60_000,
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+    },
+  })
+  const cached = makePeer({
+    peerId: 'a'.repeat(40),
+    onChainReputationScore: 50,
+    providerPricing: {
+      openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 }, services: { 'cache-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2 } } },
+    },
+  })
+
+  const model = buildNetworkModels([flagged, cached], NOW_MS)[0]
+  const offer = model?.peers.find((peer) => peer.peerId === flagged.peerId)
+  assert.ok(Math.abs((offer?.effectiveReputationScore ?? 0) - 5) < 1e-9)
 })
 
 test('merges conservative family aliases while preserving advertised service ids', () => {
@@ -772,6 +954,21 @@ test('type filter splits text and image models', () => {
   assert.deepEqual(text.map((model) => model.id), ['qwen3-coder'])
 })
 
+test('decision models are typed from the typesafe-systemone protocol', () => {
+  const decision = makePeer({
+    peerId: '6'.repeat(40),
+    providerServiceApiProtocols: {
+      typesafe: { services: { 'jev-latest': ['typesafe-systemone'] } },
+    },
+  })
+  const models = buildNetworkModels([textSeller, decision], NOW_MS)
+  const jev = models.find((model) => model.id === 'jev-latest')
+  assert.equal(jev?.type, 'decision')
+  assert.deepEqual(jev?.supported_protocols, ['typesafe-systemone'])
+  assert.equal(parseModelTypeFilter('decisions'), 'decision')
+  assert.equal(parseModelTypeFilter('decision'), 'decision')
+})
+
 test('returns an empty list when no peers are discovered', () => {
   assert.deepEqual(buildNetworkModels([], NOW_MS), [])
 })
@@ -793,4 +990,30 @@ test('keeps a canonically merged model text-routable when any peer serves text',
   const [model] = buildNetworkModels([image, text], NOW_MS)
   assert.equal(model?.type, 'text')
   assert.deepEqual(model?.peers.map((peer) => peer.type).sort(), ['image', 'text'])
+})
+test('native video protocols are discoverable separately from text models', () => {
+  const peer = makePeer({ peerId: 'a'.repeat(40), providers: ['venice'] })
+  peer.providerServiceApiProtocols = { venice: { services: { 'wan-2.5': ['venice-video'] } } }
+  peer.providerPricing = { venice: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } }
+  peer.providerServiceCapabilities = { venice: { services: { 'wan-2.5': { video: { durationsSeconds: [5, 10], resolutions: ['1080p'] } } } } }
+  peer.providerServiceUnitBillingModels = { venice: { services: { 'wan-2.5': { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } }
+  const models = buildNetworkModels([peer], NOW_MS)
+  assert.equal(models.find(model => model.id === 'wan-2.5')?.type, 'video')
+  assert.equal(parseModelTypeFilter('videos'), 'video')
+  assert.equal(models[0]?.peers[0]?.inputUsdPerMillion, undefined)
+  assert.equal(models[0]?.peers[0]?.unitBillingModels?.['venice-video']?.components[0]?.priceUsd, 0.1)
+  assert.deepEqual(models[0]?.peers[0]?.capabilities?.video, { durationsSeconds: [5, 10], resolutions: ['1080p'] })
+})
+
+test('fal endpoints that share a trailing segment stay separate models and routes', () => {
+  const ids = { 'bytedance/seedance-2.5/text-to-video': 0.27, 'xai/grok-imagine-video/v1.5/lite/text-to-video': 0.02 }
+  const peer = makePeer({ peerId: 'a'.repeat(40), providers: ['fal'] })
+  peer.providerPricing = { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } }
+  peer.providerServiceApiProtocols = { fal: { services: Object.fromEntries(Object.keys(ids).map(id => [id, ['fal-video']])) } }
+  peer.providerServiceUnitBillingModels = { fal: { services: Object.fromEntries(Object.entries(ids).map(([id, priceUsd]) => [
+    id, { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd }] } },
+  ])) } }
+  const models = buildNetworkModels([peer], NOW_MS)
+  assert.deepEqual(models.map(model => model.id).sort(), Object.keys(ids).sort())
+  assert.equal(findAdvertisedServiceOffer(peer, 'fal', 'bytedance/seedance-2.5/text-to-video')?.serviceId, 'bytedance/seedance-2.5/text-to-video')
 })

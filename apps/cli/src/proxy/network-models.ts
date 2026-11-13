@@ -8,10 +8,10 @@
 import {
   buildNetworkServiceOffers,
   compareEffectiveModelReputation,
-  computeOnChainReputationScore,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   modelRouteTotalPrice,
-  normalizedModelReputationScore as normalizeModelReputationScore,
+  normalizedModelReputationScore,
   rankModelRoutes,
   selectLowestPricedCanonicalOffers,
   type CatalogServiceCapabilities,
@@ -21,12 +21,20 @@ import {
   type PeerInfo,
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
+import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
+import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
+import type { RouterOptionSpec } from '@antseed/router-core'
+import { TEE_VERIFIER_ID, type TeeScope } from '@antseed/node/tee-status'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
-export type NetworkModelType = 'text' | 'image'
+export type NetworkModelType = NetworkServiceOffer['type']
 
 export type NetworkModelPeerOffer = {
+  unitBillingModels?: NetworkServiceOffer['unitBillingModels']
+  advertisedVerifierIds?: string[]
+  /** For a proven TEE seller: whether its model provider is attested too (`end-to-end`) or only the seller (`seller-node`). */
+  teeScope?: TeeScope
   peerId: string
   displayName?: string
   provider: string
@@ -38,13 +46,21 @@ export type NetworkModelPeerOffer = {
   categories?: string[]
   reputationScore: number | null
   effectiveReputationScore: number | null
-  onChainTrustScore: number | null
   onChainReputationScore: number | null
   inputUsdPerMillion?: number
   outputUsdPerMillion?: number
   cachedInputUsdPerMillion?: number
   minImageUsdPerImage?: number
   maxImageUsdPerImage?: number
+  /**
+   * The seller's free-tier program for this offer: on a free offer its limit,
+   * on a priced one the free allowance before the listed price applies.
+   */
+  freeTier?: FreeTierProgram
+  /** The seller's last announced self health check for this offer; failing offers are not listed. */
+  health?: ServiceHealth
+  /** How the offer served the seller's buyers in the last hour, as the seller measured it. */
+  performance?: ServicePerformance
 }
 
 export type NetworkModelCapabilityCoverage = {
@@ -80,11 +96,38 @@ export type NetworkModelEntry = {
     structured_output?: boolean
   }
   supported_parameters?: string[]
+  /** Speech models: voices every listed offer accepts (each offer lists its own under `capabilities.speech`). */
+  voices?: string[]
   capability_coverage: NetworkModelCapabilityCoverage
   peers: NetworkModelPeerOffer[]
 }
 
-export type ModelTypeFilter = 'all' | NetworkModelType | 'invalid'
+export type ModelTypeFilter = 'all' | NetworkModelType | 'router' | 'invalid'
+
+/** A routing service, listed under `?type=router`: pin it as `<peerId>@<id>` to have it pick the model. */
+export type NetworkRouterEntry = {
+  id: string
+  name: string
+  object: 'model'
+  created: number
+  owned_by: 'antseed'
+  type: 'router'
+  peers: Array<{
+    peerId: string
+    displayName?: string
+    provider: string
+    serviceId: string
+    /** The routing protocol this router speaks, e.g. `irp-suggest`. */
+    protocol: RoutingProtocol
+    /** Settings the router accepts in a request's `routing` object, by its protocol. */
+    options: readonly RouterOptionSpec[]
+    /** The `model` to send to use this router. */
+    model: string
+    priceUsdPerRequest: number | null
+    /** Models this router can rank, by service id; null when its model list is unavailable. */
+    models: string[] | null
+  }>
+}
 
 export type NetworkModelBuildOptions = {
   routingPreferences?: ModelRoutingPreferences | null
@@ -92,6 +135,25 @@ export type NetworkModelBuildOptions = {
     cooldownUntil?: number | null
     failureStreak?: number | null
   }>
+  /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
+  offerFilter?: (offer: NetworkServiceOffer) => boolean
+  /** How far a seller's passed TEE attestation reaches (null when none passed); the others' offers don't list the TEE verifier. */
+  teeScope?: (peer: PeerInfo) => TeeScope | null
+  /** `buildNetworkServiceOffers(peers)`, when the caller already built it. */
+  offers?: NetworkServiceOffer[]
+}
+
+/** The offer's verifier list and TEE scope: the TEE verifier stays listed only for a seller whose attestation passed. */
+function teeFields(
+  offer: NetworkServiceOffer,
+  peer: PeerInfo | undefined,
+  scopeOf: NetworkModelBuildOptions['teeScope'],
+): Pick<NetworkModelPeerOffer, 'advertisedVerifierIds' | 'teeScope'> {
+  if (!scopeOf || !offer.advertisedVerifierIds?.includes(TEE_VERIFIER_ID)) return { advertisedVerifierIds: offer.advertisedVerifierIds }
+  const scope = peer ? scopeOf(peer) : null
+  return scope
+    ? { advertisedVerifierIds: offer.advertisedVerifierIds, teeScope: scope }
+    : { advertisedVerifierIds: offer.advertisedVerifierIds.filter((id) => id !== TEE_VERIFIER_ID) }
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -101,22 +163,10 @@ function normalizedModelAlias(serviceId: string): string {
   return value.replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
-function onChainReputationScore(peer: PeerInfo | undefined, nowMs: number): number | null {
-  if (!peer) return null
-  const score = peer.onChainReputationScore ?? computeOnChainReputationScore(peer, nowMs)
+/** Buyer trust score as set by the node (0-100), or `null` when unscored. */
+function onChainReputationScore(peer: PeerInfo | undefined): number | null {
+  const score = peer?.onChainReputationScore
   return typeof score === 'number' && Number.isFinite(score) ? score : null
-}
-
-function legacyPeerReputationScore(peer: PeerInfo, nowMs: number): number | null {
-  const score = peer.onChainTrustScore ?? peer.onChainReputationScore ?? computeOnChainReputationScore(peer, nowMs)
-  return typeof score === 'number' && Number.isFinite(score) ? score : null
-}
-
-export function normalizedModelReputationScore(peer: PeerInfo, nowMs: number = Date.now()): number | null {
-  return normalizeModelReputationScore({
-    ...peer,
-    onChainReputationScore: peer.onChainReputationScore ?? computeOnChainReputationScore(peer, nowMs),
-  })
 }
 
 function countReported<T>(values: Array<T | undefined>): number {
@@ -147,6 +197,7 @@ function aggregateModelCapabilities(entry: NetworkModelEntry): void {
   const toolUse = capabilities.map((value) => value?.toolUse)
   const structuredOutput = capabilities.map((value) => value?.structuredOutput)
   const supportedParameters = capabilities.map((value) => value?.supportedParameters)
+  const voices = entry.type === 'speech' ? guaranteedIntersection(capabilities.map((value) => value?.speech?.voices)) : undefined
 
   entry.supported_protocols = [...new Set(entry.peers.flatMap((peer) => [peer.protocol, ...peer.protocols]))]
     .filter((protocol): protocol is string => Boolean(protocol))
@@ -188,6 +239,7 @@ function aggregateModelCapabilities(entry: NetworkModelEntry): void {
     }
   }
   if (parameters !== undefined) entry.supported_parameters = parameters
+  if (voices !== undefined) entry.voices = voices
 }
 
 /** Maps a `?type=` query value to a filter; absent/empty means "all". */
@@ -195,7 +247,11 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   const value = raw?.trim().toLowerCase() ?? ''
   if (value === '') return 'all'
   if (value === 'image' || value === 'images') return 'image'
+  if (value === 'video' || value === 'videos') return 'video'
+  if (value === 'speech' || value === 'tts') return 'speech'
   if (value === 'text') return 'text'
+  if (value === 'decision' || value === 'decisions') return 'decision'
+  if (value === 'router' || value === 'routers') return 'router'
   return 'invalid'
 }
 
@@ -211,15 +267,16 @@ export function buildNetworkModels(
 ): NetworkModelEntry[] {
   const created = Math.floor(nowMs / 1000)
   const byModelKey = new Map<string, NetworkModelEntry>()
-  const legacyReputationByPeerId = new Map<string, number | null>()
+  // Trust score when the node scored the peer, else the seller-reported score.
   const normalizedReputationByPeerId = new Map<string, number | null>()
   const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
   for (const peer of peers) {
-    legacyReputationByPeerId.set(peer.peerId, legacyPeerReputationScore(peer, nowMs))
-    normalizedReputationByPeerId.set(peer.peerId, normalizedModelReputationScore(peer, nowMs))
+    normalizedReputationByPeerId.set(peer.peerId, normalizedModelReputationScore(peer))
   }
 
-  const allOffers = buildNetworkServiceOffers(peers)
+  const offerFilter = options.offerFilter
+  const discoveredOffers = options.offers ?? buildNetworkServiceOffers(peers)
+  const allOffers = offerFilter ? discoveredOffers.filter(offerFilter) : discoveredOffers
   const offersByPeerModel = new Map<string, NetworkServiceOffer[]>()
   for (const offer of allOffers) {
     const key = canonicalModelKey(offer.serviceId)
@@ -265,9 +322,18 @@ export function buildNetworkModels(
     for (const duplicate of duplicateOffers) {
       entry.aliases.push(normalizedModelAlias(duplicate.serviceId), key)
     }
+    // Text wins over image, image over decision, so a canonically merged
+    // model stays routable for the most general client.
     if (offer.type === 'text') entry.type = 'text'
+    else if (offer.type === 'image' && entry.type === 'decision') entry.type = 'image'
     const peer = peerById.get(offer.peerId)
+    const priced = isPricedService({
+      ...offer,
+      unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
+    })
+    const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
+      ...teeFields(offer, peer, options.teeScope),
       peerId: offer.peerId,
       ...(offer.displayName ? { displayName: offer.displayName } : {}),
       provider: offer.provider,
@@ -275,17 +341,20 @@ export function buildNetworkModels(
       protocol: offer.protocol,
       protocols: offer.protocols,
       type: offer.type,
+      ...(offer.unitBillingModels ? { unitBillingModels: offer.unitBillingModels } : {}),
       ...(offer.capabilities ? { capabilities: offer.capabilities } : {}),
       ...(offer.categories ? { categories: offer.categories } : {}),
-      reputationScore: legacyReputationByPeerId.get(offer.peerId) ?? null,
+      reputationScore: normalizedReputationByPeerId.get(offer.peerId) ?? null,
       effectiveReputationScore: normalizedReputationByPeerId.get(offer.peerId) ?? null,
-      onChainTrustScore: peer?.onChainTrustScore ?? null,
-      onChainReputationScore: onChainReputationScore(peer, nowMs),
+      onChainReputationScore: onChainReputationScore(peer),
       ...(offer.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: offer.inputUsdPerMillion } : {}),
       ...(offer.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: offer.outputUsdPerMillion } : {}),
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(freeTier ? { freeTier } : {}),
+      ...(offer.health ? { health: offer.health } : {}),
+      ...(offer.performance ? { performance: offer.performance } : {}),
     })
   }
 
@@ -294,15 +363,13 @@ export function buildNetworkModels(
     entry.aliases = [...new Set(entry.aliases.filter(Boolean))].sort((a, b) => a.localeCompare(b))
     const modelHasCachedInputPricing = entry.peers.some((peer) => peer.cachedInputUsdPerMillion !== undefined)
     for (const peer of entry.peers) {
-      const sourcePeer = peerById.get(peer.peerId)
-      peer.effectiveReputationScore = modelHasCachedInputPricing
-        ? effectiveModelReputationScore(
-            sourcePeer ? normalizedModelReputationScore(sourcePeer, nowMs) : peer.onChainReputationScore,
-            peer.cachedInputUsdPerMillion !== undefined,
-            true,
-            modelRouteTotalPrice(peer) === 0,
-          )
-        : normalizedReputationByPeerId.get(peer.peerId) ?? null
+      peer.effectiveReputationScore = effectiveModelReputationScore(
+        normalizedReputationByPeerId.get(peer.peerId) ?? null,
+        peer.cachedInputUsdPerMillion !== undefined,
+        modelHasCachedInputPricing,
+        modelRouteTotalPrice(peer) === 0,
+        hasLiveDiffVerdict(peerById.get(peer.peerId), peer.serviceId, nowMs),
+      )
     }
     if (options.routingPreferences) {
       const ranked = rankModelRoutes(entry.peers.map((offer) => {

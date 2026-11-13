@@ -1,6 +1,8 @@
 import type {
+  DepositStepSignal,
   FirstModelShownSignal,
   TelemetryActionSurface,
+  TelemetryAppName,
   TelemetryUserAction,
 } from '../../../shared/telemetry.js';
 import type { ViewName } from '../../ui/types.js';
@@ -10,19 +12,13 @@ const pendingUserActions = new Map<string, ReturnType<typeof setTimeout>>();
 
 const VIEW_SURFACES: Record<ViewName, TelemetryActionSurface> = {
   home: 'home',
-  explore: 'explore',
-  model: 'model',
   tools: 'apps',
-  tunnels: 'tunnels',
-  chats: 'chats',
-  preferences: 'preferences',
-  credits: 'credits',
-  deposit: 'deposit',
-  activity: 'activity',
   rewards: 'rewards',
+  gateway: 'gateway',
+  preferences: 'preferences',
+  deposit: 'deposit',
   chat: 'chat',
   help: 'help',
-  peers: 'peers',
   connection: 'connection',
   desktop: 'desktop',
   config: 'config',
@@ -32,9 +28,17 @@ export function telemetrySurfaceForView(view: ViewName): TelemetryActionSurface 
   return VIEW_SURFACES[view];
 }
 
-export function recordUserAction(action: TelemetryUserAction, surface: TelemetryActionSurface): void {
+export function recordUserAction(
+  action: TelemetryUserAction,
+  surface: TelemetryActionSurface,
+  app?: TelemetryAppName,
+): void {
   try {
-    void window.antseedDesktop?.telemetryRecordUserAction?.({ action, surface }).catch(() => undefined);
+    void window.antseedDesktop?.telemetryRecordUserAction?.({
+      action,
+      surface,
+      ...(app !== undefined ? { app } : {}),
+    })?.catch(() => undefined);
   } catch {
     // Telemetry must never affect user actions.
   }
@@ -55,8 +59,16 @@ export function recordUserActionCoalesced(
 
 export function recordFirstModelShown(signal: FirstModelShownSignal): void {
   try {
-    void window.antseedDesktop?.telemetryRecordFirstModelShown?.(signal).catch(() => undefined);
+    void window.antseedDesktop?.telemetryRecordFirstModelShown?.(signal)?.catch(() => undefined);
   } catch {
     // Telemetry must never affect rendering.
+  }
+}
+
+export function recordDepositStep(signal: DepositStepSignal): void {
+  try {
+    void window.antseedDesktop?.telemetryRecordDepositStep?.(signal)?.catch(() => undefined);
+  } catch {
+    // Telemetry must never affect the deposit flow.
   }
 }

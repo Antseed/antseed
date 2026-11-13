@@ -36,6 +36,45 @@ export type { IdentityClientConfig } from './evm/identity-client.js';
 export { StakingClient } from './evm/staking-client.js';
 export type { StakingClientConfig } from './evm/staking-client.js';
 
+// USDC → ETH swaps for seller gas refuels (Base mainnet, Uniswap v3)
+export { UsdcEthSwapClient, usdcEthSwapDeployment } from './evm/usdc-eth-swap-client.js';
+export type { UsdcEthSwapClientConfig } from './evm/usdc-eth-swap-client.js';
+
+// Verifier network client
+export {
+  VerifierClient,
+  serviceHash,
+  modelHash,
+  sortServiceResults,
+  verifierVerdict,
+  VERIFIER_VERDICT,
+  MAX_RESULTS_PER_MODEL_AUDIT,
+  MAX_AUDITOR_PROFILE_NAME_BYTES,
+  MAX_AUDITOR_PROFILE_URI_BYTES,
+  VERIFICATION_REWARDS_OFF,
+  validateAuditorProfile,
+} from './evm/verifier-client.js';
+export {
+  DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
+  queryInBlockChunks,
+  resolveScanFromBlock,
+} from './evm/block-range.js';
+export type { BlockRangeOptions } from './evm/block-range.js';
+export type {
+  VerifierClientConfig,
+  ServiceResultInput,
+  SubmitModelAuditInput,
+  ServiceAuditedEvent,
+  ModelAuditedEvent,
+  AuditorSetEvent,
+  AuditorCredits,
+  AuditorProfile,
+  RequiredReports,
+  VerifierServiceStatus,
+  VerifierVerdict,
+  VerifierVerdictName,
+} from './evm/verifier-client.js';
+
 export {
   signSpendingAuth,
   signReserveAuth,
@@ -52,6 +91,7 @@ export {
   SET_OPERATOR_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,
@@ -84,6 +124,48 @@ export type { ANTSTokenClientConfig } from './evm/ants-token-client.js';
 // Emissions
 export { EmissionsClient } from './evm/emissions-client.js';
 export type { EmissionsClientConfig, EmissionsEpochParams } from './evm/emissions-client.js';
+export { RegistryClient } from './evm/registry-client.js';
+export type { RegistryClientConfig } from './evm/registry-client.js';
+export { UsageAccountingClient } from './evm/usage-accounting-client.js';
+export type { UsageAccountingClientConfig, UsagePoints, UsageTotals } from './evm/usage-accounting-client.js';
+export { UsageRewardsClient } from './evm/usage-rewards-client.js';
+export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
+export { SellerPoolsClient, estimateEarlyExit, positionState, projectedEarlyExitSlashBps } from './evm/seller-pools-client.js';
+export type { SellerPoolsClientConfig, SellerPoolPosition, EarlyExitEstimate, SellerPoolConfig, PositionPowerSegment, PositionState } from './evm/seller-pools-client.js';
+export { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client.js';
+export type { SellerPoolsRewardsClientConfig, DynamicStakerConfig } from './evm/seller-pools-rewards-client.js';
+export { SellerRegistryClient, SellerRegistrationVerificationError } from './evm/seller-registry-client.js';
+export type { SellerRegistryClientConfig } from './evm/seller-registry-client.js';
+export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards } from './reward-claims.js';
+export type { RewardTransactionRecorder } from './reward-claims.js';
+export { PositionInitClient } from './evm/position-init-client.js';
+export type { PositionInitClientConfig } from './evm/position-init-client.js';
+export { EmissionsGateClient, GATE_MINTERS, gateMinterId } from './evm/emissions-gate-client.js';
+export type { EmissionsGateClientConfig, GateMinter } from './evm/emissions-gate-client.js';
+export { WashTradingRegistryClient, validateSellerProofArtifact, sellerProofId } from './evm/wash-trading-registry-client.js';
+export type {
+  WashTradingRegistryClientConfig, WashTradingSellerStatus, WashTradingProofStatus, WashTradingRegistryConfig,
+  BlockReference, BlockAuthenticationChunk, SellerProofArtifact, SellerProofSubmissionStep,
+} from './evm/wash-trading-registry-client.js';
+export { PointsPolicyRegistryClient } from './evm/points-policy-registry-client.js';
+export type { PointsPolicyRegistryClientConfig } from './evm/points-policy-registry-client.js';
+export { SellerRewardsPoolClient } from './evm/seller-rewards-pool-client.js';
+export type { SellerRewardsPoolClientConfig } from './evm/seller-rewards-pool-client.js';
+export { multicallRead, MULTICALL3_ADDRESS } from './evm/multicall.js';
+export type { MulticallRequest } from './evm/multicall.js';
+export {
+  ContractStackMismatchError,
+  legacyEpochs,
+  newEpochs,
+  resolveContractStack,
+  resolveLegacyContractAddresses,
+} from './contract-stack.js';
+export type {
+  ContractStackAddresses,
+  ContractStackMode,
+  ContractStackResolution,
+  ContractStackRpcOptions,
+} from './contract-stack.js';
 
 // Channel persistence
 export { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS } from './channel-store.js';
@@ -98,6 +180,48 @@ export { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './seller-buyer-limiter.js';
+export {
+  DEFAULT_FREE_TIER_STAKE_TIERS,
+  FREE_TIER_EPOCHS_PER_YEAR,
+  MAX_FREE_TIER_STAKE_TIERS,
+  encodeFreeTierCapabilities,
+  freeTierServiceScope,
+  parseServiceFreeTierProgram,
+  freeTierProgramForService,
+  isPricedService,
+  FREE_TIER_SERVED_HEADER,
+  FREE_TIER_SERVED_COVERED,
+  freeTierStakeTierForPower,
+  normalizeFreeTierProgram,
+  parseFreeTierProgram,
+  powerToAntsEpochs,
+  validateFreeTierStakeTiers,
+} from './free-tier-program.js';
+export type { FreeTierBaseLimits, FreeTierProgram, FreeTierStakeTier } from './free-tier-program.js';
+export {
+  DEFAULT_FREE_TIER_DELEGATION_DAYS,
+  FREE_TIER_DELEGATIONS_HEADER,
+  FREE_TIER_DELEGATION_CODE_PREFIX,
+  FREE_TIER_DELEGATION_TYPES,
+  MAX_FREE_TIER_DELEGATIONS,
+  acceptFreeTierDelegationCode,
+  decodeFreeTierDelegationCode,
+  decodeFreeTierDelegationsHeader,
+  encodeFreeTierDelegationCode,
+  encodeFreeTierDelegationsHeader,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+  verifyFreeTierDelegations,
+  withFreeTierDelegation,
+} from './free-tier-delegation.js';
+export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './free-tier-delegation.js';
+export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './free-tier-stake-resolver.js';
+export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './free-tier-stake-resolver.js';
 
 // Buyer payment negotiator (402 handling, SpendingAuth flow, cost tracking)
 export { BuyerPaymentNegotiator } from './buyer-payment-negotiator.js';
@@ -112,6 +236,7 @@ export {
   computeCostUsdc,
   estimateCostFromBytes,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   isFreeUnitBillingModel,
   validateUnitBillingModelV1,
 } from './pricing.js';

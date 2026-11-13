@@ -1,5 +1,6 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { buildUsdcPaymentUri } from '@antseed/wallet-config';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -13,28 +14,52 @@ import {
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
+import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { formatUsd, shortfallBaseUnits, sweepAmountNeeded, usdcToBaseUnits } from './funding-status';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
-import { recordUserAction } from '../../../modules/telemetry/actions';
+import { recordDepositStep, recordUserAction } from '../../../modules/telemetry/actions';
+import type { TelemetryDepositMethod } from '../../../../shared/telemetry';
 
-// The Fun (fun.xyz) checkout SDK is heavy (it bundles wagmi/viem), so it loads
-// as its own chunk the first time the deposit chooser renders the CTA.
-const FunkitDeposit = lazy(() => import('./FunkitDeposit'));
-
-/** Build-time Fun API key (empty when the build had none) — vite.config.ts. */
-declare const __FUNKIT_API_KEY__: string;
+const PEER_PAY_LOGO = new URL('../../../assets/peer-pay.webp', import.meta.url).href;
+const VENMO_LOGO = new URL('../../../assets/venmo.svg', import.meta.url).href;
+const PAYPAL_LOGO = new URL('../../../assets/paypal.svg', import.meta.url).href;
+const REVOLUT_LOGO = new URL('../../../assets/revolut.png', import.meta.url).href;
+const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
 
 const AMOUNT_PRESETS = ['5', '10', '25'];
 
+/**
+ * Funding method family per chooser option, for the deposit funnel. Meridian
+ * takes USDC from any chain, so it counts as a crypto wallet; Peer Pay is a
+ * payment app (Venmo, PayPal and similar).
+ */
+const PROVIDER_DEPOSIT_METHODS: Record<string, TelemetryDepositMethod> = {
+  'antseed-pay': 'card',
+  'antseed-pay-stripe': 'card',
+  meridian: 'crypto_wallet',
+  'peer-pay': 'payment_app',
+};
+
+function enteredAmountUsdc(amount: string): number | undefined {
+  const value = Number(amount);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
-type Stage = 'choose' | 'crypto';
+type Stage = 'choose' | 'crypto' | 'peer';
 
 // The chooser sits "before" the method screen on the slide axis, so
 // entering a method slides forward and going back slides back — same
 // mechanics as ViewHost, reusing the global .view-pane animations.
-const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1 };
+const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1, peer: 1 };
 // Must match the .view-pane-in/-out animation duration (--motion-duration).
 const STAGE_SLIDE_MS = 300;
 
@@ -46,23 +71,10 @@ type DepositWatchInfo = {
   chainId: number;
 };
 
-function amountToBaseUnits(amount: string): bigint | null {
-  const value = Number(amount);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return BigInt(Math.round(value * 1e6));
-}
-
 function baseUnitsToUsd(baseUnits: string | undefined): string {
   if (!baseUnits) return '0';
   const value = Number(baseUnits) / 1e6;
   return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/** EIP-681 payment request: opens a prefilled USDC transfer in mobile wallets. */
-function buildPaymentUri(info: DepositWatchInfo, amount: string): string {
-  const baseUnits = amountToBaseUnits(amount);
-  const base = `ethereum:${info.usdcAddress}@${info.chainId}/transfer?address=${info.address}`;
-  return baseUnits ? `${base}&uint256=${baseUnits.toString()}` : base;
 }
 
 // ─── Styled QR (round dots, rounded finders, Base badge) ───
@@ -173,6 +185,16 @@ function BaseMark({ size = 18 }: { size?: number }) {
   );
 }
 
+function PeerMark({ size = 20 }: { size?: number }) {
+  return (
+    <img className={styles.peerMark} src={PEER_PAY_LOGO} width={size} height={size} alt="" aria-hidden="true" />
+  );
+}
+
+function PaymentRailMark({ src, label }: { src: string; label: string }) {
+  return <img className={styles.paymentRailMark} src={src} alt={label} title={label} />;
+}
+
 /** Apple logo silhouette (the classic bitten-apple path, 814×1000 box). */
 const APPLE_LOGO_PATH =
   'M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 ' +
@@ -239,16 +261,12 @@ function AmexRoundMark({ size = 18 }: { size?: number }) {
   );
 }
 
-/** Official Fun (fun.xyz) mark — their site's SVG favicon, recolored via
-    currentColor (white on the dark Fun CTA). */
-function FunMark({ size = 20 }: { size?: number }) {
-  const width = Math.round(size * (15 / 20));
+/** Official Stripe mark — from stripe.com's SVG favicon. */
+function StripeMark({ size = 22 }: { size?: number }) {
   return (
-    <svg width={width} height={size} viewBox="0 0 15 20" fill="currentColor" aria-hidden="true">
-      <path d="M6.44189 1.38892L14.1668 5.5V14.4999L6.44189 18.611V1.38892Z" />
-      <path d="M7.27555 2.775L13.3339 6V13.9972L7.27555 17.2222V2.775ZM5.60889 0V20L15.0006 15V5L5.60889 0Z" />
-      <path d="M2.80615 0V20L4.20893 19.2528V0.747222L2.80615 0Z" />
-      <path d="M0 0V20L1.40278 19.2528V0.747222L0 0Z" />
+    <svg width={size} height={size} viewBox="0 0 512 512" aria-hidden="true">
+      <rect width="512" height="512" rx="64" fill="#533AFD" />
+      <path fillRule="evenodd" clipRule="evenodd" d="M120 392L392 334.317V120L120 178.357V392Z" fill="#fff" />
     </svg>
   );
 }
@@ -326,35 +344,6 @@ function EthMark({ size = 18 }: { size?: number }) {
   );
 }
 
-/** Official Link logo (icon + wordmark) — link.com's header SVG, with the
-    arrow mark in white inside the dark disc (as on Link's own pay button). */
-function LinkWordmark({ height = 20 }: { height?: number }) {
-  const width = Math.round((height * 78) / 26);
-  return (
-    <svg width={width} height={height} viewBox="0 0 78 26" fill="none" aria-hidden="true">
-      <path
-        fill="#011e0f"
-        d="M39.321 3.983c0-1.222 1.035-2.215 2.252-2.215 1.218 0 2.253.998 2.253 2.215a2.254 2.254 0 0 1-2.253 2.241 2.234 2.234 0 0 1-2.252-2.241M32.638 2.08h3.919v21.84h-3.92zM43.554 8.32h-3.95v15.6h3.95zM71.954 15.59c2.973-1.82 4.996-4.53 5.795-7.276H73.8c-1.03 2.621-3.392 4.592-5.989 5.43V2.073h-3.95v21.84h3.95V17.42c3.015.748 5.398 3.343 6.213 6.494H78c-.606-3.307-2.88-6.4-6.046-8.325M50.556 10.067c1.035-1.368 3.052-2.163 4.687-2.163 3.052 0 5.576 2.22 5.58 5.574v10.436h-3.95v-9.568c0-1.378-.616-2.969-2.617-2.969-2.352 0-3.705 2.075-3.705 4.503v8.045H46.6V8.33h3.955z"
-      />
-      <circle cx="13" cy="13" r="13" fill="#011e0f" />
-      <path
-        fill="#ffffff"
-        d="M12.462 5.2H8.434c.783 3.26 3.072 6.048 5.936 7.8-2.87 1.753-5.153 4.54-5.936 7.8h4.028c.998-3.016 3.763-5.637 7.16-6.172v-3.26c-3.402-.531-6.167-3.152-7.16-6.168"
-      />
-    </svg>
-  );
-}
-
-/** Official Stripe mark — from stripe.com's SVG favicon. */
-function StripeMark({ size = 22 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 512 512" aria-hidden="true">
-      <rect width="512" height="512" rx="64" fill="#533AFD" />
-      <path fillRule="evenodd" clipRule="evenodd" d="M120 392L392 334.317V120L120 178.357V392Z" fill="#fff" />
-    </svg>
-  );
-}
-
 function explorerTxUrl(chainId: number | undefined, txHash: string): string | null {
   if (chainId === 8453) return `https://basescan.org/tx/${txHash}`;
   if (chainId === 84532) return `https://sepolia.basescan.org/tx/${txHash}`;
@@ -362,15 +351,42 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
 }
 
 /**
- * Deposit flow: for US users (per the pay page's region gating) the chooser
- * leads with the antseed-pay card checkout (hosted Stripe page in a narrow
- * app popup) and Fun moves under "More options"; elsewhere the Fun (fun.xyz)
- * checkout leads as before. Then the quick USDC-on-Base transfer
- * (scan-to-pay QR), with hosted providers (Meridian) behind "More options".
- * Everything lands in the hot wallet the main-process sweeper watches. Only
- * pages that need an external wallet signature leave the app.
+ * Deposit flow: the chooser always leads with the antseed-pay Crossmint card
+ * checkout (hosted page in a narrow app popup) — no region gating; the pay
+ * page itself shows a proper dead-end screen where a region can't be served.
+ * Then the quick USDC-on-Base transfer (scan-to-pay QR), with hosted
+ * providers (Meridian, Outerfound) behind "More options". Everything lands in the hot
+ * wallet the main-process sweeper watches. Only pages that need an external
+ * wallet signature leave the app.
  */
-export function VprDepositView({ onSelectView }: Props) {
+/**
+ * Add funds for this computer's gateway. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't reach it: the page sends
+ * the user to that gateway's console, and nothing local (deposit watcher,
+ * checkout, address) starts until the gateway is known to be local.
+ */
+export function VprDepositView(props: Props) {
+  const mode = useCachedResource(gatewayResource).data?.status.mode;
+  if (mode === 'local') return <LocalDepositView {...props} />;
+  return (
+    <section className={`view view-vpr-deposit view-pinned-header ${styles.view}`} role="tabpanel">
+      <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+        {mode === 'remote' ? (
+          <VprCard>
+            <div className={styles.stack}>
+              <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+              <div>
+                <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+              </div>
+            </div>
+          </VprCard>
+        ) : null}
+      </VprPage>
+    </section>
+  );
+}
+
+function LocalDepositView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
     total: state.creditsTotalUsdc,
@@ -380,7 +396,10 @@ export function VprDepositView({ onSelectView }: Props) {
     wallet: state.creditsWalletUsdc,
     totalOwned: state.creditsTotalOwnedUsdc,
     creditLimit: state.creditsCreditLimitUsdc,
+    minFirstDeposit: state.creditsMinFirstDepositUsdc,
+    depositFee: state.creditsDepositFeeUsdc,
   }), shallowEqual);
+  const funding = useFundingStatus();
 
   const [slide, setSlide] = useState<StageSlide>(() => ({
     stage: 'choose',
@@ -388,7 +407,7 @@ export function VprDepositView({ onSelectView }: Props) {
     direction: 'forward',
   }));
   const stage = slide.stage;
-  const [amount, setAmount] = useState('10');
+  const [amount, setAmount] = useState('');
   const [watchInfo, setWatchInfo] = useState<DepositWatchInfo | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<DepositWatchStatus | null>(null);
@@ -431,7 +450,7 @@ export function VprDepositView({ onSelectView }: Props) {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let cancelled = false;
-    void bridge?.depositsWatchStart?.().then((result) => {
+    void bridge?.depositsWatchStart?.()?.then((result) => {
       if (cancelled) return;
       if (result.ok && result.data) {
         setWatchInfo({ address: result.data.address, usdcAddress: result.data.usdcAddress, chainId: result.data.chainId });
@@ -443,7 +462,8 @@ export function VprDepositView({ onSelectView }: Props) {
     });
     const unsubscribe = bridge?.onDepositsWatchStatus?.((status) => {
       setWatchStatus(status);
-      if (status.phase === 'credited') actions.refreshCredits();
+      // Any wallet movement changes what the funding status should say.
+      if (status.phase !== 'sweeping') actions.refreshCredits();
     });
     return () => {
       cancelled = true;
@@ -467,8 +487,37 @@ export function VprDepositView({ onSelectView }: Props) {
 
   const [payPageNotice, setPayPageNotice] = useState<string | null>(null);
 
+  // Deposit funnel: the chooser was shown, a checkout opened, and whether
+  // it was credited before the view went away.
+  const checkoutOpenedRef = useRef(false);
+  const creditedRef = useRef(false);
+  const lastMethodRef = useRef<TelemetryDepositMethod>('unknown');
+  useEffect(() => {
+    recordDepositStep({ step: 'method_shown' });
+    return () => {
+      if (checkoutOpenedRef.current && !creditedRef.current) {
+        recordDepositStep({ step: 'checkout_abandoned', method: lastMethodRef.current });
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (watchStatus?.phase === 'credited') creditedRef.current = true;
+  }, [watchStatus]);
+  const chooseMethod = useCallback((method: TelemetryDepositMethod) => {
+    lastMethodRef.current = method;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'method_chosen', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+  const noteCheckoutOpened = useCallback((method: TelemetryDepositMethod) => {
+    checkoutOpenedRef.current = true;
+    creditedRef.current = false;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'checkout_opened', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+
   const openBrowserWallet = useCallback(() => {
     recordUserAction('deposit_start', 'deposit');
+    chooseMethod('crypto_wallet');
     setPayPageNotice(null);
     const call = window.antseedDesktop?.paymentsOpenPayPage?.({ kind: 'deposit', amountUsdc: amount });
     if (!call) {
@@ -477,110 +526,48 @@ export function VprDepositView({ onSelectView }: Props) {
     }
     void call.then((result) => {
       if (!result.ok) setPayPageNotice(result.error ?? 'Could not open the payment window.');
+      else noteCheckoutOpened('crypto_wallet');
     }).catch((err: unknown) => {
       setPayPageNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const openCardProvider = useCallback((providerId: string) => {
     recordUserAction('deposit_start', 'deposit');
+    const method = PROVIDER_DEPOSIT_METHODS[providerId] ?? 'unknown';
+    // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
+    if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
-    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
+    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount })?.then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
+      } else {
+        noteCheckoutOpened(method);
       }
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
-  // The Fun API key: the main process resolves overrides (user config, then
-  // runtime environment); release builds fall back to the key baked in at
-  // build time (see vite.config.ts) so packaged installs work out of the
-  // box. Never in the source tree. null = still fetching, '' = not
-  // configured (CTA hidden).
-  const [funkitApiKey, setFunkitApiKey] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    // Fetch the Fun chunk in parallel with the config/watcher round-trips so
-    // the CTA is live, not just visible, by the time they resolve.
-    void import('./FunkitDeposit');
-    void window.antseedDesktop?.paymentsFunkitConfig?.().then((result) => {
-      if (!cancelled) setFunkitApiKey((result.ok && result.data?.apiKey) || __FUNKIT_API_KEY__);
-    }).catch(() => {
-      if (!cancelled) setFunkitApiKey(__FUNKIT_API_KEY__);
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  // Region-gated card checkout (Stripe via the hosted antseed-pay page):
-  // the main process asks the pay page which providers serve this machine's
-  // region — Stripe sells USDC-on-Base in the US only. Fail-closed: until a
-  // positive answer arrives, the checkout leads nowhere useful, so the row
-  // demotes to "More options" (the pay page itself explains region
-  // unavailability with a proper dead-end screen).
-  const [stripeAvailable, setStripeAvailable] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void window.antseedDesktop?.paymentsOnrampAvailability?.().then((result) => {
-      if (!cancelled && result.ok && result.data?.stripe) setStripeAvailable(true);
-    }).catch(() => {
-      // Unreachable pay page — leave the row hidden.
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  // Fun checkout preconditions: an API key, watcher info (it supplies the
-  // recipient wallet), and the app on Base mainnet — the only chain Fun
-  // delivers to. Otherwise (local/testnet) the option list shows directly.
-  // While the config/watcher fetches are in flight the CTA renders disabled
-  // instead of popping in a beat after the view.
-  const funWatchInfo = funkitApiKey && watchInfo && watchInfo.chainId === 8453 ? watchInfo : null;
-  const funPending = funkitApiKey !== '' && (funkitApiKey === null || (!watchInfo && !watchError));
-  const funAvailable = funWatchInfo !== null || funPending;
-
-  // Shared between the live Fun CTA, its Suspense fallback, and the disabled
-  // placeholder so the button never changes content while loading. Same row
-  // anatomy as the method rows below (logo · title · badge cluster), but on
-  // the primary dark surface.
-  const funCtaContent = (
-    <>
-      <span className={styles.funCtaIcon}>
-        <FunMark size={18} />
-      </span>
-      <span className={styles.funCtaText}>
-        <span className={styles.funCtaTitle}>Deposit</span>
-        <span className={styles.funCtaCaption}>Powered by fun.xyz</span>
-      </span>
-      <span className={styles.methodBadges} aria-hidden="true">
-        <MastercardRoundMark />
-        <ApplePayRoundMark />
-        <GooglePayRoundMark />
-        <VisaRoundMark />
-      </span>
-    </>
-  );
-
-  // Fun as a "More options" row — used when the antseed-pay checkout takes
-  // the primary slot (US users). Same Fun wiring, method-row anatomy.
-  const funMethodRowContent = (
-    <>
-      <span className={styles.methodCtaIcon}>
-        <FunMark size={20} />
-      </span>
-      <span className={styles.methodCtaText}>
-        <span className={styles.methodCtaTitle}>Deposit using Fun</span>
-        <span className={styles.methodCtaCaption}>Card or crypto · fun.xyz</span>
-      </span>
-      <span className={styles.methodBadges} aria-hidden="true">
-        <MastercardRoundMark />
-        <ApplePayRoundMark />
-        <GooglePayRoundMark />
-        <VisaRoundMark />
-      </span>
-    </>
-  );
+  const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
+  const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
+  const isFirstDeposit = usdcToBaseUnits(snap.total) === 0n;
 
   const statusLine = (() => {
     if (watchError) return { tone: 'error' as const, text: watchError };
+    // Too little in the wallet to deposit: the sweep waits silently, so ask
+    // for the exact shortfall instead of spinning on "preparing".
+    const receivedShort = (have: bigint, short: bigint) => ({
+      tone: 'idle' as const,
+      text: `Received ${formatUsd(have)} · send ${formatUsd(short, 'up')} more to finish`,
+    });
+    if (watchStatus?.phase === 'deferred' && watchStatus.reason === 'below-minimum' && watchStatus.minRequiredBaseUnits) {
+      const have = BigInt(watchStatus.amountBaseUnits ?? '0');
+      return receivedShort(have, shortfallBaseUnits(BigInt(watchStatus.minRequiredBaseUnits), have));
+    }
+    if (funding.kind === 'wallet-below-minimum' && (!watchStatus || watchStatus.phase === 'received' || watchStatus.phase === 'deferred')) {
+      return receivedShort(usdcToBaseUnits(snap.wallet), funding.sendMoreBaseUnits ?? 0n);
+    }
     if (!watchStatus) return { tone: 'idle' as const, text: 'Waiting for USDC on Base…' };
     switch (watchStatus.phase) {
       case 'deferred':
@@ -609,13 +596,14 @@ export function VprDepositView({ onSelectView }: Props) {
     : statusLine.tone === 'error'
       ? 'var(--accent-red, #d64545)'
       : '#f59e0b';
+  const staticDot = statusLine.tone === 'error';
   const watchStatusRow = (
     <div className={`${styles.watchStatus} ${styles[`watchStatus_${statusLine.tone}`] ?? ''}`} role="status">
       {statusLine.tone === 'done' ? (
         <HugeiconsIcon icon={Tick02Icon} size={15} strokeWidth={2.5} className={styles.watchCheck} />
       ) : (
         <span
-          className={`${styles.watchPulse}${statusLine.tone === 'error' ? ` ${styles.watchPulseStatic}` : ''}`}
+          className={`${styles.watchPulse}${staticDot ? ` ${styles.watchPulseStatic}` : ''}`}
           style={{ background: dotColor }}
           aria-hidden="true"
         />
@@ -623,6 +611,18 @@ export function VprDepositView({ onSelectView }: Props) {
       {statusLine.text}
     </div>
   );
+
+  // What this amount still has to clear: every deposit's floor (minimum plus
+  // network fee), net of what already sits in the wallet. Top-ups too: the
+  // watcher leaves a smaller amount in the wallet.
+  const amountBaseUnits = usdcToBaseUnits(amount);
+  const walletBaseUnits = usdcToBaseUnits(snap.wallet);
+  const amountNeeded = sweepAmountNeeded(usdcToBaseUnits(snap.minFirstDeposit), feeBaseUnits, walletBaseUnits);
+  const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
+  const amountHint = (() => {
+    if (walletBaseUnits > 0n && amountNeeded > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
+    return `1 credit = 1 USDC · ${isFirstDeposit ? 'first deposit' : 'each deposit'} ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
+  })();
 
   const amountForm = (
     <VprCard className={styles.amountCard}>
@@ -644,13 +644,14 @@ export function VprDepositView({ onSelectView }: Props) {
             type="text"
             inputMode="decimal"
             value={amount}
+            placeholder="Enter amount"
             aria-label="Deposit amount in USD"
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
           />
         </div>
       </div>
-      <span className={styles.amountHint}>
-        1 credit = 1 USDC{Number(snap.total) === 0 ? ' · Minimum first deposit is $1' : ''}
+      <span className={`${styles.amountHint}${amountBelowMinimum ? ` ${styles.amountHintWarn}` : ''}`}>
+        {amountHint}
       </span>
     </VprCard>
   );
@@ -658,52 +659,37 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add credits" backFallback="credits">
-        <div className={styles.stack}>
-          <BalanceSummaryCard values={balanceValues} />
+        <VprPage title="Add funds" backFallback="home" subtitle="Add to your balance with a card, a payment app or USDC.">
+        <div className={`${styles.stack} ${styles.chooseStack}`}>
+          <BalanceSummaryCard
+            values={balanceValues}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
+          />
 
           <div className={styles.primaryMethods}>
-            {/* Primary path — for US users (the pay page's region gating
-                decides) the antseed-pay card checkout leads and Fun moves under
-                "More options"; elsewhere the Fun (fun.xyz) checkout leads as
-                before. Both deliver to the hot wallet the deposit watcher
-                sweeps. */}
-            {stripeAvailable ? (
-              <div className={styles.methodGroup}>
-                <button
-                  type="button"
-                  className={styles.linkCta}
-                  aria-label="Pay with Link"
-                  onClick={() => openCardProvider('antseed-pay')}
-                >
-                  <span>Pay with</span>
-                  <LinkWordmark />
-                </button>
-                <span className={styles.linkCtaSub}>
-                  <span>Powered by Outerfound</span>
-                  <span className={styles.methodBadges} aria-hidden="true">
-                    <VisaRoundMark />
-                    <MastercardRoundMark />
-                    <AmexRoundMark />
-                  </span>
-                </span>
-              </div>
-            ) : funAvailable && (funWatchInfo && funkitApiKey ? (
-              <Suspense fallback={<button type="button" className={styles.funCta} disabled>{funCtaContent}</button>}>
-                <FunkitDeposit
-                  apiKey={funkitApiKey}
-                  recipient={funWatchInfo.address}
-                  usdcAddress={funWatchInfo.usdcAddress}
-                  className={styles.funCta}
-                  onError={(message) => setPayPageNotice(message || null)}
-                >
-                  {funCtaContent}
-                </FunkitDeposit>
-              </Suspense>
-            ) : (
-              <button type="button" className={styles.funCta} disabled>{funCtaContent}</button>
-            ))}
+            {/* Primary path — always the antseed-pay Crossmint card checkout,
+                regardless of region (the pay page shows its own dead-end
+                screen where it can't serve). Delivers to the hot wallet the
+                deposit watcher sweeps. */}
+            <button
+              type="button"
+              className={styles.funCta}
+              onClick={() => openCardProvider('antseed-pay')}
+            >
+              <span className={styles.funCtaText}>
+                <span className={styles.funCtaTitle}>Deposit</span>
+                <span className={styles.funCtaCaption}>Powered by Crossmint</span>
+              </span>
+              <span className={styles.methodBadges} aria-hidden="true">
+                <MastercardRoundMark />
+                <ApplePayRoundMark />
+                <GooglePayRoundMark />
+                <VisaRoundMark />
+              </span>
+            </button>
             {payPageNotice && <div className={styles.cardNotice} role="alert">{payPageNotice}</div>}
+            {/* Every method funds through the watcher: when it can't start, say why here too. */}
+            {watchError && <div className={styles.cardNotice} role="alert">{watchError}</div>}
 
             <div className={styles.methodGroup}>
               <button
@@ -711,6 +697,9 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('crypto_wallet');
+                  // The QR address is this method's checkout.
+                  noteCheckoutOpened('crypto_wallet');
                   goToStage('crypto');
                 }}
               >
@@ -731,7 +720,37 @@ export function VprDepositView({ onSelectView }: Props) {
                   <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
                 </span>
               </button>
-              <span className={styles.methodFootnote}>* Deposited to your credits by the AntSeed relayer network</span>
+            </div>
+            <div className={styles.methodGroup}>
+              {/* Peer Pay needs an amount up front, so it gets its own step. */}
+              <button
+                type="button"
+                className={styles.methodCta}
+                onClick={() => {
+                  recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('payment_app');
+                  setCardNotice(null);
+                  goToStage('peer');
+                }}
+              >
+                <span className={styles.methodCtaIcon}>
+                  <PeerMark size={24} />
+                </span>
+                <span className={styles.methodCtaText}>
+                  <span className={styles.methodCtaTitle}>Deposit using Peer</span>
+                  <span className={styles.methodCtaCaption}>Bank or payment app</span>
+                </span>
+                <span className={styles.methodBadges}>
+                  <PaymentRailMark src={VENMO_LOGO} label="Venmo" />
+                  <PaymentRailMark src={PAYPAL_LOGO} label="PayPal" />
+                  <PaymentRailMark src={REVOLUT_LOGO} label="Revolut" />
+                  <PaymentRailMark src={WISE_LOGO} label="Wise" />
+                </span>
+                <span className={styles.methodArrow} aria-hidden="true">
+                  <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
+                </span>
+              </button>
+              <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
             </div>
             {cardNotice && <div className={styles.cardNotice} role="alert">{cardNotice}</div>}
           </div>
@@ -756,40 +775,6 @@ export function VprDepositView({ onSelectView }: Props) {
               {/* Fixed lineup — deliberately NOT the configurable card
                   provider list, which may carry legacy entries. These ids
                   always resolve in the main process. */}
-              {stripeAvailable && funAvailable && (funWatchInfo && funkitApiKey ? (
-                <Suspense fallback={<button type="button" className={styles.methodCta} disabled>{funMethodRowContent}</button>}>
-                  <FunkitDeposit
-                    apiKey={funkitApiKey}
-                    recipient={funWatchInfo.address}
-                    usdcAddress={funWatchInfo.usdcAddress}
-                    className={styles.methodCta}
-                    onError={(message) => setPayPageNotice(message || null)}
-                  >
-                    {funMethodRowContent}
-                  </FunkitDeposit>
-                </Suspense>
-              ) : (
-                <button type="button" className={styles.methodCta} disabled>{funMethodRowContent}</button>
-              ))}
-              {/* Outerfound demoted here when the region probe said no (or
-                  failed): still reachable, and the pay page itself shows the
-                  "not available in your region" screen. */}
-              {!stripeAvailable && (
-                <button type="button" className={styles.methodCta} onClick={() => openCardProvider('antseed-pay')}>
-                  <span className={styles.methodCtaIcon}>
-                    <StripeMark size={20} />
-                  </span>
-                  <span className={styles.methodCtaText}>
-                    <span className={styles.methodCtaTitle}>Deposit using Outerfound</span>
-                    <span className={styles.methodCtaCaption}>Card · US only</span>
-                  </span>
-                  <span className={styles.methodBadges} aria-hidden="true">
-                    <VisaRoundMark />
-                    <MastercardRoundMark />
-                    <AmexRoundMark />
-                  </span>
-                </button>
-              )}
               <button type="button" className={styles.methodCta} onClick={() => openCardProvider('meridian')}>
                 <span className={styles.methodCtaIcon}>
                   <MeridianMark />
@@ -805,7 +790,22 @@ export function VprDepositView({ onSelectView }: Props) {
                   <PolygonMark />
                 </span>
               </button>
-
+              {/* The pay page's Stripe integration. US only — elsewhere the
+                  page shows its region-unavailable screen. */}
+              <button type="button" className={styles.methodCta} onClick={() => openCardProvider('antseed-pay-stripe')}>
+                <span className={styles.methodCtaIcon}>
+                  <StripeMark size={20} />
+                </span>
+                <span className={styles.methodCtaText}>
+                  <span className={styles.methodCtaTitle}>Deposit using Outerfound</span>
+                  <span className={styles.methodCtaCaption}>Card · US only</span>
+                </span>
+                <span className={styles.methodBadges} aria-hidden="true">
+                  <VisaRoundMark />
+                  <MastercardRoundMark />
+                  <AmexRoundMark />
+                </span>
+              </button>
             </div>
           )}
 
@@ -824,15 +824,44 @@ export function VprDepositView({ onSelectView }: Props) {
       );
     }
 
+    if (current === 'peer') {
+      return (
+        <VprPage title="Deposit using Peer" subtitle="Add to your balance from a bank or payment app." onBack={() => goToStage('choose')}>
+          <div className={styles.stack}>
+
+            {amountForm}
+
+            <button
+              type="button"
+              className={styles.funCta}
+              disabled={amount === '' || amountBelowMinimum}
+              onClick={() => openCardProvider('peer-pay')}
+            >
+              <span className={styles.funCtaText}>
+                <span className={styles.funCtaTitle}>Continue to Peer Pay</span>
+                <span className={styles.funCtaCaption}>Venmo, PayPal, Revolut, Wise and more</span>
+              </span>
+              <span className={styles.methodArrow} aria-hidden="true">
+                <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} />
+              </span>
+            </button>
+            {cardNotice && <div className={styles.cardNotice} role="alert">{cardNotice}</div>}
+
+            <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
+          </div>
+        </VprPage>
+      );
+    }
+
     return (
-      <VprPage title="Pay with USDC on Base" onBack={() => goToStage('choose')}>
+      <VprPage title="Pay with USDC on Base" subtitle="Scan the code or copy the address. Credits update automatically." onBack={() => goToStage('choose')}>
         <div className={styles.stack}>
 
           {amountForm}
 
           <VprCard className={styles.payCard}>
             {watchInfo ? (
-              <StyledQr text={buildPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
+              <StyledQr text={buildUsdcPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
             ) : (
               <div className={styles.qrPlaceholder} aria-hidden="true" />
             )}
@@ -847,7 +876,7 @@ export function VprDepositView({ onSelectView }: Props) {
             <div className={styles.qrMeta}>
               <span>Credits update automatically</span>
               <span aria-hidden="true">·</span>
-              <span>$0.05 network fee</span>
+              <span>{formatUsd(feeBaseUnits)} network fee</span>
             </div>
             {creditedTxUrl && (
               <button

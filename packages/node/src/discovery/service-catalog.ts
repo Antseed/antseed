@@ -1,10 +1,18 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
+import { parseVerifierCapabilities } from './verifier-capabilities.js';
+import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type AudioSpeechProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type SpeechOptions, type VideoOptions } from '@antseed/protocol/peer-metadata';
+import type { ProviderServiceHealthMatrixEntry, ProviderServicePerformanceMatrixEntry } from '@antseed/protocol/peer-pricing';
+import { componentMatchesAttributes } from '@antseed/protocol/billing';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
   | 'openai-chat-completions'
   | 'openai-responses'
-  | 'openai-images';
+  | 'openai-images'
+  | 'typesafe-systemone'
+  | NativeVideoProtocol
+  | AudioSpeechProtocol;
 
 export type CatalogServiceCapabilities = {
   contextWindow?: number;
@@ -15,15 +23,17 @@ export type CatalogServiceCapabilities = {
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];
+  video?: VideoOptions;
+  speech?: SpeechOptions;
 };
 
 export type NetworkServiceCatalogPeer = {
   peerId: string;
+  capabilities?: string[];
   displayName?: string;
   providers?: string[];
   services?: string[];
   reputationScore?: number;
-  onChainTrustScore?: number | null;
   onChainReputationScore?: number | null;
   providerServiceApiProtocols?: Record<string, { services: Record<string, string[]> }>;
   providerServiceCapabilities?: Record<string, { services: Record<string, CatalogServiceCapabilities> }>;
@@ -50,17 +60,27 @@ export type NetworkServiceCatalogPeer = {
     }>;
   }>;
   providerServiceCategories?: Record<string, { services: Record<string, string[]> }>;
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;
 };
 
+/**
+ * `decision`: System One models return typed answers, not text or images.
+ * `speech`: text-to-speech models return an audio file.
+ */
+export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video' | 'speech';
+
 export type NetworkServiceOffer = {
+  unitBillingModels?: NonNullable<NetworkServiceCatalogPeer['providerServiceUnitBillingModels']>[string]['services'][string];
+  advertisedVerifierIds?: string[];
   serviceId: string;
   provider: string;
   protocols: string[];
   protocol: CatalogServiceProtocol | null;
-  type: 'text' | 'image';
+  type: NetworkServiceOfferType;
   capabilities?: CatalogServiceCapabilities;
   categories?: string[];
   peerId: string;
@@ -71,6 +91,18 @@ export type NetworkServiceOffer = {
   cachedInputUsdPerMillion?: number;
   minImageUsdPerImage?: number;
   maxImageUsdPerImage?: number;
+  /** The seller's self health check result for this service, when announced. */
+  health?: ServiceHealth;
+  /** How the service served the seller's buyers in the last hour, when announced. */
+  performance?: ServicePerformance;
+};
+
+export type BuildNetworkServiceOffersOptions = {
+  /**
+   * Keep services the seller's own health check announces as failing.
+   * Catalogs and routing leave them out; diagnostics may want them.
+   */
+  includeFailing?: boolean;
 };
 
 const VALID_PROTOCOLS = new Set<string>([
@@ -78,6 +110,9 @@ const VALID_PROTOCOLS = new Set<string>([
   'openai-chat-completions',
   'openai-responses',
   'openai-images',
+  'typesafe-systemone',
+  ...NATIVE_VIDEO_PROTOCOLS,
+  ...AUDIO_SPEECH_PROTOCOLS,
 ]);
 
 export function inferServiceProtocol(provider: string): Exclude<CatalogServiceProtocol, 'openai-images'> | null {
@@ -88,6 +123,7 @@ export function inferServiceProtocol(provider: string): Exclude<CatalogServicePr
   if (provider === 'anthropic' || provider === 'claude-code' || provider === 'claude-oauth') {
     return 'anthropic-messages';
   }
+  if (provider === 'typesafe') return 'typesafe-systemone';
   return null;
 }
 
@@ -159,20 +195,40 @@ function resolveImagePriceRange(peer: NetworkServiceCatalogPeer, provider: strin
     : {};
 }
 
-export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): NetworkServiceOffer[] {
+/** What an offer is, by its protocol first and then, for image models served elsewhere, its outputs. */
+function serviceOfferType(
+  protocol: CatalogServiceProtocol | null,
+  capabilities: CatalogServiceCapabilities | undefined,
+): NetworkServiceOfferType {
+  if (isNativeVideoProtocol(protocol)) return 'video';
+  if (isAudioSpeechProtocol(protocol)) return 'speech';
+  if (protocol === 'typesafe-systemone') return 'decision';
+  if (protocol === 'openai-images' || capabilities?.outputs?.includes('image')) return 'image';
+  return 'text';
+}
+
+export function buildNetworkServiceOffers(
+  peers: NetworkServiceCatalogPeer[],
+  options: BuildNetworkServiceOffersOptions = {},
+): NetworkServiceOffer[] {
   const offers: NetworkServiceOffer[] = [];
   for (const peer of peers) {
     for (const [provider, serviceIds] of announcedServicesByProvider(peer)) {
       for (const serviceId of serviceIds) {
+        const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
+        if (isServiceHealthFailing(health) && !options.includeFailing) continue;
+        const performance = providerServicePerformanceFor(peer.providerServicePerformance, provider, serviceId);
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
+        const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
+        if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);
-        const type = protocol === 'openai-images' || capabilities?.outputs?.includes('image')
-          ? 'image'
-          : 'text';
+        const type = serviceOfferType(protocol, capabilities);
         const pricing = resolvePricing(peer, provider, serviceId);
+        const unitPriced = type === 'video' || type === 'speech';
         offers.push({
+          advertisedVerifierIds: parseVerifierCapabilities(peer.capabilities).supported,
           serviceId,
           provider,
           protocols,
@@ -183,10 +239,13 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
           peerId: peer.peerId,
           ...(peer.displayName ? { displayName: peer.displayName } : {}),
           ...(peer.reputationScore !== undefined ? { reputationScore: peer.reputationScore } : {}),
-          ...(pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
-          ...(pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
-          ...(pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+          ...(!unitPriced && pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
+          ...(!unitPriced && pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
+          ...(!unitPriced && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+          ...(unitPriced ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
+          ...(health ? { health } : {}),
+          ...(performance ? { performance } : {}),
         });
       }
     }
@@ -194,8 +253,31 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
   return offers;
 }
 
+/**
+ * USD per input character a speech offer bills: speech billing matches
+ * components against `{ model: <service> }` and charges every one that
+ * applies, so their prices add up. 0 for a billing model with no components
+ * (free); null when the offer is not speech or publishes no character price.
+ */
+export function speechOfferUsdPerCharacter(offer: NetworkServiceOffer): number | null {
+  if (offer.type !== 'speech') return null;
+  const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  // A billing model with no components charges nothing: the offer is free.
+  if (model && model.components.length === 0) return 0;
+  const attributes = { model: offer.serviceId };
+  const applicable = (model?.components ?? []).filter((component) =>
+    component.unit === 'input_characters'
+    && componentMatchesAttributes(component, attributes)
+    && Number.isFinite(component.priceUsd)
+    && component.priceUsd >= 0);
+  return applicable.length > 0
+    ? applicable.reduce((sum, component) => sum + component.priceUsd, 0)
+    : null;
+}
+
 function comparableOfferPrice(offer: NetworkServiceOffer): number {
   if (offer.type === 'image') return offer.minImageUsdPerImage ?? Number.POSITIVE_INFINITY;
+  if (offer.type === 'speech') return speechOfferUsdPerCharacter(offer) ?? Number.POSITIVE_INFINITY;
   if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) {
     return Number.POSITIVE_INFINITY;
   }

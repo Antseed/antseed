@@ -82,7 +82,7 @@ module.exports = async function sign(configuration) {
     process.env.SSIGN_PATH || 'ssign',
     // Default RFC3161 TSA (http:// — the TSA serves no TLS; timestamp
     // integrity comes from its own signature, per usual for RFC3161).
-    ['-n', 'AntSeed Desktop', '-u', 'https://antseed.com', file],
+    ['-n', 'Antseed Desktop', '-u', 'https://antseed.com', file],
     // Secrets flow via env vars, never argv. Signs in place. ssign reads
     // its account/seed from CERTUM_EMAIL/CERTUM_OTP.
     {

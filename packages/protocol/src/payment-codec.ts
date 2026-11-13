@@ -1,5 +1,7 @@
 import {
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
+  PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
+  type OneOffChannelPlan,
   CLOSE_CHANNEL_REJECT_CODES,
   type SpendingAuthPayload,
   type AuthAckPayload,
@@ -40,44 +42,57 @@ function requireFiniteNumberField(obj: Record<string, unknown>, field: string): 
 
 // --- Encoders ---
 
+/**
+ * The decoder rejects payloads over MAX_PAYLOAD_SIZE, so a larger frame would be
+ * dropped by the peer while the sender believes it was delivered. Fail at the
+ * sender instead.
+ */
+function encodePaymentJson(payload: object): Uint8Array {
+  const bytes = encoder.encode(JSON.stringify(payload));
+  if (bytes.byteLength > MAX_PAYLOAD_SIZE) {
+    throw new Error(`Payment payload too large: ${bytes.byteLength} bytes (max ${MAX_PAYLOAD_SIZE})`);
+  }
+  return bytes;
+}
+
 export function encodeSpendingAuth(payload: SpendingAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeAuthAck(payload: AuthAckPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageOpen(payload: FreeUsageOpenPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageAuth(payload: FreeUsageAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeFreeUsageAck(payload: FreeUsageAckPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeNeedFreeUsageAuth(payload: NeedFreeUsageAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodePaymentRequired(payload: PaymentRequiredPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeNeedAuth(payload: NeedAuthPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeCloseChannelRequest(payload: CloseChannelRequestPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 export function encodeCloseChannelResult(payload: CloseChannelResultPayload): Uint8Array {
-  return encoder.encode(JSON.stringify(payload));
+  return encodePaymentJson(payload);
 }
 
 // --- Decoders (with runtime validation) ---
@@ -95,6 +110,19 @@ export function decodeSpendingAuth(data: Uint8Array): SpendingAuthPayload {
   if (typeof obj.reserveSalt === 'string') result.reserveSalt = obj.reserveSalt;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
   if (typeof obj.reserveDeadline === 'number') result.reserveDeadline = obj.reserveDeadline;
+  if (typeof obj.reserveBatch === 'object' && obj.reserveBatch !== null) {
+    const batch = obj.reserveBatch as Record<string, unknown>;
+    result.reserveBatch = {
+      cumulativeAmount: requireStringField(batch, 'cumulativeAmount'),
+      metadataHash: requireStringField(batch, 'metadataHash'),
+      metadata: requireStringField(batch, 'metadata'),
+      spendingAuthSig: requireStringField(batch, 'spendingAuthSig'),
+      maxAmount: requireStringField(batch, 'maxAmount'),
+      deadline: requireFiniteNumberField(batch, 'deadline'),
+      reserveAuthSig: requireStringField(batch, 'reserveAuthSig'),
+    };
+  }
+  if (typeof obj.oneOffRequestId === 'string') result.oneOffRequestId = obj.oneOffRequestId;
   return result;
 }
 
@@ -107,12 +135,14 @@ export function decodeAuthAck(data: Uint8Array): AuthAckPayload {
 
 export function decodeFreeUsageOpen(data: Uint8Array): FreeUsageOpenPayload {
   const obj = parsePaymentJson(data);
-  return {
+  const result: FreeUsageOpenPayload = {
     channelId: requireStringField(obj, 'channelId'),
     salt: requireStringField(obj, 'salt'),
     deadline: requireFiniteNumberField(obj, 'deadline'),
     openSig: requireStringField(obj, 'openSig'),
   };
+  if (typeof obj.freeTierDelegations === 'string') result.freeTierDelegations = obj.freeTierDelegations;
+  return result;
 }
 
 export function decodeFreeUsageAuth(data: Uint8Array): FreeUsageAuthPayload {
@@ -167,8 +197,19 @@ export function decodePaymentRequired(data: Uint8Array): PaymentRequiredPayload 
   if (typeof obj.currentAcceptedCumulative === 'string') result.currentAcceptedCumulative = obj.currentAcceptedCumulative;
   if (typeof obj.channelId === 'string') result.channelId = obj.channelId;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
-  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED) result.code = obj.code;
+  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED || obj.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED) result.code = obj.code;
+  if (typeof obj.oneOffPlan === 'object' && obj.oneOffPlan !== null) {
+    result.oneOffPlan = decodeOneOffChannelPlan(obj.oneOffPlan as Record<string, unknown>);
+  }
   return result;
+}
+
+export function decodeOneOffChannelPlan(plan: Record<string, unknown>): OneOffChannelPlan {
+  return {
+    openingReserveAmount: requireStringField(plan, 'openingReserveAmount'),
+    requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
+    requestCost: requireStringField(plan, 'requestCost'),
+  };
 }
 
 export function decodeNeedAuth(data: Uint8Array): NeedAuthPayload {

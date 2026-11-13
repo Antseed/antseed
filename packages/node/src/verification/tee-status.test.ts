@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest';
+import { passedSellerNodeClaims, isFreshSellerNodeEvidence, teeScope, teeUpstreams, TEE_PROVIDER_CLAIM, TEE_REQUIRED_CLAIMS, TEE_UPSTREAMS_CLAIM, type TeeEvidence } from './tee-status.js';
+
+describe('seller-node TEE evidence', () => {
+  const claims = TEE_REQUIRED_CLAIMS.map((claim) => ({ claim, ok: true }));
+  it('requires both claims and rejects missing, unrelated and conflicting duplicate claims', () => {
+    expect(passedSellerNodeClaims(claims)).toBe(true);
+    expect(passedSellerNodeClaims([...claims, claims[0]!])).toBe(true);
+    expect(passedSellerNodeClaims([])).toBe(false);
+    expect(passedSellerNodeClaims(claims.slice(1))).toBe(false);
+    expect(passedSellerNodeClaims([{ claim: 'inference-verified', ok: true }])).toBe(false);
+    expect(passedSellerNodeClaims([...claims, { ...claims[0]!, ok: false }])).toBe(false);
+  });
+  it('accepts only fresh successful evidence that is neither checking nor unavailable', () => {
+    const evidence: TeeEvidence = { peerId: 'seller', verifierId: 'antseed-verifier', fingerprint: 'caps', checkedAt: 100, expiresAt: 200, sellerNodeVerified: true, claims };
+    expect(isFreshSellerNodeEvidence(undefined, 100)).toBe(false);
+    expect(isFreshSellerNodeEvidence(evidence, 199)).toBe(true);
+    expect(isFreshSellerNodeEvidence(evidence, 200)).toBe(false);
+    expect(isFreshSellerNodeEvidence({ ...evidence, sellerNodeVerified: false }, 150)).toBe(false);
+    expect(isFreshSellerNodeEvidence({ ...evidence, unavailable: true }, 150)).toBe(false);
+    expect(isFreshSellerNodeEvidence({ ...evidence, checking: true }, 150)).toBe(false);
+  });
+  it('is end-to-end only when the provider TEE claim passes', () => {
+    expect(teeScope({ claims })).toBe('seller-node');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }] })).toBe('end-to-end');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
+    expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
+  });
+  it('reads the attested upstream hosts of a passing seller node', () => {
+    const upstreams = { claim: TEE_UPSTREAMS_CLAIM, ok: true, detail: 'https://api.example.com, https://backup.example:8443, nonsense' };
+    expect(teeUpstreams({ claims: [...claims, upstreams] })).toEqual(['api.example.com', 'backup.example:8443']);
+    expect(teeUpstreams({ claims })).toEqual([]);
+    expect(teeUpstreams({ claims: [...claims, { ...upstreams, ok: false }] })).toEqual([]);
+  });
+});

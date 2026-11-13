@@ -35,6 +35,7 @@ const RESPONSE_PATH_PREFIX = '/v1/responses';
 const RELAY_PATH = '/responses';
 const AUTH_CLAIM_PATH = 'https://api.openai.com/auth';
 const CLIENT_STREAM_REQUESTED_HEADER = 'x-antseed-client-stream-requested';
+const SESSION_ID_HEADER = 'session_id';
 
 function expandHome(path: string): string {
   if (path === '~') return homedir();
@@ -306,10 +307,11 @@ function prepareRequestBody(
     }
     delete parsed.service;
 
-    // Strip parameters the upstream backend doesn't support.
+    // Strip parameters the upstream backend doesn't support. `max_output_tokens`
+    // is supported and must pass through: it is the caller's only bound on a
+    // runaway answer.
     delete parsed.metadata;
     delete parsed.user;
-    delete parsed.max_output_tokens;
     delete parsed.temperature;
     delete parsed.top_p;
 
@@ -338,10 +340,19 @@ function prepareRequestBody(
       }
     }
 
+    // The backend routes a conversation to its prompt cache by the `session_id`
+    // header; `prompt_cache_key` in the body alone gets no cache hits. Codex
+    // sends both with the same id, so derive the header from the body key.
+    let headers = withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER);
+    const promptCacheKey = typeof parsed.prompt_cache_key === 'string' ? parsed.prompt_cache_key.trim() : '';
+    if (promptCacheKey && !getHeader(headers, SESSION_ID_HEADER)) {
+      headers = { ...headers, [SESSION_ID_HEADER]: promptCacheKey };
+    }
+
     return {
       request: {
         ...request,
-        headers: withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER),
+        headers,
         body: new TextEncoder().encode(JSON.stringify(parsed)),
       },
       forcedStream,
@@ -392,16 +403,22 @@ function collapseResponsesSseResponse(response: SerializedHttpResponse): Seriali
 }
 
 function parseResponsesSse(text: string): { body: Record<string, unknown>; statusCode?: number } | null {
+  const outputItems: Array<Record<string, unknown> | undefined> = [];
+
   for (const block of text.replace(/\r\n/g, '\n').split('\n\n')) {
     const lines = block.split('\n');
     const event = lines
       .find((line) => line.startsWith('event: '))
       ?.slice('event: '.length)
       .trim();
+    // `response.incomplete` ends a stream that hit `max_output_tokens`; it carries
+    // the partial answer like `response.completed`.
     if (
       event !== 'response.completed'
+      && event !== 'response.incomplete'
       && event !== 'response.failed'
       && event !== 'error'
+      && event !== 'response.output_item.done'
     ) {
       continue;
     }
@@ -415,6 +432,16 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
 
     try {
       const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (event === 'response.output_item.done') {
+        const item = parsed.item;
+        const outputIndex = parsed.output_index;
+        if (typeof outputIndex === 'number' && Number.isInteger(outputIndex) && outputIndex >= 0
+          && item && typeof item === 'object' && !Array.isArray(item)) {
+          outputItems[outputIndex] = item as Record<string, unknown>;
+        }
+        continue;
+      }
+
       if (event === 'error') {
         return { body: normalizeUpstreamStreamError(parsed), statusCode: 502 };
       }
@@ -424,6 +451,12 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
         const body = nested as Record<string, unknown>;
         if (event === 'response.failed') {
           return { body: normalizeUpstreamStreamError(body), statusCode: 502 };
+        }
+        const completedOutput = outputItems.filter(
+          (item): item is Record<string, unknown> => item !== undefined,
+        );
+        if (completedOutput.length > 0 && (!Array.isArray(body.output) || body.output.length === 0)) {
+          return { body: { ...body, output: completedOutput } };
         }
         return { body };
       }

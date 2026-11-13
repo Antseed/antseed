@@ -132,4 +132,13 @@
     column-gap: 24px;
     row-gap: 36px;
   }
+
+  /* The two standalone links sit on one row of their own, so the short
+     column doesn't leave a gap beside the long Product list. */
+  .columns > .column:first-child {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+  }
 }

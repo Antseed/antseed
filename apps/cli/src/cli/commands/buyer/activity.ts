@@ -3,9 +3,9 @@ import chalk from 'chalk'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getServiceMetadataId } from '@antseed/node'
-import { canonicalModelKey } from '@antseed/node/model-identity'
+import { totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
 import { getGlobalOptions } from '../types.js'
-import { BAKED_COMPARABLE_PRICES_URL } from '../../../generated/baked-defaults.js'
+import { COMPARABLE_PRICES_URL_ENV, comparablePricesUrl, fetchComparableRetailPrices } from '../../../retail-prices.js'
 import { loadConfig } from '../../../config/loader.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
@@ -22,17 +22,6 @@ import { daemonJson } from './daemon.js'
 import { pastEpochs } from '../emissions.js'
 
 const HISTORY_WINDOWS = [7, 30, 90]
-/**
- * Endpoint serving comparable retail prices for the Saved tile, in the
- * OpenRouter-compatible models schema:
- * `{ data: [{ id, name, pricing: { prompt, completion, input_cache_read } }] }`
- * with prices in USD per token (e.g. set it to OpenRouter's models endpoint).
- * Release builds bake a default via scripts/bake-comparable-prices-url.mjs;
- * with neither env nor baked value, the savings baseline is off. Setting the
- * env to an empty string disables a baked default.
- */
-const COMPARABLE_PRICES_URL_ENV = 'ANTSEED_COMPARABLE_PRICES_URL'
-const COMPARABLE_PRICES_TIMEOUT_MS = 8_000
 const CHART_WIDTH = 24
 const ONCHAIN_READ_CONCURRENCY = 8
 const MAX_CHANNEL_ROWS = 12
@@ -194,49 +183,6 @@ interface MeasuredSavings {
   matchedServices: number
 }
 
-type ReferencePrice = { input: number | null; output: number | null; cachedInput: number | null }
-
-function comparablePricesUrl(): string | null {
-  const raw = process.env[COMPARABLE_PRICES_URL_ENV]
-  if (raw !== undefined) {
-    // A set-but-empty env explicitly disables a baked release default.
-    return raw.trim() || null
-  }
-  return BAKED_COMPARABLE_PRICES_URL
-}
-
-async function fetchComparableRetailPrices(): Promise<Map<string, ReferencePrice> | null> {
-  const url = comparablePricesUrl()
-  if (!url) return null
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(COMPARABLE_PRICES_TIMEOUT_MS) })
-    if (!res.ok) return null
-    const body = await res.json() as { data?: Array<{ id?: unknown; name?: unknown; pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown } | null }> }
-    if (!Array.isArray(body?.data)) return null
-    const perMillion = (pricePerToken: unknown): number | null => {
-      const numeric = Number(pricePerToken)
-      return Number.isFinite(numeric) && numeric > 0 ? numeric * 1_000_000 : null
-    }
-    const map = new Map<string, ReferencePrice>()
-    for (const model of body.data) {
-      const price: ReferencePrice = {
-        input: perMillion(model.pricing?.prompt),
-        output: perMillion(model.pricing?.completion),
-        cachedInput: perMillion(model.pricing?.input_cache_read),
-      }
-      if (price.input === null && price.output === null) continue
-      for (const rawName of [model.id, model.name]) {
-        if (typeof rawName !== 'string' || !rawName.trim()) continue
-        const key = canonicalModelKey(rawName)
-        if (key && !map.has(key)) map.set(key, price)
-      }
-    }
-    return map.size > 0 ? map : null
-  } catch {
-    return null
-  }
-}
-
 /**
  * Usage attributes spend per keccak256(serviceName); hashing is one-way, so
  * rebuild the reverse map from every service name the buyer has seen
@@ -269,38 +215,15 @@ async function resolveServiceNames(dataDir: string, hashes: string[]): Promise<M
 function computeMeasuredSavings(
   services: DaemonServiceUsage[],
   names: Map<string, string>,
-  referenceMap: Map<string, ReferencePrice>,
+  referenceMap: RetailPriceMap,
 ): MeasuredSavings | null {
-  let actualUsd = 0
-  let baselineUsd = 0
-  let matchedServices = 0
-  const tokens = (value: string): number => {
-    const numeric = Number(value)
-    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0
-  }
-  for (const service of services) {
-    const name = names.get(service.serviceIdHash.toLowerCase())
-    if (!name) continue
-    const ref = referenceMap.get(canonicalModelKey(name))
-    if (!ref || (ref.input === null && ref.output === null)) continue
-    // Buyer-side inputTokens are total logical input (fresh + cached).
-    const totalInput = tokens(service.inputTokens)
-    const cached = Math.min(tokens(service.cachedInputTokens), totalInput)
-    const freshInput = totalInput - cached
-    const output = tokens(service.outputTokens)
-    if (totalInput === 0 && output === 0) continue
-    const inputPrice = ref.input ?? 0
-    const cachedPrice = ref.cachedInput ?? inputPrice
-    const outputPrice = ref.output ?? 0
-    const serviceBaseline = (freshInput * inputPrice + cached * cachedPrice + output * outputPrice) / 1_000_000
-    if (serviceBaseline <= 0) continue
-    baselineUsd += serviceBaseline
-    actualUsd += tokens(service.amountUsdc) / 1_000_000
-    matchedServices += 1
-  }
-  if (matchedServices === 0 || baselineUsd <= 0) return null
-  const pct = Math.round(Math.max(0, Math.min(1, 1 - actualUsd / baselineUsd)) * 100)
-  return { pct, actualUsd, baselineUsd, matchedServices }
+  const totals = totalRetailUsage(services.map((row) => ({
+    ...row,
+    serviceName: names.get(row.serviceIdHash.toLowerCase()) ?? null,
+  })), referenceMap)
+  if (!totals) return null
+  const pct = Math.round(Math.max(0, Math.min(1, 1 - totals.paidUsd / totals.retailUsd)) * 100)
+  return { pct, actualUsd: totals.paidUsd, baselineUsd: totals.retailUsd, matchedServices: totals.matchedServices }
 }
 
 // ─── Formatting ───

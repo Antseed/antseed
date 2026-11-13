@@ -2,7 +2,7 @@
 
 This template shows how to publish a **provider plugin** for the Antseed Network. A provider plugin connects the Antseed node to an upstream AI API (Anthropic, OpenAI, a local LLM, etc.) and offers AI services to buyers on the P2P network.
 
-> **Important:** AntSeed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service.
+> **Important:** Antseed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service.
 
 ## How It Works
 
@@ -198,7 +198,7 @@ npm run verify
 
 ## Links
 
-- [@antseed/node source](https://github.com/AntSeed/node)
-- [Provider interface](https://github.com/AntSeed/node/tree/main/src/interfaces/seller-provider.ts)
-- [Official Anthropic provider](https://github.com/AntSeed/provider-anthropic)
-- [Official Claude Code provider](https://github.com/AntSeed/provider-claude-code)
+- [@antseed/node source](https://github.com/Antseed/node)
+- [Provider interface](https://github.com/Antseed/node/tree/main/src/interfaces/seller-provider.ts)
+- [Official Anthropic provider](https://github.com/Antseed/provider-anthropic)
+- [Official Claude Code provider](https://github.com/Antseed/provider-claude-code)

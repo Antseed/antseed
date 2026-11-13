@@ -1,7 +1,16 @@
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { ROUTE_SELECTION_HEADER } from './route-selection.js'
 import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
+import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from '@antseed/node/free-tier-program'
+
+/** Whether the seller marked a response as covered by its free allowance (nothing charged). */
+export function coveredByFreeAllowance(headers: Record<string, string | string[] | undefined>): boolean {
+  return Object.entries(headers).some(([name, value]) =>
+    name.toLowerCase() === FREE_TIER_SERVED_HEADER
+    && (Array.isArray(value) ? value : [value]).some((entry) => entry?.trim().toLowerCase() === FREE_TIER_SERVED_COVERED))
+}
 
 const decoder = new TextDecoder()
 
@@ -237,6 +246,24 @@ type ResolvedPricing = {
   cachedInputUsdPerMillion: number | null
 }
 
+function setPricingHeaders(headers: Record<string, string>, pricing: ResolvedPricing): void {
+  setFiniteNumberHeader(headers, 'x-antseed-input-usd-per-million', pricing.inputUsdPerMillion)
+  setFiniteNumberHeader(headers, 'x-antseed-output-usd-per-million', pricing.outputUsdPerMillion)
+  setFiniteNumberHeader(headers, 'x-antseed-cached-input-usd-per-million', pricing.cachedInputUsdPerMillion)
+}
+
+/**
+ * Tells a gateway whether the service also charges per unit (image, video
+ * second, speech character), so zero token prices alone do not make it free:
+ * `1` when a published unit price is positive, `0` when none is.
+ */
+function setUnitPricedHeader(headers: Record<string, string>, peer: PeerInfo, provider: string, service: string | null): void {
+  if (!service) return
+  const models = peer.providerServiceUnitBillingModels?.[provider]?.services?.[service]
+  const priced = Object.values(models ?? {}).some((model) => (model?.components ?? []).some((component) => component.priceUsd > 0))
+  headers['x-antseed-unit-priced'] = priced ? '1' : '0'
+}
+
 function resolvePeerPricing(peer: PeerInfo, provider: string, service: string | null): ResolvedPricing {
   const providerPricing = peer.providerPricing?.[provider]
   if (providerPricing) {
@@ -285,7 +312,10 @@ export function computeResponseTelemetry(
   }
 
   let estimatedCostUsd: number | null = null
-  if (
+  if (coveredByFreeAllowance(responseHeaders)) {
+    // The seller's free allowance covered it: nothing is charged at the listed price.
+    estimatedCostUsd = 0
+  } else if (
     pricing.inputUsdPerMillion !== null &&
     pricing.outputUsdPerMillion !== null &&
     Number.isFinite(pricing.inputUsdPerMillion) &&
@@ -314,6 +344,28 @@ export function computeResponseTelemetry(
   }
 }
 
+/**
+ * Response headers of a request a routing service ranked: the router's peer
+ * and service, and which of its recommendations (1 = its first pick) was tried
+ * last: it served the request, unless the response is the last refusal. A
+ * failed ranking carries the router's peer and service only.
+ */
+export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
+export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
+export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
+
+/** Headers only the buyer sets: which router ranked a request, and why routing picked its seller. */
+const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
+
+/**
+ * A seller's headers without the buyer's routing headers: only the buyer says
+ * which router ranked a request and why its seller was picked, so a seller can
+ * neither change nor invent that.
+ */
+export function withoutRouterHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !BUYER_ROUTING_HEADERS.has(name.toLowerCase())))
+}
+
 export function attachAntseedTelemetryHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
@@ -321,7 +373,7 @@ export function attachAntseedTelemetryHeaders(
   requestId: string,
   latencyMs: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
   headers['x-antseed-request-id'] = requestId
   headers['x-antseed-latency-ms'] = String(Math.max(0, Math.floor(latencyMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
@@ -332,9 +384,8 @@ export function attachAntseedTelemetryHeaders(
   if (telemetry.pricing.service) {
     headers['x-antseed-service'] = telemetry.pricing.service
   }
-  setFiniteNumberHeader(headers, 'x-antseed-input-usd-per-million', telemetry.pricing.inputUsdPerMillion)
-  setFiniteNumberHeader(headers, 'x-antseed-output-usd-per-million', telemetry.pricing.outputUsdPerMillion)
-  setFiniteNumberHeader(headers, 'x-antseed-cached-input-usd-per-million', telemetry.pricing.cachedInputUsdPerMillion)
+  setPricingHeaders(headers, telemetry.pricing)
+  setUnitPricedHeader(headers, selectedPeer, telemetry.pricing.provider, telemetry.pricing.service)
   headers['x-antseed-token-source'] = telemetry.usage.source
   headers['x-antseed-input-tokens'] = String(telemetry.usage.inputTokens)
   headers['x-antseed-cached-input-tokens'] = String(telemetry.usage.cachedInputTokens)
@@ -346,13 +397,24 @@ export function attachAntseedTelemetryHeaders(
   return headers
 }
 
+/**
+ * Streamed responses carry the seller's advertised prices too (a gateway tells
+ * a free seller by them), and the time from sending to the seller's first frame.
+ */
 export function attachStreamingAntseedHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
-  requestId: string,
+  request: SerializedHttpRequest,
+  firstTokenMs?: number,
 ): Record<string, string> {
-  const headers: Record<string, string> = { ...upstreamHeaders }
-  headers['x-antseed-request-id'] = requestId
+  const headers: Record<string, string> = withoutRouterHeaders(upstreamHeaders)
+  headers['x-antseed-request-id'] = request.requestId
+  if (firstTokenMs !== undefined) headers['x-antseed-first-token-ms'] = String(Math.max(0, Math.floor(firstTokenMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
+  const service = extractRequestedService(request)
+  if (service) headers['x-antseed-service'] = service
+  const provider = pickProviderForPeer(selectedPeer, request)
+  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, provider, service))
+  setUnitPricedHeader(headers, selectedPeer, provider, service)
   return headers
 }

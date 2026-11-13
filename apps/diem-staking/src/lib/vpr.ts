@@ -18,8 +18,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-export const VPR_RELEASES_URL = 'https://github.com/AntSeed/antseed/releases/latest';
-const GH_API_LATEST = 'https://api.github.com/repos/AntSeed/antseed/releases/latest';
+export const VPR_RELEASES_URL = 'https://github.com/Antseed/antseed/releases/latest';
+const GH_API_LATEST = 'https://api.github.com/repos/Antseed/antseed/releases/latest';
 
 export type Platform = 'mac' | 'win' | 'linux' | 'unknown';
 export type Arch = 'arm64' | 'x64';

@@ -20,11 +20,12 @@ export type ModelRouteCandidate = {
   peerId: string;
   effectiveReputationScore?: number | null;
   onChainReputationScore?: number | null;
-  onChainTrustScore?: number | null;
   reputationScore?: number | null;
   inputUsdPerMillion?: number | null;
   outputUsdPerMillion?: number | null;
   minImageUsdPerImage?: number | null;
+  /** Speech routes: USD per `input` character; 0 when free, null when not advertised. */
+  speechUsdPerCharacter?: number | null;
   peerCooldownUntil?: number | null;
   peerFailureStreak?: number | null;
 };
@@ -55,6 +56,10 @@ export function modelRouteReputationScore(route: ModelRouteCandidate): number | 
 }
 
 export function modelRouteTotalPrice(route: ModelRouteCandidate): number | null {
+  const characterPrice = route.speechUsdPerCharacter;
+  if (typeof characterPrice === 'number' && Number.isFinite(characterPrice) && characterPrice >= 0) {
+    return characterPrice;
+  }
   const imagePrice = route.minImageUsdPerImage;
   if (typeof imagePrice === 'number' && Number.isFinite(imagePrice) && imagePrice >= 0) {
     return imagePrice;

@@ -13,7 +13,7 @@
 .bar {
   left: 0;
   right: 0;
-  bottom: 24px;
+  bottom: 0;
   width: 100%;
   border-top: 1px solid var(--border);
   animation: bottom-notice-bar-in 0.25s ease;
@@ -22,7 +22,8 @@
 .toast {
   z-index: 220;
   left: calc(88px + (100vw - 88px) / 2);
-  bottom: 40px;
+  // Above any bar along the bottom, so both stay readable and clickable.
+  bottom: calc(var(--bottom-notice-height, 0px) + 40px);
   width: min(392px, calc(100vw - 120px));
   padding: 10px 12px;
   border: 1px solid var(--success-subtle-border);
@@ -122,6 +123,43 @@
 
 .action:hover {
   background: rgba(var(--accent-green-rgb), 0.2);
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--text-muted);
+}
+
+.neutral .title {
+  color: var(--text-primary);
+}
+
+.toast.neutral .icon {
+  background: none;
+  color: rgb(var(--warning-rgb));
+}
+
+.neutral .action {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+  color: var(--text-primary);
 }
 
 .danger .action {

@@ -3,7 +3,7 @@ slug: buyer-protection
 title: "Buyer Protection Without a Middleman"
 authors: [antseed]
 tags: [protocol, payments, security, P2P, buyer-protection]
-description: How AntSeed protects buyers during active AI sessions — overdraft control, independent cost verification, reserve ceilings, and a guaranteed on-chain escape hatch — without any intermediary.
+description: How Antseed protects buyers during active AI sessions — overdraft control, independent cost verification, reserve ceilings, and a guaranteed on-chain escape hatch — without any intermediary.
 keywords: [buyer protection, overdraft control, cost verification, EIP-712, SpendingAuth, P2P payments, payment channels, streaming payments, escrow, smart contract]
 image: /og-image.jpg
 date: 2099-01-01
@@ -14,7 +14,7 @@ When you use an AI API, you swipe a card and trust the provider to charge you fa
 
 On a P2P network, none of that exists. The buyer is paying a stranger — no brand, no support department, no recourse beyond the protocol itself. If the seller overcharges, there's no one to call. If the seller disappears mid-session, there's no one to refund you. The protocol has to make cheating unprofitable and recovery automatic.
 
-AntSeed's buyer protection is built in eight layers. Each one addresses a specific attack or failure mode. Together, they ensure the buyer never risks more than it can afford, never pays more than it can verify, and can always get unspent funds back — without trusting the seller or any intermediary.
+Antseed's buyer protection is built in eight layers. Each one addresses a specific attack or failure mode. Together, they ensure the buyer never risks more than it can afford, never pays more than it can verify, and can always get unspent funds back — without trusting the seller or any intermediary.
 
 <!-- truncate -->
 

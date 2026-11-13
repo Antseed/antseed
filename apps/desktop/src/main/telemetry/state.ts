@@ -22,8 +22,13 @@ export type TelemetryState = {
   lastSessionId: string | null;
   lastSessionStartedAtMs: number | null;
   lastSessionHeartbeatAtMs: number | null;
-  /** In-app opt-out. Defaults to false (telemetry on, opt-out model). */
-  telemetryDisabled: boolean;
+  /**
+   * In-app opt-in. Defaults to false (telemetry off until the user turns it
+   * on in Preferences → Privacy). The older opt-out field `telemetryDisabled`
+   * is ignored: everyone stored `false` there by default, so it never meant a
+   * choice to share.
+   */
+  telemetryEnabled: boolean;
 };
 
 export type TelemetryStateLoadResult = {
@@ -45,7 +50,7 @@ export function defaultTelemetryState(): TelemetryState {
     lastSessionId: null,
     lastSessionStartedAtMs: null,
     lastSessionHeartbeatAtMs: null,
-    telemetryDisabled: false,
+    telemetryEnabled: false,
   };
 }
 
@@ -87,7 +92,7 @@ function normalize(raw: unknown): TelemetryState | null {
     })(),
     lastSessionStartedAtMs: asNumberOrNull(record['lastSessionStartedAtMs']),
     lastSessionHeartbeatAtMs: asNumberOrNull(record['lastSessionHeartbeatAtMs']),
-    telemetryDisabled: asBoolean(record['telemetryDisabled'], false),
+    telemetryEnabled: asBoolean(record['telemetryEnabled'], false),
   };
 }
 

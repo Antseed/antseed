@@ -3,25 +3,18 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
 import { parseVerifierCapabilities } from '../../../plugins/verifier.js';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
-  AntseedNode,
   buildNetworkServiceOffers,
-  computeOnChainReputationScore,
   type NetworkServiceOffer,
   type PeerInfo,
 } from '@antseed/node';
-import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery';
 import {
   collectPeerVerificationLinks,
   type PeerVerificationLink,
 } from '@antseed/node/discovery';
-import { parsePersistedPeers } from '../../../proxy/buyer-proxy.js';
-import { buildPaymentsConfig } from './chain-config-helper.js';
-import { resolveEffectiveBuyerConfig } from '../../../config/effective.js';
+import { discoverNetwork, loadBuyerSnapshot, type NetworkSnapshot } from '../../../discovery/network-snapshot.js';
 import {
   collectServiceTags,
   parseTagFilter,
@@ -41,50 +34,7 @@ interface BrowseOptions {
   top?: string;
 }
 
-interface BrowseSnapshot {
-  peers: PeerInfo[];
-  onChainStatsRefreshedAt: number | null;
-  sourceLabel: string;
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Load a snapshot from a live buyer daemon. Returns `null` unless the daemon is
- * connected, its PID is alive, and the persisted peer list is non-empty.
- */
-async function loadSnapshotFromBuyerState(dataDir: string): Promise<BrowseSnapshot | null> {
-  try {
-    const raw = await readFile(join(dataDir, 'buyer.state.json'), 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      state?: unknown;
-      pid?: unknown;
-      onChainStatsRefreshedAt?: unknown;
-    };
-    if (parsed.state !== 'connected') return null;
-    if (typeof parsed.pid !== 'number' || !isProcessAlive(parsed.pid)) return null;
-    const peers = parsePersistedPeers(parsed);
-    if (peers.length === 0) return null;
-    const refreshedAt = typeof parsed.onChainStatsRefreshedAt === 'number'
-      && Number.isFinite(parsed.onChainStatsRefreshedAt)
-      ? parsed.onChainStatsRefreshedAt
-      : null;
-    return {
-      peers,
-      onChainStatsRefreshedAt: refreshedAt,
-      sourceLabel: `buyer daemon (pid ${parsed.pid})`,
-    };
-  } catch {
-    return null;
-  }
-}
+type BrowseSnapshot = NetworkSnapshot;
 
 const offersByPeer = new WeakMap<PeerInfo, NetworkServiceOffer[]>();
 function peerServiceOffers(peer: PeerInfo): NetworkServiceOffer[] {
@@ -210,8 +160,9 @@ function resolveBestPaidPricing(peer: PeerInfo): { input: number | null; output:
   return { input: bestInput, output: bestOutput };
 }
 
+/** Buyer trust score (0-100) as computed by the node; the CLI never re-scores. */
 function effectiveOnChainReputationScore(peer: PeerInfo): number | null {
-  return peer.onChainReputationScore ?? computeOnChainReputationScore(peer);
+  return peer.onChainReputationScore ?? null;
 }
 
 const BROWSE_SYBIL_WARN_THRESHOLD = 0.30;
@@ -221,11 +172,16 @@ function isPeerSybilRisky(peer: PeerInfo): boolean {
     && peer.onChainSybilRisk >= BROWSE_SYBIL_WARN_THRESHOLD;
 }
 
+/** Proven wash trader per `AntseedWashTradingRegistry`; the trust score is 0. */
+function isPeerWashFlagged(peer: PeerInfo): boolean {
+  return peer.onChainWashFlagged === true;
+}
+
 function formatReputationScore(peer: PeerInfo): string {
   const score = effectiveOnChainReputationScore(peer);
   if (score == null) return chalk.dim('—');
   const formatted = (score / 10).toFixed(1);
-  const warn = isPeerSybilRisky(peer) ? chalk.red('⚠ ') : '';
+  const warn = isPeerSybilRisky(peer) || isPeerWashFlagged(peer) ? chalk.red('⚠ ') : '';
   if (score >= 80) return warn + chalk.green(formatted);
   if (score >= 50) return warn + chalk.cyan(formatted);
   if (score > 0)   return warn + chalk.yellow(formatted);
@@ -507,6 +463,10 @@ function renderCompactTable(peers: PeerInfo[], hasChainData: boolean): void {
   if (!hasChainData) {
     console.log(chalk.dim('  Sessions / Volume / Last settled are dim — configure chain RPC to enable on-chain verification.'));
   }
+  const washFlagged = peers.filter(isPeerWashFlagged);
+  if (washFlagged.length > 0) {
+    console.log(`  ${chalk.red('⚠')} ${chalk.red(`${washFlagged.length} peer(s) are proven wash traders (on-chain registry) — trust 0`)}${chalk.dim(`: ${washFlagged.map((peer) => peer.peerId.slice(0, 12)).join(', ')}`)}`);
+  }
   const anySybilWarn = peers.some(isPeerSybilRisky);
   if (anySybilWarn) {
     console.log(chalk.dim(`  ${chalk.red('⚠')} peers triggered on-chain sybil heuristics. Run ${chalk.bold('antseed network peer <id>')} for the per-signal breakdown.`));
@@ -670,60 +630,23 @@ export function registerNetworkBrowseCommand(networkCmd: Command): void {
     .action(async (rawOptions: BrowseOptions) => {
       const globalOpts = getGlobalOptions(networkCmd);
       const config = await loadConfig(globalOpts.config);
-      const effectiveBuyerConfig = resolveEffectiveBuyerConfig({ config });
       const serviceFilter = rawOptions.service?.trim();
       const tagFilter = parseTagFilter(rawOptions.tag);
       const sortKey = parseSortKey(rawOptions.sort);
       const topLimit = parseTopLimit(rawOptions.top);
 
-      let snapshot = await loadSnapshotFromBuyerState(globalOpts.dataDir);
+      let snapshot: BrowseSnapshot | null = await loadBuyerSnapshot(globalOpts.dataDir);
 
       if (!snapshot) {
-        const bootstrapNodes = config.network.bootstrapNodes.length > 0
-          ? toBootstrapConfig(parseBootstrapList(config.network.bootstrapNodes))
-          : undefined;
-
         const spinner = ora('Discovering peers on the network...').start();
-        const paymentsConfig = buildPaymentsConfig(config.payments?.crypto);
-
-        const node = new AntseedNode({
-          role: 'buyer',
-          ...(bootstrapNodes ? { bootstrapNodes } : {}),
-          dhtOperationTimeoutMs: 30_000,
-          metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,
-          ...(paymentsConfig ? { payments: paymentsConfig } : {}),
-        });
-
         try {
-          await node.start();
-        } catch (err) {
-          spinner.fail(chalk.red(`Failed to connect to network: ${(err as Error).message}`));
-          process.exit(1);
-        }
-
-        try {
-          const peers = await node.discoverPeers(serviceFilter);
-          spinner.succeed(chalk.green(`Found ${peers.length} peer(s)`));
-          // Only stamp `onChainStatsRefreshedAt` when the enrichment loop
-          // could actually have run — otherwise we'd display a misleading
-          // "On-chain stats as of just now" header on top of a table that
-          // has "—" in every on-chain column. Derive it from the per-peer
-          // timestamps so we reflect only real RPC reads.
-          const latestChainStamp = peers
-            .map((p) => p.onChainStatsFetchedAt ?? 0)
-            .reduce((max, v) => (v > max ? v : max), 0);
-          snapshot = {
-            peers,
-            onChainStatsRefreshedAt: latestChainStamp > 0 ? latestChainStamp : null,
-            sourceLabel: 'live DHT discovery',
-          };
+          snapshot = await discoverNetwork(config, { ...(serviceFilter ? { serviceFilter } : {}), rpcSource: 'network-browse' });
+          spinner.succeed(chalk.green(`Found ${snapshot.peers.length} peer(s)`));
         } catch (err) {
           spinner.fail(chalk.red(`Discovery failed: ${(err as Error).message}`));
-          await node.stop();
+          process.exitCode = 1;
           return;
         }
-
-        await node.stop();
       }
 
       let peers = snapshot.peers;

@@ -1,0 +1,13 @@
+@use 'sass:meta';
+@use './styles/tokens';
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* The standalone dashboard: the page is the app. `embed.scss` scopes the
+   same base and component styles under `.ants-embed` for the gateway console. */
+
+:root, [data-theme="dark"] { @include tokens.dark-tokens; }
+[data-theme="light"] { @include tokens.light-tokens; }
+
+@include meta.load-css('./styles/base');
+@include meta.load-css('./styles/components');

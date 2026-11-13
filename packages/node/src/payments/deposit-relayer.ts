@@ -131,7 +131,9 @@ export class DepositRelayer {
       // credit limit) → reject.
       let estimate;
       try {
-        estimate = await this._client.estimateSweepProfit(this._identity.wallet, params);
+        estimate = await this._client.estimateSweepProfit(this._identity.wallet, params, {
+          minProfitUsdc: this._config.minProfitBaseUnits ?? DEFAULT_MIN_PROFIT,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         debugLog(`[Relayer] Simulation failed for nonce ${payload.nonce.slice(0, 10)}...: ${message}`);
@@ -149,7 +151,8 @@ export class DepositRelayer {
       }
 
       this._sendReceipt(mux, payload, 'submitted');
-      const txHash = await this._client.sweep(this._identity.wallet, params);
+      // Speed-ups of a stalled sweep stop where it would no longer pay for itself.
+      const txHash = await this._client.sweep(this._identity.wallet, params, { maxFeePerGasWei: estimate.maxFeePerGasWei });
       debugLog(`[Relayer] Sweep confirmed for ${payload.from.slice(0, 10)}...: tx=${txHash} fee=${estimate.fee}`);
       this._sendReceipt(mux, payload, 'confirmed', txHash);
       return 'submitted';

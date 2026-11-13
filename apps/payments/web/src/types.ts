@@ -14,6 +14,10 @@ export interface PaymentConfig {
   channelsContractAddress: string;
   usdcContractAddress: string;
   emissionsContractAddress: string | null;
+  legacyEmissionsContractAddress: string | null;
+  usageAccountingAddress: string | null;
+  usageRewardsAddress: string | null;
+  recognizedUsageEffectiveEpoch: number | null;
   antsTokenAddress: string | null;
   networkStatsUrl: string | null;
   evmAddress: string | null;

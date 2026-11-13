@@ -45,7 +45,7 @@ const connectors = connectorsForWallets(
     },
   ],
   {
-    appName: 'AntSeed DIEM Capacity',
+    appName: 'Antseed DIEM Capacity',
     projectId,
   },
 );

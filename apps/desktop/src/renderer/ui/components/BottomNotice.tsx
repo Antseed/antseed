@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import styles from './BottomNotice.module.scss';
+import { createBarHeights } from './bottom-notice-height.js';
 
 export interface BottomNoticeAction {
   label: ReactNode;
@@ -8,6 +9,8 @@ export interface BottomNoticeAction {
 
 interface Props {
   actions?: BottomNoticeAction[];
+  /** `below`: the actions are text links under the text, for a narrow toast with a longer message. */
+  actionsPlacement?: 'inline' | 'below';
   align?: 'center' | 'start';
   ariaLive?: 'assertive' | 'polite';
   body?: ReactNode;
@@ -20,11 +23,12 @@ interface Props {
   priority?: 'default' | 'overlay';
   role?: 'alert' | 'status';
   title?: ReactNode;
-  tone?: 'danger' | 'success';
+  tone?: 'danger' | 'success' | 'neutral';
 }
 
 export function BottomNotice({
   actions = [],
+  actionsPlacement = 'inline',
   align = 'center',
   ariaLive,
   body,
@@ -47,15 +51,26 @@ export function BottomNotice({
     priority === 'overlay' ? styles.overlay : '',
   ].filter(Boolean).join(' ');
 
+  const ref = useBarHeight(layout === 'bar');
+
   return (
-    <div className={className} role={role} aria-live={ariaLive}>
+    <div ref={ref} className={className} role={role} aria-live={ariaLive} data-bottom-notice={layout}>
       <span className={styles.icon} aria-hidden="true">{icon}</span>
       <div className={styles.text}>
         {title !== undefined && <span className={styles.title}>{title}</span>}
         {body !== undefined && <span className={styles.body}>{body}</span>}
         {detail}
+        {actionsPlacement === 'below' && actions.length > 0 && (
+          <span className={styles.links}>
+            {actions.map((action, index) => (
+              <button key={index} type="button" className={styles.link} onClick={action.onClick}>
+                {action.label}
+              </button>
+            ))}
+          </span>
+        )}
       </div>
-      {actions.map((action, index) => (
+      {actionsPlacement === 'inline' && actions.map((action, index) => (
         <button key={index} type="button" className={styles.action} onClick={action.onClick}>
           {action.label}
         </button>
@@ -72,4 +87,31 @@ export function BottomNotice({
       )}
     </div>
   );
+}
+
+/**
+ * A bar lies over the window's last rows; its height goes to
+ * `--bottom-notice-height` so the layout can end right above it.
+ */
+const barHeights = createBarHeights((height) => {
+  const root = document.documentElement;
+  if (height === null) root.style.removeProperty('--bottom-notice-height');
+  else root.style.setProperty('--bottom-notice-height', `${height}px`);
+});
+
+function useBarHeight(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!enabled || !element) return undefined;
+    const apply = () => barHeights.set(element, Math.ceil(element.getBoundingClientRect().height));
+    apply();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      barHeights.remove(element);
+    };
+  }, [enabled]);
+  return ref;
 }

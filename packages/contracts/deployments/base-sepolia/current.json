@@ -1,0 +1,20 @@
+{
+  "$schema": "../schema.json",
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "release": "000-legacy-baseline",
+  "status": "active",
+  "sourceCommit": null,
+  "transactions": [],
+  "notes": "Baseline reconstructed from the repository's testnet chain configuration. The registry and antsToken entries were verified against live Base Sepolia: ANTSToken.registry() returns the recorded registry, and the registry's antsToken/channels/emissions/staking pointers match the addresses recorded here.",
+  "contracts": {
+    "usdc": { "address": "0xcA04797CaB6B412Cee6798B7314a05AdFDc3Cf23", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": null, "external": false },
+    "antsToken": { "address": "0x10B2B40d7aDEBAB0f8a9567fc90973Fbb997aE61", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "legacy", "external": false },
+    "registry": { "address": "0x81562e904D228Ee05DB473f5c9453F0f0D65ad5A", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "legacy", "external": false },
+    "deposits": { "address": "0x96f083A9801AFdcE7D764651954A1A9Fbd489FEA", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "legacy", "external": false },
+    "channels": { "address": "0x3b0b94AC27C042CAC17103A897Fb5cEb7D8b4cf7", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "7", "external": false },
+    "staking": { "address": "0x1CB76B197a20E41f9AA01806B41C59e16Cad46a7", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "legacy", "external": false },
+    "emissions": { "address": "0x9B30DAcfC20F0927fFD49fB0B84cf3EB83976a33", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": "legacy", "external": false },
+    "identityRegistry": { "address": "0x8004A818BFB912233c491871b3d84c89A494BD9e", "deploymentBlock": null, "transactionHash": null, "runtimeCodeHash": null, "version": null, "external": true }
+  }
+}
