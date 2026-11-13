@@ -18,6 +18,7 @@ test('builds a full capabilities object from per-field answers', async () => {
   const rl = scriptedPrompt([
     'y',
     '128000',       // context window
+    '',             // max prompt tokens (skip)
     '32768',        // max output tokens
     'text, image',  // inputs
     'image',        // outputs
@@ -46,8 +47,9 @@ test('declining the opening question asks nothing else', async () => {
 });
 
 test('skipping every field yields no capabilities entry', async () => {
-  const rl = scriptedPrompt(['y', '', '', '', '', '', '', '', '']);
+  const rl = scriptedPrompt(['y', '', '', '', '', '', '', '', '', '']);
   assert.equal(await promptServiceCapabilities(rl), undefined);
+  assert.equal(rl.remaining(), 0);
 });
 
 test('re-asks a field until the answer validates', async () => {
@@ -57,7 +59,7 @@ test('re-asks a field until the answer validates', async () => {
     '-5',            // not positive
     '99999999999',   // above MAX_CAPABILITY_TOKEN_COUNT — must match the JSON-paste path
     '200000',        // valid
-    '', '', '', '', '', '', '',
+    '', '', '', '', '', '', '', '',
   ]);
   const caps = await promptServiceCapabilities(rl);
   assert.deepEqual(caps, { contextWindow: 200000 });
@@ -67,7 +69,7 @@ test('re-asks a field until the answer validates', async () => {
 test('rejects unknown modalities and bad parameter names before accepting valid ones', async () => {
   const rl = scriptedPrompt([
     'y',
-    '', '',
+    '', '', '',
     'text, hologram', // invalid input modality
     'text',
     '',               // outputs skipped
@@ -77,6 +79,35 @@ test('rejects unknown modalities and bad parameter names before accepting valid 
   ]);
   const caps = await promptServiceCapabilities(rl);
   assert.deepEqual(caps, { inputs: ['text'], supportedParameters: ['seed'] });
+});
+
+test('a text service may announce a max prompt size below its context window', async () => {
+  const rl = scriptedPrompt([
+    'y',
+    '131072',  // context window
+    '4000',    // max prompt tokens
+    '1024',    // max output tokens
+    '', '', '', '', '', '',
+  ]);
+  const caps = await promptServiceCapabilities(rl);
+  assert.deepEqual(caps, { contextWindow: 131072, maxPromptTokens: 4000, maxOutputTokens: 1024 });
+  assert.equal(rl.remaining(), 0);
+});
+
+test('re-asks the max prompt size until it is a positive integer within the token ceiling', async () => {
+  const rl = scriptedPrompt([
+    'y',
+    '',              // context window (skip)
+    'many',          // not a number
+    '0',             // not positive
+    '2.5',           // not an integer
+    '99999999999',   // above MAX_CAPABILITY_TOKEN_COUNT
+    '8000',          // valid
+    '', '', '', '', '', '', '',
+  ]);
+  const caps = await promptServiceCapabilities(rl);
+  assert.deepEqual(caps, { maxPromptTokens: 8000 });
+  assert.equal(rl.remaining(), 0);
 });
 
 test('image services get the short protocol-specific question set', async () => {

@@ -7,9 +7,9 @@ import type { PeerMetadata } from '../src/discovery/peer-metadata.js';
 // Every field each version knows. The v10-v12 hashes are of the bytes the
 // codec signed before it was split into per-version files, v13's of the bytes
 // it signed when v14 was added, v14's of the bytes it signed before v15 (speech)
-// was added, v15's of the bytes it signed before v16 (maxPromptTokens) was
-// added, and v16's of the bytes it signed when v16 was added: buyers verify
-// those exact bytes, so they must never change.
+// was added, v15's of the bytes it signed when v15 was added, and v18's of the
+// bytes it signed when v18 (maxPromptTokens) was added: buyers verify those
+// exact bytes, so they must never change.
 const fixture = (version: number): PeerMetadata => {
   const metadata = {
     peerId: "ab".repeat(20), version: 12, region: "eu-west-1", timestamp: 1_700_000_000_000,
@@ -56,7 +56,7 @@ const fixture = (version: number): PeerMetadata => {
       tts: { inputs: ["text"], outputs: ["audio"], speech: { voices: ["af_sky", "am_adam"], formats: ["mp3", "wav"], customVoices: false } },
     };
   }
-  if (version >= 16) {
+  if (version >= 18) {
     metadata.providers[0].serviceCapabilities.m1.maxPromptTokens = 4000;
   }
   if (version < 12) {
@@ -76,7 +76,7 @@ const GOLDEN_SHA256: Record<number, string> = {
   13: '45e7d04a3a58a03f9781c393002828b8064434c7e741de5eb25896488ebab271',
   14: 'd48dc14ae24fb892f42f8110f570b95dbd2e01280e1e3fef77d372b39926883b',
   15: 'cab523457500cbb9d3967bc65d5a69bf609767aa6987cc853141c62cffe87bfa',
-  16: '0f16a988e292d704cc5162a32956e201cf7b932744aef4714d52cdfc25161d22',
+  18: '420311a937746c2b5cfff3a266f44f9346480342c9e60ac4ea55325b9a693824',
 };
 
 describe('metadata signing bytes', () => {
@@ -103,7 +103,7 @@ describe('metadata signing bytes', () => {
   // and survive its own codec unchanged.
   for (const version of SERVED_METADATA_VERSIONS) {
     it(`builds a valid v${version} document from the newest metadata`, () => {
-      const latest = { ...fixture(16), signature: 'ab'.repeat(65) };
+      const latest = { ...fixture(18), signature: 'ab'.repeat(65) };
       latest.providers = [...latest.providers, {
         // A wildcard provider that describes a speech service and a chat one.
         provider: 'wild', services: [], defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
@@ -124,7 +124,7 @@ describe('metadata signing bytes', () => {
       expect(speech).toBe(version >= 15);
       const promptLimit = document.providers.some((provider) =>
         Object.values(provider.serviceCapabilities ?? {}).some((caps) => caps.maxPromptTokens !== undefined));
-      expect(promptLimit).toBe(version >= 16);
+      expect(promptLimit).toBe(version >= 18);
       expect(document.providers.find((provider) => provider.provider === 'wild')?.services).toEqual([]);
     });
   }

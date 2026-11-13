@@ -106,7 +106,7 @@ METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 | serviceCategories  | object   | Optional per-service map `{ [service]: string[] }` with lowercase tags |
 | serviceApiProtocols| object   | Optional per-service map `{ [service]: string[] }` of supported service API protocols |
 | serviceUnitBillingModels | object | v11+. Optional map `{ [service]: { [protocol]: UnitBillingModelV1 } }` for non-token usage such as `output_images` |
-| serviceCapabilities | object | v12+. Optional map `{ [service]: ServiceCapabilities }` with context/output limits, input/output modalities, reasoning, tool-use, structured-output, and supported-parameter hints. v16+ adds `maxPromptTokens`: the largest prompt the seller accepts for the service, a policy limit distinct from (and usually below) `contextWindow`; a hint buyers may pre-validate against, the seller still enforces |
+| serviceCapabilities | object | v12+. Optional map `{ [service]: ServiceCapabilities }` with context/output limits, input/output modalities, reasoning, tool-use, structured-output, and supported-parameter hints. v18+ adds `maxPromptTokens`: the largest prompt the seller accepts for the service, a policy limit distinct from (and usually below) `contextWindow`; a hint buyers may pre-validate against, the seller still enforces |
 | serviceHealth | object | v13+. Optional map `{ [service]: ServiceHealth }` with the seller's own health check result (see below) |
 | servicePerformance | object | v14+. Optional map `{ [service]: ServicePerformance }`: how the service served the seller's buyers in the last hour (see below) |
 | maxConcurrency   | number   | Maximum concurrent requests (>= 1)                           |
@@ -223,7 +223,7 @@ Per provider (repeated providerCount times):
     Presence bits: contextWindow(0), maxOutputTokens(1), inputs(2), reasoning(3),
     toolUse(4), structuredOutput(5), outputs(6), supportedParameters(7).
     Value bits (boolean byte): reasoning(0), toolUse(1), structuredOutput(2),
-    videoOptions(3), speechOptions(4, v15+), maxPromptTokens(5, v16+). When the
+    videoOptions(3), speechOptions(4, v15+), maxPromptTokens(5, v18+). When the
     maxPromptTokens bit is set a uint32 follows at the end of the entry, after the
     optional video and speech option blocks.
     Input/output bitsets index into ["text","image","audio","video","pdf"].

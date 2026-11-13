@@ -22,7 +22,7 @@ const CAP_VAL_STRUCTURED_OUTPUT = 1 << 2;
 const CAP_VAL_VIDEO_OPTIONS = 1 << 3;
 /** v15+: a speech options block follows the video options. */
 const CAP_VAL_SPEECH_OPTIONS = 1 << 4;
-/** v16+: a uint32 maxPromptTokens follows the speech options at the end of the entry. */
+/** v18+: a uint32 maxPromptTokens follows the speech options at the end of the entry. */
 const CAP_VAL_MAX_PROMPT_TOKENS = 1 << 5;
 const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT
   | CAP_VAL_VIDEO_OPTIONS;
@@ -151,7 +151,7 @@ function decodeSpeechOptions(reader: MetadataReader): SpeechOptions {
 /**
  * [count:1|2] then [serviceLen:1][service:N][presence:1][contextWindow:4?][maxOutputTokens:4?]
  * [inputs:1?][outputs:1?][valueBits:1][parameterCount:1 + params?][videoOptions?][speechOptions? (v15+)]
- * [maxPromptTokens:4? (v16+)]
+ * [maxPromptTokens:4? (v18+)]
  */
 export const serviceCapabilitiesField: ProviderField = {
   key: "serviceCapabilities",
