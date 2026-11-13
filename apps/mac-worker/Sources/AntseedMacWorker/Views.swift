@@ -336,8 +336,8 @@ struct ModelRow: View {
         let choice = worker.choice
         let canChange = worker.poolModels.contains { $0 != choice }
         let showList = !worker.poolModels.isEmpty && (choice == nil || picking)
-        SettingRow(icon: "cpu", title: "Model",
-                   value: choice.map { "\($0.displayName) · \($0.service)" } ?? (worker.poolModels.isEmpty ? "Chosen from the pool you join" : "Choose one below"),
+        SettingRow(icon: "cpu", title: choice.map { "Model · \($0.service)" } ?? "Model",
+                   value: choice?.displayName ?? (worker.poolModels.isEmpty ? "Chosen from the pool you join" : "Choose one below"),
                    actionTitle: picking ? "Cancel" : (choice != nil && canChange ? "Change" : nil),
                    action: { picking.toggle() }) {
             if showList {
@@ -397,7 +397,7 @@ struct PoolRow: View {
             if showForm {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        InputField(placeholder: "wss://pool address from its operator", text: $address, snapshot: snapshot, onSubmit: join)
+                        InputField(placeholder: "wss://… from the pool's operator", text: $address, snapshot: snapshot, onSubmit: join)
                         PillButton(title: "Join", action: join)
                     }
                     if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger) }
@@ -444,7 +444,7 @@ struct PayoutRow: View {
                        actionTitle: changing ? "Cancel" : nil, action: { changing = false }) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        InputField(placeholder: "0x… wallet for your earnings", text: $wallet, snapshot: snapshot, onSubmit: link)
+                        InputField(placeholder: "0x… your wallet", text: $wallet, snapshot: snapshot, onSubmit: link)
                         PillButton(title: "Link", action: link)
                     }
                     if let error = payouts.linkError {
