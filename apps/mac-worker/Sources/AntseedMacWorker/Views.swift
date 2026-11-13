@@ -28,6 +28,8 @@ struct MenuPanel: View {
     @ObservedObject var worker: WorkerController
     /// ImageRenderer cannot draw AppKit controls; snapshots get drawn stand-ins.
     var snapshot = false
+    /// The panel's laid-out height, which its window follows.
+    @State private var height: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -68,6 +70,39 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 280)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: PanelHeightKey.self, value: geometry.size.height)
+        })
+        .onPreferenceChange(PanelHeightKey.self) { height = $0 }
+        .background(FitWindowToContent(height: height))
+    }
+}
+
+private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// A MenuBarExtra window keeps the height it opened with, so content that shrinks (the model list
+/// collapsing once one is picked) left a gap. This resizes the window to the panel, keeping its top
+/// edge under the menu bar.
+private struct FitWindowToContent: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let height = height
+        DispatchQueue.main.async {
+            guard let window = view.window, height > 0 else { return }
+            var frame = window.frame
+            let target = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: frame.width, height: height)).height
+            guard abs(frame.height - target) > 0.5 else { return }
+            frame.origin.y += frame.height - target
+            frame.size.height = target
+            window.setFrame(frame, display: true, animate: false)
+        }
     }
 }
 
