@@ -85,6 +85,32 @@ describe('PeerAnnouncer provider availability', () => {
     await announcer.refreshMetadata();
     expect(announcer.getLatestMetadata()?.providers.map((provider) => provider.provider)).toEqual(['openai']);
   });
+
+  it('does not announce a provider with no pricing as free, and still announces the others', async () => {
+    const announcer = new PeerAnnouncer({
+      ...makeBaseConfig(),
+      providers: [
+        { provider: 'openai', services: ['model-a'], maxConcurrency: 4 },
+        { provider: 'unpriced', services: ['model-b'], maxConcurrency: 4 },
+        {
+          provider: 'own-pricing',
+          services: ['model-c'],
+          maxConcurrency: 4,
+          pricing: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 3 } },
+        },
+      ],
+    });
+
+    await announcer.announce();
+    const metadata = announcer.getLatestMetadata()!;
+    expect(metadata.providers.map((provider) => provider.provider)).toEqual(['openai', 'own-pricing']);
+    expect(metadata.providers.map((provider) => provider.defaultPricing)).toEqual([
+      { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+      { inputUsdPerMillion: 2, outputUsdPerMillion: 3 },
+    ]);
+    expect(validateMetadata(metadata)).toEqual([]);
+    expect(await verifiesAsBuyer(metadata)).toBe(true);
+  });
 });
 
 describe('PeerAnnouncer sellerContract', () => {

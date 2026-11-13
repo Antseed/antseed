@@ -186,6 +186,49 @@ class SessionReplacedError extends AntseedRequestError {}
 export const PRICE_MISMATCH_MESSAGE = 'This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it. '
   + 'Use another seller, or retry once the seller announces the price it charges.';
 
+/** What the caller reads when a seller asks for more than the price the request's route was chosen at. */
+const PRICE_ABOVE_ANNOUNCED_MESSAGE = 'This seller asked for a higher price than it announces, so the buyer signed nothing for it. '
+  + 'Use another seller, or retry once the seller announces the price it charges.';
+
+/**
+ * Announced prices travel as f32, so the buyer reads the rounding of the
+ * price the seller states (f32 is exact to about 6e-8, relative).
+ */
+const ANNOUNCED_PRICE_TOLERANCE = 1e-5;
+
+/** The first token price a seller states above the route's, or null. */
+function priceAboveRoute(
+  stated: PaymentRequiredPayload,
+  route: ServicePricing,
+): { component: string; stated: number; route: number } | null {
+  const components: Array<[string, number | undefined, number]> = [
+    ['input', stated.inputUsdPerMillion, route.inputUsdPerMillion],
+    ['output', stated.outputUsdPerMillion, route.outputUsdPerMillion],
+    // What the buyer bills cached input at (computeCostUsdc).
+    ['cached input', stated.cachedInputUsdPerMillion, route.cachedInputUsdPerMillion ?? route.inputUsdPerMillion],
+  ];
+  for (const [component, statedPrice, routePrice] of components) {
+    if (statedPrice != null && statedPrice > routePrice * (1 + ANNOUNCED_PRICE_TOLERANCE)) {
+      return { component, stated: statedPrice, route: routePrice };
+    }
+  }
+  return null;
+}
+
+/**
+ * The peer's announced default price, or undefined. Known only when both
+ * input and output are present: a missing price is unknown, never free.
+ * @internal
+ */
+export function announcedDefaultPricing(peer: BuyerPeerView): ServicePricing | undefined {
+  if (peer.defaultInputUsdPerMillion == null || peer.defaultOutputUsdPerMillion == null) return undefined;
+  return {
+    inputUsdPerMillion: peer.defaultInputUsdPerMillion,
+    outputUsdPerMillion: peer.defaultOutputUsdPerMillion,
+    cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
+  };
+}
+
 /** What the caller reads when the seller is short of a cost the buyer refused on the open channel. */
 const REFUSED_CLAIM_MESSAGE = 'This seller charged for a response that is free at the prices it announces. The buyer refused that charge '
   + 'and signs nothing more on this payment channel, so the seller no longer serves it. Use another seller, and close the channel to release its reserve.';
@@ -923,6 +966,26 @@ export class BuyerPaymentNegotiator {
       return { action: 'return', response: paymentNegotiationFailureResponse(response, reason, message, statusCode) };
     };
 
+    // The seller states what it charges for this request. Above the price the
+    // route was chosen at, it would charge more than it announces: refuse
+    // before any channel, extension or signature. A one-off (video) 402
+    // states no token price, and a lower one is fine: the buyer verifies cost
+    // at its own route price either way.
+    // Only prices stated for this request: the 402 body always is, while a
+    // buffered frame is kept per seller and can be another request's.
+    const statedForRequest = buffered ? (buffered.requestId === req.requestId ? buffered : null) : bodyRequirements;
+    const routeBilling = this._bpm.getRequestBilling(req.requestId);
+    const aboveRoute = statedForRequest && routeBilling?.tokenPricing
+      ? priceAboveRoute(statedForRequest, routeBilling.tokenPricing)
+      : null;
+    if (aboveRoute) {
+      debugWarn(
+        `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
+        `for ${routeBilling?.context.service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
+      );
+      return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
+    }
+
     const oneOffPlan = directPaymentBody?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
       ? parseOneOffPlan(directPaymentBody.oneOffPlan)
       : buffered?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
@@ -1158,7 +1221,7 @@ export class BuyerPaymentNegotiator {
     const billingEntry = this._bpm.getRequestBilling(request.requestId);
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
-        ?? this._peerDefaultPricing(peer);
+        ?? announcedDefaultPricing(peer);
     if (partial.statusCode >= 400 || !pricing || billingEntry?.unitModel || billingEntry?.requestFacts?.kind === 'video') return;
     const outputTokens = Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body));
     const costUsdc = computeCostUsdc(estimateTokensFromBytesSampled(request.body), outputTokens, pricing);
@@ -1228,7 +1291,7 @@ export class BuyerPaymentNegotiator {
       ?? (requestBody ? usageForBilling(requestBody, response).usage : parseResponseUsage(response.body));
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
-        ?? this._peerDefaultPricing(peer);
+        ?? announcedDefaultPricing(peer);
     const tokenCostUsdc = pricing
       ? computeCostUsdc(usage.freshInputTokens, usage.outputTokens, pricing, usage.cachedInputTokens)
       : 0n;
@@ -1523,29 +1586,14 @@ export class BuyerPaymentNegotiator {
     this._pendingCloseRequests.clear();
   }
 
-  private _peerDefaultPricing(peer: BuyerPeerView): ServicePricing | undefined {
-    if (peer.defaultInputUsdPerMillion == null && peer.defaultOutputUsdPerMillion == null) {
-      return undefined;
-    }
-    return {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
-  }
-
   /**
    * Build the full pricing map from peer metadata (defaults + all per-service overrides).
    * This ensures the buyer knows pricing for every service the seller offers,
    * not just the one that triggered the 402.
    */
-  private _buildPricingMap(peer: BuyerPeerView): { defaults: ServicePricing; services: Record<string, ServicePricing> } | undefined {
-    const defaults: ServicePricing = {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
-    if (defaults.inputUsdPerMillion === 0 && defaults.outputUsdPerMillion === 0 && !peer.providerPricing) {
+  private _buildPricingMap(peer: BuyerPeerView): { defaults?: ServicePricing; services: Record<string, ServicePricing> } | undefined {
+    const defaults = announcedDefaultPricing(peer);
+    if (!defaults && !peer.providerPricing) {
       return undefined;
     }
 
@@ -1645,20 +1693,9 @@ export class BuyerPaymentNegotiator {
       suggestedAmount: amount.toString(),
     });
 
-    // Extract pricing from seller's PaymentRequired or peer metadata
-    const pricing = (requirements.inputUsdPerMillion != null || requirements.outputUsdPerMillion != null)
-      ? {
-          inputUsdPerMillion: requirements.inputUsdPerMillion ?? peer.defaultInputUsdPerMillion ?? 0,
-          outputUsdPerMillion: requirements.outputUsdPerMillion ?? peer.defaultOutputUsdPerMillion ?? 0,
-          cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion ?? peer.defaultCachedInputUsdPerMillion,
-        }
-      : (peer.defaultInputUsdPerMillion != null || peer.defaultOutputUsdPerMillion != null)
-        ? {
-            inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-            outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-            cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-          }
-        : undefined;
+    // Announced prices only: what the seller states in its PaymentRequired is
+    // never the price the buyer verifies its charges against.
+    const pricing = announcedDefaultPricing(peer);
 
     // Build full pricing map from peer metadata (defaults + all per-service overrides)
     const pricingMap = this._buildPricingMap(peer);

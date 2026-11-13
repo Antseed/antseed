@@ -363,8 +363,8 @@ export class BuyerPaymentManager {
   private readonly _requestLedgers = new Map<string, Map<string, DeliveredResponse>>();
   private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
-  /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
-  private readonly _sessionPricing = new Map<string, { defaults: ServicePricing; services: Record<string, ServicePricing> }>();
+  /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata) */
+  private readonly _sessionPricing = new Map<string, { defaults?: ServicePricing; services: Record<string, ServicePricing> }>();
 
   /** Cumulative response token totals per seller, tracked independently of signing metadata. */
   private readonly _responseTokenTotals = new Map<string, { input: number; output: number; requests: number }>();
@@ -1204,10 +1204,9 @@ export class BuyerPaymentManager {
    * Sign and send an initial EIP-712 SpendingAuth to a seller.
    * The initial cumulativeAmount is set to the seller's minBudgetPerRequest.
    *
-   * @param pricing Token pricing from the seller's 402 / peer metadata.
+   * @param pricing Token pricing from peer metadata.
    * @param pricingMap Full pricing map (defaults + per-service) from peer metadata. If provided,
-   *   merges with existing session pricing. The `pricing` arg is used as the service-specific
-   *   override for the service that triggered the 402.
+   *   it replaces the session pricing, with `pricing` merged over its defaults.
    */
   async authorizeSpending(
     sellerPeerId: string,
@@ -1215,7 +1214,7 @@ export class BuyerPaymentManager {
     minBudgetPerRequest: bigint,
     reserveAmountOrPricing?: bigint | ServicePricing,
     pricingArg?: ServicePricing,
-    pricingMap?: { defaults: ServicePricing; services: Record<string, ServicePricing> },
+    pricingMap?: { defaults?: ServicePricing; services: Record<string, ServicePricing> },
     metadataArg?: PeerMetadata,
   ): Promise<string> {
     const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
@@ -1238,8 +1237,6 @@ export class BuyerPaymentManager {
     this._confirmedPeers.delete(sellerPeerId);
 
     // Store full pricing map (defaults + all per-service overrides).
-    // Merge 402-negotiated pricing on top of peer-metadata defaults so
-    // the seller's live rate takes precedence over cached peer metadata.
     if (pricingMap) {
       const mergedDefaults = pricing
         ? { ...pricingMap.defaults, ...pricing }
@@ -3043,7 +3040,7 @@ export class BuyerPaymentManager {
       const servicePricing = map.services[service];
       if (servicePricing) return servicePricing;
     }
-    return map.defaults;
+    return map.defaults ?? null;
   }
 
   /** Check if a session has been confirmed via AuthAck. */

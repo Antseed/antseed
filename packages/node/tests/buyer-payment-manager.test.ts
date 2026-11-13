@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { id, keccak256, Wallet } from 'ethers';
 import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
+import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -14,7 +15,7 @@ import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
 import { decodeSpendingAuthMetadata, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
-import { captureUnitBillingContext } from '@antseed/buyer-core';
+import { captureUnitBillingContext, selectBillingRoute } from '@antseed/buyer-core';
 
 const enc = new TextEncoder();
 
@@ -202,6 +203,97 @@ describe('BuyerPaymentManager', () => {
     const sellerPeerId = fakePeerId('seller-init');
     await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+  });
+
+  it('verifies cost at the announced price after a negotiation, not a higher price the seller states in its 402', async () => {
+    const sellerPeerId = toPeerId(fakePeerId('seller-states-more'));
+    const negotiator = new BuyerPaymentNegotiator(
+      identity,
+      manager,
+      { getBuyerBalance: vi.fn().mockResolvedValue({ available: 10_000_000n, reserved: 0n, lastActivityAt: 0n }) } as never,
+      null,
+      store,
+      {},
+      { emit: () => true },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (negotiator as any)._waitForLockConfirmation = async () => {};
+    const peer = {
+      peerId: sellerPeerId,
+      providers: ['openai'],
+      defaultInputUsdPerMillion: 0.6,
+      defaultOutputUsdPerMillion: 1.2,
+    };
+    const paymentRequired = {
+      error: 'payment_required',
+      minBudgetPerRequest: '10000',
+      suggestedAmount: '100000',
+      inputUsdPerMillion: 3,
+      outputUsdPerMillion: 15,
+    };
+
+    const result = await negotiator.handle402(
+      { requestId: 'states-more', statusCode: 402, headers: { 'content-type': 'application/json' }, body: enc.encode(JSON.stringify(paymentRequired)) },
+      peer,
+      { state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() } as never,
+      { requestId: 'states-more', method: 'POST', path: '/v1/chat/completions', headers: {}, body: enc.encode('{"model":"k3"}') },
+    );
+
+    expect(result.action).toBe('retry');
+    expect(manager.getSessionPricing(sellerPeerId, 'k3')).toMatchObject({ inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 });
+  });
+
+  it('refuses a 402 stating more than the route price the request was tracked at, and signs nothing', async () => {
+    const sellerPeerId = toPeerId(fakePeerId('seller-under-quoted'));
+    const negotiator = new BuyerPaymentNegotiator(
+      identity,
+      manager,
+      { getBuyerBalance: vi.fn().mockResolvedValue({ available: 10_000_000n, reserved: 0n, lastActivityAt: 0n }) } as never,
+      null,
+      store,
+      {},
+      { emit: () => true },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (negotiator as any)._waitForLockConfirmation = async () => {};
+    const peer = {
+      peerId: sellerPeerId,
+      providers: ['openai'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 } } },
+    };
+    const request = {
+      requestId: 'under-quoted',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: enc.encode(JSON.stringify({ model: 'k3', messages: [{ role: 'user', content: 'hi' }] })),
+    };
+    const route = selectBillingRoute(peer, request, 'k3');
+    expect(route?.tokenPricing).toEqual({ inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 });
+    negotiator.trackRequestBillingContext(request, 'k3', route);
+    const conn = { state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() };
+    const paymentRequired = {
+      error: 'payment_required',
+      minBudgetPerRequest: '10000',
+      suggestedAmount: '100000',
+      inputUsdPerMillion: 3,
+      outputUsdPerMillion: 15,
+    };
+
+    const result = await negotiator.handle402(
+      { requestId: request.requestId, statusCode: 402, headers: { 'content-type': 'application/json' }, body: enc.encode(JSON.stringify(paymentRequired)) },
+      peer,
+      conn as never,
+      request,
+    );
+
+    expect(result.action).toBe('return');
+    const answer = (result as { response: { statusCode: number; body: Uint8Array } }).response;
+    expect(answer.statusCode).toBe(409);
+    expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+    expect(manager.getActiveSession(sellerPeerId)).toBeNull();
+    expect(conn.send).not.toHaveBeenCalled();
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
   });
 
   // ── AuthAck ────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ import type { ProxyMux } from './proxy-mux.js';
 import { PaymentMux } from './payment-mux.js';
 import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { BuyerPaymentNegotiator, SelectedBillingRoute } from './buyer-payment-negotiator.js';
-import { paymentNegotiationFailureResponse, PRICE_MISMATCH_MESSAGE } from './buyer-payment-negotiator.js';
+import { announcedDefaultPricing, paymentNegotiationFailureResponse, PRICE_MISMATCH_MESSAGE } from './buyer-payment-negotiator.js';
 import { debugLog, debugWarn } from './debug.js';
 import type { VerificationMux } from './verification-mux.js';
 import type { ResponseAuthSink } from './interfaces.js';
@@ -70,6 +70,9 @@ export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
  */
 export const VIDEO_DELIVERED_HEADER = 'x-antseed-video-delivered';
 export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
+
+/** What the caller reads when the buyer cannot read a price for the request's route. */
+const PRICE_UNKNOWN_MESSAGE = 'This seller announces no price for this service, so the buyer did not send the request. Use another seller.';
 
 /** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
@@ -255,6 +258,22 @@ export class BuyerRequestHandler {
           throw new Error(
             `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
+        }
+        // Without a price the buyer cannot check what it is charged, so it
+        // sends nothing: the seller serves nothing and nothing is signed.
+        const priceKnown = billingRoute
+          ? Boolean(billingRoute.tokenPricing || billingRoute.unitModel)
+          : Boolean(findPeerServicePricing(peer, requestedService)
+            || Object.values(peer.providerServiceUnitBillingModels ?? {}).some((models) => models.services[requestedService]));
+        if (!priceKnown) {
+          debugWarn(
+            `[BuyerRequest] ${peer.peerId.slice(0, 12)}... announces no price for ${requestedService} — not sending the request`,
+          );
+          return adaptPeerResponse(paymentNegotiationFailureResponse(
+            { requestId: req.requestId, statusCode: 409, headers: {}, body: new Uint8Array(0) },
+            'price_unknown',
+            PRICE_UNKNOWN_MESSAGE,
+          ));
         }
         const price = negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
         if (videoRoute?.action === 'create') videoPriceUsdc = price;
@@ -866,18 +885,7 @@ function selectTokenPricing(
   const providerPricing = peer.providerPricing?.[provider];
   const pricing = providerPricing?.services?.[service] ?? providerPricing?.defaults;
   if (pricing) return pricing;
-  return peerDefaultPricing(peer);
-}
-
-function peerDefaultPricing(peer: BuyerPeerView): SelectedBillingRoute["tokenPricing"] {
-  if (peer.defaultInputUsdPerMillion == null && peer.defaultOutputUsdPerMillion == null) {
-    return undefined;
-  }
-  return {
-    inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-    outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-    cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-  };
+  return announcedDefaultPricing(peer);
 }
 
 function isZeroTokenPricing(pricing: SelectedBillingRoute["tokenPricing"]): boolean {
@@ -1043,8 +1051,9 @@ function isPeerServiceFree(peer: BuyerPeerView, service: string): boolean {
   }
   const servicePricing = findPeerServicePricing(peer, service);
   if (!servicePricing) return false;
-  return (servicePricing.inputUsdPerMillion ?? 0) === 0
-    && (servicePricing.outputUsdPerMillion ?? 0) === 0
+  // A missing input or output price is unknown, not free.
+  return servicePricing.inputUsdPerMillion === 0
+    && servicePricing.outputUsdPerMillion === 0
     && (servicePricing.cachedInputUsdPerMillion ?? 0) === 0;
 }
 
@@ -1057,14 +1066,7 @@ function findPeerServicePricing(peer: BuyerPeerView, service: string): {
     const servicePricing = providerPricing.services?.[service];
     if (servicePricing) return servicePricing;
   }
-  if (peer.defaultInputUsdPerMillion != null || peer.defaultOutputUsdPerMillion != null) {
-    return {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
-  }
-  return null;
+  return announcedDefaultPricing(peer) ?? null;
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {

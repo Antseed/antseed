@@ -917,6 +917,110 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    describe('when the seller states a price for the request', () => {
+      const ROUTE = { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 };
+      const IMAGE_MODEL = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.04 }] };
+
+      function routeChosenAt(tokenPricing: Record<string, number>, extra: Record<string, unknown> = {}) {
+        (bpm.getRequestBilling as ReturnType<typeof vi.fn>).mockReturnValue({
+          context: { sellerPeerId: peer.peerId, provider: 'openai', service: 'k3', serviceApiProtocol: 'openai-chat-completions' },
+          tokenPricing,
+          ...extra,
+        });
+      }
+
+      function stating(prices: Record<string, unknown>): SerializedHttpResponse {
+        return make402Response({ error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000', ...prices });
+      }
+
+      function confirmLocks() {
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+      }
+
+      function expectRefused(result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>>) {
+        expect(result.action).toBe('return');
+        const answer = (result as { response: SerializedHttpResponse }).response;
+        expect(answer.statusCode).toBe(409);
+        expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
+          error: 'payment_negotiation_failed',
+          reason: 'price_mismatch',
+          message: expect.stringContaining('asked for a higher price than it announces'),
+        });
+        for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.resendReserveAuth, bpm.retireSession]) {
+          expect(fn).not.toHaveBeenCalled();
+        }
+      }
+
+      it('refuses the first request before opening a channel when the seller asks more than the route was chosen at', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest()));
+      });
+
+      it('refuses a higher price the seller states only in its PaymentRequired frame', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, { ...paymentRequiredPayload, inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+        expectRefused(await negotiator.handle402(make402Response(), peer, conn, makeRequest()));
+      });
+
+      it('does not hold a higher price stated in a frame for another request against this one', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        // A parallel request to a pricier service: its frame is the one buffered for this seller.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, {
+          ...paymentRequiredPayload, requestId: 'req-expensive', inputUsdPerMillion: 3, outputUsdPerMillion: 15,
+        });
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+
+      it('signs nothing more on an open channel when the seller asks more than the route was chosen at', async () => {
+        await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+        routeChosenAt(ROUTE);
+        expectRefused(await negotiator.handle402(stating({
+          requiredCumulativeAmount: '85119',
+          currentSpent: '85119',
+          currentAcceptedCumulative: '56218',
+          inputUsdPerMillion: 3,
+          outputUsdPerMillion: 15,
+        }), peer, conn, makeRequest()));
+      });
+
+      it('refuses a cached-input price above the input price when the route announces no cached price', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ ...ROUTE, cachedInputUsdPerMillion: 0.9 }), peer, conn, makeRequest()));
+      });
+
+      it.each([
+        // The announcement carries prices as f32, so the route holds the rounding of the price the seller states.
+        ['the price it announces, before f32 rounding', { inputUsdPerMillion: Math.fround(0.7), outputUsdPerMillion: Math.fround(0.1), cachedInputUsdPerMillion: Math.fround(0.35) }, { inputUsdPerMillion: 0.7, outputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.35 }],
+        ['a lower price', ROUTE, { inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.6, cachedInputUsdPerMillion: 0.1 }],
+      ])('still negotiates when the seller states %s', async (_label, route, stated) => {
+        routeChosenAt(route);
+        confirmLocks();
+        const result = await negotiator.handle402(stating(stated), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+
+      it('still negotiates a per-image route whose 402 states zero token prices', async () => {
+        routeChosenAt({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, { unitModel: IMAGE_MODEL });
+        confirmLocks();
+        const result = await negotiator.handle402(stating({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+    });
+
     it('auto-negotiates and returns retry on success', async () => {
       bufferPaymentRequired(negotiator, peer.peerId, conn);
       // Make isLockConfirmed return true after authorizeSpending

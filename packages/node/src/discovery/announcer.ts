@@ -292,13 +292,13 @@ export class PeerAnnouncer {
   private async _buildSignedMetadata(includeOnChainReputation = true): Promise<Map<number, PeerMetadata>> {
     const providers: ProviderAnnouncement[] = this.config.providers
       .filter((provider) => provider.isAvailable?.() !== false)
-      .map((p) => {
-        const pricing = p.pricing ?? this.config.pricing.get(p.provider) ?? {
-          defaults: {
-            inputUsdPerMillion: 0,
-            outputUsdPerMillion: 0,
-          },
-        };
+      .flatMap((p): ProviderAnnouncement[] => {
+        const pricing = p.pricing ?? this.config.pricing.get(p.provider);
+        if (!pricing) {
+          // Announced without a price, buyers would read the provider as free.
+          debugWarn(`[Announcer] Not announcing provider ${p.provider}: it has no pricing`);
+          return [];
+        }
         const providerAnnouncement: ProviderAnnouncement = {
           provider: p.provider,
           services: p.services,
@@ -333,7 +333,7 @@ export class PeerAnnouncer {
         if (normalizedServicePerformance) {
           providerAnnouncement.servicePerformance = normalizedServicePerformance;
         }
-        return providerAnnouncement;
+        return [providerAnnouncement];
       });
 
     const capabilities = builtinPeerCapabilities(this.config.relaysSweeps === true);
