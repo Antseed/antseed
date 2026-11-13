@@ -1,6 +1,6 @@
 # @antseed/protocol
 
-The AntSeed wire protocol as a standalone, dependency-light package (ethers
+The Antseed wire protocol as a standalone, dependency-light package (ethers
 only, no Node-specific APIs). Extracted from `@antseed/node`, which re-exports
 everything from its original paths, so existing consumers are unaffected.
 
@@ -14,7 +14,7 @@ Contents, one module per concern (each also available as a subpath export):
 | `request-codec` | Binary HTTP request/response/chunk payload codec |
 | `payment-codec` | JSON codecs for the 0x50–0x5F payment messages |
 | `json-codec` | Bounded JSON parsing helpers |
-| `signatures` | EIP-712 SpendingAuth/ReserveAuth/EIP-3009 types + signing, metadata v2 encoding, `computeChannelId`, domains |
+| `signatures` | EIP-712 SpendingAuth/ReserveAuth/EIP-3009 types + signing, SpendingAuth metadata v5 encoding (v4 and v5 decoding), `computeChannelId`, domains |
 | `connection-auth` | Signed `intro`/`hello` envelope wire format |
 | `signing` | EIP-191 domain-tagged signing (`signData`, `signUtf8`, …) and hex utils |
 | `peer-id` | `PeerId` branded type and helpers |
@@ -22,7 +22,7 @@ Contents, one module per concern (each also available as a subpath export):
 | `peer-metadata`, `capability`, `service-api`, `peer-pricing` | Signed discovery metadata types |
 | `connection-state` | `ConnectionState` and connection config types |
 
-Note: both `signatures` (SpendingAuth metadata, `2n`) and `peer-metadata`
-(discovery records, `10`) define `METADATA_VERSION`. The root export resolves
+Note: both `signatures` (SpendingAuth metadata, `5n`) and `peer-metadata`
+(discovery records, `17`) define `METADATA_VERSION`. The root export resolves
 to the payments constant, matching `@antseed/node`'s public API; use the
 `./peer-metadata` subpath for the discovery one.

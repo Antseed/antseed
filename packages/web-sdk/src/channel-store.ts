@@ -68,6 +68,16 @@ export class MemoryChannelStore implements BuyerChannelStore {
       .map(cloneChannel);
   }
 
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null {
+    return this.latestMatching(
+      (c) =>
+        c.peerId === peerId &&
+        c.role === role &&
+        c.channelKind === CHANNEL_KIND.ONE_OFF &&
+        c.oneOffRequestId === requestId,
+    );
+  }
+
   updateChannelStatus(sessionId: string, status: ChannelStatus, settledAmount?: string): void {
     const channel = this.channels.get(sessionId);
     if (!channel) return;
@@ -97,6 +107,18 @@ export class MemoryChannelStore implements BuyerChannelStore {
       // per-service totals just like the SQLite channel store.
       cumulativeOutputImages: services.reduce(
         (sum, service) => sum + (service.cumulativeOutputImages ?? 0n),
+        0n,
+      ),
+      cumulativeVideoGenerations: services.reduce(
+        (sum, service) => sum + (service.cumulativeVideoGenerations ?? 0n),
+        0n,
+      ),
+      cumulativeVideoSeconds: services.reduce(
+        (sum, service) => sum + (service.cumulativeVideoSeconds ?? 0n),
+        0n,
+      ),
+      cumulativeInputCharacters: services.reduce(
+        (sum, service) => sum + (service.cumulativeInputCharacters ?? 0n),
         0n,
       ),
       services,
@@ -139,6 +161,9 @@ interface StoredServiceTotalRecord {
   cumulativeOutputTokens: string;
   cumulativeRequestCount: string;
   cumulativeOutputImages?: string;
+  cumulativeVideoGenerations?: string;
+  cumulativeVideoSeconds?: string;
+  cumulativeInputCharacters?: string;
 }
 
 const DATABASE_VERSION = 1;
@@ -327,6 +352,9 @@ function serviceToRecord(
     cumulativeOutputTokens: service.cumulativeOutputTokens.toString(),
     cumulativeRequestCount: service.cumulativeRequestCount.toString(),
     cumulativeOutputImages: (service.cumulativeOutputImages ?? 0n).toString(),
+    cumulativeVideoGenerations: (service.cumulativeVideoGenerations ?? 0n).toString(),
+    cumulativeVideoSeconds: (service.cumulativeVideoSeconds ?? 0n).toString(),
+    cumulativeInputCharacters: (service.cumulativeInputCharacters ?? 0n).toString(),
   };
 }
 
@@ -339,6 +367,9 @@ function serviceFromRecord(record: StoredServiceTotalRecord): SpendingAuthServic
     cumulativeOutputTokens: BigInt(record.cumulativeOutputTokens),
     cumulativeRequestCount: BigInt(record.cumulativeRequestCount),
     cumulativeOutputImages: BigInt(record.cumulativeOutputImages ?? '0'),
+    cumulativeVideoGenerations: BigInt(record.cumulativeVideoGenerations ?? '0'),
+    cumulativeVideoSeconds: BigInt(record.cumulativeVideoSeconds ?? '0'),
+    cumulativeInputCharacters: BigInt(record.cumulativeInputCharacters ?? '0'),
   };
 }
 

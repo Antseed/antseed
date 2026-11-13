@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { buildUsdcPaymentUri } from '@antseed/wallet-config';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -13,21 +14,52 @@ import {
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
+import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { formatUsd, shortfallBaseUnits, sweepAmountNeeded, usdcToBaseUnits } from './funding-status';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
-import { recordUserAction } from '../../../modules/telemetry/actions';
+import { recordDepositStep, recordUserAction } from '../../../modules/telemetry/actions';
+import type { TelemetryDepositMethod } from '../../../../shared/telemetry';
+
+const PEER_PAY_LOGO = new URL('../../../assets/peer-pay.webp', import.meta.url).href;
+const VENMO_LOGO = new URL('../../../assets/venmo.svg', import.meta.url).href;
+const PAYPAL_LOGO = new URL('../../../assets/paypal.svg', import.meta.url).href;
+const REVOLUT_LOGO = new URL('../../../assets/revolut.png', import.meta.url).href;
+const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
 
 const AMOUNT_PRESETS = ['5', '10', '25'];
 
+/**
+ * Funding method family per chooser option, for the deposit funnel. Meridian
+ * takes USDC from any chain, so it counts as a crypto wallet; Peer Pay is a
+ * payment app (Venmo, PayPal and similar).
+ */
+const PROVIDER_DEPOSIT_METHODS: Record<string, TelemetryDepositMethod> = {
+  'antseed-pay': 'card',
+  'antseed-pay-stripe': 'card',
+  meridian: 'crypto_wallet',
+  'peer-pay': 'payment_app',
+};
+
+function enteredAmountUsdc(amount: string): number | undefined {
+  const value = Number(amount);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
-type Stage = 'choose' | 'crypto';
+type Stage = 'choose' | 'crypto' | 'peer';
 
 // The chooser sits "before" the method screen on the slide axis, so
 // entering a method slides forward and going back slides back — same
 // mechanics as ViewHost, reusing the global .view-pane animations.
-const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1 };
+const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1, peer: 1 };
 // Must match the .view-pane-in/-out animation duration (--motion-duration).
 const STAGE_SLIDE_MS = 300;
 
@@ -39,23 +71,10 @@ type DepositWatchInfo = {
   chainId: number;
 };
 
-function amountToBaseUnits(amount: string): bigint | null {
-  const value = Number(amount);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return BigInt(Math.round(value * 1e6));
-}
-
 function baseUnitsToUsd(baseUnits: string | undefined): string {
   if (!baseUnits) return '0';
   const value = Number(baseUnits) / 1e6;
   return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/** EIP-681 payment request: opens a prefilled USDC transfer in mobile wallets. */
-function buildPaymentUri(info: DepositWatchInfo, amount: string): string {
-  const baseUnits = amountToBaseUnits(amount);
-  const base = `ethereum:${info.usdcAddress}@${info.chainId}/transfer?address=${info.address}`;
-  return baseUnits ? `${base}&uint256=${baseUnits.toString()}` : base;
 }
 
 // ─── Styled QR (round dots, rounded finders, Base badge) ───
@@ -164,6 +183,16 @@ function BaseMark({ size = 18 }: { size?: number }) {
       <rect x="1" y="10.95" width="15.85" height="2.1" fill="#fff" />
     </svg>
   );
+}
+
+function PeerMark({ size = 20 }: { size?: number }) {
+  return (
+    <img className={styles.peerMark} src={PEER_PAY_LOGO} width={size} height={size} alt="" aria-hidden="true" />
+  );
+}
+
+function PaymentRailMark({ src, label }: { src: string; label: string }) {
+  return <img className={styles.paymentRailMark} src={src} alt={label} title={label} />;
 }
 
 /** Apple logo silhouette (the classic bitten-apple path, 814×1000 box). */
@@ -326,11 +355,38 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * checkout (hosted page in a narrow app popup) — no region gating; the pay
  * page itself shows a proper dead-end screen where a region can't be served.
  * Then the quick USDC-on-Base transfer (scan-to-pay QR), with hosted
- * providers (Meridian) behind "More options". Everything lands in the hot
+ * providers (Meridian, Outerfound) behind "More options". Everything lands in the hot
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
-export function VprDepositView({ onSelectView }: Props) {
+/**
+ * Add funds for this computer's gateway. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't reach it: the page sends
+ * the user to that gateway's console, and nothing local (deposit watcher,
+ * checkout, address) starts until the gateway is known to be local.
+ */
+export function VprDepositView(props: Props) {
+  const mode = useCachedResource(gatewayResource).data?.status.mode;
+  if (mode === 'local') return <LocalDepositView {...props} />;
+  return (
+    <section className={`view view-vpr-deposit view-pinned-header ${styles.view}`} role="tabpanel">
+      <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+        {mode === 'remote' ? (
+          <VprCard>
+            <div className={styles.stack}>
+              <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+              <div>
+                <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+              </div>
+            </div>
+          </VprCard>
+        ) : null}
+      </VprPage>
+    </section>
+  );
+}
+
+function LocalDepositView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
     total: state.creditsTotalUsdc,
@@ -340,7 +396,10 @@ export function VprDepositView({ onSelectView }: Props) {
     wallet: state.creditsWalletUsdc,
     totalOwned: state.creditsTotalOwnedUsdc,
     creditLimit: state.creditsCreditLimitUsdc,
+    minFirstDeposit: state.creditsMinFirstDepositUsdc,
+    depositFee: state.creditsDepositFeeUsdc,
   }), shallowEqual);
+  const funding = useFundingStatus();
 
   const [slide, setSlide] = useState<StageSlide>(() => ({
     stage: 'choose',
@@ -348,7 +407,7 @@ export function VprDepositView({ onSelectView }: Props) {
     direction: 'forward',
   }));
   const stage = slide.stage;
-  const [amount, setAmount] = useState('10');
+  const [amount, setAmount] = useState('');
   const [watchInfo, setWatchInfo] = useState<DepositWatchInfo | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<DepositWatchStatus | null>(null);
@@ -391,7 +450,7 @@ export function VprDepositView({ onSelectView }: Props) {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let cancelled = false;
-    void bridge?.depositsWatchStart?.().then((result) => {
+    void bridge?.depositsWatchStart?.()?.then((result) => {
       if (cancelled) return;
       if (result.ok && result.data) {
         setWatchInfo({ address: result.data.address, usdcAddress: result.data.usdcAddress, chainId: result.data.chainId });
@@ -403,7 +462,8 @@ export function VprDepositView({ onSelectView }: Props) {
     });
     const unsubscribe = bridge?.onDepositsWatchStatus?.((status) => {
       setWatchStatus(status);
-      if (status.phase === 'credited') actions.refreshCredits();
+      // Any wallet movement changes what the funding status should say.
+      if (status.phase !== 'sweeping') actions.refreshCredits();
     });
     return () => {
       cancelled = true;
@@ -427,8 +487,37 @@ export function VprDepositView({ onSelectView }: Props) {
 
   const [payPageNotice, setPayPageNotice] = useState<string | null>(null);
 
+  // Deposit funnel: the chooser was shown, a checkout opened, and whether
+  // it was credited before the view went away.
+  const checkoutOpenedRef = useRef(false);
+  const creditedRef = useRef(false);
+  const lastMethodRef = useRef<TelemetryDepositMethod>('unknown');
+  useEffect(() => {
+    recordDepositStep({ step: 'method_shown' });
+    return () => {
+      if (checkoutOpenedRef.current && !creditedRef.current) {
+        recordDepositStep({ step: 'checkout_abandoned', method: lastMethodRef.current });
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (watchStatus?.phase === 'credited') creditedRef.current = true;
+  }, [watchStatus]);
+  const chooseMethod = useCallback((method: TelemetryDepositMethod) => {
+    lastMethodRef.current = method;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'method_chosen', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+  const noteCheckoutOpened = useCallback((method: TelemetryDepositMethod) => {
+    checkoutOpenedRef.current = true;
+    creditedRef.current = false;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'checkout_opened', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+
   const openBrowserWallet = useCallback(() => {
     recordUserAction('deposit_start', 'deposit');
+    chooseMethod('crypto_wallet');
     setPayPageNotice(null);
     const call = window.antseedDesktop?.paymentsOpenPayPage?.({ kind: 'deposit', amountUsdc: amount });
     if (!call) {
@@ -437,23 +526,48 @@ export function VprDepositView({ onSelectView }: Props) {
     }
     void call.then((result) => {
       if (!result.ok) setPayPageNotice(result.error ?? 'Could not open the payment window.');
+      else noteCheckoutOpened('crypto_wallet');
     }).catch((err: unknown) => {
       setPayPageNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const openCardProvider = useCallback((providerId: string) => {
     recordUserAction('deposit_start', 'deposit');
+    const method = PROVIDER_DEPOSIT_METHODS[providerId] ?? 'unknown';
+    // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
+    if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
-    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
+    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount })?.then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
+      } else {
+        noteCheckoutOpened(method);
       }
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
+
+  const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
+  const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
+  const isFirstDeposit = usdcToBaseUnits(snap.total) === 0n;
 
   const statusLine = (() => {
     if (watchError) return { tone: 'error' as const, text: watchError };
+    // Too little in the wallet to deposit: the sweep waits silently, so ask
+    // for the exact shortfall instead of spinning on "preparing".
+    const receivedShort = (have: bigint, short: bigint) => ({
+      tone: 'idle' as const,
+      text: `Received ${formatUsd(have)} · send ${formatUsd(short, 'up')} more to finish`,
+    });
+    if (watchStatus?.phase === 'deferred' && watchStatus.reason === 'below-minimum' && watchStatus.minRequiredBaseUnits) {
+      const have = BigInt(watchStatus.amountBaseUnits ?? '0');
+      return receivedShort(have, shortfallBaseUnits(BigInt(watchStatus.minRequiredBaseUnits), have));
+    }
+    if (funding.kind === 'wallet-below-minimum' && (!watchStatus || watchStatus.phase === 'received' || watchStatus.phase === 'deferred')) {
+      return receivedShort(usdcToBaseUnits(snap.wallet), funding.sendMoreBaseUnits ?? 0n);
+    }
     if (!watchStatus) return { tone: 'idle' as const, text: 'Waiting for USDC on Base…' };
     switch (watchStatus.phase) {
       case 'deferred':
@@ -482,13 +596,14 @@ export function VprDepositView({ onSelectView }: Props) {
     : statusLine.tone === 'error'
       ? 'var(--accent-red, #d64545)'
       : '#f59e0b';
+  const staticDot = statusLine.tone === 'error';
   const watchStatusRow = (
     <div className={`${styles.watchStatus} ${styles[`watchStatus_${statusLine.tone}`] ?? ''}`} role="status">
       {statusLine.tone === 'done' ? (
         <HugeiconsIcon icon={Tick02Icon} size={15} strokeWidth={2.5} className={styles.watchCheck} />
       ) : (
         <span
-          className={`${styles.watchPulse}${statusLine.tone === 'error' ? ` ${styles.watchPulseStatic}` : ''}`}
+          className={`${styles.watchPulse}${staticDot ? ` ${styles.watchPulseStatic}` : ''}`}
           style={{ background: dotColor }}
           aria-hidden="true"
         />
@@ -496,6 +611,18 @@ export function VprDepositView({ onSelectView }: Props) {
       {statusLine.text}
     </div>
   );
+
+  // What this amount still has to clear: every deposit's floor (minimum plus
+  // network fee), net of what already sits in the wallet. Top-ups too: the
+  // watcher leaves a smaller amount in the wallet.
+  const amountBaseUnits = usdcToBaseUnits(amount);
+  const walletBaseUnits = usdcToBaseUnits(snap.wallet);
+  const amountNeeded = sweepAmountNeeded(usdcToBaseUnits(snap.minFirstDeposit), feeBaseUnits, walletBaseUnits);
+  const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
+  const amountHint = (() => {
+    if (walletBaseUnits > 0n && amountNeeded > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
+    return `1 credit = 1 USDC · ${isFirstDeposit ? 'first deposit' : 'each deposit'} ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
+  })();
 
   const amountForm = (
     <VprCard className={styles.amountCard}>
@@ -517,13 +644,14 @@ export function VprDepositView({ onSelectView }: Props) {
             type="text"
             inputMode="decimal"
             value={amount}
+            placeholder="Enter amount"
             aria-label="Deposit amount in USD"
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
           />
         </div>
       </div>
-      <span className={styles.amountHint}>
-        1 credit = 1 USDC{Number(snap.total) === 0 ? ' · Minimum first deposit is $1' : ''}
+      <span className={`${styles.amountHint}${amountBelowMinimum ? ` ${styles.amountHintWarn}` : ''}`}>
+        {amountHint}
       </span>
     </VprCard>
   );
@@ -531,9 +659,12 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add credits" backFallback="credits">
-        <div className={styles.stack}>
-          <BalanceSummaryCard values={balanceValues} />
+        <VprPage title="Add funds" backFallback="home" subtitle="Add to your balance with a card, a payment app or USDC.">
+        <div className={`${styles.stack} ${styles.chooseStack}`}>
+          <BalanceSummaryCard
+            values={balanceValues}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
+          />
 
           <div className={styles.primaryMethods}>
             {/* Primary path — always the antseed-pay Crossmint card checkout,
@@ -557,6 +688,8 @@ export function VprDepositView({ onSelectView }: Props) {
               </span>
             </button>
             {payPageNotice && <div className={styles.cardNotice} role="alert">{payPageNotice}</div>}
+            {/* Every method funds through the watcher: when it can't start, say why here too. */}
+            {watchError && <div className={styles.cardNotice} role="alert">{watchError}</div>}
 
             <div className={styles.methodGroup}>
               <button
@@ -564,6 +697,9 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('crypto_wallet');
+                  // The QR address is this method's checkout.
+                  noteCheckoutOpened('crypto_wallet');
                   goToStage('crypto');
                 }}
               >
@@ -579,6 +715,36 @@ export function VprDepositView({ onSelectView }: Props) {
                   <span className={styles.badgeChip}>
                     <HugeiconsIcon icon={QrCodeIcon} size={12} strokeWidth={2} />
                   </span>
+                </span>
+                <span className={styles.methodArrow} aria-hidden="true">
+                  <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
+                </span>
+              </button>
+            </div>
+            <div className={styles.methodGroup}>
+              {/* Peer Pay needs an amount up front, so it gets its own step. */}
+              <button
+                type="button"
+                className={styles.methodCta}
+                onClick={() => {
+                  recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('payment_app');
+                  setCardNotice(null);
+                  goToStage('peer');
+                }}
+              >
+                <span className={styles.methodCtaIcon}>
+                  <PeerMark size={24} />
+                </span>
+                <span className={styles.methodCtaText}>
+                  <span className={styles.methodCtaTitle}>Deposit using Peer</span>
+                  <span className={styles.methodCtaCaption}>Bank or payment app</span>
+                </span>
+                <span className={styles.methodBadges}>
+                  <PaymentRailMark src={VENMO_LOGO} label="Venmo" />
+                  <PaymentRailMark src={PAYPAL_LOGO} label="PayPal" />
+                  <PaymentRailMark src={REVOLUT_LOGO} label="Revolut" />
+                  <PaymentRailMark src={WISE_LOGO} label="Wise" />
                 </span>
                 <span className={styles.methodArrow} aria-hidden="true">
                   <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
@@ -658,15 +824,44 @@ export function VprDepositView({ onSelectView }: Props) {
       );
     }
 
+    if (current === 'peer') {
+      return (
+        <VprPage title="Deposit using Peer" subtitle="Add to your balance from a bank or payment app." onBack={() => goToStage('choose')}>
+          <div className={styles.stack}>
+
+            {amountForm}
+
+            <button
+              type="button"
+              className={styles.funCta}
+              disabled={amount === '' || amountBelowMinimum}
+              onClick={() => openCardProvider('peer-pay')}
+            >
+              <span className={styles.funCtaText}>
+                <span className={styles.funCtaTitle}>Continue to Peer Pay</span>
+                <span className={styles.funCtaCaption}>Venmo, PayPal, Revolut, Wise and more</span>
+              </span>
+              <span className={styles.methodArrow} aria-hidden="true">
+                <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} />
+              </span>
+            </button>
+            {cardNotice && <div className={styles.cardNotice} role="alert">{cardNotice}</div>}
+
+            <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
+          </div>
+        </VprPage>
+      );
+    }
+
     return (
-      <VprPage title="Pay with USDC on Base" onBack={() => goToStage('choose')}>
+      <VprPage title="Pay with USDC on Base" subtitle="Scan the code or copy the address. Credits update automatically." onBack={() => goToStage('choose')}>
         <div className={styles.stack}>
 
           {amountForm}
 
           <VprCard className={styles.payCard}>
             {watchInfo ? (
-              <StyledQr text={buildPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
+              <StyledQr text={buildUsdcPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
             ) : (
               <div className={styles.qrPlaceholder} aria-hidden="true" />
             )}
@@ -681,7 +876,7 @@ export function VprDepositView({ onSelectView }: Props) {
             <div className={styles.qrMeta}>
               <span>Credits update automatically</span>
               <span aria-hidden="true">·</span>
-              <span>$0.05 network fee</span>
+              <span>{formatUsd(feeBaseUnits)} network fee</span>
             </div>
             {creditedTxUrl && (
               <button

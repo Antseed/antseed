@@ -55,7 +55,7 @@ export function App() {
   }, []);
 
   if (unauthorized) return <AuthGate />;
-  return <Shell theme={theme} toggleTheme={toggleTheme} />;
+  return <Dashboard theme={theme} toggleTheme={toggleTheme} />;
 }
 
 function AuthGate() {
@@ -72,7 +72,7 @@ function AuthGate() {
           This link is missing a valid session or is no longer valid. Open a fresh link to continue.
         </p>
         <p className="muted small">
-          <strong>Using the AntSeed desktop app?</strong><br />
+          <strong>Using the Antseed desktop app?</strong><br />
           Go to <strong>Rewards</strong>, then select <strong>Claim rewards</strong> or <strong>Manage staking</strong>. To use another browser, choose{' '}
           <strong>Copy link</strong> beside the action and paste it into the browser where you use your wallet.
         </p>
@@ -85,7 +85,11 @@ function AuthGate() {
   );
 }
 
-function Shell({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
+/**
+ * The dashboard below the auth gate: config, overview, wallet session, jobs and
+ * the current page. The standalone app and the gateway console both render it.
+ */
+export function Dashboard({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
   const config = usePageData('config', api.config, Number.POSITIVE_INFINITY);
   const overview = usePageData('overview', api.overview);
   const route = useRoute();

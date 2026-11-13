@@ -1,16 +1,9 @@
 import type { Identity } from "../p2p/identity.js";
 import { signData } from "../p2p/identity.js";
 import type { DHTNode } from "./dht-node.js";
-import {
-  ANTSEED_WILDCARD_TOPIC,
-  capabilityTopic,
-  peerTopic,
-  subnetOf,
-  subnetTopic,
-  topicToInfoHash,
-} from "./dht-node.js";
+import { capabilityTopic, sellerTopics, topicToInfoHash } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
 import { METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
@@ -24,7 +17,8 @@ import {
 import type { ServiceApiProtocol } from "../types/service-api.js";
 import { isKnownServiceApiProtocol } from "../types/service-api.js";
 import type { ServiceUnitBillingModelsV1 } from "../types/billing.js";
-import { encodeMetadataForSigning } from "./metadata-codec.js";
+import { encodeMetadataForSigning, getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS } from "./metadata-codec.js";
+import { serviceMap } from "./metadata/wire.js";
 import { getAddress } from "ethers";
 import { debugWarn } from "../utils/debug.js";
 import { bytesToHex } from "../utils/hex.js";
@@ -59,6 +53,10 @@ export interface AnnouncerConfig {
     serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
     serviceUnitBillingModels?: ServiceUnitBillingModelsV1;
     serviceCapabilities?: Record<string, ServiceCapabilities>;
+    /** Current self health check results per service, read on every refresh. */
+    serviceHealth?: () => Record<string, ServiceHealth> | undefined;
+    /** Read on every refresh: how each service served buyers lately. */
+    servicePerformance?: () => Record<string, ServicePerformance> | undefined;
     maxConcurrency: number;
     /** Runtime availability predicate. Unavailable providers are omitted. */
     isAvailable?: () => boolean;
@@ -87,6 +85,8 @@ export interface AnnouncerConfig {
   stakingClient?: StakingClient;
   reannounceIntervalMs: number;
   signalingPort: number;
+  /** Additional public TCP port to announce alongside the listening port. */
+  publicSignalingPort?: number;
   /** Extra peer capability strings to advertise (merged with the built-in set). */
   capabilities?: string[];
   /** Optional health monitor — if supplied, announce outcomes are recorded. */
@@ -108,6 +108,17 @@ export interface AnnouncerConfig {
  */
 const ANNOUNCE_RETRY_BACKOFFS_MS = [60_000, 120_000, 300_000, 600_000];
 
+/** Capabilities every announcement carries before the configured extras. */
+export function builtinPeerCapabilities(relaysSweeps: boolean): string[] {
+  return [
+    CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+    CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
+    CONNECTION_CAPABILITY_SIGNED_SDP_V1,
+    CONNECTION_CAPABILITY_TCP_ENC_V1,
+    ...(relaysSweeps ? [CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1] : []),
+  ];
+}
+
 export class PeerAnnouncer {
   private readonly config: AnnouncerConfig;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -119,6 +130,8 @@ export class PeerAnnouncer {
   /** Monotonic build ids so a slow, older build never overwrites newer metadata. */
   private _buildSeq = 0;
   private _appliedBuildSeq = 0;
+  /** One signed document per served metadata version. */
+  private _signedByVersion = new Map<number, PeerMetadata>();
 
   constructor(config: AnnouncerConfig) {
     this.config = config;
@@ -146,10 +159,15 @@ export class PeerAnnouncer {
 
   private async _buildAndStore(includeOnChainReputation: boolean): Promise<void> {
     const seq = ++this._buildSeq;
-    const metadata = await this._buildSignedMetadata(includeOnChainReputation);
+    const signed = await this._buildSignedMetadata(includeOnChainReputation);
     if (seq < this._appliedBuildSeq) return;
     this._appliedBuildSeq = seq;
-    this._latestMetadata = metadata;
+    this._storeSigned(signed);
+  }
+
+  private _storeSigned(signed: Map<number, PeerMetadata>): void {
+    this._signedByVersion = signed;
+    this._latestMetadata = signed.get(Math.max(...signed.keys())) ?? null;
   }
 
   startPeriodicAnnounce(): void {
@@ -212,8 +230,22 @@ export class PeerAnnouncer {
     this.loadMap.set(providerName, currentLoad);
   }
 
+  /** The newest signed metadata document. */
   getLatestMetadata(): PeerMetadata | null {
     return this._latestMetadata;
+  }
+
+  /**
+   * The signed document to serve a buyer that understands metadata up to
+   * `requestedVersion` (undefined when it did not say).
+   */
+  getMetadataForVersion(requestedVersion: number | undefined): PeerMetadata | null {
+    const version = negotiateMetadataVersion(requestedVersion);
+    const exact = this._signedByVersion.get(version);
+    if (exact) return exact;
+    // That version failed to sign: serve the newest older one the buyer still reads.
+    const older = [...this._signedByVersion.keys()].filter((signed) => signed < version);
+    return older.length > 0 ? this._signedByVersion.get(Math.max(...older)) ?? null : null;
   }
 
   /** Return the configured seller contract as lowercase 40-hex (no 0x). */
@@ -268,7 +300,7 @@ export class PeerAnnouncer {
     };
   }
 
-  private async _buildSignedMetadata(includeOnChainReputation = true): Promise<PeerMetadata> {
+  private async _buildSignedMetadata(includeOnChainReputation = true): Promise<Map<number, PeerMetadata>> {
     const providers: ProviderAnnouncement[] = this.config.providers
       .filter((provider) => provider.isAvailable?.() !== false)
       .map((p) => {
@@ -304,18 +336,18 @@ export class PeerAnnouncer {
         if (normalizedServiceCapabilities) {
           providerAnnouncement.serviceCapabilities = normalizedServiceCapabilities;
         }
+        const normalizedServiceHealth = this._normalizeServiceMeasurements(p.serviceHealth?.(), p.services);
+        if (normalizedServiceHealth) {
+          providerAnnouncement.serviceHealth = normalizedServiceHealth;
+        }
+        const normalizedServicePerformance = this._normalizeServiceMeasurements(p.servicePerformance?.(), p.services);
+        if (normalizedServicePerformance) {
+          providerAnnouncement.servicePerformance = normalizedServicePerformance;
+        }
         return providerAnnouncement;
       });
 
-    const capabilities: string[] = [
-      CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
-      CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
-      CONNECTION_CAPABILITY_SIGNED_SDP_V1,
-      CONNECTION_CAPABILITY_TCP_ENC_V1,
-    ];
-    if (this.config.relaysSweeps) {
-      capabilities.push(CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1);
-    }
+    const capabilities = builtinPeerCapabilities(this.config.relaysSweeps === true);
     if (this.config.capabilities && this.config.capabilities.length > 0) {
       capabilities.push(...this.config.capabilities);
     }
@@ -351,7 +383,7 @@ export class PeerAnnouncer {
 
     const sellerContract = this._normalizedSellerContract();
 
-    return this._signAndValidateMetadata({
+    const latest: PeerMetadata = {
       peerId: this.config.identity.peerId,
       version: METADATA_VERSION,
       ...(this.config.displayName ? { displayName: this.config.displayName } : {}),
@@ -367,7 +399,21 @@ export class PeerAnnouncer {
       ...(onChainGhostCount !== undefined ? { onChainGhostCount } : {}),
       ...(sellerContract ? { sellerContract } : {}),
       signature: "",
-    });
+    };
+    // Each version is signed on its own, so a document that fails (say the
+    // newest one grows past the size limit) leaves the others served.
+    const signed = new Map<number, PeerMetadata>();
+    const failures: string[] = [];
+    for (const version of SERVED_METADATA_VERSIONS) {
+      try {
+        signed.set(version, this._signAndValidateMetadata(getMetadataCodec(version).fromLatest(latest)));
+      } catch (err) {
+        failures.push(`v${version}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (signed.size === 0) throw new Error(`Invalid metadata snapshot: ${failures.join("; ")}`);
+    if (failures.length > 0) debugWarn(`[Announcer] Metadata version not served: ${failures.join("; ")}`);
+    return signed;
   }
 
   private _signAndValidateMetadata(metadata: PeerMetadata): PeerMetadata {
@@ -403,23 +449,7 @@ export class PeerAnnouncer {
    * sequencing them just slows the reannounce cycle for no benefit.
    */
   private async _announceTopics(): Promise<number> {
-    const subnet = subnetOf(this.config.identity.peerId);
-    const topics = new Set<string>();
-
-    // Subnet topic: shards the peer set across SUBNET_COUNT infohashes so no
-    // single one carries every announcer at once. Buyers fan out parallel
-    // lookups across all subnets in `PeerLookup.findAll()`.
-    topics.add(subnetTopic(subnet));
-
-    // Wildcard remains during the transition: it lets older buyers (still on
-    // the single-infohash scan) keep finding this peer. Once subnet-aware
-    // buyers are universal it can be dropped — see SUBNET_COUNT comment in
-    // dht-node.ts.
-    topics.add(ANTSEED_WILDCARD_TOPIC);
-
-    // Per-peer topic: lets buyers do a deterministic lookup-by-peerId without
-    // scanning the wildcard or any subnet.
-    topics.add(peerTopic(this.config.identity.peerId));
+    const topics = new Set<string>(sellerTopics(this.config.identity.peerId));
 
     if (this.config.offerings) {
       for (const offering of this.config.offerings) {
@@ -446,7 +476,8 @@ export class PeerAnnouncer {
   private async _tryAnnounceTopic(topic: string): Promise<boolean> {
     try {
       const infoHash = topicToInfoHash(topic);
-      await this.config.dht.announce(infoHash, this.config.signalingPort);
+      const ports = new Set([this.config.signalingPort, this.config.publicSignalingPort ?? this.config.signalingPort]);
+      await Promise.all([...ports].map((port) => this.config.dht.announce(infoHash, port)));
       this.config.healthMonitor?.recordAnnounce(true);
       return true;
     } catch (err) {
@@ -454,6 +485,22 @@ export class PeerAnnouncer {
       debugWarn(`[Announcer] Announce failed for ${topic}: ${err instanceof Error ? err.message : err}`);
       return false;
     }
+  }
+
+  /** Copies of the live per-service measurements (health, performance) for services the provider lists. */
+  private _normalizeServiceMeasurements<T extends object>(
+    measurements: Record<string, T> | undefined,
+    supportedServices: string[],
+  ): Record<string, T> | undefined {
+    if (!measurements) return undefined;
+    const hasWildcardServices = supportedServices.length === 0;
+    const supportedServiceSet = new Set(supportedServices);
+    const normalized: Record<string, T> = serviceMap();
+    for (const [service, measurement] of Object.entries(measurements)) {
+      if (!hasWildcardServices && !supportedServiceSet.has(service)) continue;
+      normalized[service] = { ...measurement };
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
   }
 
   private _normalizeServiceCategories(
@@ -466,7 +513,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, string[]> = {};
+    const normalized: Record<string, string[]> = serviceMap();
     for (const [service, categories] of Object.entries(serviceCategories)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -497,7 +544,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceApiProtocol[]> = {};
+    const normalized: Record<string, ServiceApiProtocol[]> = serviceMap();
     for (const [service, protocols] of Object.entries(serviceApiProtocols)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -528,7 +575,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: ServiceUnitBillingModelsV1 = {};
+    const normalized: ServiceUnitBillingModelsV1 = serviceMap();
     for (const [service, protocolModels] of Object.entries(serviceUnitBillingModels)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;
@@ -554,7 +601,7 @@ export class PeerAnnouncer {
 
     const hasWildcardServices = supportedServices.length === 0;
     const supportedServiceSet = new Set(supportedServices);
-    const normalized: Record<string, ServiceCapabilities> = {};
+    const normalized: Record<string, ServiceCapabilities> = serviceMap();
     for (const [service, caps] of Object.entries(serviceCapabilities)) {
       if (!hasWildcardServices && !supportedServiceSet.has(service)) {
         continue;

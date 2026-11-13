@@ -1,0 +1,693 @@
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
+import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falReferenceAliases, renameFalReferenceAliases, falEditRule, falErrorReason, falFollowsAudio, falSubmitTimeoutMs, falInputParameters, falInputSchema, withAudioInputs, withEditInputs, withFrameInputs } from './index.js';
+
+afterEach(() => vi.unstubAllGlobals());
+
+const MODEL = 'fal-ai/kling-video/v2.1/standard/text-to-video';
+const config = {
+  FAL_VIDEO_API_KEY: 'seller-secret',
+  ANTSEED_ALLOWED_SERVICES: MODEL,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [MODEL]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } }),
+};
+const json = (body: object) => Buffer.from(JSON.stringify(body));
+const request = (path: string, body: object, headers: Record<string, string> = {}): SerializedHttpRequest => ({
+  requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json', ...headers }, body: json(body),
+});
+const retrieve = (body: object = { model: MODEL, request_id: 'req-1' }) =>
+  request('/fal/v1/video/retrieve', body, { 'x-antseed-service': MODEL, 'x-antseed-video-download': 'video-stream-v1' });
+const stream = (provider: Provider, req = retrieve(), callbacks: Partial<ProviderStreamCallbacks> = {}) =>
+  provider.handleRequestStream!(req, { signal: new AbortController().signal, onResponseStart() {}, onResponseChunk() {}, ...callbacks });
+const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString());
+
+/** Inline MP4 source whose video track plays `ms` milliseconds. */
+const sourceMp4 = (ms: number) => {
+  const box = (type: string, ...children: Buffer[]) => {
+    const head = Buffer.alloc(8);
+    head.write(type, 4, 'latin1');
+    const out = Buffer.concat([head, ...children]);
+    out.writeUInt32BE(out.length);
+    return out;
+  };
+  const u32 = (...values: number[]) => Buffer.concat(values.map(value => { const b = Buffer.alloc(4); b.writeUInt32BE(value); return b; }));
+  // mvhd and mdhd: version/flags, times, timescale 1000, duration. One sample of `ms`.
+  const header = u32(0, 0, 0, 1000, ms);
+  const mp4 = Buffer.concat([
+    box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')),
+    box('moov', box('mvhd', header), box('trak', box('mdia', box('mdhd', header), box('hdlr', u32(0, 0), Buffer.from('vide'), u32(0, 0, 0), Buffer.alloc(1)),
+      box('minf', box('stbl', box('stts', u32(0, 1, 1, ms)), box('stsz', u32(0, 0, 1))))))),
+    box('mdat', Buffer.alloc(64)),
+  ]);
+  return `data:video/mp4;base64,${mp4.toString('base64')}`;
+};
+
+const V3 = 'fal-ai/kling-video/v3/pro/image-to-video';
+const v3Config = {
+  ...config,
+  ANTSEED_ALLOWED_SERVICES: V3,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [V3]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } }),
+};
+const schema = (endpointId: string, properties: Record<string, object>) => ({
+  paths: { [`/${endpointId}`]: { post: { requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Input' } } } } } } },
+  components: { schemas: { Input: { properties } } },
+});
+
+it('derives fal app IDs for queue status and result URLs', () => {
+  expect(falAppId(MODEL)).toBe('fal-ai/kling-video');
+  expect(falAppId('fal-ai/veo3')).toBe('fal-ai/veo3');
+});
+
+it('advertises fal video services and validates seller configuration', () => {
+  expect(plugin.name).toBe('fal-video');
+  expect(() => plugin.createProvider({ ...config, FAL_VIDEO_API_KEY: ' ' })).toThrow('FAL_VIDEO_API_KEY');
+  expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{}' })).toThrow('Missing fal-video unit pricing');
+  expect(() => plugin.createProvider({ ...config, ANTSEED_ALLOWED_SERVICES: 'kling' })).toThrow('Invalid fal endpoint ID');
+  expect(() => plugin.createProvider({ ...config, ANTSEED_ALLOWED_SERVICES: 'fal-ai/../admin' })).toThrow('Invalid fal endpoint ID');
+  const provider = plugin.createProvider(config) as Provider;
+  expect(provider.serviceApiProtocols).toEqual({ [MODEL]: ['fal-video'] });
+  expect(provider.serviceCapabilities?.[MODEL]).toMatchObject({ outputs: ['video'] });
+});
+
+it('submits the input to the fal queue with seller auth and hides fal URLs', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({
+    request_id: 'req-1', queue_position: 0,
+    status_url: 'https://queue.fal.run/fal-ai/kling-video/requests/req-1/status',
+    response_url: 'https://queue.fal.run/fal-ai/kling-video/requests/req-1',
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  const input = { prompt: 'cat', duration: '5', image_url: 'data:image/png;base64,aW1hZ2U=' };
+  const response = await (plugin.createProvider(config) as Provider).handleRequest(
+    request('/fal/v1/video/queue', { model: MODEL, service: MODEL, ...input }, { authorization: 'buyer-key', 'x-antseed-buyer-peer-id': 'buyer' }),
+  );
+  expect(response.statusCode).toBe(200);
+  expect(parse(response.body)).toEqual({ model: MODEL, request_id: 'req-1', status: 'IN_QUEUE' });
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe(`https://queue.fal.run/${MODEL}`);
+  expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { authorization: 'Key seller-secret' } });
+  expect(Object.keys(init.headers).some((key: string) => key.startsWith('x-antseed-'))).toBe(false);
+  expect(parse(init.body)).toEqual(input);
+});
+
+it('reads the input field names from the fal schema', () => {
+  expect(falInputParameters(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} }), V3)).toEqual(['end_image_url', 'prompt', 'start_image_url']);
+  expect(falInputParameters(schema('fal-ai/other', { prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, { Prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`field_${i}`, {}]))), V3)).toBeNull();
+  expect(falInputParameters(null, V3)).toBeNull();
+});
+
+it('adds the frame inputs an endpoint\'s fields take to the announced video inputs', () => {
+  expect(withFrameInputs({ video: { inputs: ['first_frame'] }, supportedParameters: ['image_url', 'prompt', 'tail_image_url'] }).video?.inputs)
+    .toEqual(['first_frame', 'last_frame']);
+  expect(withFrameInputs({ video: { inputs: [] }, supportedParameters: ['end_image_url', 'start_image_url'] }).video?.inputs)
+    .toEqual(['first_frame', 'last_frame']);
+  const unknown = { supportedParameters: ['image_url', 'tail_image_url'] };
+  expect(withFrameInputs(unknown)).toBe(unknown);
+  const textOnly = { video: { inputs: [] }, supportedParameters: ['prompt'] };
+  expect(withFrameInputs(textOnly)).toBe(textOnly);
+});
+
+it('announces last_frame for a Kling endpoint whose fal schema has tail_image_url', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(schema(V3, { prompt: {}, image_url: {}, tail_image_url: {} }))));
+  const provider = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { video: { inputs: ['first_frame'] } } }) }) as Provider;
+  await provider.init!();
+  expect(provider.serviceCapabilities?.[V3]?.video?.inputs).toEqual(['first_frame', 'last_frame']);
+});
+
+it('advertises each endpoint\'s fal input fields and forwards the body unchanged', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} })))
+    .mockResolvedValueOnce(Response.json({ credits: { current_balance: 5 } }))
+    .mockResolvedValue(Response.json({ request_id: 'req-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(v3Config) as Provider;
+  expect(provider.serviceCapabilities?.[V3]?.supportedParameters).toBeUndefined();
+  await provider.init!();
+  expect(fetchMock.mock.calls[0]![0]).toBe(`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=${encodeURIComponent(V3)}`);
+  expect(fetchMock.mock.calls[0]![1].headers).toBeUndefined();
+  expect(provider.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'], supportedParameters: ['end_image_url', 'prompt', 'start_image_url'] });
+  const input = { prompt: 'cat', image_url: 'first', start_image_url: 'start' };
+  await provider.handleRequest(request('/fal/v1/video/queue', { model: V3, ...input }));
+  expect(parse(fetchMock.mock.calls[2]![1].body)).toEqual(input);
+});
+
+it('keeps configured parameters and starts without them when the fal schema is unavailable', async () => {
+  const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+  vi.stubGlobal('fetch', fetchMock);
+  const offline = plugin.createProvider(v3Config) as Provider;
+  await offline.init!();
+  expect(offline.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'] });
+  const configured = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { supportedParameters: ['prompt', 'start_image_url'] } }) }) as Provider;
+  await configured.init!();
+  expect(configured.serviceCapabilities?.[V3]?.supportedParameters).toEqual(['prompt', 'start_image_url']);
+  // The schema is still read for its source-video limits; configured field names win.
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('openapi'))).toHaveLength(2);
+});
+
+it('passes fal validation errors back without accepting a job', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ detail: [{ msg: 'prompt required' }] }, { status: 422 })));
+  const response = await (plugin.createProvider(config) as Provider).handleRequest(request('/fal/v1/video/queue', { model: MODEL }));
+  expect(response.statusCode).toBe(422);
+  expect(parse(response.body).request_id).toBeUndefined();
+});
+
+it('rejects unsupported endpoints, services, and non-streamed retrieves before calling fal', async () => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  expect((await provider.handleRequest(request('/fal/v1/video/cancel', { model: MODEL, request_id: 'req-1' }))).statusCode).toBe(400);
+  expect((await provider.handleRequest(request('/fal/v1/video/queue', { model: 'fal-ai/other', prompt: 'cat' }))).statusCode).toBe(400);
+  expect((await provider.handleRequest(retrieve())).statusCode).toBe(400);
+  expect((await stream(provider, retrieve({ model: MODEL }))).statusCode).toBe(400);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('returns fal queue status while the job runs', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ status: 'IN_QUEUE', queue_position: 3, response_url: 'https://queue.fal.run/x' }, { status: 202 }));
+  vi.stubGlobal('fetch', fetchMock);
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'IN_QUEUE' });
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe('https://queue.fal.run/fal-ai/kling-video/requests/req-1/status');
+  expect(init).toMatchObject({ redirect: 'error', headers: { authorization: 'Key seller-secret' } });
+});
+
+it('reports failed fal jobs as FAILED', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ status: 'COMPLETED', error: 'NSFW content', error_type: 'content_policy_violation' })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'NSFW content' });
+});
+
+it.each([429, 500, 503])('does not report a job as FAILED when its result fetch returns %i', async (statusCode) => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: 'try again' }, { status: statusCode })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(response.statusCode).toBe(502);
+  expect(parse(response.body).status).toBeUndefined();
+});
+
+it('reports a job as FAILED when fal refuses its result', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: [{ loc: ['body', 'start_image_url'], msg: 'Field required', type: 'missing' }] }, { status: 422 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({
+    status: 'FAILED',
+    error: 'start_image_url: Field required',
+  });
+});
+
+it('reports a job as FAILED without a reason when fal gives none', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(new Response('', { status: 422 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'fal answered HTTP 422 with no reason' });
+});
+
+it('scales the fal submit timeout with the request size', () => {
+  expect(falSubmitTimeoutMs(1000)).toBe(61_000);
+  expect(falSubmitTimeoutMs(12_000_000)).toBe(60_000 + 46_000);
+  expect(falSubmitTimeoutMs(1_000_000_000)).toBe(600_000);
+});
+
+it('reads readable reasons from fal error bodies', () => {
+  expect(falErrorReason({ detail: 'User is locked' })).toBe('User is locked');
+  expect(falErrorReason({ detail: [{ loc: ['body', 'video_url'], msg: 'too small' }, { msg: 'bad' }] })).toBe('video_url: too small; bad');
+  expect(falErrorReason({ error: 'NSFW' })).toBe('NSFW');
+  expect(falErrorReason({})).toBeUndefined();
+});
+
+it('streams the finished video from the fal media URL without the seller key', async () => {
+  const bytes = new Uint8Array(3 * 1024 * 1024 + 17).fill(7);
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED', metrics: { inference_time: 30 } }))
+    .mockResolvedValueOnce(Response.json({ video: { url: 'https://v3.fal.media/files/out.mp4', content_type: 'video/mp4' } }))
+    .mockResolvedValueOnce(new Response(bytes, { headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } }));
+  vi.stubGlobal('fetch', fetchMock);
+  let received = 0;
+  let headers: Record<string, string> | undefined;
+  const response = await stream(plugin.createProvider(config) as Provider, retrieve(), {
+    onResponseStart(start) { headers = start.headers; },
+    onResponseChunk(chunk) { expect(chunk.data.length).toBeLessThanOrEqual(65536); received += chunk.data.length; },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(headers).toMatchObject({ 'content-type': 'video/mp4', 'x-antseed-video-download': 'video-stream-v1' });
+  expect(received).toBe(bytes.length);
+  expect(fetchMock.mock.calls[1]![0]).toBe('https://queue.fal.run/fal-ai/kling-video/requests/req-1');
+  const [url, init] = fetchMock.mock.calls[2]!;
+  expect(url).toBe('https://v3.fal.media/files/out.mp4');
+  expect(init.headers).not.toHaveProperty('authorization');
+});
+
+it('refuses non-HTTPS result URLs', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ video: { url: 'http://169.254.169.254/latest' } }));
+  vi.stubGlobal('fetch', fetchMock);
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(response.statusCode).toBe(502);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+describe('checkServiceHealth and checkUpstreamAccount', () => {
+  const OTHER = 'fal-ai/wan-pro/image-to-video';
+  const twoModels = {
+    ...config,
+    ANTSEED_ALLOWED_SERVICES: `${MODEL},${OTHER}`,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
+      [MODEL]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } },
+      [OTHER]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } },
+    }),
+  };
+  const notFound = () => Response.json({ error: { type: 'not_found', message: 'Endpoint(s) not found' } }, { status: 404 });
+  const models = (list: Array<[string, string]>) =>
+    Response.json({ models: list.map(([endpoint_id, status]) => ({ endpoint_id, metadata: { status } })) });
+  const mockFal = (modelsResponse: Response | Error, billing?: Response) => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const response = url.includes('/account/billing') ? billing! : modelsResponse;
+      if (response instanceof Error) throw response;
+      return response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  const check = (cfg: Record<string, string> = twoModels) =>
+    (plugin.createProvider(cfg) as Provider).checkServiceHealth!([MODEL, OTHER]);
+
+  it('reports listed endpoints as available from fal\'s model list, sending the seller key', async () => {
+    const fetchMock = mockFal(models([[MODEL, 'active'], [OTHER, 'active']]));
+    expect(await check()).toEqual({ [MODEL]: { status: 'available' }, [OTHER]: { status: 'available' } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://api.fal.ai/v1/models?endpoint_id=${encodeURIComponent(MODEL)}&endpoint_id=${encodeURIComponent(OTHER)}`);
+    expect(init.headers).toEqual({ authorization: 'Key seller-secret' });
+  });
+
+  it('reports a removed endpoint as unavailable and keeps a deprecated one with a warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFal(models([[MODEL, 'deprecated']]));
+    const results = await check();
+    expect(results[MODEL]).toEqual({ status: 'available' });
+    expect(results[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deprecated'));
+    vi.stubGlobal('fetch', vi.fn(async () => notFound()));
+    expect((await check())[MODEL]).toMatchObject({ status: 'unavailable' });
+    warn.mockRestore();
+  });
+
+  it('looks endpoints up one by one when fal rejects a lookup for one unknown endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const ids = new URL(url).searchParams.getAll('endpoint_id');
+      return ids.includes(OTHER) ? notFound() : models(ids.map((id): [string, string] => [id, 'active']));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await check();
+    expect(results[MODEL]).toEqual({ status: 'available' });
+    expect(results[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops the one-by-one lookup at a rate limit and reports unknown', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const ids = new URL(url).searchParams.getAll('endpoint_id');
+      return ids.length > 1 ? notFound() : Response.json({ error: {} }, { status: 429 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await check()).toMatchObject({ [MODEL]: { status: 'unknown' }, [OTHER]: { status: 'unknown' } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports unknown for any other 404, such as a moved route', async () => {
+    mockFal(Response.json({ error: { type: 'not_found', message: 'Route not found' } }, { status: 404 }));
+    expect(await check()).toMatchObject({ [MODEL]: { status: 'unknown' }, [OTHER]: { status: 'unknown' } });
+  });
+
+  it('reports unknown when the model list can not be read', async () => {
+    mockFal(new Error('network down'));
+    expect((await check())[MODEL]).toMatchObject({ status: 'unknown' });
+  });
+
+  it('checks the balance with the seller key', async () => {
+    const provider = plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: '1' }) as Provider;
+    const fetchMock = mockFal(models([]), Response.json({ credits: { current_balance: 12.5, currency: 'USD' } }));
+    expect(await provider.checkUpstreamAccount!()).toEqual({ status: 'available', balanceUsd: 12.5 });
+    const [billingUrl, billingInit] = fetchMock.mock.calls.find(([url]) => url.includes('billing'))!;
+    expect(billingUrl).toBe('https://api.fal.ai/v1/account/billing?expand=credits');
+    expect(billingInit).toMatchObject({ headers: { authorization: 'Key seller-secret' } });
+
+    mockFal(models([]), Response.json({ credits: { current_balance: 0.5, currency: 'USD' } }));
+    expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
+    expect(() => plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: 'x' })).toThrow('FAL_VIDEO_MIN_BALANCE_USD');
+  });
+
+  it('reports an invalid seller key as unavailable', async () => {
+    mockFal(models([]), Response.json({ error: { type: 'authorization_error', message: 'Invalid API key' } }, { status: 401 }));
+    expect(await (plugin.createProvider(twoModels) as Provider).checkUpstreamAccount!())
+      .toMatchObject({ status: 'unavailable', reason: expect.stringContaining('401') });
+  });
+
+  it('warns once at startup and stops checking when the seller key lacks billing permission', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url: string) => (url.includes('/account/billing')
+      ? Response.json({ error: { type: 'authorization_error' } }, { status: 403 })
+      : Response.json(schema(MODEL, { prompt: {} }))));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(twoModels) as Provider;
+    await provider.init!();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(`[fal-video] ${FAL_BALANCE_CHECK_OFF}`);
+    for (let i = 0; i < 2; i++) {
+      expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
+    }
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes('/account/billing'))).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('logs at startup that the balance check is on when the key can read billing', async () => {
+    const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('/account/billing')
+      ? Response.json({ credits: { current_balance: 7.25 } })
+      : Response.json(schema(MODEL, { prompt: {} })))));
+    await (plugin.createProvider(twoModels) as Provider).init!();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('fal balance check is on: $7.25'));
+    info.mockRestore();
+  });
+});
+
+/** Real fal input schemas (trimmed to the endpoint's input), saved 2026-10-23 (edits) and 2026-11-04 (avatars). */
+const fixture = (endpointId: string) => JSON.parse(readFileSync(new URL(`./fixtures/${endpointId.replaceAll('/', '_')}.json`, import.meta.url), 'utf8'));
+const serviceConfig = (service: string, capabilities?: object) => ({
+  FAL_VIDEO_API_KEY: 'seller-secret',
+  ANTSEED_ALLOWED_SERVICES: service,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [service]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.3 }] } } }),
+  ...(capabilities ? { ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [service]: capabilities }) } : {}),
+});
+const ready = async (service: string, capabilities?: object) => {
+  const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+    if (String(url).startsWith('https://fal.ai/api/openapi')) return Response.json(fixture(service));
+    if (String(url).includes('/v1/account/billing')) return Response.json({ credits: { current_balance: 5 } });
+    if (String(url).startsWith('https://rest.fal.ai/storage/upload/initiate')) {
+      return Response.json({ upload_url: 'https://v3b.fal.media/upload/source', file_url: 'https://v3b.fal.media/files/source.mp4' });
+    }
+    if (String(url) === 'https://v3b.fal.media/upload/source') return new Response(null, { status: 200 });
+    return Response.json({ request_id: 'req-1' });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(serviceConfig(service, capabilities)) as Provider;
+  await provider.init!();
+  return { provider, fetchMock };
+};
+const create = (service: string, body: object, requestId = 'r') => ({ ...request('/fal/v1/video/queue', { model: service, ...body }), requestId });
+
+describe('video-to-video endpoints', () => {
+  const RECAST = 'minimax/h3-max/recast';
+  const KLING_EDIT = 'kling/v4/video-to-video/edit';
+  const MOTION = 'fal-ai/kling-video/v3/standard/motion-control';
+  const WAN_EDIT = 'fal-ai/wan/v2.7/edit-video';
+  it('reads required fields, the x-fal source length and resolutions from the fal schemas', () => {
+    expect(falInputSchema(fixture(RECAST), RECAST)).toMatchObject({ required: ['video_url', 'reference_image_urls'], resolutions: ['768P', '1080P'] });
+    // Recast states its source length only in a description, so none is read.
+    expect(falInputSchema(fixture(RECAST), RECAST)).not.toHaveProperty('sourceSeconds');
+    expect(falInputSchema(fixture(KLING_EDIT), KLING_EDIT)).toMatchObject({ required: ['prompt', 'video_url'], sourceSeconds: { min: 3, max: 30.05 } });
+    expect(falInputSchema(fixture(MOTION), MOTION)).toMatchObject({ sourceSeconds: { min: 3, max: 30.05 } });
+    expect(falEditRule(falInputSchema(fixture(RECAST), RECAST))).toEqual({ outputFollowsSource: true });
+    expect(falEditRule(falInputSchema(fixture(MOTION), MOTION))).toEqual({ outputFollowsSource: true });
+    expect(falEditRule(falInputSchema(fixture(KLING_EDIT), KLING_EDIT))).toEqual({ outputFollowsSource: false });
+    expect(falEditRule(falInputSchema(fixture(WAN_EDIT), WAN_EDIT))).toEqual({ outputFollowsSource: false });
+    expect(falEditRule(falInputSchema(schema(V3, { prompt: {}, image_url: {} }), V3))).toBeNull();
+  });
+
+  it('announces the source video and character inputs, and the source lengths fal takes as durations', async () => {
+    const { provider } = await ready(RECAST);
+    expect(provider.serviceCapabilities?.[RECAST]).toEqual({
+      outputs: ['video'],
+      supportedParameters: ['enable_safety_checker', 'enhance_realism', 'prompt', 'reference_image_urls', 'resolution', 'seed', 'video_url'],
+      video: {
+        inputs: ['video', 'reference_image'],
+        requiredInputs: ['video', 'reference_image'],
+        resolutions: ['768P', '1080P'],
+      },
+    });
+    // Motion control's output is as long as its source; x-fal limits the source to 3–30.05 s.
+    const motion = (await ready(MOTION)).provider.serviceCapabilities?.[MOTION]?.video;
+    expect(motion).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: Array.from({ length: 28 }, (_, i) => i + 3) });
+    // Kling v4 takes a `duration`, but it is still the source length; x-fal limits the source to 3–30.05 s.
+    expect((await ready(KLING_EDIT)).provider.serviceCapabilities?.[KLING_EDIT]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: Array.from({ length: 28 }, (_, i) => i + 3), resolutions: ['720p', '1080p'] });
+  });
+
+  it('keeps video options the seller configured', async () => {
+    const { provider } = await ready(RECAST, { video: { inputs: ['video'], durationsSeconds: [5, 10], resolutions: ['768P'] } });
+    expect(provider.serviceCapabilities?.[RECAST]?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'], durationsSeconds: [5, 10], resolutions: ['768P'] });
+    expect(withEditInputs({ outputs: ['video'] }, null, null)).toEqual({ outputs: ['video'] });
+  });
+
+  it('uploads the inline source to fal storage and drops duration for an endpoint that takes none', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    const body = { video_url: sourceMp4(12_700), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: 12 };
+    const response = await provider.handleRequest(create(RECAST, body));
+    expect(response.statusCode).toBe(200);
+    const [initiateUrl, initiate] = fetchMock.mock.calls.at(-3)!;
+    expect(initiateUrl).toBe(FAL_STORAGE_URL);
+    expect(initiate).toMatchObject({ method: 'POST', headers: { authorization: 'Key seller-secret' } });
+    expect(parse(initiate.body)).toEqual({ content_type: 'video/mp4', file_name: 'source.mp4' });
+    const [uploadUrl, upload] = fetchMock.mock.calls.at(-2)!;
+    expect(uploadUrl).toBe('https://v3b.fal.media/upload/source');
+    expect(upload.headers).toEqual({ 'content-type': 'video/mp4' });
+    expect(Buffer.from(upload.body).toString('base64')).toBe(body.video_url.split(',')[1]);
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe(`https://queue.fal.run/${RECAST}`);
+    expect(parse(init.body)).toEqual({ video_url: 'https://v3b.fal.media/files/source.mp4', reference_image_urls: body.reference_image_urls, resolution: '768P' });
+  });
+
+  it('does not submit when fal storage refuses the source', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    fetchMock.mockImplementation(async (url: string) => String(url).startsWith('https://rest.fal.ai')
+      ? Response.json({ detail: 'User is locked' }, { status: 403 })
+      : Response.json({ request_id: 'req-1' }));
+    const response = await provider.handleRequest(create(RECAST, { video_url: sourceMp4(5_000), reference_image_urls: ['x'], duration: 5 }));
+    expect(response.statusCode).toBe(502);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('https://queue.fal.run'))).toBe(false);
+  });
+
+  it('refuses an edit unless duration is the measured source length', async () => {
+    const { provider, fetchMock } = await ready(RECAST);
+    const calls = fetchMock.mock.calls.length;
+    const refused = async (body: object) => {
+      const response = await provider.handleRequest(create(RECAST, { reference_image_urls: ['data:image/png;base64,AAAA'], ...body }));
+      expect(response.statusCode).toBe(422);
+      return parse(response.body).error;
+    };
+    expect(await refused({ video_url: sourceMp4(12_700), duration: 3 })).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 12') });
+    expect((await refused({ video_url: 'https://example.com/source.mp4', duration: 12 })).message).toContain('inline');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('checks duration against the source for an endpoint that takes one, and keeps it', async () => {
+    const { provider, fetchMock } = await ready(WAN_EDIT);
+    const calls = fetchMock.mock.calls.length;
+    // Wan cuts the output to the source: a 2 s source with duration 10 would be delivered short and never charged.
+    const longer = await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: sourceMp4(2_300), duration: 10 }));
+    expect(longer.statusCode).toBe(422);
+    expect(parse(longer.body).error).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 2') });
+    expect((await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: 'https://example.com/source.mp4', duration: 5 }))).statusCode).toBe(422);
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    const response = await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: sourceMp4(5_200), duration: 5 }));
+    expect(response.statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ duration: 5 });
+  });
+});
+
+describe('endpoints whose video follows their audio', () => {
+  const AVATAR_PRO = 'fal-ai/kling-video/ai-avatar/v2/pro';
+  const AVATAR_STANDARD = 'fal-ai/kling-video/ai-avatar/v2/standard';
+  const INFINITALK = 'fal-ai/infinitalk';
+  /** Inline MP3 of `frames` MPEG-1 layer III frames, 128 kbps at 44.1 kHz (26.1 ms each). */
+  const voiceMp3 = (frames: number) => {
+    const bytes = Buffer.alloc(417 * frames);
+    for (let i = 0; i < frames; i += 1) bytes.set([0xff, 0xfb, 0x90, 0x00], i * 417);
+    return `data:audio/mpeg;base64,${bytes.toString('base64')}`;
+  };
+  /** 192 frames: 5.02 s. */
+  const voice = voiceMp3(192);
+  const face = 'data:image/png;base64,AAAA';
+  const refusal = (provider: Provider, body: object) => provider.checkRequest!(create(AVATAR_PRO, body));
+
+  it('recognises talking avatars from the fal schema: audio_url required, no source video, nothing that sets the length', () => {
+    expect(falFollowsAudio(falInputSchema(fixture(AVATAR_PRO), AVATAR_PRO))).toBe(true);
+    expect(falFollowsAudio(falInputSchema(fixture(AVATAR_STANDARD), AVATAR_STANDARD))).toBe(true);
+    // InfiniTalk stops at `num_frames`, so its length is not the audio's.
+    expect(falFollowsAudio(falInputSchema(fixture(INFINITALK), INFINITALK))).toBe(false);
+    // Optional audio next to a `duration` (Wan 2.5) and lip-sync edits (a source video) are not.
+    expect(falFollowsAudio(falInputSchema(schema(V3, { prompt: {}, image_url: {}, audio_url: {}, duration: {} }), V3))).toBe(false);
+    expect(falFollowsAudio(falInputSchema(schema(V3, { video_url: {}, audio_url: {} }), V3))).toBe(false);
+    expect(falFollowsAudio(null)).toBe(false);
+    expect(withAudioInputs({ outputs: ['video'] }, falInputSchema(fixture(INFINITALK), INFINITALK))).toEqual({ outputs: ['video'] });
+  });
+
+  it('announces the avatar image and the audio as required inputs, and no durations', async () => {
+    const { provider } = await ready(AVATAR_PRO);
+    expect(provider.serviceCapabilities?.[AVATAR_PRO]).toEqual({
+      outputs: ['video'],
+      supportedParameters: ['audio_url', 'enable_safety_checker', 'image_url', 'prompt'],
+      video: { inputs: ['first_frame', 'audio'], requiredInputs: ['first_frame', 'audio'] },
+    });
+    const configured = await ready(AVATAR_STANDARD, { video: { resolutions: ['720p'], audio: true } });
+    expect(configured.provider.serviceCapabilities?.[AVATAR_STANDARD]?.video).toEqual({
+      resolutions: ['720p'], audio: true, inputs: ['first_frame', 'audio'], requiredInputs: ['first_frame', 'audio'],
+    });
+  });
+
+  it('refuses before payment unless duration is the measured audio length', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_PRO);
+    const calls = fetchMock.mock.calls.length;
+    // A 5 s voice paid as 1 s.
+    expect(refusal(provider, { image_url: face, audio_url: voice, duration: 1 }))
+      .toEqual({ statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 5' });
+    // No duration: nothing to price.
+    expect(refusal(provider, { image_url: face, audio_url: voice })?.message).toContain(': 5');
+    // Audio missing, sent as a URL, or in a format the seller cannot measure.
+    for (const audio_url of [undefined, 'https://example.com/voice.mp3', 'data:audio/mp4;base64,AAAAIGZ0eXBNNEEg']) {
+      expect(refusal(provider, { image_url: face, audio_url, duration: 5 })).toMatchObject({ statusCode: 422, code: 'invalid_video_duration', message: expect.stringContaining('send audio_url inline') });
+    }
+    // An extra source video the endpoint doesn't take does not switch it to the video's length.
+    const withVideo = { image_url: face, audio_url: voice, video_url: sourceMp4(1_200), duration: 1 };
+    expect(refusal(provider, withVideo)?.message).toContain(': 5');
+    expect((await provider.handleRequest(create(AVATAR_PRO, withVideo))).statusCode).toBe(422);
+    // handleRequest refuses the same way when called directly, without calling fal.
+    const direct = await provider.handleRequest(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 1 }));
+    expect(direct.statusCode).toBe(422);
+    expect(parse(direct.body).error.code).toBe('invalid_video_duration');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('accepts the measured length, uploads the audio, and removes duration, which the endpoint does not take', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_PRO);
+    const body = { image_url: face, audio_url: voice, prompt: 'She smiles', duration: '5' };
+    expect(refusal(provider, body)).toBeNull();
+    const response = await provider.handleRequest(create(AVATAR_PRO, body));
+    expect(response.statusCode).toBe(200);
+    const [initiateUrl, initiate] = fetchMock.mock.calls.at(-3)!;
+    expect(initiateUrl).toBe(FAL_STORAGE_URL);
+    expect(parse(initiate.body)).toEqual({ content_type: 'audio/mpeg', file_name: 'source.mp3' });
+    expect(Buffer.from(fetchMock.mock.calls.at(-2)![1].body).toString('base64')).toBe(voice.split(',')[1]);
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe(`https://queue.fal.run/${AVATAR_PRO}`);
+    expect(parse(init.body)).toEqual({ image_url: face, audio_url: 'https://v3b.fal.media/files/source.mp4', prompt: 'She smiles' });
+  });
+
+  it('uploads a WAV as a WAV, whatever its label', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_STANDARD);
+    const pcm = Buffer.alloc(16_000 * 3);
+    const wav = Buffer.concat([Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1'), Buffer.from([16, 0, 0, 0, 1, 0, 1, 0, 0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0]),
+      Buffer.from('data', 'latin1'), Buffer.from([0x80, 0xbb, 0, 0]), pcm]);
+    const response = await provider.handleRequest(create(AVATAR_STANDARD, { image_url: face, audio_url: `data:audio/mpeg;base64,${wav.toString('base64')}`, duration: 3 }));
+    expect(response.statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls.at(-3)![1].body)).toEqual({ content_type: 'audio/wav', file_name: 'source.wav' });
+  });
+
+  it('checks audio without the fal schema, unless the configured fields set the length', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const offline = plugin.createProvider(serviceConfig(AVATAR_PRO)) as Provider;
+    await offline.init!();
+    expect(offline.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 1 }))?.code).toBe('invalid_video_duration');
+    expect(offline.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 5 }))).toBeNull();
+    expect(offline.checkRequest!(create(AVATAR_PRO, { prompt: 'no audio', duration: 5 }))).toBeNull();
+    const withDuration = plugin.createProvider(serviceConfig(AVATAR_PRO, { supportedParameters: ['audio_url', 'duration', 'image_url', 'prompt'] })) as Provider;
+    await withDuration.init!();
+    expect(withDuration.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 10 }))).toBeNull();
+  });
+
+  it('leaves other endpoints\' audio alone', async () => {
+    const { provider } = await ready(INFINITALK);
+    expect(provider.checkRequest!(create(INFINITALK, { image_url: face, audio_url: 'https://example.com/voice.mp3', prompt: 'hi', duration: 5 }))).toBeNull();
+  });
+});
+
+describe('reference media', () => {
+  const R2V = 'bytedance/seedance-2.5/reference-to-video';
+  const r2vSchema = schema(R2V, { prompt: {}, duration: {}, resolution: {}, image_urls: {}, audio_urls: {}, video_urls: {} });
+  const r2vConfig = (components: object[]) => ({
+    ...config,
+    ANTSEED_ALLOWED_SERVICES: R2V,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [R2V]: { 'fal-video': { version: 1, components } } }),
+  });
+  const perSecond = { unit: 'video_seconds', priceUsd: 0.6 };
+  const withReferenceVideo = { unit: 'video_generations', priceUsd: 5.5, match: { reference_video: 'true' } };
+  const r2vProvider = async (components: object[]) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(r2vSchema))
+      .mockResolvedValueOnce(Response.json({ credits: { current_balance: 5 } }))
+      .mockResolvedValue(Response.json({ request_id: 'req-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(r2vConfig(components)) as Provider;
+    await provider.init!();
+    return { provider, fetchMock };
+  };
+  const create = (input: object) => request('/fal/v1/video/queue', { model: R2V, prompt: 'dance', duration: '5', ...input });
+
+  it('names the common reference fields an endpoint takes under fal names', () => {
+    expect(falReferenceAliases(['prompt', 'image_urls', 'audio_urls', 'video_urls'])).toEqual(['reference_image_urls', 'reference_audio_urls', 'reference_video_urls']);
+    expect(falReferenceAliases(['prompt', 'image_urls', 'reference_image_urls'])).toEqual([]);
+    expect(falReferenceAliases(['prompt', 'image_url'])).toEqual([]);
+  });
+
+  it('renames the common names to fal fields, and refuses both names at once', () => {
+    const input: Record<string, unknown> = { reference_audio_urls: ['a.mp3'], reference_image_urls: ['i.png'] };
+    expect(renameFalReferenceAliases(input, ['image_urls', 'audio_urls'])).toBeNull();
+    expect(input).toEqual({ audio_urls: ['a.mp3'], image_urls: ['i.png'] });
+    // An endpoint whose own field has the common name keeps it.
+    const own: Record<string, unknown> = { reference_image_urls: ['i.png'] };
+    expect(renameFalReferenceAliases(own, ['reference_image_urls'])).toBeNull();
+    expect(own).toEqual({ reference_image_urls: ['i.png'] });
+    expect(renameFalReferenceAliases({ reference_audio_urls: ['a'], audio_urls: ['b'] }, undefined)).toBe('Send reference_audio_urls or audio_urls, not both');
+  });
+
+  it('announces the common names next to fal\'s and sends fal\'s names upstream', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond]);
+    expect(provider.serviceCapabilities?.[R2V]?.supportedParameters).toEqual([
+      'audio_urls', 'duration', 'image_urls', 'prompt', 'reference_audio_urls', 'reference_image_urls', 'reference_video_urls', 'resolution', 'video_urls',
+    ]);
+    const response = await provider.handleRequest(create({ reference_image_urls: ['https://x/i.png'], reference_audio_urls: ['https://x/a.mp3'] }));
+    expect(response.statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls[2]![1].body)).toEqual({ prompt: 'dance', duration: '5', image_urls: ['https://x/i.png'], audio_urls: ['https://x/a.mp3'] });
+  });
+
+  it('refuses reference videos before payment unless the service prices them', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond]);
+    for (const input of [{ video_urls: ['https://x/v.mp4'] }, { reference_video_urls: ['https://x/v.mp4'] }]) {
+      expect(provider.checkRequest!(create(input))).toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos at these options' });
+      expect((await provider.handleRequest(create(input))).statusCode).toBe(400);
+    }
+    expect(provider.checkRequest!(create({ video_urls: [] }))).toBeNull();
+    expect(provider.checkRequest!(create({ reference_audio_urls: ['a'], audio_urls: ['b'] }))?.code).toBe('invalid_video_request');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves reference videos when the service prices them', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond, { unit: 'video_generations', priceUsd: 0 }, withReferenceVideo]);
+    expect(provider.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] }))).toBeNull();
+    expect((await provider.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls[2]![1].body).video_urls).toEqual(['https://x/v.mp4']);
+  });
+
+  it('refuses reference videos at a resolution the surcharge does not cover', async () => {
+    const { provider, fetchMock } = await r2vProvider([
+      { unit: 'video_seconds', priceUsd: 0.3, match: { resolution: '480p' } },
+      { unit: 'video_seconds', priceUsd: 0.6, match: { resolution: '720p' } },
+      { unit: 'video_generations', priceUsd: 0 },
+      { unit: 'video_generations', priceUsd: 11, match: { resolution: '720p', reference_video: 'true' } },
+    ]);
+    expect(provider.checkRequest!(create({ resolution: '720p', video_urls: ['https://x/v.mp4'] }))).toBeNull();
+    expect(provider.checkRequest!(create({ resolution: '480p', video_urls: ['https://x/v.mp4'] }))?.code).toBe('unsupported_video_input');
+    expect((await provider.handleRequest(create({ resolution: '480p', video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('announces reference_video in the inputs of an endpoint that takes video_urls', () => {
+    expect(withFrameInputs({ supportedParameters: ['prompt', 'video_urls'], video: { inputs: ['reference_image'] } }).video?.inputs).toEqual(['reference_image', 'reference_video']);
+  });
+});

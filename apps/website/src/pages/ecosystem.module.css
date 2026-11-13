@@ -268,6 +268,95 @@
   font-style: normal;
 }
 
+.previewSeed {
+  padding: 14px;
+  background: #0e1a38;
+  color: #f4efe6;
+}
+
+.previewSeed .previewTop span {
+  color: #d4a074;
+  font-size: 16px;
+}
+
+.seedAsk {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(212, 160, 116, 0.32);
+  border-radius: 10px;
+  background: #16244a;
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.seedSteps {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.seedSteps span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #e6eaf2;
+}
+
+.seedSteps b {
+  color: #d4a074;
+}
+
+.previewTunnel {
+  padding: 14px;
+  background: #f4efe6;
+  color: #131b31;
+}
+
+.previewTunnel .previewTop span {
+  color: #8a6242;
+  font-size: 16px;
+}
+
+.tunnelHead {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: #0e1a38;
+  color: #d4a074;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 20px;
+}
+
+.tunnelRows {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tunnelRows span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 9px;
+  border: 1px solid rgba(19, 27, 49, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  font-family: var(--as-font-data);
+  font-size: 10px;
+}
+
+.tunnelRows b {
+  font-weight: 700;
+}
+
+.tunnelRows em {
+  color: #525c73;
+  font-style: normal;
+}
+
 .previewDiem {
   padding: 16px;
   background:
@@ -744,4 +833,73 @@
   .cardArrow {
     margin-left: 0;
   }
+}
+
+.previewPoints {
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.16), transparent 52%),
+    #e2fff0;
+  color: #001e12;
+}
+
+.previewPoints .previewTop span {
+  color: #0a6f4d;
+  font-size: 15px;
+}
+
+.pointsFlow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 12px;
+}
+.pointsFlow span {
+  display: grid;
+  gap: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(0, 30, 18, 0.06);
+}
+.pointsFlow small {
+  font-family: var(--as-font-data);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #3b5249;
+}
+.pointsFlow b {
+  font-size: 14px;
+  font-weight: 700;
+}
+.pointsFlow span:last-child {
+  background: #10b981;
+  color: #ffffff;
+}
+.pointsFlow span:last-child small {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.pointsRows {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+.pointsRows span {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 9px;
+  border: 1px solid rgba(0, 30, 18, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  font-family: var(--as-font-data);
+  font-size: 10px;
+}
+.pointsRows b {
+  font-weight: 700;
+}
+.pointsRows em {
+  color: #3b5249;
+  font-style: normal;
 }

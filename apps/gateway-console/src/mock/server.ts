@@ -1,0 +1,1335 @@
+/**
+ * In-memory fake console API for `VITE_MOCK=1 vite` so the UI can be clicked
+ * through without a gateway. Never imported by a production build. It
+ * enforces the same role checks as the real API (members PATCH and
+ * operator-auth are org-admin / owner only, workspace admins manage their
+ * workspace, plain members see only their own keys).
+ *
+ * Who you are: `?as=owner|admin|wsadmin|member|key|out` on any URL (remembered).
+ * Authorized-wallet state: `?operator=none|self|yours|member|unknown` (remembered; see mock/operator.ts).
+ * `wsadmin` administers the Default workspace only; `member` is a plain
+ * member of Default and an admin of Research.
+ */
+import type {
+  AdminToken, ApiKey, AuditEntry, BillingProfile, BuyerLimits, DepositConfirmation, PurchaseStatement, StatementSummary, FreeTierStake, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  UsageGroupBy, Workspace, WorkspaceRole,
+  RouteSelection,
+} from '../api/types'
+import { LIMIT_PERIODS } from '../lib/format'
+import { MASKED_VALUE } from '../lib/headers'
+import { tighterLimits } from '../lib/key-layers'
+import { samePeerId } from '../lib/peer-id'
+import { combinePolicies, expandLists } from '../lib/policy-match'
+import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection, seed } from './data'
+// The card renderer is the seller service's own (no copy in the console).
+import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
+import { mockCheckVerifications, mockResetSellerOverrides, mockRestartSeller, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
+import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
+import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
+
+type Handler = (ctx: { params: Record<string, string>; query: URLSearchParams; body: any }) => unknown
+
+class MockError extends Error {
+  constructor(readonly status: number, readonly code: string, message: string, readonly extra: Record<string, unknown> = {}) { super(message) }
+}
+
+const db = seed()
+/** The mock viewer's starred models: two to start, so the Favorites table shows. */
+/** Stakers sharing with each workspace buyer (staked free tier). */
+const freeTierStakers = new Map<string, Array<{ staker: string; expiresAt: number; expired: boolean }>>()
+
+/** Read staker, buyer and expiry out of a pasted free-tier code (the mock does not check the signature). */
+function decodeMockFreeTierCode(code: string): { staker: string; buyer: string; expiresAt: number } {
+  const prefix = 'antseed-free-tier-'
+  if (!code.startsWith(prefix)) throw new MockError(400, 'invalid_code', `Not a free-tier code: it should start with ${prefix}`)
+  const body = code.slice(prefix.length).replace(/-/g, '+').replace(/_/g, '/')
+  const bytes = Uint8Array.from(atob(body + '='.repeat((4 - (body.length % 4)) % 4)), (c) => c.charCodeAt(0))
+  if (bytes.length !== 113) throw new MockError(400, 'invalid_code', 'Free-tier code is incomplete')
+  const hex = (from: number, to: number) => Array.from(bytes.slice(from, to), (b) => b.toString(16).padStart(2, '0')).join('')
+  return { staker: `0x${hex(0, 20)}`, buyer: `0x${hex(20, 40)}`, expiresAt: Number(BigInt(`0x${hex(40, 48)}`)) }
+}
+
+const favorites = new Set<string>(['qwen3-coder-480b', `${db.peers[0]!.peerId}@fake-router`])
+const SESSION_KEY = 'antseed-console-mock-session'
+// `seller`: the `antseed seller dashboard` frame; its routes run as the owner.
+const roleMembers: Record<string, string> = { owner: 'mem_owner', admin: 'mem_ali', member: 'mem_sam', wsadmin: 'mem_wade', seller: 'mem_owner' }
+/** Sign-ins newer than this count as fresh for operator authorization. */
+const FRESH_MS = 5 * 60_000
+let lastSignInAt = 0
+/** The wallet the last confirmation was signed with (operator-auth refuses confirming with the operator itself). */
+let lastReauthWallet: string | null = null
+const OPERATOR_MIN_AGE_MS = 24 * 3600_000
+const OPERATOR_KEY = 'antseed-console-mock-operator'
+/** Authorized wallet per workspace; `?operator=<scenario>` overrides it for every workspace. */
+const operators: Record<string, string | null> = { ws_default: fakeAddress(9), ws_research: null }
+
+function operatorScenario(): OperatorScenario | null {
+  const fromUrl = new URLSearchParams(window.location.search).get('operator')
+  if (fromUrl) { try { localStorage.setItem(OPERATOR_KEY, fromUrl) } catch { /* ignore */ } }
+  let value: string | null = fromUrl
+  try { value ??= localStorage.getItem(OPERATOR_KEY) } catch { /* ignore */ }
+  return OPERATOR_SCENARIOS.includes(value as OperatorScenario) ? value as OperatorScenario : null
+}
+
+function currentOperator(workspace: Workspace, viewer: Member): string | null {
+  const scenario = operatorScenario()
+  return scenario ? scenarioOperator(scenario, workspace, viewer, db.members) : operators[workspace.id] ?? null
+}
+
+/** `?deposit=demo`: once a deposit dialog opens, play received → sweeping → credited over ~12 s. */
+let depositDemoStartedAt: number | null = null
+function mockDepositWatch() {
+  const idle = { mode: 'background' as const, status: 'idle', lastTxHash: null, event: null }
+  if (new URLSearchParams(window.location.search).get('deposit') !== 'demo' || depositDemoStartedAt === null) return idle
+  const elapsed = Date.now() - depositDemoStartedAt
+  const at = Date.now()
+  if (elapsed < 4_000) return { ...idle, mode: 'active' as const, status: 'watching' }
+  if (elapsed < 8_000) return { mode: 'active' as const, status: 'received', lastTxHash: null, event: { seq: 1, phase: 'received' as const, amount: '25.000000', txHash: null, error: null, at } }
+  if (elapsed < 12_000) return { mode: 'active' as const, status: 'sweeping', lastTxHash: null, event: { seq: 2, phase: 'sweeping' as const, amount: '25.000000', txHash: null, error: null, at } }
+  const txHash = `0x${'ab'.repeat(32)}`
+  return { mode: 'active' as const, status: 'credited', lastTxHash: txHash, event: { seq: 3, phase: 'credited' as const, amount: '24.950000', txHash, error: null, at } }
+}
+
+function operatorState(workspaceId: string) {
+  const { member, workspace } = requireWorkspace(workspaceId)
+  return mockOperatorState({ operator: currentOperator(workspace, member), workspace, viewer: member, members: db.members, checkedAt: Date.now() })
+}
+
+function session(): string {
+  const fromUrl = new URLSearchParams(window.location.search).get('as')
+  if (fromUrl) { try { localStorage.setItem(SESSION_KEY, fromUrl) } catch { /* ignore */ } }
+  try { return fromUrl ?? localStorage.getItem(SESSION_KEY) ?? 'owner' } catch { return 'owner' }
+}
+function setSession(value: string) {
+  lastSignInAt = Date.now()
+  try { localStorage.setItem(SESSION_KEY, value) } catch { /* ignore */ }
+}
+
+let idCounter = 1000
+const newId = (prefix: string) => `${prefix}_${++idCounter}`
+const secret = (prefix: string) => `${prefix}${Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`
+
+const unauthorized = () => new MockError(401, 'unauthorized', 'Sign in to continue')
+const forbidden = (message = 'You do not have access to this') => new MockError(403, 'forbidden', message)
+const notFound = (what: string) => new MockError(404, 'not_found', `${what} not found`)
+
+function findMember(id: string | undefined): Member {
+  const member = db.members.find((entry) => entry.id === id)
+  if (!member) throw notFound('Member')
+  return member
+}
+
+/** The Sign-In with Ethereum message the gateway asks a wallet to sign. */
+function siweMessage(address: string): { message: string } {
+  return { message: `gateway.example.com wants you to sign in with your Ethereum account:\n${address}\n\nSign in to the Antseed console.\n\nURI: http://localhost\nVersion: 1\nChain ID: 1\nNonce: mock${Date.now()}\nIssued At: ${new Date().toISOString()}` }
+}
+
+// ── Principal and access checks (mirror console-api/access.ts) ─────────────
+
+function keySession(): ApiKey | null {
+  return session() === 'key' ? db.keys[2]! : null
+}
+
+const DAY_MS = 86_400_000
+const mockDepositsByWorkspace = new Map<string, DepositConfirmation[]>()
+/** New USDC from an exchange or card (minted, approved), a transfer from a wallet, and a direct deposit from a connected wallet. */
+function mockDeposits(workspaceId: string): DepositConfirmation[] {
+  const existing = mockDepositsByWorkspace.get(workspaceId)
+  if (existing) return existing
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const wallet = ws?.walletAddress ?? '0x0000000000000000000000000000000000000001'
+  const base = { kind: 'transfer' as const, wallet, workspaceId, workspaceName: ws?.name ?? 'Default', blockNumber: 52633916, fee: '0.000000' }
+  const hash = (n: string) => `0x${n.repeat(64).slice(0, 64)}`
+  const list: DepositConfirmation[] = [
+    { ...base, txHash: hash('b2'), reference: 'DEP-B2B2B2B2', sent: '500.000000', credited: '500.000000', time: Date.now() - 2 * DAY_MS,
+      sources: [{ from: '0x0000000000000000000000000000000000000000', amount: '500.000000', txHash: hash('b2'), minted: true }],
+      approval: { by: 'Ali Admin (ali@example.com)', at: Date.now() - DAY_MS, note: 'October AI budget' } },
+    { ...base, txHash: hash('d4'), reference: 'DEP-D4D4D4D4', sent: '100.000000', credited: '100.000000', time: Date.now() - 6 * DAY_MS,
+      sources: [{ from: '0x4f3a9c1b2d5e6f708192a3b4c5d6e7f8091a2b3c', amount: '100.000000', txHash: hash('d4'), minted: false }], approval: null },
+    { ...base, kind: 'direct', txHash: hash('e5'), reference: 'DEP-E5E5E5E5', sent: '50.000000', credited: '50.000000', time: Date.now() - 12 * DAY_MS,
+      sources: [{ from: '0x9b8a7c6d5e4f30211b2c3d4e5f6a7b8c9d0e1f2a', amount: '50.000000', txHash: hash('e5'), minted: false }], approval: null },
+  ]
+  mockDepositsByWorkspace.set(workspaceId, list)
+  return list
+}
+
+const mockBillingProfiles = new Map<string, BillingProfile>()
+/** The last three months of a workspace: earlier ones final, the current one a draft. */
+function mockStatementPeriods(): string[] {
+  const now = new Date()
+  return [0, 1, 2].map((back) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  })
+}
+function mockStatement(workspaceId: string, period: string): PurchaseStatement {
+  const [year, month] = period.split('-').map(Number)
+  const from = Date.UTC(year!, month! - 1, 1)
+  const to = Date.UTC(year!, month!, 1)
+  const ws = db.workspaces.find((entry) => entry.id === workspaceId)
+  const final = Date.now() >= to + DAY_MS && mockBillingProfiles.has(workspaceId)
+  const scale = 1 + (month! % 3) * 0.35
+  const hash = (seed: string) => `0x${seed.repeat(64).slice(0, 64)}`
+  const lines = [
+    { peer: db.peers[0]!, model: 'qwen3-coder-480b', requests: 4812, input: 61_240_000, cached: 38_900_000, output: 5_410_000, usd: 118.37 },
+    { peer: db.peers[0]!, model: 'kimi-k2', requests: 1306, input: 14_820_000, cached: 6_100_000, output: 1_920_000, usd: 21.84 },
+    { peer: db.peers[0]!, model: 'fal-ai/kling-video/v3/standard/image-to-video', requests: 142, input: 0, cached: 0, output: 0, usd: 105.9 },
+    { peer: db.peers[0]!, model: 'bytedance/seedance-2.0/fast/text-to-video', requests: 282, input: 0, cached: 0, output: 0, usd: 219.1 },
+    { peer: db.peers[1]!, model: 'deepseek-v3.2', requests: 2950, input: 32_400_000, cached: 19_750_000, output: 3_880_000, usd: 34.12 },
+    { peer: db.peers[2]!, model: 'qwen-image', requests: 212, input: 0, cached: 0, output: 0, usd: 6.36 },
+  ]
+  const suppliers = [db.peers[0]!, db.peers[1]!, db.peers[2]!].map((peer, index) => {
+    const own = lines.filter((line) => line.peer === peer)
+    const total = own.reduce((sum, line) => sum + line.usd * scale, 0)
+    return {
+      peerId: peer.peerId, name: peer.displayName, verificationLinks: peer.verificationLinks,
+      lines: own.map((line) => ({ service: line.model, kind: 'inference' as const, requests: Math.round(line.requests * scale), inputTokens: Math.round(line.input * scale),
+        cachedInputTokens: Math.round(line.cached * scale), outputTokens: Math.round(line.output * scale), amount: (line.usd * scale).toFixed(6) })),
+      total: total.toFixed(6),
+      settlements: [9, 21].slice(0, index === 2 ? 1 : 2).map((day, _part, list) => ({ txHash: hash(`${index}${day}`), time: from + day * DAY_MS, amount: (total / list.length).toFixed(6) })),
+    }
+  })
+  const total = suppliers.reduce((sum, supplier) => sum + Number(supplier.total), 0)
+  const deposits = mockDeposits(workspaceId).filter((deposit) => deposit.time >= from && deposit.time < to)
+  return {
+    period, from, to, status: final ? 'final' : 'open', reference: `PS-${period}-${workspaceId.slice(-6).toUpperCase()}`,
+    issuedAt: final ? to + DAY_MS : null, generatedAt: Date.now(),
+    workspace: { id: workspaceId, name: ws?.name ?? 'Default', wallet: ws?.walletAddress ?? null },
+    buyer: mockBillingProfiles.get(workspaceId) ?? null,
+    suppliers, total: total.toFixed(6), requests: suppliers.reduce((sum, supplier) => sum + supplier.lines.reduce((n, line) => n + line.requests, 0), 0),
+    funding: {
+      deposits: deposits.map((deposit) => ({ txHash: deposit.txHash, reference: deposit.reference, kind: deposit.kind, time: deposit.time, amount: deposit.sent })),
+      total: deposits.reduce((sum, deposit) => sum + Number(deposit.sent), 0).toFixed(6),
+      relayFees: (deposits.length * 0.02).toFixed(6),
+      asOf: Date.now(),
+    },
+    settlementsSource: 'https://antscan.co',
+    sharedWallet: 0,
+  }
+}
+
+function currentMember(): Member {
+  const state = session()
+  if (state === 'out') throw unauthorized()
+  if (state === 'key') throw forbidden('API-key sessions are read-only')
+  const member = db.members.find((entry) => entry.id === roleMembers[state])
+  if (!member || member.status !== 'active') throw unauthorized()
+  return member
+}
+
+/** Adding a sign-in method needs a sign-in within the last five minutes. */
+function requireFreshForCredential(): Member {
+  const member = currentMember()
+  if (Date.now() - lastSignInAt > FRESH_MS) throw new MockError(403, 'reauth_required', 'Confirm it\'s you (passkey or wallet) before adding a sign-in method, then retry.')
+  return member
+}
+
+const isOrgAdmin = (member: Member) => member.orgRole === 'owner' || member.orgRole === 'admin'
+
+function requireOrgAdmin(): Member {
+  const member = currentMember()
+  if (!isOrgAdmin(member)) throw forbidden('Only organization admins can do this')
+  return member
+}
+
+function requireOwner(): Member {
+  const member = currentMember()
+  if (member.orgRole !== 'owner') throw forbidden('Only the organization owner can do this')
+  return member
+}
+
+function workspaceRole(member: Member, workspaceId: string): WorkspaceRole | null {
+  if (isOrgAdmin(member)) return 'admin'
+  return db.workspaceMembers[workspaceId]?.[member.id] ?? null
+}
+
+function findWorkspace(id: string): Workspace {
+  const workspace = db.workspaces.find((entry) => entry.id === id)
+  if (!workspace) throw notFound('Workspace')
+  return workspace
+}
+
+function requireWorkspace(id: string, minRole: WorkspaceRole = 'member'): { member: Member; workspace: Workspace } {
+  const member = currentMember()
+  const workspace = findWorkspace(id)
+  const role = workspaceRole(member, id)
+  if (!role) throw forbidden('You are not a member of this workspace')
+  if (minRole === 'admin' && role !== 'admin') throw forbidden('Only workspace admins can do this')
+  return { member, workspace }
+}
+
+/** Keys whose usage the caller may read; null means all. */
+function visibleKeyIds(): Set<string> | null {
+  const key = keySession()
+  if (key) return new Set([key.id])
+  const member = currentMember()
+  if (isOrgAdmin(member)) return null
+  return new Set(db.keys.filter((entry) => {
+    const role = db.workspaceMembers[entry.workspaceId]?.[member.id]
+    return role === 'admin' || (role && entry.ownerMemberId === member.id)
+  }).map((entry) => entry.id))
+}
+
+function keyAccess(id: string): { key: ApiKey; member: Member } {
+  const member = currentMember()
+  const key = db.keys.find((entry) => entry.id === id)
+  if (!key) throw notFound('Key')
+  const role = workspaceRole(member, key.workspaceId)
+  if (role !== 'admin' && !(role && key.ownerMemberId === member.id)) throw forbidden('You can only manage your own keys')
+  return { key, member }
+}
+
+function audit(action: string, target: AuditEntry['target'] = null, details: Record<string, unknown> = {}) {
+  const member = db.members.find((entry) => entry.id === roleMembers[session()])
+  db.audit.unshift({
+    id: newId('aud'), at: Date.now(), actor: { kind: 'member', id: member?.id ?? null, label: member?.label ?? null },
+    action, target, details, ip: '127.0.0.1',
+  })
+}
+
+// ── Views ──────────────────────────────────────────────────────────────────
+
+function withCounts(workspace: Workspace): Workspace {
+  return {
+    ...workspace,
+    memberCount: Object.keys(db.workspaceMembers[workspace.id] ?? {}).length,
+    keyCount: db.keys.filter((key) => key.workspaceId === workspace.id && key.status === 'active').length,
+  }
+}
+
+function me(): MeResponse {
+  // `?as=seller`: the standalone seller dashboard, as `antseed seller dashboard` serves it.
+  if (session() === 'seller') return { kind: 'seller', me: { dataDir: '/var/lib/antseed', version: '0.1.205' } }
+  const key = keySession()
+  if (key) return { kind: 'key', me: { key } }
+  const member = currentMember()
+  const admin = isOrgAdmin(member)
+  const workspaces: Me['workspaces'] = db.workspaces
+    .filter((ws) => admin || db.workspaceMembers[ws.id]?.[member.id])
+    .map((ws) => ({ workspace: { id: ws.id, name: ws.name, isDefault: ws.isDefault }, role: admin ? 'admin' : db.workspaceMembers[ws.id]![member.id]! }))
+  return { kind: 'member', me: { member, workspaces } }
+}
+
+function filterRequests(query: URLSearchParams): RequestDetail[] {
+  const from = Number(query.get('from') ?? 0)
+  const to = Number(query.get('to') ?? Date.now())
+  const visible = visibleKeyIds()
+  const q = (query.get('q') ?? '').trim().toLowerCase()
+  return db.requests.filter((request) =>
+    (!visible || visible.has(request.keyId))
+    && (!query.get('workspace') || request.workspaceId === query.get('workspace'))
+    && (!query.get('key') || request.keyId === query.get('key'))
+    && (!query.get('member') || request.memberId === query.get('member'))
+    && (!query.get('model') || (request.model ?? '').includes(query.get('model')!))
+    && (!query.get('router') || request.router?.peerId === query.get('router'))
+    && (!query.get('status') || (query.get('status') === 'error' ? (request.status ?? 0) >= 400 : (request.status ?? 0) < 400))
+    && (!q || [request.model, request.keyLabel, request.endUser, request.path, request.errorCode, request.errorMessage].some((field) => (field ?? '').toLowerCase().includes(q)))
+    && request.startedAt >= from && request.startedAt <= to)
+}
+
+function listEntry({ requestBody: _request, responseBody: _response, ...entry }: RequestDetail): RequestLogEntry {
+  return entry
+}
+
+/** Opaque cursors, like the real API: clients pass `nextBefore` back unchanged. */
+const encodeCursor = (at: number, id: string) => btoa(`${at}:${id}`)
+function decodeCursor(value: string | null): { at: number; id: string } | null {
+  if (!value) return null
+  try {
+    const [at, id] = atob(value).split(':')
+    return { at: Number(at), id: id ?? '' }
+  } catch { throw new MockError(400, 'invalid_cursor', 'Invalid cursor') }
+}
+
+/** One page of newest-first rows before the `before` cursor, and the cursor of the next page. */
+function cursorPage<T>(rows: T[], query: URLSearchParams, at: (row: T) => number, id: (row: T) => string): { rows: T[]; nextBefore: string | null } {
+  const cursor = decodeCursor(query.get('before'))
+  const limit = Number(query.get('limit') ?? 50)
+  const page = rows.filter((row) => !cursor || at(row) < cursor.at || (at(row) === cursor.at && id(row) < cursor.id)).slice(0, limit)
+  const last = page[page.length - 1]
+  return { rows: page, nextBefore: page.length === limit && last ? encodeCursor(at(last), id(last)) : null }
+}
+
+function totals(rows: RequestLogEntry[]) {
+  return {
+    requests: rows.length,
+    failedRequests: rows.filter((row) => (row.status ?? 0) >= 400).length,
+    spent: rows.reduce((sum, row) => sum + Number(row.spent ?? 0), 0).toFixed(6),
+    inputTokens: rows.reduce((sum, row) => sum + row.inputTokens, 0),
+    cachedInputTokens: rows.reduce((sum, row) => sum + row.cachedInputTokens, 0),
+    outputTokens: rows.reduce((sum, row) => sum + row.outputTokens, 0),
+  }
+}
+
+function groupKey(row: RequestLogEntry, groupBy: UsageGroupBy): [string, string] {
+  switch (groupBy) {
+    case 'hour': { const hour = new Date(row.startedAt).toISOString().slice(0, 13); return [hour, hour] }
+    case 'day': { const day = new Date(row.startedAt).toISOString().slice(0, 10); return [day, day] }
+    case 'model': return [row.model ?? 'unknown', row.model ?? 'unknown']
+    case 'key': return [row.keyId, row.keyLabel]
+    case 'member': return [row.memberId ?? 'none', db.members.find((m) => m.id === row.memberId)?.label ?? 'None']
+    case 'peer': return [row.sellerPeerId ?? 'none', db.peers.find((p) => p.peerId === row.sellerPeerId)?.displayName ?? row.sellerPeerId ?? 'No seller']
+    case 'router': return [row.router?.peerId ?? '', db.peers.find((p) => p.peerId === row.router?.peerId)?.displayName ?? row.router?.peerId ?? 'Not routed']
+    case 'workspace': return [row.workspaceId, db.workspaces.find((w) => w.id === row.workspaceId)?.name ?? row.workspaceId]
+    case 'user': return [row.endUser ?? 'none', row.endUser ?? 'Not sent']
+  }
+}
+
+function usage(query: URLSearchParams) {
+  const rows = filterRequests(query)
+  const [first, second] = (query.get('groupBy') ?? 'day').split(',')
+  const groupBy = first as UsageGroupBy
+  const splitBy = (second || query.get('splitBy') || null) as UsageGroupBy | null
+  const grouped = (list: RequestLogEntry[], by: UsageGroupBy) => {
+    const groups = new Map<string, { label: string; rows: RequestLogEntry[] }>()
+    for (const row of list) {
+      const [group, label] = groupKey(row, by)
+      const entry = groups.get(group) ?? { label, rows: [] }
+      entry.rows.push(row)
+      groups.set(group, entry)
+    }
+    return [...groups.entries()]
+  }
+  return {
+    from: Number(query.get('from') ?? 0), to: Number(query.get('to') ?? Date.now()), totals: totals(rows),
+    groups: grouped(rows, groupBy).map(([group, entry]) => ({
+      group, label: entry.label, ...totals(entry.rows),
+      ...(splitBy ? { splits: grouped(entry.rows, splitBy).map(([split, part]) => ({ group: split, label: part.label, ...totals(part.rows) })) } : {}),
+    })),
+  }
+}
+
+function buyerLimits(): BuyerLimits {
+  const { maxPricing, minPeerReputation, verifier, routingPreferences } = db.settings.buyer
+  return {
+    maxPricing: { ...maxPricing },
+    minPeerReputation,
+    requireVerifier: verifier.enabled && verifier.require,
+    routingPreferences: {
+      minTrustScore: routingPreferences.minTrustScore,
+      allowedPeerIds: [...routingPreferences.allowedPeerIds],
+      blockedPeerIds: [...routingPreferences.blockedPeerIds],
+      preferFreePeers: routingPreferences.preferFreePeers,
+    },
+  }
+}
+
+/** The buyer's config as the preview's `buyer` source (not combined into the gateway policy). */
+function buyerLimitsPolicy(): RoutingPolicy {
+  const limits = buyerLimits()
+  return {
+    ...(limits.minPeerReputation > 0 ? { minReputation: limits.minPeerReputation } : {}),
+    ...(limits.requireVerifier ? { requireVerified: true } : {}),
+    maxInputUsdPerMillion: limits.maxPricing!.inputUsdPerMillion,
+    maxOutputUsdPerMillion: limits.maxPricing!.outputUsdPerMillion,
+    ...(limits.routingPreferences!.minTrustScore > 0 ? { minTrustScore: limits.routingPreferences!.minTrustScore } : {}),
+  }
+}
+
+function preview(query: URLSearchParams): RoutePreview {
+  const model = query.get('model') ?? ''
+  const key = query.get('key') ? db.keys.find((entry) => entry.id === query.get('key')) ?? null : null
+  const member = query.get('member') ? db.members.find((entry) => entry.id === query.get('member')) ?? null : null
+  const preset = query.get('preset') ? db.presets.find((entry) => entry.slug === query.get('preset')) ?? null : null
+  const workspace = findWorkspace(key?.workspaceId ?? query.get('workspace') ?? 'ws_default')
+  const keyOwner = key ? db.members.find((entry) => entry.id === key.ownerMemberId) ?? null : null
+  requireWorkspace(workspace.id)
+  const sources: RoutePreview['sources'] = [
+    { level: 'buyer', id: null, policy: buyerLimitsPolicy() },
+    { level: 'gateway', id: null, policy: db.gatewayPolicy },
+    { level: 'workspace-org', id: workspace.id, policy: workspace.orgRoutingPolicy },
+    { level: 'workspace', id: workspace.id, policy: workspace.routingPolicy },
+    ...(member ?? keyOwner ? [{ level: 'member' as const, id: (member ?? keyOwner)!.id, policy: (member ?? keyOwner)!.routingPolicy }] : []),
+    ...(key ? [{ level: 'key' as const, id: key.id, policy: key.routingPolicy }, { level: 'key-owner' as const, id: key.id, policy: key.ownerRoutingPolicy ?? null }] : []),
+    ...(preset ? [{ level: 'preset' as const, id: preset.slug, policy: preset.routingPolicy }] : []),
+  ]
+  const policy = combinePolicies(...sources.map((source) => source.level === 'buyer' || !source.policy ? null : expandLists(source.policy, db.peerLists)))
+  const modelAllowed = !policy.allowedModels || policy.allowedModels.some((entry) => entry.toLowerCase() === model.toLowerCase())
+  const allowed = policy.allowedPeerIds ? new Set(policy.allowedPeerIds) : null
+  // Chat models have their own fake sellers: judge them by the buyer's trust minimum, cheapest first.
+  const chatModel = mockChatModels().find((entry) => entry.id === model)
+  if (chatModel && !db.peers.some((peer) => peer.services.some((service) => service.service === model))) {
+    const minTrust = db.settings.buyer.routingPreferences.minTrustScore
+    const chatCandidates: RoutePreview['candidates'] = chatModel.peers.map((peer) => {
+      const eligible = (peer.reputation ?? 0) >= minTrust
+      return {
+        peerId: peer.peerId, displayName: peer.name, rank: null, eligible,
+        reasons: eligible ? [] : [`buyer config: trust ${Math.round(peer.reputation ?? 0)} below ${minTrust}`],
+        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, cachedInputUsdPerMillion: null, trustScore: peer.reputation, selection: null as RouteSelection | null,
+      }
+    })
+    const ready = chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+    ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
+    return { model, policy, sources, modelAllowed, candidates: chatCandidates }
+  }
+  const candidates = db.peers.filter((peer) => peer.services.some((service) => service.service === model)).map((peer) => {
+    const service = peer.services.find((entry) => entry.service === model)!
+    const reasons: string[] = []
+    if (policy.blockedPeerIds?.includes(peer.peerId)) reasons.push('blocked')
+    if (allowed && !allowed.has(peer.peerId)) {
+      const lacking = sources.filter((source) => source.policy?.allowedPeerIds && !expand(source.policy)!.allowedPeerIds!.includes(peer.peerId)).map((source) => source.level.replace('workspace-org', 'organization').replace('key-owner', 'key owner'))
+      reasons.push(lacking.length ? `not in the ${lacking.join(' and ')} allow list` : 'not in the allow list')
+    }
+    if (policy.minTrustScore !== undefined && (peer.trustScore ?? 0) < policy.minTrustScore) reasons.push(`trust below ${policy.minTrustScore}`)
+    if (policy.requireTee && !peer.tee) reasons.push('no TEE')
+    if (policy.requireVerified && !peer.verified) reasons.push('not verified')
+    if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
+    // The buyer judges its own trust minimum on the effective trust: a live DIFF verdict keeps 10%.
+    const buyerMinTrust = db.settings.buyer.routingPreferences.minTrustScore
+    if (service.modelCheck?.verdict === 'diff' && peer.trustScore !== null && peer.trustScore * 0.1 < buyerMinTrust) {
+      reasons.push(`buyer config: trust ${Math.round(peer.trustScore * 0.1)} (cut to 10% from ${Math.round(peer.trustScore)}: live DIFF verification verdict) below buyer minimum ${buyerMinTrust}`)
+    }
+    if (service.health?.status === 'failing') reasons.push(`self health check failing${service.health.reason ? ` (${service.health.reason})` : ''}`)
+    return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion ?? null, trustScore: peer.trustScore, selection: null as RouteSelection | null, ...(service.health ? { health: service.health } : {}) }
+  })
+  const ready = candidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0))
+  ready.forEach((c, index) => { c.rank = index + 1; c.selection = mockRouteSelection(index + 1, ready.length, index) })
+  return { model, policy, sources, modelAllowed, candidates }
+}
+
+
+// ── Policy input checks (mirror policy-resolver's policyInputProblem) ─────
+
+const NO_LIMITS: ApiKey['limits'] = { daily: null, weekly: null, monthly: null, total: null }
+const expand = (policy: RoutingPolicy | null | undefined) => (policy ? expandLists(policy, db.peerLists) : null)
+
+/** What a sent policy loses under the levels above, and whether it leaves no seller. */
+function checkPolicy(above: Array<RoutingPolicy | null | undefined>, sent: RoutingPolicy | null | undefined) {
+  if (!sent) return { empty: false, narrowed: [] as string[], effective: combinePolicies(...above.map(expand)) }
+  const parent = combinePolicies(...above.map(expand))
+  const own = expand(sent)!
+  const effective = combinePolicies(parent, own)
+  const narrowed: string[] = []
+  if (own.allowedPeerIds && parent.allowedPeerIds && own.allowedPeerIds.some((id) => !parent.allowedPeerIds!.some((other) => samePeerId(other, id)))) narrowed.push('allowedPeerIds')
+  if (own.allowedPeerIds && parent.blockedPeerIds && own.allowedPeerIds.some((id) => parent.blockedPeerIds!.some((other) => samePeerId(other, id)))) narrowed.push('allowedPeerIds')
+  if (own.allowedModels && parent.allowedModels && own.allowedModels.some((model) => !parent.allowedModels!.includes(model))) narrowed.push('allowedModels')
+  for (const cap of ['maxInputUsdPerMillion', 'maxOutputUsdPerMillion', 'maxCachedInputUsdPerMillion', 'maxImageUsdPerImage'] as const) {
+    if (own[cap] !== undefined && parent[cap] !== undefined && own[cap]! > parent[cap]!) narrowed.push(cap)
+  }
+  const empty = own.allowedPeerIds !== undefined && (effective.allowedPeerIds ?? []).length === 0
+  return { empty, narrowed: [...new Set(narrowed)], effective }
+}
+
+/** 400 empty_allow_list / 409 narrowed unless the request confirmed it, like the gateway. */
+function guardPolicies(body: any, checks: Array<{ field: string; above: Array<RoutingPolicy | null | undefined>; sent: RoutingPolicy | null | undefined }>, limits?: { fields: string[]; effective: unknown }) {
+  const results = checks.map((check) => ({ field: check.field, ...checkPolicy(check.above, check.sent) }))
+  const empty = results.filter((result) => result.empty)
+  if (empty.length && !body?.confirmEmpty) {
+    throw new MockError(400, 'empty_allow_list', `${empty.map((r) => r.field).join(', ')} would let no seller serve; send confirmEmpty: true to save it anyway`, { fields: empty.map((r) => r.field) })
+  }
+  const narrowed = results.filter((result) => result.narrowed.length)
+  const fields = [...narrowed.flatMap((r) => r.narrowed.map((name) => `${r.field}.${name}`)), ...(limits?.fields ?? [])]
+  if (fields.length && !body?.acceptNarrowed) {
+    throw new MockError(409, 'narrowed', `The levels above allow less than this asks for (${fields.join(', ')}); send acceptNarrowed: true to save it anyway`, {
+      fields,
+      ...(narrowed.length ? { effectiveRoutingPolicy: narrowed[narrowed.length - 1]!.effective } : {}),
+      ...(limits?.fields.length ? { effectiveLimits: limits.effective } : {}),
+    })
+  }
+}
+
+function keyLevelsAbove(key: Pick<ApiKey, 'workspaceId' | 'ownerMemberId'>): Array<RoutingPolicy | null> {
+  const ws = findWorkspace(key.workspaceId)
+  const owner = db.members.find((m) => m.id === key.ownerMemberId)
+  return [db.gatewayPolicy, ws.orgRoutingPolicy, ws.routingPolicy, owner?.routingPolicy ?? null]
+}
+
+/** Owner limit periods asking for more than the admin layer allows. */
+function narrowedLimits(admin: ApiKey['limits'], owner: ApiKey['limits'] | undefined): string[] {
+  if (!owner) return []
+  return LIMIT_PERIODS
+    .filter((period) => admin[period] !== null && (owner[period] === null || Number(owner[period]) > Number(admin[period])))
+    .map((period) => `ownerLimits.${period}`)
+}
+
+function patchMember(id: string, body: any): Member {
+  const caller = requireOrgAdmin()
+  const target = findMember(id)
+  if ((target.orgRole === 'owner' || body.orgRole === 'owner') && caller.orgRole !== 'owner') {
+    throw forbidden('Only an owner can change an owner or make someone owner')
+  }
+  if (target.orgRole === 'owner' && body.orgRole && body.orgRole !== 'owner' && db.members.filter((m) => m.orgRole === 'owner' && m.status === 'active').length <= 1) {
+    throw new MockError(409, 'last_owner', 'The organization needs at least one owner')
+  }
+  if (body.routingPolicy !== undefined) guardPolicies(body, [{ field: 'routingPolicy', above: [db.gatewayPolicy], sent: body.routingPolicy }])
+  const { label, email, orgRole, limits, routingPolicy, maxKeys } = body as Partial<Member>
+  Object.assign(target, Object.fromEntries(Object.entries({ label, email, orgRole, limits, routingPolicy, maxKeys }).filter(([, value]) => value !== undefined)))
+  audit('member.update', { kind: 'member', id: target.id, label: target.label })
+  return target
+}
+
+function setMemberStatus(id: string, status: 'active' | 'disabled'): Member {
+  const caller = requireOrgAdmin()
+  const target = findMember(id)
+  if (target.orgRole === 'owner' && caller.orgRole !== 'owner') throw forbidden('Only an owner can change an owner')
+  if (status === 'disabled' && target.id === caller.id) throw new MockError(409, 'cannot_disable_self', 'You cannot disable yourself')
+  if (status === 'active' && target.status === 'invited') throw new MockError(409, 'invite_pending', 'This member has not accepted their invite yet')
+  target.status = status
+  if (status === 'disabled') db.keys.filter((k) => k.ownerMemberId === target.id).forEach((k) => { k.status = 'revoked' })
+  audit(status === 'disabled' ? 'member.disable' : 'member.enable', { kind: 'member', id: target.id, label: target.label })
+  return target
+}
+
+function createInvite(body: any) {
+  const caller = currentMember()
+  const workspaces: Array<{ workspaceId: string; role: WorkspaceRole }> = body.workspaces ?? []
+  if (!isOrgAdmin(caller)) {
+    if (body.orgRole !== 'member') throw forbidden('Only organization admins can invite admins')
+    if (workspaces.length === 0) throw forbidden('Invite them into a workspace you administer')
+    if (workspaces.some((entry) => workspaceRole(caller, entry.workspaceId) !== 'admin')) throw forbidden('You can only invite into workspaces you administer')
+  } else if (body.orgRole === 'owner' && caller.orgRole !== 'owner') {
+    throw forbidden('Only an owner can invite an owner')
+  }
+  if (body.email && db.members.some((member) => member.email?.toLowerCase() === String(body.email).toLowerCase())) {
+    throw new MockError(409, 'member_exists', 'A member with this email already exists')
+  }
+  const invite = { id: newId('inv'), label: body.label, email: body.email ?? null, orgRole: body.orgRole, expiresAt: Date.now() + (body.expiresInHours ?? 72) * 3600_000, createdAt: Date.now(), createdBy: caller.id }
+  db.invites.push(invite)
+  audit('invite.create', { kind: 'invite', id: invite.id, label: invite.label })
+  const { createdBy: _createdBy, ...dto } = invite
+  return { ...dto, url: `${window.location.origin}/console/invite#${secret('inv_')}` }
+}
+
+function createKey(body: any) {
+  const { member } = requireWorkspace(body.workspaceId)
+  const admin = workspaceRole(member, body.workspaceId) === 'admin'
+  let owner = member.id
+  if (body.ownerMemberId !== undefined && body.ownerMemberId !== member.id) {
+    if (!admin) throw forbidden('Only workspace admins can create keys for others')
+    owner = body.ownerMemberId
+  }
+  if (!admin && member.maxKeys !== null && db.keys.filter((k) => k.ownerMemberId === member.id && k.status === 'active').length >= member.maxKeys) {
+    throw new MockError(409, 'max_keys_reached', `You can have at most ${member.maxKeys} active key(s)`)
+  }
+  if (body.topupEnabled && !admin) throw forbidden('Only workspace admins can enable top-ups')
+  // A non-admin's limits and policy become the owner layer of their key.
+  const adminLimits = admin ? body.limits ?? NO_LIMITS : NO_LIMITS
+  const adminPolicy = admin ? body.routingPolicy ?? null : null
+  const ownerLimits = (admin ? body.ownerLimits : body.ownerLimits ?? body.limits) ?? NO_LIMITS
+  const ownerPolicy = (admin ? body.ownerRoutingPolicy : body.ownerRoutingPolicy ?? body.routingPolicy) ?? null
+  const above = keyLevelsAbove({ workspaceId: body.workspaceId, ownerMemberId: owner })
+  guardPolicies(body, [
+    { field: 'routingPolicy', above, sent: adminPolicy },
+    { field: 'ownerRoutingPolicy', above: [...above, adminPolicy], sent: ownerPolicy },
+  ], { fields: narrowedLimits(adminLimits, ownerLimits), effective: tighterLimits(adminLimits, ownerLimits) })
+  const s = secret('antseed_')
+  const key: ApiKey = { id: newId('key'), label: body.label, hint: `antseed_…${s.slice(-4)}`, workspaceId: body.workspaceId, ownerMemberId: owner, buyerIdentity: findWorkspace(body.workspaceId).buyerIdentity, status: 'active', limits: adminLimits, routingPolicy: adminPolicy, ownerLimits, ownerRoutingPolicy: ownerPolicy, topupEnabled: !!body.topupEnabled, expiresAt: body.expiresAt, createdAt: Date.now(), lastUsedAt: null, usage: { requests: 0, spent: '0.000000', spentThisMonth: '0.000000' } }
+  db.keys.push(key)
+  audit('key.create', { kind: 'key', id: key.id, label: key.label })
+  return { key, secret: s }
+}
+
+function patchKey(id: string, body: any): ApiKey {
+  const { key, member } = keyAccess(id)
+  const admin = workspaceRole(member, key.workspaceId) === 'admin'
+  if (!admin) {
+    if (body.limits !== undefined || body.routingPolicy !== undefined) throw forbidden('Only workspace admins can change a key\'s limits; set ownerLimits instead')
+    if (body.topupEnabled !== undefined) throw forbidden('Only workspace admins can change top-ups')
+    if (body.ownerMemberId !== undefined) throw forbidden('Only workspace admins can change a key\'s owner')
+    if (body.expiresAt !== undefined && (body.expiresAt === null || (key.expiresAt !== null && body.expiresAt > key.expiresAt))) {
+      throw forbidden('Only workspace admins can extend or remove an expiry')
+    }
+  }
+  const nextLimits = body.limits ?? key.limits
+  const nextPolicy = body.routingPolicy !== undefined ? body.routingPolicy : key.routingPolicy
+  const nextOwnerLimits = body.ownerLimits ? { ...key.ownerLimits, ...body.ownerLimits } : key.ownerLimits
+  const above = keyLevelsAbove(key)
+  guardPolicies(body, [
+    ...(body.routingPolicy !== undefined ? [{ field: 'routingPolicy', above, sent: body.routingPolicy }] : []),
+    ...(body.ownerRoutingPolicy !== undefined ? [{ field: 'ownerRoutingPolicy', above: [...above, nextPolicy], sent: body.ownerRoutingPolicy }] : []),
+  ], { fields: body.ownerLimits ? narrowedLimits(nextLimits, body.ownerLimits) : [], effective: tighterLimits(nextLimits, nextOwnerLimits) })
+  for (const field of ['label', 'limits', 'routingPolicy', 'ownerLimits', 'ownerRoutingPolicy', 'topupEnabled', 'expiresAt', 'ownerMemberId'] as const) {
+    if (body[field] !== undefined) (key as any)[field] = field === 'ownerLimits' ? nextOwnerLimits : body[field]
+  }
+  audit('key.update', { kind: 'key', id: key.id, label: key.label })
+  return key
+}
+
+function createAdminToken(body: any) {
+  const caller = requireOrgAdmin()
+  const days = body.expiresInDays === undefined ? 90 : body.expiresInDays
+  if (days === null && caller.orgRole !== 'owner') throw forbidden('Only owners can create tokens that never expire')
+  if (days !== null && (typeof days !== 'number' || days < 1 || days > 365)) throw new MockError(400, 'invalid_request', 'expiresInDays must be between 1 and 365')
+  const s = secret('antseed_admin_')
+  const token: AdminToken = { id: newId('tok'), label: body.label, hint: `antseed_admin_…${s.slice(-4)}`, scope: body.scope, createdByMemberId: caller.id, expiresAt: days === null ? null : Date.now() + days * 86_400_000, createdAt: Date.now(), lastUsedAt: null }
+  db.adminTokens.push(token)
+  audit('token.create', { kind: 'admin_token', id: token.id, label: token.label })
+  return { token, secret: s }
+}
+
+function operatorAuth(params: Record<string, string>, body: any) {
+  const caller = requireOwner()
+  const workspace = findWorkspace(params['id']!)
+  const current = currentOperator(workspace, caller)
+  if (current) throw new MockError(409, 'operator_already_set', `This wallet already has an authorized wallet (${current}). Only that wallet can transfer or clear the authorization.`)
+  const operator = String(body?.operator ?? '').trim()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(operator)) throw new MockError(400, 'invalid_operator', 'operator must be a wallet address.')
+  const credential = caller.credentials.find((entry) => entry.kind === 'wallet' && entry.label.toLowerCase() === operator.toLowerCase())
+  if (!credential) {
+    throw new MockError(403, 'operator_not_yours', 'The operator must be a wallet you sign in with. Add it under your sign-in methods first.')
+  }
+  const age = Date.now() - credential.createdAt
+  if (age < OPERATOR_MIN_AGE_MS) {
+    const hours = Math.max(1, Math.ceil((OPERATOR_MIN_AGE_MS - age) / 3_600_000))
+    throw new MockError(403, 'operator_too_new', `This wallet was added as a sign-in method less than 24 hours ago. For your safety it can become an operator only after that; try again in about ${hours} hour${hours === 1 ? '' : 's'}.`)
+  }
+  if (Date.now() - lastSignInAt > FRESH_MS) throw new MockError(403, 'reauth_required', 'Sign in again (passkey or wallet) to confirm, then retry.')
+  if (caller.credentials.length > 1 && lastReauthWallet?.toLowerCase() === operator.toLowerCase()) {
+    throw new MockError(403, 'reauth_other_credential', 'Confirm with a sign-in method other than the wallet you are making the operator (another passkey or wallet), then retry.')
+  }
+  audit('wallet.operator_auth', { kind: 'workspace', id: workspace.id, label: workspace.name }, { operator })
+  return { buyer: workspace.walletAddress, operator, nonce: '0', signature: `0x${'ab'.repeat(65)}`, depositsContract: db.chain.contracts['deposits'], chainId: db.chain.chainId }
+}
+
+/** A workspace preset needs that workspace's admin; a gateway-wide one an org admin. */
+function requirePresetAdmin(workspaceId: string | null | undefined) {
+  if (workspaceId) requireWorkspace(workspaceId, 'admin')
+  else requireOrgAdmin()
+}
+
+function editablePreset(id: string | undefined) {
+  const preset = db.presets.find((entry) => entry.id === id)
+  if (!preset) throw notFound('Preset')
+  requirePresetAdmin(preset.workspaceId)
+  return preset
+}
+
+/** The body without the confirmEmpty / acceptNarrowed flags, which are not stored. */
+function withoutSaveFlags(body: any) {
+  const { confirmEmpty: _confirmEmpty, acceptNarrowed: _acceptNarrowed, ...input } = body
+  return input
+}
+
+function maskedSettings() {
+  const headers = Object.fromEntries(Object.keys(db.settings.observability.otlpHeaders).map((name) => [name, MASKED_VALUE]))
+  return { ...db.settings, observability: { ...db.settings.observability, otlpHeaders: headers } }
+}
+
+/** Saved header values are kept for "••••" only while the endpoint keeps its origin. */
+function observability(body: any) {
+  const current = db.settings.observability
+  const origin = (url: string | null) => { try { return url ? new URL(url).origin : null } catch { return url } }
+  const sameOrigin = origin(current.otlpEndpoint) === origin(body.otlpEndpoint) || current.otlpEndpoint === null
+  const headers: Record<string, string> = {}
+  for (const [name, value] of Object.entries(body.otlpHeaders ?? {}) as Array<[string, string]>) {
+    if (value === MASKED_VALUE) {
+      if (!sameOrigin) throw new MockError(400, 'otlp_headers_required', `The export endpoint changed: enter the value of header "${name}" again (saved header values are not sent to a new endpoint)`)
+      if (current.otlpHeaders[name] === undefined) throw new MockError(400, 'invalid_request', `Header "${name}" needs a value`)
+      headers[name] = current.otlpHeaders[name]!
+    } else headers[name] = value
+  }
+  return { ...body, otlpHeaders: headers }
+}
+
+const routes: Array<[string, string, Handler]> = [
+  ['GET', '/auth/config', () => db.authConfig],
+  ['GET', '/auth/me', () => me()],
+  ['GET', '/seller/status', () => { requireOrgAdmin(); return mockSellerStatus() }],
+  ['GET', '/seller/events', () => { requireOrgAdmin(); return mockSellerEvents() }],
+  ['GET', '/seller/usage', ({ query }) => { requireOrgAdmin(); return mockSellerUsage(Number(query.get('days') ?? 14)) }],
+  ['GET', '/seller/settings', () => { requireOrgAdmin(); return mockSellerSettingsState() }],
+  ['PATCH', '/seller/settings', ({ body }) => {
+    requireOrgAdmin()
+    try { return mockUpdateSellerSettings(body ?? {}) } catch (err) { throw new MockError(400, 'invalid_request', (err as Error).message) }
+  }],
+  ['DELETE', '/seller/settings/overrides', () => { requireOrgAdmin(); return mockResetSellerOverrides() }],
+  ['POST', '/seller/restart', () => { requireOrgAdmin(); return mockRestartSeller() }],
+  ['PATCH', '/seller/alerts', ({ body }) => { requireOrgAdmin(); return mockUpdateSellerAlerts(body ?? {}) }],
+  ['POST', '/seller/alerts/test', ({ body }) => { requireOrgAdmin(); return mockTestAlert(body?.channel === 'webhook' ? 'webhook' : 'telegram') }],
+  ['POST', '/seller/alerts/telegram/chats', () => { requireOrgAdmin(); return mockTelegramChats() }],
+  ['POST', '/seller/promote/check', () => { requireOrgAdmin(); return mockCheckVerifications() }],
+  ['PUT', '/seller/promote/verifications', ({ body }) => { requireOrgAdmin(); return mockSaveVerifications(body ?? { domains: [], github: [] }) }],
+  ['GET', '/seller/market', () => { requireOrgAdmin(); return mockSellerMarket() }],
+  ['GET', '/seller/reputation', () => { requireOrgAdmin(); return mockSellerReputation() }],
+  ['GET', '/seller/promote', () => { requireOrgAdmin(); return mockSellerPromote() }],
+  ['GET', '/seller/logs', ({ query }) => { requireOrgAdmin(); return mockSellerLogs(query) }],
+  ['GET', '/seller/logs/:id', ({ params }) => {
+    requireOrgAdmin()
+    const entry = mockSellerLogDetail(params['id']!)
+    if (!entry) throw new MockError(404, 'not_found', 'No request with this id.')
+    return entry
+  }],
+  ['GET', '/seller/promote/card', () => { requireOrgAdmin(); return new RawBody(sellerCardSvg(mockSellerPromote()), 'image/svg+xml') }],
+  ['POST', '/auth/logout', () => { setSession('out') }],
+  ['POST', '/auth/setup', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'Invalid token'); return { enrollment: 'enr_1', label: 'Dana Owner', orgRole: 'owner' } }],
+  ['POST', '/auth/recover', ({ body }) => { if (body.token === 'bad') throw new MockError(400, 'invalid_token', 'This recovery link is invalid, used or expired.'); return { enrollment: 'enr_3', label: 'Dana Owner', orgRole: 'owner' } }],
+  ['POST', '/auth/invite', ({ body }) => { if (body.token === 'expired') throw new MockError(410, 'invite_expired', 'Expired'); return { enrollment: 'enr_2', label: 'Robin Contractor', orgRole: 'member' } }],
+  ['POST', '/auth/passkey/register/options', ({ body }) => {
+    if (!body?.enrollment) requireFreshForCredential()
+    throw new MockError(501, 'mock', 'Passkeys need a real gateway. Add a wallet instead in mock mode.')
+  }],
+  ['POST', '/auth/passkey/login/options', () => { throw new MockError(501, 'mock', 'Passkeys need a real gateway. Use ?as=owner to skip sign-in in mock mode.') }],
+  ['POST', '/auth/wallet/nonce', ({ body }) => siweMessage(body.address)],
+  ['POST', '/auth/wallet/verify', ({ body }) => {
+    const state = session()
+    if (state === 'out' || state === 'key' || body?.enrollment) { setSession(state === 'out' || state === 'key' ? 'owner' : state); return me() }
+    // Signed in already: this links the wallet to the member, after a fresh sign-in.
+    const member = requireFreshForCredential()
+    const address = /0x[0-9a-fA-F]{40}/.exec(String(body?.message ?? ''))?.[0] ?? fakeAddress(idCounter)
+    if (db.members.some((m) => m.credentials.some((c) => c.label.toLowerCase() === address.toLowerCase()))) throw new MockError(409, 'credential_exists', 'This wallet is already linked to a member.')
+    member.credentials.push({ id: newId('cred'), kind: 'wallet', label: address, createdAt: Date.now(), lastUsedAt: null })
+    audit('auth.credential_add', { kind: 'member', id: member.id, label: member.label })
+    return me()
+  }],
+  ['POST', '/auth/reauth/passkey/options', () => { throw new MockError(501, 'mock', 'Passkeys need a real gateway. Confirm with a wallet in mock mode.') }],
+  ['POST', '/auth/reauth/wallet/nonce', ({ body }) => siweMessage(body.address)],
+  ['POST', '/auth/reauth/wallet/verify', ({ body }) => {
+    const member = currentMember()
+    const address = /0x[0-9a-fA-F]{40}/.exec(String(body?.message ?? ''))?.[0] ?? ''
+    if (!member.credentials.some((c) => c.kind === 'wallet' && c.label.toLowerCase() === address.toLowerCase())) {
+      throw new MockError(403, 'reauth_wrong_member', 'That wallet is not one of your sign-in methods.')
+    }
+    lastSignInAt = Date.now()
+    lastReauthWallet = address
+    return me()
+  }],
+  ['POST', '/auth/api-key', ({ body }) => { if (!String(body.key).startsWith('antseed_') || String(body.key).startsWith('antseed_admin_')) throw new MockError(401, 'invalid_key', 'Invalid key'); setSession('key'); return me() }],
+
+  ['GET', '/members', () => { requireOrgAdmin(); return db.members }],
+  ['PATCH', '/members/:id', ({ params, body }) => patchMember(params['id']!, body)],
+  ['POST', '/members/:id/disable', ({ params }) => setMemberStatus(params['id']!, 'disabled')],
+  ['POST', '/members/:id/enable', ({ params }) => setMemberStatus(params['id']!, 'active')],
+  ['DELETE', '/members/:id/credentials/:cred', ({ params }) => {
+    const caller = currentMember()
+    const m = findMember(params['id'])
+    if (caller.id === m.id) {
+      if (!m.credentials.some((c) => c.id === params['cred'])) throw notFound('Sign-in method')
+      if (m.credentials.length <= 1) throw new MockError(409, 'last_credential', 'Add another sign-in method before removing this one')
+    } else {
+      requireOrgAdmin()
+      if (m.orgRole === 'owner' && caller.orgRole !== 'owner') throw forbidden('Only an owner can change an owner\'s sign-in methods')
+    }
+    m.credentials = m.credentials.filter((c) => c.id !== params['cred'])
+  }],
+  ['GET', '/invites', () => {
+    const caller = currentMember()
+    return db.invites.filter((invite) => isOrgAdmin(caller) || (invite as { createdBy?: string }).createdBy === caller.id)
+      .map(({ createdBy: _createdBy, ...invite }: typeof db.invites[number] & { createdBy?: string }) => invite)
+  }],
+  ['POST', '/invites', ({ body }) => createInvite(body)],
+  ['DELETE', '/invites/:id', ({ params }) => {
+    const caller = currentMember()
+    const invite = db.invites.find((x) => x.id === params['id']) as (typeof db.invites[number] & { createdBy?: string }) | undefined
+    if (!invite) throw notFound('Invite')
+    if (!isOrgAdmin(caller) && invite.createdBy !== caller.id) throw forbidden()
+    db.invites = db.invites.filter((x) => x.id !== params['id'])
+  }],
+
+  ['GET', '/workspaces', () => { const member = currentMember(); return db.workspaces.filter((ws) => workspaceRole(member, ws.id)).map(withCounts) }],
+  ['POST', '/workspaces', ({ body }) => {
+    const member = requireOrgAdmin()
+    const ws: Workspace = { id: newId('ws'), name: body.name, isDefault: false, buyerIdentity: body.buyerIdentity ?? body.name.toLowerCase(), walletAddress: fakeAddress(idCounter), limits: body.limits, routingPolicy: body.routingPolicy, orgRoutingPolicy: null, memberCount: 0, keyCount: 0, createdAt: Date.now() }
+    db.workspaces.push(ws)
+    db.workspaceMembers[ws.id] = { [member.id]: 'admin' }
+    audit('workspace.create', { kind: 'workspace', id: ws.id, label: ws.name })
+    return withCounts(ws)
+  }],
+  ['GET', '/workspaces/:id', ({ params }) => withCounts(requireWorkspace(params['id']!).workspace)],
+  ['PATCH', '/workspaces/:id', ({ params, body }) => {
+    const { member, workspace } = requireWorkspace(params['id']!, 'admin')
+    if (body.buyerIdentity !== undefined) throw new MockError(400, 'invalid_request', 'A workspace\'s wallet cannot be changed')
+    if ((body.limits !== undefined || body.orgRoutingPolicy !== undefined) && !isOrgAdmin(member)) throw forbidden('Only organization admins can do this')
+    const org = body.orgRoutingPolicy !== undefined ? body.orgRoutingPolicy : workspace.orgRoutingPolicy
+    guardPolicies(body, [
+      ...(body.orgRoutingPolicy !== undefined ? [{ field: 'orgRoutingPolicy', above: [db.gatewayPolicy], sent: body.orgRoutingPolicy }] : []),
+      ...(body.routingPolicy !== undefined ? [{ field: 'routingPolicy', above: [db.gatewayPolicy, org], sent: body.routingPolicy }] : []),
+    ])
+    for (const field of ['name', 'limits', 'routingPolicy', 'orgRoutingPolicy'] as const) if (body[field] !== undefined) (workspace as any)[field] = body[field]
+    audit(body.routingPolicy !== undefined || body.orgRoutingPolicy !== undefined ? 'workspace.policy.update' : 'workspace.update', { kind: 'workspace', id: workspace.id, label: workspace.name })
+    return withCounts(workspace)
+  }],
+  ['DELETE', '/workspaces/:id', ({ params }) => {
+    requireOrgAdmin()
+    const ws = findWorkspace(params['id']!)
+    if (ws.isDefault) throw new MockError(409, 'default_workspace', 'The Default workspace cannot be deleted')
+    if (db.keys.some((k) => k.workspaceId === ws.id && k.status === 'active')) throw new MockError(409, 'workspace_has_keys', 'Revoke this workspace\'s keys first')
+    db.workspaces = db.workspaces.filter((x) => x.id !== ws.id)
+  }],
+  ['GET', '/workspaces/:id/members', ({ params }) => {
+    const { member } = requireWorkspace(params['id']!)
+    const admin = workspaceRole(member, params['id']!) === 'admin'
+    return Object.entries(db.workspaceMembers[params['id']!] ?? {}).map(([memberId, role]) => {
+      const entry = db.members.find((m) => m.id === memberId)!
+      // Like the gateway: plain members see who is in the workspace, not emails, budgets or policies.
+      return { member: admin ? entry : { id: entry.id, label: entry.label, orgRole: entry.orgRole, status: entry.status }, role }
+    })
+  }],
+  ['PUT', '/workspaces/:id/members/:memberId', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); (db.workspaceMembers[params['id']!] ??= {})[params['memberId']!] = body.role }],
+  ['DELETE', '/workspaces/:id/members/:memberId', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    delete db.workspaceMembers[params['id']!]?.[params['memberId']!]
+    db.keys.filter((k) => k.workspaceId === params['id'] && k.ownerMemberId === params['memberId']).forEach((k) => { k.status = 'revoked' })
+  }],
+
+  ['GET', '/keys', ({ query }) => {
+    const visible = visibleKeyIds()
+    return db.keys.filter((k) => (!visible || visible.has(k.id)) && (!query.get('workspace') || k.workspaceId === query.get('workspace')) && (!query.get('member') || k.ownerMemberId === query.get('member')))
+  }],
+  ['POST', '/keys', ({ body }) => createKey(body)],
+  ['PATCH', '/keys/:id', ({ params, body }) => patchKey(params['id']!, body)],
+  ['POST', '/keys/:id/rotate', ({ params }) => { const { key } = keyAccess(params['id']!); const s = secret('antseed_'); key.hint = `antseed_…${s.slice(-4)}`; audit('key.rotate', { kind: 'key', id: key.id, label: key.label }); return { key, secret: s } }],
+  ['POST', '/keys/:id/revoke', ({ params }) => { const { key } = keyAccess(params['id']!); key.status = 'revoked'; audit('key.revoke', { kind: 'key', id: key.id, label: key.label }); return key }],
+
+  ['GET', '/admin-tokens', () => { requireOrgAdmin(); return db.adminTokens }],
+  ['POST', '/admin-tokens', ({ body }) => createAdminToken(body)],
+  ['DELETE', '/admin-tokens/:id', ({ params }) => { requireOrgAdmin(); db.adminTokens = db.adminTokens.filter((x) => x.id !== params['id']) }],
+
+  ['GET', '/usage', ({ query }) => usage(query)],
+  ['GET', '/requests', ({ query }) => {
+    const page = cursorPage(filterRequests(query), query, (row) => row.startedAt, (row) => row.tag)
+    return { requests: page.rows.map(listEntry), nextBefore: page.nextBefore }
+  }],
+  ['GET', '/requests/:tag', ({ params }) => {
+    const visible = visibleKeyIds()
+    const row = db.requests.find((entry) => entry.tag === params['tag'])
+    if (!row || (visible && !visible.has(row.keyId))) throw notFound('Request')
+    return row
+  }],
+  ['GET', '/audit', ({ query }) => {
+    requireOrgAdmin()
+    const actor = query.get('actor') ?? ''
+    const action = query.get('action') ?? ''
+    const matching = db.audit.filter((entry) => (!actor || entry.actor.id === actor)
+      && (!action || entry.action === action || entry.action.startsWith(`${action}.`)))
+    const page = cursorPage(matching, query, (entry) => entry.at, (entry) => entry.id)
+    return { entries: page.rows, nextBefore: page.nextBefore }
+  }],
+
+  ['GET', '/workspaces/:id/deposits', ({ params }) => mockDeposits(params['id'] ?? '')],
+  ['POST', '/workspaces/:id/deposits', ({ params, body }) => {
+    const txHash = String(body?.txHash ?? '').toLowerCase()
+    if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new MockError(400, 'invalid_tx_hash', 'Paste the transaction hash (0x followed by 64 hex characters).')
+    const list = mockDeposits(params['id'] ?? '')
+    const known = list.find((entry) => entry.txHash === txHash)
+    if (known) return known
+    const added = { ...list[0]!, txHash, reference: `DEP-${txHash.slice(2, 10).toUpperCase()}`, time: Date.now() - 9 * DAY_MS, approval: null }
+    list.push(added)
+    return added
+  }],
+  ['PUT', '/workspaces/:id/deposits/:tx/approval', ({ params, body }) => {
+    const deposit = mockDeposits(params['id'] ?? '').find((entry) => entry.txHash === params['tx'])
+    if (!deposit) throw new MockError(404, 'not_found', 'Deposit not found.')
+    const me = currentMember()
+    deposit.approval = { by: me.email ? `${me.label} (${me.email})` : me.label, at: Date.now(), note: typeof body?.note === 'string' && body.note ? body.note : null }
+    return deposit
+  }],
+  ['DELETE', '/workspaces/:id/deposits/:tx/approval', ({ params }) => {
+    const deposit = mockDeposits(params['id'] ?? '').find((entry) => entry.txHash === params['tx'])
+    if (!deposit) throw new MockError(404, 'not_found', 'Deposit not found.')
+    deposit.approval = null
+    return deposit
+  }],
+  ['GET', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockBillingProfiles.get(params['id']!) ?? null
+  }],
+  ['PUT', '/workspaces/:id/billing-profile', ({ params, body }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const companyName = String(body?.companyName ?? '').trim()
+    if (!companyName || !String(body?.address ?? '').trim()) throw new MockError(400, 'invalid_billing_profile', 'companyName and address are required.')
+    const optional = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null)
+    const profile: BillingProfile = {
+      companyName, address: String(body?.address).trim(), country: optional(body?.country) ?? '', vatNumber: optional(body?.vatNumber),
+      registrationNumber: optional(body?.registrationNumber), notes: optional(body?.notes), updatedAt: Date.now(),
+    }
+    mockBillingProfiles.set(params['id']!, profile)
+    return profile
+  }],
+  ['DELETE', '/workspaces/:id/billing-profile', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    mockBillingProfiles.delete(params['id']!)
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/statements', ({ params }): StatementSummary[] => {
+    requireWorkspace(params['id']!, 'admin')
+    return mockStatementPeriods().map((period) => {
+      const statement = mockStatement(params['id']!, period)
+      return { period, status: statement.status, reference: statement.reference, purchases: statement.total, issuedAt: statement.issuedAt }
+    })
+  }],
+  ['GET', '/workspaces/:id/statements/:period', ({ params }) => {
+    requireWorkspace(params['id']!, 'admin')
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(params['period'] ?? '')) throw new MockError(400, 'invalid_period', 'period must be a month, e.g. 2026-10.')
+    return mockStatement(params['id']!, params['period']!)
+  }],
+  ['GET', '/workspaces/:id/wallet', ({ params }) => {
+    const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
+    // ?deposit=pending: $9.81 waits in the wallet for 8 seconds after load, then moves into the credits.
+    const pendingDeposit = new URLSearchParams(window.location.search).get('deposit') === 'pending'
+    const landed = pendingDeposit && performance.now() > 8_000
+    // ?balance=locked: nothing available, everything reserved in channels.
+    const locked = new URLSearchParams(window.location.search).get('balance') === 'locked'
+    const available = locked ? '0.000000' : ws.isDefault ? (landed ? '241.350000' : '231.540000') : '0.120000'
+    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available, reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: pendingDeposit && !landed && ws.isDefault ? '9.810000' : '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
+  }],
+  ['POST', '/workspaces/:id/wallet/card-link', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { url: `https://antseed-pay.com/?address=${fakeAddress(1)}&currency=USD&amount=${body?.amountUsd ?? 10}&integration=${body?.provider === 'stripe' ? 'stripe' : 'crossmint'}` } }],
+  ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
+  ['POST', '/workspaces/:id/wallet/operator-auth', ({ params, body }) => operatorAuth(params, body)],
+  ['GET', '/workspaces/:id/wallet/operator', ({ params }) => operatorState(params['id']!)],
+  ['GET', '/chat/models', () => mockChatModels()],
+  ['GET', '/chat/context', ({ query }) => {
+    const workspace = findWorkspace(query.get('workspace') ?? 'ws_default')
+    const key = db.keys.find((k) => k.workspaceId === workspace.id && k.status === 'active') ?? db.keys[0]!
+    return { key: { ...key, label: 'Web chat' }, workspaceName: workspace.name }
+  }],
+  ['GET', '/chat/threads', () => mockChatThreads()],
+  ['GET', '/chat/threads/:id', ({ params }) => { const thread = mockChatThread(params['id']!); if (!thread) throw new MockError(404, 'not_found', 'Conversation not found'); return thread }],
+  ['DELETE', '/chat/threads/:id', ({ params }) => { mockDeleteChatThread(params['id']!); return undefined }],
+  ['GET', '/wallet/operators', () => {
+    const member = currentMember()
+    return db.workspaces.filter((ws) => workspaceRole(member, ws.id)).map((ws) => {
+      const state = operatorState(ws.id)
+      return { workspaceId: ws.id, operator: state.operator, relation: state.relation, canAuthorize: state.canAuthorize }
+    })
+  }],
+  ['POST', '/workspaces/:id/wallet/operator/sync', ({ params }) => operatorState(params['id']!)],
+  ['GET', '/workspaces/:id/channels', ({ params, query }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const list = db.channels[params['id']!] ?? []
+    return query.get('all') === '1' ? list : list.filter((c) => ['active', 'open', 'closing', 'withdrawable'].includes(c.status))
+  }],
+  ['POST', '/workspaces/:id/channels/close', ({ params, body }) => {
+    requireOrgAdmin()
+    const list = db.channels[params['id']!] ?? []
+    const ch = list.find((c) => (body.channelId ? c.channelId === body.channelId : c.peerId === body.peerId))
+    if (ch?.sellerName === 'Fake Seller Beta') throw new MockError(502, 'buyer_error', `A channel close request is already in flight for ${String(body.peerId).slice(0, 12)}...`)
+    if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
+  ['GET', '/workspaces/:id/free-tier', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) ?? [] }
+  }],
+  ['GET', '/workspaces/:id/free-tier/stake', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'member')
+    // Weekly epochs from an obvious fake genesis. The buyer's own Delta stake has
+    // 10 weeks left (20× now, 5× next week); a shared staker max-locks enough for Beta's stakers-only model.
+    const genesis = 1_700_000_000
+    const epochDuration = 604_800
+    const currentEpoch = Math.floor((Date.now() / 1000 - genesis) / epochDuration)
+    const buyer = String(workspace.walletAddress)
+    const position = { startEpoch: currentEpoch - 20, closedAtEpoch: null, maxLocked: false, maxLockedNext: false, expiresAt: null }
+    const pools: FreeTierStake['pools'] = [{ agentId: 86_903, positions: [{ ...position, id: 41, staker: buyer.toLowerCase(), ants: 270_000, endEpoch: currentEpoch + 10 }] }]
+    const shared = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => !entry.expired)[0]
+    if (shared) pools.unshift({ agentId: 86_901, positions: [{ ...position, id: 42, staker: shared.staker.toLowerCase(), ants: 450_000, endEpoch: currentEpoch + 104, maxLocked: true, maxLockedNext: true, expiresAt: shared.expiresAt }] })
+    return { buyer, currentEpoch, genesis, epochDuration, pools }
+  }],
+  ['POST', '/workspaces/:id/free-tier', ({ params, body }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    const decoded = decodeMockFreeTierCode(String((body as { code?: unknown })?.code ?? '').trim())
+    if (decoded.buyer.toLowerCase() !== String(workspace.walletAddress).toLowerCase()) {
+      throw new MockError(400, 'invalid_code', `This code is for buyer ${decoded.buyer}, not ${workspace.walletAddress}. Ask the staker for a code for your buyer address.`)
+    }
+    const kept = (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker !== decoded.staker)
+    freeTierStakers.set(workspace.id, [...kept, { staker: decoded.staker, expiresAt: decoded.expiresAt, expired: decoded.expiresAt * 1000 <= Date.now() }])
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
+  ['DELETE', '/workspaces/:id/free-tier/:staker', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    freeTierStakers.set(workspace.id, (freeTierStakers.get(workspace.id) ?? []).filter((entry) => entry.staker.toLowerCase() !== params['staker']!.toLowerCase()))
+    return { buyer: workspace.walletAddress, stakers: freeTierStakers.get(workspace.id) }
+  }],
+  ['GET', '/chain', () => db.chain],
+
+  ['GET', '/peers', () => db.peers],
+  ['GET', '/models', () => mockNetworkModels(db.peers)],
+  ['GET', '/routers', () => mockNetworkRouters(db.peers)],
+  ['GET', '/favorites', () => ({ models: [...favorites] })],
+  ['PUT', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!); favorites.add(params['model']!) }],
+  ['DELETE', '/favorites/:model', ({ params }) => { favorites.delete(params['model']!) }],
+  ['GET', '/route-preview', ({ query }) => preview(query)],
+  ['GET', '/routing', () => { currentMember(); return db.gatewayPolicy }],
+  ['GET', '/routing/buyer-limits', () => buyerLimits()],
+  ['PUT', '/routing', ({ body, query }) => {
+    requireOrgAdmin()
+    guardPolicies({ confirmEmpty: query.get('confirmEmpty') === '1' }, [{ field: 'routing policy', above: [], sent: body }])
+    db.gatewayPolicy = body as RoutingPolicy
+    audit('routing.default.update')
+    return body
+  }],
+  ['GET', '/peer-lists', () => db.peerLists],
+  ['POST', '/peer-lists', ({ body }) => { requireOrgAdmin(); const list = { id: newId('pl'), createdAt: Date.now(), ...body }; db.peerLists.push(list); return list }],
+  ['PATCH', '/peer-lists/:id', ({ params, body }) => { requireOrgAdmin(); return Object.assign(db.peerLists.find((x) => x.id === params['id'])!, body) }],
+  ['DELETE', '/peer-lists/:id', ({ params }) => { requireOrgAdmin(); db.peerLists = db.peerLists.filter((x) => x.id !== params['id']) }],
+
+  ['GET', '/presets', ({ query }) => db.presets.filter((p) => !query.get('workspace') || p.workspaceId === null || p.workspaceId === query.get('workspace'))],
+  ['POST', '/presets', ({ body }) => {
+    requirePresetAdmin(body.workspaceId)
+    const preset = { id: newId('pre'), createdAt: Date.now(), ...withoutSaveFlags(body) }
+    db.presets.push(preset)
+    return preset
+  }],
+  ['PATCH', '/presets/:id', ({ params, body }) => Object.assign(editablePreset(params['id']), withoutSaveFlags(body))],
+  ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
+
+  ['GET', '/status', () => ({ version: '0.1.205', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { mockUpdateState.checkedAt = Date.now(); if (session() === 'seller') return sellerMockUpdate(); requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update', ({ body }) => {
+    if (session() === 'seller') throw new MockError(409, 'update_unsupported', 'The seller dashboard does not install updates; update where the seller runs, then restart it')
+    requireOrgAdmin()
+    const update = mockUpdate()
+    if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
+    if (!update.available) throw new MockError(409, 'up_to_date', 'Already the latest version')
+    const action = body?.action === 'download' ? 'download' : 'install'
+    if (action === 'download' && mockUpdateState.downloaded) return update
+    mockUpdateState.requestedAt = Date.now()
+    mockUpdateState.action = action
+    if (action === 'install') audit('gateway.update')
+    return mockUpdate()
+  }],
+  ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
+  ['PATCH', '/settings/buyer', ({ body }) => {
+    requireOrgAdmin()
+    const buyer = db.settings.buyer
+    Object.assign(buyer.maxPricing, body.maxPricing ?? {})
+    if (body.minPeerReputation !== undefined) buyer.minPeerReputation = body.minPeerReputation
+    Object.assign(buyer.routingPreferences, body.routingPreferences ?? {})
+    Object.assign(buyer.verifier, body.verifier ?? {})
+    Object.assign(buyer.payments, body.payments ?? {})
+    Object.assign(buyer.network, body.network ?? {})
+    Object.assign(buyer.evidence, body.evidence ?? {})
+    buyer.requireVerifier = buyer.verifier.enabled && buyer.verifier.require
+    audit('settings.buyer.update')
+    const routingOnly = Object.keys(body).every((key) => key === 'routingPreferences')
+    if (routingOnly) return { ...db.settings }
+    // The mock cannot restart anything, like a buyer started by hand without a supervisor.
+    return { ...db.settings, restartRequired: true }
+  }],
+  ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
+  ['PUT', '/settings/telemetry', ({ body }) => {
+    requireOrgAdmin()
+    if (typeof body?.enabled !== 'boolean') throw new MockError(400, 'invalid_request', 'enabled must be true or false')
+    db.settings.telemetry = { available: true, enabled: body.enabled, userDisabled: !body.enabled }
+    audit('settings.telemetry.update')
+    return maskedSettings()
+  }],
+]
+
+/**
+ * `?update=available|command|current|desktop|container` on the first load picks what
+ * `/update` reports (default available; desktop is a gateway in the desktop
+ * app). An applied update waits 1.5 s for the update service, then walks
+ * the installer updater's steps (a few seconds each); the whole mock API is
+ * unreachable from the drain until the new gateway starts, as on a server.
+ * `?update=step:<phase>|restarting|succeeded|failed` freezes one state of a
+ * Restart & update (for screenshots).
+ */
+type MockRun = NonNullable<GatewayUpdate['progress']>
+type MockPhase = NonNullable<MockRun['phase']>
+const mockUpdateState = {
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop' | 'container',
+  current: '0.1.180',
+  checkedAt: Date.now() - 20 * 60_000,
+  requestedAt: null as number | null,
+  action: 'install' as 'download' | 'install',
+  downloaded: false,
+  lastRun: null as MockRun | null,
+  frozen: null as { phase: MockPhase | 'restarting' | 'succeeded' | 'failed'; at: number } | null,
+}
+/** Restart & update's steps in the mock: how long each takes, and the longest the updater says it can. */
+const MOCK_STEPS: Array<{ phase: MockPhase; ms: number; maxMs?: number }> = [
+  { phase: 'downloading', ms: 4_000 },
+  { phase: 'restarting-buyer', ms: 4_000 },
+  { phase: 'draining-gateway', ms: 8_000, maxMs: 90_000 },
+  { phase: 'starting-gateway', ms: 6_000 },
+  { phase: 'checking', ms: 500 },
+]
+const MOCK_PICKUP_MS = 1_500
+
+/** The step a mock install is on `elapsed` ms after its request, with when it started; null once done. */
+function mockStep(elapsed: number): { phase: MockPhase; startedAt: number; maxMs?: number } | null {
+  let start = MOCK_PICKUP_MS
+  for (const step of MOCK_STEPS) {
+    if (elapsed < start + step.ms) return { phase: step.phase, startedAt: start, maxMs: step.maxMs }
+    start += step.ms
+  }
+  return null
+}
+
+/** The mock gateway is down from a second into its drain until the new one has started. */
+function mockGatewayDown(now = Date.now()): boolean {
+  // Frozen on `restarting`: the page loads, then the gateway goes away.
+  if (mockUpdateState.frozen) return mockUpdateState.frozen.phase === 'restarting' && now - mockUpdateState.frozen.at > 2_500
+  const at = mockUpdateState.requestedAt
+  if (at === null || mockUpdateState.action !== 'install' || mockUpdateState.mode === 'desktop') return false
+  const step = mockStep(now - at)
+  return (step?.phase === 'draining-gateway' && now - at - step.startedAt > 1_000) || step?.phase === 'starting-gateway'
+}
+
+function frozenUpdate(base: GatewayUpdate): GatewayUpdate {
+  const frozen = mockUpdateState.frozen!
+  const latest = base.latest!
+  const run: MockRun = { state: 'running', action: 'install', from: base.current, to: latest, startedAt: frozen.at - 94_000, finishedAt: null, error: null }
+  if (frozen.phase === 'succeeded') {
+    return { ...base, current: latest, available: false, progress: { ...run, from: '0.1.180', state: 'succeeded', startedAt: frozen.at - 3 * 60_000 - 151_000, finishedAt: frozen.at - 3 * 60_000 } }
+  }
+  if (frozen.phase === 'failed') {
+    return { ...base, progress: { ...run, to: null, state: 'failed', startedAt: frozen.at - 2 * 60_000 - 80_000, finishedAt: frozen.at - 2 * 60_000, error: `the gateway did not start on ${latest}; rolled back to ${base.current}` } }
+  }
+  // `restarting`: the last status the page read before the gateway went away.
+  const phase: MockPhase = frozen.phase === 'restarting' ? 'draining-gateway' : frozen.phase
+  const maxMs = MOCK_STEPS.find((step) => step.phase === phase)?.maxMs
+  return { ...base, progress: { ...run, phase, phaseStartedAt: frozen.at - 42_000, ...(maxMs ? { phaseMaxMs: maxMs } : {}) } }
+}
+/** The seller dashboard's view (sellerUpdates): how to update, never installed from the page. `?update=container` for a seller in a container. */
+function sellerMockUpdate(): GatewayUpdate {
+  const current = '0.1.205'
+  const latest = mockUpdateState.mode === 'current' ? current : '0.1.208'
+  const container = mockUpdateState.mode === 'container'
+  return {
+    product: 'cli', current, latest, available: latest !== current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: container ? 'none' : 'command', install: 'npm',
+    command: container ? null : 'npm install -g @antseed/cli@latest',
+    note: container ? `Runs in a container: deploy an image with @antseed/cli ${latest} to update this seller.` : 'Installed globally with npm. Restart the seller after updating.',
+    progress: null, downloaded: null,
+  }
+}
+
+function mockUpdate(): GatewayUpdate {
+  const mode = mockUpdateState.mode
+  if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
+  const latest = mode === 'current' ? mockUpdateState.current : mode === 'desktop' ? '0.2.63' : '0.1.193'
+  const base: GatewayUpdate = {
+    product: mode === 'desktop' ? 'desktop' : 'cli',
+    current: mockUpdateState.current, latest, available: latest !== mockUpdateState.current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: mode === 'command' ? 'command' : 'console', install: mode === 'command' ? 'npm' : mode === 'desktop' ? 'desktop' : 'installer',
+    command: mode === 'command' ? 'npm install -g @antseed/cli@latest' : mode === 'desktop' ? null : 'antseed update',
+    note: mode === 'command' ? 'Installed globally with npm.'
+      : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
+      : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
+    progress: mockUpdateState.lastRun,
+    downloaded: null,
+  }
+  if (mockUpdateState.frozen) return frozenUpdate(base)
+  const at = mockUpdateState.requestedAt
+  const action = mockUpdateState.action
+  if (at === null) {
+    return mockUpdateState.downloaded
+      ? { ...base, downloaded: latest, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
+      : base
+  }
+  const elapsed = Date.now() - at
+  const startedAt = at + MOCK_PICKUP_MS
+  if (elapsed < MOCK_PICKUP_MS) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  const running: MockRun = { state: 'running', action, from: base.current, to: latest, startedAt, finishedAt: null, error: null }
+  if (mode === 'desktop') {
+    // The desktop app's updater reports no steps.
+    if (elapsed < 6_000) return { ...base, progress: running }
+  } else if (action === 'download') {
+    if (elapsed < MOCK_PICKUP_MS + MOCK_STEPS[0]!.ms) return { ...base, progress: { ...running, phase: 'downloading', phaseStartedAt: startedAt } }
+  } else {
+    const step = mockStep(elapsed)
+    if (step) return { ...base, progress: { ...running, phase: step.phase, phaseStartedAt: at + step.startedAt, ...(step.maxMs ? { phaseMaxMs: step.maxMs } : {}) } }
+  }
+  mockUpdateState.requestedAt = null
+  if (action === 'download') {
+    mockUpdateState.downloaded = true
+    return mockUpdate()
+  }
+  mockUpdateState.current = latest
+  mockUpdateState.downloaded = false
+  mockUpdateState.lastRun = { state: 'succeeded', action, from: base.current, to: latest, startedAt, finishedAt: Date.now(), error: null }
+  return { ...base, current: latest, available: false, progress: mockUpdateState.lastRun }
+}
+
+/** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
+let mockExposure: GatewayExposureMode = 'public'
+function exposureFor(mode: GatewayExposureMode): GatewayExposure {
+  let admin = false
+  try { admin = isOrgAdmin(currentMember()) } catch { admin = false }
+  const exposure: GatewayExposure = mode === 'public'
+    ? { mode, publicUrl: db.settings.publicUrl, listenHost: '127.0.0.1', reachableFromInternet: true, personalComputer: false, reasons: [`The console is served at ${db.settings.publicUrl}.`] }
+    : mode === 'lan'
+      ? { mode, publicUrl: null, listenHost: '0.0.0.0', reachableFromInternet: null, personalComputer: true, reasons: ['The gateway listens on every network interface: other machines on your network can reach it over plain HTTP.', 'No public URL is set (--public-url, a domain or a tunnel).', 'It runs on macOS: keys work only while this computer is on, awake and online.'] }
+      : { mode, publicUrl: null, listenHost: '127.0.0.1', reachableFromInternet: false, personalComputer: true, reasons: ['The gateway listens on 127.0.0.1, so only this computer can reach it.', 'It runs on macOS: keys work only while this computer is on, awake and online.'] }
+  return admin ? exposure : { ...exposure, listenHost: null, reasons: [] }
+}
+
+function match(method: string, path: string): { handler: Handler; params: Record<string, string> } | null {
+  const segments = path.split('/').filter(Boolean)
+  for (const [routeMethod, pattern, handler] of routes) {
+    if (routeMethod !== method) continue
+    const parts = pattern.split('/').filter(Boolean)
+    if (parts.length !== segments.length) continue
+    const params: Record<string, string> = {}
+    if (parts.every((part, index) => (part.startsWith(':') ? ((params[part.slice(1)] = decodeURIComponent(segments[index]!)), true) : part === segments[index]))) return { handler, params }
+  }
+  return null
+}
+
+/** A handler result sent as is with its own content type (e.g. the seller card SVG). */
+class RawBody { constructor(readonly body: string, readonly contentType: string) {} }
+
+function json(status: number, body: unknown): Response {
+  if (status === 204) return new Response(null, { status })
+  if (body instanceof RawBody) return new Response(body.body, { status, headers: { 'content-type': body.contentType } })
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
+}
+
+export function installMockApi(): void {
+  const realFetch = window.fetch.bind(window)
+  const exposureParam = new URLSearchParams(window.location.search).get('exposure')
+  if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
+  const updateParam = new URLSearchParams(window.location.search).get('update')
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop' || updateParam === 'container') mockUpdateState.mode = updateParam
+  // `?update=ready`: the new version is downloaded and waits for Restart & update.
+  if (updateParam === 'ready') mockUpdateState.downloaded = true
+  // `?update=step:<phase>|restarting|succeeded|failed`: one state of a Restart & update, frozen.
+  const frozen = updateParam?.replace(/^step:/, '')
+  if (frozen && (MOCK_STEPS.some((step) => step.phase === frozen) || frozen === 'rolling-back' || frozen === 'restarting' || frozen === 'succeeded' || frozen === 'failed')) {
+    mockUpdateState.frozen = { phase: frozen as NonNullable<typeof mockUpdateState.frozen>['phase'], at: Date.now() }
+  }
+  // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
+  if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
+    db.keys.length = 0
+    db.requests.length = 0
+    for (const id of Object.keys(db.channels)) db.channels[id] = []
+  }
+  session()
+  lastSignInAt = Date.now() - FRESH_MS - 1
+  // Staking pages read a live dashboard backend when Vite proxies one (`ANTSEED_ANTS_URL`);
+  // wallet actions then sign against that backend's chain.
+  const antsProxy = import.meta.env['VITE_ANTS_PROXY'] === '1'
+  const antsChain = antsProxy
+    ? realFetch('/__ants/api/config').then((response) => response.json()).then(({ data }: { data: { evmChainId: number; chainId: string; walletRpcUrl?: string } }) => {
+      db.chain = { ...db.chain, chainId: data.evmChainId, name: data.chainId, rpcUrl: data.walletRpcUrl ?? null, explorerUrl: null }
+    }).catch(() => undefined)
+    : Promise.resolve()
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(requestUrl(input), window.location.origin)
+    if (!url.pathname.startsWith('/console/api/')) return realFetch(input, init)
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const path = url.pathname.slice('/console/api'.length)
+    await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
+    // Mid-update the gateway (which serves the console API) is down, as on a server.
+    if (mockGatewayDown()) throw new TypeError('Failed to fetch')
+    if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
+    const staking = /^\/workspaces\/[^/]+\/ants\/(.+)$/.exec(path)
+    if (staking) {
+      if (!antsProxy) return json(503, { ok: false, error: 'The mock has no staking backend. Start `antseed ants --no-open` (or scripts/ants-sandbox.mjs) and run Vite with ANTSEED_ANTS_URL set to its URL.' })
+      return realFetch(`/__ants/api/${staking[1]}${url.search}`, { method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}) })
+    }
+    if (path === '/chain') await antsChain
+    if (method !== 'GET' && keySession() && !path.startsWith('/auth/')) return json(403, { error: { code: 'forbidden', message: 'API-key sessions are read-only' } })
+    if (method === 'POST' && path === '/chat') return mockChatStream(init?.body ? JSON.parse(String(init.body)) : {})
+    const route = match(method, path)
+    if (!route) return json(404, { error: { code: 'not_found', message: `Mock has no ${method} ${path}` } })
+    try {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined
+      const result = route.handler({ params: route.params, query: url.searchParams, body })
+      return result === undefined ? json(204, null) : json(200, result)
+    } catch (error) {
+      if (error instanceof MockError) return json(error.status, { error: { code: error.code, message: error.message, ...error.extra } })
+      return json(500, { error: { code: 'mock_error', message: String(error) } })
+    }
+  }
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out|seller, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop|container|ready|step:<phase>|restarting|succeeded|failed')
+}

@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 
 const KEY_PREFIX = 'antseed_'
+/** Management tokens look like `antseed_admin_<43 chars>`. */
+export const ADMIN_TOKEN_PREFIX = 'antseed_admin_'
 
 export interface GeneratedApiKey {
   /** Shown once at creation; only its hash is stored. */

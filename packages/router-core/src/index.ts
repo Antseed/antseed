@@ -18,5 +18,22 @@ export {
 export {
   WELL_KNOWN_TOOL_HINTS,
   formatToolHints,
+  toolHintBaseUrl,
   type ToolHint,
 } from './tool-hints.js'
+export { ModelRoutingClient, routingProtocolOfTarget, type ModelRoutingClientApi } from './model-routing-client.js'
+export {
+  candidatePricing,
+  findRoutingClientAdapter,
+  InvalidRouterOptionsError,
+  irpCandidateId,
+  irpSuggestAdapter,
+  RouterCannotRankError,
+  routingClientAdapter,
+  validateRouterOptions,
+  type RankCandidate,
+  type RouterOptionSpec,
+  type RoutingClientAdapter,
+} from './routing-adapters/index.js'
+export { CacheObservations } from './cache-observations.js'
+export { routerModelResolver } from './router-model-names.js'

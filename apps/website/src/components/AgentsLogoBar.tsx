@@ -25,7 +25,7 @@ export const PiGlyph = (
 
 export type LogoItem = {name: string; logo?: string; glyph?: ReactNode};
 
-const AGENTS: LogoItem[] = [
+export const AGENTS: LogoItem[] = [
   {name: 'Hermes', logo: '/logos/nousresearch.svg'},
   {name: 'OpenClaw', logo: '/logos/openclaw.svg'},
   {name: 'Codex', logo: '/logos/openai.png'},

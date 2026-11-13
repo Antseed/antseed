@@ -1,10 +1,12 @@
-import { keccak256 } from 'ethers';
+import { createMp4Inspector } from '@antseed/api-adapter';
+import { VIDEO_DOWNLOAD_MAX_BYTES } from '@antseed/protocol/http';
 import type { Wallet } from 'ethers';
 import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/protocol/http';
 import { bytesToHex, hexToBytes, signData, verifySignature } from '@antseed/protocol/signing';
-import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
+import { encodeHttpRequest, encodeHttpResponse, encodeHttpResponsePrefix } from '@antseed/protocol/request-codec';
+import { createIncrementalKeccak256, keccak256Hex } from './keccak.js';
 
 const RESPONSE_AUTH_DOMAIN = 'antseed-response-auth-v1';
 
@@ -49,7 +51,7 @@ export function createResponseAuthPayload(input: ResponseAuthInput, signer: Wall
     responseStartedAt: input.responseStartedAt,
     responseCompletedAt: input.responseCompletedAt,
   };
-  const signature = bytesToHex(signData(signer, buildResponseAuthSigningBytes(payload)));
+  const signature = bytesToHex(signData(signer, encodeResponseAuthSigningPayload(payload)));
   return { ...payload, signature };
 }
 
@@ -93,7 +95,7 @@ export function verifyResponseAuth(
     validSignature = verifySignature(
       normalizePeerId(expected.sellerPeerId),
       signature,
-      buildResponseAuthSigningBytes(unsigned),
+      encodeResponseAuthSigningPayload(unsigned),
     );
   } catch {
     validSignature = false;
@@ -106,14 +108,51 @@ export function verifyResponseAuth(
 }
 
 export function hashRequest(request: SerializedHttpRequest): string {
-  return keccak256(encodeHttpRequest(request));
+  return keccak256Hex(encodeHttpRequest(request));
 }
 
 export function hashResponse(response: SerializedHttpResponse): string {
-  return keccak256(encodeHttpResponse(stripStreamingHeader(response)));
+  if (response.streamedBody) return response.streamedBody.responseHash;
+  return keccak256Hex(encodeHttpResponse(stripStreamingHeader(response)));
 }
 
-function buildResponseAuthSigningBytes(payload: Omit<ResponseAuthPayload, 'signature'>): Uint8Array {
+export function createStreamingResponseHash(response: SerializedHttpResponse) {
+  const rawLength = response.headers['content-length'];
+  if (rawLength !== undefined) {
+    const declaredLength = Number(rawLength);
+    if (!/^[1-9][0-9]*$/.test(rawLength) || !Number.isSafeInteger(declaredLength) || declaredLength > VIDEO_DOWNLOAD_MAX_BYTES) {
+      throw new Error('Invalid video content length');
+    }
+  }
+  const byteLength = rawLength === undefined ? undefined : Number(rawLength);
+  const { body: _body, ...responseWithoutBody } = stripStreamingHeader(response);
+  const prefix = encodeHttpResponsePrefix(responseWithoutBody, byteLength ?? 0);
+  const hash = createIncrementalKeccak256();
+  hash.update(prefix);
+  const mp4 = createMp4Inspector();
+  let received = 0;
+  return {
+    update(data: Uint8Array): void {
+      received += data.length;
+      if (received > VIDEO_DOWNLOAD_MAX_BYTES || (byteLength !== undefined && received > byteLength)) throw new Error('Video exceeds content length');
+      hash.update(data);
+      mp4.update(data);
+    },
+    finish(): NonNullable<SerializedHttpResponse['streamedBody']> {
+      if (byteLength !== undefined && received !== byteLength) throw new Error('Incomplete video');
+      const video = mp4.finish();
+      return {
+        byteLength: received,
+        responseHash: `0x${bytesToHex(hash.digest())}`,
+        ...(video ? { videoDurationMs: video.durationMs } : {}),
+      };
+    },
+  };
+}
+
+export function encodeResponseAuthSigningPayload(
+  payload: Omit<ResponseAuthPayload, 'signature'>,
+): Uint8Array {
   const encoder = new TextEncoder();
   const fields = [
     RESPONSE_AUTH_DOMAIN,

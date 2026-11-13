@@ -11,6 +11,7 @@ import type {
   DomainVerificationConfig,
   DomainVerificationMethod,
   GithubVerificationConfig,
+  SellerFallbackUpstreamConfig,
   SellerProviderConfig,
   SellerServiceConfig,
   TokenPricingUsdPerMillion,
@@ -21,7 +22,7 @@ import { assertValidConfig } from './validation.js';
 /**
  * Resolve a config path, expanding ~ to the user's home directory.
  */
-function resolveConfigPath(configPath: string): string {
+export function resolveConfigPath(configPath: string): string {
   if (configPath.startsWith('~')) {
     return resolve(homedir(), configPath.slice(2));
   }
@@ -102,6 +103,12 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (typeof value['upstreamModel'] === 'string' && value['upstreamModel'].trim().length > 0) {
     out.upstreamModel = value['upstreamModel'].trim();
   }
+  if (typeof value['imageEditModel'] === 'string' && value['imageEditModel'].trim().length > 0) {
+    out.imageEditModel = value['imageEditModel'].trim();
+  }
+  if (value['extraProtocols'] !== undefined) {
+    out.extraProtocols = value['extraProtocols'] as SellerServiceConfig['extraProtocols'];
+  }
   const categories = normalizeCategories(value['categories']);
   if (categories) {
     out.categories = categories;
@@ -116,7 +123,52 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (value['unitBillingModels'] !== undefined) {
     out.unitBillingModels = value['unitBillingModels'] as SellerServiceConfig['unitBillingModels'];
   }
+  if (value['enabled'] === false) {
+    out.enabled = false;
+  }
+  if (value['freeTier'] !== undefined) {
+    // A non-object becomes an empty program, which validation rejects for its missing limits.
+    out.freeTier = normalizeFreeTierProgram(isRecord(value['freeTier']) ? value['freeTier'] : {});
+  }
   return out;
+}
+
+function normalizeStringMap(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Shape-only: a missing or malformed baseUrl is kept as '' so validateConfig
+// rejects it instead of the fallback silently disappearing.
+function normalizeFallbackUpstreams(value: unknown): SellerFallbackUpstreamConfig[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter(isRecord).map((raw): SellerFallbackUpstreamConfig => {
+    const fallback: SellerFallbackUpstreamConfig = {
+      baseUrl: typeof raw['baseUrl'] === 'string' ? raw['baseUrl'].trim() : '',
+    };
+    if (typeof raw['apiKeyEnv'] === 'string') {
+      fallback.apiKeyEnv = raw['apiKeyEnv'].trim();
+    }
+    const pathRewrite = normalizeStringMap(raw['pathRewrite']);
+    if (pathRewrite) {
+      fallback.pathRewrite = pathRewrite;
+    }
+    if (isRecord(raw['services'])) {
+      fallback.services = {};
+      for (const [serviceId, rawService] of Object.entries(raw['services'])) {
+        const upstreamModel = isRecord(rawService) && typeof rawService['upstreamModel'] === 'string'
+          ? rawService['upstreamModel'].trim()
+          : undefined;
+        fallback.services[serviceId] = upstreamModel !== undefined ? { upstreamModel } : {};
+      }
+    }
+    return fallback;
+  });
+  return out.length > 0 ? out : undefined;
 }
 
 function normalizeSellerProvider(value: unknown): SellerProviderConfig | null {
@@ -129,12 +181,13 @@ function normalizeSellerProvider(value: unknown): SellerProviderConfig | null {
   if (typeof value['apiKeyEnv'] === 'string' && value['apiKeyEnv'].trim().length > 0) {
     out.apiKeyEnv = value['apiKeyEnv'].trim();
   }
-  if (isRecord(value['pathRewrite'])) {
-    const pr: Record<string, string> = {};
-    for (const [k, v] of Object.entries(value['pathRewrite'])) {
-      if (typeof v === 'string') pr[k] = v;
-    }
-    if (Object.keys(pr).length > 0) out.pathRewrite = pr;
+  const pathRewrite = normalizeStringMap(value['pathRewrite']);
+  if (pathRewrite) {
+    out.pathRewrite = pathRewrite;
+  }
+  const fallbackUpstreams = normalizeFallbackUpstreams(value['fallbackUpstreams']);
+  if (fallbackUpstreams) {
+    out.fallbackUpstreams = fallbackUpstreams;
   }
   const defaults = normalizeTokenPricing(value['defaults']);
   if (defaults) {
@@ -163,6 +216,7 @@ function mergeSellerProviders(
       ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
       ...(cfg.apiKeyEnv ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
       ...(cfg.pathRewrite ? { pathRewrite: { ...cfg.pathRewrite } } : {}),
+      ...(cfg.fallbackUpstreams ? { fallbackUpstreams: structuredClone(cfg.fallbackUpstreams) } : {}),
       ...(cfg.defaults ? { defaults: clonePricing(cfg.defaults) } : {}),
       services: { ...cfg.services },
     };
@@ -337,6 +391,34 @@ function normalizeSellerGasCheck(
   };
 }
 
+const GAS_REFUEL_NUMBER_KEYS = ['triggerBalanceEth', 'swapUsdc', 'maxUsdcPerDay', 'slippageBps'] as const;
+
+function cloneSellerGasRefuel(
+  value: AntseedConfig['seller']['gasRefuel'],
+): AntseedConfig['seller']['gasRefuel'] {
+  return value ? { ...value } : undefined;
+}
+
+function normalizeSellerGasRefuel(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['gasRefuel'],
+): { gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> } | Record<string, never> {
+  if (value === undefined) {
+    const cloned = cloneSellerGasRefuel(fallback);
+    return cloned ? { gasRefuel: cloned } : {};
+  }
+  // Kept as written when it is not an object, so validateConfig refuses it instead of turning on the defaults.
+  if (!isRecord(value)) return { gasRefuel: value as NonNullable<AntseedConfig['seller']['gasRefuel']> };
+  // Keep user-supplied values (even malformed) so validateConfig reports them.
+  const gasRefuel: NonNullable<AntseedConfig['seller']['gasRefuel']> = {
+    ...(value['enabled'] !== undefined ? { enabled: value['enabled'] as boolean } : {}),
+  };
+  for (const key of GAS_REFUEL_NUMBER_KEYS) {
+    if (value[key] !== undefined) gasRefuel[key] = toFiniteOrNaN(value[key]);
+  }
+  return { gasRefuel };
+}
+
 function cloneSellerFreeTier(
   value: AntseedConfig['seller']['freeTier'],
 ): AntseedConfig['seller']['freeTier'] {
@@ -345,7 +427,23 @@ function cloneSellerFreeTier(
     ...(value.maxRequestsPerAddress !== undefined ? { maxRequestsPerAddress: value.maxRequestsPerAddress } : {}),
     ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
     ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
+    ...(value.stakeTiers !== undefined ? { stakeTiers: value.stakeTiers.map((tier) => ({ ...tier })) } : {}),
+    ...(value.stakersOnly !== undefined ? { stakersOnly: value.stakersOnly } : {}),
   };
+}
+
+function normalizeSellerFreeTierStakeTiers(
+  value: unknown,
+): NonNullable<NonNullable<AntseedConfig['seller']['freeTier']>['stakeTiers']> {
+  // Malformed entries become NaN so validation reports them instead of dropping them.
+  if (!Array.isArray(value)) return [{ minPower: Number.NaN, multiplier: Number.NaN }];
+  return value.map((tier) => {
+    if (!isRecord(tier)) return { minPower: Number.NaN, multiplier: Number.NaN };
+    return {
+      minPower: toFiniteOrNaN(tier['minPower']),
+      multiplier: tier['multiplier'] === 'unlimited' ? 'unlimited' : toFiniteOrNaN(tier['multiplier']),
+    };
+  });
 }
 
 function normalizeSellerFreeTier(
@@ -356,16 +454,21 @@ function normalizeSellerFreeTier(
     const cloned = cloneSellerFreeTier(fallback);
     return cloned ? { freeTier: cloned } : {};
   }
+  return { freeTier: normalizeFreeTierProgram(value) };
+}
+
+function normalizeFreeTierProgram(value: Record<string, unknown>): NonNullable<AntseedConfig['seller']['freeTier']> {
   return {
-    freeTier: {
-      ...(value['maxRequestsPerAddress'] !== undefined
-        ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
-        : {}),
-      ...(value['maxRequestsPerIp'] !== undefined
-        ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
-        : {}),
-      ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
-    },
+    ...(value['maxRequestsPerAddress'] !== undefined
+      ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
+      : {}),
+    ...(value['maxRequestsPerIp'] !== undefined
+      ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
+      : {}),
+    ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+    ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
+    // Kept as given so validation reports a non-boolean instead of reading it as false.
+    ...(value['stakersOnly'] !== undefined ? { stakersOnly: value['stakersOnly'] as boolean } : {}),
   };
 }
 
@@ -392,10 +495,15 @@ function mergeSellerConfig(
       providers: mergeSellerProviders(defaults.providers, undefined),
       publicAddress: defaults.publicAddress,
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
+      ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
+      ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
+      ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
+      ...(typeof defaults.inboundIdleTimeoutMs === 'number' ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs } : {}),
       ...(defaults.agentDir ? { agentDir: defaults.agentDir } : {}),
       ...(normalizeVerifications(undefined, defaults.verifications)),
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
       ...(normalizeSellerGasCheck(undefined, defaults.gasCheck)),
+      ...(normalizeSellerGasRefuel(undefined, defaults.gasRefuel)),
       ...(normalizeSellerFreeTier(undefined, defaults.freeTier)),
       ...(normalizeSellerFreeUsage(undefined, defaults.freeUsage)),
     };
@@ -418,11 +526,39 @@ function mergeSellerConfig(
       : typeof defaults.maxUploadBodyBytes === 'number'
         ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes }
         : {}),
+    ...(typeof value['maxInboundConnections'] === 'number'
+      ? { maxInboundConnections: value['maxInboundConnections'] }
+      : typeof defaults.maxInboundConnections === 'number'
+        ? { maxInboundConnections: defaults.maxInboundConnections }
+        : {}),
+    ...(typeof value['maxInboundConnectionsPerIp'] === 'number'
+      ? { maxInboundConnectionsPerIp: value['maxInboundConnectionsPerIp'] }
+      : typeof defaults.maxInboundConnectionsPerIp === 'number'
+        ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp }
+        : {}),
+    ...(typeof value['announceProviderIds'] === 'boolean'
+      ? { announceProviderIds: value['announceProviderIds'] }
+      : typeof defaults.announceProviderIds === 'boolean'
+        ? { announceProviderIds: defaults.announceProviderIds }
+        : {}),
+    ...(typeof value['inboundIdleTimeoutMs'] === 'number'
+      ? { inboundIdleTimeoutMs: value['inboundIdleTimeoutMs'] }
+      : typeof defaults.inboundIdleTimeoutMs === 'number'
+        ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs }
+        : {}),
     ...(normalizeAgentDir(value['agentDir'], defaults.agentDir)),
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
+    ...(normalizeSellerGasRefuel(value['gasRefuel'], defaults.gasRefuel)),
     ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
+    ...(value['restrictedCountries'] !== undefined
+      ? { restrictedCountries: value['restrictedCountries'] as string[] }
+      : {}),
     ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
+    // Kept as written so validateConfig reports a malformed one.
+    ...(value['buyerLimits'] !== undefined ? { buyerLimits: structuredClone(value['buyerLimits']) as AntseedConfig['seller']['buyerLimits'] } : {}),
+    // Kept as written (even malformed) so validateConfig reports it and a save round-trips it.
+    ...(value['alerts'] !== undefined ? { alerts: structuredClone(value['alerts']) as AntseedConfig['seller']['alerts'] } : {}),
   };
 }
 
@@ -515,6 +651,7 @@ function mergeBuyerConfig(
       disableMetadataV2Services: defaults.disableMetadataV2Services,
       autoSweep: defaults.autoSweep,
       ...(normalizeBuyerVerification(undefined, defaults.verification)),
+      ...(defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
     };
   }
   return {
@@ -550,6 +687,12 @@ function mergeBuyerConfig(
       'buyer.autoSweep',
     ),
     ...(normalizeBuyerVerification(value['verification'], defaults.verification)),
+    ...(value['verifier'] !== undefined
+      ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
+      : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
+    ...(value['freeTierDelegations'] !== undefined
+      ? { freeTierDelegations: value['freeTierDelegations'] as NonNullable<AntseedConfig['buyer']['freeTierDelegations']> }
+      : {}),
   };
 }
 
@@ -584,6 +727,15 @@ export async function loadConfig(configPath: string): Promise<AntseedConfig> {
     return createDefaultConfig();
   }
 
+  return configFromObject(parsedRaw);
+}
+
+/**
+ * A parsed config file's object merged over the defaults and validated,
+ * exactly as `loadConfig` reads it. Throws when the result is invalid, so an
+ * edit can be checked before it is written.
+ */
+export function configFromObject(parsedRaw: unknown): AntseedConfig {
   const defaults = createDefaultConfig();
   const parsed = isRecord(parsedRaw) ? parsedRaw : {};
 

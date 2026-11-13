@@ -6,6 +6,7 @@ import type { AbstractSigner } from 'ethers';
 import type { AntsContext } from './context.js';
 import { closedPositionIds } from './positions.js';
 import { legacySellerPayout } from './legacy-payout.js';
+import { stakeEligibility } from './stake-eligibility.js';
 import { IndexerError } from './indexer.js';
 import type { RewardsView, ClaimRequest, RestakeRequest, StakeUsageRequest, EpochAmount, RewardBucket } from '../api-types.js';
 import { formatAnts } from './format.js';
@@ -325,6 +326,10 @@ export async function restake(ctx: AntsContext, request: RestakeRequest, report:
   const config = await pools.poolConfig();
   const epochs = assertEpochs(request.epochs, config.minStakeEpochs, config.maxStakeEpochs);
   const requested = request.positionIds && request.positionIds.length > 0 ? assertPositiveIds(request.positionIds) : null;
+  if (requested) {
+    const foreign = (await pools.positionsBatch(requested)).filter(position => position.owner.toLowerCase() !== ctx.address.toLowerCase());
+    if (foreign.length > 0) throw new Error(`Position(s) ${foreign.map(position => position.id).join(', ')} are not owned by this wallet.`);
+  }
   const includeIds = requested ?? await rewardCandidateIds(ctx);
   const pending = (await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds }))
     .filter((position) => position.amount > 0n && (!requested || requested.includes(position.id)));
@@ -406,10 +411,8 @@ export interface CompoundResult { transactions: string[]; restakedPositionIds: n
 export async function compound(ctx: AntsContext, request: CompoundRequest, report: StepReporter = silentReporter): Promise<CompoundResult> {
   const pools = ctx.requirePools();
   const targetAgentId = request.targetAgentId === undefined ? null : assertAgentId(request.targetAgentId);
-  if (targetAgentId !== null) {
-    const registry = ctx.sellerRegistry();
-    const seller = registry ? await registry.agentSeller(targetAgentId) : ZeroAddress;
-    if (sameAddress(seller, ZeroAddress)) throw new Error(`Agent ${targetAgentId} has no seller bound in the seller registry, so it has no stakeable pool.`);
+  if (targetAgentId !== null && !(await stakeEligibility(ctx, [targetAgentId])).get(targetAgentId)?.stakeable) {
+    throw new Error(`Agent ${targetAgentId} is not registered to its current owner in the pool's staking source.`);
   }
   const before = new Set(await pools.allStakerPositionIds(ctx.address));
   const result: CompoundResult = { transactions: [], restakedPositionIds: [], sellerEpochs: [], buyerEpochs: [], newPositionIds: [], movedPositionIds: [], targetAgentId };

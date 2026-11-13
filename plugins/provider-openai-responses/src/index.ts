@@ -35,6 +35,7 @@ const RESPONSE_PATH_PREFIX = '/v1/responses';
 const RELAY_PATH = '/responses';
 const AUTH_CLAIM_PATH = 'https://api.openai.com/auth';
 const CLIENT_STREAM_REQUESTED_HEADER = 'x-antseed-client-stream-requested';
+const SESSION_ID_HEADER = 'session_id';
 
 function expandHome(path: string): string {
   if (path === '~') return homedir();
@@ -303,10 +304,11 @@ function prepareRequestBody(
     }
     delete parsed.service;
 
-    // Strip parameters the upstream backend doesn't support.
+    // Strip parameters the upstream backend doesn't support. `max_output_tokens`
+    // is supported and must pass through: it is the caller's only bound on a
+    // runaway answer.
     delete parsed.metadata;
     delete parsed.user;
-    delete parsed.max_output_tokens;
     delete parsed.temperature;
     delete parsed.top_p;
 
@@ -335,10 +337,19 @@ function prepareRequestBody(
       }
     }
 
+    // The backend routes a conversation to its prompt cache by the `session_id`
+    // header; `prompt_cache_key` in the body alone gets no cache hits. Codex
+    // sends both with the same id, so derive the header from the body key.
+    let headers = withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER);
+    const promptCacheKey = typeof parsed.prompt_cache_key === 'string' ? parsed.prompt_cache_key.trim() : '';
+    if (promptCacheKey && !getHeader(headers, SESSION_ID_HEADER)) {
+      headers = { ...headers, [SESSION_ID_HEADER]: promptCacheKey };
+    }
+
     return {
       request: {
         ...request,
-        headers: withoutHeader(request.headers, CLIENT_STREAM_REQUESTED_HEADER),
+        headers,
         body: new TextEncoder().encode(JSON.stringify(parsed)),
       },
       forcedStream,
@@ -397,8 +408,11 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
       .find((line) => line.startsWith('event: '))
       ?.slice('event: '.length)
       .trim();
+    // `response.incomplete` ends a stream that hit `max_output_tokens`; it carries
+    // the partial answer like `response.completed`.
     if (
       event !== 'response.completed'
+      && event !== 'response.incomplete'
       && event !== 'response.failed'
       && event !== 'error'
       && event !== 'response.output_item.done'

@@ -9,13 +9,6 @@
   -webkit-app-region: no-drag;
 }
 
-.credits {
-  @include chip.chip-text;
-  flex: 0 0 auto;
-  min-width: 0;
-  max-width: 180px;
-}
-
 .iconButton {
   flex: 0 0 auto;
   width: chip.$chip-height;
@@ -29,7 +22,16 @@
   cursor: pointer;
 }
 
-.credits:hover {
+.keysButton {
+  @include chip.chip-text;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+}
+
+.keysButton:hover {
   @include chip.chip-hover;
 }
 
@@ -41,7 +43,7 @@
   opacity: 1;
 }
 
-.credits:focus-visible,
+.keysButton:focus-visible,
 .iconButton:focus-visible {
   outline: 2px solid var(--accent-green);
   outline-offset: 2px;

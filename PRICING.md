@@ -2,7 +2,7 @@
 
 There are **two ways** to get Antseed pricing. Both serve the same schema; they differ in freshness and trust model.
 
-Full documentation: **<https://antseed.com/docs/pricing>**
+Full documentation: **<https://antseed.com/docs/api/routing>**
 
 ## Cached vs live
 

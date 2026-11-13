@@ -11,8 +11,7 @@
  * directory, which causes electron-builder's asar packer to fail with
  * "must be under <appDir>" errors.
  *
- * Handles both top-level packages (e.g. antseed-dashboard) and scoped
- * packages (e.g. @antseed/node).
+ * Handles both top-level packages and scoped packages (e.g. @antseed/node).
  */
 
 import { readdirSync, lstatSync, readlinkSync, realpathSync, rmSync, cpSync, existsSync, mkdirSync, chmodSync, writeFileSync, readFileSync } from 'node:fs';
@@ -33,6 +32,7 @@ const WORKSPACE_PACKAGES = {
   '@antseed/antseed-verifier': path.resolve(appDir, '..', '..', 'packages', 'antseed-verifier'),
   '@antseed/api-adapter': path.resolve(appDir, '..', '..', 'packages', 'api-adapter'),
   '@antseed/buyer-core': path.resolve(appDir, '..', '..', 'packages', 'buyer-core'),
+  '@antseed/connected-apps': path.resolve(appDir, '..', '..', 'packages', 'connected-apps'),
   '@antseed/node': path.resolve(appDir, '..', '..', 'packages', 'node'),
   '@antseed/payments': path.resolve(appDir, '..', 'payments'),
   '@antseed/protocol': path.resolve(appDir, '..', '..', 'packages', 'protocol'),
@@ -122,6 +122,22 @@ writeFileSync(
 );
 
 console.log(`[prepare-dist] Bundled CLI -> ${bundleOutput}`);
+
+// --- 2b. Ship the gateway console next to the bundled CLI ---
+// @antseed/gateway-console resolves its web app as `new URL('./dist/', import.meta.url)`.
+// Bundled, import.meta.url is cli-dist/cli/index.js, so the gateway the app's
+// Public endpoint runs serves /console from cli-dist/cli/dist/. Without this
+// copy it answers "The gateway console is not built".
+const consoleSourceDir = path.resolve(appDir, '..', 'gateway-console', 'dist');
+const consoleDestDir = path.join(path.dirname(bundleOutput), 'dist');
+if (!existsSync(path.join(consoleSourceDir, 'index.html'))) {
+  throw new Error(
+    `[prepare-dist] Gateway console is not built (${consoleSourceDir}). `
+    + 'Run `pnpm --filter @antseed/gateway-console build` first.',
+  );
+}
+cpSync(consoleSourceDir, consoleDestDir, { recursive: true });
+console.log(`[prepare-dist] Copied gateway console -> ${consoleDestDir}`);
 
 // --- 3. Install Electron-compatible native module prebuilds ---
 // The native modules (better-sqlite3, etc.) may have been compiled for the

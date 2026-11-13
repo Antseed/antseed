@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { AbiCoder, id, keccak256, Wallet } from 'ethers';
+import { id, keccak256, Wallet } from 'ethers';
 import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
@@ -11,6 +11,10 @@ import type { Identity } from '../src/p2p/identity.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
+import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
+import { decodeSpendingAuthMetadata, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import type { SpendingAuthPayload } from '@antseed/protocol/messages';
+import { captureUnitBillingContext } from '@antseed/buyer-core';
 
 const enc = new TextEncoder();
 
@@ -27,10 +31,23 @@ function fakePeerId(label: string): string {
   return hex;
 }
 
-function decodeMetadataTokens(metadata: string): { inputTokens: bigint; outputTokens: bigint; outputImages: bigint } {
-  const coder = AbiCoder.defaultAbiCoder();
-  const [, inputTokens, outputTokens, , outputImages] = coder.decode(['uint256', 'uint256', 'uint256', 'uint256', 'uint256'], metadata);
-  return { inputTokens, outputTokens, outputImages };
+function decodeMetadataTokens(metadata: string): {
+  inputTokens: bigint;
+  outputTokens: bigint;
+  outputImages: bigint;
+  videoGenerations: bigint;
+  videoSeconds: bigint;
+  inputCharacters: bigint;
+} {
+  const decoded = decodeSpendingAuthMetadata(metadata);
+  return {
+    inputTokens: decoded.cumulativeInputTokens,
+    outputTokens: decoded.cumulativeOutputTokens,
+    outputImages: decoded.cumulativeOutputImages,
+    videoGenerations: decoded.cumulativeVideoGenerations,
+    videoSeconds: decoded.cumulativeVideoSeconds,
+    inputCharacters: decoded.cumulativeInputCharacters,
+  };
 }
 
 function decodeMetadataServices(metadata: string): Array<{
@@ -42,23 +59,14 @@ function decodeMetadataServices(metadata: string): Array<{
   cumulativeRequestCount: bigint;
   cumulativeOutputImages: bigint;
 }> {
-  const coder = AbiCoder.defaultAbiCoder();
-  const [, , , , , services] = coder.decode([
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]',
-  ], metadata);
-  return [...services].map((service) => ({
-    serviceId: service.serviceId as string,
-    cumulativeAmount: service.cumulativeAmount as bigint,
-    cumulativeInputTokens: service.cumulativeInputTokens as bigint,
-    cumulativeCachedInputTokens: service.cumulativeCachedInputTokens as bigint,
-    cumulativeOutputTokens: service.cumulativeOutputTokens as bigint,
-    cumulativeRequestCount: service.cumulativeRequestCount as bigint,
-    cumulativeOutputImages: service.cumulativeOutputImages as bigint,
+  return decodeSpendingAuthMetadata(metadata).services.map((service) => ({
+    serviceId: service.serviceId,
+    cumulativeAmount: service.cumulativeAmount,
+    cumulativeInputTokens: service.cumulativeInputTokens,
+    cumulativeCachedInputTokens: service.cumulativeCachedInputTokens,
+    cumulativeOutputTokens: service.cumulativeOutputTokens,
+    cumulativeRequestCount: service.cumulativeRequestCount,
+    cumulativeOutputImages: service.cumulativeOutputImages,
   }));
 }
 
@@ -162,8 +170,10 @@ describe('BuyerPaymentManager', () => {
     expect(sent.metadata).toBeTypeOf('string');
     expect(sent.metadata).not.toBe('');
     expect((sent.metadata as string).startsWith('0x')).toBe(true);
-    // v3 zero metadata: five head words + empty services array (offset + length) = 7 words.
-    expect((sent.metadata as string).length).toBe(2 + 7 * 64);
+    // v5 zero metadata: eight head words (version, input, output, requests,
+    // images, video generations, video seconds, speech characters) + empty services array
+    // (offset + length) = 10 words.
+    expect((sent.metadata as string).length).toBe(2 + 10 * 64);
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
@@ -287,6 +297,7 @@ describe('BuyerPaymentManager', () => {
       service: 'gpt-test',
       requestId: 'post-response-persist-fail',
     };
+    manager.recordDeliveredResponse(sellerPeerId, response.requestId, { costUsdc: SAMPLE_ESTIMATE.cost });
     await expect(manager.signPerRequestAuth(sellerPeerId, response))
       .rejects.toThrow('durable post-response write failed');
 
@@ -730,6 +741,168 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('remembers the highest amount the seller reported accepting on the active channel, until it retires', async () => {
+    const sellerPeerId = fakePeerId('seller-accepted');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-10', { costUsdc: 10_000n });
+    const needAuth = (required: string, accepted: string) => manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'paid-request-10', requiredCumulativeAmount: required, currentAcceptedCumulative: accepted, deposit: '1000000', lastRequestCost: '10000',
+    }, mux);
+
+    await needAuth('50000', '40000');
+    // A NeedAuth that was overtaken on the wire reports less: the higher one stands.
+    await needAuth('20000', '10000');
+    const seen = manager.getSellerAcceptedCumulative(sellerPeerId);
+    manager.retireSession(sellerPeerId, CHANNEL_STATUS.SETTLED);
+
+    expect({ seen, afterRetire: manager.getSellerAcceptedCumulative(sellerPeerId) }).toEqual({ seen: 40_000n, afterRetire: 0n });
+  });
+
+  it('handleNeedAuth signs concurrent NeedAuths one at a time: no lost cost, no lower cumulative after a higher one', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-race');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    // The first signature is slow, so without serializing the second would commit first.
+    const wallet = Wallet.createRandom();
+    let calls = 0;
+    const slowFirst = new Proxy(wallet, {
+      get(target, property, receiver) {
+        if (property !== 'signTypedData') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<Wallet['signTypedData']>) => {
+          calls += 1;
+          if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 50));
+          return target.signTypedData(...args);
+        };
+      },
+    });
+    manager.setSigner(slowFirst);
+
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-a', { costUsdc: 40_000n });
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-b', { costUsdc: 40_000n });
+    await Promise.all([
+      manager.handleNeedAuth(sellerPeerId, { channelId, requestId: 'paid-request-a', requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+      manager.handleNeedAuth(sellerPeerId, { channelId, requestId: 'paid-request-b', requiredCumulativeAmount: '80000', currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '40000' }, mux),
+    ]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['40000', '80000']);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(80_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(80_000n);
+  });
+
+  it('judges NeedAuths in arrival order while an image NeedAuth waits for its delivery: the image is counted once, never charged again at close', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-image-order');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.trackRequestBilling('req-image-order', {
+      context: {
+        sellerPeerId,
+        provider: 'openai',
+        service: 'gpt-image-2',
+        serviceApiProtocol: 'openai-images',
+        attributes: { model: 'gpt-image-2', size: '1024x1024' },
+      },
+      requestFacts: { kind: 'image', image: {} },
+      tokenPricing: TEST_PRICING,
+      unitModel: { version: 1, components: [{ unit: 'output_images', priceUsd: 0.004, match: { size: '1024x1024' } }] },
+    });
+    mux.sentSpendingAuths.length = 0;
+
+    const imageCost = 11_750n; // 1000 input + 50 output tokens, plus 2 images at $0.004
+    const tokenCost = 40_000n;
+    // The image NeedAuth arrives before the buyer saw the images; a token
+    // NeedAuth for the next request arrives right behind it.
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-order', { costUsdc: imageCost });
+    const image = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requestId: 'req-image-order',
+      requiredCumulativeAmount: imageCost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: imageCost.toString(),
+      inputTokens: '1000',
+      freshInputTokens: '1000',
+      cachedInputTokens: '0',
+      outputTokens: '50',
+      billingUsage: { version: 1, units: { output_images: '2' } },
+    }, mux);
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-9', { costUsdc: tokenCost });
+    const token = manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requestId: 'paid-request-9',
+      requiredCumulativeAmount: (imageCost + tokenCost).toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: tokenCost.toString(),
+    }, mux);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    manager.recordObservedUnitUsage('req-image-order', { units: { output_images: 2 } });
+    await Promise.all([image, token]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount))
+      .toEqual([imageCost.toString(), (imageCost + tokenCost).toString()]);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(imageCost + tokenCost);
+    const last = mux.sentSpendingAuths.at(-1) as Record<string, string>;
+    expect(decodeMetadataTokens(last.metadata).outputImages).toBe(2n);
+
+    // The buyer-initiated authorization for the same response at close adds nothing.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: imageCost,
+      reportedInputTokens: 1000n,
+      reportedOutputTokens: 50n,
+      unitUsage: { units: { output_images: 2 } },
+      service: 'gpt-image-2',
+      requestId: 'req-image-order',
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(imageCost + tokenCost);
+  });
+
+  it('handleNeedAuth resends the signed authorization when a catch-up prompt shows the seller never got it', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-resend');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
+    mux.sentSpendingAuths.length = 0;
+
+    // The seller restarted and only accepted 20k: same amount again, never higher.
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000' }, mux);
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).cumulativeAmount)).toEqual(['50000']);
+
+    // A post-response NeedAuth for an amount already signed is still ignored (its authorization is in flight).
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '50000', currentAcceptedCumulative: '20000', deposit: '1000000', lastRequestCost: '0' }, mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+  });
+
+  it('handleNeedAuth refuses to sign for a request the seller served from a free allowance', async () => {
+    const sellerPeerId = fakePeerId('seller-needauth-covered');
+    const otherSellerPeerId = fakePeerId('seller-needauth-fallback');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const otherChannelId = await manager.authorizeSpending(otherSellerPeerId, mux, 10_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+    // The same charge signs once nothing marks it covered (see the last step),
+    // so only the covered-request guard refuses it here.
+    const needAuth = (id: string) => ({
+      channelId: id,
+      requiredCumulativeAmount: '50000',
+      currentAcceptedCumulative: '10000',
+      deposit: '1000000',
+      requestId: 'covered-request',
+    });
+    manager.markRequestCovered(sellerPeerId, 'covered-request');
+
+    await manager.handleNeedAuth(sellerPeerId, needAuth(channelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+    expect(manager.isRequestCovered(sellerPeerId, 'covered-request')).toBe(true);
+
+    // A fallback seller serving the same request ID is paid normally.
+    await manager.handleNeedAuth(otherSellerPeerId, needAuth(otherChannelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+
+    // A paid retry to the same seller releases the covered attempt first.
+    manager.releaseRequestCoverage(sellerPeerId, 'covered-request');
+    await manager.handleNeedAuth(sellerPeerId, needAuth(channelId), mux);
+    expect(mux.sentSpendingAuths).toHaveLength(2);
+  });
+
   it('handleNeedAuth propagates durable persistence failures without transmitting', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-persist-fail');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -865,10 +1038,11 @@ describe('BuyerPaymentManager', () => {
         attributes: { model: service },
         unitLimits: { output_images: 1 },
       },
-      requestFacts: { model: service, requestedImages: 1 },
+      requestFacts: { kind: 'image', image: { model: service, requestedImages: 1 } },
       unitModel,
     });
     mux.sentSpendingAuths.length = 0;
+    manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 25_000n });
 
     // This only opens payment headroom. It does not report a delivered image
     // and therefore must not consume the request's service attribution.
@@ -904,6 +1078,63 @@ describe('BuyerPaymentManager', () => {
     }]);
   });
 
+  it('signs delivered speech characters and adds none for a speech request that failed', async () => {
+    const sellerPeerId = fakePeerId('seller-speech-characters');
+    const service = 'tts-model';
+    const unitModel = { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd: 0.000015 }] };
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    const track = (requestId: string) => manager.trackRequestBilling(requestId, {
+      context: {
+        sellerPeerId,
+        provider: 'openai',
+        service,
+        serviceApiProtocol: 'openai-audio-speech',
+        attributes: { model: service },
+        unitLimits: { input_characters: 19 },
+      },
+      requestFacts: { kind: 'speech', speech: { characters: 19 } },
+      unitModel,
+    });
+
+    track('req-speech-ok');
+    manager.recordDeliveredResponse(sellerPeerId, 'req-speech-ok', { costUsdc: 285n });
+    const delivered = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: new Uint8Array(0),
+      outputBytes: new Uint8Array([0xff, 0xfb, 0x90]),
+      sellerClaimedCost: 285n,
+      reportedInputTokens: 0n,
+      reportedCachedInputTokens: 0n,
+      reportedOutputTokens: 0n,
+      unitUsage: { units: { input_characters: 19 } },
+      service,
+      requestId: 'req-speech-ok',
+    });
+    expect(decodeMetadataTokens(delivered.payload.metadata).inputCharacters).toBe(19n);
+    expect(decodeSpendingAuthMetadata(delivered.payload.metadata).services[0]).toMatchObject({
+      serviceId: id(service),
+      cumulativeInputCharacters: 19n,
+      cumulativeRequestCount: 1n,
+    });
+
+    // Speech billing measures no characters when no audio came back.
+    track('req-speech-failed');
+    manager.recordDeliveredResponse(sellerPeerId, 'req-speech-failed', { costUsdc: 0n });
+    const failed = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: new Uint8Array(0),
+      outputBytes: enc.encode(JSON.stringify({ error: { message: 'upstream failed' } })),
+      sellerClaimedCost: 0n,
+      reportedInputTokens: 0n,
+      reportedCachedInputTokens: 0n,
+      reportedOutputTokens: 0n,
+      unitUsage: { units: { input_characters: 0 } },
+      service,
+      requestId: 'req-speech-failed',
+    });
+    const after = decodeSpendingAuthMetadata(failed.payload.metadata);
+    expect(after.cumulativeInputCharacters).toBe(19n);
+    expect(after.services[0]).toMatchObject({ cumulativeInputCharacters: 19n, cumulativeRequestCount: 2n });
+  });
+
   it('handleNeedAuth suppresses per-service metadata when disabled', async () => {
     manager = new BuyerPaymentManager(identity, makeConfig(tempDir, {
       disableMetadataV2Services: true,
@@ -915,6 +1146,7 @@ describe('BuyerPaymentManager', () => {
     manager.trackRequestService('req-sensitive-needauth', 'sensitive-model');
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-sensitive-needauth', { costUsdc: 100n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-sensitive-needauth',
@@ -975,7 +1207,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -985,6 +1217,7 @@ describe('BuyerPaymentManager', () => {
     });
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-no-usage', { costUsdc: 40_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-image-no-usage',
@@ -1036,7 +1269,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '256x256' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1047,6 +1280,7 @@ describe('BuyerPaymentManager', () => {
     manager.recordObservedUnitUsage('req-image-tier-mismatch', { units: { output_images: 2 } });
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-tier-mismatch', { costUsdc: 40_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-image-tier-mismatch',
@@ -1088,7 +1322,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       tokenPricing: TEST_PRICING,
       unitModel: imageModel,
     });
@@ -1098,6 +1332,7 @@ describe('BuyerPaymentManager', () => {
     const tokenCost = 3_750n; // 1000 input at $3/M + 50 output at $15/M
     const imageCost = 8_000n;
     const totalCost = tokenCost + imageCost;
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-hybrid', { costUsdc: totalCost });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-image-hybrid',
@@ -1124,6 +1359,51 @@ describe('BuyerPaymentManager', () => {
     expect(totals.outputImages).toBe(2n);
   });
 
+  it('handleNeedAuth pays a video exactly its price: no token tolerance above it', async () => {
+    const sellerPeerId = fakePeerId('seller-video-exact');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const unitModel = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
+    const captured = captureUnitBillingContext({
+      sellerPeerId,
+      provider: 'venice',
+      service: 'wan-2.5',
+      serviceApiProtocol: 'venice-video',
+      request: {
+        requestId: 'req-video-exact',
+        method: 'POST',
+        path: '/api/v1/video/queue',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'wan-2.5', prompt: 'An ant', duration: '8s' })),
+      },
+    });
+    manager.trackRequestBilling('req-video-exact', {
+      context: captured.context,
+      requestFacts: captured.requestFacts,
+      estimatedCostUsdc: 800_000n,
+      unitModel,
+    });
+    manager.recordObservedUnitUsage('req-video-exact', { units: { video_seconds: 8 } });
+    manager.recordDeliveredResponse(sellerPeerId, 'req-video-exact', { costUsdc: 800_000n });
+    mux.sentSpendingAuths.length = 0;
+    const needAuth = (cost: bigint) => ({
+      channelId,
+      requestId: 'req-video-exact',
+      requiredCumulativeAmount: cost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '5000000',
+      lastRequestCost: cost.toString(),
+      inputTokens: '0',
+      outputTokens: '0',
+      billingUsage: { version: 1 as const, units: { video_seconds: '8' } },
+    });
+
+    // $1.00 is within the 1.4x tolerance of $0.80, but a video's price is exact.
+    await manager.handleNeedAuth(sellerPeerId, needAuth(1_000_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(0);
+    await manager.handleNeedAuth(sellerPeerId, needAuth(800_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(1);
+  });
+
   it('handleNeedAuth rejects image billingUsage claiming more images than the buyer observed', async () => {
     const sellerPeerId = fakePeerId('seller-image-observed');
     const channelId = await manager.authorizeSpending(
@@ -1140,7 +1420,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1151,6 +1431,7 @@ describe('BuyerPaymentManager', () => {
     manager.recordObservedUnitUsage('req-image-observed', { units: { output_images: 1 } });
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-observed', { costUsdc: 80_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-image-observed',
@@ -1170,6 +1451,26 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
+  it('handleNeedAuth keeps a pending request\'s billing context through a catch-up prompt that names it', async () => {
+    const sellerPeerId = fakePeerId('seller-catch-up-billing');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const context = {
+      sellerPeerId,
+      provider: 'openai',
+      service: 'gpt-image-2',
+      serviceApiProtocol: 'openai-images' as const,
+      attributes: { model: 'gpt-image-2', size: '1024x1024' },
+    };
+    manager.trackRequestBillingContext('req-image-pending', context);
+
+    // A catch-up for earlier spend arrives while the image request is still being served.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'req-image-pending', requiredCumulativeAmount: '40000', currentAcceptedCumulative: '0', deposit: '1000000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(40_000n);
+    expect(manager.getRequestBilling('req-image-pending')?.context).toEqual(context);
+  });
+
   it('handleNeedAuth rejects positive cost for free-default image billing', async () => {
     const sellerPeerId = fakePeerId('seller-image-free');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -1182,6 +1483,7 @@ describe('BuyerPaymentManager', () => {
     });
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-image-free', { costUsdc: 40_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-image-free',
@@ -1197,10 +1499,11 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
-  it('handleNeedAuth does not double-count service totals for a request already counted by signPerRequestAuth', async () => {
+  it('handleNeedAuth refuses a cost claim for a request signPerRequestAuth paid, and counts its service totals once', async () => {
     const sellerPeerId = fakePeerId('seller-service-dedup');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
     manager.trackRequestService('req-dedup', 'gpt-5');
+    manager.recordDeliveredResponse(sellerPeerId, 'req-dedup', { costUsdc: 100n });
 
     await manager.signPerRequestAuth(
       sellerPeerId,
@@ -1216,7 +1519,7 @@ describe('BuyerPaymentManager', () => {
       },
     );
 
-    // Seller demands more headroom for the same request — must not re-count it.
+    // The seller charges the same request again: it is already paid, so the claim is refused.
     mux.sentSpendingAuths.length = 0;
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
@@ -1228,6 +1531,15 @@ describe('BuyerPaymentManager', () => {
       inputTokens: '1000',
       cachedInputTokens: '200',
       outputTokens: '50',
+    }, mux);
+    expect(mux.sentSpendingAuths.length).toBe(0);
+
+    // The seller then asks for headroom: the auth signed for it counts the request once.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '50000',
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
     }, mux);
 
     expect(mux.sentSpendingAuths.length).toBe(1);
@@ -1242,6 +1554,72 @@ describe('BuyerPaymentManager', () => {
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 0n,
     }]);
+  });
+
+  it('signPerRequestAuth does not charge again for a request already paid through NeedAuth', async () => {
+    const sellerPeerId = fakePeerId('seller-cost-dedup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    // The seller's NeedAuth for the chat arrives first and is paid.
+    manager.recordDeliveredResponse(sellerPeerId, 'chat-1', { costUsdc: 20_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '20000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '20000', inputTokens: '1000', outputTokens: '1133',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+
+    // The post-response auth for the same chat (e.g. flushed before a close) must not add its cost again.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-1', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 20_000n, reportedInputTokens: 1000n, reportedOutputTokens: 1133n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(20_000n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+  });
+
+  it('signPerRequestAuth signs the remainder of a request NeedAuth capped at the reserve ceiling', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+
+    const sellerPeerId = fakePeerId('seller-cost-dedup-capped');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    manager.recordDeliveredResponse(sellerPeerId, 'chat-1', { costUsdc: 60_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(60_000n);
+
+    // chat-2 costs 50_000, but NeedAuth can only sign up to the 100_000 ceiling before topping up.
+    manager.recordDeliveredResponse(sellerPeerId, 'chat-2', { costUsdc: 50_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+
+    // The post-response auth (e.g. flushed before a close) signs the 10_000 NeedAuth left unsigned.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(110_000n);
+
+    // Once paid in full, a repeat must not charge it again.
+    const repeat = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(repeat.payload.cumulativeAmount)).toBe(110_000n);
   });
 
   it('handleNeedAuth caps at reserve ceiling', async () => {
@@ -1276,8 +1654,10 @@ describe('BuyerPaymentManager', () => {
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-8', { costUsdc: 64_999n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-8',
       requiredCumulativeAmount: '64999',
       currentAcceptedCumulative: '0',
       deposit: '100000',
@@ -1287,8 +1667,10 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths).toHaveLength(1);
     expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBeUndefined();
 
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-7', { costUsdc: 1n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-7',
       requiredCumulativeAmount: '65000',
       currentAcceptedCumulative: '64999',
       deposit: '100000',
@@ -1317,8 +1699,10 @@ describe('BuyerPaymentManager', () => {
       ._currentReserveCeiling.set(sellerPeerId, 10_000_000n);
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-6', { costUsdc: 9_499_999n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-6',
       requiredCumulativeAmount: '9499999',
       currentAcceptedCumulative: '0',
       deposit: '10000000',
@@ -1328,8 +1712,10 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths).toHaveLength(1);
     expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBeUndefined();
 
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-5', { costUsdc: 1n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-5',
       requiredCumulativeAmount: '9500000',
       currentAcceptedCumulative: '9499999',
       deposit: '10000000',
@@ -1396,8 +1782,10 @@ describe('BuyerPaymentManager', () => {
     (manager as unknown as { _verifiedCost: Map<string, bigint> })._verifiedCost.set(sellerPeerId, 950_000n);
     mux.sentSpendingAuths.length = 0;
 
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-4', { costUsdc: 950_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-4',
       requiredCumulativeAmount: '1100000',
       currentAcceptedCumulative: '950000',
       deposit: '1000000',
@@ -1436,24 +1824,29 @@ describe('BuyerPaymentManager', () => {
     (manager as unknown as { _verifiedCost: Map<string, bigint> })._verifiedCost.set(sellerPeerId, 950_000n);
     mux.sentSpendingAuths.length = 0;
 
-    const payload = {
-      channelId,
-      requiredCumulativeAmount: '1100000',
-      currentAcceptedCumulative: '950000',
-      deposit: '1000000',
-      lastRequestCost: '950000',
-      inputTokens: '50000',
-      freshInputTokens: '50000',
-      outputTokens: '4500',
-      cachedInputTokens: '0',
-    } as const;
+    // One paid request per conversation, each with the same cost frame.
+    const payload = (requestId: string) => {
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 950_000n });
+      return {
+        channelId,
+        requestId,
+        requiredCumulativeAmount: '1100000',
+        currentAcceptedCumulative: '950000',
+        deposit: '1000000',
+        lastRequestCost: '950000',
+        inputTokens: '50000',
+        freshInputTokens: '50000',
+        outputTokens: '4500',
+        cachedInputTokens: '0',
+      } as const;
+    };
 
     await Promise.all([
-      manager.handleNeedAuth(sellerPeerId, payload, mux),
-      manager.handleNeedAuth(sellerPeerId, payload, mux),
-      manager.handleNeedAuth(sellerPeerId, payload, mux),
-      manager.handleNeedAuth(sellerPeerId, payload, mux),
-      manager.handleNeedAuth(sellerPeerId, payload, mux),
+      manager.handleNeedAuth(sellerPeerId, payload('conversation-1'), mux),
+      manager.handleNeedAuth(sellerPeerId, payload('conversation-2'), mux),
+      manager.handleNeedAuth(sellerPeerId, payload('conversation-3'), mux),
+      manager.handleNeedAuth(sellerPeerId, payload('conversation-4'), mux),
+      manager.handleNeedAuth(sellerPeerId, payload('conversation-5'), mux),
     ]);
 
     const cumulatives = mux.sentSpendingAuths
@@ -1509,11 +1902,11 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths.length).toBe(1);
     mux.sentSpendingAuths.length = 0;
 
-    // Stale: required (30000) < current cumulative (50000)
+    // Stale: required (30000) < current cumulative (50000), which the seller already accepted
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requiredCumulativeAmount: '30000',
-      currentAcceptedCumulative: '10000',
+      currentAcceptedCumulative: '50000',
       deposit: '1000000',
     }, mux);
 
@@ -1548,6 +1941,7 @@ describe('BuyerPaymentManager', () => {
 
     manager.trackRequestService('req-service-pricing', 'gpt-5.3-codex-spark');
 
+    manager.recordDeliveredResponse(sellerPeerId, 'req-service-pricing', { costUsdc: 53_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requestId: 'req-service-pricing',
@@ -1623,6 +2017,94 @@ describe('BuyerPaymentManager', () => {
     expect(reserveSecond.reserveMaxAmount).toBe('200000');
   });
 
+  it('extendCurrentSpendingAuth tops up the reserve when a catch-up signs exactly up to the ceiling', async () => {
+    // Signing the target fills the reserve: without a top-up the seller's spend
+    // then equals its reserve and it closes the channel as exhausted.
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+
+    const sellerPeerId = fakePeerId('seller-catch-up-to-ceiling');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 100_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-60', { costUsdc: 60_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '60000',
+      currentAcceptedCumulative: '0',
+      deposit: '100000',
+      requestId: 'paid-request-60',
+      lastRequestCost: '60000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(60_000n);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 50_000n, mux, 100_000n);
+
+    expect(mux.sentSpendingAuths.map((auth) => {
+      const { cumulativeAmount, reserveMaxAmount } = auth as Record<string, string | undefined>;
+      return { cumulativeAmount, reserveMaxAmount };
+    })).toEqual([
+      { cumulativeAmount: '100000', reserveMaxAmount: undefined },
+      { cumulativeAmount: '100000', reserveMaxAmount: '200000' },
+    ]);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+  });
+
+  it('handleNeedAuth signs the confirmed deposit first when a pending top-up would be crossed in one jump', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+
+    const sellerPeerId = fakePeerId('seller-needauth-cross-pending-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId,
+        requestId,
+        requiredCumulativeAmount: required.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        deposit: '250000',
+        lastRequestCost: cost.toString(),
+      }, mux);
+    };
+    await needAuth('r1', 105_327n, 105_327n, 0n);
+    // An early top-up (sent below the contract's settle threshold) is pending.
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(500_000n);
+    await needAuth('r2', 49_638n, 154_965n, 105_327n);
+    mux.sentSpendingAuths.length = 0;
+
+    // The next delivered cost jumps past the confirmed deposit (250000).
+    await needAuth('r3', 99_879n, 254_844n, 154_965n);
+    const spendOnly = () => mux.sentSpendingAuths
+      .map((a) => a as Record<string, unknown>)
+      .filter((a) => a.reserveMaxAmount == null)
+      .map((a) => a.cumulativeAmount);
+    expect(spendOnly()).toEqual(['250000']);
+
+    // The seller's next prompt signs the rest.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '254844',
+      currentAcceptedCumulative: '250000',
+      deposit: '250000',
+    }, mux);
+    expect(spendOnly()).toEqual(['250000', '254844']);
+  });
+
   it('topUpReserve sends new ReserveAuth with increased ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-topup-rsv');
     await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -1636,6 +2118,214 @@ describe('BuyerPaymentManager', () => {
     expect(sent.reserveSalt).toBeTypeOf('string');
     expect(sent.reserveDeadline).toBeTypeOf('number');
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
+  });
+
+  it('sizes reserve top-ups and their trigger to the paid requests in flight, within a bound', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-load-topup');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+      _cumulativeAmount: Map<string, bigint>;
+      _needsTopUp(sellerPeerId: string): boolean;
+    };
+    // Ten requests served at $0.07 each on average.
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    internals._cumulativeAmount.set(sellerPeerId, 400_000n);
+
+    // Idle: $0.60 of headroom left is above the fixed trigger, and one step is enough.
+    expect(internals._needsTopUp(sellerPeerId)).toBe(false);
+
+    // 32 requests in flight need 32 x $0.07 x 2 = $4.48: top up now, by that much.
+    for (let i = 0; i < 32; i += 1) manager.beginPaidRequest(sellerPeerId);
+    expect(internals._needsTopUp(sellerPeerId)).toBe(true);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5480000');
+
+    // 200 in flight would need $28: capped at ten configured steps.
+    for (let i = 0; i < 168; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('15480000');
+
+    // Once they finish, top-ups return to one configured step.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('16480000');
+  });
+
+  it('never authorizes stacked top-ups beyond the deposits left after one still pending on-chain', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-stacked-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 12_000_000n, reserved: 1_000_000n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    const ceilings = (): string[] => mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount as string);
+    mux.sentSpendingAuths.length = 0;
+
+    // $28 needed: capped at ten steps. The seller defers it (below the settle threshold).
+    await manager.topUpReserve(sellerPeerId, mux);
+    // Still short: only the $2 left after the pending $10 can be added.
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect(ceilings()).toEqual(['11000000', '13000000']);
+    // Nothing left: refuse rather than authorize more than the deposits hold.
+    await expect(manager.topUpReserve(sellerPeerId, mux)).rejects.toThrow(/Insufficient buyer deposits/);
+    expect(ceilings()).toHaveLength(2);
+  });
+
+  it('reconciles a top-up that already landed before budgeting the next, so its funds are not counted twice', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-landed-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    let deposit = 1_000_000n;
+    manager.setChannelDepositReader(async () => deposit);
+    let available = 12_000_000n;
+    vi.spyOn(manager, 'getBalance').mockImplementation(async () => ({ available, reserved: 0n }));
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.topUpReserve(sellerPeerId, mux);
+    // The $10 top-up lands: the chain locks it and the available balance drops,
+    // but the seller's acknowledgement has not reached the buyer yet.
+    deposit = 11_000_000n;
+    available = 2_000_000n;
+    await manager.topUpReserve(sellerPeerId, mux);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['11000000', '13000000']);
+    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
+  });
+
+  it('runs overlapping top-ups one at a time, so a slow deposit read never moves the ceiling backward', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId('seller-overlap-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 50_000_000n, reserved: 0n });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    await manager.topUpReserve(sellerPeerId, mux); // $11, pending on-chain
+
+    // It lands; the next two top-ups both start before the first deposit read answers.
+    let releaseFirstRead!: () => void;
+    let reads = 0;
+    manager.setChannelDepositReader(() => {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { releaseFirstRead = () => resolve(11_000_000n); });
+      return Promise.resolve(11_000_000n);
+    });
+    mux.sentSpendingAuths.length = 0;
+    const first = manager.topUpReserve(sellerPeerId, mux);
+    const second = manager.topUpReserve(sellerPeerId, mux);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The load drains while the slow read is outstanding.
+    for (let i = 0; i < 200; i += 1) manager.endPaidRequest(sellerPeerId);
+    releaseFirstRead();
+    await Promise.all([first, second]);
+
+    const ceilings = mux.sentSpendingAuths.map((auth) => BigInt((auth as Record<string, unknown>).reserveMaxAmount as string));
+    expect(ceilings.length).toBeGreaterThanOrEqual(1);
+    for (let i = 1; i < ceilings.length; i += 1) expect(ceilings[i]! > ceilings[i - 1]!).toBe(true);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(ceilings.at(-1));
+  });
+
+  function loadedManager(label: string, available: () => bigint) {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n }), store);
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+    const sellerPeerId = fakePeerId(label);
+    vi.spyOn(manager, 'getBalance').mockImplementation(async () => ({ available: available(), reserved: 0n }));
+    return { sellerPeerId };
+  }
+
+  it('drops top-ups queued behind one that already restored the headroom', async () => {
+    const { sellerPeerId } = loadedManager('seller-queued-topups', () => 50_000_000n);
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+      _cumulativeAmount: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    internals._cumulativeAmount.set(sellerPeerId, 900_000n);
+    for (let i = 0; i < 32; i += 1) manager.beginPaidRequest(sellerPeerId);
+    mux.sentSpendingAuths.length = 0;
+
+    // Three signing steps each see the low ceiling and ask for a top-up at once.
+    await Promise.all([1, 2, 3].map(() => manager.topUpReserve(sellerPeerId, mux)));
+
+    // The first adds $4.48 for the 32 in flight; the others find enough headroom.
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['5480000']);
+  });
+
+  it('reads both the deposit and the balance again when a pending top-up lands between them', async () => {
+    let available = 12_000_000n;
+    const { sellerPeerId } = loadedManager('seller-snapshot-topup', () => available);
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    const internals = manager as unknown as {
+      _metadata: Map<string, { cumulativeRequestCount: bigint }>;
+      _verifiedCost: Map<string, bigint>;
+    };
+    internals._metadata.set(sellerPeerId, { ...internals._metadata.get(sellerPeerId)!, cumulativeRequestCount: 10n });
+    internals._verifiedCost.set(sellerPeerId, 700_000n);
+    for (let i = 0; i < 200; i += 1) manager.beginPaidRequest(sellerPeerId);
+    await manager.topUpReserve(sellerPeerId, mux); // $10 more, pending on-chain
+    mux.sentSpendingAuths.length = 0;
+
+    // The deposit read still sees $1; the $10 then lands before the balance read.
+    let deposit = 1_000_000n;
+    manager.setChannelDepositReader(async () => {
+      const seen = deposit;
+      deposit = 11_000_000n;
+      available = 2_000_000n;
+      return seen;
+    });
+    await manager.topUpReserve(sellerPeerId, mux);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount)).toEqual(['13000000']);
   });
 
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
@@ -1806,6 +2496,62 @@ describe('BuyerPaymentManager', () => {
     expect((mux.sentSpendingAuths[0] as Record<string, unknown>).cumulativeAmount).toBe('0');
   });
 
+  it('re-signs a channel whose persisted service list outgrew the payment frame', async () => {
+    const sellerPeerId = fakePeerId('seller-oversized-metadata');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    // A channel persisted before the service cap: ~110 services made each
+    // SpendingAuth larger than the 64 KiB payment frame.
+    store.replaceMetadataServiceTotals(channelId, Array.from({ length: 110 }, (_, i) => ({
+      serviceId: getServiceMetadataId(`legacy-model-${i}`),
+      cumulativeAmount: BigInt(1_000 + i),
+      cumulativeInputTokens: 10n,
+      cumulativeCachedInputTokens: 0n,
+      cumulativeOutputTokens: 20n,
+      cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 1n,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+    })));
+    store.close();
+
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+    manager.setSigner(identity.wallet);
+    mux = createMockPaymentMux();
+
+    expect(await manager.resendCurrentSpendingAuth(sellerPeerId, mux)).toBe(channelId);
+    const resent = mux.sentSpendingAuths[0] as SpendingAuthPayload;
+    // What the seller's codec does with the frame: it must decode, and the
+    // signed hash must match the folded metadata it carries.
+    const received = decodeSpendingAuth(encodeSpendingAuth(resent));
+    expect(keccak256(received.metadata)).toBe(received.metadataHash);
+    const services = decodeMetadataServices(received.metadata);
+    expect(services).toHaveLength(MAX_METADATA_SERVICES);
+    expect(services.reduce((sum, s) => sum + s.cumulativeRequestCount, 0n)).toBe(110n);
+    // The folded list is persisted, so the next restart signs the same metadata.
+    expect(store.getMetadataServiceTotals(channelId)).toHaveLength(MAX_METADATA_SERVICES);
+  });
+
+  it('caps a close authorization at the given deposit without persisting it', async () => {
+    const sellerPeerId = fakePeerId('seller-close-cap');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
+    await manager.signPerRequestAuth(
+      sellerPeerId,
+      { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 10_000n },
+    );
+    const signed = manager.getCumulativeAmount(sellerPeerId);
+    const persistedSig = store.getChannel(channelId)!.latestSpendingAuthSig;
+
+    const capped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed - 1n });
+    expect(capped.cumulativeAmount).toBe((signed - 1n).toString());
+    expect(store.getChannel(channelId)!.latestSpendingAuthSig).toBe(persistedSig);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(signed);
+
+    const uncapped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed + 1n });
+    expect(uncapped.cumulativeAmount).toBe(signed.toString());
+  });
+
   it('extendCurrentSpendingAuth raises cumulative for an exhausted active session without changing metadata', async () => {
     const sellerPeerId = fakePeerId('seller-extend-current');
     await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
@@ -1912,8 +2658,10 @@ describe('BuyerPaymentManager', () => {
 
     // Simulate a session that has already signed cumulative=56_218 via a
     // tolerance-checked NeedAuth (so verifiedCost tracks that amount).
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-3', { costUsdc: 56_218n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-3',
       requiredCumulativeAmount: '56218',
       currentAcceptedCumulative: '0',
       deposit: '1000000',
@@ -1956,8 +2704,10 @@ describe('BuyerPaymentManager', () => {
     manager.handleAuthAck(sellerPeerId, { channelId });
 
     // Legitimate progress via NeedAuth: verifiedCost tracks this.
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-2', { costUsdc: 5_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
+      requestId: 'paid-request-2',
       requiredCumulativeAmount: '5000',
       currentAcceptedCumulative: '0',
       deposit: '1000000',
@@ -1981,6 +2731,42 @@ describe('BuyerPaymentManager', () => {
     // And crucially: verifiedCost must NOT have been contaminated by the
     // seller-supplied target — it only advances to the already-signed amount
     // to reopen the overdraft window.
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
+  });
+
+  it('extendCurrentSpendingAuth allows one per-request window per in-flight request for a catch-up', async () => {
+    // Several parallel requests to one seller can leave its spend more than
+    // one per-request window ahead of what the buyer signed.
+    const sellerPeerId = fakePeerId('seller-parallel-catch-up');
+    const tightConfig = makeConfig(tempDir, {
+      maxPerRequestUsdc: 10_000n,
+      maxReserveAmountUsdc: 1_000_000n,
+    });
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, tightConfig, store);
+    manager.setSigner(identity.wallet);
+    mux = createMockPaymentMux();
+
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    const channelId = (mux.sentSpendingAuths[0] as Record<string, string>).channelId!;
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-1', { costUsdc: 5_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requestId: 'paid-request-1',
+      requiredCumulativeAmount: '5000',
+      currentAcceptedCumulative: '0',
+      deposit: '1000000',
+      lastRequestCost: '5000',
+    }, mux);
+    mux.sentSpendingAuths.length = 0;
+
+    // Three requests in flight: the signable window grows to 3 × 10_000, and
+    // an inflated target is still capped at verifiedCost + 3 × maxPerRequestUsdc.
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 1_000_000n, undefined, 3);
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect(BigInt((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount)).toBe(35_000n);
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
   });
 

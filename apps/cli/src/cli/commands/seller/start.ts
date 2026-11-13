@@ -1,14 +1,23 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
-import { writeFile, unlink } from 'node:fs/promises'
+import { readFile, rename, writeFile, unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
-import { loadConfig } from '../../../config/loader.js'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { watchForUpdates } from '../../../update/watch.js'
+import { resolveConfigPath } from '../../../config/loader.js'
+import { configOverridesPath, loadSellerConfig } from '../../../config/overrides.js'
+import { networkNodeOptions } from '../../../config/network.js'
+import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
   ModelHealthChecker,
   GasHealthMonitor,
+  GasAutoRefueler,
+  UsdcEthSwapClient,
+  usdcEthSwapDeployment,
   CONNECTION_CAPABILITY_MODEL_HEALTH_V1,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
@@ -16,7 +25,7 @@ import {
   DEFAULT_MIN_GAS_BALANCE_WEI,
   SellerFreeTierLimiter,
   formatEther,
-  parseEther,
+  isPricedProviderService,
   type Provider,
   type Prover,
   type ConfigField,
@@ -24,29 +33,61 @@ import {
   loadOrCreateIdentity,
 } from '@antseed/node'
 import type { PaymentConfig } from '@antseed/node/payments'
-import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR } from '@antseed/node/payments'
+import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR, probeRpcEndpoint } from '@antseed/node/payments'
 import {
   ANTSEED_BASE_RPC_URL_ENV,
   createIdentityClient,
   createStakingClient,
+  requireCryptoConfig,
   resolveBaseRpcUrlOverride,
 } from '../../payment-utils.js'
 import type { AntseedConfig, SellerCLIConfig, SellerProviderConfig } from '../../../config/types.js'
 import { ANTSEED_VERIFIER_SDKS_ENV, buildVerifierCapabilities, normalizeVerifierIds } from '../../../plugins/verifier.js'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
-import { setupShutdownHandler } from '../../shutdown.js'
+import { isRestarting, setupShutdownHandler, shutdownForRestart } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
-import { resolveEffectiveSellerConfig, type SellerRuntimeOverrides } from '../../../config/effective.js'
+import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
 import { startSellerPriceReload, type PriceReloadTarget } from './price-reload.js'
+import { redact, redactUrlsIn, sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
+import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
+import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
+import { ethToWei } from './gas.js'
+import { gasRefuelState, loadGasRefuelHistory, resolveGasRefuelSettings, saveGasRefuelHistory } from './gas-refuel.js'
+import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-alerts/lifecycle.js'
+import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
+import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
+import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
+import { patchSellerConfig } from '../../../seller-monitor/settings.js'
+
+/** How long shutdown waits, after channels are finalized, for a gas refuel swap already sent to be mined and recorded. */
+const GAS_REFUEL_SHUTDOWN_WAIT_MS = 20_000
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
+}
+
+/** The gas monitor's last reading for daemon.state.json, in ETH (bigint is not JSON). */
+export function gasHealthState(
+  monitor: Pick<GasHealthMonitor, 'getSnapshot'> | null,
+  refueler: Pick<GasAutoRefueler, 'getSnapshot'> | null = null,
+) {
+  if (!monitor) return null
+  const snapshot = monitor.getSnapshot()
+  return {
+    address: snapshot.address,
+    depleted: snapshot.depleted,
+    balanceEth: snapshot.lastBalanceWei === null ? null : Number(formatEther(snapshot.lastBalanceWei)),
+    minBalanceEth: Number(formatEther(snapshot.minBalanceWei)),
+    lastCheckedAt: snapshot.lastCheckedAt,
+    refuel: gasRefuelState(refueler),
+  }
 }
 
 export function selectSellerProviderNames(
@@ -90,6 +131,18 @@ export function isPublicRpcUrl(rpcUrl: string): boolean {
 }
 
 /**
+ * The "Effective seller settings" lines about the Base RPC: its origin only (the rest can hold an
+ * API key) and where it comes from, then a warning when it is public.
+ */
+export function describeBaseRpc(rpcUrl: string, source: 'runtime override' | 'config/default'): string[] {
+  const lines = [chalk.dim(`  Base RPC URL: ${redact(rpcUrl)} (${source})`)]
+  if (isPublicRpcUrl(rpcUrl)) {
+    lines.push(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/buyer-config#base-rpc-url'))
+  }
+  return lines
+}
+
+/**
  * Gate `antseed seller start` on required prerequisites:
  *   1. At least one service is configured for the selected provider.
  *   2. (When payments are enabled) seller is registered on-chain and staked.
@@ -108,6 +161,8 @@ export async function assertSellerPrerequisites(input: {
   runtimePricingOverride: boolean
   skipChainChecks: boolean
   baseRpcUrlOverride?: string
+  /** Set when the startup probe got no answer from any RPC: the chain checks fail without querying. */
+  unreachableRpc?: { urls: string[]; pricedServiceIds: string[] }
 }): Promise<void> {
   const {
     dataDir,
@@ -118,6 +173,7 @@ export async function assertSellerPrerequisites(input: {
     runtimePricingOverride,
     skipChainChecks,
     baseRpcUrlOverride,
+    unreachableRpc,
   } = input
 
   const failures: Array<{ title: string; detail: string; command?: string }> = []
@@ -146,7 +202,15 @@ export async function assertSellerPrerequisites(input: {
   }
 
   // 3. On-chain readiness — only when payments are actually on.
-  if (paymentsEnabled && config.payments.crypto && !skipChainChecks) {
+  if (paymentsEnabled && config.payments.crypto && !skipChainChecks && unreachableRpc) {
+    // A priced seller must not fall back to serving for free: fail closed.
+    failures.push({
+      title: 'Base RPC unreachable',
+      detail: `No answer from ${unreachableRpc.urls.map(redact).join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
+        + `This seller charges for ${unreachableRpc.pricedServiceIds.join(', ')}, so it needs the chain to check registration and gas and to settle payments. `
+        + 'Check the network, or set a working RPC with --base-rpc-url or payments.crypto.rpcUrl. To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.',
+    })
+  } else if (paymentsEnabled && config.payments.crypto && !skipChainChecks) {
     try {
       const identity = await loadOrCreateIdentity(dataDir)
       const identityClient = createIdentityClient(config, { rpcUrl: baseRpcUrlOverride })
@@ -167,7 +231,7 @@ export async function assertSellerPrerequisites(input: {
       // silently skipping — that's what broke testnet-together earlier today.
       failures.push({
         title: 'On-chain readiness check failed',
-        detail: `Could not query the configured chain (${(err as Error).message}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
+        detail: `Could not query the configured chain (${redactUrlsIn((err as Error).message)}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
       })
     }
   }
@@ -187,32 +251,78 @@ export async function assertSellerPrerequisites(input: {
   throw new Error('seller prerequisites not met')
 }
 
-async function isRpcReachable(rpcUrl: string, timeoutMs = 1500): Promise<boolean> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+/** Per-request timeout of the startup RPC probe. Public RPCs can take a few seconds under load. */
+export const RPC_PROBE_TIMEOUT_MS = 5_000
+/** Rounds of the startup RPC probe. Each round asks every configured RPC at once. */
+export const RPC_PROBE_ATTEMPTS = 3
+const RPC_PROBE_RETRY_DELAY_MS = 1_000
 
-  try {
-    const response = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_chainId',
-        params: [],
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) return false
-
-    const payload = await response.json() as { result?: unknown }
-    return typeof payload.result === 'string' && payload.result.startsWith('0x')
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timeout)
+/**
+ * True once any of `rpcUrls` (the primary and its fallbacks, as the payment
+ * clients use them) answers `eth_chainId`. Retries, so one slow or
+ * rate-limited answer does not count as "unreachable".
+ */
+export async function probeRpcUrls(
+  rpcUrls: readonly string[],
+  options: { timeoutMs?: number; attempts?: number; retryDelayMs?: number } = {},
+): Promise<boolean> {
+  const {
+    timeoutMs = RPC_PROBE_TIMEOUT_MS,
+    attempts = RPC_PROBE_ATTEMPTS,
+    retryDelayMs = RPC_PROBE_RETRY_DELAY_MS,
+  } = options
+  const urls = [...new Set(rpcUrls.filter((url) => url.length > 0))]
+  if (urls.length === 0) return false
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const answered = await Promise.any(urls.map(async (url) => {
+      if (await probeRpcEndpoint(url, timeoutMs)) return true
+      throw new Error('no answer')
+    })).catch(() => false)
+    if (answered) return true
+    if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
   }
+  return false
+}
+
+/**
+ * Whether payments stay on after the startup RPC probe. Without an answer, a
+ * free-only seller runs without payments as before. A seller with priced
+ * services keeps them on, so it never serves those services for free just
+ * because the RPC was slow; the prerequisite check then refuses to start.
+ * `ANTSEED_ENABLE_SETTLEMENT` (`true` or `false`) skips the probe.
+ */
+export async function resolveSellerPaymentsAfterRpcProbe(input: {
+  paymentsEnabled: boolean
+  settlementEnv: boolean | null
+  rpcUrls: readonly string[]
+  pricedServiceIds: readonly string[]
+  probe?: (rpcUrls: readonly string[]) => Promise<boolean>
+}): Promise<{ paymentsEnabled: boolean; rpcReachable: boolean | null }> {
+  const { paymentsEnabled, settlementEnv, rpcUrls, pricedServiceIds, probe = probeRpcUrls } = input
+  if (!paymentsEnabled || settlementEnv !== null || rpcUrls.length === 0) {
+    return { paymentsEnabled, rpcReachable: null }
+  }
+  if (await probe(rpcUrls)) return { paymentsEnabled: true, rpcReachable: true }
+  return { paymentsEnabled: pricedServiceIds.length > 0, rpcReachable: false }
+}
+
+/**
+ * Services the loaded providers announce with a price: the seller config's
+ * own token and unit prices, plus any token default or unit billing model a
+ * plugin applies itself (as the node decides a service is paid).
+ */
+export function announcedPricedServices(
+  seller: SellerCLIConfig,
+  providerNames: readonly string[],
+  providers: ReadonlyArray<Pick<Provider, 'services' | 'pricing' | 'serviceUnitBillingModels'>>,
+): string[] {
+  const priced = new Set(pricedSellerServices(seller, providerNames))
+  for (const provider of providers) {
+    for (const serviceId of provider.services) {
+      if (isPricedProviderService(provider, serviceId)) priced.add(serviceId)
+    }
+  }
+  return [...priced]
 }
 
 function toUSDCBaseUnits(value: string | undefined, fallbackBaseUnits: string): string {
@@ -222,12 +332,18 @@ function toUSDCBaseUnits(value: string | undefined, fallbackBaseUnits: string): 
   return String(Math.round(parsed * 1_000_000))
 }
 
-export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
+/** A whole number from an env var, 0 included (it turns a setting off); undefined when unset or malformed. */
+export function parseOptionalNonNegativeIntegerEnv(value: string | undefined): number | undefined {
   if (value === undefined) return undefined
   const trimmed = value.trim()
   if (!/^\d+$/.test(trimmed)) return undefined
   const parsed = Number(trimmed)
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
+export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
+  const parsed = parseOptionalNonNegativeIntegerEnv(value)
+  return parsed !== undefined && parsed > 0 ? parsed : undefined
 }
 
 export function buildSellerRuntimeOverridesFromFlags(options: {
@@ -246,6 +362,17 @@ export function buildSellerRuntimeOverridesFromFlags(options: {
     overrides.outputUsdPerMillion = options.outputUsdPerMillion
   }
   return overrides
+}
+
+/** Config-key prefix of a provider plugin package. Other plugins use `OPENAI`. */
+const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
+  '@antseed/provider-local-llm': 'LOCAL_LLM',
+  '@antseed/provider-typesafe': 'TYPESAFE',
+  '@antseed/provider-venice-video': 'VENICE_VIDEO',
+  '@antseed/provider-fal-video': 'FAL_VIDEO',
+  '@antseed/provider-fal-image': 'FAL_IMAGE',
+  '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
+  '@antseed/provider-irp-router': 'IRP_ROUTER',
 }
 
 /**
@@ -286,8 +413,10 @@ export function buildSellerPluginRuntimeEnv(
   // the plugin env avoids dead noise in process.env.
   const servicePricing: Record<string, unknown> = {}
   const serviceAliasMap: Record<string, string> = {}
+  const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
+  const serviceExtraProtocols: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
     if (serviceCfg.pricing) {
       servicePricing[serviceId] = serviceCfg.pricing
@@ -295,11 +424,17 @@ export function buildSellerPluginRuntimeEnv(
     if (serviceCfg.upstreamModel && serviceCfg.upstreamModel !== serviceId) {
       serviceAliasMap[serviceId] = serviceCfg.upstreamModel
     }
+    if (serviceCfg.imageEditModel) {
+      serviceImageEditModelMap[serviceId] = serviceCfg.imageEditModel
+    }
     if (serviceCfg.capabilities) {
       serviceCapabilities[serviceId] = serviceCfg.capabilities
     }
     if (serviceCfg.unitBillingModels) {
       serviceUnitBillingModels[serviceId] = serviceCfg.unitBillingModels
+    }
+    if (serviceCfg.extraProtocols !== undefined) {
+      serviceExtraProtocols[serviceId] = serviceCfg.extraProtocols
     }
   }
   if (Object.keys(servicePricing).length > 0) {
@@ -308,18 +443,20 @@ export function buildSellerPluginRuntimeEnv(
   if (Object.keys(serviceAliasMap).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_ALIAS_MAP_JSON'] = JSON.stringify(serviceAliasMap)
   }
+  if (Object.keys(serviceImageEditModelMap).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON'] = JSON.stringify(serviceImageEditModelMap)
+  }
   if (Object.keys(serviceCapabilities).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_CAPABILITIES_JSON'] = JSON.stringify(serviceCapabilities)
   }
   if (Object.keys(serviceUnitBillingModels).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
   }
+  if (Object.keys(serviceExtraProtocols).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] = JSON.stringify(serviceExtraProtocols)
+  }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
-  const envPrefix = pluginPackage === '@antseed/provider-local-llm'
-    ? 'LOCAL_LLM'
-    : pluginPackage === '@antseed/provider-typesafe'
-      ? 'TYPESAFE'
-      : 'OPENAI'
+  const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
   }
@@ -332,8 +469,45 @@ export function buildSellerPluginRuntimeEnv(
       runtimeEnv[`${envPrefix}_API_KEY`] = apiKey
     }
   }
+  if (providerCfg.fallbackUpstreams && providerCfg.fallbackUpstreams.length > 0) {
+    runtimeEnv['ANTSEED_FALLBACK_UPSTREAMS_JSON'] = JSON.stringify(
+      providerCfg.fallbackUpstreams.map((fallback, index) => {
+        let apiKey: string | undefined
+        if (fallback.apiKeyEnv) {
+          apiKey = process.env[fallback.apiKeyEnv]
+          if (!apiKey) {
+            throw new Error(`fallbackUpstreams[${index}] of provider "${providerName}" reads its API key from ${fallback.apiKeyEnv}, which is not set`)
+          }
+        }
+        const serviceAliasMap = Object.fromEntries(
+          Object.entries(fallback.services ?? {})
+            .filter(([, service]) => service.upstreamModel)
+            .map(([serviceId, service]) => [serviceId, service.upstreamModel]),
+        )
+        return {
+          baseUrl: fallback.baseUrl,
+          ...(apiKey ? { apiKey } : {}),
+          ...(fallback.services ? { services: Object.keys(fallback.services) } : {}),
+          ...(Object.keys(serviceAliasMap).length > 0 ? { serviceAliasMap } : {}),
+          ...(fallback.pathRewrite ? { pathRewrite: fallback.pathRewrite } : {}),
+        }
+      }),
+    )
+  }
 
   return runtimeEnv
+}
+
+export function getUnsupportedFallbackUpstreamsWarning(
+  providerName: string,
+  providerConfig: SellerProviderConfig,
+  configFields: ConfigField[],
+): string | undefined {
+  if (!providerConfig.fallbackUpstreams?.length) return undefined
+  if (configFields.some((field) => field.key === 'ANTSEED_FALLBACK_UPSTREAMS_JSON')) {
+    return undefined
+  }
+  return `Provider "${providerName}" (${providerConfig.plugin}) ignores fallbackUpstreams because its plugin does not support them.`
 }
 
 export function getUnsupportedUnitBillingWarning(
@@ -349,6 +523,18 @@ export function getUnsupportedUnitBillingWarning(
     return undefined
   }
   return `Provider "${providerName}" (${providerConfig.plugin}) ignores unitBillingModels for service(s): ${configuredServices.join(', ')} because its plugin does not support unit billing.`
+}
+
+export function getImageEditUnitBillingWarning(
+  providerName: string,
+  providerConfig: SellerProviderConfig,
+): string | undefined {
+  const unpricedEditServices = Object.entries(providerConfig.services)
+    .filter(([, service]) => service.imageEditModel !== undefined
+      && service.unitBillingModels?.['openai-images'] === undefined)
+    .map(([serviceId]) => serviceId)
+  if (unpricedEditServices.length === 0) return undefined
+  return `Provider "${providerName}" has imageEditModel configured for service(s): ${unpricedEditServices.join(', ')} without openai-images unit billing. Configure a shared output_images price for generation and edits.`
 }
 
 export function mergeSellerRuntimeEnv(
@@ -388,14 +574,31 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('--min-settle-delta <usdc>', 'minimum unsettled delta (USDC decimal, e.g. 0.002) before idle settle submits a tx')
     .option('--base-rpc-url <url>', `runtime-only Base JSON-RPC URL override (also ${ANTSEED_BASE_RPC_URL_ENV})`)
     .option('--skip-prereq-check', 'skip pre-flight checks (services configured, on-chain registration + stake). Use only for local testing.')
+    .option('--no-dashboard', 'do not serve the local seller dashboard (on by default, 127.0.0.1 only)')
+    .option('--dashboard-port <port>', `seller dashboard port (default: ${DEFAULT_SELLER_DASHBOARD_PORT}; another free port if taken)`, parseInt)
     .option('--verifiers <ids>', `comma-separated verifier SDK ids this seller supports (first is default; also ${ANTSEED_VERIFIER_SDKS_ENV})`)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(sellerCmd)
-      const config = await loadConfig(globalOpts.config)
+      // Settings saved from the dashboard when the config file is read-only apply over it.
+      let config: AntseedConfig
+      let overriddenSettings: string[] = []
+      try {
+        ({ config, overridden: overriddenSettings } = await loadSellerConfig(globalOpts.config, globalOpts.dataDir))
+      } catch (err) {
+        console.error(chalk.red(`Could not load the seller config: ${(err as Error).message}`))
+        console.error(chalk.dim(`  Settings saved from the dashboard are in ${configOverridesPath(globalOpts.dataDir)}; fix or delete that file to start from the config file alone.`))
+        process.exit(1)
+      }
       await ensureDerivedIdentityDisplayName({
         config,
         configPath: globalOpts.config,
         dataDir: globalOpts.dataDir,
+        // Only the name, where dashboard saves go (the config file, or its overrides when it is read-only):
+        // the config loaded here has the overrides applied, so writing it whole would bake them into the file.
+        save: (displayName) => patchSellerConfig(resolveConfigPath(globalOpts.config), globalOpts.dataDir, (raw) => {
+          const identity = (raw.identity && typeof raw.identity === 'object' ? raw.identity : (raw.identity = {})) as Record<string, unknown>
+          identity.displayName = displayName
+        }).catch(() => {}),
       })
       let baseRpcUrlOverride: string | undefined
       try {
@@ -423,7 +626,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         effectiveSellerConfig,
         options.provider as string | undefined,
       )
-      const selectedProviderNames = providerSelection.selected
+      // Models turned off from the dashboard (`enabled: false`) are not offered; a provider left with none is not started.
+      const disabled = dropDisabledServices(effectiveSellerConfig, providerSelection.selected)
+      const selectedProviderNames = providerSelection.selected.filter((name) => !disabled.emptyProviders.includes(name))
+      if (disabled.off.length > 0) console.log(chalk.dim(`  models turned off: ${disabled.off.join(', ')}${disabled.emptyProviders.length > 0 ? ` (not starting ${disabled.emptyProviders.join(', ')}: every model is off)` : ''}`))
 
       if (selectedProviderNames.length === 0) {
         console.error(chalk.red('Error: No seller providers are configured.'))
@@ -437,6 +643,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         console.error(chalk.dim(`Configured providers: ${configuredProviderNames.join(', ') || '(none)'}`))
         process.exit(1)
       }
+      const sellerFreeTier = resolveSellerFreeTier(effectiveSellerConfig, selectedProviderNames)
 
       // Refresh any installed plugin whose pinned `@antseed/*` core deps are
       // older than the versions the CLI itself bundles. Must run BEFORE the
@@ -458,14 +665,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         try {
           const plugin = await loadProviderPlugin(packageName)
           const configFields = plugin.configSchema ?? plugin.configKeys ?? []
-          const unitBillingWarning = getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields)
-          if (unitBillingWarning) {
-            spinner.warn(chalk.yellow(unitBillingWarning))
+          for (const warning of [
+            getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields),
+            getUnsupportedFallbackUpstreamsWarning(providerName, providerCfg, configFields),
+            getImageEditUnitBillingWarning(providerName, providerCfg),
+          ]) {
+            if (!warning) continue
+            spinner.warn(chalk.yellow(warning))
             spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)
           const basePluginConfig = buildPluginConfig(configFields)
-          const pluginConfig = mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride })
+          const pluginConfig = {
+            ...mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride }),
+            // Lets plugins keep small state (e.g. pending video download URLs) across restarts.
+            ANTSEED_DATA_DIR: globalOpts.dataDir,
+          }
           const provider = await plugin.createProvider(pluginConfig)
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`
@@ -496,6 +711,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       let paymentConfig: PaymentConfig | null = null
       let depositRelayAddress: string | undefined
+      let sellerPoolsAddress: string | undefined
       if (preferredMethod === 'crypto') {
         const cc = resolveChainConfig({
           chainId: config.payments.crypto?.chainId,
@@ -509,8 +725,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           identityRegistryAddress: config.payments.crypto?.identityRegistryAddress,
           emissionsContractAddress: config.payments.crypto?.emissionsContractAddress,
           depositRelayAddress: config.payments.crypto?.depositRelayAddress,
+          sellerPoolsAddress: config.payments.crypto?.sellerPoolsAddress,
         })
         depositRelayAddress = cc.depositRelayAddress
+        sellerPoolsAddress = cc.sellerPoolsAddress || undefined
         const defaultLockAmountUSDCBaseUnits = toUSDCBaseUnits(
           config.payments.crypto?.defaultLockAmountUSDC ?? defaultDepositAmountUSDC,
           defaultDepositAmountUSDCBaseUnits,
@@ -532,16 +750,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
 
       const settlementEnv = parseOptionalBoolEnv(process.env['ANTSEED_ENABLE_SETTLEMENT'])
-      let paymentsEnabled = settlementEnv ?? paymentConfig !== null
       const cryptoRpcUrl = paymentConfig?.crypto?.rpcUrl
-
-      if (paymentsEnabled && cryptoRpcUrl && settlementEnv !== true) {
-        const rpcUp = await isRpcReachable(cryptoRpcUrl)
-        if (!rpcUp) {
-          paymentsEnabled = false
-          console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${cryptoRpcUrl}`))
-          console.log(chalk.dim('Start your chain node or set ANTSEED_ENABLE_SETTLEMENT=true to force-enable payments.'))
-        }
+      const rpcUrls = cryptoRpcUrl ? [cryptoRpcUrl, ...(paymentConfig?.crypto?.fallbackRpcUrls ?? [])] : []
+      const pricedServiceIds = announcedPricedServices(effectiveSellerConfig, selectedProviderNames, providers)
+      const rpcProbe = await resolveSellerPaymentsAfterRpcProbe({
+        paymentsEnabled: settlementEnv ?? paymentConfig !== null,
+        settlementEnv,
+        rpcUrls,
+        pricedServiceIds,
+      })
+      const paymentsEnabled = rpcProbe.paymentsEnabled
+      if (rpcProbe.rpcReachable === false && !paymentsEnabled) {
+        console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${redact(cryptoRpcUrl ?? '')}`))
+        console.log(chalk.dim('Every service is free, so the seller runs without payments. Start your chain node or set ANTSEED_ENABLE_SETTLEMENT=true to force-enable payments.'))
+      } else if (rpcProbe.rpcReachable === false && options.skipPrereqCheck) {
+        console.log(chalk.yellow(`RPC node unreachable at ${redact(cryptoRpcUrl ?? '')}. Payments stay on because this seller charges for ${pricedServiceIds.join(', ')}; paid requests settle once the RPC answers.`))
+        console.log(chalk.dim('To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.'))
       }
 
       const primaryProviderName = selectedProviderNames[0] ?? providers[0]?.name ?? 'unknown'
@@ -559,6 +783,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           runtimePricingOverride: forcePricingOverride,
           skipChainChecks: Boolean(options.skipPrereqCheck),
           baseRpcUrlOverride,
+          ...(rpcProbe.rpcReachable === false ? { unreachableRpc: { urls: rpcUrls, pricedServiceIds } } : {}),
         })
       } catch {
         process.exit(1)
@@ -599,10 +824,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const gasCheckEnabled = paymentsEnabled && Boolean(config.payments.crypto) && gasCheckCfg?.enabled !== false
       const gasCheckIntervalMs = gasCheckCfg?.intervalMs ?? DEFAULT_GAS_CHECK_INTERVAL_MS
       const minGasBalanceWei = gasCheckCfg?.minBalanceEth !== undefined
-        ? parseEther(String(gasCheckCfg.minBalanceEth))
+        ? ethToWei(gasCheckCfg.minBalanceEth)
         : DEFAULT_MIN_GAS_BALANCE_WEI
+      const gasRefuelSettings = resolveGasRefuelSettings(effectiveSellerConfig.gasRefuel)
 
       console.log(chalk.bold('Effective seller settings:'))
+      if (overriddenSettings.length > 0) {
+        console.log(chalk.dim(`  saved from the dashboard (over ${resolveConfigPath(globalOpts.config)}): ${overriddenSettings.join(', ')}`))
+      }
       console.log(chalk.dim(`  providers: ${selectedProviderNames.join(', ')}`))
       for (let index = 0; index < providers.length; index += 1) {
         const provider = providers[index]!
@@ -616,11 +845,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const minBudgetPerRequest = config.payments.minBudgetPerRequest ?? '10000'
       console.log(chalk.dim(`  min budget per request: ${minBudgetPerRequest} base units`))
       if (paymentConfig?.crypto?.rpcUrl) {
-        const rpcSource = baseRpcUrlOverride ? 'runtime override' : 'config/default'
-        console.log(chalk.dim(`  Base RPC URL: ${paymentConfig.crypto.rpcUrl} (${rpcSource})`))
-        if (isPublicRpcUrl(paymentConfig.crypto.rpcUrl)) {
-          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/config#base-rpc-url'))
-        }
+        for (const line of describeBaseRpc(paymentConfig.crypto.rpcUrl, baseRpcUrlOverride ? 'runtime override' : 'config/default')) console.log(line)
       }
       // CLI flag (decimal USDC) overrides config JSON (base-unit string).
       const minSettleDeltaFlag = options.minSettleDelta as string | undefined
@@ -633,25 +858,63 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
       console.log(chalk.dim(`  reserve floor: ${effectiveSellerConfig.reserveFloor}`))
       console.log(chalk.dim(`  max concurrent buyers: ${effectiveSellerConfig.maxConcurrentBuyers}`))
-      if (effectiveSellerConfig.freeTier) {
-        console.log(chalk.dim(`  free tier: ${new SellerFreeTierLimiter(effectiveSellerConfig.freeTier).describe()}`))
+      if (sellerFreeTier) {
+        const freeTierPreview = new SellerFreeTierLimiter(sellerFreeTier)
+        freeTierPreview.setPaidServices(pricedSellerServices(effectiveSellerConfig, selectedProviderNames))
+        console.log(chalk.dim('  free tier:'))
+        for (const line of freeTierPreview.describePrograms()) console.log(chalk.dim(`    ${line}`))
+        if (!sellerFreeTier.maxRequestsPerAddress && !sellerFreeTier.maxRequestsPerIp) {
+          console.log(chalk.dim('    other free models: unlimited'))
+        }
       } else {
         console.log(chalk.dim('  free tier: unlimited for fully zero-priced services'))
       }
       if (healthCheckEnabled) {
         const intervalMs = healthCheckCfg?.intervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS
         const failureThreshold = healthCheckCfg?.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD
-        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s, unadvertise after ${failureThreshold} consecutive failures`))
+        console.log(chalk.dim(`  model health checks: every ${Math.round(intervalMs / 1000)}s for models without buyer traffic, announce failing after ${failureThreshold} consecutive failures`))
       } else {
         console.log(chalk.dim('  model health checks: disabled'))
       }
       if (gasCheckEnabled) {
         console.log(chalk.dim(`  gas checks: every ${Math.round(gasCheckIntervalMs / 1000)}s, pause advertising below ${formatEther(minGasBalanceWei)} ETH`))
+        console.log(chalk.dim(gasRefuelSettings.enabled
+          ? `  gas auto-refuel: below ${formatEther(gasRefuelSettings.triggerBalanceWei)} ETH swap ${Number(gasRefuelSettings.swapUsdcUnits) / 1e6} USDC for ETH (max ${Number(gasRefuelSettings.maxUsdcPerDayUnits) / 1e6} USDC/day)`
+          : '  gas auto-refuel: off'))
+      }
+      const restrictedCountries = new Set(effectiveSellerConfig.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES)
+      let acceptInboundAddress: ((remoteAddress: string) => boolean) | undefined
+      if (restrictedCountries.size > 0) {
+        try {
+          const geoip = createRequire(import.meta.url)('geoip-country') as typeof import('geoip-country')
+          acceptInboundAddress = (ip) => !restrictedCountries.has(geoip.lookup(ip)?.country ?? '')
+          console.log(chalk.dim(`  restricted countries: ${[...restrictedCountries].join(', ')}`))
+        } catch (err) {
+          console.log(chalk.yellow(`  restricted countries: off, geoip-country failed to load (${(err as Error).message})`))
+        }
       }
       const maxUploadBodyBytes = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_UPLOAD_BODY_BYTES'])
         ?? effectiveSellerConfig.maxUploadBodyBytes
       if (maxUploadBodyBytes !== undefined) {
         console.log(chalk.dim(`  max upload body bytes: ${maxUploadBodyBytes}`))
+      }
+      const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
+        ?? effectiveSellerConfig.maxInboundConnections
+      if (maxInboundConnections !== undefined) {
+        console.log(chalk.dim(`  max inbound connections: ${maxInboundConnections}`))
+      }
+      const maxInboundConnectionsPerIp = effectiveSellerConfig.maxInboundConnectionsPerIp
+      if (maxInboundConnectionsPerIp !== undefined) {
+        console.log(chalk.dim(`  max inbound connections per IP: ${maxInboundConnectionsPerIp}`))
+      }
+      const announceProviderIds = effectiveSellerConfig.announceProviderIds === true
+      if (announceProviderIds) {
+        console.log(chalk.dim('  providers announced by ID'))
+      }
+      const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
+        ?? effectiveSellerConfig.inboundIdleTimeoutMs
+      if (inboundIdleTimeoutMs !== undefined) {
+        console.log(chalk.dim(`  idle buyer connections: ${inboundIdleTimeoutMs === 0 ? 'kept' : `closed after ${Math.round(inboundIdleTimeoutMs / 60_000)} min`}`))
       }
       const verificationDomains = (effectiveSellerConfig.verifications?.domains ?? []).map((claim) => claim.domain)
       if (verificationDomains.length > 0) {
@@ -664,9 +927,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       console.log('')
 
       const nodeSpinner = ora('Starting seeding daemon...').start()
-
-      const dhtPort = options.dhtPort as number | undefined
-      const signalingPort = options.signalingPort as number | undefined
 
       const sellerContractCfg = config.payments?.sellerContract
       const announcerSellerContract = sellerContractCfg
@@ -714,19 +974,27 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(announcedCapabilities.length > 0 ? { capabilities: announcedCapabilities } : {}),
         bootstrapNodes,
         dataDir: globalOpts.dataDir,
-        ...(dhtPort ? { dhtPort } : {}),
-        ...(signalingPort ? { signalingPort } : {}),
+        ...networkNodeOptions(config.network, {
+          dhtPort: options.dhtPort as number | undefined,
+          signalingPort: options.signalingPort as number | undefined,
+        }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
-        ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
+        ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
+        ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
+        ...(announceProviderIds ? { announceProviderIds } : {}),
+        ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
+        ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
+        ...(effectiveSellerConfig.buyerLimits ? { buyerLimits: effectiveSellerConfig.buyerLimits } : {}),
+        ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,
-          platformFeeRate: config.payments.platformFeeRate,
           settlementIdleMs: Number.isFinite(settlementIdleMs) ? settlementIdleMs : 30_000,
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,
           paymentConfig,
+          ...(config.payments.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           minBudgetPerRequest: config.payments.minBudgetPerRequest ?? '10000',
           minSettleDelta,
           ...(config.payments.serveWhileClosePending !== undefined
@@ -743,6 +1011,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             identityRegistryAddress: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).identityRegistryAddress,
             stakingAddress: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).stakingContractAddress,
             chainId: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).evmChainId,
+            ...(sellerPoolsAddress ? { sellerPoolsAddress } : {}),
             ...(depositRelayAddress ? { depositRelayAddress } : {}),
           } : {}),
         },
@@ -812,11 +1081,37 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         process.exit(1)
       }
 
-      // Periodic model health self-checks: probe supported text services with
-      // a minimal completion; unadvertise services that keep failing and
-      // restore them when they recover, refreshing signed metadata each time.
-      // Image services are skipped because a meaningful probe would generate
-      // and charge for an image.
+      // Periodic model health self-checks: buyer traffic counts as a check, and
+      // idle text services are probed with a minimal completion. Services that
+      // keep failing stay announced with a failing status in signed metadata
+      // (buyers skip them) until a check passes again.
+      // Image and video services are not probed because a meaningful probe
+      // would generate and charge for media. Providers check them with free
+      // account and model-list calls instead (checkUpstreamAccount,
+      // checkServiceHealth).
+      // Seller events: journaled to <dataDir>/seller-events.jsonl for the dashboard,
+      // and sent to the channels in seller.alerts (if any).
+      const alerts = new SellerAlerts({
+        dataDir: globalOpts.dataDir,
+        // Re-read on change: alert edits (dashboard, console, by hand) apply without a restart.
+        configPath: resolveConfigPath(globalOpts.config),
+        sellerName: config.identity.displayName || `seller ${(node.peerId ?? '').slice(0, 8)}`,
+        ...(node.peerId ? { peerId: node.peerId } : {}),
+        log: (line) => console.log(chalk.yellow(line)),
+      })
+      const previousState = await readFile(getStateFile(globalOpts.dataDir), 'utf-8').catch(() => null)
+      const crashed = uncleanExitEvent(previousState, Date.now())
+      if (crashed) void alerts.record(crashed)
+      void alerts.record({ kind: 'started', severity: 'info', title: `Seller started (v${pkg.version})` })
+      if (alerts.channels().length > 0) console.log(chalk.dim(`  alerts: ${alerts.channels().join(', ')}`))
+      else console.log(chalk.dim('  alerts: off (journal only). Send them to Telegram or a webhook with `antseed seller alerts set` or `antseed seller dashboard`; a running seller picks the change up.'))
+      // Model and upstream-credit alerts go out per upstream: one message for a round of withdrawals, and the cause when it is billing.
+      const upstreamHost = (providerId: string) => {
+        const baseUrl = effectiveSellerConfig.providers[providerId]?.baseUrl
+        try { return baseUrl ? new URL(baseUrl).host : null } catch { return null }
+      }
+      const upstreamAlerts = new UpstreamAlerts(alerts, { hostOf: upstreamHost })
+
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
@@ -825,24 +1120,44 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             // Probe the unwrapped provider so an ant-agent wrapper doesn't
             // run a full agent loop for every probe.
             ...(providers[index] && providers[index] !== provider ? { probeProvider: providers[index]! } : {}),
+            ...(selectedProviderNames[index] ? { id: selectedProviderNames[index] } : {}),
           })),
           ...(healthCheckCfg?.intervalMs !== undefined ? { intervalMs: healthCheckCfg.intervalMs } : {}),
           ...(healthCheckCfg?.failureThreshold !== undefined ? { failureThreshold: healthCheckCfg.failureThreshold } : {}),
           onChange: (event) => {
-            if (event.status === 'removed') {
-              console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
+            if (event.status === 'failing') {
+              console.log(chalk.yellow(`Model ${event.provider}/${event.service} announced as failing — self health check failed (${event.detail})`))
             } else {
-              console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered`))
+              console.log(chalk.green(`Model ${event.provider}/${event.service} announced as healthy — self health check recovered (${event.detail})`))
             }
+            upstreamAlerts.modelChanged(event)
             void node.refreshSellerMetadata().catch(() => {})
           },
+          onUpstreamAccount: (event) => {
+            console.log((event.status === 'funded' ? chalk.green : chalk.yellow)(`Upstream ${event.providerId}: ${event.status.replace('_', ' ')} (${event.detail})`))
+            upstreamAlerts.account(event)
+          },
+          onSweepComplete: () => {
+            upstreamAlerts.flush()
+            // Re-sign so announced check times stay current between status changes.
+            void node.refreshSellerMetadata().catch(() => {})
+          },
+          // Read on every check, so a dashboard edit applies without a restart.
+          lowBalanceUsd: () => alerts.settings.config.lowBalanceUsd ?? DEFAULT_LOW_BALANCE_USD,
         })
+        const checker = healthChecker
+        // Live traffic is health evidence: a success spares the next probe, an
+        // upstream failure triggers one early, and an out-of-credit error is seen first.
+        node.on('provider:response', ({ provider, service, statusCode, body, billable }: { provider: Provider; service: string; statusCode: number; body: string; billable: boolean }) => checker.reportUpstreamResponse(provider, statusCode, body, billable, service))
+        node.on('provider:failure', ({ provider, service, billable }: { provider: Provider; service: string; billable: boolean }) => checker.reportUpstreamFailure(provider, service, billable))
         healthChecker.start()
       }
 
       // Operator-facing notices surfaced via daemon.state.json (seller status
       // command and desktop). Currently only the out-of-gas notice.
       let gasNotice: string | null = null
+      let gasMonitor: GasHealthMonitor | null = null
+      let gasRefueler: GasAutoRefueler | null = null
 
       // Write daemon state so dashboard and connect can discover this seeder
       const startedAt = Date.now()
@@ -933,6 +1248,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           provider: primaryProviderName,
           defaultInputUsdPerMillion: primaryProvider.pricing.defaults.inputUsdPerMillion,
           defaultOutputUsdPerMillion: primaryProvider.pricing.defaults.outputUsdPerMillion,
+          // The providers this seller starts with (`--provider`, or all configured), models turned off or not.
+          selectedProviders: providerSelection.selected,
           providerPricing: Object.fromEntries(registeredProviders.map((provider, index) => {
             const providerName = selectedProviderNames[index]!
             return [providerName, {
@@ -962,12 +1279,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           tokensToday: 0,
           uptime: formatUptime(),
           notices: gasNotice ? [gasNotice] : [],
+          // Read by `antseed metrics serve --role seller` for model and gas alerts.
+          modelHealth: healthChecker?.getSnapshot() ?? [],
+          gas: gasHealthState(gasMonitor, gasRefueler),
+          alerts: alerts.state(),
+          // Chain RPC calls this process made, per source (the dashboard and metrics exporter show them).
+          rpc: rpcUsage(),
           updatedAt: now,
           proxyPort: null,
         }
       }
 
+      // Set on shutdown: the state file is removed then, and no late write may bring it back (a "crash" on the next start).
+      let stateStopped = false
+      let stateWriteCurrent: Promise<void> | null = null
       async function writeDaemonState(): Promise<void> {
+        if (stateStopped) return
         if (stateWriteInFlight) {
           stateWritePending = true
           return
@@ -975,10 +1302,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
         stateWriteInFlight = true
         try {
-          await writeFile(getStateFile(globalOpts.dataDir), JSON.stringify(buildDaemonState(), null, 2))
+          // Replaced whole (temp file, then rename): a reader never sees a half-written state.
+          const stateFile = getStateFile(globalOpts.dataDir)
+          const temp = `${stateFile}.${process.pid}.tmp`
+          stateWriteCurrent = writeFile(temp, JSON.stringify(buildDaemonState(), null, 2)).then(() => rename(temp, stateFile))
+          await stateWriteCurrent
         } finally {
           stateWriteInFlight = false
-          if (stateWritePending) {
+          if (stateWritePending && !stateStopped) {
             stateWritePending = false
             await writeDaemonState()
           }
@@ -990,9 +1321,19 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
 
       await writeDaemonState()
+      // Billing by estimate works, but only an upstream that reports usage bills exactly.
+      node.on('provider:usage-missing', ({ provider, service }: { provider: string; service: string }) => {
+        console.log(chalk.yellow(`Upstream ${provider}/${service} sent an answer with no usage figure; such answers are billed by an estimate of their tokens.`))
+      })
       node.on('connection', scheduleDaemonStateWrite)
       node.on('session:updated', scheduleDaemonStateWrite)
       node.on('session:finalized', scheduleDaemonStateWrite)
+
+      const idleWatch = startIdleWatch({
+        idleMinutes: () => alerts.idleMinutes(),
+        node,
+        record: (event) => alerts.record(event),
+      })
 
       // Refresh state file every 1s so the desktop dashboard reflects live counters.
       const stateInterval = setInterval(async () => {
@@ -1002,16 +1343,58 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Periodic seller-wallet gas checks: a seller whose wallet cannot fund
       // reserve/settle/close transactions rejects every buyer that connects,
       // so pause advertising (and say so) until the wallet is funded again.
-      let gasMonitor: GasHealthMonitor | null = null
       if (gasCheckEnabled && node.identity) {
         const gasWalletAddress = node.identity.wallet.address
         try {
-          const gasStakingClient = createStakingClient(config, { rpcUrl: baseRpcUrlOverride })
+          // Balance reads go through the process's shared provider (coalescing, back-off), tagged for the RPC counters.
+          const gasCrypto = requireCryptoConfig(config, { rpcUrl: baseRpcUrlOverride })
+          const gasProvider = sharedChainProvider({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, ...(gasCrypto.fallbackRpcUrls ? { fallbackRpcUrls: gasCrypto.fallbackRpcUrls } : {}) })
+          // Auto-refuel: swap some of the wallet's USDC earnings for ETH before it runs dry (Base mainnet only).
+          const usdcAddress = gasCrypto.usdcContractAddress
+          const swapDeployment = usdcEthSwapDeployment(resolveChainConfig({ chainId: gasCrypto.chainId }), { evmChainId: gasCrypto.evmChainId, usdcAddress })
+          if (gasRefuelSettings.enabled && !swapDeployment) {
+            console.log(chalk.dim('  gas auto-refuel: unavailable on this chain (Base mainnet only)'))
+          } else if (gasRefuelSettings.enabled && swapDeployment) {
+            const swapClient = new UsdcEthSwapClient({ rpcUrl: gasCrypto.rpcUrl, evmChainId: gasCrypto.evmChainId, usdcAddress, deployment: swapDeployment }).withProvider(gasProvider)
+            const wallet = node.identity.wallet
+            const dataDir = globalOpts.dataDir
+            gasRefueler = new GasAutoRefueler({
+              address: gasWalletAddress,
+              triggerBalanceWei: gasRefuelSettings.triggerBalanceWei,
+              swapUsdcUnits: gasRefuelSettings.swapUsdcUnits,
+              maxUsdcPerDayUnits: gasRefuelSettings.maxUsdcPerDayUnits,
+              slippageBps: gasRefuelSettings.slippageBps,
+              history: await loadGasRefuelHistory(dataDir),
+              saveHistory: (records) => saveGasRefuelHistory(dataDir, records),
+              swapper: {
+                quote: (amount) => withRpcSource('gas', () => swapClient.quote(amount)),
+                usdcBalance: (address) => withRpcSource('gas', () => swapClient.usdcBalance(address)),
+                maxSwapCostWei: () => withRpcSource('gas', () => swapClient.maxSwapCostWei()),
+                swap: (amount, minEthOut) => withRpcSource('gas', () => swapClient.swapUsdcForEth(wallet, amount, minEthOut)),
+              },
+              onEvent: (event) => {
+                if (event.status === 'refueled') {
+                  const usdc = Number(event.record.usdcUnits) / 1e6
+                  console.log(chalk.green(`Gas auto-refuel: swapped ${usdc} USDC for ~${formatEther(event.expectedEthWei)} ETH (tx ${event.record.txHash}).`))
+                  void alerts.record({ kind: 'gas_refueled', severity: 'info', title: `Gas refueled: swapped ${usdc} USDC for ETH`, detail: `tx ${event.record.txHash}` })
+                  void gasMonitor?.checkNow()
+                } else if (event.status === 'failed') {
+                  console.log(chalk.yellow(`Gas auto-refuel failed: ${event.error}. Retrying at ${new Date(event.retryAt).toISOString()}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel failed', detail: `${event.error}. Send ETH to ${event.address} if this persists.` })
+                } else {
+                  console.log(chalk.yellow(`Gas auto-refuel skipped (${event.reason}): ${event.detail}.`))
+                  void alerts.record({ kind: 'gas_refuel_failed', severity: 'warning', title: 'Gas auto-refuel skipped', detail: `${event.detail}. Send ETH to ${event.address} to keep selling.` })
+                }
+                scheduleDaemonStateWrite()
+              },
+            })
+          }
           gasMonitor = new GasHealthMonitor({
             address: gasWalletAddress,
-            getBalance: (address) => gasStakingClient.provider.getBalance(address),
+            getBalance: (address) => withRpcSource('gas', () => gasProvider.getBalance(address)),
             intervalMs: gasCheckIntervalMs,
             minBalanceWei: minGasBalanceWei,
+            ...(gasRefueler ? { onBalance: (balanceWei: bigint) => gasRefueler?.onBalance(balanceWei) } : {}),
             onChange: (event) => {
               const balanceSummary = `wallet ${event.address} holds ${formatEther(event.balanceWei)} ETH (minimum ${formatEther(event.minBalanceWei)} ETH)`
               if (event.status === 'depleted') {
@@ -1020,8 +1403,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
                 console.log(chalk.yellow(`  On-chain settlement would fail and buyers would be rejected: ${balanceSummary}.`))
                 console.log(chalk.cyan(`  Send ETH to ${event.address} — advertising resumes automatically once funded.`))
                 void node.pauseAdvertising('out-of-gas').catch(() => {})
+                void alerts.record({ kind: 'gas_low', severity: 'critical', title: 'Out of gas: advertising paused', detail: `${balanceSummary}. Send ETH to ${event.address} to resume.` })
               } else {
                 gasNotice = null
+                void alerts.record({ kind: 'gas_ok', severity: 'info', title: `Gas restored (${formatEther(event.balanceWei)} ETH): advertising resumed` })
                 console.log(chalk.green(`Gas balance restored (${formatEther(event.balanceWei)} ETH) — advertising resumed.`))
                 node.resumeAdvertising()
               }
@@ -1049,18 +1434,98 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         warn: (message) => console.warn(chalk.yellow(message)),
       })
 
+      // The local dashboard, unless turned off. Its link carries a session token, so it is printed only to a
+      // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
+      let dashboard: SellerDashboardServer | null = null
+      if (options.dashboard !== false) {
+        // A restart from the dashboard is a clean stop: only offered where a supervisor starts the seller again.
+        const supervisor = restartSupervisor()
+        const restart = {
+          unavailableReason: supervisor ? null : 'Restart `antseed seller start` where it runs to apply saved changes. (Under a supervisor that starts it again when it exits, set ANTSEED_SUPERVISED=1 to restart it from here.)',
+          run: () => {
+            console.log(chalk.yellow(`Restarting from the dashboard to apply saved settings (${supervisor} starts the seller again).`))
+            shutdownForRestart()
+          },
+        }
+        // A restart keeps the link (and the sessions signed with it), so an open dashboard reconnects.
+        const previousToken = previousDashboardToken(globalOpts.dataDir)
+        const dashboardOptions = { dataDir: globalOpts.dataDir, configPath: resolveConfigPath(globalOpts.config), version: pkg.version, host: '127.0.0.1', restart, ...(previousToken ? { token: previousToken } : {}), log: (line: string) => console.log(chalk.dim(line)) }
+        // The flag's port; else the one the last run served on (an open page reconnects there after a restart),
+        // then the default, then any free one.
+        const previousPort = previousDashboardPort(globalOpts.dataDir)
+        const ports = options.dashboardPort ? [Number(options.dashboardPort)] : [...new Set([previousPort, DEFAULT_SELLER_DASHBOARD_PORT, 0].filter((port): port is number => port !== null))]
+        try {
+          for (const [index, port] of ports.entries()) {
+            try {
+              dashboard = await startSellerDashboard({ ...dashboardOptions, port })
+              break
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || index === ports.length - 1) throw err
+            }
+          }
+          if (!dashboard) throw new Error('no port to serve on')
+          await writeDashboardLink(globalOpts.dataDir, dashboard.url)
+          const origin = new URL(dashboard.url).origin
+          if (process.stdout.isTTY) console.log(`  dashboard: ${chalk.cyan(dashboard.url)}`)
+          else console.log(`  dashboard: ${origin} (\`antseed seller dashboard\` on this host prints its link; --no-dashboard turns it off)`)
+        } catch (err) {
+          console.log(chalk.yellow(`  dashboard unavailable: ${(err as Error).message}`))
+        }
+      }
+
+      const updateWatch = watchForUpdates({
+        dataDir: globalOpts.dataDir,
+        current: pkg.version,
+        running: 'seller',
+        log: (line) => console.log(chalk.yellow(line)),
+      })
+
       setupShutdownHandler(async () => {
         priceReload.stop()
+        updateWatch.stop()
+        idleWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
+        // A refuel swap already sent keeps going while channels finalize; it is saved to the daily-cap history when mined.
+        const refuelStopped = gasRefueler?.stop() ?? Promise.resolve()
         clearInterval(stateInterval)
         node.off('connection', scheduleDaemonStateWrite)
         node.off('session:updated', scheduleDaemonStateWrite)
         node.off('session:finalized', scheduleDaemonStateWrite)
+        upstreamAlerts.close()
+        alerts.close()
+        if (dashboard) {
+          // Never long: channels are finalized next, and a dashboard request must not hold that up.
+          await waitAtMost((isRestarting() ? Promise.resolve() : removeDashboardLink(globalOpts.dataDir)).then(() => dashboard!.close()), 2_000)
+        }
         nodeSpinner.start('Shutting down seeding daemon...')
-        await node.stop()
-        await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
-        nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        try {
+          await node.stop()
+          nodeSpinner.succeed('Seeding daemon stopped. Channels finalized.')
+        } catch (err) {
+          nodeSpinner.fail(`Seeding daemon stopped with an error: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          // A clean stop, even one whose node shutdown failed: no state file, so the next start reports no crash.
+          stateStopped = true
+          await stateWriteCurrent?.catch(() => {})
+          await unlink(getStateFile(globalOpts.dataDir)).catch(() => {})
+          await waitAtMost(refuelStopped, GAS_REFUEL_SHUTDOWN_WAIT_MS)
+          // Only once the node is down, and never for long: alert delivery is remote and best effort.
+          await waitAtMost(alerts.record({ kind: 'stopped', severity: 'info', title: 'Seller stopped' }))
+        }
       })
     })
+}
+
+/**
+ * Who starts the seller again after a restart from the dashboard, or null when
+ * nothing would (the restart would stop it for good). Never inferred from
+ * variables a shell inherits: `ANTSEED_SUPERVISED=1` says so explicitly (`0`
+ * turns it off), and otherwise only a Kubernetes container's main process
+ * counts, which the kubelet restarts.
+ */
+export function restartSupervisor(env: NodeJS.ProcessEnv = process.env, pid = process.pid): string | null {
+  if (env.ANTSEED_SUPERVISED === '0') return null
+  if (env.ANTSEED_SUPERVISED === '1') return 'its supervisor'
+  return env.KUBERNETES_SERVICE_HOST && pid === 1 ? 'Kubernetes' : null
 }

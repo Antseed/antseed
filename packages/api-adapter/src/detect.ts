@@ -1,4 +1,5 @@
 import type { SerializedHttpRequest, ServiceApiProtocol } from './types.js';
+import { detectNativeVideoProtocol } from './native-video.js';
 
 const ANTHROPIC_PROVIDER_NAMES = new Set(['anthropic', 'claude-code', 'claude-oauth']);
 const OPENAI_CHAT_PROVIDER_NAMES = new Set(['openai', 'local-llm']);
@@ -19,6 +20,8 @@ export function detectRequestServiceApiProtocol(
   request: Pick<SerializedHttpRequest, 'path' | 'headers'>,
 ): ServiceApiProtocol | null {
   const normalizedPath = request.path.toLowerCase();
+  const videoProtocol = detectNativeVideoProtocol(request.path);
+  if (videoProtocol) return videoProtocol;
   if (normalizedPath.startsWith('/v1/messages') || normalizedPath.startsWith('/v1/complete')) {
     return 'anthropic-messages';
   }
@@ -37,8 +40,16 @@ export function detectRequestServiceApiProtocol(
   ) {
     return 'openai-images';
   }
+  if (normalizedPath.split('?')[0] === '/v1/audio/speech') {
+    return 'openai-audio-speech';
+  }
   if (normalizedPath.startsWith('/v1/systemone')) {
     return 'typesafe-systemone';
+  }
+  const pathOnly = normalizedPath.split('?')[0];
+  // Inference Routing Protocol suggest-only mode (see @antseed/protocol/irp).
+  if (pathOnly === '/v1/routing/models' || pathOnly === '/v1/routing/rank') {
+    return 'irp-suggest';
   }
 
   const hasAnthropicVersionHeader = Object.keys(request.headers)

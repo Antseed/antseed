@@ -202,11 +202,18 @@ function pickShowcase(
   models: OpenRouterModel[],
   popularity: PopularityMap,
   count: number,
+  minSave = 0,
 ): ShowcaseRow[] {
-  const ranked = buildCandidates(offerings, models, popularity).sort(
+  const sorted = buildCandidates(offerings, models, popularity).sort(
     (a, b) => b.created - a.created || b.popularity - a.popularity,
   );
-  if (ranked.length < count) return FALLBACK_ROWS;
+  if (sorted.length < count) return FALLBACK_ROWS;
+  // With minSave, models saving at least that much (percent) go first, still
+  // newest first; the rest only fill in when there are not enough of them.
+  const saving = (c: Candidate) => (1 - c.row.bestUsd / c.row.officialUsd) * 100;
+  const ranked = minSave
+    ? [...sorted.filter(c => saving(c) >= minSave), ...sorted.filter(c => saving(c) < minSave)]
+    : sorted;
 
   // Prefer vendor variety among the top picks, then fill by rank.
   const picked: Candidate[] = [];
@@ -335,11 +342,11 @@ const subscribeMarketFetch = createSharedFetch(async signal => {
 }, 8000);
 
 /** Shared market fetch (session-cached) behind the showcase and pick hooks. */
-function useMarket(): CachedMarket | null {
+function useMarket(enabled = true): CachedMarket | null {
   const [market, setMarket] = useState<CachedMarket | null>(null);
 
   useEffect(() => {
-    if (!ExecutionEnvironment.canUseDOM) return undefined;
+    if (!ExecutionEnvironment.canUseDOM || !enabled) return undefined;
     const cached = readCache();
     if (cached) {
       setMarket(cached);
@@ -354,15 +361,18 @@ function useMarket(): CachedMarket | null {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [enabled]);
 
   return market;
 }
 
-/** The pricing-card rows: live network picks, or the dated fallback snapshot. */
-export function useMarketplaceShowcase(count = 4): ShowcaseRow[] {
-  const market = useMarket();
-  return market ? pickShowcase(market.offerings, market.models, market.popularity, count) : FALLBACK_ROWS;
+/** The pricing-card rows: live network picks, or the dated fallback snapshot.
+    `minSave` (percent) puts the models with the biggest savings first. */
+export function useMarketplaceShowcase(count = 4, {minSave = 0, enabled = true}: {minSave?: number; enabled?: boolean} = {}): ShowcaseRow[] {
+  const market = useMarket(enabled);
+  return market
+    ? pickShowcase(market.offerings, market.models, market.popularity, count, minSave)
+    : FALLBACK_ROWS;
 }
 
 export interface ModelPick {

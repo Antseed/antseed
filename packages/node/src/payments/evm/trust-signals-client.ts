@@ -1,5 +1,5 @@
 import { Interface, type AbstractProvider } from 'ethers';
-import { multicallRead, MULTICALL3_ADDRESS, type MulticallRequest } from './multicall.js';
+import { createCachedMulticallReader, type MulticallRequest } from './multicall.js';
 
 /**
  * Reads every on-chain input of the buyer trust score for a batch of sellers
@@ -108,26 +108,13 @@ class Round {
 }
 
 export class TrustSignalsClient {
-  private _multicallAvailable: Promise<boolean> | undefined;
+  private readonly _read: (requests: MulticallRequest[]) => Promise<Array<unknown[] | null>>;
 
   constructor(
-    private readonly _provider: AbstractProvider,
+    provider: AbstractProvider,
     private readonly _addresses: TrustSignalsAddresses,
-  ) {}
-
-  private async _read(requests: MulticallRequest[]): Promise<Array<unknown[] | null>> {
-    // `multicallRead` probes for Multicall3 with `eth_getCode` on every call;
-    // remember the answer so a discovery cycle costs only the batched reads.
-    this._multicallAvailable ??= this._provider.getCode(MULTICALL3_ADDRESS).then((code) => code !== '0x').catch(() => false);
-    if (await this._multicallAvailable) return multicallRead(this._provider, requests, { assumeDeployed: true });
-    return Promise.all(requests.map(async (request) => {
-      try {
-        const data = await this._provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []) });
-        return [...request.iface.decodeFunctionResult(request.method, data)];
-      } catch {
-        return null;
-      }
-    }));
+  ) {
+    this._read = createCachedMulticallReader(provider);
   }
 
   /**
@@ -135,8 +122,18 @@ export class TrustSignalsClient {
    * id are omitted from the result.
    */
   async read(sellers: readonly string[]): Promise<Map<string, TrustSignals>> {
+    return (await this.readWithMisses(sellers)).signals;
+  }
+
+  /**
+   * Like `read`, and also reports which sellers the registry confirmed have
+   * no agent id, so a caller can tell them apart from sellers whose agent-id
+   * read failed (e.g. a throttled call), which are in neither.
+   */
+  async readWithMisses(sellers: readonly string[]): Promise<{ signals: Map<string, TrustSignals>; unregistered: Set<string> }> {
     const out = new Map<string, TrustSignals>();
-    if (sellers.length === 0) return out;
+    const unregistered = new Set<string>();
+    if (sellers.length === 0) return { signals: out, unregistered };
     const { sellerRegistry, channels, sellerPools, usageAccounting, washTradingRegistry } = this._addresses;
 
     // Round 1: agent ids, wash verdicts, current epoch.
@@ -154,7 +151,11 @@ export class TrustSignalsClient {
     const agentIds = new Map<string, number>();
     for (const call of round1Calls) {
       const agentId = toSafeNumber(round1.value(call.agentId));
-      if (!agentId || agentId <= 0) continue;
+      if (agentId === undefined) continue;
+      if (agentId <= 0) {
+        unregistered.add(call.seller);
+        continue;
+      }
       agentIds.set(call.seller, agentId);
       const signals: TrustSignals = { agentId };
       const flagged = round1.value(call.washFlagged);
@@ -163,7 +164,7 @@ export class TrustSignalsClient {
       if (share !== undefined) signals.washShareBps = share;
       out.set(call.seller, signals);
     }
-    if (agentIds.size === 0) return out;
+    if (agentIds.size === 0) return { signals: out, unregistered };
 
     // Round 2: channel stats, pool power, last epoch's recognized usage.
     const poolsEnabled = Boolean(sellerPools) && epoch !== undefined;
@@ -204,6 +205,6 @@ export class TrustSignalsClient {
         signals.usageShareBps = epoch === 0 ? 0 : shareBps(points, totalPoints);
       }
     }
-    return out;
+    return { signals: out, unregistered };
   }
 }

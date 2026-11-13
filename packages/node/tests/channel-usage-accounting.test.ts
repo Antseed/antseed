@@ -34,6 +34,9 @@ describe('channel usage accounting', () => {
         cumulativeOutputTokens: 9n,
         cumulativeRequestCount: 2n,
         cumulativeOutputImages: 1n,
+        cumulativeVideoGenerations: 0n,
+        cumulativeVideoSeconds: 0n,
+        cumulativeInputCharacters: 0n,
       },
     ]);
   });
@@ -53,6 +56,9 @@ describe('channel usage accounting', () => {
       cumulativeOutputTokens: 5n,
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 0n,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+      cumulativeInputCharacters: 0n,
       services: [],
     });
   });

@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthorizeWalletModal } from './AuthorizeWalletModal';
-import type { ButtonProps } from './Button';
+import type { ButtonProps } from '@antseed/ui';
 import type { PaymentConfig } from '../types';
 
 const state = vi.hoisted(() => ({
@@ -25,7 +25,8 @@ vi.mock('../hooks/useSetOperator', () => ({
 }));
 vi.mock('../layout/ActionModal', () => ({ ActionModal: ({ children }: { children: ReactNode }) => children }));
 vi.mock('./ConnectWalletAction', () => ({ ConnectWalletAction: () => createElement('button', null, 'Connect wallet') }));
-vi.mock('./Button', () => ({
+vi.mock('@antseed/ui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@antseed/ui')>()),
   Button: (props: ButtonProps) => {
     state.buttons.push(props);
     return createElement('button', { disabled: props.disabled }, props.children);

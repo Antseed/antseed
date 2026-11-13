@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { encodeMetadata, decodeMetadata, encodeMetadataForSigning } from '../src/discovery/metadata-codec.js';
-import { METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
+import { encodeMetadata, decodeMetadata, encodeMetadataForSigning, getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS } from '../src/discovery/metadata-codec.js';
+import { LEGACY_METADATA_VERSION, METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
 
 function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
   return {
@@ -32,6 +32,115 @@ function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 }
 
 describe('encodeMetadata / decodeMetadata', () => {
+  function completedRequestMetadata(priceUsd = 0.001): PeerMetadata {
+    return makeMetadata({ providers: [{
+      provider: 'alpha', services: ['route', 'image'], maxConcurrency: 5, currentLoad: 0,
+      defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      serviceApiProtocols: { route: ['irp-suggest'], image: ['openai-images'] },
+      serviceUnitBillingModels: {
+        route: { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd }] } },
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+      },
+    }] });
+  }
+
+  it.each([0, 0.000001, 0.001, 0.04])('round-trips request prices of $%s using the image component layout', price => {
+    const original = completedRequestMetadata(price);
+    const decoded = decodeMetadata(encodeMetadata(original));
+    expect(decoded.version).toBe(METADATA_VERSION);
+    expect(decoded.providers[0]!.serviceUnitBillingModels!.route).toEqual({
+      'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: Math.fround(price) }] },
+    });
+    expect(Math.round(decoded.providers[0]!.serviceUnitBillingModels!.route!['irp-suggest']!.components[0]!.priceUsd * 1_000_000)).toBe(Math.round(price * 1_000_000));
+    expect(decoded.providers[0]!.serviceUnitBillingModels!.image?.['openai-images']?.version).toBe(1);
+    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
+  });
+
+  it('rejects unknown units and model versions in the existing component encoding', () => {
+    const encoded = encodeMetadata(completedRequestMetadata());
+    const price = new Uint8Array(4);
+    new DataView(price.buffer).setFloat32(0, 0.001, false);
+    const marker = new Uint8Array([1, 1, 1, ...price, 0]);
+    const offset = Buffer.from(encoded).indexOf(marker);
+    expect(offset).toBeGreaterThan(0);
+    const invalidVersion = encoded.slice();
+    invalidVersion[offset] = 2;
+    expect(() => decodeMetadata(invalidVersion)).toThrow('model version 2');
+    const invalidUnit = encoded.slice();
+    invalidUnit[offset + 2] = 255;
+    expect(() => decodeMetadata(invalidUnit)).toThrow('component unit');
+    expect(() => decodeMetadata(encoded.slice(0, offset + marker.length - 1))).toThrow();
+  });
+  it('round-trips signed video options in v12', () => {
+    const metadata = makeMetadata({ version: 12 });
+    const video = { durationsSeconds: [5, 10], resolutions: ['720p', '1080p'], aspectRatios: ['16:9', '9:16'], inputs: ['first_frame', 'last_frame'] as const, requiredInputs: ['first_frame'] as const, audio: false };
+    metadata.providers[0]!.serviceCapabilities = { video: { outputs: ['video'], video: { ...video, inputs: [...video.inputs], requiredInputs: [...video.requiredInputs] } } };
+    expect(decodeMetadata(encodeMetadata(metadata)).providers[0]!.serviceCapabilities?.video?.video).toEqual(metadata.providers[0]!.serviceCapabilities.video!.video);
+    expect(decodeMetadata(encodeMetadata(metadata)).version).toBe(12);
+    const changed = structuredClone(metadata);
+    changed.providers[0]!.serviceCapabilities!.video!.video!.durationsSeconds = [5];
+    expect(encodeMetadataForSigning(changed)).not.toEqual(encodeMetadataForSigning(metadata));
+  });
+  it('preserves the existing non-video v12 wire format', () => {
+    const metadata = makeMetadata({
+      version: 12,
+      region: 'us',
+      providers: [{
+        provider: 'test', services: ['text'],
+        defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+        serviceCapabilities: { text: {
+          inputs: ['text'], outputs: ['text'], reasoning: false,
+          toolUse: true, supportedParameters: ['temperature'],
+        } },
+        maxConcurrency: 1, currentLoad: 0,
+      }],
+    });
+    const legacyBytes = Buffer.from(
+      '0caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0275730000018bcfe5680001047465737400010474657874000000000000000000000000000000000000000000010474657874dc010102010b74656d706572617475726500010000000000000000000000' + 'bb'.repeat(65),
+      'hex',
+    );
+
+    expect(Buffer.from(encodeMetadata(metadata))).toEqual(legacyBytes);
+    expect(decodeMetadata(legacyBytes).providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
+  });
+  it('round-trips mixed video and non-video entries without losing empty options', () => {
+    const metadata = makeMetadata({ version: 12 });
+    metadata.providers[0]!.serviceCapabilities = {
+      alpha: { video: { audio: true }, supportedParameters: ['seed'] },
+      beta: { video: {} },
+      gamma: { inputs: ['text'], toolUse: false },
+    };
+
+    const decoded = decodeMetadata(encodeMetadata(metadata));
+    expect(decoded.providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
+    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(metadata));
+  });
+  it('round-trips native video protocols and appended billing units without changing image IDs', () => {
+    const metadata = makeMetadata();
+    const provider = metadata.providers[0]!;
+    provider.serviceApiProtocols = { video: ['venice-video'] };
+    provider.serviceUnitBillingModels = { video: {
+      'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.25 }] },
+    } };
+    const decoded = decodeMetadata(encodeMetadata(metadata));
+    expect(decoded.providers[0]?.serviceApiProtocols).toEqual(provider.serviceApiProtocols);
+    expect(decoded.providers[0]?.serviceUnitBillingModels).toEqual(provider.serviceUnitBillingModels);
+  });
+  it.each([
+    ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
+    ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
+    ['venice-video', 6], ['fal-video', 7], ['irp-suggest', 8],
+  ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
+    const metadata = makeMetadata();
+    const marker = 'billing-wire-id';
+    metadata.providers[0]!.serviceUnitBillingModels = { [marker]: { [protocol]: { version: 1, components: [] } } };
+    const bytes = Buffer.from(encodeMetadata(metadata));
+    const offset = bytes.indexOf(marker);
+    expect(offset).toBeGreaterThan(0);
+    expect(bytes[offset + marker.length]).toBe(wireId);
+    expect(decodeMetadata(bytes).providers[0]!.serviceUnitBillingModels).toEqual(metadata.providers[0]!.serviceUnitBillingModels);
+  });
+
   it('round-trips v12 catalogs with more than 255 service entries', () => {
     const services = Array.from({ length: 300 }, (_, index) => `service-${index}`);
     const servicePricing = Object.fromEntries(
@@ -196,6 +305,35 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.publicAddress).toBe('peer.example.com:6882');
     expect(decoded.providers[0]!.serviceCategories?.['claude-3-opus']).toEqual(['coding', 'privacy']);
     expect(decoded.providers[0]!.serviceApiProtocols?.['claude-3-opus']).toEqual(['anthropic-messages', 'openai-chat-completions']);
+  });
+
+  it('encodes billing units by their canonical positions', () => {
+    const units = ['output_images', 'completed_requests', 'video_generations', 'video_seconds'] as const;
+    const encodedIds = units.map((unit) => {
+      const metadata = makeMetadata({
+        version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+        providers: [{
+          provider: 'future',
+          services: ['svc'],
+          defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+          serviceUnitBillingModels: {
+            svc: { 'openai-images': { version: 1, components: [{ unit, priceUsd: 0.25 }] } },
+          },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        }],
+      });
+      const encoded = encodeMetadata(metadata);
+      expect(decodeMetadata(encoded).providers[0]!.serviceUnitBillingModels?.svc?.['openai-images']?.components[0]?.unit).toBe(unit);
+      const entryPrefix = [3, 115, 118, 99, 4, 1, 1];
+      const entryOffset = encoded.findIndex((_, index) => (
+        entryPrefix.every((byte, relativeIndex) => encoded[index + relativeIndex] === byte)
+      ));
+      expect(entryOffset).toBeGreaterThanOrEqual(0);
+      return encoded[entryOffset + entryPrefix.length];
+    });
+
+    expect(encodedIds).toEqual([0, 1, 2, 3]);
   });
 
   it('round-trips v11 service unit billing models and signs billing bytes', () => {
@@ -372,10 +510,10 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.onChainGhostCount).toBe(2);
   });
 
-  it("round-trips a v8 metadata with sellerContract", () => {
+  it("round-trips v10 metadata with sellerContract", () => {
     const meta: PeerMetadata = {
       peerId: "aa".repeat(20),
-      version: 8,
+      version: 10,
       region: "us-east-1",
       timestamp: 1_700_000_000_000,
       providers: [],
@@ -387,10 +525,10 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.sellerContract).toEqual(meta.sellerContract);
   });
 
-  it("round-trips v8 metadata with no sellerContract", () => {
+  it("round-trips v10 metadata with no sellerContract", () => {
     const meta: PeerMetadata = {
       peerId: "aa".repeat(20),
-      version: 8,
+      version: 10,
       region: "us-east-1",
       timestamp: 1_700_000_000_000,
       providers: [],
@@ -483,5 +621,104 @@ describe('encodeMetadataForSigning', () => {
     const a = encodeMetadataForSigning(metadata);
     const b = encodeMetadataForSigning(metadata);
     expect(a).toEqual(b);
+  });
+});
+
+describe('service health (v13)', () => {
+  function healthMetadata(): PeerMetadata {
+    return makeMetadata({
+      version: SERVICE_HEALTH_METADATA_VERSION,
+      providers: [{
+        provider: 'codex',
+        services: ['gpt-a', 'gpt-b', 'gpt-c'],
+        defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+        servicePricing: { 'gpt-b': { inputUsdPerMillion: 3, outputUsdPerMillion: 4 } },
+        serviceCapabilities: { 'gpt-b': { toolUse: true } },
+        serviceHealth: {
+          'gpt-a': { status: 'healthy', checkedAt: 1_700_000_000_123, source: 'traffic' },
+          'gpt-b': {
+            status: 'failing', checkedAt: 1_700_000_100_000, source: 'probe',
+            failingSince: 1_700_000_000_000, consecutiveFailures: 3, reason: 'timeout',
+          },
+          'gpt-c': { status: 'failing', reason: 'rate_limited', httpStatus: 429, consecutiveFailures: 7 },
+        },
+        maxConcurrency: 5,
+        currentLoad: 0,
+      }],
+    });
+  }
+
+  it('round-trips every health field and re-encodes to the same signed bytes', () => {
+    const original = healthMetadata();
+    const decoded = decodeMetadata(encodeMetadata(original));
+    expect(decoded.version).toBe(13);
+    expect(decoded.providers[0]!.serviceHealth).toEqual(original.providers[0]!.serviceHealth);
+    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
+  });
+
+  it('signs the health status', () => {
+    const original = healthMetadata();
+    const changed = structuredClone(original);
+    changed.providers[0]!.serviceHealth!['gpt-a']!.status = 'failing';
+    expect(encodeMetadataForSigning(changed)).not.toEqual(encodeMetadataForSigning(original));
+  });
+
+  it('rejects unknown status ids', () => {
+    const original = healthMetadata();
+    original.providers[0]!.serviceHealth = { 'gpt-a': { status: 'healthy' } };
+    const bytes = Buffer.from(encodeMetadata(original));
+    const marker = Buffer.from([5, ...Buffer.from('gpt-a'), 1, 0]);
+    const offset = bytes.lastIndexOf(marker);
+    expect(offset).toBeGreaterThan(0);
+    bytes[offset + 6] = 9;
+    expect(() => decodeMetadata(bytes)).toThrow('status id 9');
+  });
+
+  it('ignores service health when encoding older versions', () => {
+    const original = healthMetadata();
+    const v12 = { ...original, version: 12 };
+    const withoutHealth = structuredClone(v12);
+    delete withoutHealth.providers[0]!.serviceHealth;
+    expect(encodeMetadataForSigning(v12)).toEqual(encodeMetadataForSigning(withoutHealth));
+  });
+
+  it('builds the v12 document without failing services', () => {
+    const v12 = getMetadataCodec(12).fromLatest(healthMetadata());
+    expect(v12.version).toBe(12);
+    const provider = v12.providers[0]!;
+    expect(provider.services).toEqual(['gpt-a']);
+    expect(provider.serviceHealth).toBeUndefined();
+    expect(provider.servicePricing).toBeUndefined();
+    expect(provider.serviceCapabilities).toBeUndefined();
+    expect(decodeMetadata(encodeMetadata(v12)).providers[0]!.services).toEqual(['gpt-a']);
+  });
+
+  it('drops a provider from v12 when every service is failing', () => {
+    const latest = healthMetadata();
+    latest.providers[0]!.serviceHealth!['gpt-a'] = { status: 'failing', reason: 'auth' };
+    expect(getMetadataCodec(12).fromLatest(latest).providers).toEqual([]);
+  });
+
+  it('keeps failing services in the v13 document', () => {
+    const v13 = getMetadataCodec(13).fromLatest(healthMetadata());
+    expect(v13.providers[0]!.services).toEqual(['gpt-a', 'gpt-b', 'gpt-c']);
+    expect(v13.providers[0]!.serviceHealth?.['gpt-b']?.status).toBe('failing');
+  });
+});
+
+describe('negotiateMetadataVersion', () => {
+  it('serves the legacy version to buyers that send no version', () => {
+    expect(negotiateMetadataVersion(undefined)).toBe(LEGACY_METADATA_VERSION);
+    expect(negotiateMetadataVersion(Number.NaN)).toBe(LEGACY_METADATA_VERSION);
+  });
+
+  it('serves the newest version the buyer understands', () => {
+    expect(negotiateMetadataVersion(13)).toBe(13);
+    expect(negotiateMetadataVersion(12)).toBe(12);
+    expect(negotiateMetadataVersion(99)).toBe(METADATA_VERSION);
+  });
+
+  it('never serves below the oldest signed version', () => {
+    expect(negotiateMetadataVersion(5)).toBe(SERVED_METADATA_VERSIONS[0]);
   });
 });

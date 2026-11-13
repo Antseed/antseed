@@ -14,13 +14,7 @@ import { QueryClient, type QueryKey } from '@tanstack/query-core';
 /** Credits are polled every 5s while a payment card waits for funds; stay under that. */
 export const CREDITS_FRESH_MS = 4_000;
 /** On-chain channel status only changes on settle/close, which invalidates. */
-export const CHANNELS_FRESH_MS = 20_000;
-/** Rewards accrue per epoch; claims and stakes invalidate. */
-export const REWARDS_FRESH_MS = 60_000;
-/** A failed rewards read is retried after this, not on every 3s home-view tick. */
-export const REWARDS_ERROR_FRESH_MS = 15_000;
-
-const client = new QueryClient({
+export const CHANNELS_FRESH_MS = 20_000;const client = new QueryClient({
   defaultOptions: {
     // The read functions do their own fallbacks; no hidden retries, and a
     // desktop app has no browser "online" signal to wait for.
@@ -91,8 +85,18 @@ export function invalidateChainReads(scope: QueryKey = []): void {
   bump(scope);
 }
 
-/** Drop everything, e.g. when the wallet or chain changes. */
+/**
+ * Drop everything, e.g. when the wallet or chain changes. Bumping the global
+ * generation is enough: no caller asks for the old keys again and they are
+ * garbage-collected. `client.clear()` would also cancel reads in flight, and
+ * their callers would get a CancelledError instead of a result.
+ */
 export function clearChainReads(): void {
+  bump([]);
+}
+
+/** Drop every query and its gc timer (tests); cancels reads in flight. */
+export function disposeChainReads(): void {
   bump([]);
   client.clear();
 }

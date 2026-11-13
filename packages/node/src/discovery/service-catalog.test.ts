@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { buildNetworkServiceOffers } from './service-catalog.js';
 
 describe('buildNetworkServiceOffers', () => {
+  it('leaves out services the seller announces as failing unless asked, and attaches health', () => {
+    const peer = {
+      peerId: 'seller',
+      providers: ['openai'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'model-a': {}, 'model-b': {} } } },
+      providerServiceHealth: { openai: { services: {
+        'model-a': { status: 'failing' as const, reason: 'timeout' as const },
+        'model-b': { status: 'healthy' as const, source: 'traffic' as const },
+      } } },
+    };
+    expect(buildNetworkServiceOffers([peer]).map((offer) => [offer.serviceId, offer.health?.status])).toEqual([['model-b', 'healthy']]);
+    expect(buildNetworkServiceOffers([peer], { includeFailing: true }).map((offer) => offer.serviceId)).toEqual(['model-a', 'model-b']);
+  });
+
   it('projects peer-level verifier advertisements to every service offer', () => {
     const offers = buildNetworkServiceOffers([{
       peerId: 'tee-seller', providers: ['openai'], services: ['model-a', 'model-b'],
@@ -68,6 +82,21 @@ describe('buildNetworkServiceOffers', () => {
       inputUsdPerMillion: 3,
       outputUsdPerMillion: 9,
     });
+  });
+
+  it('keeps the other offers when a peer announces a billing model without components', () => {
+    const offers = buildNetworkServiceOffers([{
+      peerId: 'a'.repeat(40),
+      providers: ['openai'],
+      providerPricing: { openai: { services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
+    }, {
+      peerId: 'b'.repeat(40),
+      providers: ['broken'],
+      providerServiceUnitBillingModels: {
+        broken: { services: { 'image-test': { 'openai-images': { version: 1 } as never } } },
+      },
+    }]);
+    expect(offers.map((offer) => offer.serviceId).sort()).toEqual(['gpt-test', 'image-test']);
   });
 
   it('types typesafe-systemone services as decision offers', () => {

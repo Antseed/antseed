@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { host } from '../host';
 
 const explanation = 'Early withdrawal permanently burns some principal, based on the remaining lock and configured limits. No penalty after expiry. Preview shows the exact burn and payout. Claim rewards separately.';
 
@@ -44,6 +45,6 @@ export function InfoHelp({ label, children, symbol = '?' }: { label: string; chi
     {placement && createPortal(<span id={id} role="tooltip" className="early-exit-help__tooltip" onMouseEnter={keepOpen} onMouseLeave={hideSoon}
       style={{ left: placement.left, top: placement.top, transform: placement.above ? 'translateY(-100%)' : undefined }}>
       {children}
-    </span>, document.body)}
+    </span>, host().portalTarget())}
   </span>;
 }

@@ -87,6 +87,22 @@ type ResolveLookupResultsOptions = {
   onResult?: (result: LookupResult) => void | Promise<void>;
 };
 
+/**
+ * One result per peerId, keeping the newest signed announcement: a seller
+ * that moved hosts can still be listed at its old endpoints for a while.
+ */
+export function preferFreshestResultPerPeer(results: LookupResult[]): LookupResult[] {
+  const best = new Map<string, LookupResult>();
+  for (const result of results) {
+    const peerId = result.metadata.peerId.toLowerCase();
+    const current = best.get(peerId);
+    if (!current || result.metadata.timestamp > current.metadata.timestamp) {
+      best.set(peerId, result);
+    }
+  }
+  return [...best.values()];
+}
+
 export class PeerLookup {
   private readonly config: LookupConfig;
   private nextSubnetStart = 0;
@@ -102,7 +118,7 @@ export class PeerLookup {
    *
    *   1. Wildcard topic, alone. Its broad reach pulls many peers and warms
    *      the local DHT routing table with nodes that already know about
-   *      AntSeed traffic.
+   *      Antseed traffic.
    *   2. Each subnet topic, one at a time, against that hot routing table.
    *      Each subnet only holds ~total/SUBNET_COUNT announcers, which keeps
    *      us well under the K-closest saturation limit that made the single
@@ -245,15 +261,7 @@ export class PeerLookup {
   }
 
   private deduplicateResultsByPeerId(results: LookupResult[]): LookupResult[] {
-    const seen = new Set<string>();
-    const deduped: LookupResult[] = [];
-    for (const result of results) {
-      const peerId = result.metadata.peerId.toLowerCase();
-      if (seen.has(peerId)) continue;
-      seen.add(peerId);
-      deduped.push(result);
-    }
-    return deduped;
+    return preferFreshestResultPerPeer(results);
   }
 
   async findByCapability(capability: string, name?: string): Promise<LookupResult[]> {

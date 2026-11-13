@@ -56,7 +56,7 @@ describe.skipIf(!enabled)('M001 CLI sandbox', () => {
 
   async function contractUint(address: string, signature: string, args: string[] = []): Promise<bigint> {
     const result = await execFile('cast', ['call', address, signature, ...args, '--rpc-url', rpcUrl]);
-    return BigInt(result.stdout.trim().split(/\s/)[0]);
+    return BigInt(result.stdout.trim().split(/\s/)[0]!);
   }
 
   async function runJson(command: string[]): Promise<unknown> {
@@ -76,7 +76,6 @@ describe.skipIf(!enabled)('M001 CLI sandbox', () => {
     out = existingSandboxOut ? resolve(existingSandboxOut) : await mkdtemp(join(tmpdir(), 'antseed-m001-sandbox-'));
     dataDir = await mkdtemp(join(tmpdir(), 'antseed-m001-cli-'));
     config = join(out, 'cli-config.json');
-    await execFile('pnpm', ['--filter', '@antseed/cli', 'build'], { cwd: root, env: process.env });
     const identity = await loadOrCreateIdentity(dataDir);
     walletAddress = identity.wallet.address;
     if (ownsSandbox) {
@@ -139,7 +138,7 @@ describe.skipIf(!enabled)('M001 CLI sandbox', () => {
     await run(['seller', 'stake', '100', '--epochs', '4']);
     const positionsJson = await runJson(['seller', 'pool', 'positions', '--json']) as Array<{ id: number }>;
     expect(positionsJson.length).toBeGreaterThanOrEqual(2);
-    const newestId = String(positionsJson.at(-1).id);
+    const newestId = String(positionsJson.at(-1)!.id);
     await sandbox(['advance-epoch', '1']);
     await run(['seller', 'legacy', 'unstake']);
     expect(await runJson(['seller', 'status', '--json'])).toMatchObject({ onChain: { eligible: true, agentId: Number(agentId) }, onChainError: null });

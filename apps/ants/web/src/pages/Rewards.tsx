@@ -11,6 +11,7 @@ import { Field, Select } from '../components/Field';
 import { LockSlider } from '../components/LockSlider';
 import { poolName } from '../components/Pools';
 import { usePageData } from '../data';
+import { host } from '../host';
 import { poolDataOptions } from '../pool-data';
 import { formatAnts, isZero, sumBig, toBigInt } from '../format';
 
@@ -33,8 +34,9 @@ export function RewardsPage() {
         </>
       ) : null}
       {data ? <RewardRefreshContext.Provider value={{ updating, stale }}>
-        <BuyerRewardsCard data={data} />
-        {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} /> : null}
+        {host().buyerRewards ? <BuyerRewardsCard data={data} /> : null}
+        {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} />
+          : host().buyerRewards ? null : <p className="hint">Connect the wallet that holds your staking positions to see its staking rewards.</p>}
       </RewardRefreshContext.Provider> : null}
     </>
   );
@@ -134,7 +136,8 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
         )}
       </Card>
 
-      <Card className="hero" aria-label="Seller rewards">
+      {/* A host without the Seller page shows seller rewards only when there are some. */}
+      {!host().pages.includes('seller') && nothing && isZero(data.locked.locked) ? null : <Card className="hero" aria-label="Seller rewards">
         <div className="tile-label">Seller rewards</div>
         <p className="hint">Unclaimed AI selling rewards for <AddressLink value={dashboard.address} />—not your wallet balance.</p>
         <div className="hero-value">
@@ -191,7 +194,7 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
           />
         </div>
       )}
-      </Card>
+      </Card>}
     </>
   );
 }

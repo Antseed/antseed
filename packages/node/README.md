@@ -4,9 +4,9 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-blue.svg)](https://www.typescriptlang.org/)
 
-Core protocol SDK for AntSeed — a peer-to-peer AI services network. Providers offer AI services, buyers discover providers via DHT and send requests over encrypted P2P connections.
+Core protocol SDK for Antseed — a peer-to-peer AI services network. Providers offer AI services, buyers discover providers via DHT and send requests over encrypted P2P connections.
 
-> **Important:** AntSeed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service.
+> **Important:** Antseed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service.
 
 ## Installation
 
@@ -135,7 +135,6 @@ interface NodeConfig {
   payments?: {
     enabled?: boolean;
     paymentMethod?: 'crypto';
-    platformFeeRate?: number;
     settlementIdleMs?: number;
     defaultSessionAmountUSDC?: string;
     sellerWalletAddress?: string;
@@ -154,7 +153,7 @@ interface NodeConfig {
 | `dhtPort` | `6881` / `0` | UDP port for DHT. Seller defaults to 6881, buyer uses OS-assigned |
 | `signalingPort` | `6882` | TCP port for P2P signaling and incoming connections (seller only) |
 | `maxUploadBodyBytes` | `64 MiB` | Maximum request body a seller accepts per proxied upload. Raise this for large Codex-style `/v1/responses` payloads while keeping the aggregate pending-upload budget bounded. |
-| `bootstrapNodes` | AntSeed nodes | Additional DHT bootstrap nodes merged with the official AntSeed infrastructure |
+| `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure |
 | `payments` | disabled | Optional seller-side payment channel + settlement lifecycle wiring |
 
 Use `publicAddress` when the DHT announce source IP is not the address buyers should dial, such as Kubernetes or other load-balanced deployments:
@@ -180,7 +179,7 @@ Every node has a secp256k1 identity keypair. The private key (32 bytes, stored a
 Identity loading follows this priority:
 
 1. **Environment variable (recommended for CLI/server)** — if `ANTSEED_IDENTITY_HEX` is set (64 hex chars, optional `0x` prefix), it is used directly and cleared from the environment immediately after read. Use this with secrets managers for production deployments.
-2. **Desktop keychain (recommended for Desktop)** — AntSeed Desktop encrypts the key at rest via Electron `safeStorage` and the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret).
+2. **Desktop keychain (recommended for Desktop)** — Antseed Desktop encrypts the key at rest via Electron `safeStorage` and the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret).
 3. **Custom IdentityStore** — if `identityStore` is passed in `NodeConfig`, it is used to load/save the key (e.g., KMS, HSM).
 4. **Plaintext file (not recommended)** — reads/writes `identity.key` in `dataDir` (`~/.antseed/` by default) with `0600` permissions. Since this key is also your on-chain wallet, avoid storing it unencrypted on disk in production.
 
@@ -236,7 +235,7 @@ const node = new AntseedNode({
 
 ### Desktop App
 
-The AntSeed Desktop app encrypts the identity at rest using Electron's `safeStorage` API. The encryption key is stored in the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret) and the encrypted blob is stored at `~/.antseed/identity.enc`. On first launch, any existing plaintext `identity.key` is migrated to the encrypted store and deleted.
+Antseed Desktop encrypts the identity at rest using Electron's `safeStorage` API. The encryption key is stored in the OS keychain (macOS Keychain / Windows DPAPI / Linux libsecret) and the encrypted blob is stored at `~/.antseed/identity.enc`. On first launch, any existing plaintext `identity.key` is migrated to the encrypted store and deleted.
 
 ## On-Chain Settlement Flow
 
@@ -257,7 +256,6 @@ const node = new AntseedNode({
   payments: {
     enabled: true,
     paymentMethod: 'crypto',
-    platformFeeRate: 0.05,
     defaultSessionAmountUSDC: '1',
     sellerWalletAddress: '0xSeller...',
     paymentConfig: {
@@ -555,9 +553,9 @@ interface ConfigField {
 }
 ```
 
-The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. Plugins are installed with `antseed plugin add <package-name>`.
+The CLI reads these keys from environment variables and passes them as a `Record<string, string>` to the factory function. The CLI installs a provider plugin when a seller adds a provider that uses it: `antseed config seller add-provider <name> --plugin <package-name>`.
 
 ## Links
 
 - [npm](https://www.npmjs.com/package/@antseed/node)
-- [GitHub](https://github.com/AntSeed/node)
+- [GitHub](https://github.com/Antseed/node)

@@ -37,6 +37,15 @@ export interface AntsServerOptions {
   readOnly?: boolean;
   /** Notify the host after an action finishes, including failed actions. */
   onActionFinished?: () => void;
+  /** Serve the web bundle (default). A host that renders the pages itself only needs the API. */
+  serveWeb?: boolean;
+  /**
+   * Keeps this session's activity journal and position history apart from other
+   * sessions sharing `dataDir` (the gateway runs one per console member).
+   */
+  stateKey?: string;
+  /** Rank the chain's RPC endpoints before the first read (default). Off when `chain` is already ranked. */
+  selectRpc?: boolean;
 }
 
 export interface AntsServer {
@@ -101,7 +110,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     }
     return wallet;
   };
-  await context.selectRpc();
+  if (options.selectRpc !== false) await context.selectRpc();
 
   const app = Fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
   app.addHook('onSend', async (_request, reply, payload) => {
@@ -120,19 +129,22 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     if (header !== `Bearer ${token}`) return reply.status(401).send({ ok: false, error: 'Unauthorized' });
   });
 
-  const webDir = path.resolve(__dirname, 'ants-web');
-  try {
-    await app.register(fastifyStatic, { root: webDir, prefix: '/' });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith('/api/')) return reply.status(404).send({ ok: false, error: 'Not found' });
-      return reply.sendFile('index.html');
-    });
-  } catch {
-    // No web bundle (dev mode); the API is still available for the Vite dev server.
+  if (options.serveWeb !== false) {
+    const webDir = path.resolve(__dirname, 'ants-web');
+    try {
+      await app.register(fastifyStatic, { root: webDir, prefix: '/' });
+      app.setNotFoundHandler((request, reply) => {
+        if (request.url.startsWith('/api/')) return reply.status(404).send({ ok: false, error: 'Not found' });
+        return reply.sendFile('index.html');
+      });
+    } catch {
+      // No web bundle (dev mode); the API is still available for the Vite dev server.
+    }
   }
+  const statePrefix = options.stateKey ? `${chain.evmChainId}-${options.stateKey.replace(/[^A-Za-z0-9_-]/g, '_')}` : `${chain.evmChainId}`;
 
   const views = new ViewCache();
-  const historyPath = path.join(dataDir, 'ants-activity', `${chain.evmChainId}-positions.json`);
+  const historyPath = path.join(dataDir, 'ants-activity', `${statePrefix}-positions.json`);
   try {
     const saved = JSON.parse(await readFile(historyPath, 'utf8')) as Array<[number, string]>;
     for (const [positionId, owner] of saved) if (Number.isSafeInteger(positionId) && positionId > 0 && /^0x[0-9a-fA-F]{40}$/.test(owner)) context.localPositionIds.set(positionId, owner);
@@ -153,7 +165,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     await rename(temporary, historyPath);
   };
   // Browser sessions have no wallet at startup; one journal per chain, with jobs tagged by owner.
-  const journalPath = path.join(dataDir, 'ants-activity', browserSigning ? `${chain.evmChainId}-browser.json` : `${chain.evmChainId}-${context.address.toLowerCase()}.json`);
+  const journalPath = path.join(dataDir, 'ants-activity', browserSigning ? `${statePrefix}-browser.json` : `${statePrefix}-${context.address.toLowerCase()}.json`);
   const jobs = new JobRunner({
     onFinish: () => {
       views.invalidate();
@@ -162,7 +174,8 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     },
     ...(!readOnly || browserSigning ? { journalPath } : {}),
   });
-  registerRoutes(app, { ctx: context, jobs, views, readOnly, dataDir, selectedAddress, originBuyer, browserSigning, onAuthorize: options.onAuthorize, rememberTransaction });
+  // A hosted session (no web bundle) does not tell browsers where the host keeps its files.
+  registerRoutes(app, { ctx: context, jobs, views, readOnly, dataDir: options.serveWeb === false ? null : dataDir, selectedAddress, originBuyer, browserSigning, onAuthorize: options.onAuthorize, rememberTransaction });
   if (browserSigning) {
     app.post<{ Body: { address?: string; chainId?: number; refresh?: boolean; disconnect?: boolean } }>('/api/wallet', async (request, reply) => {
       const body = request.body ?? {};

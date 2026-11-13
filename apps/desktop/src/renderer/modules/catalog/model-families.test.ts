@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { availableModelFamilies, modelFamilyLabel } from './model-families.js';
+import { availableModelFamilies, modelFamilyLabel } from '@antseed/ui';
 
 test('resolves the family from the model label even when the provider is a transport slug', () => {
   assert.equal(modelFamilyLabel({ provider: 'openai', label: 'GLM 5.2' }), 'Z.ai');

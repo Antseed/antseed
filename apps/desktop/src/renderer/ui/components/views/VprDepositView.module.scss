@@ -11,7 +11,7 @@
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  max-width: 392px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -38,8 +38,8 @@
   text-align: left;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: #0e0e12;
-  color: #ffffff;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   font-size: 15px;
   font-weight: 650;
   line-height: 20px;
@@ -86,19 +86,6 @@
 
 .methodGroup > button {
   justify-self: stretch;
-}
-
-/* Leading Fun-logo chip — .methodCtaIcon's geometry, tinted from the CTA's
-   own text color so it holds up in both themes. */
-.funCtaIcon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 /* Text block takes the middle so the badge cluster hugs the right edge,
@@ -181,6 +168,22 @@
 
 .methodBadges svg {
   display: block;
+}
+
+.peerMark,
+.paymentRailMark {
+  display: block;
+  object-fit: contain;
+}
+
+.peerMark {
+  border-radius: 7px;
+}
+
+.paymentRailMark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
 }
 
 /* Trailing chevron on a method row — quiet "this opens a screen" affordance. */
@@ -280,6 +283,10 @@
   line-height: 14px;
 }
 
+.amountHintWarn {
+  color: var(--text-secondary);
+}
+
 .amountRow {
   display: flex;
   align-items: stretch;
@@ -371,18 +378,6 @@
   font-size: 11px;
   line-height: 14px;
   color: var(--text-secondary);
-}
-
-.methodHint {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
-  text-align: center;
-}
-
-.methodHint strong {
-  color: var(--text-primary);
-  font-weight: 600;
 }
 
 .addressRow {
@@ -538,29 +533,6 @@
   color: var(--brand);
 }
 
-.cardPayButton {
-  width: 100%;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 16px;
-  border: none;
-  border-radius: 999px;
-  background: var(--brand);
-  color: var(--bg-card, #fff);
-  font-size: 15px;
-  font-weight: 650;
-  cursor: pointer;
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
-}
-
-.cardPayButton:hover {
-  filter: brightness(1.05);
-  box-shadow: var(--shadow-sm);
-}
-
 .cardNotice {
   color: var(--accent-red, #d64545);
   font-size: 12px;
@@ -593,12 +565,25 @@
   flex: 0 0 auto;
 }
 
-.secureNote {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+/* Add funds: the balance beside the ways to add to it, when there's room. */
+.chooseStack {
+  gap: 14px;
+}
+
+@media (min-width: 1040px) {
+  .chooseStack {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    column-gap: 24px;
+    align-items: start;
+
+    > * {
+      grid-column: 2;
+    }
+
+    > :first-child {
+      grid-column: 1;
+      grid-row: 1 / span 6;
+    }
+  }
 }

@@ -2,6 +2,7 @@ import { Button, Card } from './ui';
 import { Modal } from '@antseed/ui';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { host } from '../host';
 import { useApp } from '../app-context';
 import { describeError } from '../format';
 import { useJobs } from '../jobs';
@@ -29,7 +30,7 @@ export function ActionDialog({ title, children, onClose, busy = false }: { title
       <ActionDialogContext.Provider value={childBusy}>{children}</ActionDialogContext.Provider>
     </Modal>
   );
-  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, host().portalTarget());
 }
 
 interface ConfirmProps {

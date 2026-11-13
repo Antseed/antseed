@@ -15,8 +15,7 @@ import type {
 } from '../../src/api-types';
 
 import { IndexerSyncingError } from '../../src/read-state';
-
-const TOKEN_KEY = 'ants.dashboard.token';
+import { host, TOKEN_KEY } from './host';
 
 export interface DashboardConfig {
   address: string;
@@ -29,7 +28,7 @@ export interface DashboardConfig {
   evmChainId: number;
   walletRpcUrl?: string;
   readOnly: boolean;
-  dataDir: string;
+  dataDir: string | null;
 }
 
 export interface WithdrawPreview {
@@ -64,11 +63,15 @@ export function captureToken(): void {
   } catch {
     /* storage unavailable: the app will show the auth gate */
   }
-  const page = new URLSearchParams(window.location.hash.slice(1)).get('page');
-  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/${page === 'rewards' ? 'rewards' : 'stake'}`);
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const pool = Number(params.get('pool'));
+  const route = params.get('page') === 'rewards' ? 'rewards' : Number.isSafeInteger(pool) && pool > 0 ? `stake?pool=${pool}` : 'stake';
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/${route}`);
 }
 
+/** The standalone session token; an embedded dashboard is authenticated by its host instead. */
 export function getToken(): string | null {
+  if (host().embedded) return 'host';
   try {
     return window.sessionStorage.getItem(TOKEN_KEY);
   } catch {
@@ -88,7 +91,7 @@ export function onUnauthorized(listener: () => void): () => void {
 type Envelope<T> = { ok: true; data: T } | { ok: false; state: 'syncing' } | { ok: false; error: string };
 
 export async function request<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const headers: Record<string, string> = { Authorization: `Bearer ${getToken() ?? ''}` };
+  const headers: Record<string, string> = { ...host().headers() };
   let body: string | undefined;
   if (init?.body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -96,7 +99,7 @@ export async function request<T>(path: string, init?: { method?: string; body?: 
   }
   let response: Response;
   try {
-    response = await fetch(path, { method: init?.method ?? 'GET', headers, body });
+    response = await fetch(host().apiUrl(path), { method: init?.method ?? 'GET', headers, body });
   } catch (error) {
     throw new ApiError(`Network error: ${error instanceof Error ? error.message : String(error)}`, 0);
   }
@@ -161,4 +164,6 @@ export const api = {
   job: (id: string) => get<JobView>(`/api/jobs/${encodeURIComponent(id)}`),
   withdrawPreview: (positionIds: number[]) => post<WithdrawPreview>('/api/positions/withdraw/preview', { positionIds }),
   startJob: (path: string, body: unknown) => post<JobView>(path, body),
+  freeTierCode: (body: { buyer: string; expiresAt: number; signature?: string }) =>
+    post<{ code: string; staker: string; buyer: string; expiresAt: number }>('/api/free-tier/code', body),
 };

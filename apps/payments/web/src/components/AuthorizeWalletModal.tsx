@@ -4,7 +4,7 @@ import { useAccount, useDisconnect } from 'wagmi';
 import { ActionModal } from '../layout/ActionModal';
 import { useSetOperator } from '../hooks/useSetOperator';
 import type { PaymentConfig } from '../types';
-import { Button } from './Button';
+import { Button } from '@antseed/ui';
 import { ConnectWalletAction } from './ConnectWalletAction';
 
 interface AuthorizeWalletModalProps {
@@ -78,7 +78,7 @@ export function AuthorizeWalletModal({
             style={{ top: tooltipPos.top, left: tooltipPos.left }}
           >
             <p>
-              Your AntSeed signer lives on this node and authorizes spending, but it
+              Your Antseed signer lives on this node and authorizes spending, but it
               never holds USDC or ANTS. To <strong>withdraw funds</strong>,{' '}
               <strong>claim ANTS rewards</strong>, or{' '}
               <strong>close a channel</strong>, you need to designate an external

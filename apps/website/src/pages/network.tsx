@@ -12,7 +12,7 @@ import styles from './network.module.css';
  * emission caps) lives in /docs and is linked, not repeated.
  */
 
-const SOURCE = 'https://github.com/AntSeed/antseed/tree/main';
+const SOURCE = 'https://github.com/Antseed/antseed/tree/main';
 
 const STAGES = [
   {name: 'Find', label: '01 / FIND', title: 'Your device finds providers itself.', detail: 'It asks Mainline DHT, the same network BitTorrent uses, for provider addresses, then reads each provider’s signed listing: which models, at what price.'},
@@ -242,7 +242,7 @@ const FAILURES = [
 const STACK = [
   ['05', 'Reputation', 'Trust scoring and identity signals', 'reputation', 'reputation'],
   ['04', 'Payments', 'USDC channels and settlement', 'payments', 'payments'],
-  ['03', 'Metering', 'Counting usage and signing receipts', 'metering', 'metering'],
+  ['03', 'Metering', 'Counting usage into each signed payment', 'payments', 'metering'],
   ['02', 'Transport', 'Verified peers and encrypted traffic', 'transport', 'p2p'],
   ['01', 'Discovery', 'Finding peers and signed listings', 'discovery', 'discovery'],
 ];
@@ -292,7 +292,7 @@ export default function NetworkPage() {
             <Reveal className={styles.moneyCol}>
               <h3>USDC pays for the work.</h3>
               <ul>
-                <li>You top up by card in the AI VPN, or with USDC from the CLI.</li>
+                <li>You top up by card in Antseed Desktop, or with USDC from the CLI.</li>
                 <li>Before the first request, a budget is reserved. After each response, you sign the running total.</li>
                 <li>The provider settles on Base and the unused budget returns to you.</li>
               </ul>

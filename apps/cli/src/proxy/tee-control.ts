@@ -36,7 +36,9 @@ export class TeeControl {
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, method: string, path: string,
-    snapshot: () => TeeSnapshot, check: (peerId: string) => Promise<void>): Promise<void> {
+    snapshot: () => TeeSnapshot, check: (peerId: string) => Promise<void>,
+    /** True when the caller already proved it is the local gateway (control secret). */
+    gatewayAuthenticated = false): Promise<void> {
     const reply = (status: number, body: unknown): void => {
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
       res.end(JSON.stringify(body))
@@ -46,8 +48,8 @@ export class TeeControl {
     const remote = req.socket.remoteAddress
     if (!this.ready || req.headers.origin !== undefined
       || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote ?? '')
-      || Buffer.byteLength(supplied) !== Buffer.byteLength(expected)
-      || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+      || (!gatewayAuthenticated && (Buffer.byteLength(supplied) !== Buffer.byteLength(expected)
+        || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))))) {
       reply(403, { error: 'Local verification authorization required' })
       return
     }

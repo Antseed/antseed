@@ -5,7 +5,9 @@ import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
  * Live network stats from Antscan (the Antseed Base explorer), replacing
  * hand-updated numbers in marketing copy. Fetches the on-chain
  * `networkSnapshot` from Antscan's public GraphQL API (CORS: *) and
- * formats values in the site's compact style ("95B+", "$188K+").
+ * formats values in the site's compact style ("95B+", "$188K+"). Token
+ * totals come from Antscan's `/api/totals`, which adds buyer-reported
+ * free-tier usage to the paid on-chain counters.
  *
  * SSR / hydration: the initial state is the FALLBACK constant on both the
  * server and the first client render (React #418), so the static build
@@ -20,7 +22,8 @@ import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
  */
 
 const ANTSCAN_GRAPHQL = 'https://antscan.co/graphql';
-const CACHE_KEY = 'as-network-stats-v1';
+const ANTSCAN_TOTALS = 'https://antscan.co/api/totals';
+const CACHE_KEY = 'as-network-stats-v2';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 const STATS_QUERY = `{
@@ -47,8 +50,15 @@ interface SnapshotResponse {
   };
 }
 
+interface TotalsResponse {
+  totalInputTokens: string;
+  totalOutputTokens: string;
+  freeInputTokens: string;
+  freeOutputTokens: string;
+}
+
 export interface NetworkStats {
-  /** Total settled tokens (input + output), e.g. "95B+" */
+  /** Total tokens served, paid plus free (input + output), e.g. "95B+" */
   tokens: string;
   /** Total settled USDC volume, e.g. "$188K+" */
   revenue: string;
@@ -94,10 +104,14 @@ function compact(n: number): string {
   return `${Math.floor(n)}`;
 }
 
-function toStats(res: SnapshotResponse): NetworkStats | null {
+function toStats(res: SnapshotResponse, totals: TotalsResponse | null): NetworkStats | null {
   const snap = res.data?.networkSnapshot;
   if (!snap) return null;
-  const tokens = Number(snap.totalInputTokens) + Number(snap.totalOutputTokens);
+  const paidTokens = Number(snap.totalInputTokens) + Number(snap.totalOutputTokens);
+  const freeTokens = totals
+    ? Number(totals.freeInputTokens) + Number(totals.freeOutputTokens)
+    : 0;
+  const tokens = paidTokens + (Number.isFinite(freeTokens) ? freeTokens : 0);
   const revenueUsd = Number(snap.totalVolumeUsdc) / 1e6; // USDC has 6 decimals
   if (!Number.isFinite(tokens) || !Number.isFinite(revenueUsd) || tokens <= 0 || revenueUsd <= 0) {
     return null;
@@ -153,6 +167,10 @@ export function useNetworkStats(): NetworkStats {
     let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
+    // Free-tier totals are optional: if /api/totals fails, show paid only.
+    const totalsPromise = fetch(ANTSCAN_TOTALS, {signal: controller.signal})
+      .then(r => (r.ok ? (r.json() as Promise<TotalsResponse>) : null))
+      .catch(() => null);
     fetch(ANTSCAN_GRAPHQL, {
       method: 'POST',
       headers: {'content-type': 'application/json'},
@@ -160,9 +178,10 @@ export function useNetworkStats(): NetworkStats {
       signal: controller.signal,
     })
       .then(r => (r.ok ? (r.json() as Promise<SnapshotResponse>) : null))
-      .then(res => {
+      .then(async res => {
+        const totals = await totalsPromise;
         if (cancelled || !res) return;
-        const live = toStats(res);
+        const live = toStats(res, totals);
         if (live) {
           writeCache(live);
           setStats(live);

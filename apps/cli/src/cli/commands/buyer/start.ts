@@ -6,20 +6,32 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
+import { networkNodeOptions } from '../../../config/network.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
-import { BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
-import { DepositWatcher } from '../../../proxy/deposit-watcher.js'
+import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
+import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } from '../../../proxy/deposit-watcher.js'
+import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
+import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
+import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
-import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
+import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
+import { BuyerTelemetry } from '../../../telemetry/buyer.js'
+import { formatToolHints, toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
+
+const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
 interface LocalSeederInfo {
   dhtPort: number
@@ -52,6 +64,45 @@ export function buildRouterRuntimeEnvFromBuyerConfig(buyerConfig: BuyerCLIConfig
   }
 }
 
+/**
+ * Whether a supervisor restarts this process when it exits, so the buyer may
+ * accept `POST /_antseed/restart`. Explicit opt-in only (ANTSEED_SUPERVISED=1,
+ * set by the server installer's systemd unit, a Docker restart policy,
+ * launchd, pm2, …): systemd's INVOCATION_ID is not a signal, since desktop
+ * terminals running as user units pass it on to every shell they open, and a
+ * buyer started by hand there would exit and never come back.
+ */
+export function isSupervisedProcess(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['ANTSEED_SUPERVISED']?.trim() === '1'
+}
+
+/**
+ * Keeps the buyer running when whoever reads its output is gone (a gateway
+ * that spawned it and was SIGKILLed): writes to the dead pipe fail with EPIPE,
+ * which would otherwise crash the process. Other stream errors still throw.
+ */
+export function ignoreBrokenPipes(streams: NodeJS.EventEmitter[] = [process.stdout, process.stderr]): void {
+  for (const stream of streams) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE') throw err
+    })
+  }
+}
+
+/**
+ * The "Configure your tools" lines printed once the proxy listens. OpenAI
+ * clients need the base URL with /v1; Anthropic clients use the root.
+ */
+export function buyerToolHintLines(proxyUrl: string, toolHints: ToolHint[]): string[] {
+  if (toolHints.length > 0) {
+    return formatToolHints(toolHints, proxyUrl).map((line) => `  ${line}`)
+  }
+  return [
+    `  export ANTHROPIC_BASE_URL=${toolHintBaseUrl('ANTHROPIC_BASE_URL', proxyUrl)}`,
+    `  export OPENAI_BASE_URL=${toolHintBaseUrl('OPENAI_BASE_URL', proxyUrl)}`,
+  ]
+}
+
 export function resolveBuyerRouterName(options: { router?: string }): string {
   return (options.router as string | undefined) ?? 'local'
 }
@@ -59,11 +110,12 @@ export function resolveBuyerRouterName(options: { router?: string }): string {
 export function buildBuyerBootstrapEntries(
   configuredBootstrapNodes: string[] | undefined,
   localSeederDhtPort?: number,
+  noOfficialBootstrap = false,
 ): string[] {
   const configured = Array.isArray(configuredBootstrapNodes)
     ? configuredBootstrapNodes.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
     : []
-  const baseEntries = configured.length > 0
+  const baseEntries = configured.length > 0 || noOfficialBootstrap
     ? configured
     : OFFICIAL_BOOTSTRAP_NODES.map((node) => `${node.host}:${node.port}`)
   const entries = [...baseEntries]
@@ -200,7 +252,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
     .option('--verifiers <ids>', "ordered, comma-separated verifier SDK ids to verify sellers with (default: the seller's advertised default if trusted)")
     .option('--require-verifier', 'refuse to route unless a verifier SDK verifies the seller (default: verify but route anyway)')
     .option('--no-verifier', 'disable seller verification entirely')
-    .action(async (options) => {
+    .action(async (options, command: Command) => {
+      ignoreBrokenPipes()
       const globalOpts = getGlobalOptions(buyerCmd)
       const config = await loadConfig(globalOpts.config)
       const logFilter = typeof options.logFilter === 'string' ? options.logFilter.trim() : ''
@@ -215,6 +268,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
+      // Before any spinner: an encrypted wallet key with no passphrase configured is asked for on a terminal.
+      await walletPassphraseForStart(globalOpts.dataDir)
+
       const runtimeOverrides = buildBuyerRuntimeOverridesFromFlags({
         port: options.port as number | undefined,
         maxInputUsdPerMillion: options.maxInputUsdPerMillion as number | undefined,
@@ -228,7 +284,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       })
 
       let router
-      let toolHints: Array<{ name: string; envVar: string }> = []
+      let toolHints: ToolHint[] = []
       const routerName = resolveBuyerRouterName({ router: options.router as string | undefined })
 
       if (options.instance) {
@@ -276,7 +332,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const seederInfo = await getLocalSeederInfo(globalOpts.dataDir)
-      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort)
+      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort, config.network?.noOfficialBootstrap)
       const bootstrapNodes = toBootstrapConfig(parseBootstrapList(allBootstrapEntries))
 
       const nodeSpinner = ora('Connecting to P2P network...').start()
@@ -286,11 +342,14 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const cryptoOverrides = config.payments?.crypto
       const chainConfig = resolveChainConfig({
         chainId: cryptoOverrides?.chainId,
-        rpcUrl: cryptoOverrides?.rpcUrl,
+        rpcUrl: resolveBaseRpcUrlOverride() ?? cryptoOverrides?.rpcUrl,
         depositsContractAddress: cryptoOverrides?.depositsContractAddress,
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        verificationContractAddress: cryptoOverrides?.verificationContractAddress,
+        verificationResultsAddress: cryptoOverrides?.verificationResultsAddress,
+        verificationPointsPolicyAddress: cryptoOverrides?.verificationPointsPolicyAddress,
       })
       const settlementEnabled = settlementEnv ?? true
 
@@ -301,7 +360,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       if (settlementEnabled && settlementEnv !== true) {
         const rpcUp = await isRpcReachable(chainConfig.rpcUrl)
         if (!rpcUp) {
-          console.log(chalk.yellow(`Chain RPC not answering at ${chainConfig.rpcUrl} — payments stay enabled; on-chain reads resume automatically once it is reachable.`))
+          console.log(chalk.yellow(`Chain RPC not answering at ${redact(chainConfig.rpcUrl)} — payments stay enabled; on-chain reads resume automatically once it is reachable.`))
           console.log(chalk.dim('Set ANTSEED_ENABLE_SETTLEMENT=false to run without payments.'))
         }
       }
@@ -329,11 +388,16 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
+          // Live DIFF verdicts on AntseedVerificationResults (found through the
+          // KBF audits contract) cut a service's effective reputation to 10%.
+          ...(chainConfig.verificationContractAddress ? { verificationContractAddress: chainConfig.verificationContractAddress } : {}),
+          ...(chainConfig.verificationResultsAddress ? { verificationResultsAddress: chainConfig.verificationResultsAddress } : {}),
+          // The seller's verification points multiplier, when below 100%, cuts its trust score.
+          ...(chainConfig.verificationPointsPolicyAddress ? { verificationPointsPolicyAddress: chainConfig.verificationPointsPolicyAddress } : {}),
           chainId: chainConfig.evmChainId,
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))
             : '1000000',
-          platformFeeRate: config.payments?.platformFeeRate,
           // $0.30 overdraft window per channel — large enough that a single
           // typical long-context request (~$0.05–$0.15 on the priciest
           // published models) fits within verifiedCost + maxPerRequest, so the
@@ -342,6 +406,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // seller can extract via an inflated 402 target (per 402 round trip).
           maxPerRequestUsdc: config.payments?.maxPerRequestUsdc ?? '300000',
           maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
+          ...(config.payments?.maxVideoRequestUsdc ? { maxVideoRequestUsdc: config.payments.maxVideoRequestUsdc } : {}),
+          ...(config.payments?.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           disableMetadataV2Services: effectiveBuyerConfig.disableMetadataV2Services,
         }
       }
@@ -388,6 +454,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         role: 'buyer',
         bootstrapNodes,
         allowPrivateIPs: true,
+        ...networkNodeOptions(config.network),
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,
@@ -395,9 +462,18 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         maxStreamDurationMs: effectiveBuyerConfig.maxStreamDurationMs,
         payments: paymentsConfig,
         verification: effectiveBuyerConfig.verification,
+        ...(config.buyer.freeTierDelegations ? { freeTierDelegations: config.buyer.freeTierDelegations } : {}),
       })
 
       node.setRouter(router)
+      // `antseed buyer free-tier share` writes new delegations to the config
+      // file; pick them up without a restart.
+      const freeTierDelegationsReload = setInterval(() => {
+        void loadConfig(globalOpts.config)
+          .then((latest) => node.setFreeTierDelegations(latest.buyer.freeTierDelegations ?? []))
+          .catch(() => {})
+      }, 60_000)
+      freeTierDelegationsReload.unref()
 
       try {
         await node.start()
@@ -407,18 +483,29 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
+      // The gateway's chain reads for workspace wallets (balances, their deposit
+      // watchers) share one rate-aware provider and one cache; see
+      // proxy/chain-rpc.ts. The default wallet keeps its own clients.
+      const chainReader = paymentsConfig?.enabled
+        ? new CachedBuyerChainReader({
+            provider: sharedChainProvider(chainConfig),
+            depositsAddress: chainConfig.depositsContractAddress,
+            usdcAddress: chainConfig.usdcContractAddress,
+          })
+        : null
+      const newDepositsClient = (): DepositsClient => new DepositsClient({
+        rpcUrl: chainConfig.rpcUrl,
+        ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+        contractAddress: chainConfig.depositsContractAddress,
+        usdcAddress: chainConfig.usdcContractAddress,
+        evmChainId: chainConfig.evmChainId,
+      })
+
       if (paymentsConfig?.enabled) {
         try {
           const identity = node.identity!
           const address = identity.wallet.address
-          const depositsClient = new DepositsClient({
-            rpcUrl: chainConfig.rpcUrl,
-            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
-            contractAddress: chainConfig.depositsContractAddress,
-            usdcAddress: chainConfig.usdcContractAddress,
-            evmChainId: chainConfig.evmChainId,
-          })
-          const account = await depositsClient.getBuyerBalance(address)
+          const account = await newDepositsClient().getBuyerBalance(address)
           console.log(chalk.dim(`Wallet: ${address}`))
           const availUsdc = Number(account.available) / 1_000_000
           console.log(chalk.dim(`Deposits available: ${availUsdc.toFixed(6)} USDC`))
@@ -430,12 +517,22 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const proxyPort = effectiveBuyerConfig.proxyPort
       const proxySpinner = ora(`Starting local proxy on port ${proxyPort}...`).start()
       let verifierPolicy: VerifierPolicy | undefined
+      // `buyer.verifier` in the config, unless a verifier flag is given: the flags then decide alone.
+      const verifierFlags = command.getOptionValueSource('verifier') === 'cli'
+        || options.verifiers !== undefined || options.requireVerifier !== undefined
+      let verifierInput: Parameters<typeof resolveVerifierPolicy>[0]
+      if (verifierFlags) {
+        verifierInput = { verifier: options.verifier, verifiers: options.verifiers, requireVerifier: options.requireVerifier }
+      } else {
+        const configuredVerifier = effectiveBuyerConfig.verifier ?? {}
+        verifierInput = {
+          verifier: configuredVerifier.enabled,
+          ...(configuredVerifier.prefer?.length ? { verifiers: configuredVerifier.prefer.join(',') } : {}),
+          requireVerifier: configuredVerifier.require,
+        }
+      }
       try {
-        verifierPolicy = resolveVerifierPolicy({
-          verifier: options.verifier,
-          verifiers: options.verifiers,
-          requireVerifier: options.requireVerifier,
-        })
+        verifierPolicy = resolveVerifierPolicy(verifierInput)
       } catch (err) {
         console.error(chalk.red((err as Error).message))
         process.exit(1)
@@ -460,17 +557,52 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // Extra buyer identities pay through this same node. Each gets its own
       // deposit watcher once watchers can run (see below).
-      let createDepositWatcher: ((identity: Identity) => DepositWatcher) | null = null
+      let createDepositWatcher: ((identity: Identity, shared?: boolean) => DepositWatcher) | null = null
       const identityWatchers: DepositWatcher[] = []
+      // A request can load its identity as soon as the proxy listens, before
+      // watchers can run; those identities get their watcher once they can.
+      const unwatchedIdentities: Array<[string, Identity]> = []
+      const watchIdentity = (name: string, identity: Identity): void => {
+        if (!createDepositWatcher) {
+          unwatchedIdentities.push([name, identity])
+          return
+        }
+        // Every identity (workspace wallet) gets its own watcher so the gateway
+        // can read and promote it via /_antseed/deposits/*?identity=<name>.
+        const watcher = createDepositWatcher(identity, true)
+        if (effectiveBuyerConfig.autoSweep !== false) watcher.startIdle()
+        identityWatchers.push(watcher)
+        proxy.setIdentityDepositWatcher(name, watcher)
+      }
       const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
         console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
-        if (!createDepositWatcher || effectiveBuyerConfig.autoSweep === false) return
-        const watcher = createDepositWatcher(identity)
-        watcher.startIdle()
-        identityWatchers.push(watcher)
+        watchIdentity(name, identity)
       })
 
+      // One graceful shutdown path for signals and for a gateway-requested
+      // restart (`POST /_antseed/restart`, which then exits with code 75).
+      // A hung stop (node.stop() waiting on the network) must still end the
+      // process: the port is already closed, and a supervisor restarts only
+      // a process that exits.
+      let shutdownPromise: Promise<void> | null = null
+      const runShutdown = (exitCodeOnTimeout = 1): Promise<void> => {
+        if (!shutdownPromise) {
+          setTimeout(() => {
+            console.error(chalk.red(`Shutdown did not finish within ${SHUTDOWN_DEADLINE_MS / 1000} s; exiting.`))
+            process.exit(exitCodeOnTimeout)
+          }, SHUTDOWN_DEADLINE_MS).unref()
+          shutdownPromise = shutdown()
+        }
+        return shutdownPromise
+      }
+
+      // Anonymous request telemetry (docs/telemetry.md), following `telemetry.enabled` in the config live.
+      const buyerTelemetry = new BuyerTelemetry({
+        configPath: globalOpts.config,
+        getDistinctId: () => node.identity?.wallet.address ?? null,
+      })
       const proxy = new BuyerProxy({
+        telemetry: buyerTelemetry,
         buyerIdentities,
         port: proxyPort,
         node,
@@ -478,10 +610,40 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
+        minPeerReputation: effectiveBuyerConfig.minPeerReputation,
+        maxPricing: effectiveBuyerConfig.maxPricing.defaults,
+        maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
+        settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
+        ...(chainReader ? { balanceReader: chainReader } : {}),
+        ...(isSupervisedProcess()
+          ? {
+              onRestartRequested: async () => {
+                try {
+                  await runShutdown(BUYER_RESTART_EXIT_CODE)
+                } finally {
+                  process.exit(BUYER_RESTART_EXIT_CODE)
+                }
+              },
+            }
+          : {}),
       })
       let ownsProxyListener = false
+      let depositWatcher: DepositWatcher | null = null
+      let depositWatchHub: DepositWatchHub | null = null
+      // Set before the proxy listens: a restart can be requested from then on,
+      // and stops whatever has started by the time it runs.
+      const shutdown = async (): Promise<void> => {
+        nodeSpinner.start('Shutting down...')
+        depositWatcher?.stop()
+        for (const watcher of identityWatchers) watcher.stop()
+        depositWatchHub?.stop()
+        if (ownsProxyListener) await proxy.stop()
+        await buyerTelemetry.close()
+        await node.stop()
+        nodeSpinner.succeed('Disconnected. All channels finalized.')
+      }
 
       try {
         await proxy.start()
@@ -504,11 +666,16 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         }
       }
 
+      buyerTelemetry.started({
+        paymentsEnabled: Boolean(paymentsConfig?.enabled),
+        verifierEnabled: Boolean(verifierPolicy),
+        ownsProxyPort: ownsProxyListener,
+      })
+
       // Hot-wallet deposit watcher (auto-sweep): incoming USDC is swept into
       // the deposits balance gaslessly via the relayer network. Skipped when
       // another daemon owns the proxy port — it already runs a watcher, and a
       // second signer against the same wallet would race it.
-      let depositWatcher: DepositWatcher | null = null
       const depositRelayAddress = cryptoOverrides?.depositRelayAddress || chainConfig.depositRelayAddress
       let watcherAbsence: DepositWatcherAbsenceReason | null = null
       if (!ownsProxyListener) {
@@ -521,24 +688,45 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       if (watcherAbsence !== null) {
         proxy.setDepositWatcher(null, watcherAbsence)
       }
-      if (ownsProxyListener && paymentsConfig?.enabled && depositRelayAddress) {
-        createDepositWatcher = (identity) => new DepositWatcher({
+      if (ownsProxyListener && chainReader && depositRelayAddress) {
+        // One poll loop for the workspace wallets: each tick is a single
+        // batched read of all due wallets' USDC balances, shared with the
+        // balance cache. The default wallet polls on its own timer.
+        const reader = chainReader
+        depositWatchHub = new DepositWatchHub({
+          // A wallet whose balance was read a moment ago (the console's
+          // balance request) is not read again for the watcher.
+          readBalances: (addresses) => reader.usdcBalancesForWatch(addresses, DEPOSIT_WATCH_ACTIVE_INTERVAL_MS / 2),
+        })
+        const hub = depositWatchHub
+        const newRelayClient = (): DepositRelayClient => new DepositRelayClient({
+          rpcUrl: chainConfig.rpcUrl,
+          ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+          contractAddress: depositRelayAddress,
+          evmChainId: chainConfig.evmChainId,
+        })
+        const sharedRelayClient = constantRelayReads(newRelayClient().withProvider(sharedChainProvider(chainConfig)))
+        createDepositWatcher = (identity, shared = false) => new DepositWatcher({
           wallet: identity.wallet,
           address: identity.wallet.address,
-          depositsClient: new DepositsClient({
-            rpcUrl: chainConfig.rpcUrl,
-            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
-            contractAddress: chainConfig.depositsContractAddress,
-            usdcAddress: chainConfig.usdcContractAddress,
-            evmChainId: chainConfig.evmChainId,
-          }),
-          relayClient: new DepositRelayClient({
-            rpcUrl: chainConfig.rpcUrl,
-            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
-            contractAddress: depositRelayAddress,
-            evmChainId: chainConfig.evmChainId,
-          }),
+          ...(shared
+            ? { depositsClient: reader.reads, relayClient: sharedRelayClient, scheduler: hub }
+            : { depositsClient: newDepositsClient(), relayClient: newRelayClient() }),
+          // Without auto-sweep a workspace wallet is watched only while a
+          // deposit flow is open (and its linger window), never at a resting
+          // cadence. The default wallet keeps its earlier behavior.
+          ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
+          onEvent: (event) => {
+            if (event.phase !== 'credited') return
+            buyerTelemetry.depositCredited(identity.wallet.address, event)
+            proxy.invalidateBalances(identity.wallet.address)
+            // Kept for the gateway's deposit confirmations; the hash can arrive in a second 'credited' event.
+            if (event.txHash && event.amountBaseUnits) {
+              proxy.recordDeposit(identity.wallet.address, { txHash: event.txHash, creditedBaseUnits: event.amountBaseUnits, at: event.at })
+            }
+          },
           usdcAddress: chainConfig.usdcContractAddress,
+          sessionReserveBaseUnits: reserveBaseUnits(config.payments?.maxReserveAmountUsdc),
           evmChainId: chainConfig.evmChainId,
           depositRelayAddress,
           dispatch: (payload) => node.dispatchSweepRequest(payload),
@@ -554,6 +742,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           depositWatcher.startIdle()
           console.log(chalk.dim('Auto-sweep: watching the hot wallet — incoming USDC deposits automatically (buyer.autoSweep=false disables).'))
         }
+        for (const [name, identity] of unwatchedIdentities.splice(0)) watchIdentity(name, identity)
       }
 
       if (ownsProxyListener) {
@@ -571,28 +760,17 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       const proxyUrl = `http://localhost:${proxyPort}`
       console.log('')
-      if (toolHints.length > 0) {
-        console.log(chalk.bold('Configure your tools:'))
-        for (const hint of toolHints) {
-          console.log(`  export ${hint.envVar}=${proxyUrl}   # ${hint.name}`)
-        }
-      } else {
-        console.log(chalk.bold('Configure your CLI tools:'))
-        console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`)
-        console.log(`  export OPENAI_BASE_URL=${proxyUrl}`)
-      }
+      console.log(chalk.bold(toolHints.length > 0 ? 'Configure your tools:' : 'Configure your CLI tools:'))
+      for (const line of buyerToolHintLines(proxyUrl, toolHints)) console.log(line)
       console.log('')
       console.log(chalk.dim('Enable debug logs: export ANTSEED_DEBUG=1'))
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))
       console.log('')
 
-      setupShutdownHandler(async () => {
-        nodeSpinner.start('Shutting down...')
-        depositWatcher?.stop()
-        for (const watcher of identityWatchers) watcher.stop()
-        if (ownsProxyListener) await proxy.stop()
-        await node.stop()
-        nodeSpinner.succeed('Disconnected. All channels finalized.')
-      })
+      // A buyer the gateway runs leaves this to the gateway, which tells its console too.
+      const updateWatch = process.env['ANTSEED_SUPERVISED'] === '1' || process.env['ANTSEED_UPDATER_REQUEST']
+        ? null
+        : watchForUpdates({ dataDir: globalOpts.dataDir, current: pkg.version, running: 'buyer', log: (line) => console.log(chalk.yellow(line)) })
+      setupShutdownHandler(() => { updateWatch?.stop(); return runShutdown() })
     })
 }

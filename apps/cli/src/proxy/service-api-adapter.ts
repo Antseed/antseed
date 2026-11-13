@@ -3,6 +3,7 @@ export {
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
   inferProviderDefaultServiceApiProtocols,
+  isNativeVideoProtocol,
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,

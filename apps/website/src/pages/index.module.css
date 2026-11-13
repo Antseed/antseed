@@ -86,7 +86,7 @@
   }
 }
 
-/* ---- split hero (copy left, AI VPN demo right) — wide viewports only ---- */
+/* ---- split hero (copy left, Antseed Desktop demo right) — wide viewports only ---- */
 @media (min-width: 997px) {
   .heroSplit {
     text-align: left;
@@ -161,7 +161,6 @@
   .heroSplit .ctaBlock {
     align-items: flex-start;
   }
-
 
   .heroSplit .statsRow {
     grid-area: stats;
@@ -634,6 +633,11 @@
   margin: 0;
 }
 
+/* Homepage FAQ title, in the heavier homepage headline weight */
+.faqTitle.faqTitleStrong {
+  font-weight: 600;
+}
+
 /* Compound selector on purpose: single-class .statAccent ties with
    .statValue on specificity, and cssnano's rule merging reorders them in
    production — the accent silently lost to the later .statValue rule. */
@@ -1030,11 +1034,6 @@
   border-radius: 8px;
   padding: 0 8px 0 4px;
   white-space: nowrap;
-}
-
-:global(html[data-theme='dark']) .bestBadge {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--as-text-2);
 }
 
 .priceBestSub {
@@ -1784,6 +1783,43 @@
   overflow-x: auto;
 }
 
+/* Static examples retain code indentation and scroll within the card. */
+.terminalCode {
+  max-width: 100%;
+  margin: 16px 0 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #FFFFFF;
+  font-family: var(--as-font-data);
+  font-size: 13px;
+  line-height: 22px;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  overflow-x: auto;
+}
+
+.terminalCode code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  white-space: inherit;
+}
+
+.terminalCode:focus-visible {
+  outline: 2px solid var(--as-primary-4);
+  outline-offset: 2px;
+}
+
+.terminalScrollHint {
+  display: none;
+}
+
 .tComment { color: #A3A29F; }
 .tWhite { color: #FFFFFF; }
 .tGreen { color: var(--as-green); }
@@ -2053,7 +2089,7 @@
   font-family: var(--as-font-display);
   font-size: clamp(32px, 3.4vw, 48px);
   line-height: 54px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -1px;
   color: var(--as-heading);
   margin: 0 0 16px;
@@ -2349,9 +2385,8 @@
   }
 
   .priceModel strong {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
     display: block;
   }
 
@@ -2522,6 +2557,14 @@
 
   .terminalTagline {
     display: none;
+  }
+
+  .terminalScrollHint {
+    display: block;
+    margin: 12px 8px 0;
+    color: #B9CEC4;
+    font-size: 11px;
+    line-height: 18px;
   }
 
   .flowLine {

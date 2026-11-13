@@ -1,113 +1,73 @@
-.view {
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  padding: 8px 16px 24px;
-}
-
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 34px;
   width: 100%;
-  max-width: 392px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
 
-/* ---------- Pending hero ---------- */
-
 .heroCard {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px;
 }
 
 .heroText {
   display: grid;
-  gap: 4px;
+  flex: 1 1 320px;
+  gap: 6px;
 }
 
-.heroLabel {
+.heroLabel,
+.heroHint {
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .heroValue {
   color: var(--text-primary);
-  font-size: 28px;
-  font-weight: 650;
-  line-height: 32px;
-}
-
-.heroHint {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  font-family: var(--font-mono);
+  font-size: 38px;
+  font-weight: 500;
+  line-height: 44px;
 }
 
 .heroActions {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.claimButton {
-  min-height: 36px;
-  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 18px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  gap: 10px;
 }
-
-.claimButton:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-sm);
-}
-
-.claimButton:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* ---------- About ---------- */
 
 .aboutCard {
   display: grid;
-  gap: 4px;
-  padding: 12px 16px;
+  gap: 6px;
+  padding: 16px 20px;
 }
 
 .aboutTitle {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 16px;
+  line-height: 18px;
 }
 
 .aboutText {
+  max-width: 680px;
+  margin: 0;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 14.5px;
+  line-height: 1.55;
 }
 
 .errorNote {
   color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 15px;
-  text-align: center;
+  font-size: 12px;
+  line-height: 16px;
 }

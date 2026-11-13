@@ -374,6 +374,50 @@
   color: var(--as-text-2);
 }
 
+/* ---------- foundation staking program callout ---------- */
+.stakingCallout {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 32px 0 0;
+  border: 1px solid var(--as-line);
+  border-left: 3px solid var(--as-live);
+  border-radius: 24px;
+  background: var(--as-soil-2);
+  padding: 24px;
+}
+
+.stakingBody {
+  min-width: 0;
+}
+
+.stakingKicker {
+  font-family: var(--as-font-data);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--as-live-text);
+  margin: 0 0 8px;
+}
+
+.stakingTitle {
+  margin: 0 0 8px;
+}
+
+.stakingText {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--as-text-2);
+  margin: 0;
+}
+
+.stakingCallout > a {
+  flex-shrink: 0;
+}
+
 /* ============================================================
    RESPONSIVE
    ============================================================ */
@@ -393,6 +437,13 @@
   .privacyCol,
   .repCard,
   .compliance {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .stakingCallout {
+    flex-direction: column;
+    align-items: flex-start;
     padding: 20px;
     border-radius: 20px;
   }

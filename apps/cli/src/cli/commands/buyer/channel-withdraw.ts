@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
-import { CHANNEL_STATUS } from '@antseed/node/payments';
+import { CHANNEL_KIND, CHANNEL_STATUS } from '@antseed/node/payments';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
@@ -114,6 +114,14 @@ async function daemonRequestClose(
   return body.result;
 }
 
+/**
+ * `channels` declares --json itself (for its bare listing), so commander hands it the flag wherever it is typed,
+ * before or after a subcommand. A subcommand therefore also reads it from `channels`.
+ */
+export function channelsJsonRequested(options: { json?: boolean }, channelsCmd: Command): boolean {
+  return Boolean(options.json || channelsCmd.opts()['json']);
+}
+
 export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyerCmd: Command): void {
   channelsCmd
     .command('close <channelId>')
@@ -121,6 +129,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
     .option('--no-auth', 'do not attach your latest spending authorization; let the seller use the one it holds')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options: { auth: boolean; json: boolean }) => {
+      const json = channelsJsonRequested(options, channelsCmd);
       const globalOpts = getGlobalOptions(buyerCmd);
       const config = await loadConfig(globalOpts.config);
       const { address } = await loadCryptoContext(globalOpts.dataDir);
@@ -129,11 +138,17 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {
         store.close();
+      }
+
+      if (localChannel.channelKind === CHANNEL_KIND.ONE_OFF) {
+        console.error(chalk.red('One-off video channels do not support cooperative close.'));
+        console.error(chalk.dim(`Use antseed buyer channels request-close ${localChannel.sessionId}, then withdraw after the grace period.`));
+        process.exit(1);
       }
 
       if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
@@ -157,7 +172,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         process.exit(1);
       }
 
-      if (options.json) {
+      if (json) {
         spinner.stop();
         console.log(JSON.stringify(result, null, 2));
         if (result.status !== 'closed') process.exit(1);
@@ -185,6 +200,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
     .description('Request timeout close for an active buyer payment channel so reserved funds can be withdrawn after the grace period')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options) => {
+      const json = channelsJsonRequested(options, channelsCmd);
       const globalOpts = getGlobalOptions(buyerCmd);
       const config = await loadConfig(globalOpts.config);
       const { wallet, address } = await loadCryptoContext(globalOpts.dataDir);
@@ -194,7 +210,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {
@@ -222,7 +238,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
             Math.floor(Date.now() / 1000),
           );
           spinner.stop();
-          if (options.json) {
+          if (json) {
             console.log(JSON.stringify({
               channelId: localChannel.sessionId,
               alreadyRequested: true,
@@ -241,7 +257,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
 
         const txHash = await channelsClient.requestClose(wallet, localChannel.sessionId);
         spinner.succeed(chalk.green(`Requested timeout close for ${shortId(localChannel.sessionId, 18)}`));
-        if (options.json) {
+        if (json) {
           console.log(JSON.stringify({
             channelId: localChannel.sessionId,
             transaction: txHash,
@@ -263,6 +279,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
     .description('Withdraw/release reserved buyer funds after a channel timeout close grace period has elapsed')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options) => {
+      const json = channelsJsonRequested(options, channelsCmd);
       const globalOpts = getGlobalOptions(buyerCmd);
       const config = await loadConfig(globalOpts.config);
       const { wallet, address } = await loadCryptoContext(globalOpts.dataDir);
@@ -272,7 +289,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {
@@ -302,7 +319,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         const refund = onChain.deposit > onChain.settled ? onChain.deposit - onChain.settled : 0n;
         const txHash = await channelsClient.withdraw(wallet, localChannel.sessionId);
         spinner.succeed(chalk.green(`Withdrew reserved funds for ${shortId(localChannel.sessionId, 18)}`));
-        if (options.json) {
+        if (json) {
           console.log(JSON.stringify({
             channelId: localChannel.sessionId,
             transaction: txHash,

@@ -2,12 +2,14 @@ import { useMemo } from 'react';
 import { api } from '../api';
 import { useConfig } from '../app-context';
 import { ErrorBox } from '../components/Feedback';
+import { FreeTierShare } from '../components/FreeTierShare';
 import { sortPools } from '../components/Pools';
 import { PositionsCard } from '../components/Positions';
 import { StatTile, Tiles } from '../components/StatTile';
 import { usePageData } from '../data';
 import { poolDataOptions } from '../pool-data';
 import { formatAnts, formatBps, formatInt, toBigInt } from '../format';
+import { host } from '../host';
 import { href } from '../router';
 
 /** Your wallet: stake, power and rewards at a glance, then every position with its actions. */
@@ -25,7 +27,7 @@ export function PositionsPage() {
 
   return (
     <>
-      <h1 className="page-title">My positions</h1>
+      {host().embedded ? null : <h1 className="page-title">My positions</h1>}
       {overview.error && !data ? <ErrorBox error={overview.error} onRetry={overview.refresh} /> : null}
       <Tiles>
         <StatTile
@@ -75,6 +77,7 @@ export function PositionsPage() {
         />
       </Tiles>
       <PositionsCard pools={sortedPools} enabled={canViewPositions} />
+      <FreeTierShare />
     </>
   );
 }

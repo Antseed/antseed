@@ -39,6 +39,9 @@ describe('IndexedDbChannelStore', () => {
       cumulativeOutputTokens: 4n,
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 2n,
+      cumulativeVideoGenerations: 1n,
+      cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 19n,
     }]);
     await first.close();
 
@@ -60,6 +63,9 @@ describe('IndexedDbChannelStore', () => {
     });
     const restoredMetadata = restored.getChannelMetadata(channel);
     expect(restoredMetadata.cumulativeOutputImages).toBe(2n);
+    expect(restoredMetadata.cumulativeVideoGenerations).toBe(1n);
+    expect(restoredMetadata.cumulativeVideoSeconds).toBe(8n);
+    expect(restoredMetadata.cumulativeInputCharacters).toBe(19n);
     expect(restoredMetadata.services).toEqual([{
       serviceId: 'test-model',
       cumulativeAmount: 123n,
@@ -68,6 +74,9 @@ describe('IndexedDbChannelStore', () => {
       cumulativeOutputTokens: 4n,
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 2n,
+      cumulativeVideoGenerations: 1n,
+      cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 19n,
     }]);
     await restored.close();
   });
@@ -174,6 +183,7 @@ describe('IndexedDbChannelStore', () => {
     const mux = paymentMux();
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 1_000n);
 
+    manager.recordDeliveredResponse(sellerPeerId, 'crash-window-request', { costUsdc: 1_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requiredCumulativeAmount: '2000',

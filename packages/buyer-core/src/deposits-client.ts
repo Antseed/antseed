@@ -21,6 +21,7 @@ const DEPOSITS_ABI = [
   'function withdraw(address buyer, uint256 amount) external',
   'function getBuyerBalance(address buyer) external view returns (uint256 available, uint256 reserved, uint256 lastActivityAt)',
   'function getBuyerCreditLimit(address buyer) external view returns (uint256)',
+  'function MIN_BUYER_DEPOSIT() external view returns (uint256)',
   'function uniqueSellersCharged(address buyer) external view returns (uint256)',
   'function getOperator(address buyer) external view returns (address)',
   'function getOperatorNonce(address buyer) external view returns (uint256)',
@@ -64,6 +65,12 @@ export class DepositsClient extends BaseEvmClient {
   async getBuyerCreditLimit(buyerAddr: string): Promise<bigint> {
     const contract = new Contract(this._contractAddress, DEPOSITS_ABI, this._provider);
     return contract.getFunction('getBuyerCreditLimit')(buyerAddr) as Promise<bigint>;
+  }
+
+  /** Smallest first deposit the contract accepts for a buyer with no balance (base units). */
+  async getMinBuyerDeposit(): Promise<bigint> {
+    const contract = new Contract(this._contractAddress, DEPOSITS_ABI, this._provider);
+    return contract.getFunction('MIN_BUYER_DEPOSIT')() as Promise<bigint>;
   }
 
   // ─── Operator Management ─────────────────────────────────────────
