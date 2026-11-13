@@ -238,7 +238,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
                 action={{ label: 'Add funds', onClick: () => onSelectView?.('deposit') }}
               />
               <Tile
-                label="Rewards"
+                label="Pending rewards"
                 value={pendingAnts !== null ? formatCredits(pendingAnts) : '—'}
                 unit={pendingAnts !== null ? ' ANTS' : undefined}
                 action={{ label: rewards && !rewards.available && !rewards.remoteChainUnverified ? 'Not live yet' : 'See rewards', onClick: () => onSelectView?.('rewards') }}
