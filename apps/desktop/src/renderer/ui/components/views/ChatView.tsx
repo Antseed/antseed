@@ -514,6 +514,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   // An image model picked in the dropdown makes Send generate an image until
   // the user picks a text model again; the conversation keeps its text model.
   const imageMode = imageModel?.type === 'image';
+  // The seller picker follows the model Send uses: the image model in image mode.
+  const pickerModelId = imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId;
   // Unknown models (a plain OpenAI-compatible gateway, or the list still
   // loading) are treated as text-only.
   const supportsMultimodal = selectedTextModel ? modelAcceptsImages(selectedTextModel, snap.chatSelectedModelId) : false;
@@ -1420,12 +1422,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                       });
                     }}
                   />
-                  {!imageMode && snap.chatSelectedModelId && !selectedTextModel?.router ? (
+                  {/* Image models have sellers too: pick one, or leave it to Auto. */}
+                  {pickerModelId && (imageMode || !selectedTextModel?.router) ? (
                     <ChatSellerPicker
                       onOpenChange={setSellerMenuOpen}
-                      modelId={snap.chatSelectedModelId}
+                      modelId={pickerModelId}
                       disabled={snap.chatInputDisabled || snap.chatSending}
-                      onChange={(peerId) => actions.selectChatModel(joinPinnedModel(snap.chatSelectedModelId, peerId))}
+                      onChange={(peerId) => actions.selectChatModel(joinPinnedModel(pickerModelId, peerId))}
                       menuPlacement="above"
                     />
                   ) : null}

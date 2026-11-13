@@ -105,3 +105,9 @@ test('a video or decision model starts a prompt for the chat model, naming its s
   assert.equal(skillPrompt(model({ id: 'alibaba/wan-3.0/text-to-video', type: 'video' })), 'Make a video with the model alibaba/wan-3.0/text-to-video (antseed-videos skill) of: ');
   assert.equal(skillPrompt(model({ id: 'jev-latest', type: 'decision' })), 'Use the decision model jev-latest (antseed-decisions skill) to answer: ');
 });
+
+test('TEE tags read as the gateway console does: Full when sealed end to end, Partial otherwise', () => {
+  assert.match(modelSummary(model({ tee: true, teeEndToEnd: true })), /Full TEE/);
+  assert.match(modelSummary(model({ tee: true })), /Partial TEE/);
+  assert.doesNotMatch(modelSummary(model({})), /TEE/);
+});
