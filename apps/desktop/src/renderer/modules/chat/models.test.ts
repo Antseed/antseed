@@ -14,6 +14,7 @@ import {
   isFreeOffer,
   offerPriceLabel,
   pickerChatModels,
+  retailDiscount,
   shouldWaitForFreeModel,
 } from './models';
 
@@ -251,4 +252,33 @@ test('the seller picker prices an image model\'s sellers per image', () => {
   assert.equal(sellerImagePriceLabel(prices, '0xAB12CD34'), '$0.04 per image');
   assert.equal(sellerImagePriceLabel(prices, '12ab34cd'), 'Free');
   assert.equal(sellerImagePriceLabel(prices, 'ef56ab78'), null);
+});
+
+test('a model priced under retail on input and output shows how far, rounded down', () => {
+  const priced = { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, free: false };
+  const discount = retailDiscount({ ...priced, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } });
+  // 37.5% below on output reads as 37%, never 38%.
+  assert.deepEqual(discount, { input: 40, output: 37 });
+});
+
+test('no discount shows without a retail price for both sides, or when a side is not cheaper', () => {
+  const priced = { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, free: false };
+  // An older gateway, or a model the price list doesn't name.
+  assert.equal(retailDiscount(priced), null);
+  assert.equal(retailDiscount({ ...priced, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: null } }), null);
+  // Output costs more than retail: one figure would mislead.
+  assert.equal(retailDiscount({ ...priced, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } }), null);
+  assert.equal(retailDiscount({ ...priced, referencePrice: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 } }), null);
+  // A seller that advertises no output price.
+  assert.equal(retailDiscount({ ...priced, outputUsdPerMillion: null, referencePrice: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }), null);
+});
+
+test('a free model, a stakers-only $0 offer and a router show no discount', () => {
+  const referencePrice = { inputUsdPerMillion: 1, outputUsdPerMillion: 4 };
+  assert.equal(retailDiscount({ inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, free: true, referencePrice }), null);
+  assert.equal(retailDiscount({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, free: false, referencePrice }), null);
+  assert.equal(retailDiscount({
+    inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5, free: false, referencePrice,
+    router: { sellerName: null, priceUsdPerRequest: 0, models: 3 },
+  }), null);
 });

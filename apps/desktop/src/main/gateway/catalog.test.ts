@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels } from './catalog.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, minVideoUsdPerSecond } from './catalog.js';
 import type { GatewayModelEntry } from './models.js';
 
 const seller = (n: string, fields: Record<string, unknown>) => ({ peerId: n.repeat(40), ...fields });
@@ -85,4 +85,36 @@ test('an image model keeps each seller\'s price per image for the seller picker'
   // A free seller keeps its $0, next to the paid ones.
   assert.deepEqual(model.imageUsdBySeller, { ab12cd34: 0.04, ef56ab78: 0.05, '12ab34cd': 0 });
   assert.equal(toChatModel({ id: 'glm-5.3-flash', peers: [{ peerId: 'ab12cd34', inputUsdPerMillion: 0.3 }] } as unknown as GatewayModelEntry).imageUsdBySeller, undefined);
+});
+
+test('a text model keeps the retail reference price the gateway lists; any other entry has none', () => {
+  const peers = [{ peerId: 'ab12cd34', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 }];
+  const listed = (fields: Record<string, unknown>) => toChatModel({ id: 'kimi-k3', type: 'text', peers, ...fields } as unknown as GatewayModelEntry);
+  assert.deepEqual(
+    listed({ reference_price: { input_usd_per_million: 1, output_usd_per_million: 4, cached_input_usd_per_million: 0.1 } }).referencePrice,
+    { inputUsdPerMillion: 1, outputUsdPerMillion: 4 },
+  );
+  assert.deepEqual(listed({ reference_price: { output_usd_per_million: 4 } }).referencePrice, { inputUsdPerMillion: null, outputUsdPerMillion: 4 });
+  // An older gateway, a plain OpenAI-compatible list, or a malformed value.
+  for (const fields of [{}, { reference_price: null }, { reference_price: { input_usd_per_million: '1' } }, { reference_price: { input_usd_per_million: 0, output_usd_per_million: -1 } }]) {
+    assert.equal('referencePrice' in listed(fields), false);
+  }
+  // Image models charge per image.
+  assert.equal('referencePrice' in listed({ type: 'image', reference_price: { input_usd_per_million: 1, output_usd_per_million: 4 } }), false);
+});
+
+test('a video model reads its lowest price per second of video from its sellers\' unit billing models', () => {
+  const peers = [
+    { peerId: 'aaaa', unitBillingModels: { 'fal-video': { version: 1, components: [
+      { unit: 'video_seconds', priceUsd: 0.17, match: { resolution: '720p' } },
+      { unit: 'video_seconds', priceUsd: 0.29, match: { resolution: '1080p' } },
+    ] } } },
+    { peerId: 'bbbb', unitBillingModels: { 'venice-video': { version: 1, components: [
+      { unit: 'video_seconds', priceUsd: 0.10285, match: { resolution: '720p' } },
+      { unit: 'images', priceUsd: 0.01 },
+    ] } } },
+  ];
+  assert.equal(minVideoUsdPerSecond(peers), 0.10285);
+  assert.equal(minVideoUsdPerSecond([{ peerId: 'cccc' }]), null);
+  assert.equal(toChatModel({ id: 'example-video', type: 'video', peers }).minVideoUsdPerSecond, 0.10285);
 });

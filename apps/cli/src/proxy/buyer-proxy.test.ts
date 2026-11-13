@@ -25,6 +25,7 @@ import {
   type PeerInfo,
   type SerializedHttpResponse,
 } from '@antseed/node'
+import { parseRetailPrices } from '@antseed/node/retail-prices'
 
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
@@ -3162,6 +3163,25 @@ test('/models order and model-only dispatch use the same Price + Trust ranking',
   assert.deepEqual(peerOrder, [emberRoute.peerId, cobaltRelay.peerId])
   assert.equal(completionRes.statusCode, 200)
   assert.equal(selectedPeerId, emberRoute.peerId)
+})
+
+test('/v1/models lists the reference price the proxy holds, in the list and for one model', async () => {
+  const seller = makePeer('a', ['openai'])
+  seller.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0.9, outputUsdPerMillion: 2.7 } } }
+  seller.providerServiceApiProtocols = { openai: { services: { 'kimi-k3': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([seller], [seller], permissiveRouter())
+  let held: ReturnType<typeof parseRetailPrices> = null
+  ;(proxy as any)._referencePrices = { current: () => held }
+  const listed = async (path: string) => JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path }))).body)
+
+  // Before the price list is read the listing answers without it.
+  assert.equal('reference_price' in (await listed('/v1/models/kimi-k3')), false)
+
+  held = parseRetailPrices({ data: [{ id: 'moonshotai/kimi-k3', pricing: { prompt: '0.000003', completion: '0.000009' } }] })
+  const expected = { input_usd_per_million: 3, output_usd_per_million: 9 }
+  assert.deepEqual((await listed('/v1/models/kimi-k3')).reference_price, expected)
+  const all = (await listed('/v1/models')).data as Array<{ id: string; reference_price?: unknown }>
+  assert.deepEqual(all.find((model) => model.id === 'kimi-k3')?.reference_price, expected)
 })
 
 test('Price + Trust routing falls back after the preferred cheaper peer fails', async () => {

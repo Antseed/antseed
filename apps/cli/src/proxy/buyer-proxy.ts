@@ -102,6 +102,7 @@ import {
   type RequestRoutingOptions,
 } from './request-utils.js'
 import { BuyerIdentityLoader } from '../buyer-identities/loader.js'
+import { createReferencePriceSource, type ReferencePriceSource } from './reference-prices.js'
 import {
   buildNetworkModels,
   effectiveModelReputationScore,
@@ -255,6 +256,8 @@ export interface BuyerProxyConfig {
    * failure spacing directly instead of sleeping past the coalesce window.
    */
   now?: () => number
+  /** Retail prices for `reference_price` in `/v1/models`; defaults to the comparable-prices list (`ANTSEED_COMPARABLE_PRICES_URL`). */
+  referencePrices?: ReferencePriceSource
   /** Spreading and probing in automatic routing. Test seam: tests turn both off for a deterministic order. */
   adaptiveRouting?: { random?: () => number; spreadTolerance?: number; explorationRate?: number }
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
@@ -1502,6 +1505,7 @@ export class BuyerProxy {
   private readonly _adaptiveRouting: NonNullable<BuyerProxyConfig['adaptiveRouting']>
   private _heartbeatHandle: ReturnType<typeof setInterval> | null = null
   private readonly _now: () => number
+  private readonly _referencePrices: ReferencePriceSource
   /** Latest relayer receipt per sweep authNonce, for CLI progress polling. */
   private readonly _sweepReceipts = new Map<string, AttributedSweepReceipt>()
   /**
@@ -1581,6 +1585,7 @@ export class BuyerProxy {
         }
       : null
     this._now = config.now ?? (() => Date.now())
+    this._referencePrices = config.referencePrices ?? createReferencePriceSource()
     this._adaptiveRouting = { ...config.adaptiveRouting }
     this._server = createServer((req, res) => {
       this._handleRequest(req, res).catch((err) => {
@@ -2501,6 +2506,8 @@ export class BuyerProxy {
 
   async start(): Promise<void> {
     this._startedAtMs = Date.now()
+    // Read behind the start, so the first model list already has reference prices.
+    this._referencePrices.current()
     this._initialDiscoveryPending = true
     // Clean up temp files orphaned by state writes whose rename failed in a
     // previous run — each carries a full discovered-peers snapshot, so left
@@ -4031,6 +4038,8 @@ export class BuyerProxy {
       offers,
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
+      // What is held now: the listing never waits for the price list.
+      referencePrices: this._referencePrices.current(),
       teeScope: (peer) => {
         // Once per seller for this listing, not per model it offers.
         if (!teeScopes.has(peer.peerId)) teeScopes.set(peer.peerId, this._teeVerification.teeProvenScope(peer))

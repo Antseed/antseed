@@ -24,6 +24,7 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
+import type { RetailPrice, RetailPriceMap } from '@antseed/node/retail-prices'
 import { TEE_VERIFIER_ID, type TeeScope } from '@antseed/node/tee-status'
 
 export { effectiveModelReputationScore } from '@antseed/node'
@@ -75,6 +76,17 @@ export type NetworkModelCapabilityCoverage = {
   supported_parameters: number
 }
 
+/**
+ * What the model costs at retail, USD per million tokens, from the price list
+ * behind the savings totals. A reference to compare `peers[]` prices with:
+ * nobody on the network charges it.
+ */
+export type NetworkModelReferencePrice = {
+  input_usd_per_million?: number
+  output_usd_per_million?: number
+  cached_input_usd_per_million?: number
+}
+
 export type NetworkModelEntry = {
   id: string
   name: string
@@ -99,6 +111,8 @@ export type NetworkModelEntry = {
   /** Speech models: voices every listed offer accepts (each offer lists its own under `capabilities.speech`). */
   voices?: string[]
   capability_coverage: NetworkModelCapabilityCoverage
+  /** Text models the retail price list names; absent for any other model, or with no price list. */
+  reference_price?: NetworkModelReferencePrice
   peers: NetworkModelPeerOffer[]
 }
 
@@ -141,6 +155,16 @@ export type NetworkModelBuildOptions = {
   teeScope?: (peer: PeerInfo) => TeeScope | null
   /** `buildNetworkServiceOffers(peers)`, when the caller already built it. */
   offers?: NetworkServiceOffer[]
+  /** Retail prices by canonical model key; text models found there list them as `reference_price`. */
+  referencePrices?: RetailPriceMap | null
+}
+
+function referencePriceFields(price: RetailPrice): NetworkModelReferencePrice {
+  return {
+    ...(price.input !== null ? { input_usd_per_million: price.input } : {}),
+    ...(price.output !== null ? { output_usd_per_million: price.output } : {}),
+    ...(price.cachedInput !== null ? { cached_input_usd_per_million: price.cachedInput } : {}),
+  }
 }
 
 /** The offer's verifier list and TEE scope: the TEE verifier stays listed only for a seller whose attestation passed. */
@@ -356,6 +380,13 @@ export function buildNetworkModels(
       ...(offer.health ? { health: offer.health } : {}),
       ...(offer.performance ? { performance: offer.performance } : {}),
     })
+  }
+
+  // The list prices tokens, so only text models compare with it. The type is
+  // final here: a merged model is text once any of its offers is.
+  for (const [key, entry] of byModelKey) {
+    const price = entry.type === 'text' ? options.referencePrices?.get(key) : undefined
+    if (price) entry.reference_price = referencePriceFields(price)
   }
 
   const entries = [...byModelKey.values()]

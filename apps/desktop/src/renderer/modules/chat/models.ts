@@ -214,6 +214,24 @@ export function formatPriceRange(offer: OfferPrices): string {
   return cachedOnly ? `${range} · cache reads ${formatUsdPerMillion(offer.cachedInputUsdPerMillion)}` : range;
 }
 
+/**
+ * How far below retail the model's input and output prices are, in whole
+ * percent rounded down. Null unless both sides have a retail price and are
+ * cheaper than it: one side above retail has no single answer, and a free
+ * model already says Free.
+ */
+export function retailDiscount(
+  model: Pick<ChatModel, 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'referencePrice' | 'free' | 'router'>,
+): { input: number; output: number } | null {
+  if (model.router || model.free || isFreeOffer(model)) return null;
+  const below = (price: number | null, retail: number | null | undefined): number => (
+    price === null || !retail || !(retail > 0) ? 0 : Math.floor((1 - price / retail) * 100)
+  );
+  const input = below(model.inputUsdPerMillion, model.referencePrice?.inputUsdPerMillion);
+  const output = below(model.outputUsdPerMillion, model.referencePrice?.outputUsdPerMillion);
+  return input >= 1 && output >= 1 ? { input, output } : null;
+}
+
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
 /** A seller's price per image ("$0.04 per image", "Free"), or null when the listing has none for it. */
 export function sellerImagePriceLabel(prices: Record<string, number>, peerId: string): string | null {
