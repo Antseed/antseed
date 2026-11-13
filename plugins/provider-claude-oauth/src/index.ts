@@ -6,7 +6,7 @@ import type {
   SerializedHttpResponse,
   ServiceApiProtocol,
 } from '@antseed/node';
-import { BaseProvider, OAuthTokenProvider, StaticTokenProvider, parseServiceAliasMap, parseNonNegativeNumber, parseServicePricingJson, parseServiceCapabilitiesJson } from '@antseed/provider-core';
+import { BaseProvider, OAuthTokenProvider, StaticTokenProvider, parseServiceAliasMap, parseNonNegativeNumber, parseServicePricingJson, parseServiceCapabilitiesJson, anthropicMessagesRelay } from '@antseed/provider-core';
 
 import { CredentialStore } from './credential-store.js';
 
@@ -163,6 +163,8 @@ const plugin: AntseedProviderPlugin = {
       ...(serviceApiProtocols ? { serviceApiProtocols } : {}),
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
       relay: {
+        // The version is forced in `extraHeaders` below, so only the body rule applies.
+        omitJsonFields: anthropicMessagesRelay.omitJsonFields,
         baseUrl: 'https://api.anthropic.com',
         authHeaderName: 'authorization',
         authHeaderValue: `Bearer ${accessToken}`,

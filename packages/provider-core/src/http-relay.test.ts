@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { HttpRelay, type RelayConfig, type RelayCallbacks } from './http-relay.js';
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '@antseed/node';
 
@@ -793,6 +793,131 @@ describe('HttpRelay', () => {
       // injectJsonFields runs after our default injection and deep-merges,
       // so an explicit operator override of include_usage wins.
       expect(upstreamBody().stream_options).toEqual({ include_usage: false, include_obfuscation: true });
+    });
+  });
+
+  describe('defaultHeaders', () => {
+    async function sentHeaders(headers: Record<string, string>, config?: Partial<RelayConfig>): Promise<Record<string, string>> {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ defaultHeaders: { 'anthropic-version': '2023-06-01' }, ...config }),
+        { onResponse: () => undefined },
+      );
+      await relay.handleRequest(makeRequest({ headers: { 'content-type': 'application/json', ...headers } }));
+      const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      return opts.headers as Record<string, string>;
+    }
+
+    it('adds a header the request does not carry', async () => {
+      expect((await sentHeaders({}))['anthropic-version']).toBe('2023-06-01');
+    });
+
+    it('keeps the header the request carries, whatever its case', async () => {
+      const headers = await sentHeaders({ 'Anthropic-Version': '2026-10-21' });
+      expect(headers['Anthropic-Version']).toBe('2026-10-21');
+      expect(headers['anthropic-version']).toBeUndefined();
+    });
+
+    it('replaces a blank header', async () => {
+      const headers = await sentHeaders({ 'Anthropic-Version': ' ' });
+      expect(headers['anthropic-version']).toBe('2023-06-01');
+      expect(headers['Anthropic-Version']).toBeUndefined();
+    });
+
+    it('does not override a header the seller forces', async () => {
+      const headers = await sentHeaders({}, { extraHeaders: { 'anthropic-version': '2024-01-01' } });
+      expect(headers['anthropic-version']).toBe('2024-01-01');
+    });
+  });
+
+  describe('omitJsonFields', () => {
+    const seen: Array<{ path: string; model: string | undefined }> = [];
+    const omitTemperatureForUpstreamB = (request: { path: string; model: string | undefined }) => {
+      seen.push(request);
+      return request.model === 'upstream-b' ? ['temperature', 'top_k'] : [];
+    };
+
+    let warn: MockInstance<typeof console.warn>;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    async function sentBody(
+      body: Record<string, unknown>,
+      config?: Partial<RelayConfig>,
+      request?: Partial<SerializedHttpRequest>,
+    ): Promise<Record<string, unknown>> {
+      seen.length = 0;
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB, ...config }),
+        { onResponse: () => undefined },
+      );
+      await relay.handleRequest(makeRequest({ body: new TextEncoder().encode(JSON.stringify(body)), ...request }));
+      const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      return JSON.parse(new TextDecoder().decode(opts.body as Uint8Array)) as Record<string, unknown>;
+    }
+
+    it('drops the named fields and keeps the rest', async () => {
+      const body = await sentBody({ model: 'upstream-b', temperature: 0.2, top_p: 0.9, max_tokens: 8 });
+      expect(body).toEqual({ model: 'upstream-b', top_p: 0.9, max_tokens: 8 });
+      // Only the field that was there is reported.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('dropped temperature (');
+    });
+
+    it('leaves a model it names nothing for untouched, without a log line', async () => {
+      expect(await sentBody({ model: 'upstream-a', temperature: 0.2 })).toEqual({ model: 'upstream-a', temperature: 0.2 });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('judges the model the upstream will see, and the path without its query', async () => {
+      const body = await sentBody(
+        { model: 'announced', temperature: 0.2 },
+        { allowedServices: ['announced'], serviceRewriteMap: { announced: 'upstream-b' } },
+        { path: '/v1/messages?beta=true' },
+      );
+      expect(body).toEqual({ model: 'upstream-b' });
+      expect(seen).toEqual([{ path: '/v1/messages', model: 'upstream-b' }]);
+    });
+
+    it('logs a dropped field once per model', async () => {
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB }),
+        { onResponse: () => undefined },
+      );
+      const body = new TextEncoder().encode(JSON.stringify({ model: 'upstream-b', temperature: 0 }));
+      await relay.handleRequest(makeRequest({ requestId: 'a', body }));
+      await relay.handleRequest(makeRequest({ requestId: 'b', body }));
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('quotes the model in the log line and stops logging after 100 models', async () => {
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: () => ['temperature'] }),
+        { onResponse: () => undefined },
+      );
+      for (let i = 0; i < 105; i += 1) {
+        const body = new TextEncoder().encode(JSON.stringify({ model: `m${i}\nfake log line`, temperature: 0 }));
+        await relay.handleRequest(makeRequest({ requestId: `r${i}`, body }));
+      }
+      expect(warn).toHaveBeenCalledTimes(100);
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain('\n');
+    });
+
+    it('runs before injectJsonFields, so an operator can still set a field', async () => {
+      const body = await sentBody(
+        { model: 'upstream-b', temperature: 0.2 },
+        { injectJsonFields: { temperature: 1 } },
+      );
+      expect(body).toEqual({ model: 'upstream-b', temperature: 1 });
     });
   });
 

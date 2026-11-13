@@ -54,7 +54,7 @@ const provider = new BaseProvider({
 
 ### HttpRelay
 
-Low-level HTTP relay with concurrency control, SSE streaming support, model validation, and optional request model rewriting (`serviceRewriteMap`). Used internally by `BaseProvider`. Other `relay` options include `pathRewrite`, `injectJsonFields`, `throttle`, `retryOn5xx`, `retryOn401`, `timeoutMs`, `fallbackUpstreams` and `redirect` (upstream redirects fail by default).
+Low-level HTTP relay with concurrency control, SSE streaming support, model validation, and optional request model rewriting (`serviceRewriteMap`). `defaultHeaders` sets a header only when the request lacks it, and `omitJsonFields` drops body fields the upstream rejects for the model it will see; `anthropicMessagesRelay` is both for the Anthropic API. Used internally by `BaseProvider`. Other `relay` options include `pathRewrite`, `injectJsonFields`, `throttle`, `retryOn5xx`, `retryOn401`, `timeoutMs`, `fallbackUpstreams` and `redirect` (upstream redirects fail by default).
 
 ## Usage in Plugins
 
