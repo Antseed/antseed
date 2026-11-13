@@ -103,6 +103,16 @@ export type BuildNetworkServiceOffersOptions = {
    * Catalogs and routing leave them out; diagnostics may want them.
    */
   includeFailing?: boolean;
+  /**
+   * Build offers only for the services this accepts. A caller after one
+   * service of a seller skips building every other one it announces.
+   */
+  only?: (provider: string, serviceId: string) => boolean;
+  /**
+   * Build offers only for services whose `canonicalModelKey` is this one.
+   * Inside `withServiceCatalogMemo` they are looked up, not searched for.
+   */
+  modelKey?: string;
 };
 
 const VALID_PROTOCOLS = new Set<string>([
@@ -133,7 +143,68 @@ export function resolveServiceProtocol(protocols: string[], provider: string): C
   return announced ?? inferServiceProtocol(provider);
 }
 
-function announcedServicesByProvider(peer: NetworkServiceCatalogPeer): Map<string, Set<string>> {
+/** What `withServiceCatalogMemo` remembers about one seller. */
+interface SellerCatalogMemo {
+  byProvider: Map<string, Set<string>>;
+  /** `[provider, serviceId]` pairs per canonical model key, in announcement order; built on first use. */
+  byModelKey?: Map<string, Array<[string, string]>>;
+  verifierIds?: string[];
+}
+
+/** Set only while `withServiceCatalogMemo` runs; see there. */
+let sellerCatalogMemo: WeakMap<NetworkServiceCatalogPeer, SellerCatalogMemo> | null = null;
+
+/**
+ * Runs `run` with each seller's announced services worked out once instead of
+ * on every `buildNetworkServiceOffers` call inside it. For synchronous work
+ * that asks about the same sellers many times (a model list plans every model
+ * across every seller). `run` must be synchronous and must not change the
+ * peers' announcements: the memo is dropped when it returns.
+ */
+export function withServiceCatalogMemo<T>(run: () => T): T {
+  if (sellerCatalogMemo) return run();
+  sellerCatalogMemo = new WeakMap();
+  try {
+    return run();
+  } finally {
+    sellerCatalogMemo = null;
+  }
+}
+
+function sellerMemo(peer: NetworkServiceCatalogPeer): SellerCatalogMemo | null {
+  if (!sellerCatalogMemo) return null;
+  let memo = sellerCatalogMemo.get(peer);
+  if (!memo) sellerCatalogMemo.set(peer, memo = { byProvider: computeAnnouncedServicesByProvider(peer) });
+  return memo;
+}
+
+/** A seller's announced `[provider, serviceId]` pairs, or only those of one canonical model. */
+function announcedServicePairs(peer: NetworkServiceCatalogPeer, modelKey: string | undefined): Iterable<[string, string]> {
+  const memo = sellerMemo(peer);
+  if (memo && modelKey !== undefined) {
+    if (!memo.byModelKey) {
+      memo.byModelKey = new Map();
+      for (const [provider, serviceIds] of memo.byProvider) {
+        for (const serviceId of serviceIds) {
+          const key = canonicalModelKey(serviceId);
+          const pairs = memo.byModelKey.get(key);
+          if (pairs) pairs.push([provider, serviceId]);
+          else memo.byModelKey.set(key, [[provider, serviceId]]);
+        }
+      }
+    }
+    return memo.byModelKey.get(modelKey) ?? [];
+  }
+  const pairs: Array<[string, string]> = [];
+  for (const [provider, serviceIds] of memo?.byProvider ?? computeAnnouncedServicesByProvider(peer)) {
+    for (const serviceId of serviceIds) {
+      if (modelKey === undefined || canonicalModelKey(serviceId) === modelKey) pairs.push([provider, serviceId]);
+    }
+  }
+  return pairs;
+}
+
+function computeAnnouncedServicesByProvider(peer: NetworkServiceCatalogPeer): Map<string, Set<string>> {
   const byProvider = new Map<string, Set<string>>();
   const matrices: Array<Record<string, { services?: Record<string, unknown> }> | undefined> = [
     peer.providerPricing,
@@ -213,8 +284,12 @@ export function buildNetworkServiceOffers(
 ): NetworkServiceOffer[] {
   const offers: NetworkServiceOffer[] = [];
   for (const peer of peers) {
-    for (const [provider, serviceIds] of announcedServicesByProvider(peer)) {
-      for (const serviceId of serviceIds) {
+    // Parsed once per seller, on its first offer, not once per service it announces.
+    const memo = sellerMemo(peer);
+    let verifierIds: string[] | null = memo?.verifierIds ?? null;
+    for (const [provider, serviceId] of announcedServicePairs(peer, options.modelKey)) {
+      {
+        if (options.only && !options.only(provider, serviceId)) continue;
         const health = providerServiceHealthFor(peer.providerServiceHealth, provider, serviceId);
         if (isServiceHealthFailing(health) && !options.includeFailing) continue;
         const performance = providerServicePerformanceFor(peer.providerServicePerformance, provider, serviceId);
@@ -227,8 +302,12 @@ export function buildNetworkServiceOffers(
         const type = serviceOfferType(protocol, capabilities);
         const pricing = resolvePricing(peer, provider, serviceId);
         const unitPriced = type === 'video' || type === 'speech';
+        if (!verifierIds) {
+          verifierIds = parseVerifierCapabilities(peer.capabilities).supported;
+          if (memo) memo.verifierIds = verifierIds;
+        }
         offers.push({
-          advertisedVerifierIds: parseVerifierCapabilities(peer.capabilities).supported,
+          advertisedVerifierIds: [...verifierIds],
           serviceId,
           provider,
           protocols,

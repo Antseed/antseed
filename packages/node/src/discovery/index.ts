@@ -66,6 +66,7 @@ export { HttpMetadataResolver, MAX_METADATA_HTTP_RESPONSE_SIZE, type HttpMetadat
 export { DHTHealthMonitor, DEFAULT_HEALTH_THRESHOLDS, type DHTHealthSnapshot, type HealthThresholds } from './dht-health.js';
 export {
   buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   compareNetworkServiceOfferPrice,
   inferServiceProtocol,
   resolveServiceProtocol,
