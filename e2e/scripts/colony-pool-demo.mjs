@@ -364,7 +364,7 @@ async function main() {
     say(`${name}: ${wallet.address}`);
   }
   if (EXPECT_WORKERS > LOCAL_WORKERS) say(`waiting for the Mac app to join ws://<this Mac>:${POOL_PORT}…`);
-  await waitFor(async () => poolProvider.services.includes(SERVICE) && colonyPool.workerSummaries().filter((w) => w.services.length).length >= EXPECT_WORKERS, 'workers verified', 300_000, 500);
+  await waitFor(async () => poolProvider.services.includes(SERVICE) && colonyPool.workerSummaries().filter((w) => w.services.length).length >= EXPECT_WORKERS, 'workers verified', Number(process.env.DEMO_WORKER_WAIT_MS ?? 300_000), 500);
   for (const summary of colonyPool.workerSummaries()) {
     if (workers.some((w) => w.wallet.address.toLowerCase() === summary.address)) continue;
     workers.push({ name: 'mac-app', wallet: { address: summary.address }, external: true, agent: summary.agent });
