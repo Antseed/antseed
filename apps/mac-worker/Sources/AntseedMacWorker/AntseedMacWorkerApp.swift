@@ -29,7 +29,11 @@ struct AntseedMacWorkerApp: App {
         MenuBarExtra {
             MenuPanel(worker: worker)
         } label: {
-            Image(systemName: worker.status == .serving ? "ant.fill" : "ant")
+            if let mark = menuBarMark {
+                Image(nsImage: mark)
+            } else {
+                Image(systemName: worker.status == .serving ? "ant.fill" : "ant")
+            }
         }
         .menuBarExtraStyle(.window)
     }

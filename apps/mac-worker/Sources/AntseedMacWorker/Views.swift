@@ -57,7 +57,7 @@ struct Mascot: View {
     var size: CGFloat = 52
 
     var body: some View {
-        if let image = Self.image(Self.mood(status)) {
+        if let image = resourceImage("mascot/\(Self.mood(status)).png") {
             Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
                 .frame(width: size, height: size * 1.2)
         } else {
@@ -74,15 +74,24 @@ struct Mascot: View {
         case .paused, .needsPool, .choosingModel: "idle"
         }
     }
-
-    /// Bundled in Contents/Resources/mascot by scripts/build-app.sh; from the source tree in development.
-    private static func image(_ mood: String) -> NSImage? {
-        let bundled = Bundle.main.resourceURL?.appendingPathComponent("mascot/\(mood).png")
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Resources/mascot/\(mood).png")
-        return [bundled, source].compactMap { $0 }.lazy.compactMap { NSImage(contentsOf: $0) }.first
-    }
 }
+
+/// An image from apps/mac-worker/Resources: bundled in Contents/Resources by scripts/build-app.sh,
+/// read from the source tree in development.
+func resourceImage(_ path: String) -> NSImage? {
+    let bundled = Bundle.main.resourceURL?.appendingPathComponent(path)
+    let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources/\(path)")
+    return [bundled, source].compactMap { $0 }.lazy.compactMap { NSImage(contentsOf: $0) }.first
+}
+
+/// The desktop app's menu bar mark: 18 pt, a template image so it follows the menu bar's colour.
+let menuBarMark: NSImage? = {
+    guard let image = resourceImage("menubar.png") else { return nil }
+    image.size = NSSize(width: 18, height: 18)
+    image.isTemplate = true
+    return image
+}()
 
 /// The desktop's toggle: accent when on.
 struct ShareSwitch: View {

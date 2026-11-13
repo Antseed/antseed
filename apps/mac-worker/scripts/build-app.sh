@@ -47,14 +47,15 @@ BUNDLES=("$PRODUCTS"/*.bundle)
 shopt -u nullglob
 if ((${#BUNDLES[@]})); then cp -R "${BUNDLES[@]}" "$APP/Contents/Resources/"; fi
 cp -R "build/$TENSORFOLD/bin" "build/$TENSORFOLD/lib" "$ENGINE/"
-# The panel's ant (from the desktop app), one per status.
-cp -R Resources/mascot "$APP/Contents/Resources/"
+# From the desktop app: the panel's ant (one per status), the menu bar mark and the app icon.
+cp -R Resources/mascot Resources/menubar.png Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp -R "build/$TENSORFOLD/LICENSE" "build/$TENSORFOLD/NOTICE" "build/$TENSORFOLD/THIRD_PARTY_NOTICES.md" "build/$TENSORFOLD/LICENSES" "$APP/Contents/Resources/tensorfold-licenses/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>Antseed Colony</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
 <key>CFBundleExecutable</key><string>AntseedMacWorker</string>
 <key>CFBundlePackageType</key><string>APPL</string>
