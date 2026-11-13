@@ -10,7 +10,7 @@ import { WORKSPACE_APPS_DIR } from '../paths.js';
 export const SHOW_MEDIA_TOOL_NAME = 'show_media';
 export const GET_CHAT_IMAGE_PATH_TOOL_NAME = 'get_chat_image_path';
 export const GET_CHAT_VIDEO_PATH_TOOL_NAME = 'get_chat_video_path';
-export const BUNDLED_CHAT_SKILL_NAMES = ['antseed-images', 'antseed-videos'] as const;
+export const BUNDLED_CHAT_SKILL_NAMES = ['antseed-images', 'antseed-videos', 'antseed-decisions'] as const;
 
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 1024 * 1024 * 1024;

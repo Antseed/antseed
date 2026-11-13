@@ -458,33 +458,34 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
     expect(signed()).toBe(650_000n);
   });
 
-  it('the buyer\'s signing before a close does not sign a 402 retry\'s minimum advance on top of what the seller served', async () => {
+  it('the buyer\'s signing before a close does not sign what a 402 retry already signed on top of what the seller served', async () => {
     send('r1');
     deliver('r1', 100_000n);
     await sellerSends(claim('r1', 100_000n, 100_000n));
-    // The seller answers 402 asking for what it served (100,000). The retry signs its minimum advance, 10,000 past that.
-    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 100_000n, 'r2', 1);
-    expect(signed()).toBe(110_000n);
-
-    // Two responses the advance already covers, so their cost frames ask for nothing new. A close the seller
-    // refuses follows each: the buyer's own signing counts the response against the advance, not on top of it.
+    // Two more responses arrive, their cost frames do not (yet). The seller answers the next request 402 asking
+    // for all it served (108,000), and the retry signs exactly that: no minimum advance on top.
     send('r2');
     deliver('r2', 3_000n);
-    await sellerSends(claim('r2', 3_000n, 103_000n));
-    await signAtClose('r2', 3_000n);
     send('r3');
     deliver('r3', 5_000n);
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 108_000n, 'r4', 1);
+    expect(signed()).toBe(108_000n);
+
+    // The late cost frames ask for nothing new. A close the seller refuses follows each: the buyer's own signing
+    // counts the response against what the retry signed, not on top of it.
+    await sellerSends(claim('r2', 3_000n, 103_000n));
+    await signAtClose('r2', 3_000n);
     await sellerSends(claim('r3', 5_000n, 108_000n));
     await signAtClose('r3', 5_000n);
-    expect(signed(), 'signed the advance and the responses it covered').toBe(110_000n);
+    expect(signed(), 'signed the responses the retry already paid a second time').toBe(108_000n);
 
-    // A response past the advance: its cost frame signs up to what the seller served, and the close adds nothing.
+    // The next response: its cost frame signs up to what the seller served, and the close adds nothing.
     send('r4');
     deliver('r4', 50_000n);
     await sellerSends(claim('r4', 50_000n, 158_000n));
     expect(signed()).toBe(158_000n);
     await signAtClose('r4', 50_000n);
-    expect(signed(), 'signed the advance on top of what the seller served').toBe(158_000n);
+    expect(signed(), 'signed more than the seller served').toBe(158_000n);
     expect(verified()).toBe(158_000n);
   });
 });

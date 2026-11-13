@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import type { ChildProcess } from 'node:child_process'
 import { FileIdentityStore } from '@antseed/node'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
-import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer } from './buyer-process.js'
+import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer, superviseAttachedBuyer, watchAttachedBuyer } from './buyer-process.js'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
@@ -142,4 +142,56 @@ test('hands the wallet passphrase to the buyer on stdin, not in its environment'
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('watchAttachedBuyer takes over only once the buyer has stayed gone', async () => {
+  const answers = [true, false, true, false, false]
+  let tookOver = 0
+  await new Promise<void>((resolve) => {
+    watchAttachedBuyer({
+      isRunning: async () => answers.shift() ?? true,
+      takeOver: () => { tookOver += 1; resolve() },
+      checkMs: 1,
+    })
+  })
+  assert.equal(tookOver, 1)
+  assert.equal(answers.length, 0)
+})
+
+test('watchAttachedBuyer stops when asked', async () => {
+  let tookOver = false
+  const stop = watchAttachedBuyer({ isRunning: async () => false, takeOver: () => { tookOver = true }, checkMs: 1 })
+  stop()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(tookOver, false)
+})
+
+test('superviseAttachedBuyer stops the buyer it took over with', async () => {
+  let stops = 0
+  let started: () => void = () => undefined
+  const running = new Promise<void>((resolve) => { started = resolve })
+  const stop = superviseAttachedBuyer({
+    isRunning: async () => false,
+    start: () => { started(); return { stop: async () => { stops += 1 } } },
+    checkMs: 1,
+  })
+  await running
+  await stop()
+  assert.equal(stops, 1)
+})
+
+test('superviseAttachedBuyer starts nothing once shutdown has begun', async () => {
+  let starts = 0
+  let answer: (running: boolean) => void = () => undefined
+  const stop = superviseAttachedBuyer({
+    // Still waiting on the check when shutdown begins.
+    isRunning: () => new Promise((resolve) => { answer = resolve }),
+    start: () => { starts += 1; return { stop: async () => undefined } },
+    checkMs: 1,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await stop()
+  answer(false)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(starts, 0)
 })

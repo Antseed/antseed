@@ -19,6 +19,8 @@ curl -fsSL https://antseed.com/install.sh | bash
 # or
 npm install -g @antseed/cli
 antseed gateway start
+# or keep it running in the background (macOS launchd, Linux systemd user service; no root):
+antseed gateway service install
 ```
 
 ## Getting started

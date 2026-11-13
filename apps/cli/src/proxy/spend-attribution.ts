@@ -20,7 +20,7 @@ const MAX_STORED_EVENTS = 100_000
 const MAX_EVENTS_PER_PAGE = 1000
 /** How long a request's tag is kept for spend signed after the response. */
 const TAG_RETENTION_MS = 60 * 60 * 1000
-/** Spend without a request id goes to the seller's recent tag only if no other tag used it this recently. */
+/** Spend without a request id is shared among the tags that had spend on that seller this recently. */
 const UNTAGGED_SPEND_WINDOW_MS = 5 * 60 * 1000
 /** Acknowledged events are kept this long (a second reader may still want them). */
 const ACKED_RETENTION_MS = 60 * 60 * 1000
@@ -109,8 +109,10 @@ export class SpendAttributionFeed {
   private readonly _oldest: Database.Statement
   private readonly _ack: Database.Statement
   private readonly _pruneEvents: Database.Statement
-  /** When each tag last had spend, per identity and seller, for spend signed without a request id. */
-  private readonly _recentTagsBySeller = new Map<string, Map<string, number>>()
+  /** Each tag's recent spend on a seller (per identity), for spend signed without a request id. */
+  private readonly _recentTagsBySeller = new Map<string, Map<string, RecentTagSpend>>()
+  /** The last tag with spend on each seller (per identity), for spend signed after the window. */
+  private readonly _lastTagBySeller = new Map<string, string>()
   private _lastPruneAt: number | null = null
 
   constructor(private readonly _now: () => number = () => Date.now(), options: SpendAttributionFeedOptions = {}) {
@@ -196,21 +198,44 @@ export class SpendAttributionFeed {
     if (!this._db.open) return
     const now = this._now()
     const sellerKey = `${event.buyerIdentity ?? 'default'}:${event.sellerPeerId}`
-    const recentTags = this._recentTagsBySeller.get(sellerKey) ?? new Map<string, number>()
-    for (const [recentTag, at] of recentTags) if (at < now - UNTAGGED_SPEND_WINDOW_MS) recentTags.delete(recentTag)
-    // Without a request id the spend can only be attributed when exactly one
-    // tag (one gateway key's request) is using this identity on this seller.
-    const tracked = event.requestId
-      ? this._lookup.get(event.requestId, now - TAG_RETENTION_MS) as { tag: string; purpose: SpendPurpose | null } | undefined
-      : undefined
-    const tag = event.requestId ? tracked?.tag : recentTags.size === 1 ? [...recentTags.keys()][0] : undefined
-    if (!tag) return
-    recentTags.set(tag, now)
+    const recentTags = this._recentTagsBySeller.get(sellerKey) ?? new Map<string, RecentTagSpend>()
+    for (const [recentTag, recent] of recentTags) if (recent.at < now - UNTAGGED_SPEND_WINDOW_MS) recentTags.delete(recentTag)
     this._recentTagsBySeller.set(sellerKey, recentTags)
     this._prune(now)
+    if (event.requestId) {
+      const tracked = this._lookup.get(event.requestId, now - TAG_RETENTION_MS) as { tag: string; purpose: SpendPurpose | null } | undefined
+      if (!tracked) return
+      const recent = recentTags.get(tracked.tag)
+      recentTags.set(tracked.tag, { at: now, amount: (recent?.amount ?? 0n) + parseAmount(event.amountUsdc) })
+      this._lastTagBySeller.set(sellerKey, tracked.tag)
+      this._insertEvent(tracked.tag, event, event.amountUsdc, now, tracked.purpose)
+      return
+    }
+    // Signed without a request id (a seller's catch-up prompt for work already
+    // served, often while other requests wait): it pays for the requests that
+    // used this seller lately, all paid from this identity's wallet. Dropping it
+    // would leave that spend out of every total, so it is shared among them by
+    // what each spent; after the window it goes to the seller's last tag.
+    const shares = shareUntaggedSpend(parseAmount(event.amountUsdc), recentTags, this._lastTagBySeller.get(sellerKey))
+    shares.forEach(([tag, amount], index) => {
+      const recent = recentTags.get(tag)
+      if (recent) recent.at = now
+      // Token counts are not split: they stay with the first share.
+      const counts = index === 0 ? event : { ...event, inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+      this._insertEvent(tag, counts, amount.toString(), now, null)
+    })
+  }
+
+  private _insertEvent(
+    tag: string,
+    event: { requestId: string | null; buyerIdentity?: string; sellerPeerId: string; inputTokens: string; cachedInputTokens: string; outputTokens: string; outputImages: string },
+    amountUsdc: string,
+    now: number,
+    purpose: SpendPurpose | null,
+  ): void {
     this._insert.run(
-      tag, event.requestId, event.buyerIdentity ?? 'default', event.sellerPeerId, event.amountUsdc,
-      event.inputTokens, event.cachedInputTokens, event.outputTokens, event.outputImages, now, tracked?.purpose ?? null,
+      tag, event.requestId, event.buyerIdentity ?? 'default', event.sellerPeerId, amountUsdc,
+      event.inputTokens, event.cachedInputTokens, event.outputTokens, event.outputImages, now, purpose,
     )
   }
 
@@ -243,6 +268,42 @@ export class SpendAttributionFeed {
     this._prunePurposes.run(now - TAG_RETENTION_MS)
     this._pruneEvents.run(now - ACKED_RETENTION_MS, now - UNACKED_RETENTION_MS, MAX_STORED_EVENTS)
   }
+}
+
+interface RecentTagSpend {
+  /** When the tag last had spend on the seller. */
+  at: number
+  /** Its spend signed with a request id within the window, USDC base units. */
+  amount: bigint
+}
+
+function parseAmount(value: string): bigint {
+  try {
+    const amount = BigInt(value)
+    return amount > 0n ? amount : 0n
+  } catch {
+    return 0n
+  }
+}
+
+/**
+ * Splits spend signed without a request id among the seller's recent tags, in
+ * proportion to their recent spend (evenly when none had any), so the shares
+ * add up to `amount` exactly. With no recent tag it all goes to `fallbackTag`;
+ * with neither there is no one to attribute it to.
+ */
+export function shareUntaggedSpend(amount: bigint, recentTags: ReadonlyMap<string, RecentTagSpend>, fallbackTag: string | undefined): Array<[string, bigint]> {
+  if (amount <= 0n) return []
+  // Most recent first, so the first share (which carries the token counts) and the remainder go there.
+  const tags = [...recentTags.entries()].sort((a, b) => b[1].at - a[1].at)
+  if (tags.length === 0) return fallbackTag ? [[fallbackTag, amount]] : []
+  const total = tags.reduce((sum, [, recent]) => sum + recent.amount, 0n)
+  const weights = tags.map(([tag, recent]) => [tag, total > 0n ? recent.amount : 1n] as const)
+  const weightTotal = total > 0n ? total : BigInt(tags.length)
+  const shares: Array<[string, bigint]> = weights.map(([tag, weight]) => [tag, (amount * weight) / weightTotal])
+  const remainder = amount - shares.reduce((sum, [, share]) => sum + share, 0n)
+  shares[0]![1] += remainder
+  return shares.filter(([, share]) => share > 0n)
 }
 
 interface SpendEventRow {

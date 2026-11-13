@@ -18,8 +18,8 @@ export function DownloadButton({
   const buttonClass = className ? `vprBtn ${className}` : 'vprBtn';
   return (
     <Button href={download.href} size={size} variant={variant} className={buttonClass} onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
+      <span className="vprLabelDesktop">Download Antseed Desktop</span>
+      <span className="vprLabelMobile">Get Antseed Desktop<ArrowRight /></span>
     </Button>
   );
 }

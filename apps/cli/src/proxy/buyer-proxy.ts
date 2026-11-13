@@ -53,6 +53,8 @@ import {
   type AdaptiveRouteScore,
   type RouteRequestShape,
   type PeerInfo,
+  buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   type NetworkServiceOffer,
   type PeerMetadata,
   type ModelRoutingPreferences,
@@ -315,6 +317,9 @@ export interface BuyerBalances {
 
 /** Exit code `POST /_antseed/restart` ends the process with, so a supervisor restarts it. */
 export const BUYER_RESTART_EXIT_CODE = 75
+/** The ways a chat request can arrive, whichever the seller speaks natively. */
+const CHAT_REQUEST_PROTOCOLS: readonly ServiceApiProtocol[] = ['openai-chat-completions', 'openai-responses', 'anthropic-messages']
+
 const MIN_RESTART_INTERVAL_MS = 30_000
 const BALANCE_CACHE_TTL_MS = 15_000
 /** A balance up to this much past its TTL is answered at once while it refreshes. */
@@ -356,6 +361,8 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+  cachedInputUsdPerMillion: number | null
   /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
   /** The score before a DIFF cut; present only when one applies. */
@@ -1312,25 +1319,88 @@ export async function sweepStaleStateTmpFiles(dir: string, minAgeMs = STATE_TMP_
   }
 }
 
+/** A state file as last read or written by this process: each top-level value as its JSON text. */
+interface StateFileImage {
+  ino: number
+  mtimeMs: number
+  size: number
+  parts: Map<string, string>
+}
+
+const stateFileImages = new Map<string, StateFileImage>()
+
+/**
+ * The state file's top-level values as JSON text, or null when it cannot be
+ * read as a JSON object. The file is large (the peer cache and video routes
+ * are megabytes), so it is read and parsed only when another process changed
+ * it: while it is the file this process last read or wrote (same inode,
+ * modification time and size), the remembered values are returned.
+ */
+async function loadStateFileParts(stateFile: string): Promise<Map<string, string> | null> {
+  let before: { ino: number; mtimeMs: number; size: number }
+  try {
+    before = await stat(stateFile)
+  } catch {
+    stateFileImages.delete(stateFile)
+    return null
+  }
+  const known = stateFileImages.get(stateFile)
+  if (known && known.ino === before.ino && known.mtimeMs === before.mtimeMs && known.size === before.size) return known.parts
+  try {
+    const parsed = JSON.parse(await readFile(stateFile, 'utf-8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object')
+    const parts = new Map<string, string>()
+    for (const [key, value] of Object.entries(parsed)) {
+      const text = JSON.stringify(value)
+      if (text !== undefined) parts.set(key, text)
+    }
+    // Filed under the stat taken before the read: a write that landed in
+    // between no longer matches it, so the next call reads again.
+    stateFileImages.set(stateFile, { ino: before.ino, mtimeMs: before.mtimeMs, size: before.size, parts })
+    return parts
+  } catch {
+    stateFileImages.delete(stateFile)
+    return null
+  }
+}
+
+/** Some top-level values of a JSON state file, or null when the file cannot be read. Parses only those values. */
+export async function readJsonStateFileKeys(stateFile: string, keys: readonly string[]): Promise<Record<string, unknown> | null> {
+  const parts = await loadStateFileParts(stateFile)
+  if (!parts) return null
+  const values: Record<string, unknown> = {}
+  for (const key of keys) {
+    const text = parts.get(key)
+    if (text !== undefined) values[key] = JSON.parse(text)
+  }
+  return values
+}
+
 /**
  * Atomic read-merge-write of a JSON state file via a sibling temp file. The
  * temp file never survives: a failed rename unlinks it before rethrowing.
+ * Only the patched values are serialized, and the file is re-read only when
+ * another process wrote it since (see `loadStateFileParts`).
  */
 export async function mergeJsonStateFile(stateDir: string, stateFile: string, patch: Record<string, unknown>): Promise<void> {
   await mkdir(stateDir, { recursive: true })
-  let existing: Record<string, unknown> = {}
-  try {
-    const raw = await readFile(stateFile, 'utf-8')
-    existing = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    // file doesn't exist yet
+  // A missing or unreadable file starts from nothing, as before.
+  const parts = new Map(await loadStateFileParts(stateFile) ?? [])
+  for (const [key, value] of Object.entries(patch)) {
+    const text = JSON.stringify(value)
+    if (text === undefined) parts.delete(key)
+    else parts.set(key, text)
   }
-  const data = { ...existing, ...patch }
+  const body = [...parts].map(([key, text]) => `  ${JSON.stringify(key)}: ${text}`).join(',\n')
   const tmp = join(stateDir, `.buyer.state.${randomUUID()}.json.tmp`)
-  await writeFile(tmp, JSON.stringify(data, null, 2))
+  await writeFile(tmp, parts.size > 0 ? `{\n${body}\n}\n` : '{}\n')
   try {
+    // A rename keeps the inode, time and size, so these identify the state file once it is in place.
+    const written = await stat(tmp)
     await renameWithRetry(tmp, stateFile)
+    stateFileImages.set(stateFile, { ino: written.ino, mtimeMs: written.mtimeMs, size: written.size, parts })
   } catch (err) {
+    stateFileImages.delete(stateFile)
     await unlink(tmp).catch(() => {})
     throw err
   }
@@ -1427,6 +1497,8 @@ export class BuyerProxy {
   /** Requests in flight per seller, to stop sending a seller more than it says it can take at once. */
   private readonly _inFlightBySeller = new Map<string, number>()
   private _peerHealthPersistTimer: ReturnType<typeof setTimeout> | null = null
+  /** A seller's last-reached time changed since the peer cache was written; saved with the next health write. */
+  private _peersPersistPending = false
   private readonly _adaptiveRouting: NonNullable<BuyerProxyConfig['adaptiveRouting']>
   private _heartbeatHandle: ReturnType<typeof setInterval> | null = null
   private readonly _now: () => number
@@ -1750,8 +1822,31 @@ export class BuyerProxy {
       cachedInputUsdPerMillion: offer?.cachedInputUsdPerMillion ?? null,
       imageUsdPerImage: offer?.maxImageUsdPerImage ?? offer?.minImageUsdPerImage ?? null,
       unverifiedReason: this._unverifiedReason(peer),
-      teeCapable: parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID),
+      ...this._teeFacts(peer),
     }
+  }
+
+  /**
+   * Checks the TEE attestation of every seller that advertises one, as soon as
+   * it is found, so the model list can show which really are TEE sellers and a
+   * failing one drops out of Private before anything is sent. Cached, deduped
+   * and capped like any check; a busy or unrun one is tried on a later discovery.
+   */
+  private _checkTeeSellers(peers: readonly PeerInfo[]): void {
+    if (!this._verifier) return
+    for (const peer of peers) {
+      if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) continue
+      void this._teeVerification.verifyForDisplay(peer,
+        () => this._runVerifier(peer, { require: false, prefer: [TEE_VERIFIER_ID] }, AbortSignal.timeout(31_000)))
+        .catch(() => undefined)
+    }
+  }
+
+  /** Advertising the TEE verifier makes a seller TEE-capable until its attestation fails. */
+  private _teeFacts(peer: PeerInfo): Pick<PolicyPeerFacts, 'teeCapable' | 'teeFailure'> {
+    if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) return { teeCapable: false }
+    const failure = this._teeVerification.teeFailure(peer)
+    return failure ? { teeCapable: false, teeFailure: failure } : { teeCapable: true }
   }
 
   /**
@@ -1844,6 +1939,8 @@ export class BuyerProxy {
     deterministic?: boolean
     /** Stable key of the conversation, so all its turns go to the seller holding its prompt cache. */
     affinityKey?: string | null
+    /** The buyer's open-channel sellers, when the caller plans many models and read them once. */
+    openChannels?: () => Set<string> | null
   }) {
     const { modelPeers, modelPlans, request, requestProtocol, requestedService, explicitProvider, requiredParameters } = input
     const policyRouter = this._node.router as BuyerPolicyRouter | null | undefined
@@ -1958,7 +2055,7 @@ export class BuyerProxy {
       candidates = this._readyFirst(ranked, verdicts, now)
     }
     const isCooling = (candidate: (typeof ranked)[number]): boolean => isModelRouteCoolingDown(candidate, now)
-    const openChannels = this._openChannelPeers(request.headers[BUYER_IDENTITY_HEADER])
+    const openChannels = input.openChannels ? input.openChannels() : this._openChannelPeers(request.headers[BUYER_IDENTITY_HEADER])
     // Among the sellers the buyer's limits allow, rank by what this buyer has
     // seen them do: expected cost of a successful answer, spread across the
     // sellers close to the best. An explicit gateway sort or route chain
@@ -2157,26 +2254,7 @@ export class BuyerProxy {
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */
   private async _routePreview(model: string, requestPolicy: RoutingPolicy | null): Promise<RoutePreviewCandidate[]> {
     const peers = await this._getPeers()
-    const request: SerializedHttpRequest = {
-      requestId: randomUUID(),
-      method: 'POST',
-      path: '/v1/chat/completions',
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model })),
-    }
-    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, model, null, 'strict')
-    const plan = this._planModelRoutes({
-      modelPeers: candidatePeers,
-      modelPlans: routePlanByPeerId,
-      request,
-      requestProtocol: null,
-      requestedService: model,
-      explicitProvider: null,
-      requiredParameters: [],
-      requestPolicy,
-      preferredPeerId: null,
-      deterministic: true,
-    })
+    const plan = this._planChatModelRoutes(peers, model, requestPolicy)
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
     // Routing never considers a service its seller announces as failing, so
@@ -2195,6 +2273,7 @@ export class BuyerProxy {
         reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion ?? null,
         ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
         selection: null,
         health: offer.health ?? null,
@@ -2209,6 +2288,7 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: verdict.offer.cachedInputUsdPerMillion ?? null,
         ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
         health: verdict.offer.health ?? null,
@@ -2616,8 +2696,8 @@ export class BuyerProxy {
 
   private async _reloadSessionOverrides(opts: { preservePeerPin?: boolean } = {}): Promise<void> {
     try {
-      const raw = await readFile(this._stateFile, 'utf-8')
-      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const parsed = await readJsonStateFileKeys(this._stateFile, ['pinnedPeerId', 'defaultRoutedModel', 'defaultRouter'])
+      if (!parsed) return
       if (!opts.preservePeerPin) {
         const pinnedPeer = typeof parsed.pinnedPeerId === 'string' && parsed.pinnedPeerId.trim().length > 0
           ? parsed.pinnedPeerId.trim().toLowerCase()
@@ -2829,12 +2909,14 @@ export class BuyerProxy {
 
     this._cachedPeers = merged
     this._teeVerification.observePeers(merged)
+    this._checkTeeSellers(merged)
     this._cacheLastUpdatedAtMs = Date.now()
     this._cacheMutationEpoch += 1
     this._persistPeersToState()
   }
 
   private _persistPeersToState(): void {
+    this._peersPersistPending = false
     // Write discovered peers to buyer.state.json so the dashboard can read them
     // without running its own DHT node.
     const peers = this._cachedPeers.map((p) => {
@@ -2961,7 +3043,7 @@ export class BuyerProxy {
       )
     }
 
-    void this._persistPeerHealthToState()
+    this._schedulePeerHealthPersist()
   }
 
   /**
@@ -3028,7 +3110,7 @@ export class BuyerProxy {
     }
     if (changed) {
       log(`Cleared peer cooldowns for ${peerIds.length} peer(s): ${why}.`)
-      void this._persistPeerHealthToState()
+      this._schedulePeerHealthPersist()
     }
   }
 
@@ -3076,12 +3158,14 @@ export class BuyerProxy {
       log(`Peer ${peerId.slice(0, 12)}... recovered; cooldown cleared.`)
     }
     this._peerHealth.set(peerId, clearPeerHealthEntry(previous, now))
-    void this._persistPeerHealthToState()
+    // Every answered request lands here: the state file is megabytes, so it
+    // is written at most every few seconds, never once per request.
+    this._schedulePeerHealthPersist()
 
     const cached = this._cachedPeers.find((p) => p.peerId === peerId)
     if (cached) {
       cached.lastReachedAt = now
-      this._persistPeersToState()
+      this._peersPersistPending = true
     }
   }
 
@@ -3106,6 +3190,7 @@ export class BuyerProxy {
 
   /** Persist health separately from `discoveredPeers`, which is rebuilt wholesale. */
   private async _persistPeerHealthToState(): Promise<void> {
+    if (this._peersPersistPending) this._persistPeersToState()
     const now = this._now()
     this._peerHealth = prunePeerHealth(this._peerHealth, now)
     await this._mergeStateFile({
@@ -3909,13 +3994,57 @@ export class BuyerProxy {
     const responseHeaders = { 'content-type': 'application/json', 'x-antseed-request-id': randomUUID() }
     const peers = await this._getPeers()
     const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
-    const models = buildNetworkModels(peers, this._now(), {
+    // Lists what a request could be routed to. `?scope=network` is the console
+    // browsing everything on the network, usable or not.
+    const listPolicy = requestPolicy ?? (url.searchParams.get('scope') === 'network' ? null : {})
+    // Each model is planned once, among only the sellers offering it: a list
+    // holds hundreds of models, so planning across all peers takes over a second.
+    const offers = buildNetworkServiceOffers(peers)
+    // Sets keep first-seen order and dedupe by peer.
+    const sellersByModel = new Map<string, Set<PeerInfo>>()
+    if (listPolicy) {
+      for (const offer of offers) {
+        const peer = peerById.get(offer.peerId)
+        if (!peer) continue
+        const key = canonicalModelKey(offer.serviceId)
+        const sellers = sellersByModel.get(key)
+        if (!sellers) sellersByModel.set(key, new Set([peer]))
+        else sellers.add(peer)
+      }
+    }
+    // Read once for the whole list: every model's plan asks, and each read is a database query.
+    let openChannels: Set<string> | null | undefined
+    const openChannelsOnce = (): Set<string> | null => (openChannels === undefined ? (openChannels = this._openChannelPeers(undefined)) : openChannels)
+    const routable = new Map<string, Set<string>>()
+    const routableSellers = (serviceId: string, policy: RoutingPolicy): Set<string> => {
+      const key = canonicalModelKey(serviceId)
+      let sellers = routable.get(key)
+      if (!sellers) {
+        sellers = this._routableChatSellers([...(sellersByModel.get(key) ?? [])], serviceId, policy, openChannelsOnce)
+        routable.set(key, sellers)
+      }
+      return sellers
+    }
+    const teeScopes = new Map<string, ReturnType<TeeVerification['teeProvenScope']>>()
+    // Planning asks each seller for its services once per model: worked out once for this list.
+    const models = withServiceCatalogMemo(() => buildNetworkModels(peers, this._now(), {
+      offers,
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      ...(requestPolicy
-        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(requestPolicy, peerById.get(offer.peerId), offer) }
+      teeScope: (peer) => {
+        // Once per seller for this listing, not per model it offers.
+        if (!teeScopes.has(peer.peerId)) teeScopes.set(peer.peerId, this._teeVerification.teeProvenScope(peer))
+        return teeScopes.get(peer.peerId) ?? null
+      },
+      ...(listPolicy
+        ? {
+            offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)
+              // Routing's own answer for chat models, so limits only it applies
+              // (the price cap, a trust cut per model) can't list a model that fails.
+              && ((offer.type ?? 'text') !== 'text' || routableSellers(offer.serviceId, listPolicy).has(offer.peerId)),
+          }
         : {}),
-    })
+    }))
 
     const modelIdRaw = url.pathname.replace(/^\/v1\/models\/?/i, '')
     if (modelIdRaw.length > 0) {
@@ -4016,11 +4145,56 @@ export class BuyerProxy {
    * the checks that judge a pinned `peer@model`: the model allow list, the
    * seller-level policy, a strict model route and the buyer's hard limits.
    */
+  /** Which of these sellers a chat request for this model could be routed to right now. */
+  private _routableChatSellers(peers: PeerInfo[], serviceId: string, requestPolicy: RoutingPolicy, openChannels?: () => Set<string> | null): Set<string> {
+    // Any way in counts, and each resolves to the provider a real request of that
+    // kind would use: the cheapest compatible one, not the first one advertised.
+    const routable = new Set<string>()
+    for (const protocol of CHAT_REQUEST_PROTOCOLS) {
+      for (const verdict of this._planChatModelRoutes(peers, serviceId, requestPolicy, protocol, openChannels).verdicts) {
+        if (verdict.eligible) routable.add(verdict.peer.peerId)
+      }
+      if (routable.size === peers.length) break
+    }
+    return routable
+  }
+
+  /**
+   * The route plan for a model-only request: what model listing and route preview
+   * mean by routable. Without a protocol it covers every kind of model (images,
+   * video, speech); with one it resolves the provider a request of that kind uses.
+   */
+  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null, requestProtocol: ServiceApiProtocol | null = null, openChannels?: () => Set<string> | null) {
+    const request: SerializedHttpRequest = {
+      requestId: randomUUID(),
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model })),
+    }
+    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, requestProtocol, model, null, 'strict')
+    return this._planModelRoutes({
+      modelPeers: candidatePeers,
+      modelPlans: routePlanByPeerId,
+      request,
+      requestProtocol,
+      requestedService: model,
+      explicitProvider: null,
+      requiredParameters: [],
+      requestPolicy,
+      preferredPeerId: null,
+      deterministic: true,
+      ...(openChannels ? { openChannels } : {}),
+    })
+  }
+
   private _policyAllowsOffer(requestPolicy: RoutingPolicy, peer: PeerInfo | undefined, offer: NetworkServiceOffer): boolean {
     if (!peer || !policyAllowsModel(this._effectivePolicy(requestPolicy), offer.serviceId)) return false
     const facts = this._policyFacts(peer, offer)
     return pinnedPeerExclusionReasons(requestPolicy, facts, offer.serviceId).length === 0
-      && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
+      // The whole buyer level, as routing applies it: a seller below the buyer's
+      // minimum trust can't be routed to, so listing it offers a model that fails.
+      && policyExclusionReasons(this._buyerPolicy(), facts).length === 0
   }
 
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -4556,8 +4730,8 @@ export class BuyerProxy {
     let trackedConversationId = storedConversation?.id ?? null
     // Resolve the `antseed` model alias to the session's default route first,
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // substituted value. Tools connected to the buyer without a gateway can
+    // carry the alias, so route changes apply without config rewrites.
     const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
@@ -4566,8 +4740,9 @@ export class BuyerProxy {
         error: {
           type: 'no_default_route',
           code: 'no_default_route',
-          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in the AI VPN, but no route is set. `
-            + 'Pick a model in the desktop app, or request "<peerId>@<model>" explicitly.',
+          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the buyer's default route, but none is set. `
+            + 'Request a model by name ("<model>" or "<peerId>@<model>"), or set a default route with '
+            + 'POST /_antseed/route {"model":"<peerId>@<model>"}.',
           param: 'model',
         },
       }))

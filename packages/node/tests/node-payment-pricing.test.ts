@@ -269,7 +269,9 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
   return {
     oneOffPlans: plans,
     openOneOff: open,
-    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown) => { plans.set(key(buyer, requestId), plan); }),
+    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown): number | null => { plans.set(key(buyer, requestId), plan); return null; }),
+    oneOffRetryAfterSeconds: vi.fn((): number | null => null),
+    markOneOffCreateAccepted: vi.fn(),
     getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
       ?? (opened ? open(buyer, requestId) : null),
     claimOneOffChannel: (channelId: string) => {
@@ -358,6 +360,200 @@ it('does not charge a native video on acceptance or JSON status, preserves buyer
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(404);
   expect(owners.get('task')).toBe(buyer);
   expect(provider.handleRequest).toHaveBeenCalledTimes(3);
+});
+
+it('charges a multipart request the price of its own service, and nothing for a free one on a paid provider', async () => {
+  const boundary = 'form-boundary';
+  const provider = makeProvider(10, 20, {
+    name: 'images',
+    services: ['priced', 'at-default', 'free'],
+    servicePricing: { priced: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, free: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+  });
+  provider.handleRequest = vi.fn(async request => ({
+    requestId: request.requestId,
+    statusCode: 200,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ choices: [], usage: { prompt_tokens: 1000, completion_tokens: 1000 } })),
+  }));
+  const recordSpend = vi.fn();
+  const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend, getReserveMax: () => 1_000_000n }), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  const serve = async (model: string) => {
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: frames.length + 1,
+      payload: encodeHttpRequest({
+        requestId: model,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        body: new TextEncoder().encode(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}--\r\n`),
+      }),
+    });
+    return frames
+      .map(frame => decodeFrame(frame)!.message)
+      .filter(message => message.type === MessageType.HttpResponse)
+      .map(message => decodeHttpResponse(message.payload))
+      .find(answer => answer.requestId === model)!.statusCode;
+  };
+
+  expect(await serve('priced')).toBe(200);
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n]]);
+  expect(await serve('at-default')).toBe(200);
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n], ['session-1', 30000n]]);
+  expect(await serve('free')).toBe(200);
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n], ['session-1', 30000n]]);
+  expect(vi.mocked(provider.handleRequest).mock.calls.map(([request]) => request.headers['x-antseed-service'])).toEqual(['priced', 'at-default', 'free']);
+});
+
+describe('charges for requests whose fields every reader reads alike', () => {
+  const boundary = 'form-boundary';
+  type Part = [headers: string, content: string];
+  const text = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
+  const form = (parts: Part[]) => ({
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    body: new TextEncoder().encode(`${parts.map(([headers, content]) => `--${boundary}\r\n${headers}\r\n\r\n${content}\r\n`).join('')}--${boundary}--\r\n`),
+  });
+
+  /** An image seller priced per image by quality, on top of token prices, with every charge and provider call recorded. */
+  function imageSeller() {
+    const provider = makeProvider(0, 0, {
+      name: 'images',
+      services: ['image-model', 'chat-model'],
+      servicePricing: { 'chat-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } },
+      serviceApiProtocols: { 'image-model': ['openai-images'], 'chat-model': ['openai-chat-completions'] },
+      serviceUnitBillingModels: { 'image-model': { 'openai-images': { version: 1, components: [
+        { unit: 'output_images', priceUsd: 0.01, match: { quality: 'low' } },
+        { unit: 'output_images', priceUsd: 0.04, match: { quality: 'high' } },
+        { unit: 'output_images', priceUsd: 0.02, match: { quality: 'auto' } },
+      ] } } },
+    });
+    const received: Array<{ headers: Record<string, string>; body: Uint8Array }> = [];
+    provider.handleRequest = vi.fn(async request => {
+      received.push({ headers: { ...request.headers }, body: request.body });
+      const answer = request.headers['x-antseed-service'] === 'image-model'
+        ? { data: [{ b64_json: 'a' }, { b64_json: 'b' }] }
+        : { choices: [], usage: { prompt_tokens: 1000, completion_tokens: 1000 } };
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(answer)) };
+    });
+    const recordSpend = vi.fn();
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend, getReserveMax: () => 1_000_000n }), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    let sent = 0;
+    const serve = async (path: string, request: { headers: Record<string, string>; body: Uint8Array }) => {
+      const requestId = `request-${sent += 1}`;
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: sent, payload: encodeHttpRequest({ requestId, method: 'POST', path, ...request }) });
+      const response = frames.map(frame => decodeFrame(frame)!.message)
+        .filter(message => message.type === MessageType.HttpResponse)
+        .map(message => decodeHttpResponse(message.payload))
+        .find(answer => answer.requestId === requestId)!;
+      return { status: response.statusCode, code: response.statusCode === 200 ? undefined : JSON.parse(new TextDecoder().decode(response.body)).error.code as string };
+    };
+    return { serve, received, charges: () => recordSpend.mock.calls.map(([, amount]) => amount as bigint) };
+  }
+
+  it('charges a multipart image request by its one quality and count, the values its provider receives', async () => {
+    const { serve, received, charges } = imageSeller();
+    const upload: Part = ['Content-Disposition: form-data; name="audio"; filename="voice.wav"\r\nContent-Type: audio/wav', 'RIFF'];
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), upload]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([80_000n]);
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'low'), text('n', '2')]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([80_000n, 20_000n]);
+
+    // What the provider was handed, read by a parser the seller does not share: the values that were charged.
+    const read = await Promise.all(received.map(async ({ headers, body }) => {
+      const fields = await new Response(body, { headers: { 'content-type': headers['content-type']! } }).formData();
+      return Object.fromEntries(['model', 'quality', 'n'].map(name => [name, fields.getAll(name)]));
+    }));
+    expect(read).toEqual([
+      { model: ['image-model'], quality: ['high'], n: ['2'] },
+      { model: ['image-model'], quality: ['low'], n: ['2'] },
+    ]);
+  });
+
+  it.each<[string, Part[], string]>([
+    ['a quality sent twice, the higher one last', [text('quality', 'low'), text('quality', 'high')], 'repeated_field'],
+    ['a quality sent twice, the higher one first', [text('quality', 'high'), text('quality', 'low')], 'repeated_field'],
+    ['a count sent twice', [text('quality', 'low'), text('n', '1'), text('n', '2')], 'repeated_field'],
+    ['a quality billing would not read, sent as a file', [['Content-Disposition: form-data; name="quality"; filename=""', 'high']], 'invalid_billing_field'],
+    ['a quality billing would not read, over the field limit', [text('quality', `high${' '.repeat(4096)}`)], 'invalid_billing_field'],
+    ['a quality under another spelling', [text('Quality', 'high')], 'invalid_billing_field'],
+    ['a quality under two spellings', [text('quality', 'low'), text('Quality', 'high')], 'invalid_billing_field'],
+    ['a count billing would not read', [text('quality', 'low'), text('n', '4abc')], 'invalid_billing_field'],
+    ['a parameter key padded with a control byte', [text('quality', 'low'), ['Content-Disposition: form-data; name="decoy"; name\x1f="quality"', 'high']], 'unsupported_multipart_body'],
+  ])('charges nothing and calls no provider for a multipart image request with %s', async (_name, parts, code) => {
+    const { serve, received, charges } = imageSeller();
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), ...parts]))).toEqual({ status: 400, code });
+    expect(charges()).toEqual([]);
+    expect(received).toEqual([]);
+  });
+
+  // Some form parser reads each of these parts as the field in brackets; the seller writes only the name it read.
+  it.each<[string, Part[], bigint, Record<string, string[]>]>([
+    ['a part billing reads as "user" (quality)', [['Content-Disposition: form-data; filenamename="quality"; name="user"', 'low'], text('quality', 'high')], 40_000n, { quality: ['high'], user: ['low'] }],
+    ['a part whose other header quotes a disposition line (quality)', [text('quality', 'low'), ['X-Note: content-disposition: form-data; name="quality"\r\nContent-Disposition: form-data; name="prompt"', 'high']], 10_000n, { quality: ['low'], prompt: ['high'] }],
+    ['an escaped quote hiding a name (quality)', [text('quality', 'low'), ['Content-Disposition: form-data; name="decoy"; foo="a\\\\"; bar="x; name=quality; y"', 'high']], 10_000n, { quality: ['low'], decoy: ['high'] }],
+    ['an extra parameter on the quality', [['Content-Disposition: form-data; name="quality"; x=a/b', 'low']], 10_000n, { quality: ['low'] }],
+  ])('charges a multipart image request with %s by the value its provider receives', async (_name, parts, charge, expected) => {
+    const { serve, received, charges } = imageSeller();
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), ...parts]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([charge]);
+    const fields = await new Response(received[0]!.body, { headers: { 'content-type': received[0]!.headers['content-type']! } }).formData();
+    expect(Object.fromEntries(Object.keys(expected).map((name) => [name, fields.getAll(name)]))).toEqual(expected);
+  });
+
+  it.each(['/v1/images/./generations', '/v1/chat/completions/../../images/generations', '//v1/images/generations', '/v1/images/generations/'])(
+    'charges nothing and calls no provider for an image request on the path %s, which billing would not price',
+    async (path) => {
+      const { serve, received, charges } = imageSeller();
+      const body = new TextEncoder().encode('{"model":"image-model"}');
+      expect(await serve(path, { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 400, code: 'invalid_request_path' });
+      expect(charges()).toEqual([]);
+      expect(received).toEqual([]);
+      expect(await serve('/v1/images/generations', { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 200 });
+      expect(charges()).toEqual([20_000n]);
+    },
+  );
+
+  it('charges a JSON image request with a count sent twice by the one count its provider receives', async () => {
+    const { serve, received, charges } = imageSeller();
+    const body = new TextEncoder().encode('{"model":"image-model","quality":"low","n":1,"n":2}');
+    expect(await serve('/v1/images/generations', { headers: { 'content-type': 'application/json' }, body })).toEqual({ status: 200 });
+    expect(charges()).toEqual([20_000n]);
+    expect(JSON.parse(new TextDecoder().decode(received[0]!.body))).toEqual({ model: 'image-model', quality: 'low', n: 2 });
+  });
+
+  it.each<[string, string]>([
+    ['a count sent in two letter cases', '{"model":"image-model","quality":"low","n":1,"N":2}'],
+    ['a quality sent in two letter cases', '{"model":"image-model","Quality":"high","quality":"low","n":2}'],
+    ['a quality only in another letter case', '{"model":"image-model","Quality":"high","n":2}'],
+    ['a count only in another letter case', '{"model":"image-model","quality":"low","N":8}'],
+    ['a quality in a list', '{"model":"image-model","quality":["high"],"n":2}'],
+    ['a count billing would not read', '{"model":"image-model","quality":"low","n":"4abc"}'],
+  ])('charges nothing and calls no provider for a JSON image request with %s', async (_name, body) => {
+    const { serve, received, charges } = imageSeller();
+    const json = (text: string) => ({ headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(text) });
+    expect(await serve('/v1/images/generations', json(body))).toEqual({ status: 400, code: 'invalid_billing_field' });
+    expect(charges()).toEqual([]);
+    expect(received).toEqual([]);
+    expect(await serve('/v1/images/generations', json('{"model":"image-model","quality":"low","n":2}'))).toEqual({ status: 200 });
+    expect(charges()).toEqual([20_000n]);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['text, as a browser fetch sends', { 'content-type': 'text/plain;charset=UTF-8' }],
+    ['a form, as curl -d sends', { 'content-type': 'application/x-www-form-urlencoded' }],
+    ['JSON', { 'content-type': 'application/json' }],
+  ])('charges a JSON request labelled %s the price of its service, and hands it to the provider as JSON', async (_name, headers) => {
+    const { serve, received, charges } = imageSeller();
+    const body = new TextEncoder().encode(JSON.stringify({ model: 'chat-model', messages: [{ role: 'user', content: '&model=image-model&' }] }));
+    expect(await serve('/v1/chat/completions', { headers, body })).toEqual({ status: 200 });
+    expect(charges()).toEqual([3000n]);
+    expect(received.map(request => [request.headers['content-type'], request.headers['x-antseed-service'], request.body])).toEqual([['application/json', 'chat-model', body]]);
+  });
 });
 
 describe('native video job ownership', () => {
@@ -687,6 +883,80 @@ describe('native video job ownership', () => {
         expect(bodyOf(response).error.code).toBe('invalid_billing_request');
         expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('holds back a buyer with too many unproven channels: a 429 with Retry-After, no plan and no chain reads', async () => {
+      const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
+      const { provider, create, spm, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('120');
+        expect(bodyOf(response).error.code).toBe('one_off_channel_backoff');
+        expect(bodyOf(response).error.message).toContain('retry in 120 seconds');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(firstSignCap).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { firstSignCap.mockRestore(); store.close(); }
+    });
+
+    it('holds back a create that loses the last offer to a parallel one during the chain reads', async () => {
+      const { provider, create, store } = setupOneOff({ registerOneOffPlan: vi.fn(() => 60) });
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(429);
+        expect(response.headers['retry-after']).toBe('60');
+        expect(bodyOf(response).oneOffPlan).toBeUndefined();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('still runs a create whose channel is already open while its buyer is held back', async () => {
+      const { provider, create, store } = setupOneOff({ oneOffRetryAfterSeconds: vi.fn(() => 120) }, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+      } finally { store.close(); }
+    });
+
+    it('stops counting a channel against its buyer when its paid create is accepted', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).toHaveBeenCalledWith('one-off-video-1');
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the provider refuses the create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.handleRequest = vi.fn(async request => ({
+        requestId: request.requestId, statusCode: 429, headers: {}, body: Buffer.from('{"error":{"message":"busy"}}'),
+      }));
+      try {
+        await create('video-1');
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('keeps counting the channel when the accepted job cannot be recorded', async () => {
+      const { create, spm, store } = setupOneOff({}, true);
+      vi.spyOn(store, 'recordAcceptedCreate').mockImplementation(() => { throw new Error('database is locked'); });
+      try {
+        expect((await create('video-1')).statusCode).toBe(503);
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('has no channel to mark for a free create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.serviceUnitBillingModels = { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0 }] } } };
+      try {
+        expect((await create('video-1')).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        expect(spm.markOneOffCreateAccepted).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
@@ -1545,7 +1815,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
   describe('free allowance on a priced service', () => {
     const send = async (covered: boolean) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
-      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
       const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
       const sendPaymentRequired = vi.fn();
@@ -1584,6 +1854,8 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['x-antseed-free-tier']).toBe('covered');
       expect(sendNeedAuth).not.toHaveBeenCalled();
+      // The buyer pays nothing for it, and the body's price says the same.
+      expect(JSON.parse(new TextDecoder().decode(response.body)).usage.estimated_cost).toBe(0);
     });
 
     it('asks for payment, not a 429, once the allowance does not cover the buyer', async () => {
@@ -2309,6 +2581,44 @@ describe('a channel at its ceiling while top-ups follow each other', () => {
     expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
   });
 
+  it('serves, not 402, when the catch-up auth was parked behind a top-up that lands during the wait', async () => {
+    // The buyer signed past the old ceiling, so its auth waits for the top-up. On a slow chain the
+    // top-up lands just as the catch-up wait runs out, and the parked auth applies a moment later.
+    let reserveMax = 1_000_000n;
+    let accepted = 1_000_000n;
+    let running = true;
+    const awaitAcceptedAtLeast = vi.fn(async () => {
+      if (awaitAcceptedAtLeast.mock.calls.length === 1) {
+        reserveMax = 2_000_000n;
+        running = false;
+        return false;
+      }
+      accepted = 1_300_000n;
+      return true;
+    });
+    const result = await requestAtCeiling('auth-parked-behind-top-up', {
+      getCumulativeSpend: () => 1_300_000n,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      awaitAcceptedAtLeast,
+    });
+
+    expect({ ...result, waits: awaitAcceptedAtLeast.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
+  });
+
+  it('still answers 402 when the catch-up never arrives and no top-up raised the ceiling', async () => {
+    const awaitAcceptedAtLeast = vi.fn(async () => false);
+    const result = await requestAtCeiling('no-catch-up', {
+      getCumulativeSpend: () => 1_300_000n,
+      getAcceptedCumulative: () => 1_000_000n,
+      getReserveMax: () => 2_000_000n,
+      awaitAcceptedAtLeast,
+    });
+
+    expect({ status: result.status, closed: result.closed, waits: awaitAcceptedAtLeast.mock.calls.length }).toEqual({ status: 402, closed: 0, waits: 1 });
+  });
+
   it('waits for a top-up that starts during the ceiling read when none was running on entry', async () => {
     // Nothing is mining or queued when the request reaches the ceiling. During the chain read the buyer's
     // next ReserveAuth arrives, its top-up starts, and requests that finish push the spend past the ceiling.
@@ -2454,6 +2764,16 @@ describe('speech seller payments', () => {
       error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
     });
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, unknown]>([['a number', 5], ['a list', ['Hello']]])('refuses speech input sent as %s before reaching the upstream or asking for payment', async (_name, input) => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input, voice: 'af_sky' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error.code).toBe('invalid_billing_request');
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
   });
 

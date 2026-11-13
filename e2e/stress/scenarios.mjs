@@ -15,6 +15,13 @@ export const SCENARIOS = {
   faults: { ...BASE, concurrency: 32, requests: 256, abortRatio: 0.1, fault500Rate: 0.05, disconnectRate: 0.05 },
   'restart-buyer': { ...BASE, concurrency: 32, requests: 300, restart: { who: 'buyer', atFraction: 0.4 } },
   'restart-seller': { ...BASE, concurrency: 32, requests: 300, restart: { who: 'seller', atFraction: 0.4 } },
+  // The seller's RPC keeps its first topUp() back and the seller restarts 3 s
+  // later: a verified top-up whose transaction never went out, with work served
+  // above the deposit while it was pending. Small reserves top up early.
+  'restart-seller-topup': {
+    ...BASE, concurrency: 32, requests: 384, maxReserveUsdc: '250000', maxPerRequestUsdc: '150000',
+    restart: { who: 'seller', on: 'top-up', settleMs: 3000 },
+  },
   mixed: { ...BASE, concurrency: 32, requests: 256 },
   images: { ...BASE, concurrency: 32, requests: 256, imageRatio: 0.3 },
   // #1050: pay, stop the buyer (seller closes on disconnect), restart it, then

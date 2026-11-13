@@ -829,7 +829,8 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const higher = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
       await saving.arrived;
       // The catch-up reaches the seller lock while the NeedAuth still holds it,
-      // so it signs only after the higher one is saved, from that cumulative.
+      // so it runs only after the higher one is saved. That one already signed
+      // past the seller's target, so the catch-up signs nothing on top.
       const extend = manager.extendCurrentSpendingAuth.bind(manager);
       vi.spyOn(manager, 'extendCurrentSpendingAuth').mockImplementationOnce((...args) => {
         const run = extend(...args);
@@ -842,7 +843,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
         higher,
       ]);
 
-      expect(afterCatchUp(channelId, outcome, sent)).toEqual({ ...caughtUp, committed: '48000', inMemory: 48_000n, sent: ['38000', '48000'] });
+      expect(afterCatchUp(channelId, outcome, sent)).toEqual(caughtUp);
     });
 
     /** Replace the seller's channel, then handle a 402 the seller sent about the old one. */

@@ -74,6 +74,7 @@ export class ChannelStore {
     getById: Database.Statement;
     getActiveByPeer: Database.Statement;
     getOneOffByRequest: Database.Statement;
+    getUnpaidOneOffChannels: Database.Statement;
     getActiveByPeerAndBuyer: Database.Statement;
     getLatestByPeer: Database.Statement;
     getFirstCreatedByPeer: Database.Statement;
@@ -90,6 +91,7 @@ export class ChannelStore {
     updateReceiptAck: Database.Statement;
     getActiveChannels: Database.Statement;
     getActiveChannelsByBuyer: Database.Statement;
+    getBuyerPaymentChannelsByStatus: Database.Statement;
     getTotalsByPeerAndBuyer: Database.Statement;
     deleteServiceTotals: Database.Statement;
     insertServiceTotal: Database.Statement;
@@ -173,6 +175,19 @@ export class ChannelStore {
       getOneOffByRequest: this._db.prepare(
         "SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND one_off_request_id = ? AND channel_kind = 'one_off' ORDER BY created_at DESC LIMIT 1",
       ),
+      // A channel's end time is when its settlement was recorded, else when it was reserved: both are written once.
+      getUnpaidOneOffChannels: this._db.prepare(`
+        SELECT COUNT(*) AS count, MAX(COALESCE(settled_at, reserved_at)) AS lastEndedAt
+        FROM payment_channels
+        WHERE peer_id = @peerId AND role = @role AND channel_kind = 'one_off' AND status <> 'active'
+          AND CAST(COALESCE(settled_amount, '0') AS INTEGER) < @minEarned
+          AND COALESCE(settled_at, reserved_at) > MAX(@since, COALESCE((
+            SELECT MAX(settled_at) FROM payment_channels
+            WHERE peer_id = @peerId AND role = @role AND channel_kind = 'one_off' AND status = 'settled'
+              AND CAST(tokens_delivered AS INTEGER) > 0
+              AND CAST(settled_amount AS INTEGER) >= CAST(tokens_delivered AS INTEGER)
+          ), 0))
+      `),
       getActiveByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC LIMIT 1',
       ),
@@ -226,6 +241,9 @@ export class ChannelStore {
       ),
       getActiveChannels: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC',
+      ),
+      getBuyerPaymentChannelsByStatus: this._db.prepare(
+        'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND status = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
       ),
       getActiveChannelsByBuyer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC',
@@ -316,6 +334,15 @@ export class ChannelStore {
     return row ? rowToChannel(row) : null;
   }
 
+  /**
+   * A peer's one-off channels that ended after `since`, and after its last
+   * delivered video paid in full, having earned less than `minEarned`.
+   */
+  getUnpaidOneOffChannels(peerId: string, role: ChannelRole, since: number, minEarned: number): { count: number; lastEndedAt: number } {
+    const row = this._stmts.getUnpaidOneOffChannels.get({ peerId, role, since, minEarned }) as { count: number; lastEndedAt: number | null };
+    return { count: row.count, lastEndedAt: row.lastEndedAt ?? 0 };
+  }
+
   getActiveChannelByPeer(peerId: string, role: ChannelRole, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
     const row = this._stmts.getActiveByPeer.get(peerId, role, channelKind, CHANNEL_STATUS.ACTIVE) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
@@ -397,6 +424,14 @@ export class ChannelStore {
     const rows = this._db.prepare(
       'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
     ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
+  /** A buyer's channels in one status, newest first, read through the buyer/status index. */
+  getBuyerPaymentChannelsByStatus(buyerEvmAddr: string, status: string): StoredChannel[] {
+    const rows = this._stmts.getBuyerPaymentChannelsByStatus.all(
+      CHANNEL_ROLE.BUYER, buyerEvmAddr, status, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF,
+    ) as ChannelRow[];
     return rows.map(rowToChannel);
   }
 

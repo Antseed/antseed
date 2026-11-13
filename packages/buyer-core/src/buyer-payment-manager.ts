@@ -749,16 +749,21 @@ export class BuyerPaymentManager {
         + this._config.maxPerRequestUsdc * BigInt(Math.floor(inFlightRequests));
       maxSignable = catchUpMax < ceiling ? catchUpMax : ceiling;
     }
-    // Prefer the seller-supplied target when present — a raw
-    // `currentCumulative + minBudgetPerRequest` advance may still fall short
-    // of what the seller has already spent, producing an infinite 402 loop.
+    // The seller's target is what it has delivered. Signing more would make
+    // undelivered work claimable on-chain, and signing less than the target
+    // would leave the seller rejecting us in a 402 loop.
     const minAdvance = currentCumulative + minBudgetPerRequest;
-    const requestedAmount = targetCumulative != null && targetCumulative > minAdvance
-      ? targetCumulative
-      : minAdvance;
+    const requestedAmount = targetCumulative ?? minAdvance;
 
     const nextCumulative = requestedAmount < maxSignable ? requestedAmount : maxSignable;
-    const extendNeedsTopUp = this._needsCeilingAdvance(requestedAmount, maxSignable, ceiling);
+    // The top-up still asks for room for the next request: a target at the
+    // ceiling fills the reserve, and the seller closes a full channel as
+    // exhausted. A top-up locks more deposit but makes nothing claimable.
+    const extendNeedsTopUp = this._needsCeilingAdvance(
+      requestedAmount > minAdvance ? requestedAmount : minAdvance,
+      maxSignable,
+      ceiling,
+    );
     if (nextCumulative <= currentCumulative) {
       // Nothing to sign at current ceiling; a top-up still extends it for the next round.
       debugWarn(
@@ -2219,9 +2224,21 @@ export class BuyerPaymentManager {
     // check (contract requires TOP_UP_SETTLED_THRESHOLD_BPS of deposit to be settleable before topUp).
     // We cap at the old ceiling here; the topUp is sent AFTER so the seller
     // processes the SpendingAuth first, then the topUp with adequate settle amount.
-    const effectiveAmount = needsTopUp
+    let effectiveAmount = needsTopUp
       ? (maxSignable > currentCumulative ? maxSignable : currentCumulative)
       : (requiredCumulativeAmount < maxSignable ? requiredCumulativeAmount : maxSignable);
+    // While a top-up is pending, the seller can only accept up to the deposit
+    // locked on-chain, and the contract runs topUp() only once enough of that
+    // deposit is settled. Crossing it in one jump (from below the settle
+    // threshold to above the deposit) leaves the seller with no auth it can
+    // use: it rejects the new one, can never submit the top-up, and the
+    // channel strands work above the deposit. Sign exactly the confirmed
+    // deposit first; the next prompt signs the rest.
+    const confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
+      debugLog(`[BuyerPayment] NeedAuth: signing the confirmed deposit ${confirmedDeposit} first (target ${effectiveAmount}) while a top-up is pending`);
+      effectiveAmount = confirmedDeposit;
+    }
     if (effectiveAmount <= currentCumulative) {
       // Nothing to sign; a top-up still extends the ceiling for the next round.
       countUnsigned();

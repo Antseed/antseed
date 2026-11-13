@@ -27,6 +27,7 @@ const GATES = {
   // Requests in flight while a peer restarts may fail; none outside that window.
   'restart-buyer': { minOk: 0.85, restart: true },
   'restart-seller': { minOk: 0.75, restart: true },
+  'restart-seller-topup': { minOk: 0.75, restart: true },
   'issue-1050': { minOk: 0.95 },
 };
 

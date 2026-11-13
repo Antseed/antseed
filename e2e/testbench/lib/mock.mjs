@@ -6,6 +6,7 @@ import { createPrng, derive } from './prng.mjs';
 
 const FIXTURE_PNG = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'pixel.png');
 export const MOCK_USAGE = { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 };
+export const NO_USAGE_MARKER = '[no-usage]';
 const FIXED_IMAGE_INPUT_TOKENS = 10;
 const WORDS = 'the quick brown fox jumps over lazy dogs while seven agents argue about payment channels'.split(' ');
 const TAG = /\[req:([a-z0-9-]+)\]/i;
@@ -82,6 +83,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const usageBody = cachedPromptTokens > 0
       ? { prompt_tokens: prompt + cachedPromptTokens, completion_tokens: completion, total_tokens: prompt + cachedPromptTokens + completion, prompt_tokens_details: { cached_tokens: cachedPromptTokens } }
       : { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+    // `[no-usage]` in the prompt stands for an upstream that never reports usage, even when asked.
+    const reportsUsage = !content.includes(NO_USAGE_MARKER);
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
@@ -100,7 +103,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       if (disconnect) { entry.status = 'disconnect'; response.socket?.destroy(); return; }
       entry.started = true;
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ id, object: 'chat.completion', created, model: body.model, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: text } }], usage: usageBody }));
+      response.end(JSON.stringify({ id, object: 'chat.completion', created, model: body.model, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: text } }], ...(reportsUsage ? { usage: usageBody } : {}) }));
       entry.status = 'ok';
       return;
     }
@@ -123,7 +126,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     }
     if (gone()) { entry.status = 'client-gone'; return; }
     response.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]));
-    response.write(chunk([], usageBody));
+    // As the OpenAI spec says: a stream carries usage only when the request asks for it.
+    if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
     response.end('data: [DONE]\n\n');
     entry.status = 'ok';
   }
@@ -162,7 +166,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       const text = Buffer.concat(chunks).toString('utf8');
       const body = text ? JSON.parse(text) : {};
       const path = (request.url ?? '/').split('?')[0];
-      state.requests.push({ method: request.method, path, model: body.model ?? null, stream: Boolean(body.stream), at: Date.now() });
+      state.requests.push({ method: request.method, path, model: body.model ?? null, stream: Boolean(body.stream), includeUsage: body.stream_options?.include_usage ?? null, at: Date.now() });
       if (request.method === 'GET' && path === '/v1/models') {
         if (state.latencyMs > 0) await sleep(state.latencyMs);
         return json(200, { object: 'list', data: models.map((id) => ({ id, object: 'model', owned_by: 'antseed-testbench' })) });
