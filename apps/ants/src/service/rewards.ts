@@ -317,6 +317,13 @@ export async function claim(ctx: AntsContext, request: ClaimRequest, report: Ste
   return { claimed: claimed.toString(), transactions, buckets };
 }
 
+/**
+ * Each restaked position mints a new weighted position (~650k gas), so a
+ * 32-id batch (~21M) exceeds Base's 16.77M per-transaction gas cap and the
+ * call reverts with no data. 12 ids stay near 8M.
+ */
+const RESTAKE_BATCH_SIZE = 12;
+
 export interface RestakeResult { transactions: string[]; positionIds: number[]; epochs: number; }
 
 export async function restake(ctx: AntsContext, request: RestakeRequest, report: StepReporter = silentReporter): Promise<RestakeResult> {
@@ -339,8 +346,8 @@ export async function restake(ctx: AntsContext, request: RestakeRequest, report:
   for (const position of pending) if (await poolRewards.pendingIndexedStakerReward(position.id) > 0n) ids.push(position.id);
   if (ids.length === 0) throw new Error('Rewards are not indexed yet; retry after the next epoch.');
   const transactions: string[] = [];
-  for (let offset = 0; offset < ids.length; offset += 32) {
-    const batch = ids.slice(offset, offset + 32);
+  for (let offset = 0; offset < ids.length; offset += RESTAKE_BATCH_SIZE) {
+    const batch = ids.slice(offset, offset + RESTAKE_BATCH_SIZE);
     await report(`Restaking rewards from position(s) ${batch.join(', ')} for ${epochs} epoch(s)`);
     const hash = await poolRewards.restakeStakerRewardsBatch(signer, batch, epochs);
     transactions.push(hash);
