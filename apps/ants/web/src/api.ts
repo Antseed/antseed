@@ -63,8 +63,10 @@ export function captureToken(): void {
   } catch {
     /* storage unavailable: the app will show the auth gate */
   }
-  const page = new URLSearchParams(window.location.hash.slice(1)).get('page');
-  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/${page === 'rewards' ? 'rewards' : 'stake'}`);
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const pool = Number(params.get('pool'));
+  const route = params.get('page') === 'rewards' ? 'rewards' : Number.isSafeInteger(pool) && pool > 0 ? `stake?pool=${pool}` : 'stake';
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/${route}`);
 }
 
 /** The standalone session token; an embedded dashboard is authenticated by its host instead. */
@@ -162,4 +164,6 @@ export const api = {
   job: (id: string) => get<JobView>(`/api/jobs/${encodeURIComponent(id)}`),
   withdrawPreview: (positionIds: number[]) => post<WithdrawPreview>('/api/positions/withdraw/preview', { positionIds }),
   startJob: (path: string, body: unknown) => post<JobView>(path, body),
+  freeTierCode: (body: { buyer: string; expiresAt: number; signature?: string }) =>
+    post<{ code: string; staker: string; buyer: string; expiresAt: number }>('/api/free-tier/code', body),
 };

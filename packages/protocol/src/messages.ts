@@ -145,6 +145,12 @@ export interface FreeUsageOpenPayload {
   salt: string;
   deadline: number;
   openSig: string;
+  /**
+   * The buyer's `x-antseed-free-tier-delegations` value: stakers' signed
+   * delegations, so a seller admitting the channel counts delegated stake
+   * before the first request carries it. Omitted by older buyers.
+   */
+  freeTierDelegations?: string;
 }
 
 /**

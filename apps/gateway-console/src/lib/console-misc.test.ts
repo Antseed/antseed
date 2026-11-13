@@ -21,6 +21,12 @@ describe('budget warnings and runway', () => {
     expect(runway(0.5, 0, 7)).toMatchObject({ days: null, low: true })
     expect(runway(50, 0, 7)).toMatchObject({ days: null, low: false })
   })
+
+  it('counts USDC waiting in the wallet toward the runway', () => {
+    expect(runway(20, 70, 7, 60)).toMatchObject({ total: 80, inWallet: 60, days: 8, low: false })
+    expect(runway(0.5, 0, 7, 5)).toMatchObject({ days: null, low: false })
+    expect(runway(20, 70, 7, -1)).toMatchObject({ total: 20, inWallet: 0, low: true })
+  })
 })
 
 describe('buyer settings validation', () => {

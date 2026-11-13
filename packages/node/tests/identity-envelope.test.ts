@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import {
+  DEFAULT_SCRYPT_PARAMS,
   decryptIdentityKey,
   encryptIdentityKey,
   identityEnvelopeAddress,
@@ -14,6 +15,8 @@ import {
 import { FileIdentityStore, identityFromPrivateKeyHex, loadOrCreateIdentity } from '../src/p2p/identity.js';
 
 const FAST = { N: 2 ** 14, r: 8, p: 1 };
+/** Tests that encrypt at the production cost (DEFAULT_SCRYPT_PARAMS) on purpose. */
+const SLOW_KDF_TIMEOUT_MS = 30_000;
 const KEY = '11'.repeat(32);
 const PW = 'correct horse battery';
 
@@ -61,6 +64,8 @@ describe('identity envelope', () => {
 });
 
 describe('FileIdentityStore with a passphrase', () => {
+  // The other tests here encrypt with FAST: production scrypt (N=2^17) takes
+  // about a second per key on a loaded CI runner, and they do several each.
   it('writes new keys encrypted (0600) and loads them back', async () => {
     const dir = await tmpDir();
     const store = new FileIdentityStore(dir, { passphrase: PW });
@@ -72,23 +77,24 @@ describe('FileIdentityStore with a passphrase', () => {
     expect(raw).not.toContain(KEY);
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
     expect(await store.format()).toBe('encrypted');
+    expect((JSON.parse(raw) as { kdf: { N: number } }).kdf.N).toBe(DEFAULT_SCRYPT_PARAMS.N);
     expect(await store.load()).toBe(KEY);
     expect(await new FileIdentityStore(dir, { passphrase: null }).address()).toBe(identityFromPrivateKeyHex(KEY).wallet.address);
-  });
+  }, SLOW_KDF_TIMEOUT_MS);
 
   it('fails closed without the passphrase, naming the variable, and on a wrong one', async () => {
     const dir = await tmpDir();
-    await new FileIdentityStore(dir, { passphrase: PW }).save(KEY);
+    await new FileIdentityStore(dir, { scrypt: FAST, passphrase: PW }).save(KEY);
 
     await expect(new FileIdentityStore(dir, { passphrase: null }).load()).rejects.toThrow(/encrypted; set ANTSEED_PASSPHRASE/);
-    await expect(new FileIdentityStore(dir, { passphrase: 'nope' }).load()).rejects.toThrow(/Cannot unlock identity .*Wrong passphrase/);
+    await expect(new FileIdentityStore(dir, { scrypt: FAST, passphrase: 'nope' }).load()).rejects.toThrow(/Cannot unlock identity .*Wrong passphrase/);
     await expect(loadOrCreateIdentity(new FileIdentityStore(dir, { passphrase: null }))).rejects.toThrow(/ANTSEED_PASSPHRASE/);
   });
 
   it('reads plaintext keys as before and does not rewrite them', async () => {
     const dir = await tmpDir();
     await fs.writeFile(path.join(dir, 'identity.key'), KEY, { mode: 0o600 });
-    const store = new FileIdentityStore(dir, { passphrase: PW });
+    const store = new FileIdentityStore(dir, { scrypt: FAST, passphrase: PW });
 
     expect(await store.load()).toBe(KEY);
     expect(await fs.readFile(path.join(dir, 'identity.key'), 'utf8')).toBe(KEY);
@@ -97,20 +103,20 @@ describe('FileIdentityStore with a passphrase', () => {
   it('refuses a passphrase shorter than 12 characters for new keys, counted after NFKC', async () => {
     const dir = await tmpDir();
     const file = path.join(dir, 'identity.key');
-    await expect(new FileIdentityStore(dir, { passphrase: 'short' }).save(KEY)).rejects.toThrow(/ANTSEED_PASSPHRASE.*at least 12 characters/);
+    await expect(new FileIdentityStore(dir, { scrypt: FAST, passphrase: 'short' }).save(KEY)).rejects.toThrow(/ANTSEED_PASSPHRASE.*at least 12 characters/);
     await expect(fs.access(file)).rejects.toThrow();
     // Eleven ligature characters that NFKC expands to twenty-two: long enough.
-    await new FileIdentityStore(dir, { passphrase: '\uFB00'.repeat(11) }).save(KEY);
+    await new FileIdentityStore(dir, { scrypt: FAST, passphrase: '\uFB00'.repeat(11) }).save(KEY);
 
     await fs.writeFile(file, KEY, { mode: 0o600 });
-    await expect(new FileIdentityStore(dir, { passphrase: ' 10 chars ' }).protect()).rejects.toThrow(/at least 12 characters/);
+    await expect(new FileIdentityStore(dir, { scrypt: FAST, passphrase: ' 10 chars ' }).protect()).rejects.toThrow(/at least 12 characters/);
     expect(await fs.readFile(file, 'utf8')).toBe(KEY);
   });
 
   it('still opens files encrypted earlier with a short passphrase', async () => {
     const dir = await tmpDir();
     await fs.writeFile(path.join(dir, 'identity.key'), await encryptIdentityKey(KEY, 'pw', FAST), { mode: 0o600 });
-    const store = new FileIdentityStore(dir, { passphrase: 'pw' });
+    const store = new FileIdentityStore(dir, { scrypt: FAST, passphrase: 'pw' });
     expect(await store.load()).toBe(KEY);
     expect(await store.unprotect()).toBe(true);
   });
@@ -119,7 +125,7 @@ describe('FileIdentityStore with a passphrase', () => {
     const dir = await tmpDir();
     const file = path.join(dir, 'identity.key');
     await fs.writeFile(file, KEY, { mode: 0o600 });
-    const store = new FileIdentityStore(dir, { passphrase: PW });
+    const store = new FileIdentityStore(dir, { scrypt: FAST, passphrase: PW });
 
     await expect(new FileIdentityStore(dir, { passphrase: null }).protect()).rejects.toThrow(/Set ANTSEED_PASSPHRASE/);
     expect(await store.protect()).toBe(true);
@@ -128,7 +134,7 @@ describe('FileIdentityStore with a passphrase', () => {
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
     expect(await store.load()).toBe(KEY);
 
-    await expect(new FileIdentityStore(dir, { passphrase: 'nope' }).unprotect()).rejects.toThrow(/Wrong passphrase/);
+    await expect(new FileIdentityStore(dir, { scrypt: FAST, passphrase: 'nope' }).unprotect()).rejects.toThrow(/Wrong passphrase/);
     expect(await store.unprotect()).toBe(true);
     expect(await store.unprotect()).toBe(false);
     expect(await fs.readFile(file, 'utf8')).toBe(KEY);
@@ -176,5 +182,5 @@ describe('passphrase from the environment', () => {
     expect(reloaded.wallet.address).toBe(created.wallet.address);
     expect(await new FileIdentityStore(dir, { passphrase: 'env passphrase 1' }).load()).toBe(created.wallet.privateKey.slice(2));
     expect(identityPassphraseEnv()).toEqual({ ANTSEED_PASSPHRASE: 'env passphrase 1' });
-  });
+  }, SLOW_KDF_TIMEOUT_MS);
 });

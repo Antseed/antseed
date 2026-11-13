@@ -1,20 +1,22 @@
 {
   "name": "@antseed/network-stats",
   "version": "0.1.11",
-  "description": "Standalone service that polls the AntSeed network and exposes peer/model stats via HTTP",
+  "description": "Standalone service that polls the Antseed network and exposes peer/model stats via HTTP",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
   },
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*"
   ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "node --watch dist/index.js",
-    "test": "npm run build && node --test dist/*.test.js"
+    "test": "npm run build && node --test dist/*.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

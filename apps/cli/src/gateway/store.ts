@@ -310,6 +310,16 @@ export interface RequestRouter {
   rank: number | null
 }
 
+/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
+export interface ModelUsage {
+  model: string
+  amountUsdc: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  requests: number
+}
+
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */
 export interface KeyUsageSummary {
   requests: number
@@ -577,6 +587,7 @@ export class GatewayStore {
   private readonly _statements = new Map<string, Database.Statement>()
   private readonly _settings = new Map<string, { raw: string | null; at: number }>()
   private readonly _touched = new Map<string, number>()
+  private _auditObserver: ((record: AuditRecord) => void) | null = null
 
   constructor(dataDir: string, private readonly _now: () => number = () => Date.now()) {
     const dir = gatewayDir(dataDir)
@@ -1204,9 +1215,13 @@ export class GatewayStore {
       routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
       outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
-    // Spend can reach the ledger before the response names its router.
+    // Spend can reach the ledger before the response names its router and the model it served.
     if (routerPeerId) {
       this._stmt('UPDATE ledger_entries SET router_peer_id = ? WHERE request_tag = ? AND router_peer_id IS NULL').run(routerPeerId, tag)
+    }
+    if (outcome.servedModel) {
+      this._stmt('UPDATE ledger_entries SET served_model = ? WHERE request_tag = ? AND routing_fee = 0 AND served_model IS NULL')
+        .run(outcome.servedModel.slice(0, 200), tag)
     }
   }
 
@@ -1282,11 +1297,13 @@ export class GatewayStore {
     /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
     videoJob: string | null
     routerPeerId: string | null
+    /** The model the seller served, once the response named it. */
+    servedModel: string | null
   } | null {
-    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id, served_model
       FROM gateway_requests WHERE tag = ?`).get(tag) as
       { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
-        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null } | undefined
+        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null; served_model: string | null } | undefined
     return row
       ? {
         keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
@@ -1294,6 +1311,7 @@ export class GatewayStore {
           ? requestVideoJob(row.path, row.video_job_id)
           : null,
         routerPeerId: row.router_peer_id,
+        servedModel: row.served_model,
       }
       : null
   }
@@ -1574,8 +1592,8 @@ export class GatewayStore {
     const result = this._stmt(`
       INSERT OR IGNORE INTO ledger_entries
         (kind, key_id, buyer_identity, amount_usdc, external_ref, request_tag, seller_peer_id,
-         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id, served_model)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       entry.kind, entry.keyId, entry.buyerIdentity, signed, entry.externalRef,
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
@@ -1585,6 +1603,7 @@ export class GatewayStore {
       entry.routingFee ? 1 : 0,
       // A ranking fee is paid to the router itself, before the response names it.
       request?.routerPeerId ?? (entry.routingFee ? entry.sellerPeerId?.toLowerCase() ?? null : null),
+      entry.routingFee ? null : request?.servedModel ?? null,
     )
     return result.changes > 0
   }
@@ -1624,14 +1643,81 @@ export class GatewayStore {
     return spend
   }
 
+  /**
+   * A key's usage per model (the one that served it, else the one asked
+   * for), for comparing with retail prices: metered spend
+   * and tokens from the ledger, plus the tokens responses reported where no
+   * spend was metered (free requests). Rows without a model are left out.
+   * The reported tokens come from the request log, so requests pruned from it
+   * no longer count theirs. `requests` counts requests, not ledger entries: a
+   * request metered in several spend entries, or in both the ledger and the
+   * log, counts once.
+   */
+  usageByModel(keyId: string): ModelUsage[] {
+    return this.usageByModelForKeys([keyId])
+  }
+
+  /**
+   * `usageByModel` summed over `keyIds` in one batched read per source (the
+   * retired keys an app's history spans). Requests are counted per key before
+   * the sum, so request tags from different keys are never merged.
+   */
+  usageByModelForKeys(keyIds: readonly string[]): ModelUsage[] {
+    if (keyIds.length === 0) return []
+    const ids = JSON.stringify(keyIds)
+    const ledger = this._stmt(`
+      SELECT COALESCE(served_model, model) AS model, COALESCE(-SUM(amount_usdc), 0) AS amount, COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+      GROUP BY key_id, COALESCE(served_model, model)
+    `).all(ids) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    const reported = this._stmt(`
+      SELECT COALESCE(r.served_model, r.model) AS model, COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
+      FROM gateway_requests r
+      WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      GROUP BY r.key_id, COALESCE(r.served_model, r.model)
+    `).all(ids) as Array<{ model: string; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    // Distinct requests per key and model over both sources; a spend entry
+    // without a request tag stands for its own request.
+    const counted = this._stmt(`
+      SELECT model, COUNT(DISTINCT request) AS requests FROM (
+        SELECT key_id, COALESCE(served_model, model) AS model, COALESCE(request_tag, 'entry:' || external_ref) AS request
+        FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+        UNION
+        SELECT r.key_id AS key_id, COALESCE(r.served_model, r.model) AS model, r.tag AS request
+        FROM gateway_requests r
+        WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      ) GROUP BY key_id, model
+    `).all(ids, ids) as Array<{ model: string; requests: number }>
+    const requests = new Map<string, number>()
+    for (const row of counted) requests.set(row.model, (requests.get(row.model) ?? 0) + row.requests)
+    const byModel = new Map<string, ModelUsage>()
+    const add = (model: string, row: Omit<ModelUsage, 'model' | 'requests'>) => {
+      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+      byModel.set(model, {
+        model,
+        amountUsdc: current.amountUsdc + row.amountUsdc,
+        inputTokens: current.inputTokens + row.inputTokens,
+        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
+        outputTokens: current.outputTokens + row.outputTokens,
+        requests: 0,
+      })
+    }
+    for (const row of ledger) add(row.model, { amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    for (const row of reported) add(row.model, { amountUsdc: 0, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    return [...byModel.values()].map((usage) => ({ ...usage, requests: requests.get(usage.model) ?? 0 }))
+  }
+
   usageStats(keyId: string, since = 0): KeyUsageStats {
     const requests = this._stmt(`
       SELECT COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
-      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ?
+      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const rolled = this._stmt(`
       SELECT COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(failed_requests), 0) AS failed
-      FROM request_rollups WHERE key_id = ? AND hour_start >= ?
+      FROM request_rollups r WHERE key_id = ? AND hour_start >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const ledger = this._stmt(`
       SELECT COALESCE(-SUM(CASE WHEN kind = 'spend' THEN amount_usdc ELSE 0 END), 0) AS spent,
@@ -1660,6 +1746,13 @@ export class GatewayStore {
     }
   }
 
+  /** Which of `keyIds` name a key (revoked ones included), in one query. */
+  existingKeyIds(keyIds: readonly string[]): Set<string> {
+    if (keyIds.length === 0) return new Set()
+    const rows = this._stmt('SELECT id FROM api_keys WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(keyIds)) as Array<{ id: string }>
+    return new Set(rows.map((row) => row.id))
+  }
+
   /**
    * Lifetime requests and spend, plus spend since `since`, for many keys in
    * one grouped query per table (rather than `usageStats` per key). Every
@@ -1670,12 +1763,12 @@ export class GatewayStore {
     if (keyIds.length === 0) return summaries
     const ids = JSON.stringify(keyIds)
     const requests = this._stmt(`
-      SELECT key_id, COUNT(*) AS requests FROM gateway_requests
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, COUNT(*) AS requests FROM gateway_requests r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     const rolled = this._stmt(`
-      SELECT key_id, SUM(requests) AS requests FROM request_rollups
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, SUM(requests) AS requests FROM request_rollups r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     for (const row of [...requests, ...rolled]) {
       const summary = summaries.get(row.key_id)
@@ -1839,6 +1932,24 @@ export class GatewayStore {
    * `clientIp(request)`. `details` must never contain secrets.
    */
   recordAudit(input: AuditInput): AuditRecord {
+    const record = this._insertAudit(input)
+    try {
+      this._auditObserver?.(record)
+    } catch {
+      // An observer never affects the action it observes.
+    }
+    return record
+  }
+
+  /**
+   * Called after every audit entry this store writes. The running gateway
+   * uses it for its setup-funnel telemetry (`telemetry/gateway.ts`).
+   */
+  setAuditObserver(observer: ((record: AuditRecord) => void) | null): void {
+    this._auditObserver = observer
+  }
+
+  private _insertAudit(input: AuditInput): AuditRecord {
     const id = newId('aud')
     const at = this._now()
     this._stmt(`
@@ -1911,9 +2022,13 @@ export class GatewayStore {
 
   // ── Favorite models ─────────────────────────────────────────────────────
 
-  /** Model and router ids the owner starred, oldest first. */
+  /**
+   * Model and router ids the owner starred, oldest first. Stars made within
+   * the same millisecond keep the order they were made in (rowid), not the
+   * ids' alphabetical order.
+   */
   listFavoriteModels(owner: FavoriteOwner): string[] {
-    return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, model')
+    return this._stmt('SELECT model FROM favorite_models WHERE owner_kind = ? AND owner_id = ? ORDER BY created_at, rowid')
       .pluck().all(owner.kind, owner.id) as string[]
   }
 
@@ -1968,6 +2083,85 @@ export class GatewayStore {
         .run(workspaceId, txHash.toLowerCase())
     }
     return this.getDeposit(workspaceId, txHash)
+  }
+
+  // ── Purchase statements ─────────────────────────────────────────────────
+
+  getBillingProfile(workspaceId: string): BillingProfileRecord | null {
+    const row = this._stmt('SELECT * FROM billing_profiles WHERE workspace_id = ?').get(workspaceId) as BillingProfileRow | undefined
+    return row ? billingProfileRecord(row) : null
+  }
+
+  setBillingProfile(workspaceId: string, profile: Omit<BillingProfileRecord, 'workspaceId' | 'updatedAt'>): BillingProfileRecord {
+    this._stmt(`
+      INSERT INTO billing_profiles (workspace_id, company_name, address, country, vat_number, registration_number, notes, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (workspace_id) DO UPDATE SET company_name = excluded.company_name, address = excluded.address, country = excluded.country,
+        vat_number = excluded.vat_number, registration_number = excluded.registration_number, notes = excluded.notes,
+        vat_valid = NULL, vat_checked_at = NULL, updated_at = excluded.updated_at
+    `).run(workspaceId, profile.companyName, profile.address, profile.country, profile.vatNumber, profile.registrationNumber,
+      profile.notes, this._now())
+    return this.getBillingProfile(workspaceId)!
+  }
+
+  deleteBillingProfile(workspaceId: string): boolean {
+    return this._stmt('DELETE FROM billing_profiles WHERE workspace_id = ?').run(workspaceId).changes > 0
+  }
+
+  /**
+   * A workspace's paid spend in [from, to), per seller (the router, for a
+   * routing fee), model and kind: the model the seller served, or for a
+   * routing fee the routing service asked for. Requests are counted once however many
+   * charges they carried.
+   */
+  statementLines(workspaceId: string, from: number, to: number): StatementLineRow[] {
+    return (this._stmt(`
+      SELECT seller_peer_id, CASE WHEN routing_fee = 1 THEN model ELSE COALESCE(served_model, model) END AS service, routing_fee, COUNT(DISTINCT COALESCE(request_tag, external_ref)) AS requests,
+        SUM(input_tokens) AS input_tokens, SUM(cached_input_tokens) AS cached_input_tokens, SUM(output_tokens) AS output_tokens,
+        -SUM(amount_usdc) AS spent
+      FROM ledger_entries
+      WHERE kind = 'spend' AND workspace_id = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0
+      GROUP BY seller_peer_id, service, routing_fee
+    `).all(workspaceId, from, to) as Array<Record<string, unknown>>).map((row) => ({
+      sellerPeerId: row['seller_peer_id'] as string | null,
+      model: row['service'] as string | null,
+      routingFee: row['routing_fee'] === 1,
+      requests: row['requests'] as number,
+      inputTokens: row['input_tokens'] as number,
+      cachedInputTokens: row['cached_input_tokens'] as number,
+      outputTokens: row['output_tokens'] as number,
+      spentUsdc: row['spent'] as number,
+    }))
+  }
+
+  /** Other workspaces that paid from `buyerIdentity`'s wallet in [from, to) (it can be shared). */
+  workspacesSpendingFrom(buyerIdentity: string, from: number, to: number): string[] {
+    return this._stmt(`SELECT DISTINCT workspace_id FROM ledger_entries
+      WHERE kind = 'spend' AND buyer_identity = ? AND created_at >= ? AND created_at < ? AND amount_usdc < 0 AND workspace_id IS NOT NULL`)
+      .pluck().all(buyerIdentity, from, to) as string[]
+  }
+
+  /** When the workspace first paid for anything; null when it never has. */
+  firstSpendAt(workspaceId: string): number | null {
+    return this._stmt("SELECT MIN(created_at) FROM ledger_entries WHERE kind = 'spend' AND workspace_id = ? AND amount_usdc < 0").pluck().get(workspaceId) as number | null
+  }
+
+  /** Final statements of a workspace, by period ("YYYY-MM"), as issued. */
+  listStatements(workspaceId: string): Array<{ period: string; issuedAt: number; content: string }> {
+    return (this._stmt('SELECT period, issued_at, content FROM purchase_statements WHERE workspace_id = ? ORDER BY period DESC').all(workspaceId) as Array<{ period: string; issued_at: number; content: string }>)
+      .map((row) => ({ period: row.period, issuedAt: row.issued_at, content: row.content }))
+  }
+
+  getStatement(workspaceId: string, period: string): { issuedAt: number; content: string } | null {
+    const row = this._stmt('SELECT issued_at, content FROM purchase_statements WHERE workspace_id = ? AND period = ?').get(workspaceId, period) as { issued_at: number; content: string } | undefined
+    return row ? { issuedAt: row.issued_at, content: row.content } : null
+  }
+
+  /** Keeps a final statement as issued; one already kept for the period wins. */
+  saveStatement(workspaceId: string, period: string, issuedAt: number, content: string): { issuedAt: number; content: string } {
+    this._stmt('INSERT INTO purchase_statements (workspace_id, period, issued_at, content) VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, period) DO NOTHING')
+      .run(workspaceId, period, issuedAt, content)
+    return this.getStatement(workspaceId, period)!
   }
 
   // ── Settings ────────────────────────────────────────────────────────────
@@ -2031,6 +2225,12 @@ const MAX_ERROR_CODE = 100
 const MAX_ERROR_MESSAGE = 500
 /** A failed request: finished with an error status. One still in flight is not a failure. */
 const FAILED_SQL = '(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))'
+/**
+ * A call to a model, the kind a key's request count counts. Reads that name
+ * no model (listing `/v1/models`, a video's status) stay in the request log
+ * but aren't usage: an app polling the model list hasn't sent anything.
+ */
+const MODEL_REQUEST_SQL = '(r.model IS NOT NULL)'
 /**
  * A request whose tokens come only from its response: its spend recorded no
  * token counts (free sellers record none), so the response's own count is used.
@@ -2276,6 +2476,59 @@ function depositRecord(row: DepositRow): DepositRecord {
       : null,
     recordedAt: row.recorded_at,
   }
+}
+
+/** The company a workspace buys for, printed on its purchase statements. */
+export interface BillingProfileRecord {
+  workspaceId: string
+  companyName: string
+  /** Street, postal code and city, one per line. */
+  address: string
+  /** As entered; empty when not given. */
+  country: string
+  /** The company's tax ID (VAT, GST, EIN…), as entered. */
+  vatNumber: string | null
+  /** A company register number (e.g. KvK). */
+  registrationNumber: string | null
+  /** Anything else the buyer wants on its statements (a PO number, cost centre, contact). */
+  notes: string | null
+  updatedAt: number
+}
+
+interface BillingProfileRow {
+  workspace_id: string
+  company_name: string
+  address: string
+  country: string
+  vat_number: string | null
+  registration_number: string | null
+  notes: string | null
+  updated_at: number
+}
+
+function billingProfileRecord(row: BillingProfileRow): BillingProfileRecord {
+  return {
+    workspaceId: row.workspace_id,
+    companyName: row.company_name,
+    address: row.address,
+    country: row.country,
+    vatNumber: row.vat_number,
+    registrationNumber: row.registration_number,
+    notes: row.notes,
+    updatedAt: row.updated_at,
+  }
+}
+
+/** One seller × model × kind of a workspace's paid spend in a period. */
+export interface StatementLineRow {
+  sellerPeerId: string | null
+  model: string | null
+  routingFee: boolean
+  requests: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  spentUsdc: number
 }
 
 function storedRouteSelection(value: unknown): ServedSelection | null {

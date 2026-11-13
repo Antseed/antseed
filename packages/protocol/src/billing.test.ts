@@ -17,6 +17,11 @@ describe('unit billing registry', () => {
     ]);
   });
 
+  it('appends input_characters and the speech protocol after the existing entries', () => {
+    expect(UNIT_BILLING_UNITS_V1).toEqual(['output_images', 'completed_requests', 'video_generations', 'video_seconds', 'input_characters']);
+    expect(WELL_KNOWN_SERVICE_API_PROTOCOLS.slice(6)).toEqual(['venice-video', 'fal-video', 'irp-suggest', 'openai-audio-speech']);
+  });
+
   it('keeps service API protocol positions append-only', () => {
     expect(WELL_KNOWN_SERVICE_API_PROTOCOLS.slice(0, 6)).toEqual([
       'anthropic-messages',

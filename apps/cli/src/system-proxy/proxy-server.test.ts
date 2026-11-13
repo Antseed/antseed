@@ -721,6 +721,45 @@ test('Proxy: strips every client credential header (#1104)', { timeout: 15_000 }
   }
 })
 
+test('Proxy: drops the intercepted page Origin and Sec-Fetch headers', { timeout: 15_000 }, async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'antseed-proxy-test-'))
+  try {
+    const buyer = await startFakeBuyerProxy()
+    const { proxy, caKeys } = await makeProxy(tmpDir, buyer.port)
+    try {
+      const result = await tlsHttpRequest({
+        host: '127.0.0.1',
+        port: proxy.innerTlsPort,
+        servername: 'api-b.example.test',
+        caCert: caKeys.certPem,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          'origin': 'https://app.example.test',
+          'referer': 'https://app.example.test/chat',
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'cors',
+        },
+        body: Buffer.from(JSON.stringify({ model: 'model-default', messages: [] })),
+      })
+      assert.equal(result.statusCode, 200)
+      const captured = buyer.captured[0]!
+      assert.equal(captured.headers['host'], `127.0.0.1:${buyer.port}`)
+      assert.equal(captured.headers['origin'], undefined)
+      assert.equal(captured.headers['referer'], undefined)
+      assert.equal(captured.headers['sec-fetch-site'], undefined)
+      assert.equal(captured.headers['sec-fetch-mode'], undefined)
+      assert.equal(captured.headers['content-type'], 'application/json')
+    } finally {
+      await proxy.stop()
+      await buyer.close()
+    }
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true })
+  }
+})
+
 test('Proxy: passes non-JSON body through without modification', { timeout: 15_000 }, async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), 'antseed-proxy-test-'))
   try {
@@ -967,7 +1006,7 @@ function respond402PaymentRequired(
     error: 'payment_required',
     code: 'insufficient_deposits',
     peerId: 'testPeer',
-    message: 'You are out of AntSeed credits for this request.',
+    message: 'You are out of Antseed credits for this request.',
   })
   res.writeHead(402, {
     'content-type': 'application/json',
@@ -1005,7 +1044,7 @@ test('Proxy: rewrites a 402 body into a plain-text out-of-credits notice', { tim
       assert.ok(result.headers['content-type']?.includes('text/plain'), 'body is plain text, not JSON')
       const text = result.body.toString('utf8')
       assert.ok(text.includes('out of credits'), 'notice tells the user what happened')
-      assert.ok(text.includes('AntSeed app'), 'notice tells the user where to fix it')
+      assert.ok(text.includes('Antseed Desktop'), 'notice tells the user where to fix it')
       assert.ok(!text.includes('payment_required'), 'raw error JSON never reaches the client')
       assert.ok(!text.includes('{'), 'no JSON syntax leaks into the notice')
     } finally {

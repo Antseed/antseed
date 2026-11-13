@@ -16,14 +16,26 @@ export function parseServiceAliasMap(raw: string | undefined): Record<string, st
     throw new Error('ANTSEED_SERVICE_ALIAS_MAP_JSON must be a JSON object');
   }
 
+  return normalizeServiceModelMap(parsed as Record<string, unknown>, 'ANTSEED_SERVICE_ALIAS_MAP_JSON');
+}
+
+/**
+ * Normalize a parsed service → model JSON object: service keys are trimmed and
+ * lowercased (empty keys skipped), and every value must be a non-empty string.
+ * `key` names the config entry in error messages.
+ */
+export function normalizeServiceModelMap(
+  parsed: Record<string, unknown>,
+  key: string,
+): Record<string, string> | undefined {
   const out: Record<string, string> = {};
-  for (const [announcedRaw, upstreamRaw] of Object.entries(parsed as Record<string, unknown>)) {
-    const announced = announcedRaw.trim().toLowerCase();
-    if (!announced) continue;
-    if (typeof upstreamRaw !== 'string' || !upstreamRaw.trim()) {
-      throw new Error(`ANTSEED_SERVICE_ALIAS_MAP_JSON entry "${announcedRaw}" must map to a non-empty string`);
+  for (const [serviceRaw, modelRaw] of Object.entries(parsed)) {
+    const service = serviceRaw.trim().toLowerCase();
+    if (!service) continue;
+    if (typeof modelRaw !== 'string' || !modelRaw.trim()) {
+      throw new Error(`${key} entry "${serviceRaw}" must map to a non-empty string`);
     }
-    out[announced] = upstreamRaw.trim();
+    out[service] = modelRaw.trim();
   }
 
   return Object.keys(out).length > 0 ? out : undefined;

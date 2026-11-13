@@ -49,7 +49,7 @@ async function fetchEvidence(nonce: Uint8Array, env: Record<string, string | und
   const chuteEnc = encodeURIComponent(chute)
 
   const get = async (path: string): Promise<unknown> => {
-    const resp = await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
+    const resp = await fetch(`${base}${path}`, { headers, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) })
     if (!resp.ok) throw new Error(`chutes ${path.split('?')[0]} HTTP ${resp.status}`)
     return resp.json()
   }
@@ -73,6 +73,7 @@ async function fetchEvidence(nonce: Uint8Array, env: Record<string, string | und
     quote: new Uint8Array(Buffer.from(inst.quote, 'base64')),
     bindingScheme: 'nonce-pubkey-sha256-v1',
     ingredients: { e2ePubkey: pubkeys.get(inst.instance_id) },
+    origin: new URL(base).origin,
   }
   const gpu = reshapeGpu(inst.gpu_evidence)
   if (gpu) evidence.gpuEvidence = gpu

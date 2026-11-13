@@ -205,7 +205,7 @@ test('export refuses weak passwords, missing gateway data and app-encrypted wall
     await assert.rejects(exportGatewayBundle({ dataDir: empty, configPath: join(empty, 'c.json'), outFile: f.bundle, password: PASSWORD, cliVersion: 't' }), /No gateway data/)
     rmSync(join(f.source.dataDir, 'identity.key'))
     writeFileSync(join(f.source.dataDir, 'identity.enc'), 'opaque')
-    await assert.rejects(exportFixture(f), /encrypted by the Antseed desktop app/)
+    await assert.rejects(exportFixture(f), /encrypted by Antseed Desktop/)
   } finally {
     f.cleanup()
   }

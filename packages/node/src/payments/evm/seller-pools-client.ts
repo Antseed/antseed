@@ -217,6 +217,28 @@ export class SellerPoolsClient extends BaseEvmClient {
   allStakerPositionIds(staker: string): Promise<number[]> {
     return collectPositionIds((offset, limit) => this.stakerPositionIds(staker, offset, limit));
   }
+
+  /**
+   * The staker's positions in `agentId`'s pool with power at `epoch`
+   * (`positionWeightAtEpoch`: ANTS wei × epochs of lock remaining, zero before
+   * activation). Positions without power are left out.
+   */
+  async stakerPositionsInPool(staker: string, agentId: number, epoch: number): Promise<Array<{ id: number; power: bigint }>> {
+    const ids = await this.allStakerPositionIds(staker);
+    if (ids.length === 0) return [];
+    const inPool = (await this.positionsBatch(ids))
+      .filter((position) => position.agentId === agentId && !position.withdrawn);
+    if (inPool.length === 0) return [];
+    const results = await multicallRead(this.provider, inPool.map((position) => ({
+      target: this.contractAddress, iface: SELLER_POOLS_IFACE, method: 'positionWeightAtEpoch', args: [position.id, epoch],
+    })));
+    return inPool
+      .map((position, index) => ({
+        id: position.id,
+        power: requiredRead(results, index, `positionWeightAtEpoch(${position.id})`)[0] as bigint,
+      }))
+      .filter((position) => position.power > 0n);
+  }
 }
 
 async function collectPositionIds(readPage: (offset: number, limit: number) => Promise<number[]>): Promise<number[]> {

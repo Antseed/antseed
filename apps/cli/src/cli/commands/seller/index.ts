@@ -7,6 +7,10 @@ import { registerSellerStakeCommand } from './stake.js';
 import { registerSellerDoctorCommand } from './doctor.js';
 import { registerSellerPoolCommand } from './pool.js';
 import { registerSellerRewardsCommand } from './rewards.js';
+import { registerSellerAlertsCommand } from './alerts.js';
+import { registerSellerDashboardCommand } from './dashboard.js';
+import { registerSellerMonitorCommands } from './monitor.js';
+import { registerSellerForwardCommand } from './forward.js';
 
 export function registerSellerCommands(program: Command): void {
   const sellerCmd = program
@@ -19,6 +23,10 @@ export function registerSellerCommands(program: Command): void {
   registerSellerRegisterCommand(sellerCmd);
   registerSellerStakeCommand(sellerCmd);
   registerSellerPoolCommand(sellerCmd);
+  registerSellerForwardCommand(sellerCmd);
   registerSellerRewardsCommand(sellerCmd);
   registerSellerDoctorCommand(sellerCmd);
+  registerSellerAlertsCommand(sellerCmd);
+  registerSellerDashboardCommand(sellerCmd);
+  registerSellerMonitorCommands(sellerCmd);
 }

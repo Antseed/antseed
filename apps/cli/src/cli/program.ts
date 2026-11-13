@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { registerSellerCommands } from './commands/seller/index.js';
 import { registerBuyerCommands } from './commands/buyer/index.js';
+import { registerVerifierCommands } from './commands/verifier/index.js';
 import { registerConfigCommand } from './commands/config/index.js';
 import { registerNetworkCommands } from './commands/network/index.js';
 import { registerIdentityCommands } from './commands/identity/index.js';
@@ -17,6 +18,7 @@ import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
 import { registerAppsCommands } from './commands/apps/index.js';
 import { registerUpdateCommand } from './commands/update.js';
+import { registerTelemetryCommands } from './commands/telemetry.js';
 
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -34,6 +36,7 @@ export function createProgram(): Command {
 
   registerSellerCommands(program);
   registerBuyerCommands(program);
+  registerVerifierCommands(program);
   registerConfigCommand(program);
   registerNetworkCommands(program);
   registerIdentityCommands(program);
@@ -50,6 +53,7 @@ export function createProgram(): Command {
   registerAntsCommands(program);
   registerAppsCommands(program);
   registerUpdateCommand(program);
+  registerTelemetryCommands(program);
 
   return program;
 }

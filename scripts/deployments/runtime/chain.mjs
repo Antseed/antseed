@@ -1,7 +1,24 @@
 import { capture } from './exec.mjs';
 
+// Public RPC pools sometimes route a read to a node that has not caught up with the newest block.
+const TRANSIENT_RPC_ERROR = /no state found|error code -32603|timed out|connection (reset|refused|closed)|502 Bad Gateway|503 Service/i;
+const READ_RETRIES = 5;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Runs cast against `rpcUrl`; reads are retried on transient RPC errors, sends never are. */
 export function cast(rpcUrl, args, options = {}) {
-  return capture('cast', [...args, '--rpc-url', rpcUrl], options);
+  const retries = args[0] === 'send' ? 0 : READ_RETRIES;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return capture('cast', [...args, '--rpc-url', rpcUrl], options);
+    } catch (error) {
+      if (attempt >= retries || !TRANSIENT_RPC_ERROR.test(error.message)) throw error;
+      sleepSync(1000 * (attempt + 1));
+    }
+  }
 }
 
 export function call(rpcUrl, address, signature, args = []) {

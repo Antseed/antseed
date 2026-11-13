@@ -42,6 +42,31 @@ function validMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 
 
 describe('validateMetadata', () => {
+  it('validates announced service health', () => {
+    const metadata = validMetadata();
+    metadata.providers[0]!.serviceHealth = {
+      'claude-3-opus': { status: 'failing', reason: 'timeout', consecutiveFailures: 3, failingSince: 1, checkedAt: 2, source: 'probe', httpStatus: 504 },
+    };
+    expect(validateMetadata(metadata)).toEqual([]);
+    metadata.providers[0]!.serviceHealth = {
+      'claude-3-opus': { status: 'broken' as never, reason: 'nope' as never, consecutiveFailures: -1, checkedAt: 1.5, httpStatus: 42 },
+      'other-model': { status: 'healthy' },
+    };
+    expect(validateMetadata(metadata).map((error) => error.message)).toEqual(expect.arrayContaining([
+      'Unsupported service health status "broken"',
+      'Unsupported service health reason "nope"',
+      'consecutiveFailures must be an integer 0..65535',
+      'checkedAt must be a Unix ms timestamp between 0 and 8640000000000000',
+      'httpStatus must be an HTTP status code',
+      'Service health must reference a service listed in providers[].services',
+    ]));
+    metadata.providers[0]!.serviceHealth = { 'claude-3-opus': { status: 'failing', failingSince: 9e15 } };
+    expect(validateMetadata(metadata).map((error) => error.message))
+      .toContain('failingSince must be a Unix ms timestamp between 0 and 8640000000000000');
+    expect(validateMetadata({ ...validMetadata(), version: 12, providers: [{ ...validMetadata().providers[0]!, serviceHealth: { 'claude-3-opus': { status: 'healthy' } } }] })
+      .map((error) => error.message)).toContain('Service health requires metadata version 13');
+  });
+
   it('validates announced video options', () => {
     const metadata = validMetadata();
     metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: { video: { durationsSeconds: [0, 5, 5], resolutions: ['bad value'], inputs: [], requiredInputs: ['first_frame'] } } };
