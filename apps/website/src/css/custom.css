@@ -1729,7 +1729,7 @@ html[data-theme='light'] .blog-wrapper .pagination-nav__link:hover {
   .blog-wrapper .markdown li { font-size: 14.5px; line-height: 1.72; }
 }
 
-/* AI VPN download buttons: "Get Started" + arrow on mobile, "Download AI VPN" + OS icons on desktop */
+/* Antseed Desktop download buttons: "Get Started" + arrow on mobile, "Download Antseed Desktop" + OS icons on desktop */
 .vprLabelMobile {
   display: none;
   align-items: center;

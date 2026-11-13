@@ -131,6 +131,6 @@ From the CLI, `antseed gateway workspace operator show <workspace>` reads the au
 
 ## Without a gateway
 
-To fund a buyer you run without a gateway, use `antseed buyer deposit`, or the card checkout in the [desktop app](/docs/desktop). See [Payments](/docs/payments) for how deposits, channels and the authorized wallet work on-chain.
+To fund a buyer you run without a gateway, use `antseed buyer deposit`. The [desktop app](/docs/desktop) has its own **Add funds**, by card checkout or USDC. See [Payments](/docs/payments) for how deposits, channels and the authorized wallet work on-chain.
 
 Next: [Budgets and spend limits](/docs/gateway/budgets).

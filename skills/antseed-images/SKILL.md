@@ -11,7 +11,7 @@ Generate an image, or edit one or more images the user has, through the user's l
 
 - Antseed Desktop or `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
-- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm testbench` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop sets it to its gateway, with the key in `$ANTSEED_API_KEY`; `pnpm testbench` sets it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
@@ -30,11 +30,11 @@ Always fetch the current image catalog before generating:
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=images"
 ```
 
-The endpoint is answered locally and returns network-wide image models. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided, inspect the available models and their capabilities; select an obvious match for the request or ask the user when the choice is material. Use `GET /v1/models/<id>` when you need the selected model's full ranked offers, protocols, pricing, and capabilities.
+The endpoint is answered locally and returns network-wide image models. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided, inspect the available models and their capabilities; select an obvious match for the request or ask the user when the choice is material. The selected model's entry in that list carries its offers (`peers`): protocols, pricing, and capabilities. Read them from there; the gateway serves only the list, not `/v1/models/<id>`.
 
 Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. A bare model id lets the buyer proxy apply its Price + Trust preferences and fail over when another eligible serving peer is needed.
 
@@ -51,7 +51,7 @@ output="${output:-generated-image.png}"
 
 curl --fail-with-body "$proxy_url/v1/images/generations" \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   --data-binary "$(jq -n \
     --arg model "$model" \
     --arg prompt "$prompt" \
@@ -79,7 +79,7 @@ image_args=()
 for image in "${images[@]}"; do image_args+=(-F "image[]=@$image"); done
 
 curl --fail-with-body "$proxy_url/v1/images/edits" \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   -F "model=$model" \
   -F "prompt=$prompt" \
   "${image_args[@]}" \

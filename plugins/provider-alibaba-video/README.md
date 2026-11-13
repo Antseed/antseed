@@ -5,9 +5,11 @@ Relays video generation requests to Alibaba Cloud Model Studio models such as Wa
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-alibaba-video
 export ALIBABA_VIDEO_API_KEY=<seller-model-studio-key>
+antseed config seller add-provider video --plugin alibaba-video
 ```
+
+`add-provider` installs the plugin.
 
 - `ALIBABA_VIDEO_API_KEY`: Model Studio API key, sent as `Authorization: Bearer <key>`. Keys belong to one region
 - `ALIBABA_VIDEO_BASE_URL`: optional, defaults to the Singapore endpoint `https://dashscope-intl.aliyuncs.com`
