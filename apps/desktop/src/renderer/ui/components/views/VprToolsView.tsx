@@ -1,32 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { Add01Icon, ArrowDown01Icon, ArrowLeft01Icon, ArrowReloadHorizontalIcon, ArrowRight01Icon, ArrowUpRight01Icon, Copy01Icon, Settings02Icon, SquareLock01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey } from '@antseed/ui';
-import type { InstalledAppEntry, SystemProxyProfileSummary } from '../../../types/bridge';
-import { chooseBestVprRoute, isPeerRoutable } from '../../../modules/routing/select';
-import { routesForSelectedModel } from '../../../modules/catalog/view-models';
-import { installedAppsResource, systemProxyResource } from '../../../modules/app/vpr-resources';
-import { useCachedResource } from '../../../modules/app/cached-resource';
 import {
-  activeProfilesFromRuntimeState,
-  buildVprPeerOptions,
-  resolveVprToolRouteForPeerOptions,
-} from '../../../modules/routing/tools';
-import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
-import { useActions } from '../../hooks/useActions';
-import { VprBadge, VprPage, VprSearch } from '../vpr/VprKit';
+  ArrowDown01Icon,
+  ArrowLeft01Icon,
+  ArrowReloadHorizontalIcon,
+  ArrowRight01Icon,
+  ArrowUpRight01Icon,
+  Copy01Icon,
+  Key01Icon,
+  Settings02Icon,
+  Tick02Icon,
+} from '@hugeicons/core-free-icons';
+import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedback } from '@antseed/ui';
+import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
+import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
+import { offersConnectAnyway } from './app-card-actions';
+import { appsResource, gatewayResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { copyFreshKey, createEndpointReads, readKeyToCopy } from './endpoint-reads';
+import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
-import { CursorAppCard } from './CursorAppCard';
+import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
+import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
+import { appLogoUrl } from '../vpr/AppPills';
+import { AppsBanner } from '../vpr/AppsBanner';
 import { AppsOnboarding } from './AppsOnboarding';
 import { isAppsOnboardingSeen, persistAppsOnboardingSeen } from '../../../modules/app/apps-onboarding';
 import styles from './VprToolsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
-
-
-declare const __ANTSEED_SYSTEM_PROXY_PORT__: number;
-
-const DEFAULT_PORT = __ANTSEED_SYSTEM_PROXY_PORT__;
 
 const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteUrl: string }>> = {
   opencode: {
@@ -36,10 +37,6 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
   codex: {
     description: 'OpenAI’s coding agent for building, reviewing, and shipping software.',
     websiteUrl: 'https://openai.com/codex/',
-  },
-  'claude-code': {
-    description: 'Anthropic’s terminal coding agent, routed through the model selected in the AI VPN.',
-    websiteUrl: 'https://code.claude.com/docs/en/overview',
   },
   t3code: {
     description: 'A desktop interface for running multiple coding agents in parallel.',
@@ -52,6 +49,10 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
   gooeypi: {
     description: 'A graphical desktop experience powered by the Pi coding-agent ecosystem.',
     websiteUrl: 'https://pi.dev/',
+  },
+  'prime-agent': {
+    description: 'Prime Intellect’s open-source coding and research agent for long-running work.',
+    websiteUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
   },
   crush: {
     description: 'A terminal-based AI coding agent from Charm.',
@@ -69,48 +70,206 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
     description: 'A high-performance collaborative code editor with built-in AI assistance.',
     websiteUrl: 'https://zed.dev/download',
   },
+  droid: {
+    description: 'Factory’s coding agent for the terminal and desktop.',
+    websiteUrl: 'https://factory.ai/',
+  },
 };
 
-function appInfo(profile: SystemProxyProfileSummary): { description: string; websiteUrl?: string } {
-  const builtIn = BUILT_IN_APP_INFO[profile.name];
-  if (builtIn) return builtIn;
-  const domain = profile.domains[0];
-  return {
-    description: profile.custom
-      ? 'A custom AI application routed through Antseed.'
-      : `${profile.displayName} is configured to use Antseed for AI requests.`,
-    ...(domain ? { websiteUrl: `https://${domain}` } : {}),
-  };
+function appInfo(profile: ConnectedAppProfile): { description: string; websiteUrl?: string } {
+  return BUILT_IN_APP_INFO[profile.name]
+    ?? { description: `${profile.displayName} uses your Antseed gateway for AI requests.` };
 }
 
 /** Two-pane modal navigation: the main pane slides to the application list
     the same way the app's screens slide ('none' = no animation on open). */
 type ModalPane = { pane: 'main' | 'apps'; dir: 'none' | 'forward' | 'back' };
 
-type GuiTestResult = {
-  ok: boolean;
-  proxyConfigured: boolean;
-  proxyReachable: boolean;
-  guiTrustOk: boolean;
-  certTrustError: boolean;
-  appRunning: boolean;
-  needsAppRestart: boolean;
-  appPid?: number;
-  statusCode?: number;
-  error?: string;
+function maskKey(key: string): string {
+  return key.length > 16 ? `${key.slice(0, 12)}…${key.slice(-4)}` : key;
+}
+
+function CopyRow({ label, value, display, readValue }: {
+  label: string;
+  value: string;
+  display?: string;
+  /** Reads the value again when copying (a key that may have been replaced); nothing is copied when it fails. */
+  readValue?: () => Promise<string | null>;
+}) {
+  const { copied, copy } = useCopyFeedback(value);
+  const onCopy = async () => {
+    if (!readValue) return copy();
+    await copyFreshKey(readValue, copy);
+  };
+  return (
+    <button
+      type="button"
+      className={styles.endpointValue}
+      onClick={() => void onCopy()}
+      title={`Copy ${label}`}
+    >
+      <code>{display ?? value}</code>
+      <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} size={13} strokeWidth={2} />
+      <span>{copied ? 'Copied' : label}</span>
+    </button>
+  );
+}
+
+/**
+ * Base URL + key for any OpenAI- or Anthropic-compatible tool the list does
+ * not cover.
+ */
+/**
+ * A gateway API key to copy. The key is always read again when copying (it
+ * may have been revoked or replaced in the console), so a key row can't be
+ * built without that read.
+ */
+function KeyCopyRow({ apiKey, readKey }: { apiKey: string; readKey: () => Promise<string | null> }) {
+  return <CopyRow label="Copy key" value={apiKey} display={maskKey(apiKey)} readValue={readKey} />;
+}
+
+function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
+  const status = useCachedResource(gatewayResource).data?.status;
+  // Which gateway the card would read: a switch reads the key again.
+  const gatewayKey = status ? `${status.mode} ${status.origin ?? ''}` : '';
+  const reads = useMemo(() => createEndpointReads(() => window.antseedDesktop?.gatewayGetEndpoint?.(), setEndpoint), []);
+  useEffect(() => {
+    if (!open) {
+      reads.close();
+      return undefined;
+    }
+    // Every opening, focus return and gateway switch reads the key again: it
+    // may have been rotated in the console meanwhile.
+    void reads.refresh();
+    const onFocus = () => { void reads.refresh(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [open, gatewayKey, reads]);
+  return (
+    <div className={styles.endpointCard}>
+      <button type="button" className={styles.endpointHead} aria-expanded={open} onClick={() => setOpen(!open)}>
+        <HugeiconsIcon icon={Key01Icon} size={14} strokeWidth={2} />
+        <span className={styles.endpointTitle}>Use with any other tool</span>
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          size={14}
+          strokeWidth={2}
+          className={`${styles.endpointChevron}${open ? ` ${styles.endpointChevronOpen}` : ''}`}
+        />
+      </button>
+      {open ? (
+        <>
+          <p className={styles.endpointHint}>
+            Any tool that takes an OpenAI- or Anthropic-compatible base URL and API key works with your
+            gateway. Paste these into its settings and pick a model there.
+          </p>
+          {endpoint?.ok && endpoint.baseUrl && endpoint.apiKey ? (
+            <div className={styles.endpointRows}>
+              <CopyRow label="Copy URL" value={endpoint.baseUrl} />
+              <KeyCopyRow apiKey={endpoint.apiKey} readKey={() => readKeyToCopy(reads)} />
+            </div>
+          ) : (
+            <p className={styles.endpointHint}>{endpoint?.error ?? 'Loading…'}</p>
+          )}
+          <div className={styles.actions}>
+            <button type="button" onClick={() => onOpenConsole('/keys')}>Manage API keys</button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** The first clause of a connect error; the full text stays in the tooltip. */
+function shortError(error: string): string {
+  const first = error.split(/ — |\. /)[0]!.trim().replace(/\.$/, '');
+  return first.length > 90 ? `${first.slice(0, 87)}…` : first;
+}
+
+type AppCardFooterProps = {
+  profile: ConnectedAppProfile;
+  /** The app being connected or disconnected, if any. */
+  busy: string | null;
+  notInstalled: boolean;
+  needsKey: boolean;
+  needsAttention: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onGet: (url: string) => void;
 };
 
+/** An app card's status and action. An error shows before the connected state. */
+function AppCardFooter({ profile, busy, notInstalled, needsKey, needsAttention, onConnect, onDisconnect, onGet }: AppCardFooterProps) {
+  const { connected } = profile;
+  if (busy === profile.name) {
+    return <span className={styles.appBusy} role="status" aria-label={`${connected ? 'Disconnecting' : 'Connecting'} ${profile.displayName}`} />;
+  }
+  if (profile.error) {
+    return (
+      <>
+        <span className={styles.appStatusWarn} title={profile.error}>
+          <span className={styles.restartDot} aria-hidden="true" />
+          {shortError(profile.error)}
+        </span>
+        {!connected && <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect}>Connect</button>}
+      </>
+    );
+  }
+  if (connected) {
+    return (
+      <span className={styles.appConnectedRow}>
+        <span className={needsAttention ? styles.appStatusWarn : styles.appStatus} title={needsKey ? 'Open Zed’s settings here to copy the key' : undefined}>
+          <span className={needsAttention ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
+          {needsKey ? 'Paste key in Zed' : profile.needsRestart ? 'Restart required' : 'Connected'}
+        </span>
+        <button
+          type="button"
+          className={styles.appDisconnect}
+          disabled={busy !== null}
+          onClick={onDisconnect}
+          aria-label={`Disconnect ${profile.displayName}`}
+        >
+          Disconnect
+        </button>
+      </span>
+    );
+  }
+  if (!notInstalled) {
+    return (
+      <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect}>
+        Connect
+      </button>
+    );
+  }
+  if (offersConnectAnyway(window.antseedDesktop?.platform)) {
+    return (
+      <span className={styles.appConnectedRow}>
+        <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect} title={`Connect ${profile.displayName} if it is installed in WSL`}>
+          Connect
+        </button>
+      </span>
+    );
+  }
+  if (!profile.downloadUrl) return <span className={styles.appMuted}>Not installed</span>;
+  const downloadUrl = profile.downloadUrl;
+  return (
+    <button
+      type="button"
+      className={styles.appGet}
+      onClick={() => onGet(downloadUrl)}
+      title={`Get ${profile.displayName}, then connect it here`}
+    >
+      Get
+      <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
+    </button>
+  );
+}
+
 export function VprToolsView() {
-  const actions = useActions();
-  const snap = useUiSelector((state) => ({
-    lastPeers: state.lastPeers,
-    discoverRows: state.vprRoutableRows,
-    selection: state.vprRouteSelection,
-    preferences: state.vprRoutingPreferences,
-  }), shallowEqual);
-  const proxyResource = useCachedResource(systemProxyResource);
-  const profiles = proxyResource.data?.profiles ?? [];
-  const proxyState = proxyResource.data?.state ?? null;
+  const appsSnapshot = useCachedResource(appsResource);
+  const profiles = appsSnapshot.data ?? [];
   // First-ever visit to this screen (however the user got here): play the
   // coach-mark walkthrough once, and mark it seen immediately so the nav dot
   // never comes back.
@@ -118,169 +277,30 @@ export function VprToolsView() {
   useEffect(() => {
     if (showOnboarding) persistAppsOnboardingSeen();
   }, [showOnboarding]);
+  // The app being connected or disconnected right now. Connecting also
+  // restarts an app that was already running, so the row stays busy well
+  // past the click.
   const [busy, setBusy] = useState<string | null>(null);
-  // The app being connected right now. Connecting also restarts an app that
-  // was already running, so the row has to stay busy well past the click.
-  const [connecting, setConnecting] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
-  const [guiTest, setGuiTest] = useState<GuiTestResult | null>(null);
-  const [trustBusy, setTrustBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
-  const [addUrl, setAddUrl] = useState('');
-  const [addBusy, setAddBusy] = useState(false);
-  // Application picked for a new custom app — supplies its display name and
-  // icon, replacing the favicon fetch.
-  const [addApp, setAddApp] = useState<InstalledAppEntry | null>(null);
-  const [addPane, setAddPane] = useState<ModalPane>({ pane: 'main', dir: 'none' });
-  const [addSearch, setAddSearch] = useState('');
-  // Add-app wizard: 1 = URL + application, 2 = trust the CA, 3 = connect.
-  // Step 2 is skipped when the certificate is already trusted.
-  const [addStep, setAddStep] = useState<1 | 2 | 3>(1);
-  const [addedName, setAddedName] = useState<string | null>(null);
-  const [addError, setAddError] = useState<string | null>(null);
-  // The endpoint probe could not confirm the URL is an AI API — the error is
-  // shown as a warning and the submit button becomes "Add anyway".
-  const [addUnverified, setAddUnverified] = useState(false);
-  const [caInfo, setCaInfo] = useState<{ path: string; exists: boolean } | null>(null);
-  const [caTrust, setCaTrust] = useState<'trusted' | 'stale' | 'absent' | 'unknown'>('unknown');
-  const [caCopied, setCaCopied] = useState(false);
-  // Certificate card expansion: the user's explicit toggle wins; until they
-  // touch it, the card only opens itself when an action is actually needed.
-  const [caOpenOverride, setCaOpenOverride] = useState<boolean | null>(null);
-  // "What are connected apps?" explainer modal.
   const [helpOpen, setHelpOpen] = useState(false);
-  // Per-app settings modal: which profile it edits, which pane is showing
-  // (main settings vs. the application list it slides to), its search text,
-  // the client-identity draft, and the lazily fetched installed-apps list.
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsPane, setSettingsPane] = useState<ModalPane>({ pane: 'main', dir: 'none' });
   const [pickerSearch, setPickerSearch] = useState('');
   const [identityDraft, setIdentityDraft] = useState('');
-  // Drafted "Open with" pick — undefined until the user touches it, applied
-  // together with the identity draft by the modal's Save button.
+  // undefined = untouched; null = "default action" picked; entry = app picked.
   const [launchDraft, setLaunchDraft] = useState<InstalledAppEntry | null | undefined>(undefined);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const installedAppsResourceSnapshot = useCachedResource(installedAppsResource, false);
   const installedApps = installedAppsResourceSnapshot.data;
   const installedAppsError = installedAppsResourceSnapshot.error;
 
-  // lastPeers is the raw scan, so it has to be filtered too — otherwise an
-  // excluded seller would still be offerable as a per-app route here.
-  const peerOptions = useMemo(
-    () => buildVprPeerOptions(snap.lastPeers, snap.discoverRows)
-      .filter((peer) => isPeerRoutable(peer.peerId, snap.preferences)),
-    [snap.lastPeers, snap.discoverRows, snap.preferences],
-  );
-  const modelRoutes = useMemo(() => routesForSelectedModel(snap.discoverRows, snap.selection.model), [snap.discoverRows, snap.selection.model]);
-  const bestRoute = useMemo(() => chooseBestVprRoute(modelRoutes, snap.preferences), [modelRoutes, snap.preferences]);
-  const defaultPeerId = snap.selection.peerId || bestRoute?.peerId || peerOptions[0]?.peerId || '';
-  const defaultModel = snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
-  const activeProfiles = useMemo(() => activeProfilesFromRuntimeState(proxyState), [proxyState]);
-  const activeProfileNames = useMemo(() => activeProfiles ? [...activeProfiles] : [], [activeProfiles]);
-  const setupProfiles = useMemo(() => {
-    const metadata = proxyState as (Record<string, unknown> | null);
-    return new Set(Array.isArray(metadata?.setupProfileNames) ? metadata.setupProfileNames.filter((name): name is string => typeof name === 'string') : []);
-  }, [proxyState]);
-  const hasConnectedProxyProfile = useMemo(() => (
-    profiles.some((profile) => profile.kind === 'proxy' && (activeProfiles?.has(profile.name) ?? false))
-  ), [activeProfiles, profiles]);
-
-  const hasProxyProfile = useMemo(() => profiles.some((profile) => profile.kind === 'proxy'), [profiles]);
-
-  const refresh = systemProxyResource.refresh;
-
-  // Trust state shells out to the CLI (which queries the OS keychain), so it is
-  // fetched on demand — mount, after adding an app, after trusting — never on
-  // the 3s poll above.
-  const refreshCaTrust = useCallback(async (): Promise<'trusted' | 'stale' | 'absent' | 'unknown'> => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyCaTrustState) return 'unknown';
-    try {
-      const result = await bridge.systemProxyCaTrustState();
-      const trust = result.ok ? result.trust : 'unknown';
-      setCaTrust(trust);
-      return trust;
-    } catch {
-      setCaTrust('unknown');
-      return 'unknown';
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshCaTrust();
-    void window.antseedDesktop?.systemProxyCaInfo?.().then(setCaInfo);
-  }, [refreshCaTrust]);
-
-  const testGui = useCallback(async () => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyTestGui) return;
-    try {
-      setGuiTest(await bridge.systemProxyTestGui({ port: DEFAULT_PORT }));
-    } catch (err) {
-      setGuiTest({
-        ok: false,
-        proxyConfigured: false,
-        proxyReachable: false,
-        guiTrustOk: false,
-        certTrustError: false,
-        appRunning: false,
-        needsAppRestart: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!hasConnectedProxyProfile) {
-      setGuiTest(null);
-      return;
-    }
-    void testGui();
-  }, [hasConnectedProxyProfile, testGui]);
-
-  // Every connected app follows the default AI VPN route; the model itself is
-  // resolved live by the buyer (the `antseed` alias), so there are no per-app
-  // model overrides here anymore.
-  const startProfiles = useCallback(async (names: string[]): Promise<boolean> => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyStart || !defaultPeerId) return false;
-    setBusy(names.join(','));
-    setMessage(null);
-    const defaultRoute = { peerId: defaultPeerId, model: defaultModel };
-    const routeOverrides = Object.fromEntries(
-      names.map((name) => [name, resolveVprToolRouteForPeerOptions({}, name, defaultRoute, peerOptions)]),
-    );
-    const result = await bridge.systemProxyStart({
-      peerId: defaultPeerId,
-      port: DEFAULT_PORT,
-      profiles: names,
-      defaultModel: defaultModel || undefined,
-      servedModels: peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services ?? [],
-      toolRoutes: routeOverrides,
-      profileSwitch: proxyState?.running === true || activeProfileNames.length > 0,
+  const connectedCount = (appsSnapshot.data ?? []).filter((profile) => profile.connected).length;
+  const openConsole = useCallback((path: string) => {
+    void window.antseedDesktop?.gatewayOpenConsole?.(path)?.then((result) => {
+      if (result && !result.ok) setMessage(result.error ?? 'Could not open your gateway');
     });
-    setBusy(null);
-    if (!result.ok) {
-      setMessage(result.error ?? 'Unable to connect tool profile');
-      return false;
-    }
-    systemProxyResource.setData({ profiles, state: result.state ?? null });
-    return true;
-  }, [activeProfileNames.length, defaultModel, defaultPeerId, peerOptions, profiles, proxyState?.running]);
-
-  const disconnect = useCallback(async (appName?: string) => {
-    const bridge = window.antseedDesktop;
-    recordUserAction('app_disconnect', 'apps', appName !== undefined ? normalizeTelemetryAppName(appName) : undefined);
-    setBusy('stop');
-    const result = await bridge?.systemProxyStop?.();
-    setBusy(null);
-    if (result?.ok) {
-      systemProxyResource.setData({ profiles, state: result.state ?? null });
-    } else {
-      setMessage(result?.error ?? 'Unable to disconnect tools');
-    }
-  }, [profiles]);
+  }, []);
 
   const openUrl = useCallback(async (url: string) => {
     const result = await window.antseedDesktop?.openExternalUrl?.(url);
@@ -292,98 +312,61 @@ export function VprToolsView() {
     if (result && !result.ok) setMessage(result.error ?? 'Could not open tool');
   }, []);
 
-  const connectProfile = useCallback(async (profileName: string) => {
-    recordUserAction('app_connect', 'apps', normalizeTelemetryAppName(profileName));
-    const names = Array.from(new Set([...activeProfileNames, profileName]));
-    setConnecting(profileName);
+  const connectProfile = useCallback(async (profile: ConnectedAppProfile) => {
+    const bridge = window.antseedDesktop;
+    if (!bridge?.appsConnect) return;
+    recordUserAction('app_connect', 'apps', normalizeTelemetryAppName(profile.name));
+    setBusy(profile.name);
+    setMessage(null);
     try {
-      if (!await startProfiles(names)) return;
-      // Surface the pill right away — it opens with the chat dropdown
-      // expanded, so the "start a new session" guidance is in view while
-      // the user switches to the tool.
-      void actions.openVprFloat?.(profileName);
-      // Bring the app itself forward too — same launch rules as the row's
-      // open arrow: a user-picked application wins over the packaged
-      // open-url action. Awaited, so the row stays busy until the app is
-      // actually up rather than until the launch request is accepted.
-      const profile = profiles.find((entry) => entry.name === profileName);
-      if (!profile) return;
+      const result = await bridge.appsConnect(profile.name);
+      await appsResource.refresh();
+      if (!result.ok) {
+        setMessage(shortError(result.error ?? `Could not connect ${profile.displayName}`));
+        return;
+      }
+      // Bring the app itself forward — a user-picked application wins over
+      // the packaged open-url action.
       if (profile.appAction === 'open-url' && profile.openUrl && !profile.launchAppName) {
         await openUrl(profile.openUrl);
       } else if (profile.launchAppName || profile.appAction === 'open-tool') {
         await openTool(profile.toolName ?? profile.name);
       }
     } finally {
-      setConnecting(null);
+      setBusy(null);
     }
-  }, [actions, activeProfileNames, openTool, openUrl, profiles, startProfiles]);
+  }, [openTool, openUrl]);
 
-  const disconnectProfile = useCallback((profileName: string) => {
-    const remaining = activeProfileNames.filter((name) => name !== profileName);
-    if (remaining.length === 0) {
-      void disconnect(profileName);
-      return;
+  const disconnectProfile = useCallback(async (profile: ConnectedAppProfile) => {
+    const bridge = window.antseedDesktop;
+    if (!bridge?.appsDisconnect) return;
+    recordUserAction('app_disconnect', 'apps', normalizeTelemetryAppName(profile.name));
+    setBusy(profile.name);
+    setMessage(null);
+    try {
+      const result = await bridge.appsDisconnect(profile.name);
+      await appsResource.refresh();
+      if (!result.ok) setMessage(result.error ?? `Could not disconnect ${profile.displayName}`);
+    } finally {
+      setBusy(null);
     }
-    recordUserAction('app_disconnect', 'apps', normalizeTelemetryAppName(profileName));
-    void startProfiles(remaining);
-  }, [activeProfileNames, disconnect, startProfiles]);
+  }, []);
 
   const restartApp = useCallback(async (profileName: string, label: string) => {
     const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyRestartApp) return;
+    if (!bridge?.appsRestartApp) return;
     setActionBusy(profileName);
     setMessage(null);
     try {
-      const result = await bridge.systemProxyRestartApp(profileName);
+      const result = await bridge.appsRestartApp(profileName);
       setMessage(result.ok ? `Restarted ${label}` : (result.error ?? `Unable to restart ${label}`));
-      if (result.ok) await refresh();
+      if (result.ok) await appsResource.refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
       setActionBusy(null);
     }
-  }, [refresh]);
-
-  const trustCa = useCallback(async () => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyInstallCa) return;
-    setTrustBusy(true);
-    setMessage(null);
-    try {
-      const result = await bridge.systemProxyInstallCa();
-      if (!result.ok) {
-        setMessage(result.error ?? 'CA install failed');
-        return;
-      }
-      const trust = await refreshCaTrust();
-      await testGui();
-      // The CLI's login-keychain fallback reports "system-wide trust was
-      // skipped" even when the cert ends up trusted for this user — which is
-      // all intercepted GUI apps need. Only surface the warning when the
-      // keychain still doesn't verify the cert as trusted.
-      if (result.warning && trust !== 'trusted') setMessage(result.warning);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setTrustBusy(false);
-    }
-  }, [refreshCaTrust, testGui]);
-
-  const revealCa = useCallback(async () => {
-    const result = await window.antseedDesktop?.systemProxyRevealCa?.();
-    if (result && !result.ok) setMessage(result.error ?? 'Could not reveal the certificate');
   }, []);
-
-  const copyCaPath = useCallback(async () => {
-    if (!caInfo?.path) return;
-    try {
-      await navigator.clipboard.writeText(caInfo.path);
-      setCaCopied(true);
-      window.setTimeout(() => setCaCopied(false), 1500);
-    } catch {
-      setCaCopied(false);
-    }
-  }, [caInfo?.path]);
 
   // ---------- Per-app settings modal ----------
 
@@ -393,7 +376,7 @@ export function VprToolsView() {
     }
   }, [installedApps, installedAppsResourceSnapshot.loading]);
 
-  const openSettings = useCallback((profile: SystemProxyProfileSummary) => {
+  const openSettings = useCallback((profile: ConnectedAppProfile) => {
     setSettingsFor(profile.name);
     setSettingsPane({ pane: 'main', dir: 'none' });
     setPickerSearch('');
@@ -409,6 +392,7 @@ export function VprToolsView() {
   }, []);
 
   const settingsProfile = settingsFor ? profiles.find((profile) => profile.name === settingsFor) ?? null : null;
+  const zedKey = useZedKeyPaste(profiles.some((profile) => profile.name === ZED_APP && profile.connected), settingsFor);
   const settingsInfo = settingsProfile ? appInfo(settingsProfile) : null;
   const settingsIdentity = settingsProfile
     ? (settingsProfile.toolSlugs?.length ? settingsProfile.toolSlugs : [settingsProfile.name]).join(', ')
@@ -422,22 +406,14 @@ export function VprToolsView() {
     ? settingsProfile?.launchAppName ?? null
     : launchDraft?.name ?? null;
 
-  // Apply the drafted settings. A connected app disconnects first — the proxy
-  // runtime only reads profiles on connect, so edits never apply mid-session;
-  // reconnecting stays on the apps list row.
   const saveSettings = useCallback(async () => {
     const bridge = window.antseedDesktop;
     if (!settingsFor || !bridge) return;
     setSettingsSaving(true);
     setMessage(null);
     try {
-      if (activeProfileNames.includes(settingsFor)) {
-        const remaining = activeProfileNames.filter((name) => name !== settingsFor);
-        if (remaining.length === 0) await disconnect();
-        else if (!await startProfiles(remaining)) return;
-      }
-      if (launchDirty && bridge.systemProxySetAppLaunch) {
-        const result = await bridge.systemProxySetAppLaunch({
+      if (launchDirty && bridge.appsSetAppLaunch) {
+        const result = await bridge.appsSetAppLaunch({
           name: settingsFor,
           app: launchDraft ? { name: launchDraft.name, path: launchDraft.path } : null,
         });
@@ -446,18 +422,16 @@ export function VprToolsView() {
           return;
         }
       }
-      if (identityDirty && bridge.systemProxySetAppIdentity) {
+      if (identityDirty && bridge.appsSetAppIdentity) {
         const slugs = identityDraft.split(',').map((entry) => entry.trim()).filter(Boolean);
-        const result = await bridge.systemProxySetAppIdentity({ name: settingsFor, toolSlugs: slugs.length > 0 ? slugs : null });
+        const result = await bridge.appsSetAppIdentity({ name: settingsFor, toolSlugs: slugs.length > 0 ? slugs : null });
         if (!result.ok) {
           setMessage(result.error ?? 'Could not save the client names');
           return;
         }
       }
-      // Sync drafts to the normalized values the main process persisted —
-      // including a custom app renamed after its application pick.
-      const listed = (await bridge.systemProxyListProfiles?.()) ?? [];
-      systemProxyResource.setData({ profiles: listed, state: proxyState });
+      // Sync drafts to the normalized values the main process persisted.
+      const listed = (await appsResource.refresh()) ?? [];
       setLaunchDraft(undefined);
       const updated = listed.find((profile) => profile.name === settingsFor);
       if (updated) setIdentityDraft((updated.toolSlugs?.length ? updated.toolSlugs : [updated.name]).join(', '));
@@ -466,292 +440,119 @@ export function VprToolsView() {
     } finally {
       setSettingsSaving(false);
     }
-  }, [activeProfileNames, disconnect, identityDirty, identityDraft, launchDirty, launchDraft, proxyState, settingsFor, startProfiles]);
+  }, [identityDirty, identityDraft, launchDirty, launchDraft, settingsFor]);
 
-  const advanceAddStep = useCallback((step: 2 | 3) => {
-    setAddStep(step);
-    setAddPane({ pane: 'main', dir: 'forward' });
-  }, []);
-
-  const addCustomApp = useCallback(async (force = false) => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyAddCustomApp) return;
-    setAddBusy(true);
-    setAddError(null);
-    try {
-      const result = await bridge.systemProxyAddCustomApp({
-        apiUrl: addUrl,
-        app: addApp ? { name: addApp.name, path: addApp.path } : null,
-        force,
-      });
-      if (!result.ok) {
-        setAddUnverified(result.unverified === true);
-        setAddError(result.error ?? 'Unable to add custom app');
-        return;
-      }
-      setAddUnverified(false);
-      setAddedName(result.name ?? null);
-      await refresh();
-      // Intercepting a custom app's HTTPS needs the local CA trusted, so the
-      // trust step comes next — skipped when the CA is already trusted.
-      const trust = await refreshCaTrust();
-      advanceAddStep(trust === 'trusted' ? 3 : 2);
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAddBusy(false);
-    }
-  }, [addApp, addUrl, advanceAddStep, refresh, refreshCaTrust]);
-
-  // Wizard variant of Trust: advance to the connect step once the keychain
-  // confirms the CA is trusted (trustCa surfaces its own errors via message).
-  const trustCaFromWizard = useCallback(async () => {
-    await trustCa();
-    const trust = await refreshCaTrust();
-    if (trust === 'trusted') advanceAddStep(3);
-  }, [advanceAddStep, refreshCaTrust, trustCa]);
-
-  const removeCustomApp = useCallback(async (profileName: string, connected: boolean) => {
-    const bridge = window.antseedDesktop;
-    if (!bridge?.systemProxyRemoveCustomApp) return;
-    setActionBusy(profileName);
-    setMessage(null);
-    try {
-      if (connected) {
-        const remaining = activeProfileNames.filter((name) => name !== profileName);
-        if (remaining.length === 0) {
-          await disconnect(profileName);
-        } else {
-          await startProfiles(remaining);
-        }
-      }
-      const result = await bridge.systemProxyRemoveCustomApp(profileName);
-      if (!result.ok) {
-        setMessage(result.error ?? 'Unable to remove app');
-        return;
-      }
-      await refresh();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setActionBusy(null);
-    }
-  }, [activeProfileNames, disconnect, refresh, startProfiles]);
-
-  const orderedProfiles = useMemo(() => {
-    // Connected apps float to the top; the sort is stable, so each group keeps
-    // its original order.
-    const isConnected = (name: string): boolean => activeProfiles?.has(name) ?? false;
-    return [...profiles].sort((a, b) => Number(isConnected(b.name)) - Number(isConnected(a.name)));
-  }, [profiles, activeProfiles]);
-
-  // Certificate trust presentation. A live probe failure (certTrustError) or a
-  // stale/absent keychain state all mean the same thing to the user: press
-  // Trust. `stale` is the CERT_SIGNATURE_FAILURE case — an older CA trusted
-  // under the same name that re-trusting will replace.
-  const certNeedsTrust = guiTest?.certTrustError === true || caTrust === 'stale' || caTrust === 'absent';
-  const certBadgeLabel = guiTest?.certTrustError ? 'Not trusted'
-    : caTrust === 'trusted' ? 'Trusted'
-    : caTrust === 'stale' ? 'Update needed'
-    : caTrust === 'absent' ? 'Not trusted'
-    : caInfo?.exists ? 'Installed' : 'Not created yet';
-  const certBadgeTone: 'green' | 'neutral' = certNeedsTrust
-    ? 'neutral'
-    : caTrust === 'trusted' || caInfo?.exists ? 'green' : 'neutral';
+  const orderedProfiles = useMemo(
+    // Connected apps float to the top; the sort is stable, so each group keeps its order.
+    () => [...profiles].sort((a, b) => Number(b.connected) - Number(a.connected)),
+    [profiles],
+  );
 
   return (
     <section className={`view view-vpr-tools view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Connected apps" backFallback="home">
+      <VprPage title="Agents &amp; apps" titleInBody>
       <div className={styles.stack}>
         {message ? <p className={styles.note} role="status">{message}</p> : null}
 
-        <div className={styles.appScroll}>
-          <div className={styles.appList}>
+        <AppsBanner title="Agents &amp; apps" subtitle="Let your agent call Antseed for another model, or run your apps on Antseed." />
+
+        <VprSection
+          title="Use Antseed from your agent"
+          caption="Your agent keeps its own model and calls Antseed when you ask, for an image or a second opinion."
+        >
+          <VprCard className={styles.agentCard}>
+            <AgentSkillsPanel />
+          </VprCard>
+        </VprSection>
+
+        <VprSection
+          title="Run your apps on Antseed"
+          caption={`Each app uses Antseed as its model provider. ${connectedCount} connected.`}
+        >
+          <div className={styles.appGrid}>
             <TelegramBotCard />
             {orderedProfiles.map((profile) => {
-              const connected = activeProfiles?.has(profile.name) ?? false;
-              const setupComplete = setupProfiles.has(profile.name);
+              const connected = profile.connected;
+              const needsKey = connected && profile.name === ZED_APP && !zedKey.pasted;
+              const needsAttention = needsKey || profile.needsRestart;
               const canRestart = connected && profile.canRestart === true;
+              const notInstalled = !connected && profile.installed === false;
               const brandKey = resolveBrandKey(profile.name, profile.displayName);
-              const profileCard = (
-                <div key={profile.name} className={`${styles.appPill}${connected ? ` ${styles.appPillConnected}` : ''}`}>
-                  <div className={styles.appHead}>
-                    <span className={styles.appIdentity}>
-                      {profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
-                        <img src={profile.iconDataUri} alt="" className={styles.appIcon} />
-                      ) : (
-                        <BrandIcon brand={brandKey} size={24} />
-                      )}
-                      <span className={styles.appText}>
-                        <span className={styles.appNameRow}>
-                          {/* The name itself launches the associated app when
-                              one is available — no separate app link line. */}
-                          {profile.launchAppName || profile.appAction === 'open-url' || profile.appAction === 'open-tool' ? (
-                            <button
-                              type="button"
-                              className={styles.appNameLink}
-                              onClick={() => {
-                                void (profile.appAction === 'open-url' && profile.openUrl && !profile.launchAppName
-                                  ? openUrl(profile.openUrl)
-                                  : openTool(profile.toolName ?? profile.name));
-                              }}
-                              title={`Open ${profile.launchAppName ?? profile.displayName}`}
-                            >
-                              {profile.displayName}
-                            </button>
-                          ) : (
-                            <span className={styles.appName}>{profile.displayName}</span>
-                          )}
-                        </span>
-                        {connected && (
-                          <span className={`${styles.appMeta}${profile.needsRestart ? ` ${styles.appMetaWarning}` : ''}`}>
-                            <span className={profile.needsRestart ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
-                            {profile.needsRestart ? 'Restart required' : 'Connected'}
-                          </span>
-                        )}
-                      </span>
-                    </span>
-                    {connecting === profile.name ? (
-                      <span
-                        className={styles.appBusy}
-                        role="status"
-                        aria-label={`Connecting ${profile.displayName}`}
-                        title={`Connecting ${profile.displayName}`}
-                      />
-                    ) : canRestart ? (
+              const launchable = profile.launchAppName || profile.appAction === 'open-url' || profile.appAction === 'open-tool';
+              return (
+                <div key={profile.name} className={styles.appCard}>
+                  <span className={styles.appTile}>
+                    {appLogoUrl(profile.name, profile.displayName) ? (
+                      <img src={appLogoUrl(profile.name, profile.displayName)} alt="" className={styles.appTileImage} />
+                    ) : profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
+                      <img src={profile.iconDataUri} alt="" className={styles.appTileImage} />
+                    ) : (
+                      <BrandIcon brand={brandKey} size={30} />
+                    )}
+                  </span>
+                  <span className={styles.appCardCorner}>
+                    {canRestart && busy !== profile.name ? (
                       <button
                         type="button"
-                        className={`${styles.appOpen}${profile.needsRestart ? ` ${styles.appRestartNeeded}` : ''}`}
+                        className={styles.appCornerButton}
                         onClick={() => { void restartApp(profile.name, profile.displayName); }}
                         disabled={actionBusy === profile.name}
                         aria-label={`Restart ${profile.displayName}`}
                         title={profile.needsRestart ? `Restart ${profile.displayName} to apply the connection` : `Restart ${profile.displayName}`}
                       >
-                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={16} strokeWidth={2} />
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={15} strokeWidth={1.8} />
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className={`${styles.configAction}${settingsFor === profile.name ? ` ${styles.configActionActive}` : ''}`}
-                      onClick={() => openSettings(profile)}
-                      aria-haspopup="dialog"
-                      aria-label={`${profile.displayName} settings`}
-                      title={`${profile.displayName} settings`}
-                    >
-                      <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={2} />
-                    </button>
-                    {connected || setupComplete ? (
+                    {notInstalled ? null : (
                       <button
                         type="button"
-                        role="switch"
-                        aria-checked={connected}
-                        className={`${styles.connectedToggle}${connected ? '' : ` ${styles.connectedToggleOff}`}`}
-                        disabled={busy !== null || (!connected && !defaultPeerId)}
-                        onClick={() => {
-                          if (connected) disconnectProfile(profile.name);
-                          else void connectProfile(profile.name);
-                        }}
-                        aria-label={`${connected ? 'Disconnect' : 'Connect'} ${profile.displayName}`}
-                        title={`${connected ? 'Disconnect' : 'Connect'} ${profile.displayName}`}
+                        className={styles.appCornerButton}
+                        onClick={() => openSettings(profile)}
+                        aria-haspopup="dialog"
+                        aria-label={`${profile.displayName} settings`}
+                        title={`${profile.displayName} settings`}
                       >
-                        <span />
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className={styles.connectAction}
-                        disabled={busy !== null || !defaultPeerId}
-                        onClick={() => { void connectProfile(profile.name); }}
-                      >
-                        Connect
+                        <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={1.8} />
                       </button>
                     )}
-                  </div>
-
+                  </span>
+                  {/* The name itself launches the associated app when one is available. */}
+                  {launchable ? (
+                    <button
+                      type="button"
+                      className={styles.appCardName}
+                      onClick={() => {
+                        void (profile.appAction === 'open-url' && profile.openUrl && !profile.launchAppName
+                          ? openUrl(profile.openUrl)
+                          : openTool(profile.toolName ?? profile.name));
+                      }}
+                      title={`Open ${profile.launchAppName ?? profile.displayName}`}
+                    >
+                      {profile.displayName}
+                    </button>
+                  ) : (
+                    <span className={styles.appCardName}>{profile.displayName}</span>
+                  )}
+                  <span className={styles.appCardFoot}>
+                    <AppCardFooter
+                      profile={profile}
+                      busy={busy}
+                      notInstalled={notInstalled}
+                      needsKey={needsKey}
+                      needsAttention={Boolean(needsAttention)}
+                      onConnect={() => { void connectProfile(profile); }}
+                      onDisconnect={() => { void disconnectProfile(profile); }}
+                      onGet={(url) => { void openUrl(url); }}
+                    />
+                  </span>
                 </div>
               );
-              return profile.name === 'claude-desktop'
-                ? [profileCard, <CursorAppCard key="cursor" />]
-                : profileCard;
             })}
           </div>
-
-          {/* The certificate only matters for intercepted (mitm proxy) apps —
-              keep the card hidden until one is connected, or one exists and
-              the cert still needs trusting to let it connect. */}
-          {caInfo && (hasConnectedProxyProfile || (hasProxyProfile && certNeedsTrust)) ? (() => {
-            const caExpanded = caOpenOverride ?? certNeedsTrust;
-            return (
-              <div className={styles.caCard}>
-                <button
-                  type="button"
-                  className={styles.caHead}
-                  aria-expanded={caExpanded}
-                  onClick={() => setCaOpenOverride(!caExpanded)}
-                >
-                  <HugeiconsIcon icon={SquareLock01Icon} size={14} strokeWidth={2} />
-                  <span className={styles.caTitle}>HTTPS certificate</span>
-                  <VprBadge tone={certBadgeTone}>{certBadgeLabel}</VprBadge>
-                  <HugeiconsIcon
-                    icon={ArrowDown01Icon}
-                    size={14}
-                    strokeWidth={2}
-                    className={`${styles.caChevron}${caExpanded ? ` ${styles.caChevronOpen}` : ''}`}
-                  />
-                </button>
-                {caExpanded ? (
-                  <>
-                    <p className={styles.caHint}>
-                      {caTrust === 'stale'
-                        ? 'An older Antseed certificate is still trusted on this device — trust the current one to replace it, otherwise intercepted apps fail with an SSL certificate error.'
-                        : 'Apps whose HTTPS traffic is intercepted trust a certificate generated locally on this device. It never leaves your machine — inspect it any time.'}
-                    </p>
-                    <button type="button" className={styles.caPath} onClick={() => { void copyCaPath(); }} title={caInfo.path}>
-                      <code>{caInfo.path}</code>
-                      <HugeiconsIcon icon={caCopied ? Tick02Icon : Copy01Icon} size={13} strokeWidth={2} />
-                      <span>{caCopied ? 'Copied' : 'Copy'}</span>
-                    </button>
-                    {caInfo.exists || certNeedsTrust ? (
-                      <div className={styles.actions}>
-                        {caInfo.exists ? (
-                          <button type="button" onClick={() => { void revealCa(); }}>Reveal certificate</button>
-                        ) : null}
-                        {certNeedsTrust ? (
-                          <button type="button" onClick={() => { void trustCa(); }} disabled={trustBusy}>
-                            {trustBusy ? 'Trusting...' : 'Trust certificate'}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </>
-                ) : null}
-              </div>
-            );
-          })() : null}
-        </div>
+          <GatewayEndpointCard onOpenConsole={openConsole} />
+        </VprSection>
 
         <div className={styles.appFooter}>
-          <button
-            type="button"
-            className={styles.addAppButton}
-            onClick={() => {
-              setAddOpen(true);
-              setAddUrl('');
-              setAddApp(null);
-              setAddPane({ pane: 'main', dir: 'none' });
-              setAddSearch('');
-              setAddStep(1);
-              setAddedName(null);
-              setAddError(null);
-              setAddUnverified(false);
-              setMessage(null);
-              ensureInstalledApps();
-            }}
-          >
-            <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={2} />
-            Add custom app
-          </button>
-
           <button type="button" className={styles.learnMore} onClick={() => setHelpOpen(true)}>
             What are connected apps?
           </button>
@@ -761,13 +562,12 @@ export function VprToolsView() {
 
       {showOnboarding && <AppsOnboarding onDone={() => setShowOnboarding(false)} />}
 
-      {/* Connected-apps explainer. */}
       <Modal
         isOpen={helpOpen}
         onClose={() => setHelpOpen(false)}
         size="sm"
         title="Connected apps"
-        subtitle="How AI VPN works with your tools"
+        subtitle="How your tools use your gateway"
         bodyClassName={styles.settingsBody}
       >
         <section className={styles.settingSection}>
@@ -775,51 +575,40 @@ export function VprToolsView() {
             <span className={styles.settingTitle}>What connecting does</span>
           </div>
           <p className={styles.settingHint}>
-            Connecting an app routes its AI requests through AI VPN. The app works exactly
-            as usual — its model calls are served by the Antseed network and paid from
-            your balance instead of a subscription or API key. Click an app&apos;s name
-            any time to open it.
+            Connecting points the app at your Antseed gateway with an API key, through a small change to the
+            app&apos;s own config file — written on Connect and removed on Disconnect (a backup of the original is
+            kept next to it). Requests are served by the Antseed network and paid from your gateway&apos;s balance.
           </p>
         </section>
         <section className={styles.settingSection}>
           <div className={styles.settingHead}>
-            <span className={styles.settingTitle}>How apps connect</span>
+            <span className={styles.settingTitle}>Choosing models</span>
           </div>
           <p className={styles.settingHint}>
-            Most tools are pointed at AI VPN through a small change to their own config
-            file — written locally on Connect and removed again on Disconnect (a backup
-            of the original is kept next to it). Apps marked HTTPS proxy are instead
-            intercepted on this device, which needs the locally generated certificate
-            below to be trusted. After connecting, start a new session in the tool so
-            it picks up the routing.
+            Connected apps list the gateway&apos;s models in their own model picker. Pick and switch models
+            inside each app, the way you normally would. Start a new session after connecting so the app reads
+            its new settings.
           </p>
         </section>
         <section className={styles.settingSection}>
           <div className={styles.settingHead}>
-            <span className={styles.settingTitle}>Models and chats</span>
+            <span className={styles.settingTitle}>Keys, usage and limits</span>
           </div>
           <p className={styles.settingHint}>
-            Connected apps follow the model selected on the AI VPN home screen. Each chat
-            then sticks to the model that served its first request — pin a different
-            one per chat from Recent chats or the floating pill.
+            Usage, spend limits and API keys are managed in your gateway. By default every app shares one key;
+            switch to a key per app in Settings to see usage per app.
           </p>
-        </section>
-        <section className={styles.settingSection}>
-          <div className={styles.settingHead}>
-            <span className={styles.settingTitle}>Custom apps and settings</span>
+          <div className={styles.settingActions}>
+            <button type="button" className={styles.settingQuiet} onClick={() => openConsole('/keys')}>
+              Open your gateway
+              <HugeiconsIcon icon={ArrowUpRight01Icon} size={12} strokeWidth={2} />
+            </button>
           </div>
-          <p className={styles.settingHint}>
-            Add any other app by the API URL it calls — its requests are redirected to
-            AI VPN on this device (localhost). Each app&apos;s gear opens its settings:
-            the application to open, the client names that attribute its chats, and
-            Disconnect or Remove.
-          </p>
         </section>
       </Modal>
 
-      {/* Per-app settings: application to open and request-identity client
-          names, edited as drafts and applied by the footer Save (which
-          disconnects a connected app first), plus Disconnect / Remove. */}
+      {/* Per-app settings: the application to open and the request-identity
+          client names, edited as drafts and applied by Save, plus Disconnect. */}
       <Modal
         isOpen={settingsProfile !== null}
         onClose={() => setSettingsFor(null)}
@@ -856,374 +645,163 @@ export function VprToolsView() {
           ) : undefined}
         bodyClassName={styles.settingsBody}
       >
-        {settingsProfile ? (() => {
-          const connected = activeProfiles?.has(settingsProfile.name) ?? false;
-          return (
-            <div key={settingsPane.pane} className={`${styles.pane}${settingsPane.dir === 'forward' ? ` ${styles.paneForward}` : settingsPane.dir === 'back' ? ` ${styles.paneBack}` : ''}`}>
-              {settingsPane.pane === 'apps' ? (
-                <AppPickerPane
-                  apps={installedApps}
-                  error={installedAppsError}
-                  search={pickerSearch}
-                  onSearch={setPickerSearch}
-                  activeName={settingsLaunchName}
-                  onChoose={chooseApp}
-                  noneLabel={settingsProfile.custom ? 'No application' : 'Default action'}
-                  noneMeta={settingsProfile.custom
-                    ? 'No application associated with this app'
-                    : 'Use the app’s built-in open behavior'}
-                />
-              ) : (
-                <>
+        {settingsProfile ? (
+          <div key={settingsPane.pane} className={`${styles.pane}${settingsPane.dir === 'forward' ? ` ${styles.paneForward}` : settingsPane.dir === 'back' ? ` ${styles.paneBack}` : ''}`}>
+            {settingsPane.pane === 'apps' ? (
+              <AppPickerPane
+                apps={installedApps}
+                error={installedAppsError}
+                onRetry={() => { void installedAppsResource.refresh(); }}
+                search={pickerSearch}
+                onSearch={setPickerSearch}
+                activeName={settingsLaunchName}
+                onChoose={chooseApp}
+                noneLabel="Default action"
+                noneMeta="Use the app’s built-in open behavior"
+              />
+            ) : (
+              <>
+                <section className={styles.settingSection}>
+                  <div className={styles.settingHead}>
+                    <span className={styles.settingTitle}>Connection</span>
+                    {settingsProfile.connected ? (
+                      <span className={styles.settingConnected}>
+                        <span className={styles.connectedDot} aria-hidden="true" />
+                        Connected
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className={styles.settingHint}>
+                    {settingsProfile.connected
+                      ? `${settingsProfile.displayName} uses your gateway. Disconnecting restores its original settings.`
+                      : `Connect from the apps list to point ${settingsProfile.displayName} at your gateway.`}
+                  </p>
+                </section>
+
+                {settingsProfile.name === ZED_APP && settingsProfile.connected && zedKey.apiKey ? (
                   <section className={styles.settingSection}>
                     <div className={styles.settingHead}>
-                      <span className={styles.settingTitle}>Connection</span>
-                      {connected ? (
+                      <span className={styles.settingTitle}>API key</span>
+                      {zedKey.pasted ? (
                         <span className={styles.settingConnected}>
                           <span className={styles.connectedDot} aria-hidden="true" />
-                          Connected
+                          Pasted
                         </span>
                       ) : null}
                     </div>
                     <p className={styles.settingHint}>
-                      {connected
-                        ? `${settingsProfile.displayName}'s AI requests currently route through AI VPN. Disconnecting restores its direct connection.${settingsDirty ? ' Saving these changes disconnects it first — reconnect from the apps list.' : ''}`
-                        : `Connect from the apps list to route ${settingsProfile.displayName}'s AI requests through AI VPN — served by the Antseed network and paid from your balance.`}
+                      Zed keeps API keys in its own keychain, so Antseed can’t add this one for you. Paste it into
+                      the Antseed provider in Zed’s AI settings.
                     </p>
+                    <div className={styles.endpointRows}>
+                      <KeyCopyRow apiKey={zedKey.apiKey} readKey={zedKey.keyToCopy} />
+                    </div>
+                    {zedKey.pasted ? null : (
+                      <button type="button" className={styles.settingTextLink} onClick={zedKey.markPasted}>
+                        I’ve pasted it
+                      </button>
+                    )}
                   </section>
-
+                ) : null}
+                {settingsProfile.name === ZED_APP && settingsProfile.connected && !zedKey.apiKey && zedKey.error ? (
                   <section className={styles.settingSection}>
                     <div className={styles.settingHead}>
-                      <span className={styles.settingTitle}>Application</span>
+                      <span className={styles.settingTitle}>API key</span>
                     </div>
-                    <p className={styles.settingHint}>
-                      The installed application AI VPN launches for {settingsProfile.displayName} —
-                       used by the restart button and when jumping back into a chat session.
-                    </p>
-                    <button
-                      type="button"
-                      className={styles.settingValueRow}
-                      onClick={() => setSettingsPane({ pane: 'apps', dir: 'forward' })}
-                    >
-                      {settingsProfile.iconDataUri
-                        ? <img src={settingsProfile.iconDataUri} alt="" className={styles.pickerIcon} />
-                        : <BrandIcon name={settingsProfile.name} hints={[settingsProfile.displayName]} size={20} />}
-                      <span className={styles.settingValueName}>
-                        {settingsLaunchName
-                          ?? (settingsProfile.custom ? 'No application' : 'Default action')}
-                      </span>
-                      <HugeiconsIcon icon={ArrowRight01Icon} size={14} strokeWidth={2} className={styles.settingValueChevron} />
+                    <p className={styles.settingHint} role="alert">{zedKey.error}</p>
+                    <button type="button" className={styles.settingTextLink} onClick={zedKey.retry}>
+                      Try again
                     </button>
                   </section>
-
-                  <section className={styles.settingSection}>
-                    <div className={styles.settingHead}>
-                      <span className={styles.settingTitle}>Request identity</span>
-                    </div>
-                    <p className={styles.settingHint}>
-                      AI VPN matches requests to {settingsProfile.displayName} by the client name they
-                      carry on the wire — the User-Agent product or session header, like{' '}
-                      <code>opencode</code> or <code>codex</code>. Separate multiple names with commas.
-                    </p>
-                    <form
-                      className={styles.settingInputRow}
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveSettings();
-                      }}
-                    >
-                      <input
-                        type="text"
-                        className={styles.settingInput}
-                        value={identityDraft}
-                        placeholder={settingsProfile.name}
-                        spellCheck={false}
-                        onChange={(event) => setIdentityDraft(event.currentTarget.value)}
-                        disabled={settingsSaving}
-                      />
-                    </form>
-                  </section>
-
-                  {settingsProfile.custom ? (
-                    <section className={styles.settingSection}>
-                      <div className={styles.settingHead}>
-                        <span className={styles.settingTitle}>Remove</span>
-                      </div>
-                      <p className={styles.settingHint}>
-                        Removes {settingsProfile.displayName} from AI VPN — its requests go directly
-                        to {settingsProfile.domains[0] ?? 'the API'} again.
-                      </p>
-                      <div className={styles.settingActions}>
-                        <button
-                          type="button"
-                          className={styles.settingDanger}
-                          disabled={actionBusy === settingsProfile.name || busy !== null}
-                          onClick={() => {
-                            if (window.confirm(`Remove ${settingsProfile.displayName}? Its requests will no longer route through AI VPN.`)) {
-                              setSettingsFor(null);
-                              void removeCustomApp(settingsProfile.name, connected);
-                            }
-                          }}
-                        >
-                          Remove app
-                        </button>
-                      </div>
-                    </section>
-                  ) : null}
-
-                  {/* Connect lives on the apps list row — the footer only
-                      saves drafted changes or disconnects a connected app. */}
-                  <div className={styles.settingFooter}>
-                    {settingsDirty ? (
-                      <button
-                        type="button"
-                        className={styles.settingPrimary}
-                        disabled={settingsSaving || busy !== null}
-                        onClick={() => void saveSettings()}
-                      >
-                        {settingsSaving ? 'Saving...' : 'Save'}
-                      </button>
-                    ) : connected ? (
-                      <button
-                        type="button"
-                        className={styles.settingDanger}
-                        disabled={busy !== null}
-                        onClick={() => disconnectProfile(settingsProfile.name)}
-                      >
-                        Disconnect
-                      </button>
-                    ) : null}
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })() : null}
-      </Modal>
-
-      {/* Add custom app: a 3-step wizard — the API URL to intercept plus an
-          optional installed application, then trusting the local CA (skipped
-          when already trusted), then connecting the new app. */}
-      <Modal
-        isOpen={addOpen}
-        onClose={() => { if (!addBusy) setAddOpen(false); }}
-        size="sm"
-        title={addPane.pane === 'apps' ? (
-          <span className={styles.modalBackTitle}>
-            <button
-              type="button"
-              className={styles.paneBackButton}
-              onClick={() => setAddPane({ pane: 'main', dir: 'back' })}
-              aria-label="Back"
-            >
-              <HugeiconsIcon icon={ArrowLeft01Icon} size={15} strokeWidth={2} />
-            </button>
-            Choose application
-          </span>
-        ) : 'Add custom app'}
-        subtitle={addPane.pane === 'apps' ? undefined
-          : addStep === 1 ? 'Route another app through AI VPN'
-          : addStep === 2 ? 'Trust the HTTPS certificate'
-          : 'Connect the app'}
-        bodyClassName={styles.settingsBody}
-      >
-        {addPane.pane !== 'apps' ? (
-          <div className={styles.wizardSteps} aria-hidden="true">
-            {(['Add', 'Trust', 'Connect'] as const).map((label, index) => {
-              const step = index + 1;
-              const state = addStep === step ? styles.wizardStepActive : addStep > step ? styles.wizardStepDone : '';
-              return (
-                <span key={label} className={`${styles.wizardStep}${state ? ` ${state}` : ''}`}>
-                  <span className={styles.wizardStepNum}>
-                    {addStep > step ? <HugeiconsIcon icon={Tick02Icon} size={11} strokeWidth={2.4} /> : step}
-                  </span>
-                  {label}
-                </span>
-              );
-            })}
-          </div>
-        ) : null}
-        <div key={`${addPane.pane}-${addStep}`} className={`${styles.pane}${addPane.dir === 'forward' ? ` ${styles.paneForward}` : addPane.dir === 'back' ? ` ${styles.paneBack}` : ''}`}>
-          {addPane.pane === 'apps' ? (
-            <AppPickerPane
-              apps={installedApps}
-              error={installedAppsError}
-              search={addSearch}
-              onSearch={setAddSearch}
-              activeName={addApp?.name ?? null}
-              onChoose={(app) => {
-                setAddApp(app);
-                setAddPane({ pane: 'main', dir: 'back' });
-              }}
-              noneLabel="No application"
-              noneMeta="Use the API host's name and icon"
-            />
-          ) : addStep === 1 ? (
-            <form
-              className={styles.settingsBody}
-              onSubmit={(event) => {
-                event.preventDefault();
-                void addCustomApp(addUnverified);
-              }}
-            >
-              <section className={styles.settingSection}>
-                <div className={styles.settingHead}>
-                  <span className={styles.settingTitle}>API URL</span>
-                  <span className={styles.settingTag}>Required</span>
-                </div>
-                <p className={styles.settingHint}>
-                  AI requests the app sends to this URL are redirected to AI VPN on this
-                  device (localhost) and served by the Antseed network instead.
-                </p>
-                <input
-                  type="text"
-                  className={styles.settingInput}
-                  value={addUrl}
-                  placeholder="https://api.example.com/v1"
-                  autoFocus
-                  spellCheck={false}
-                  onChange={(event) => {
-                    setAddUrl(event.currentTarget.value);
-                    // A changed URL invalidates the previous probe result.
-                    setAddUnverified(false);
-                  }}
-                  disabled={addBusy}
-                />
-              </section>
-
-              <section className={styles.settingSection}>
-                <div className={styles.settingHead}>
-                  <span className={styles.settingTitle}>Application</span>
-                  <span className={styles.settingTag}>Optional</span>
-                </div>
-                <p className={styles.settingHint}>
-                  Pick the installed application that talks to this API — its name and icon
-                  identify the new entry, and the open arrow launches it.
-                </p>
-                <button
-                  type="button"
-                  className={styles.settingValueRow}
-                  onClick={() => setAddPane({ pane: 'apps', dir: 'forward' })}
-                >
-                  {addApp?.iconDataUri
-                    ? <img src={addApp.iconDataUri} alt="" className={styles.pickerIcon} />
-                    : null}
-                  <span className={styles.settingValueName}>{addApp?.name ?? 'No application'}</span>
-                  <HugeiconsIcon icon={ArrowRight01Icon} size={14} strokeWidth={2} className={styles.settingValueChevron} />
-                </button>
-              </section>
-
-              {addError ? <p className={styles.note} role="alert">{addError}</p> : null}
-
-              <div className={styles.wizardFooter}>
-                <button
-                  type="button"
-                  className={styles.settingQuiet}
-                  onClick={() => setAddOpen(false)}
-                  disabled={addBusy}
-                >
-                  Cancel
-                </button>
-                <button type="submit" className={styles.settingPrimary} disabled={addBusy || addUrl.trim().length === 0}>
-                  {addBusy ? (addUnverified ? 'Adding...' : 'Checking...') : addUnverified ? 'Add anyway' : 'Continue'}
-                </button>
-              </div>
-            </form>
-          ) : addStep === 2 ? (
-            <>
-              <section className={styles.settingSection}>
-                <div className={styles.settingHead}>
-                  <span className={styles.settingTitle}>HTTPS certificate</span>
-                  <VprBadge tone={certBadgeTone}>{certBadgeLabel}</VprBadge>
-                </div>
-                <p className={styles.settingHint}>
-                  {caTrust === 'stale'
-                    ? 'An older Antseed certificate is still trusted on this device — trust the current one to replace it, otherwise the app fails with an SSL certificate error.'
-                    : 'Custom apps connect over HTTPS intercepted on this device, which needs the certificate generated locally by Antseed to be trusted. It never leaves your machine.'}
-                </p>
-                {caInfo?.path ? (
-                  <button type="button" className={styles.caPath} onClick={() => { void copyCaPath(); }} title={caInfo.path}>
-                    <code>{caInfo.path}</code>
-                    <HugeiconsIcon icon={caCopied ? Tick02Icon : Copy01Icon} size={13} strokeWidth={2} />
-                    <span>{caCopied ? 'Copied' : 'Copy'}</span>
-                  </button>
                 ) : null}
-              </section>
 
-              {message ? <p className={styles.note} role="status">{message}</p> : null}
-
-              <div className={styles.wizardFooter}>
-                <button
-                  type="button"
-                  className={styles.settingQuiet}
-                  onClick={() => advanceAddStep(3)}
-                  disabled={trustBusy}
-                >
-                  Skip for now
-                </button>
-                <button type="button" className={styles.settingPrimary} onClick={() => { void trustCaFromWizard(); }} disabled={trustBusy}>
-                  {trustBusy ? 'Trusting...' : 'Trust certificate'}
-                </button>
-              </div>
-            </>
-          ) : (() => {
-            const addedProfile = addedName ? profiles.find((entry) => entry.name === addedName) ?? null : null;
-            const addedLabel = addedProfile?.displayName ?? addApp?.name ?? 'the app';
-            return (
-              <>
                 <section className={styles.settingSection}>
                   <div className={styles.settingHead}>
-                    <span className={styles.settingTitle}>Ready to connect</span>
+                    <span className={styles.settingTitle}>Application</span>
                   </div>
                   <p className={styles.settingHint}>
-                    Connecting routes {addedLabel}&apos;s AI requests through AI VPN — served by
-                    the Antseed network and paid from your balance. The app opens after
-                    connecting; start a new session there so it picks up the routing.
+                    The installed application launched for {settingsProfile.displayName} — used by the restart
+                    button and when jumping back into a chat session.
                   </p>
-                  {addedProfile ? (
-                    <div className={styles.wizardApp}>
-                      {addedProfile.iconDataUri
-                        ? <img src={addedProfile.iconDataUri} alt="" className={styles.pickerIcon} />
-                        : <BrandIcon name={addedProfile.name} hints={[addedProfile.displayName]} size={20} />}
-                      <span className={styles.settingValueName}>{addedProfile.displayName}</span>
-                    </div>
-                  ) : null}
-                </section>
-
-                {addError ? <p className={styles.note} role="alert">{addError}</p> : null}
-
-                <div className={styles.wizardFooter}>
-                  <button type="button" className={styles.settingQuiet} onClick={() => setAddOpen(false)}>
-                    Later
-                  </button>
                   <button
                     type="button"
-                    className={styles.settingPrimary}
-                    disabled={busy !== null || !defaultPeerId || !addedName}
-                    onClick={() => {
-                      if (!addedName) return;
-                      setAddOpen(false);
-                      void connectProfile(addedName);
+                    className={styles.settingValueRow}
+                    onClick={() => setSettingsPane({ pane: 'apps', dir: 'forward' })}
+                  >
+                    {settingsProfile.iconDataUri
+                      ? <img src={settingsProfile.iconDataUri} alt="" className={styles.pickerIcon} />
+                      : <BrandIcon name={settingsProfile.name} hints={[settingsProfile.displayName]} size={20} />}
+                    <span className={styles.settingValueName}>{settingsLaunchName ?? 'Default action'}</span>
+                    <HugeiconsIcon icon={ArrowRight01Icon} size={14} strokeWidth={2} className={styles.settingValueChevron} />
+                  </button>
+                </section>
+
+                <section className={styles.settingSection}>
+                  <div className={styles.settingHead}>
+                    <span className={styles.settingTitle}>Request identity</span>
+                  </div>
+                  <p className={styles.settingHint}>
+                    Requests are matched to {settingsProfile.displayName} by the client name they carry — the
+                    User-Agent product or session header, like <code>opencode</code> or <code>codex</code>.
+                    Separate multiple names with commas.
+                  </p>
+                  <form
+                    className={styles.settingInputRow}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveSettings();
                     }}
                   >
-                    Connect
-                  </button>
+                    <input
+                      type="text"
+                      className={styles.settingInput}
+                      value={identityDraft}
+                      placeholder={settingsProfile.name}
+                      spellCheck={false}
+                      onChange={(event) => setIdentityDraft(event.currentTarget.value)}
+                      disabled={settingsSaving}
+                    />
+                  </form>
+                </section>
+
+                <div className={styles.settingFooter}>
+                  {settingsDirty ? (
+                    <button
+                      type="button"
+                      className={styles.settingPrimary}
+                      disabled={settingsSaving || busy !== null}
+                      onClick={() => void saveSettings()}
+                    >
+                      {settingsSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  ) : settingsProfile.connected ? (
+                    <button
+                      type="button"
+                      className={styles.settingDanger}
+                      disabled={busy !== null}
+                      onClick={() => { void disconnectProfile(settingsProfile); }}
+                    >
+                      Disconnect
+                    </button>
+                  ) : null}
                 </div>
               </>
-            );
-          })()}
-        </div>
+            )}
+          </div>
+        ) : null}
       </Modal>
     </section>
   );
 }
 
-/** Application-list pane the settings and add-app modals slide to: a
+/** Application-list pane the settings modal slides to: a
     searchable list with a "none" row first. The back affordance lives in
     the modal header (title swaps to back + "Choose application"). */
-function AppPickerPane({ apps, error, search, onSearch, activeName, onChoose, noneLabel, noneMeta }: {
+export function AppPickerPane({ apps, error, onRetry, search, onSearch, activeName, onChoose, noneLabel, noneMeta }: {
   apps: InstalledAppEntry[] | null;
   error: string | null;
+  /** Reads the list again after a failed read. */
+  onRetry: () => void;
   search: string;
   onSearch: (value: string) => void;
   /** Currently associated application name, or null when none is set. */
@@ -1253,10 +831,13 @@ function AppPickerPane({ apps, error, search, onSearch, activeName, onChoose, no
           </span>
           {activeName === null ? <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} /> : null}
         </button>
-        {apps === null ? (
+        {error ? (
+          <div className={styles.pickerEmpty} role="alert">
+            {error}{' '}
+            <button type="button" className={styles.settingTextLink} onClick={onRetry}>Try again</button>
+          </div>
+        ) : apps === null ? (
           <div className={styles.pickerEmpty}>Loading applications...</div>
-        ) : error ? (
-          <div className={styles.pickerEmpty}>{error}</div>
         ) : filtered.length === 0 ? (
           <div className={styles.pickerEmpty}>No applications match your search</div>
         ) : (

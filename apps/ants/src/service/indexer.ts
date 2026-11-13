@@ -13,6 +13,9 @@ const FETCH_TIMEOUT_MS = 8_000;
 const READ_BUDGET_MS = 18_000;
 const RETRY_DELAY_MS = 750;
 const CACHE_TTL_MS = 15_000;
+/** Verdicts change at most once per audit round; one read covers every provider. */
+export const VERIFICATIONS_TTL_MS = 3 * 60_000;
+const VERIFICATIONS_RETRY_MS = 60_000;
 
 export interface IndexedStakingEpoch {
   snapshotBlock?: number;
@@ -125,7 +128,13 @@ export interface IndexedParticipant { address: string; currentEpoch: number; sel
 /** Network settlement volume per epoch from the explorer's epoch metrics (covers legacy epochs too). */
 export interface IndexedEpochMetric { epoch: number; volumeUsdc: string; requests: string; }
 
+export interface IndexedVerificationService { service: string; serviceHash: string; verdict: string; }
+export interface IndexedVerificationProvider { agentId: number; sameCount: number; diffCount: number; services: IndexedVerificationService[]; }
+/** Every provider's model-verification verdicts, keyed by agent id; `baseUrl` is the explorer they link to. */
+export interface IndexedVerifications { baseUrl: string; providers: Map<number, IndexedVerificationProvider>; }
+
 export interface Indexer {
+  verifications?(): Promise<IndexedVerifications>;
   rewardPositions?(owner: string, outstanding?: boolean): Promise<RewardPositions>;
   displaySnapshot?(epoch: number): Promise<DisplaySnapshot>;
   invalidate?(): void;
@@ -260,6 +269,24 @@ const toBuyerEpoch = (row: Record<string, unknown>): IndexedBuyerEpoch => ({
   requests: str(row['requests']),
 });
 
+/** Parse `/api/views/verifications`; providers without a valid agent id are skipped. */
+export function parseVerifications(raw: unknown, baseUrl: string): IndexedVerifications {
+  const view = (raw as { verifications?: { providers?: unknown } } | null)?.verifications;
+  if (!view || !Array.isArray(view.providers)) throw new SyntaxError('Explorer verifications response has no providers.');
+  const providers = new Map<number, IndexedVerificationProvider>();
+  for (const row of view.providers as Array<Record<string, unknown>>) {
+    if (!row || !/^\d+$/.test(String(row['agentId'] ?? ''))) continue;
+    const agentId = Number(row['agentId']);
+    if (!Number.isSafeInteger(agentId) || agentId === 0) continue;
+    const services = (Array.isArray(row['services']) ? row['services'] as Array<Record<string, unknown>> : [])
+      .filter(service => service && typeof service['service'] === 'string' && /^0x[0-9a-fA-F]{64}$/.test(String(service['serviceHash'] ?? '')))
+      .map(service => ({ service: service['service'] as string, serviceHash: (service['serviceHash'] as string).toLowerCase(), verdict: String(service['verdict'] ?? '').toUpperCase() }));
+    const count = (value: unknown, verdict: string) => countOrNull(value) ?? services.filter(service => service.verdict === verdict).length;
+    providers.set(agentId, { agentId, sameCount: count(row['verifiedCount'], 'SAME'), diffCount: count(row['diffCount'], 'DIFF'), services });
+  }
+  return { baseUrl, providers };
+}
+
 export class AntscanIndexer implements Indexer {
   readonly baseUrl: string;
   private readonly cache = new Map<string, { at: number; value: Promise<unknown> }>();
@@ -269,7 +296,21 @@ export class AntscanIndexer implements Indexer {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
+  /** Kept apart from `cache` so a wallet refresh does not re-read every provider's verdicts. */
+  private verificationsCache: { at: number; value: Promise<IndexedVerifications> } | null = null;
+
   invalidate(): void { this.cache.clear(); this.pending.clear(); }
+
+  verifications(): Promise<IndexedVerifications> {
+    const hit = this.verificationsCache;
+    if (hit && Date.now() - hit.at < VERIFICATIONS_TTL_MS) return hit.value;
+    const value = this.read<unknown>(`${this.baseUrl}/api/views/verifications`).then(raw => parseVerifications(raw, this.baseUrl));
+    const entry = { at: Date.now(), value };
+    this.verificationsCache = entry;
+    // A failed read is retried after a minute, not on every pools refresh.
+    value.catch(() => { if (this.verificationsCache === entry) entry.at = Date.now() - VERIFICATIONS_TTL_MS + VERIFICATIONS_RETRY_MS; });
+    return value;
+  }
 
   displaySnapshot(epoch: number): Promise<DisplaySnapshot> {
     const key = `display:${epoch}`;

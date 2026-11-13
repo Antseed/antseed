@@ -23,6 +23,8 @@ export interface DHTNodeConfig {
   allowPrivateIPs?: boolean;
   /** Injectable bootstrap DNS lookup. Always called with IPv4 and all answers requested. */
   lookup?: (host: string, options: { family: 4; all: true }) => Promise<LookupAddress[]>;
+  /** Local address to bind the DHT UDP socket to. Default: all interfaces. */
+  bindHost?: string;
 }
 
 export const DEFAULT_DHT_CONFIG: Omit<DHTNodeConfig, "peerId"> = {
@@ -128,6 +130,18 @@ export function peerTopic(peerId: string): string {
   return "antseed:peer:" + peerId.trim().toLowerCase().replace(/^0x/, "");
 }
 
+/**
+ * The topics every seller announces under, before its offering topics:
+ *   - its subnet topic, which shards the peer set across SUBNET_COUNT infohashes so no single
+ *     one carries every announcer (buyers fan out lookups across all subnets);
+ *   - the wildcard, kept during the transition so older buyers still on the single-infohash scan
+ *     find it (see SUBNET_COUNT);
+ *   - its per-peer topic, for a lookup by peerId.
+ */
+export function sellerTopics(peerId: string): string[] {
+  return [subnetTopic(subnetOf(peerId)), ANTSEED_WILDCARD_TOPIC, peerTopic(peerId)];
+}
+
 export function capabilityTopic(capability: string, name?: string): string {
   const base = "antseed:" + normalizeTopicSegment(capability);
   return name ? base + ":" + normalizeTopicSegment(name) : base;
@@ -188,7 +202,7 @@ export class DHTNode {
         clearTimeout(timeout);
       };
 
-      this.dht.listen(this.config.port, () => {
+      const onListening = (): void => {
         // Socket is bound; now wait for DHT bootstrap to complete.
         // The 'ready' event fires when the routing table has been populated.
         this.dht!.on("ready", () => {
@@ -196,7 +210,12 @@ export class DHTNode {
           this.events.emit("ready");
           resolve();
         });
-      });
+      };
+      if (this.config.bindHost) {
+        this.dht.listen(this.config.port, this.config.bindHost, onListening);
+      } else {
+        this.dht.listen(this.config.port, onListening);
+      }
 
       this.dht.on("error", (err: Error) => {
         cleanup();
@@ -301,6 +320,15 @@ export class DHTNode {
       return 0;
     }
     return this.dht.nodes.toArray().length;
+  }
+
+  /** Local address the DHT socket is bound to (null before start). */
+  getAddress(): string | null {
+    try {
+      return this.dht?.address()?.address ?? null;
+    } catch {
+      return null;
+    }
   }
 
   getPort(): number {

@@ -134,3 +134,22 @@ describe('Peer Pay checkout', () => {
     );
   });
 });
+
+it('the signed checkout message is byte for byte the version-1 format the checkout service checks', () => {
+  assert.equal(buildCheckoutAuthorizationMessage({
+    address: '0xABCDEF0000000000000000000000000000000001',
+    amount: '25',
+    timestamp: '1700000000',
+    nonce: 'n-1',
+  }), [
+    'AntSeed Peer Pay Checkout',
+    'version: 1',
+    'audience: antseed-checkout.pay.zkp2p.xyz',
+    'method: POST',
+    'path: /api/checkout',
+    'address: 0xabcdef0000000000000000000000000000000001',
+    'amount: 25',
+    'timestamp: 1700000000',
+    'nonce: n-1',
+  ].join('\n'));
+});

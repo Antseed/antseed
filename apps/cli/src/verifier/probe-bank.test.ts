@@ -10,13 +10,18 @@ import {
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
+import { setAuditedModelsForTesting } from './audited-models.js'
 import {
   appendModelReferenceToBank,
   BANK_EXHAUSTED,
   epochProbeReferencePath,
+  extensionReferencePath,
   inspectModelProbeBankPower,
+  inspectSellerProbeCapacity,
+  loadBankEnrollmentReference,
   loadModelAuditReservation,
-  reserveDiffRecheckReference,
+  missingBankReferenceExchanges,
+  reserveExtensionReference,
   reserveModelAuditReference,
   SELLER_PROBE_SELECTION_METHOD,
   sellerEpochProbeReferencePath,
@@ -43,18 +48,22 @@ function appendReference(banksDir: string, value = reference()) {
   return appendModelReferenceToBank({ banksDir, model: 'model-a', reference: value, cost: referenceCost })
 }
 
+setAuditedModelsForTesting({
+  'model-a': { upstreamModel: 'upstream-a' },
+  'different-model': { upstreamModel: 'upstream-b' },
+})
+
 function excludedDomainConfig(model = 'model-a'): VerifierCLIConfig {
   return {
     referenceEndpoint: {
       baseUrl: 'https://reference.test/v1',
       sourceId: 'test',
       trust: 'trusted',
-      models: {
-        [model]: {
-          upstreamModel: 'upstream-a',
-          contrastModels: ['contrast-a'],
-          excludedDomains: ['medical'],
-        },
+    },
+    models: {
+      [model]: {
+        contrastModels: ['contrast-a'],
+        excludedDomains: ['medical'],
       },
     },
   }
@@ -107,6 +116,27 @@ function reference(count = 200): KbfReferenceV1 {
   return value
 }
 
+/** A reference whose probes come after the first `offset` probes of `reference()`. */
+function shiftedReference(count: number, offset: number): KbfReferenceV1 {
+  const value = reference(count + offset)
+  const keep = new Set(value.probes.slice(offset).map((probe) => probe.id))
+  value.probes = value.probes.slice(offset)
+  value.selfTest.outcomes = value.selfTest.outcomes.filter((outcome) => keep.has(outcome.probeId))
+  value.selfTest.total = count
+  value.selectedProbeCount = count
+  const power = computeBinomialPower({
+    selfHamming: 0, selfTotal: count, probeCount: count, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+  })
+  value.statisticalPower = power.power
+  value.statisticalPowerEvidence = {
+    ...value.statisticalPowerEvidence, selfTotal: count, probeCount: count, p0UpperBound: power.p0,
+    alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
+  }
+  value.contrasts = [{ model: 'contrast-a', distinguishingProbeIds: [...keep] }]
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
 test('probe banks append, deduplicate, and discard conflicting canonical variants', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
   try {
@@ -126,6 +156,49 @@ test('probe banks append, deduplicate, and discard conflicting canonical variant
       probes: Array<{ probe: KbfReferenceV1['probes'][number] }>
     }
     assert.equal(bank.probes[0]!.probe.template, 'The test value 1 is ___.')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a bank of any size gives a valid settings seed for enrollment', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
+  try {
+    // 175 probes are not a whole number of batches, as when a bank is split between auditors.
+    const oddDir = join(directory, 'odd')
+    const odd = await appendReference(oddDir, reference(180))
+    const bank = JSON.parse(await readFile(odd.path, 'utf8')) as { probes: unknown[] }
+    bank.probes = bank.probes.slice(0, 175)
+    await writeFile(odd.path, JSON.stringify(bank))
+    assert.equal((await loadBankEnrollmentReference(oddDir, 'model-a'))?.probes.length, 170)
+
+    // 760 probes are more than one reference may hold.
+    const largeDir = join(directory, 'large')
+    await appendReference(largeDir, reference(380))
+    await appendReference(largeDir, shiftedReference(380, 380))
+    const seed = await loadBankEnrollmentReference(largeDir, 'model-a')
+    assert.equal(seed?.selectedProbeCount, 750)
+    assert.equal(seed?.probes.length, 750)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('missing reference evidence of a bank is reported before a run', async () => {
+  // A bank copied without reference-evidence/ would fail every submission after the run.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
+  try {
+    const appended = await appendReference(directory)
+    const bank = JSON.parse(await readFile(appended.path, 'utf8')) as { referenceExchanges?: Array<Record<string, unknown>> }
+    const entry = { sha256: 'sha256:00', upstream: null, exchangeCount: 1, requestCount: 1 }
+    bank.referenceExchanges = [
+      { ...entry, referenceId: 'sha256:aa', path: 'reference-evidence/sha256:aa.exchanges.json' },
+      { ...entry, referenceId: 'sha256:bb', path: 'reference-evidence/sha256:bb.exchanges.json' },
+    ]
+    await writeFile(appended.path, JSON.stringify(bank))
+    await mkdir(join(dirname(appended.path), 'reference-evidence'), { recursive: true })
+    await writeFile(join(dirname(appended.path), 'reference-evidence', 'sha256:aa.exchanges.json'), '{}')
+    assert.deepEqual(await missingBankReferenceExchanges(directory, 'model-a'), ['reference-evidence/sha256:bb.exchanges.json'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -156,6 +229,53 @@ test('probe bank power inspection recognizes a reusable powered reference', asyn
     assert.equal(withoutCosts.selectedProbeCount, null)
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+function noisyReference(count: number, wrongOutOfFive: number): KbfReferenceV1 {
+  const value = reference(count)
+  value.selfTest.outcomes = value.probes.map((probe, index) => {
+    const answers = [0, 1, 2].map((run) => ((index * 3 + run) % 5 < wrongOutOfFive
+      ? Number(probe.consensus) + 1
+      : Number(probe.consensus)))
+    return { probeId: probe.id, answers, matches: answers.map((answer) => (answer === probe.consensus ? 1 : 0)) }
+  })
+  const hamming = value.selfTest.outcomes.reduce(
+    (sum, outcome) => sum + outcome.matches.filter((match) => match === 0).length, 0)
+  value.selfTest = { ...value.selfTest, hamming, total: count * 3, coverage: 1, errorRate: hamming / (count * 3) }
+  const power = computeBinomialPower({
+    selfHamming: hamming, selfTotal: count * 3, probeCount: count,
+    minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+  })
+  value.statisticalPower = power.power
+  value.statisticalPowerEvidence = {
+    ...value.statisticalPowerEvidence,
+    selfHamming: hamming, selfTotal: count * 3, probeCount: count, p0UpperBound: power.p0,
+    alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+test('a reference that disagrees with itself up to half the time is still usable for audits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-noisy-'))
+  try {
+    // 40% self-test disagreement: above the old 0.35 cutoff, below the 0.5 one.
+    await appendReference(directory, noisyReference(500, 2))
+    const noisy = await inspectModelProbeBankPower({ banksDir: directory, model: 'model-a' })
+    assert.ok(noisy.selectedProbeCount !== null)
+    assert.ok((noisy.statisticalPower ?? 0) >= 0.9)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+  const broken = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-broken-'))
+  try {
+    // 60% self-test disagreement: treated as a broken reference.
+    await appendReference(broken, noisyReference(500, 3))
+    const status = await inspectModelProbeBankPower({ banksDir: broken, model: 'model-a' })
+    assert.equal(status.selectedProbeCount, null)
+  } finally {
+    await rm(broken, { recursive: true, force: true })
   }
 })
 
@@ -401,6 +521,67 @@ test('probe banks reject incompatible enrollment algorithms', async () => {
   }
 })
 
+test('a changed alias list never makes a bank incompatible', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-aliases-'))
+  try {
+    await appendReference(directory)
+    // A later build for the same model, after sellers' extra names were added.
+    const renamed = reference()
+    renamed.serviceAliases = ['model-a', 'model-a-1', 'vendor/model-a']
+    renamed.referenceId = computeReferenceId(renamed)
+    const appended = await appendReference(directory, renamed)
+    assert.equal(appended.totalProbeCount, 200)
+    // Audits draw from the bank as before.
+    const reserved = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: '22'.repeat(20), service: 'model-a',
+      runId: 'alias-run', epoch: 'alias', config: { referenceMaximumProbeCount: 100 },
+    })
+    assert.equal(reserved.reference.probes.length > 0, true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('pre-run capacity counts each seller\'s unseen questions against one audit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-capacity-'))
+  try {
+    await appendReference(directory)
+    const config = { referenceMaximumProbeCount: 100 }
+    const identityShuffle = <T>(values: readonly T[]) => [...values]
+    const seller = '33'.repeat(20)
+    const fresh = '44'.repeat(20)
+    // The seller got 100 questions in an earlier epoch.
+    await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a',
+      runId: 'earlier', epoch: '27', config, shuffle: identityShuffle,
+    })
+    const capacity = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller, fresh], config,
+    })
+    assert.equal(capacity.selectedProbeCount, 100)
+    assert.deepEqual(capacity.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 100], [200, 100]])
+    // --allow-probe-reuse: the first audit may reuse seen questions, so nothing unseen is needed.
+    const reuse = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller], config, allowProbeReuse: true,
+    })
+    assert.deepEqual(reuse.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 0]])
+    // Already audited this epoch: the run reuses its set, so nothing more is needed.
+    await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: fresh, service: 'model-a',
+      runId: 'now', epoch: '28', config, shuffle: identityShuffle,
+    })
+    const after = await inspectSellerProbeCapacity({
+      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], config,
+    })
+    assert.deepEqual(after.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount, entry.assignedThisEpoch]), [[100, 0, true]])
+    await assert.rejects(inspectSellerProbeCapacity({
+      banksDir: directory, model: 'missing-model', epoch: '28', sellerPeerIds: [fresh], config,
+    }), /no probe bank exists for missing-model/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('audit reservations reject legacy Antseed enrollment banks', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-legacy-enrollment-'))
   try {
@@ -458,9 +639,10 @@ test('bank-selected references pool every self-test run and size power for the a
       service: 'model-a', runId: 'run-a', epoch: '9', shuffle: <T>(values: readonly T[]) => [...values],
     })
     const count = reserved.reference.probes.length
-    assert.equal(reserved.reference.selfTest.total, count * 3)
-    assert.equal(reserved.reference.selfTest.hamming, 1)
-    assert.equal(reserved.reference.statisticalPowerEvidence.selfTotal, count * 3)
+    // The bank stored the missing run as 0 (older rule); it is re-scored as unscored on load.
+    assert.equal(reserved.reference.selfTest.total, count * 3 - 1)
+    assert.equal(reserved.reference.selfTest.hamming, 0)
+    assert.equal(reserved.reference.statisticalPowerEvidence.selfTotal, count * 3 - 1)
     assert.equal(reserved.reference.statisticalPowerEvidence.probeCount, count)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -709,57 +891,107 @@ test('different sellers reserve independent references concurrently', async () =
   }
 })
 
-test('a DIFF recheck draws probes the seller has never been assigned and stays stable on resume', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
+test('a close-call extension draws exactly as many never-seen probes as the first set, stable on resume', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension-'))
   const seller = '11'.repeat(20)
   try {
-    await appendReference(directory)
+    await appendReference(directory, reference(300))
     const first = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: seller,
       service: 'model-a', runId: 'run-a', epoch: '4',
     })
-    const recheck = await reserveDiffRecheckReference({
+    const probeCount = first.reference.probes.length
+    const extension = await reserveExtensionReference({
       banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
     })
     const firstIds = new Set(first.reference.probes.map((probe) => probe.id))
-    assert.equal(recheck.reference.probes.length, 100)
-    assert.ok(recheck.reference.probes.every((probe) => !firstIds.has(probe.id)))
+    assert.equal(extension.reference.probes.length, probeCount)
+    assert.ok(extension.reference.probes.every((probe) => !firstIds.has(probe.id)))
 
-    const again = await reserveDiffRecheckReference({
+    const again = await reserveExtensionReference({
       banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
     })
-    assert.equal(again.auditId, recheck.auditId)
-    assert.equal(again.reference.referenceId, recheck.reference.referenceId)
+    assert.equal(again.auditId, extension.auditId)
+    assert.equal(again.reference.referenceId, extension.reference.referenceId)
     const loaded = await loadModelAuditReservation({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: recheck.auditId,
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: extension.auditId,
     })
-    assert.equal(loaded.reference.referenceId, recheck.reference.referenceId)
+    assert.equal(loaded.reference.referenceId, extension.reference.referenceId)
+    assert.equal(loaded.assignment.purpose, 'extension')
 
-    // The first check of the same epoch keeps its own probes.
-    const rerun = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-b', epoch: '4',
-    })
-    assert.equal(rerun.reference.referenceId, first.reference.referenceId)
+    // The extension does not count as this epoch's first audit for capacity planning.
+    const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', seller), 'utf8'))
+    assert.deepEqual(ledger.assignments.map((entry: { purpose?: string }) => entry.purpose ?? 'audit'), [
+      'audit', 'extension',
+    ])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('a DIFF recheck reports BANK_EXHAUSTED instead of reusing seen probes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
+test('a second close-call extra set (kbf-extension-v2) draws probes neither earlier set used, in its own file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension2-'))
   const seller = '11'.repeat(20)
   try {
-    await appendReference(directory, reference(150))
-    await reserveModelAuditReference({
+    await appendReference(directory, reference(400))
+    const first = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: seller,
       service: 'model-a', runId: 'run-a', epoch: '4',
     })
-    await assert.rejects(reserveDiffRecheckReference({
+    const probeCount = first.reference.probes.length
+    const extension = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
+    })
+    const extension2 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
+    })
+    const seen = new Set([...first.reference.probes, ...extension.reference.probes].map((probe) => probe.id))
+    assert.equal(extension2.reference.probes.length, probeCount)
+    assert.ok(extension2.reference.probes.every((probe) => !seen.has(probe.id)))
+    assert.notEqual(extension2.auditId, extension.auditId)
+    assert.notEqual(extensionReferencePath(directory, 'model-a', '4', seller, 2), extensionReferencePath(directory, 'model-a', '4', seller))
+
+    // Each set resumes to its own reservation.
+    const again1 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
+    })
+    const again2 = await reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
+    })
+    assert.equal(again1.auditId, extension.auditId)
+    assert.equal(again2.auditId, extension2.auditId)
+    const loaded = await loadModelAuditReservation({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: extension2.auditId,
+    })
+    assert.equal(loaded.reference.referenceId, extension2.reference.referenceId)
+    assert.equal(loaded.assignment.extensionIndex, 2)
+    await assert.rejects(reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 3,
+    }), /extension index must be 1 or 2/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a close-call extension reports BANK_EXHAUSTED instead of reusing seen probes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension-'))
+  const seller = '11'.repeat(20)
+  try {
+    await appendReference(directory, reference(150))
+    const first = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: seller,
       service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    await assert.rejects(reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4', probeCount: first.reference.probes.length,
     }), new RegExp(`^Error: ${BANK_EXHAUSTED}`))
   } finally {
     await rm(directory, { recursive: true, force: true })

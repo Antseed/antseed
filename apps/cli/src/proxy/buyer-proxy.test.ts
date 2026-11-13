@@ -17,6 +17,7 @@ import {
   adaptPeerFaultErrorResponse,
   buyerFault,
   computeTrustScore,
+  requestBodyService,
   type ModelRoutingPreferences,
   type RouteSelectionContext,
   type RouteRecommendation,
@@ -28,8 +29,11 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
+import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
+  classifyFailedAttempt,
+  healthStatusFor,
   isModelNotFoundResponse,
   makeVerifierReach,
   mergeJsonStateFile,
@@ -54,6 +58,17 @@ function makePeer(seed: string, providers: string[]): PeerInfo {
     lastSeen: Date.now(),
     providers,
   }
+}
+
+/** A seller of the `tts-kokoro` speech service with `voices`. */
+function makeSpeechPeer(seed: string, voices: string[], reputation?: number): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  if (reputation !== undefined) peer.reputationScore = reputation
+  peer.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
+  peer.providerServiceCapabilities = {
+    openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } },
+  }
+  return peer
 }
 
 test('the buyer switches between a model and a routing service without replacing the plugin', async () => {
@@ -1521,6 +1536,44 @@ test('native video resolves antseed and peer-pinned models like images', async (
   }
 })
 
+test('video edits route automatically only to sellers whose model lists the source video field', async () => {
+  const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
+    const p = makePeer(seed, ['fal'])
+    p.reputationScore = reputation
+    p.providerServiceApiProtocols = { fal: { services: { 'edit-model': ['fal-video'] } } }
+    p.providerServiceCapabilities = { fal: { services: { 'edit-model': { outputs: ['video'], supportedParameters } as any } } }
+    return p
+  }
+  const textOnly = peer('a', 95, ['image_url', 'prompt'])
+  const edits = peer('b', 50, ['prompt', 'video_url'])
+  const selected: string[] = []
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter() as any)
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    ;(proxy as any)._node.sendRequest = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
+      selected.push(selectedPeer.peerId)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ request_id: `job-${selected.length}` })) }
+    }
+    return invokeProxy(proxy, makeProxyRequest({ path: '/fal/v1/video/queue', body: { model: 'edit-model', prompt: 'swap the dancer', duration: 12, ...body } }))
+  }
+
+  selected.length = 0
+  assert.equal((await route([textOnly, edits], { video_url: 'https://example.com/a.mp4' })).statusCode, 200)
+  assert.deepEqual(selected, [edits.peerId])
+
+  // Without a source video the highest-reputation seller still wins.
+  selected.length = 0
+  assert.equal((await route([textOnly, edits], {})).statusCode, 200)
+  assert.deepEqual(selected, [textOnly.peerId])
+
+  selected.length = 0
+  const refused = await route([textOnly], { video_url: 'https://example.com/a.mp4' })
+  assert.equal(refused.statusCode, 422)
+  assert.equal(JSON.parse(refused.body).error.code, 'required_capability_unavailable')
+  assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): video_url/)
+  assert.deepEqual(selected, [])
+})
+
 test('native video retrieves use the buyer identity that created the job', async () => {
   const peer = makePeer('a', ['venice'])
   peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
@@ -1612,6 +1665,75 @@ test('a video job that reports failed is retired: later retrieves never reach th
     assert.equal(after.headers['x-antseed-video-job-retired'], '1')
     assert.equal(retrieves, 1, 'the retired job is never sent to the seller again')
     assert.equal(persisted, 2, 'the route is saved when accepted and again when retired')
+  }
+})
+
+/** Answers every request the proxy sends to a seller with an empty success, handing it to `onRequest` first. */
+function captureProxyRequests(proxy: BuyerProxy, onRequest: (request: SerializedHttpRequest) => void): void {
+  const capture = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    onRequest(request)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  ;(proxy as any)._node.sendRequest = capture
+  ;(proxy as any)._node.sendRequestStream = capture
+}
+
+// The seller refuses a body that names more than one service, so what the proxy
+// sends must name exactly the service it routed to, read by the seller's own reader.
+for (const [label, fields] of [
+  ['a model', (_peer: string) => ({ model: 'glm-5' })],
+  ['a model spelled differently from the service', (_peer: string) => ({ model: 'GLM-5' })],
+  ['service and model together', (_peer: string) => ({ service: 'glm-5', model: 'glm-5' })],
+  ['a pinned model', (peer: string) => ({ model: `${peer}@glm-5` })],
+  ['a pinned model spelled differently', (peer: string) => ({ model: `${peer}@GLM-5` })],
+  ['a pinned service', (peer: string) => ({ service: `${peer}@glm-5` })],
+  ['a pinned model next to its service', (peer: string) => ({ model: `${peer}@glm-5`, service: 'glm-5' })],
+  ['a model next to the service it routes by', (_peer: string) => ({ model: 'other-model', service: 'glm-5' })],
+] as const) {
+  test(`a request with ${label} reaches the seller naming the routed service`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    captureProxyRequests(proxy, (request) => { sent = request })
+    const response = await invokeProxy(proxy, makeProxyRequest({ body: { ...fields(peer.peerId), messages: [] } }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(requestBodyService(sent!), 'glm-5')
+  })
+}
+
+// The proxy reads a model only from a body labelled JSON or multipart, so such a request needs a pinned peer.
+// The seller reads a body as JSON under any content type but multipart/form-data, as it did before it checked for one service.
+for (const contentType of ['text/plain;charset=UTF-8', 'application/x-www-form-urlencoded']) {
+  test(`a JSON request sent as ${contentType} to a pinned peer reaches the seller naming the routed service`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'glm-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    captureProxyRequests(proxy, (request) => { sent = request })
+    const response = await invokeProxy(proxy, makeProxyRequest({ headers: { 'content-type': contentType, 'x-antseed-pin-peer': peer.peerId }, body: { model: 'glm-5', messages: [] } }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(sent!.headers['content-type'], contentType)
+    assert.equal(requestBodyService(sent!), 'glm-5')
+  })
+}
+
+test('a multipart request reaches the seller naming the routed service', async () => {
+  const boundary = 'form-boundary'
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'image-model': ['openai-images'] } } }
+  peer.providerServiceCapabilities = { openai: { services: { 'image-model': { outputs: ['image'], supportedParameters: ['image'] } } } }
+  for (const model of ['image-model', `${peer.peerId}@image-model`]) {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    let sent: SerializedHttpRequest | undefined
+    captureProxyRequests(proxy, (request) => { sent = request })
+    const response = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/images/edits',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      rawBody: `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\nPNG\r\n--${boundary}--\r\n`,
+    }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(requestBodyService(sent!), 'image-model')
   }
 })
 
@@ -1792,9 +1914,11 @@ test('existing required CLI verification rejects a failed pin without payment/in
   ;(proxy as any)._teeVerification = verification
   ;(proxy as any)._cachedPeers = peers
   await verification.verify(rejected, policy, async () => ({ ok: false, verified: false, reason: 'Seller binding failed' }))
-  await verification.verify(accepted, policy, async () => ({ ok: true, verified: true, sellerNodeVerified: true }))
+  await verification.verify(accepted, policy, async () => ({ ok: true, verified: true, sellerNodeVerified: true, channelBinding: 'c'.repeat(64) }))
+  ;(proxy as any)._node.getChannelBinding = () => 'c'.repeat(64)
   const dispatches: string[] = []
-  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }, options?: { channelBinding?: string }) => {
+    assert.equal(options?.channelBinding, 'c'.repeat(64))
     dispatches.push(peer.peerId)
     return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
   }
@@ -2155,6 +2279,17 @@ test('sweep control endpoint validates and dispatches sequentially via the runni
   assert.equal(receiptBody.receipt.status, 'confirmed')
   assert.equal(receiptBody.receipt.txHash, '0x' + '77'.repeat(32))
 
+  // A late refusal from a relayer offered the sweep earlier does not hide the accepting relayer's progress...
+  const second = '0x' + 'cc'.repeat(32)
+  const receiptOf = async (nonce: string) =>
+    (JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: `/_antseed/sweep/${nonce}` }))).body) as { receipt: { status: string } }).receipt
+  emit!({ peerId: 'p2', payload: { version: 1, authNonce: second, status: 'submitted' } })
+  emit!({ peerId: 'p1', payload: { version: 1, authNonce: second, status: 'rejected', reason: 'simulation failed' } })
+  assert.equal((await receiptOf(second)).status, 'submitted')
+  // ...but the accepting relayer's own failure does.
+  emit!({ peerId: 'p2', payload: { version: 1, authNonce: second, status: 'rejected', reason: 'submission failed' } })
+  assert.equal((await receiptOf(second)).status, 'rejected')
+
   // Unknown nonce returns null receipt.
   const missing = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: `/_antseed/sweep/0x${'bb'.repeat(32)}` }))
   assert.deepEqual(JSON.parse(missing.body), { ok: true, receipt: null })
@@ -2263,6 +2398,44 @@ test('selectCandidatePeersForRouting excludes peers when requested service is no
   assert.equal(result.candidatePeers[0]?.peerId, claudePeer.peerId)
   assert.equal(result.routePlanByPeerId.has(openAiPeer.peerId), false)
   assert.equal(result.routePlanByPeerId.get(claudePeer.peerId)?.provider, 'claude-oauth')
+})
+
+test('automatic routing skips a model the seller announces as failing, and a pin still reaches it', () => {
+  const failingPeer = makePeer('a', ['openai'])
+  failingPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failingPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failingPeer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const healthyPeer = makePeer('b', ['openai'])
+  healthyPeer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 2 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 2, outputUsdPerMillion: 2 } } } }
+  healthyPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+
+  const strict = selectCandidatePeersForRouting([failingPeer, healthyPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'strict')
+  assert.deepEqual(strict.candidatePeers.map((peer) => peer.peerId), [healthyPeer.peerId])
+  // Model-only requests are ranked from a strict plan per peer, which a failing model never gets.
+  assert.equal(resolvePeerRoutePlan(failingPeer, null, 'gpt-6-sol', null, 'strict'), null)
+  assert.equal(resolvePeerRoutePlan(healthyPeer, null, 'gpt-6-sol', null, 'strict')?.serviceId, 'gpt-6-sol')
+  const pinned = selectCandidatePeersForRouting([failingPeer], 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')
+  assert.equal(pinned.routePlanByPeerId.get(failingPeer.peerId)?.serviceId, 'gpt-6-sol')
+})
+
+test('a pinned request prefers the provider whose health check passes, even when the failing one is cheaper', () => {
+  const peer = makePeer('a', ['openai', 'openrouter'])
+  peer.providerPricing = {
+    openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+    openrouter: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } },
+  }
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+    openrouter: { services: { 'gpt-6-sol': ['openai-chat-completions'] } },
+  }
+  peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  assert.equal(resolvePeerRoutePlan(peer, null, 'gpt-6-sol', null, 'lenient')?.provider, 'openrouter')
+  // With only failing providers left, the pin still reaches the seller.
+  peer.providerServiceHealth.openrouter = { services: { 'gpt-6-sol': { status: 'failing' } } }
+  assert.equal(resolvePeerRoutePlan(peer, 'openai-chat-completions', 'gpt-6-sol', null, 'lenient')?.provider, 'openai')
+  assert.deepEqual(findFailingServiceOffers([peer], 'gpt-6-sol').map((offer) => offer.provider).sort(), ['openai', 'openrouter'])
+  assert.deepEqual(findFailingServiceOffers([peer], 'other-model'), [])
 })
 
 test('selectCandidatePeersForRouting in lenient mode keeps a peer whose advertised services miss the requested model, as long as the provider protocol set matches', () => {
@@ -2724,6 +2897,79 @@ test('model-only request applies a cached-input pricing reputation penalty', asy
 
   assert.equal(res.statusCode, 200)
   assert.equal(selectedPeerId, priced.peerId)
+})
+
+test('model-only routing cuts a live DIFF service to 10% and excludes it under the trust minimum', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const protocols: PeerInfo['providerServiceApiProtocols'] = { openai: { services: { 'diff-model': ['openai-chat-completions'] } } }
+  const flagged = makePeer('a', ['openai'])
+  flagged.onChainReputationScore = 95
+  flagged.onChainDiffServices = ['diff-model']
+  flagged.onChainVerificationFetchedAt = Date.now()
+  flagged.providerPricing = pricing
+  flagged.providerServiceApiProtocols = protocols
+  const clean = makePeer('b', ['openai'])
+  clean.onChainReputationScore = 70
+  clean.providerPricing = pricing
+  clean.providerServiceApiProtocols = protocols
+  const proxy = makeBuyerProxyWithPeers([flagged, clean], [flagged, clean], permissiveRouter(), undefined, priceAndTrustPreferences)
+  let selectedPeerId = ''
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    selectedPeerId = peer.peerId
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'diff-model', messages: [] } }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(selectedPeerId, clean.peerId)
+
+  const preview = await (proxy as any)._routePreview('diff-model', null)
+  const excluded = preview.find((candidate: { peerId: string }) => candidate.peerId === flagged.peerId)
+  assert.equal(excluded?.eligible, false)
+  assert.ok(
+    excluded?.reasons.includes('trust 10 (cut to 10% from 95: live DIFF verification verdict) below buyer minimum 60'),
+    JSON.stringify(excluded?.reasons),
+  )
+  // A pin still reaches the DIFF seller: the penalty only affects automatic routing.
+  selectedPeerId = ''
+  await invokeProxy(proxy, makeProxyRequest({ headers: { 'x-antseed-pin-peer': flagged.peerId }, body: { model: 'diff-model', messages: [] } }))
+  assert.equal(selectedPeerId, flagged.peerId)
+})
+
+test('gateway policies judge trust per model: a live DIFF cuts it for the trust sort and the trust minimum', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const protocols: PeerInfo['providerServiceApiProtocols'] = { openai: { services: { 'diff-model': ['openai-chat-completions'] } } }
+  const flagged = makePeer('a', ['openai'])
+  flagged.onChainReputationScore = 95
+  flagged.onChainDiffServices = ['diff-model']
+  flagged.onChainVerificationFetchedAt = Date.now()
+  flagged.providerPricing = pricing
+  flagged.providerServiceApiProtocols = protocols
+  const clean = makePeer('b', ['openai'])
+  clean.onChainReputationScore = 70
+  clean.providerPricing = pricing
+  clean.providerServiceApiProtocols = protocols
+  const proxy = makeBuyerProxyWithPeers([flagged, clean], [flagged, clean], permissiveRouter())
+
+  const sorted = await (proxy as any)._routePreview('diff-model', { sort: 'trust' })
+  const byPeer = new Map(sorted.map((candidate: { peerId: string }) => [candidate.peerId, candidate]))
+  assert.deepEqual(sorted.filter((candidate: { eligible: boolean }) => candidate.eligible).map((candidate: { peerId: string }) => candidate.peerId), [clean.peerId, flagged.peerId])
+  assert.equal((byPeer.get(flagged.peerId) as { trustScore: number }).trustScore, 9.5)
+  assert.equal((byPeer.get(flagged.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, 95)
+  assert.equal((byPeer.get(clean.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, undefined)
+
+  const floored = await (proxy as any)._routePreview('diff-model', { minTrustScore: 50 })
+  const excluded = floored.find((candidate: { peerId: string }) => candidate.peerId === flagged.peerId)
+  assert.equal(excluded?.eligible, false)
+  assert.ok(excluded?.reasons.some((reason: string) => reason.includes('cut to 10% from 95: live DIFF verification verdict')), JSON.stringify(excluded?.reasons))
+  assert.equal(floored.find((candidate: { peerId: string }) => candidate.peerId === clean.peerId)?.eligible, true)
+
+  // Pins and offer listings share these facts: a pinned DIFF model is judged on the cut trust too.
+  const pinnedFacts = (proxy as any)._policyFacts(flagged, { serviceId: 'diff-model' })
+  assert.equal(pinnedFacts.trustScore, 9.5)
+  assert.match(pinnedFacts.trustPenalty, /cut to 10% from 95/)
+  assert.equal((proxy as any)._policyFacts(flagged, { serviceId: 'other-model' }).trustScore, 95)
+  assert.equal((proxy as any)._policyFacts(flagged, null).trustScore, 95)
 })
 
 test('model-only cached-input pricing penalty does not bury a substantially stronger peer', async () => {
@@ -3198,6 +3444,145 @@ test('POST /v1/systemone routes only to peers advertising typesafe-systemone', a
   assert.deepEqual(attempts, [decision.peerId])
 })
 
+test('a model whose every seller reports it failing gets a self health error, not model_not_found', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout', consecutiveFailures: 3 } } } }
+  const proxy = makeBuyerProxyWithPeers([failing], [failing], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  const body = JSON.parse(res.body)
+  assert.equal(body.error.code, 'seller_self_health_failing')
+  assert.match(body.error.message, /^The only seller serving "gpt-6-sol" reports it failing\.\nThe seller's self health check for "gpt-6-sol" has been failing \(the upstream timed out, 3 failed checks in a row\)\./)
+})
+
+test('a failing seller that advertises the required parameters gets the self health error, else the capability error', async () => {
+  const seller = (supportedParameters: string[]) => {
+    const failing = makePeer('b', ['openai'])
+    failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    failing.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return failing
+  }
+  const send = async (peer: PeerInfo) => {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(seller(['seed'])), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(seller([])), [422, 'required_capability_unavailable'])
+})
+
+test('a healthy seller without the required parameters does not hide a capable seller failing', async () => {
+  const seller = (seed: string, supportedParameters: string[], failing: boolean) => {
+    const peer = makePeer(seed, ['openai'])
+    peer.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+    peer.providerServiceCapabilities = { openai: { services: { 'gpt-6-sol': { supportedParameters } } } }
+    if (failing) peer.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+    return peer
+  }
+  const peers = [seller('b', ['seed'], true), seller('c', [], false)]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    headers: { 'x-antseed-required-parameters': 'seed' },
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 503)
+  assert.equal(JSON.parse(res.body).error.code, 'seller_self_health_failing')
+})
+
+test('a capable failing provider gets the self health error next to an incapable one on the same seller', async () => {
+  const route = (price: number, supportedParameters: string[]) => ({
+    pricing: { defaults: { inputUsdPerMillion: price, outputUsdPerMillion: price }, services: { 'gpt-6-sol': { inputUsdPerMillion: price, outputUsdPerMillion: price } } },
+    protocols: { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } },
+    capabilities: { services: { 'gpt-6-sol': { supportedParameters } } },
+  })
+  const failing = { services: { 'gpt-6-sol': { status: 'failing' as const, reason: 'timeout' as const } } }
+  const send = async (cheapFailing: boolean) => {
+    const peer = makePeer('b', ['cheap', 'capable'])
+    const cheap = route(1, [])
+    const capable = route(5, ['seed'])
+    peer.providerPricing = { cheap: cheap.pricing, capable: capable.pricing }
+    peer.providerServiceApiProtocols = { cheap: cheap.protocols, capable: capable.protocols }
+    peer.providerServiceCapabilities = { cheap: cheap.capabilities, capable: capable.capabilities }
+    peer.providerServiceHealth = cheapFailing ? { cheap: failing, capable: failing } : { capable: failing }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/chat/completions',
+      headers: { 'x-antseed-required-parameters': 'seed' },
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    return [res.statusCode, JSON.parse(res.body).error.code]
+  }
+
+  assert.deepEqual(await send(false), [503, 'seller_self_health_failing'])
+  assert.deepEqual(await send(true), [503, 'seller_self_health_failing'])
+})
+
+test('price policy checks the provider the route sends through, not the first healthy one', async () => {
+  const peer = makePeer('b', ['a', 'b', 'c'])
+  const price = (usd: number) => ({ defaults: { inputUsdPerMillion: usd, outputUsdPerMillion: usd }, services: { 'gpt-6-sol': { inputUsdPerMillion: usd, outputUsdPerMillion: usd } } })
+  const chat = { services: { 'gpt-6-sol': ['openai-chat-completions' as const] } }
+  peer.providerPricing = { a: price(1), b: price(100), c: price(2) }
+  peer.providerServiceApiProtocols = { a: chat, b: chat, c: chat }
+  peer.providerServiceHealth = { a: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const router = await localPlugin.createRouter({ ANTSEED_MAX_PRICING_JSON: JSON.stringify({ defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } }) })
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], router)
+  const providers: string[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    providers.push(request.headers['x-antseed-provider'] ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(providers, ['c'])
+})
+
+test('a healthy seller ruled out by policy keeps the policy answer, not a self health error', async () => {
+  const failing = makePeer('b', ['openai'])
+  failing.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } }
+  failing.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-6-sol': { status: 'failing', reason: 'timeout' } } } }
+  const pricey = makePeer('c', ['openai'])
+  pricey.providerPricing = { openai: { defaults: { inputUsdPerMillion: 99, outputUsdPerMillion: 99 }, services: { 'gpt-6-sol': { inputUsdPerMillion: 99, outputUsdPerMillion: 99 } } } }
+  pricey.providerServiceApiProtocols = { openai: { services: { 'gpt-6-sol': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([failing, pricey], [failing, pricey], { allowsPeerForPolicy: () => false, onResult: () => {} })
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('must not reach a peer') }
+
+  for (const path of ['/v1/chat/completions', '/v1/models/custom-operation']) {
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path,
+      body: { model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }] },
+    }))
+    assert.notEqual(JSON.parse(res.body).error.code, 'seller_self_health_failing', path)
+  }
+})
+
 test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {
   const decision = makePeer('b', ['typesafe'])
   decision.providerServiceApiProtocols = {
@@ -3283,6 +3668,33 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /is not reachable right now/)
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
+
+for (const hasOtherSeller of [true, false]) {
+  const scenario = hasOtherSeller ? 'the refresh misses it' : 'discovery finds no sellers'
+
+  test(`pinned proxy request looks the peer up on its own DHT topic when ${scenario}`, async () => {
+    const discoveredPeers = hasOtherSeller ? [makePeer('b', ['openai'])] : []
+    const pinnedPeer = makePeer('a', ['openai'])
+    pinnedPeer.publicAddress = '198.51.100.20:14532'
+    pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([...discoveredPeers], [...discoveredPeers], permissiveRouter())
+    ;(proxy as any)._mergeStateFile = async () => {}
+    ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.publicAddress ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
+      body: { model: 'gpt-5', messages: [] },
+    }))
+
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(attempts, ['198.51.100.20:14532'])
+  })
+}
 
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
@@ -3466,22 +3878,12 @@ test('pinned proxy request dispatches when stale metadata misses the requested m
   assert.equal(selectedBody?.['model'], 'new-helper-model')
 })
 
-test('pinned proxy request reports explicit provider mismatch separately', async () => {
+test('a pinned request naming a provider its peer does not announce uses the peer\'s own provider', () => {
   const pinnedPeer = makePeer('a', ['local-llm'])
-  const proxy = makeBuyerProxyWithPeers([pinnedPeer])
-  const req = makeProxyRequest({
-    headers: {
-      'x-antseed-pin-peer': pinnedPeer.peerId,
-      'x-antseed-provider': 'openai',
-    },
-  })
-
-  const res = await invokeProxy(proxy, req)
-
-  assert.equal(res.statusCode, 502)
-  assert.match(res.body, /does not offer provider=openai/)
-  assert.match(res.body, /Available providers: local-llm/)
-  assert.match(res.body, /x-antseed-provider header/)
+  pinnedPeer.providerServiceApiProtocols = { 'local-llm': { services: { llama: ['openai-chat-completions'] } } }
+  const plan = resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'lenient')
+  assert.equal(plan?.provider, 'local-llm')
+  assert.equal(resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'strict'), null)
 })
 
 test('pinned proxy request reports protocol or service mismatch when provider is available', async () => {
@@ -3965,6 +4367,49 @@ test('GET /v1/models is answered locally with the network-wide model list', asyn
   assert.equal(forwarded, 0)
 })
 
+test('GET /v1/models keeps a model whose cheaper provider fits the price cap, as a real request would use it', async () => {
+  const twin = makePeer('a', ['pricey', 'cheap'])
+  twin.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+    cheap: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 3 } } },
+  }
+  twin.providerServiceApiProtocols = {
+    pricey: { services: { 'twin-model': ['openai-chat-completions'] } },
+    cheap: { services: { 'twin-model': ['openai-chat-completions'] } },
+  }
+  const overCap = makePeer('b', ['pricey'])
+  overCap.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'only-pricey': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+  }
+  overCap.providerServiceApiProtocols = { pricey: { services: { 'only-pricey': ['openai-chat-completions'] } } }
+  // As the local router does: a request naming its provider is priced through that provider.
+  const router = {
+    allowsPeerForPolicy: (request: SerializedHttpRequest, peer: PeerInfo) => {
+      const provider = request.headers['x-antseed-provider'] ?? peer.providers[0]!
+      const services = peer.providerPricing![provider]!.services!
+      return Object.values(services).every((price) => price.inputUsdPerMillion <= 8)
+    },
+    onResult: () => undefined,
+  }
+  const proxy = makeBuyerProxyWithPeers([twin, overCap], [twin, overCap], router)
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))
+  assert.equal(res.statusCode, 200, res.body)
+  const ids = JSON.parse(res.body).data.map((model: { id: string }) => model.id)
+  assert.ok(ids.includes('twin-model'), `listed: ${ids.join(', ')}`)
+  assert.ok(!ids.includes('only-pricey'), `listed: ${ids.join(', ')}`)
+})
+
+test('route preview keeps sellers of models that are not chat models', async () => {
+  const imager = makePeer('a', ['openai'])
+  imager.onChainReputationScore = 90
+  imager.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'picture-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } }
+  imager.providerServiceApiProtocols = { openai: { services: { 'picture-model': ['openai-images'] } } }
+  const proxy = makeBuyerProxyWithPeers([imager], [imager], permissiveRouter())
+  const preview = await (proxy as any)._routePreview('picture-model', null)
+  assert.deepEqual(preview.map((candidate: { peerId: string }) => candidate.peerId), [imager.peerId])
+})
+
 test('GET /v1/models?type= filters by model type and rejects unknown types', async () => {
   const proxy = makeBuyerProxyWithPeers(makeNetworkModelPeers())
 
@@ -4394,6 +4839,43 @@ const validPeerId = 'a'.repeat(40)
 const MAX_AGE_MS = 2 * 60 * 60_000
 const NOW = 1_700_000_000_000
 
+test('parsePersistedPeers carries live DIFF services through buyer state', () => {
+  const [peer] = parsePersistedPeers({
+    discoveredPeers: [{
+      peerId: validPeerId,
+      providers: ['openai'],
+      lastSeen: NOW,
+      onChainDiffServices: [' GPT-6.1-Sol ', 42, '', 'gpt-6.1-sol'],
+      onChainVerificationFetchedAt: NOW - 1_000,
+    }],
+  }, NOW)
+  assert.deepEqual(peer?.onChainDiffServices, ['gpt-6.1-sol'])
+  assert.equal(peer?.onChainVerificationFetchedAt, NOW - 1_000)
+})
+
+test('parsePersistedPeers keeps a fresh verification penalty on the restored trust score, and drops a stale one', () => {
+  const entry = {
+    peerId: validPeerId,
+    providers: ['openai'],
+    lastSeen: NOW,
+    onChainChannelCount: 100,
+    onChainTotalVolumeUsdcMicros: 100_000_000,
+    onChainWashFlagged: false,
+    onChainSameServices: ['Claude-Opus-5.5'],
+    onChainVerificationStatus: { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 },
+    onChainVerificationFetchedAt: NOW - 60_000,
+  }
+  const [fresh] = parsePersistedPeers({ discoveredPeers: [entry] }, NOW)
+  const [raw] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationStatus: undefined }] }, NOW)
+  assert.deepEqual(fresh?.onChainSameServices, ['claude-opus-5.5'])
+  assert.deepEqual(fresh?.onChainVerificationStatus, { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 })
+  assert.ok(Math.abs(fresh!.onChainReputationScore! - raw!.onChainReputationScore! * 0.4) < 1e-9)
+  const [stale] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationFetchedAt: NOW - 16 * 60_000 }] }, NOW)
+  assert.equal(stale?.onChainReputationScore, raw?.onChainReputationScore)
+  const [junk] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationStatus: { sameCount: -1, diffCount: 'x' } }] }, NOW)
+  assert.equal(junk?.onChainVerificationStatus, undefined)
+})
+
 test('parsePersistedPeers returns [] for null/undefined/junk input', () => {
   assert.deepEqual(parsePersistedPeers(null, NOW), [])
   assert.deepEqual(parsePersistedPeers(undefined, NOW), [])
@@ -4631,9 +5113,9 @@ test('parsePersistedPeers re-derives the trust score from persisted on-chain sig
   assert.ok(!('onChainTrustScore' in peer))
   assert.deepEqual(peer.trust, computeTrustScore(peer, NOW))
   assert.equal(peer.onChainReputationScore, peer.trust?.score)
-  // Twenty settled sessions and 100 USDC of volume contribute about 45 history
-  // points; 10% usage and power shares add about 17 more.
-  assert.equal(Math.round(peer.onChainReputationScore ?? 0), 62)
+  // 10% usage and power shares each reach 0.77 of the curve, on weights summing to 100.
+  // Twenty settled sessions and 100 USDC of volume are kept for display and add nothing.
+  assert.equal(Math.round(peer.onChainReputationScore ?? 0), 77)
   assert.equal(peer.trust?.history?.channelCount, 20)
   assert.equal(peer.trust?.history?.totalVolumeUsdcMicros, 100_000_000)
   assert.equal(peer.trust?.usage?.epoch, 21)
@@ -4766,7 +5248,7 @@ test('parsePersistedPeers restores GitHub identity history but never trusts pers
   const stored = { discoveredPeers: [{ peerId: validPeerId, providers: ['openai'], lastSeen: NOW - 1_000,
     verifications: { github: [{ username: 'portfolio', repository: 'proof' }] },
     onChainReputationScore: 100,
-    trust: { score: 100, history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 1 }, power: { score: 10, shareBps: 10_000, epoch: 1 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
+    trust: { score: 100, history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 1 }, power: { score: 10, shareBps: 10_000, epoch: 1 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
     verificationResults: { verified: true, checkedAtMs: NOW - 500, domains: [],
       github: [{ username: 'portfolio', repository: 'proof', peerId: validPeerId, verified: true, checkedAtMs: NOW - 500 }],
       identityHistory: { version: 1, identities: [{ kind: 'github', claim: 'portfolio', identityId: 'github:42', status: 'available',
@@ -5092,8 +5574,12 @@ test('requests with the routed-model alias fail clearly when no default route is
 
   const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
   assert.equal(res.statusCode, 400)
-  const parsed = JSON.parse(res.body) as { error?: { code?: string } }
+  const parsed = JSON.parse(res.body) as { error?: { code?: string; message?: string } }
   assert.equal(parsed.error?.code, 'no_default_route')
+  // The desktop has no model picker for this route any more, so the error
+  // must point at what still sets it.
+  assert.doesNotMatch(parsed.error?.message ?? '', /desktop/i)
+  assert.match(parsed.error?.message ?? '', /POST \/_antseed\/route/)
 })
 
 test('substituteRoutedModelAlias updates content-length when substituting', () => {
@@ -5467,11 +5953,11 @@ Input: one user message from the start of a session.`,
   }
 })
 
-test('makeVerifierReach: rejects non-attest paths, sends the attest route as a payment-free control-plane request', async () => {
+test('makeVerifierReach: rejects non-attest paths, sends the attest route as a payment-free control-plane request with the connection binding', async () => {
   const peer = makePeer('a', ['openai'])
   const signal = new AbortController().signal
 
-  const rejectNode = { sendRequest: async () => ({ statusCode: 200, headers: {}, body: new Uint8Array() }) }
+  const rejectNode = { sendRequest: async () => ({ statusCode: 200, headers: {}, body: new Uint8Array() }), getChannelBinding: () => null }
   await assert.rejects(
     makeVerifierReach(rejectNode as never, peer, 'antseed-verifier', signal)({ method: 'POST', path: '/v1/chat/completions' }),
     /may only call its attestation route/,
@@ -5483,6 +5969,7 @@ test('makeVerifierReach: rejects non-attest paths, sends the attest route as a p
       opts = o
       return { statusCode: 200, headers: {}, body: new Uint8Array() }
     },
+    getChannelBinding: (peerId: string) => (peerId === peer.peerId ? 'c'.repeat(64) : null),
   }
   const resp = await makeVerifierReach(captureNode as never, peer, 'antseed-verifier', signal)(
     { method: 'POST', path: '/_antseed/attest/antseed-verifier', body: new Uint8Array([1]) },
@@ -5490,6 +5977,8 @@ test('makeVerifierReach: rejects non-attest paths, sends the attest route as a p
   assert.equal(resp.statusCode, 200)
   assert.equal(opts!.controlPlane, true)
   assert.equal(opts!.signal, signal)
+  // The buyer's own session hash for the connection to this seller, for the quote binding check.
+  assert.equal(resp.channelBinding, 'c'.repeat(64))
 })
 
 test('isModelNotFoundResponse: detects seller and upstream model_not_found rejections', () => {
@@ -5640,6 +6129,19 @@ test('adaptPeerFaultErrorResponse leaves actionable request errors unchanged', (
 
   assert.equal(Buffer.from(response.body).toString('utf8'), body.toString('utf8'))
   assert.equal(response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER], 'peer')
+})
+
+test('adaptPeerFaultErrorResponse leaves a video seller\'s upload timeout unchanged', () => {
+  for (const code of ['upstream_upload_timeout']) {
+    const body = Buffer.from(JSON.stringify({ error: { code, message: 'Sending the request to fal timed out' } }))
+    const response = adaptPeerFaultErrorResponse({
+      requestId: `req-${code}`,
+      statusCode: 400,
+      headers: { 'content-type': 'application/json' },
+      body,
+    }, 'fal-video')
+    assert.equal(Buffer.from(response.body).toString('utf8'), body.toString('utf8'))
+  }
 })
 
 test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route', () => {
@@ -5836,7 +6338,7 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   })
   const nonce = '0x' + 'AB'.repeat(32)
   const receipt = { authNonce: nonce.toLowerCase(), status: 'confirmed', txHash: '0x' + '12'.repeat(32) }
-  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), receipt)
+  ;(proxy as any)._sweepReceipts.set(nonce.toLowerCase(), { peerId: 'p1', payload: receipt })
 
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
@@ -5878,7 +6380,7 @@ test('buyer proxy does not forward client credential headers to the seller (buff
   // Non-credential client headers still pass through.
   assert.equal(seen!['anthropic-version'], '2023-06-01')
   assert.equal(seen!['content-type'], 'application/json')
-  // AntSeed's own payment-auth header is not a client credential.
+  // Antseed's own payment-auth header is not a client credential.
   assert.equal(seen!['x-antseed-spending-auth'], 'signed-auth-payload')
 })
 
@@ -6471,4 +6973,185 @@ test('requests from other sites never reach the paid or control routes', async (
   }))
   assert.equal(local.statusCode, 200)
   assert.equal(stateWrites, 1)
+})
+
+test('the state file records the limits the buyer enforces, for verifier run', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-settings-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: dir,
+    configPath: '/home/a/.antseed/config.validation.json',
+    minPeerReputation: 20,
+    maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+    maxReserveAmountUsdc: '500000',
+    node: { router: null } as any,
+  })
+  await (proxy as any)._writeStateFile('connected')
+  const persisted = JSON.parse(await readFile(join(dir, 'buyer.state.json'), 'utf-8')) as Record<string, unknown>
+  assert.deepEqual(persisted['settings'], {
+    minPeerReputation: 20,
+    maxPricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+    maxReserveAmountUsdc: '500000',
+  })
+})
+
+test('a buyer payment negotiation failure counts like a busy answer, flat or adapted to the model API', () => {
+  const negotiation = {
+    requestId: 'r', statusCode: 503, headers: { 'content-type': 'application/json', 'retry-after': '2' },
+    body: new TextEncoder().encode(JSON.stringify({ error: 'payment_negotiation_failed', reason: 'catch_up_incomplete', message: 'The seller is still waiting for payment of earlier requests on this channel. Retry the request.' })),
+  }
+  const bodies = [Buffer.from(negotiation.body)]
+  for (const protocol of ['openai-chat-completions', 'anthropic-messages'] as const) {
+    for (const pinned of [false, true]) {
+      bodies.push(Buffer.from(adaptPeerFaultErrorResponse(negotiation, protocol, { pinned, peerId: 'a'.repeat(40) }).body))
+    }
+  }
+  for (const responseBody of bodies) {
+    const attempt = classifyFailedAttempt({ done: false, statusCode: 503, responseBody, responseHeaders: {}, errorMessage: null })
+    assert.deepEqual({ sellerOnly: attempt.sellerOnly, weight: attempt.weight }, { sellerOnly: false, weight: 0.5 }, responseBody.toString())
+    // Peer health records it as busy, so a burst never cools the seller down.
+    assert.equal(healthStatusFor({ statusCode: 503, body: responseBody }), 429)
+  }
+  // Any other 503 is still the seller's.
+  assert.equal(classifyFailedAttempt({ done: false, statusCode: 503, responseBody: Buffer.from('{"error":"overloaded"}'), responseHeaders: {}, errorMessage: null }).sellerOnly, true)
+  assert.equal(healthStatusFor({ statusCode: 503, body: Buffer.from('{"error":"overloaded"}') }), 503)
+})
+
+test('speech requests route only to speech services and return the audio unchanged', async () => {
+  const chat = makePeer('a', ['openai'])
+  chat.reputationScore = 95
+  chat.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-chat-completions'] } } }
+  const speech = makeSpeechPeer('b', ['af_sky'], 50)
+  const proxy = makeBuyerProxyWithPeers([chat, speech], [chat, speech], permissiveRouter())
+  const sent: Array<{ peer: string; path: string; body: Record<string, unknown> }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string; body: Uint8Array }) => {
+    sent.push({ peer: peer.peerId, path: request.path, body: JSON.parse(Buffer.from(request.body).toString()) })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('ID3-audio-bytes') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.headers['content-type'], 'audio/mpeg')
+  assert.equal(res.body, 'ID3-audio-bytes')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]!.peer, speech.peerId)
+  assert.equal(sent[0]!.path, '/v1/audio/speech')
+  assert.equal(sent[0]!.body.input, 'Hello there.')
+})
+
+test('speech requests route only to sellers that offer the requested voice', async () => {
+  // The two best-ranked sellers do not offer the voice; only the third does.
+  const first = makeSpeechPeer('a', ['am_adam'], 95)
+  const second = makeSpeechPeer('b', ['am_adam'], 90)
+  const third = makeSpeechPeer('c', ['af_sky', 'am_adam'], 50)
+  const proxy = makeBuyerProxyWithPeers([first, second, third], [first, second, third], permissiveRouter())
+  const sent: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    sent.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(sent, [third.peerId])
+})
+
+/** One peer selling `tts-kokoro` through a cheaper provider without `af_sky` and a dearer one with it. */
+function makeTwoProviderSpeechPeer(): PeerInfo {
+  const peer = makePeer('a', ['cheap', 'voiced'])
+  const service = (voices: string[]) => ({ inputs: ['text' as const], outputs: ['audio' as const], speech: { voices } })
+  const perCharacter = (priceUsd: number) => ({ 'openai-audio-speech': { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd }] } })
+  peer.providerServiceApiProtocols = {
+    cheap: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+    voiced: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+  }
+  peer.providerServiceCapabilities = {
+    cheap: { services: { 'tts-kokoro': service(['am_adam']) } },
+    voiced: { services: { 'tts-kokoro': service(['af_sky']) } },
+  }
+  peer.providerServiceUnitBillingModels = {
+    cheap: { services: { 'tts-kokoro': perCharacter(0.000001) } },
+    voiced: { services: { 'tts-kokoro': perCharacter(0.00002) } },
+  }
+  return peer
+}
+
+for (const pinned of [false, true]) {
+  test(`a${pinned ? ' pinned' : ''} speech request uses the peer provider that offers its voice, even when another is cheaper`, async () => {
+    const peer = makeTwoProviderSpeechPeer()
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    const providers: string[] = []
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+      providers.push(request.headers['x-antseed-provider'] ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/audio/speech',
+      body: { model: pinned ? `${peer.peerId}@tts-kokoro` : 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+    }))
+
+    assert.equal(res.statusCode, 200, res.body)
+    assert.deepEqual(providers, ['voiced'])
+  })
+}
+
+test('a voice no seller offers is refused with the voices that are available', async () => {
+  const peers = [makeSpeechPeer('a', ['am_adam']), makeSpeechPeer('b', ['af_sky', 'am_adam'])]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  let sent = 0
+  ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('must not be sent') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'nova' },
+  }))
+
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(sent, 0)
+  const error = JSON.parse(res.body).error
+  assert.equal(error.code, 'unsupported_voice')
+  assert.equal(error.param, 'voice')
+  assert.deepEqual(error.available_voices, ['af_sky', 'am_adam'])
+})
+
+test('lip-synced video creates route only to sellers whose model takes audio_url', async () => {
+  const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
+    const p = makePeer(seed, ['venice-video'])
+    p.reputationScore = reputation
+    p.providerServiceApiProtocols = { 'venice-video': { services: { 'ref-model': ['venice-video'] } } }
+    p.providerServiceCapabilities = { 'venice-video': { services: { 'ref-model': { outputs: ['video'], supportedParameters } as any } } }
+    return p
+  }
+  const silent = peer('a', 95, ['duration', 'image_url', 'prompt'])
+  const lipSync = peer('b', 50, ['audio_url', 'duration', 'image_url', 'prompt'])
+  const selected: string[] = []
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter() as any)
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    ;(proxy as any)._node.sendRequest = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
+      selected.push(selectedPeer.peerId)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: `job-${selected.length}` })) }
+    }
+    return invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'ref-model', prompt: 'she says hello', duration: '5s', ...body } }))
+  }
+
+  selected.length = 0
+  assert.equal((await route([silent, lipSync], { audio_url: 'https://example.com/hello.mp3' })).statusCode, 200)
+  assert.deepEqual(selected, [lipSync.peerId])
+
+  selected.length = 0
+  const refused = await route([silent], { audio_url: 'https://example.com/hello.mp3' })
+  assert.equal(refused.statusCode, 422)
+  assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): audio_url/)
+  assert.deepEqual(selected, [])
 })

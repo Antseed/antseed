@@ -1,5 +1,6 @@
 import type {
   FreeTierDelegation,
+  SellerBuyerLimitsConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -46,6 +47,10 @@ export interface SellerServiceConfig {
    * `"deepseek-v3.1"` with upstreamModel `"deepseek-ai/DeepSeek-V3.1"`.
    */
   upstreamModel?: string;
+  /** Native image-edit model paired with this advertised generation service. */
+  imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -161,11 +166,11 @@ export interface BuyerVerificationConfig {
  * Periodic model health self-check settings for the seller.
  */
 export interface SellerHealthCheckCLIConfig {
-  /** Enable periodic 1-token probes of every advertised service. Default: true. */
+  /** Enable the seller self health check: 1-token probes of services without recent buyer traffic. Default: true. */
   enabled?: boolean;
-  /** Milliseconds between probe sweeps. Default: 300000 (5 minutes). */
+  /** Milliseconds between probe sweeps; a service that served a buyer within this window is not probed. Default: 300000 (5 minutes). */
   intervalMs?: number;
-  /** Consecutive probe failures before a service is unadvertised. Default: 3. */
+  /** Consecutive failed checks before a service is announced as failing. Default: 3. */
   failureThreshold?: number;
 }
 
@@ -179,6 +184,23 @@ export interface SellerGasCheckCLIConfig {
   intervalMs?: number;
   /** Minimum wallet balance in ETH before advertising is paused. Default: 0.00005. */
   minBalanceEth?: number;
+}
+
+/**
+ * Automatic gas top-ups: when the seller wallet runs low on ETH, swap some of
+ * its USDC earnings for ETH (Uniswap v3 on Base mainnet, gas paid in ETH).
+ */
+export interface SellerGasRefuelCLIConfig {
+  /** Default: true. Needs gas checks on (`seller.gasCheck`). */
+  enabled?: boolean;
+  /** Refuel when the wallet holds less than this many ETH. Default: 0.0005. */
+  triggerBalanceEth?: number;
+  /** USDC swapped per refuel. Default: 10. */
+  swapUsdc?: number;
+  /** Most USDC swapped in any 24 hours. Default: 30. */
+  maxUsdcPerDay?: number;
+  /** Slippage tolerance in basis points. Default: 100 (1%). */
+  slippageBps?: number;
 }
 
 /** `seller.alerts` in config.json: where the seller sends its own alerts. */
@@ -266,6 +288,21 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Announce each provider by an ID instead of its plugin name, so buyers don't see which
+   * plugin (and upstream) serves a model. Default: false while older buyers, which refuse a
+   * pinned request naming a provider the peer doesn't announce, are still in use.
+   */
+  announceProviderIds?: boolean;
+  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
    * default). Chosen in `antseed seller setup`; overridden at launch by
@@ -274,7 +311,8 @@ export interface SellerCLIConfig {
   verifiers?: string[];
   /**
    * Periodic model health self-checks. Enabled by default; failing services
-   * are unadvertised until they recover. Set `enabled: false` to opt out.
+   * are announced with a failing status (buyers skip them) until they recover.
+   * Set `enabled: false` to opt out.
    */
   healthCheck?: SellerHealthCheckCLIConfig;
   /**
@@ -284,12 +322,17 @@ export interface SellerCLIConfig {
    */
   gasCheck?: SellerGasCheckCLIConfig;
   /**
+   * Swap USDC for ETH automatically before the wallet runs out of gas (Base
+   * mainnet). On by default; set `enabled: false` to opt out.
+   */
+  gasRefuel?: SellerGasRefuelCLIConfig;
+  /**
    * Seller-wide free-tier program for zero-priced services. A service with its
    * own `providers.<p>.services.<s>.freeTier` uses that instead.
    */
   freeTier?: SellerFreeTierCLIConfig;
   /**
-   * Alerts the seller sends itself (Telegram, webhook) when a model is withdrawn,
+   * Alerts the seller sends itself (Telegram, webhook) when a model fails its health checks,
    * gas runs low, it restarts after a crash or goes idle. Off until a channel is set.
    */
   alerts?: SellerAlertsCLIConfig;
@@ -300,6 +343,13 @@ export interface SellerCLIConfig {
   restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
+  /**
+   * Per-buyer load limits: tokens (uncached input + output) each buyer may
+   * use from each provider in a rolling window, tighter for buyers whose first
+   * channel with this seller is recent, with optional per-service weights.
+   * Over a limit, requests are answered 429 with retry-after. Off unless set.
+   */
+  buyerLimits?: SellerBuyerLimitsConfig;
 }
 
 /**
@@ -387,6 +437,8 @@ export interface PaymentsCLIConfig {
   maxReserveAmountUsdc?: string;
   /** Most the buyer pays for one video in base units; a gateway reserves up to this while a video is priced. Default: "5000000" ($5.00). */
   maxVideoRequestUsdc?: string;
+  /** Validity in seconds of the auths the node signs. Default: the node's (900 for a ReserveAuth). */
+  defaultAuthDurationSecs?: number;
   /**
    * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via
@@ -421,9 +473,11 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
-    /** Deployed AntseedVerification contract address */
+    /** Deployed AntseedKbfAudits contract address (the KBF source auditors submit to; holds the approved auditors) */
     verificationContractAddress?: string;
-    /** Deployment block of the verification contract; floor for verifier event scans */
+    /** AntseedVerificationResults address; discovered from the KBF contract when unset */
+    verificationResultsAddress?: string;
+    /** Deployment block of the KBF audits contract; floor for verifier event scans */
     verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;
@@ -439,6 +493,7 @@ export interface PaymentsCLIConfig {
     legacyEmissionsEscrowAddress?: string;
     washTradingRegistryAddress?: string;
     pointsPolicyRegistryAddress?: string;
+    verificationPointsPolicyAddress?: string;
     /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
@@ -469,6 +524,20 @@ export interface RelayerCLIConfig {
 export interface NetworkCLIConfig {
   /** Additional bootstrap nodes for DHT discovery (host:port pairs) */
   bootstrapNodes: string[];
+  /** UDP port for the DHT; 0 lets the OS choose. Default: 6881 for a seller, OS-assigned for a buyer. `--dht-port` wins. */
+  dhtPort?: number;
+  /** TCP port for seller signaling; 0 lets the OS choose. Default: 6882. `--signaling-port` wins. */
+  signalingPort?: number;
+  /** Local address the DHT and signaling sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. */
+  natTraversal?: boolean;
+  /** Use only `bootstrapNodes` and never contact the official DHT nodes. Default: false. */
+  noOfficialBootstrap?: boolean;
+  /** Accept private and loopback addresses in DHT lookups. Default: true for a buyer, false for a seller. */
+  allowPrivateIPs?: boolean;
+  /** Timeout of one DHT operation in ms. Default: the node's. */
+  dhtOperationTimeoutMs?: number;
 }
 
 /**
@@ -494,4 +563,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

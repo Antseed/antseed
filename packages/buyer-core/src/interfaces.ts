@@ -14,6 +14,8 @@ import type {
   ProviderServiceCategoryMatrixEntry,
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ResponseAuthPayload,
   SerializedHttpRequest,
@@ -28,6 +30,8 @@ export interface FrameSender {
 /** Connection surface used by the buyer request/payment machinery. */
 export interface BuyerConnection extends FrameSender {
   readonly state: ConnectionState;
+  /** Session hash of an encrypted TCP connection (see RequestExecutionOptions.channelBinding). */
+  readonly channelBinding?: string | null;
   on(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
   off(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
 }
@@ -59,6 +63,10 @@ export interface BuyerPeerView {
   providerServiceApiProtocols?: Record<string, ProviderServiceApiProtocolMatrixEntry>;
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Seller self health check results per provider/service (metadata v13+). */
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** How each service served buyers lately, measured by the seller (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;

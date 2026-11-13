@@ -1,7 +1,7 @@
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '../types/http.js';
 import type { ServiceApiProtocol } from '../types/service-api.js';
 import type { ServiceUnitBillingModelsV1 } from '../types/billing.js';
-import type { ServiceCapabilities } from '../discovery/peer-metadata.js';
+import type { ServiceCapabilities, ServiceHealth } from '../discovery/peer-metadata.js';
 
 export interface ProviderTokenPricingUsdPerMillion {
   inputUsdPerMillion: number;
@@ -30,12 +30,19 @@ export interface Provider {
   services: string[];
 
   /**
-   * Runtime health availability. The model health checker sets this to false
-   * when every configured service has been removed, allowing discovery to
-   * omit the provider instead of interpreting an empty service list as a
-   * wildcard. Undefined means available for providers without health checks.
+   * False when the provider failed to initialize (e.g. an OAuth refresh
+   * failure) and is retained only so a later health check can recover it.
+   * The model health checker announces its services as failing until a
+   * check passes, then sets this back to true.
    */
   healthCheckAvailable?: boolean;
+
+  /**
+   * The seller's self health check result per service, written by the model
+   * health checker and signed into metadata (v13+). Absent services have not
+   * been checked yet.
+   */
+  serviceHealth?: Record<string, ServiceHealth>;
 
   /** Seller pricing in USD per 1M tokens (defaults + optional per-service overrides). */
   pricing: ProviderPricing;
@@ -59,6 +66,15 @@ export interface Provider {
    * Handle an incoming inference request and return the response.
    */
   handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse>;
+
+  /**
+   * Optional local check of a request the provider would refuse anyway,
+   * without calling the upstream: for example a video whose paid `duration`
+   * is not the length of its inline source. The seller runs it before any
+   * payment step, so a refused request opens no payment channel and costs the
+   * buyer nothing. Returns null to serve the request.
+   */
+  checkRequest?(req: SerializedHttpRequest): ProviderRequestRefusal | null;
 
   /**
    * Optional streaming request handler. Implementations should call
@@ -115,6 +131,14 @@ export type UpstreamAccountStatus =
   /** `outOfCredit`: the account's balance is the cause (the seller alerts it as a billing problem). */
   | { status: 'unavailable'; reason: string; outOfCredit?: boolean }
   | { status: 'unknown'; reason?: string };
+
+/** Result of `Provider.checkRequest`: sent to the buyer as `{ error: { code, message } }`. */
+export interface ProviderRequestRefusal {
+  /** A 4xx status. */
+  statusCode: number;
+  code: string;
+  message: string;
+}
 
 export interface ProviderStreamCallbacks {
   signal?: AbortSignal;

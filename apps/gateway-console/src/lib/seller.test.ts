@@ -22,29 +22,39 @@ describe('seller page helpers', () => {
     expect(sellerNotices(seller(), now)).toEqual([])
   })
 
-  it('lists stopped, out of gas and withdrawn models, without repeating the daemon gas notice', () => {
+  it('says when gas auto-refuel failed or is waiting', () => {
+    const refuel = { triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, usdcLast24h: 30, lastRefuel: null, lastError: null, skipped: null, nextAttemptAt: null }
+    const gas = { address: '0xabc', depleted: false, balanceEth: 0.0004, minBalanceEth: 0.00005, lastCheckedAt: now }
+    expect(sellerNotices(seller({ gas: { ...gas, refuel } }), now)).toEqual([])
+    expect(sellerNotices(seller({ gas: { ...gas, refuel: { ...refuel, lastError: 'execution reverted' } } }), now))
+      .toEqual(['Gas auto-refuel failed: execution reverted. It retries on its own; send ETH to 0xabc if it keeps failing.'])
+    expect(sellerNotices(seller({ gas: { ...gas, refuel: { ...refuel, skipped: 'daily_cap' as const } } }), now))
+      .toEqual(['Gas auto-refuel is waiting: the 30 USDC daily cap is used up. Send ETH to 0xabc to keep selling.'])
+  })
+
+  it('lists stopped, out of gas and failing models, without repeating the daemon gas notice', () => {
     const lines = sellerNotices(seller({
       running: false,
       updatedAt: now - 5 * 60_000,
-      gas: { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: now },
+      gas: { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: now, refuel: null },
       notices: ['Out of gas: wallet 0xabc holds …'],
       models: [
-        { provider: 'openai', providerId: 'openai', service: 'glm-5.3', advertised: false, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
-        { provider: 'openai', providerId: 'openai', service: 'kimi-k3', advertised: true, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
+        { provider: 'openai', providerId: 'openai', service: 'glm-5.3', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 4, lastProbeAt: now, lastStatusCode: 402, lastDetail: 'HTTP 402' },
+        { provider: 'openai', providerId: 'openai', service: 'kimi-k3', status: 'healthy', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 0, lastProbeAt: now, lastStatusCode: null, lastDetail: null },
       ],
     }), now)
     expect(lines).toHaveLength(3)
     expect(lines[0]).toContain('5 min ago')
     expect(lines[1]).toMatch(/^Out of gas/)
-    expect(lines[2]).toBe('1 model is withdrawn after failing health checks: glm-5.3.')
+    expect(lines[2]).toBe('1 model is failing health checks, so buyers skip it: glm-5.3.')
   })
 
   it('formats ETH and probe results compactly', () => {
     expect(formatEth(0.0297126)).toBe('0.0297')
     expect(formatEth(0.00005)).toBe('0.00005')
     expect(formatEth(null)).toBe('—')
-    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
-    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', advertised: false, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'out of credit' })).toBe('HTTP 402 · out of credit')
+    expect(lastResult({ provider: 'p', providerId: 'p', service: 's', status: 'failing', reason: null, failingSince: null, checkedAt: null, source: null, lastTrafficAt: null, consecutiveFailures: 1, lastProbeAt: 1, lastStatusCode: 402, lastDetail: 'HTTP 402: no balance' })).toBe('HTTP 402: no balance')
   })
 
   it('labels chart days in UTC', () => {
@@ -65,6 +75,7 @@ describe('seller editors', async () => {
   const settings = {
     configPath: '/c', writable: true, readOnlyReason: null, savesTo: 'config' as const, overridesPath: null, overridden: [], displayName: 'S', maxConcurrentBuyers: 50,
     healthCheck: { enabled: true, intervalMs: 300_000, failureThreshold: 3 }, gasCheck: { enabled: true, minBalanceEth: 0.00005 },
+    gasRefuel: { enabled: true, triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, slippageBps: 100 },
     freeTier: { maxRequestsPerAddress: null, maxRequestsPerIp: null, windowMs: null, stakersOnly: false, stakeTiers: null }, restrictedCountries: ['RU'], restrictedCountriesDefault: true,
     defaultStakeTiers: [{ minPower: 520_000, multiplier: 5 as number | 'unlimited' }],
     services: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, inherited: false, paid: true, unitPrice: null, kind: 'text' as const, apiProtocols: [], freeTier: null, ownFreeTier: null, enabled: true, upstreamModel: null, categories: [], unitComponents: [] }],
@@ -82,6 +93,8 @@ describe('seller editors', async () => {
       pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.8 }],
     })
     expect(patchOf(base, { ...base, healthEnabled: false, gasMinEth: '0.0001' })).toEqual({ healthCheck: { enabled: false }, gasCheck: { minBalanceEth: 0.0001 } })
+    expect(patchOf(base, { ...base, refuelEnabled: false, refuelUsdc: '25' })).toEqual({ gasRefuel: { enabled: false, swapUsdc: 25 } })
+    expect(draftErrors({ ...base, refuelUsdc: '0.5', refuelBelowEth: '0' }, base)).toMatchObject({ refuelUsdc: 'Use 1 or more.', refuelBelowEth: expect.any(String) })
     // The same value typed differently is no change.
     expect(patchOf(base, { ...base, maxConcurrentBuyers: '50.0' })).toEqual({})
     expect(draftErrors({ ...base, maxConcurrentBuyers: '0', countries: 'RUS' })).toMatchObject({ maxConcurrentBuyers: expect.any(String), countries: expect.any(String) })

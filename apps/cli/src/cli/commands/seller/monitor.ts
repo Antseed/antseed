@@ -207,7 +207,7 @@ export function freeTierSummary(program: FreeTierProgramView | null, paid: boole
 export function registerSellerMonitorCommands(sellerCmd: Command): void {
   sellerCmd
     .command('events')
-    .description('Recent seller events: starts and stops, models withdrawn or restored, gas, quiet periods')
+    .description('Recent seller events: starts and stops, models failing or recovered, gas, quiet periods')
     .option('--limit <n>', 'how many, newest first', '25')
     .option('--json', 'output as JSON', false)
     .action((options: { limit: string; json: boolean }) => runMonitorCommand(options.json, () => sellerMonitorFor(sellerCmd).events(Number(options.limit) || 25), (events) => {
@@ -310,7 +310,13 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       else {
         console.log(`${chalk.bold('Trust score')} ${trust.washFlagged ? 0 : trust.score.toFixed(1)} / 100${reputation.rank ? chalk.dim(`  (#${reputation.rank.position} of ${reputation.rank.of})`) : ''}`);
         const part = (label: string, value: { score: number; max: number } | null) => console.log(`  ${label.padEnd(18)} ${value ? `${value.score.toFixed(1)} / ${value.max}` : '—'}`);
-        part('Service history', trust.history); part('Recognized usage', trust.usage); part('Staking power', trust.power); part('Verified identity', trust.identity); part('Free model bonus', trust.freeModels);
+        part('Staking power', trust.power); part('Recognized usage', trust.usage); part('Verified identity', trust.identity); part('Free model bonus', trust.freeModels);
+        if (trust.verification) {
+          const { change, sameCount, diffCount, multiplierBps } = trust.verification;
+          const counts = [sameCount > 0 ? `${sameCount} verified` : null, diffCount > 0 ? `${diffCount} DIFF` : null].filter(Boolean).join(', ');
+          console.log(`  ${'Model checks'.padEnd(18)} ${change < 0 ? '−' : '+'}${Math.abs(change).toFixed(1)} (${counts}: earns ${Math.round(multiplierBps / 100)}% of normal points)`);
+        }
+        if (trust.history) console.log(chalk.dim(`  ${'Service history'.padEnd(18)} ${trust.history.channelCount} settled channels, $${trust.history.volumeUsdc.toFixed(2)} (shown only, not scored)`));
       }
       if (reputation.steps.length) console.log(`\n${chalk.bold('How to raise it')}\n${reputation.steps.map((step, index) => `  ${index + 1}. ${step.text}`).join('\n')}`);
       const standing = reputation.standing;
@@ -373,7 +379,7 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       console.log(`${chalk.bold(view.displayName || '(no display name)')}  ${chalk.dim(view.configPath)}${view.writable ? '' : chalk.yellow(`  read-only: ${view.readOnlyReason}`)}`);
       if (view.overridden.length > 0) console.log(chalk.yellow(`Saved over the config file (${view.overridesPath}): ${view.overridden.join(', ')}. \`seller settings reset\` drops them.`));
       else if (view.savesTo === 'overrides') console.log(chalk.dim(`The config file is read-only here: changes are saved in ${view.overridesPath} and apply over it.`));
-      console.log(`Max concurrent buyers ${view.maxConcurrentBuyers} · health checks ${view.healthCheck.enabled ? `every ${view.healthCheck.intervalMs / 1000}s, withdraw after ${view.healthCheck.failureThreshold}` : 'off'} · gas checks ${view.gasCheck.enabled ? `min ${view.gasCheck.minBalanceEth} ETH` : 'off'}`);
+      console.log(`Max concurrent buyers ${view.maxConcurrentBuyers} · health checks ${view.healthCheck.enabled ? `every ${view.healthCheck.intervalMs / 1000}s, withdraw after ${view.healthCheck.failureThreshold}` : 'off'} · gas checks ${view.gasCheck.enabled ? `min ${view.gasCheck.minBalanceEth} ETH` : 'off'} · gas auto-refuel ${view.gasRefuel.enabled ? `below ${view.gasRefuel.triggerBalanceEth} ETH swap ${view.gasRefuel.swapUsdc} USDC (max ${view.gasRefuel.maxUsdcPerDay}/day)` : 'off'}`);
       console.log(`Refused countries ${view.restrictedCountries.join(', ') || 'none'}${view.restrictedCountriesDefault ? chalk.dim(' (built-in)') : ''}`);
       const wide = view.freeTier;
       const wideTiers = wide.stakeTiers === null ? 'network default tiers' : wide.stakeTiers.length === 0 ? 'no staked tiers' : `tiers ${wide.stakeTiers.map((tier) => `${Math.ceil(tier.minPower / WEEKS_PER_YEAR)}:${tier.multiplier}`).join(',')}`;
@@ -398,6 +404,10 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
     .option('--health-failures <n>')
     .option('--gas <on|off>')
     .option('--gas-min <eth>')
+    .option('--refuel <on|off>', 'swap USDC for ETH automatically when the wallet runs low on gas (Base mainnet)')
+    .option('--refuel-below <eth>', 'refuel when the wallet holds less ETH than this')
+    .option('--refuel-usdc <usdc>', 'USDC swapped per refuel')
+    .option('--refuel-max-day <usdc>', 'most USDC swapped in 24 hours')
     .option('--free-per-address <n|none>')
     .option('--free-per-ip <n|none>')
     .option('--free-window-hours <hours|none>')
@@ -425,6 +435,14 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       }
       if (text('gas') !== undefined || text('gasMin') !== undefined) {
         patch.gasCheck = { ...(text('gas') !== undefined ? { enabled: onOff(text('gas')!, '--gas') } : {}), ...(text('gasMin') !== undefined ? { minBalanceEth: Number(text('gasMin')) } : {}) };
+      }
+      if (['refuel', 'refuelBelow', 'refuelUsdc', 'refuelMaxDay'].some((key) => text(key) !== undefined)) {
+        patch.gasRefuel = {
+          ...(text('refuel') !== undefined ? { enabled: onOff(text('refuel')!, '--refuel') } : {}),
+          ...(text('refuelBelow') !== undefined ? { triggerBalanceEth: Number(text('refuelBelow')) } : {}),
+          ...(text('refuelUsdc') !== undefined ? { swapUsdc: Number(text('refuelUsdc')) } : {}),
+          ...(text('refuelMaxDay') !== undefined ? { maxUsdcPerDay: Number(text('refuelMaxDay')) } : {}),
+        };
       }
       if (['freePerAddress', 'freePerIp', 'freeWindowHours', 'freeStakersOnly', 'freeStakeTiers'].some((key) => text(key) !== undefined)) {
         const hours = text('freeWindowHours') === undefined ? undefined : limitOrNone(text('freeWindowHours')!);

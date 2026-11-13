@@ -5,11 +5,11 @@ type Recorder = Pick<SellerAlerts, 'record'>;
 
 interface Upstream {
   provider: string;
-  /** Withdrawn services, with the last reason. */
+  /** Services marked failing, with the last reason. */
   down: Map<string, string>;
-  /** Whether a withdrawal alert is open for this upstream. */
+  /** Whether a failing-models alert is open for this upstream. */
   announced: boolean;
-  /** The withdrawn services the open alert names, less any restored since. */
+  /** The failing services the open alert names, less any recovered since. */
   announcedServices: Set<string>;
   credit: 'out' | 'low' | null;
   /** Something changed since the last flush. */
@@ -18,8 +18,8 @@ interface Upstream {
 
 /**
  * Seller alerts per upstream (a configured provider) rather than per model:
- * models withdrawn or restored in one health-check round are one message
- * (`flush` after each round), more withdrawn later update it,
+ * models marked failing or recovered in one health-check round are one message
+ * (`flush` after each round), more failing later update it,
  * and an upstream out of credit is one critical alert naming the cause, sent
  * on its first billing error. Every model change is still journaled by itself.
  */
@@ -32,14 +32,14 @@ export class UpstreamAlerts {
     private readonly _options: { hostOf?: (providerId: string) => string | null } = {},
   ) {}
 
-  /** A model withdrawn or restored by the health checker. */
+  /** A model the self health check marked failing, or that recovered. */
   modelChanged(event: ModelHealthEvent): void {
     if (this._closed) return;
-    const removed = event.status === 'removed';
+    const removed = event.status === 'failing';
     void this._alerts.record({
       kind: removed ? 'model_down' : 'model_up',
       severity: removed ? 'warning' : 'info',
-      title: removed ? `${event.service} withdrawn after ${event.consecutiveFailures} failed health checks` : `${event.service} is healthy again and advertised`,
+      title: removed ? `${event.service} marked failing after ${event.consecutiveFailures} failed health checks` : `${event.service} is healthy again`,
       detail: event.detail, provider: event.provider, providerId: event.providerId, service: event.service,
     }, { notify: false });
     const upstream = this._upstream(event.providerId, event.provider);
@@ -72,11 +72,11 @@ export class UpstreamAlerts {
     else if (previous === 'low' && event.status !== 'low_balance') void this._alerts.record({ kind: 'upstream_balance_ok', severity: 'info', title: `${name} balance is back above the warning line`, ...common });
     if (event.status === 'out_of_credit') {
       upstream.credit = 'out';
-      const withdrawn = upstream.down.size;
+      const failing = upstream.down.size;
       const models = `${event.services.length} model${event.services.length === 1 ? '' : 's'}`;
       void this._alerts.record({
         kind: 'upstream_credit', severity: 'critical',
-        title: `${name} is out of credit: ${withdrawn > 0 ? `${withdrawn} of ${models} withdrawn` : `its ${models} fail until it is topped up`}. Top up the upstream account.`,
+        title: `${name} is out of credit: ${failing > 0 ? `${failing} of ${models} failing` : `its ${models} fail until it is topped up`}. Top up the upstream account.`,
         ...common,
       });
     } else if (event.status === 'low_balance') {
@@ -85,7 +85,7 @@ export class UpstreamAlerts {
     } else {
       upstream.credit = null;
     }
-    // Withdrawals were held back while it was out of credit. Models still down after the
+    // Failing-model alerts were held back while it was out of credit. Models still down after the
     // round that brought credit back are a separate outage: the next flush announces them.
     if (previous === 'out' && upstream.credit !== 'out' && upstream.down.size > 0) upstream.dirty = true;
   }
@@ -110,28 +110,28 @@ export class UpstreamAlerts {
   }
 
   private _flush(providerId: string, upstream: Upstream): void {
-    const withdrawn = [...upstream.down.keys()];
+    const failing = [...upstream.down.keys()];
     const common = { provider: upstream.provider, providerId };
-    if (withdrawn.length === 0) {
-      if (upstream.announced) void this._alerts.record({ kind: 'model_up', severity: 'info', title: `${this._name(providerId)}: every withdrawn model is healthy again and advertised`, ...common }, { journal: false });
+    if (failing.length === 0) {
+      if (upstream.announced) void this._alerts.record({ kind: 'model_up', severity: 'info', title: `${this._name(providerId)}: every failing model is healthy again`, ...common }, { journal: false });
       upstream.announced = false;
       upstream.announcedServices.clear();
       return;
     }
-    // A restored model drops out, so it is announced again if it is withdrawn again.
+    // A recovered model drops out, so it is announced again if it fails again.
     for (const service of upstream.announcedServices) if (!upstream.down.has(service)) upstream.announcedServices.delete(service);
-    // Out of credit already said why; more withdrawals add nothing to act on.
-    if (upstream.credit === 'out' || withdrawn.every((service) => upstream.announcedServices.has(service))) return;
-    const shown = withdrawn.slice(0, 10).join(', ') + (withdrawn.length > 10 ? ` and ${withdrawn.length - 10} more` : '');
+    // Out of credit already said why; more failing models add nothing to act on.
+    if (upstream.credit === 'out' || failing.every((service) => upstream.announcedServices.has(service))) return;
+    const shown = failing.slice(0, 10).join(', ') + (failing.length > 10 ? ` and ${failing.length - 10} more` : '');
     void this._alerts.record({
       kind: 'model_down', severity: 'warning',
-      title: withdrawn.length === 1
-        ? `${withdrawn[0]} on ${this._name(providerId)} withdrawn after failed health checks`
-        : `${withdrawn.length} models on ${this._name(providerId)} withdrawn after failed health checks: ${shown}`,
-      detail: upstream.down.get(withdrawn.at(-1)!) ?? '',
+      title: failing.length === 1
+        ? `${failing[0]} on ${this._name(providerId)} marked failing after failed health checks`
+        : `${failing.length} models on ${this._name(providerId)} marked failing after failed health checks: ${shown}`,
+      detail: upstream.down.get(failing.at(-1)!) ?? '',
       ...common,
     }, { journal: false, update: upstream.announced });
     upstream.announced = true;
-    upstream.announcedServices = new Set(withdrawn);
+    upstream.announcedServices = new Set(failing);
   }
 }

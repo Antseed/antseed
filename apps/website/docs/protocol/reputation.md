@@ -1,34 +1,39 @@
 ---
 slug: /reputation
 title: Reputation
-description: How buyers compute a local 0-100 trust score for each seller from on-chain history, recognized usage, pool power, and verified identity.
+description: How buyers compute a local 0-100 trust score for each seller from pool power, recognized usage, verified identity, and model checks.
 hide_title: true
 ---
 
 # Reputation
 
-Buyers score sellers locally from data they can check themselves: settled service history, the seller pool's share of recognized usage and staking power, and wash-trading verdicts, all read from the chain, plus public history of identities the seller has proven it owns. There is no central reputation authority and no seller allowlist.
+Buyers score sellers locally from data they can check themselves: the seller pool's share of staking power and recognized usage, model checks, and wash-trading verdicts, all read from the chain, plus public history of identities the seller has proven it owns. There is no central reputation authority and no seller allowlist.
 
 ## Trust score
 
-Every buyer computes one number per seller, 0-100, as a weighted sum of independent parts:
+Every buyer computes one number per seller, 0-100. It estimates what a buyer's spend with the seller earns and whether the seller carries real volume, plus credit for a proven identity and a free model:
 
 ```
-trust = washFlagged ? 0 : min(100, history + usage + power + identity + freeModels)
+sum   = min(100, power + usage + identity + freeModels)
+trust = washFlagged ? 0 : min(100, sum * verification multiplier)
 ```
 
 | Part | Weight | On-chain source | What it means |
 |---|---|---|---|
-| `history` | 50 | `AntseedChannels.getAgentStats` lifetime settled channel count and volume | Demonstrated service history. Channel count and settled USDC volume each use a bounded log curve, saturating at 100 settled sessions and 100 USDC, then contribute equally to this part. |
-| `usage` | 20 | `AntseedUsageAccounting.sellerPointsByEpoch / totalPoolPointsByEpoch` for the last complete weekly epoch | The seller pool's share of all pools' recognized-usage points: what it actually delivered last week relative to the network. Points only accrue for sellers with a pool and have already passed the on-chain [reward policies](/docs/reward-policies), so a proven wash trader's share is already zero. |
-| `power` | 10 | `AntseedSellerPools.poolWeightAtEpoch / totalPowerWeightAtEpoch` for the current epoch (lock-weighted ANTS) | The pool's share of all pools' staking power this week, which is what decides what a buyer's spend with this seller earns. |
-| `identity` | 20 | None (buyer-local lookups of verified GitHub accounts and domains, see below) | Public history of an identity the seller has proven it owns, so an established operator earns credit before it has a pool record. |
-| `freeModels` | +5 bonus | None (the seller's signed pricing metadata) | Added on top of the weighted parts, with the total capped at 100, when the seller offers at least one model at $0 input and output (and $0 cached input, when it prices cached input). It only adds to a seller that is already scored: a free model alone does not make an unknown seller trusted. |
+| `power` | 70 | `AntseedSellerPools.poolWeightAtEpoch / totalPowerWeightAtEpoch` for the current epoch (lock-weighted ANTS) | The pool's share of all pools' staking power this week, which is what decides what a buyer's spend with this seller earns. |
+| `usage` | 30 | `AntseedUsageAccounting.sellerPointsByEpoch / totalPoolPointsByEpoch` for the last complete weekly epoch | The seller pool's share of all pools' recognized-usage points: what it actually delivered last week relative to the network. Points only accrue for sellers with a pool and have already passed the on-chain [reward policies](/docs/reward-policies), so a proven wash trader's share is already zero. |
+| `identity` | +20 | None (buyer-local lookups of verified GitHub accounts and domains, see below) | Public history of an identity the seller has proven it owns, added on top of the weights. |
+| `freeModels` | +5 bonus | None (the seller's signed pricing metadata) | Added on top of the weights, with the total capped at 100, when the seller offers at least one model at $0 input and output (and $0 cached input, when it prices cached input). It only adds to a seller that is already scored: a free model alone does not make an unknown seller trusted. |
 | `washFlagged` | true/false | `AntseedWashTradingRegistry.isProvenWashTrader` | A proven wash trader scores 0 whatever the other parts say. |
+| `verification` | multiplier | `AntseedVerificationResults.agentStatus` and the rates of `AntseedVerificationPointsPolicy` | The seller's [model checks](/docs/verify/overview): the capped sum is multiplied by the points multiplier the verification policy gives the seller. That is what a buyer's volume with this seller would earn: each verified service adds 2%, up to 50%, one DIFF service costs 4%, two 16%, three 36%, four 64%, and five with no verified services take the score to 0. The result is capped at 100. |
 
-Each part is a 0-1 value times its weight. History averages `log10(1 + channelCount) / log10(101)` and `log10(1 + settledVolumeUsdc) / log10(101)`, with each term capped at 1. Both network shares are unitless and go through the same log curve, `log10(1 + 999 · share) / 3`: a 100% share maps to 1, 10% to 0.67, and 1% to 0.35, so shares self-normalize as the network grows or as more ANTS is staked. Identity maps its points (GitHub up to 70, domain up to 12, below) onto 0-1 over 70. The free-model bonus is all or nothing: 5 points or 0, outside the weights. The weights sum to 100 and live in one table (`TRUST_WEIGHTS`); a future [model-verification](/docs/model-verification) part will take its weight from there.
+Power and usage are unitless shares that go through the same log curve, `log10(1 + 999 · min(1, share / 50%)) / 3`: a share of 50% or more maps to 1, 5% to 0.67, and 0.5% to 0.35, so shares self-normalize as the network grows or as more ANTS is staked. Each is then multiplied by its weight (`TRUST_WEIGHTS`). Identity maps its points (GitHub up to 70, domain up to 12, below) onto 0-20 over 70. The free-model bonus is all or nothing: 5 points or 0. The verification multiplier is applied last; it is read with the DIFF verdicts (every two minutes per seller, the rates at most hourly), and a read older than 15 minutes counts for nothing.
 
-The history part only needs the channels and seller-registry contracts already required for paid routing. The other on-chain parts need the recognized-usage stack: `sellerPoolsAddress`, `usageAccountingAddress`, and `washTradingRegistryAddress` in the chain config (see [Buyer configuration](/docs/buyer-config)), filled automatically for `base-mainnet`. On chains without the recognized-usage stack, service history and identity can still score a peer; in the first epoch after activation there is no previous-epoch usage share yet. Buyers read every on-chain input for a discovery pass in two Multicall3 round trips (chunked at 80 calls each) and refresh a seller at most every 120 seconds.
+Policies reach the score in three ways, and the Reputation page, provider panel and CLI say what each did. The wash-trading policy sets it to 0. The verification policy scales it by the seller's multiplier, shown as the points added or taken off. Both also shape `usage`, because usage points are counted after the on-chain reward policies, so a verification penalty lowers `usage` as well as the multiplier.
+
+A seller with no pool has no power and no usage, so it scores only what identity and a free model add, which is below the default minimum. Buyers also earn no rewards on such a seller's volume. Settled service history is still read and shown next to the score, but it does not change the number.
+
+Power and usage need the recognized-usage stack: `sellerPoolsAddress`, `usageAccountingAddress`, and `washTradingRegistryAddress` in the chain config (see [Buyer configuration](/docs/buyer-config)), filled automatically for `base-mainnet`. On chains without the recognized-usage stack, only identity and a free model can add to a peer's score; in the first epoch after activation there is no previous-epoch usage share yet. Buyers read every on-chain input for a discovery pass in two Multicall3 round trips (chunked at 80 calls each) and refresh a seller at most every 120 seconds.
 
 ### Identity
 
@@ -41,7 +46,7 @@ The identity part is the strongest single verified identity; several accounts or
 
 ### Not in the score
 
-These stay separate router rules and never change the number: the local sybil heuristic (a display-only warning in the CLI and desktop), ghost-channel count, settlement recency, failure streaks and cooldowns, price limits, and allow/block lists. A seller-reported `reputationScore` is used only when the buyer has not scored the peer.
+These stay separate router rules or display-only figures and never change the number: settled service history, the local sybil heuristic (a display-only warning in the CLI and desktop), ghost-channel count, settlement recency, failure streaks and cooldowns, price limits, and allow/block lists. A seller-reported `reputationScore` is used only when the buyer has not scored the peer.
 
 ## How routing uses the score
 

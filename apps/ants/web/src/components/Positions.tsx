@@ -17,6 +17,7 @@ import { Table, type Column } from './Table';
 import { Button } from './ui';
 import { WithdrawAction } from './WithdrawAction';
 import { InfoHelp } from './EarlyExitHelp';
+import { VerificationLine } from './VerificationLine';
 import { formatYieldPercent, positionApr } from '../pool-yield';
 
 export type RowActionKind = 'move' | 'extend' | 'withdraw' | 'split' | 'max-lock';
@@ -89,7 +90,8 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
         const pool = poolById.get(position.agentId);
         const epoch = data?.currentEpoch ?? info?.current;
         const apy = positionApr(position, pool, epoch, data?.config?.maxStakeEpochs);
-        return <span title={apy === null ? 'APR unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
+        const apr = <span title={apy === null ? 'APR unavailable for this position.' : `Based on ${pool?.yield?.status === 'estimated' ? 'estimated ' : ''}pool rewards in epoch ${pool?.yield?.epoch}.${epoch !== undefined && position.stakeStartEpoch > epoch ? ' Estimate for when this position activates.' : ''}`}>{formatYieldPercent(apy)}</span>;
+        return pool?.verification && isOpen(position) ? <span className="cell-stack">{apr}<VerificationLine verification={pool.verification} compact /></span> : apr;
       },
     },
     {

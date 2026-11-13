@@ -4,14 +4,17 @@
 #
 #   curl -fsSL https://antseed.com/install.sh | bash
 #
-# On Linux with systemd it runs the server installer (install-gateway.sh) as
-# root, passing every argument through:
+# On macOS, WSL, a Linux desktop session or Linux without systemd it installs
+# the Antseed CLI for the current user with npm, starts the gateway in the
+# background and prints a link to claim its console.
+#
+# On a Linux server with systemd (options given, or no desktop session) it runs
+# the server installer (install-gateway.sh) as root, passing every option through:
 #
 #   curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 #
-# On macOS (and Linux without systemd, such as WSL) it installs the Antseed CLI
-# for the current user with npm, starts the gateway in the background and
-# prints a link to claim its console. Docs: https://antseed.com/docs/quickstart
+# --local forces the per-user install; --server forces the server installer.
+# Docs: https://antseed.com/docs/quickstart
 
 set -euo pipefail
 
@@ -42,7 +45,7 @@ tty_in() { if { : </dev/tty; } 2>/dev/null; then "$@" </dev/tty; else "$@" </dev
 install_server() {
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
-  step "Linux with systemd: running the server installer ($BASE_URL/install-gateway.sh)"
+  step "Running the server installer ($BASE_URL/install-gateway.sh)"
   curl -fsSL --proto '=https' --tlsv1.2 "$BASE_URL/install-gateway.sh" -o "$TMP_DIR/install-gateway.sh" \
     || die "could not download $BASE_URL/install-gateway.sh"
   local args=("$@")
@@ -91,6 +94,22 @@ install_cli() {
 
 gateway_up() { curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/console/api/auth/config" 2>/dev/null; }
 
+# Just after start the buyer is still discovering sellers, and a model it has
+# not found yet answers 503 with Retry-After. Wait for that, up to a minute.
+wait_for_sellers() {
+  local i buyer_port
+  # The buyer's port comes from the same config `gateway start` read (buyer.proxyPort).
+  buyer_port="$("$ANTSEED" gateway settings show --json 2>/dev/null \
+    | node -e 'try{const p=JSON.parse(require("fs").readFileSync(0,"utf8")).buyer.proxyPort;if(Number.isInteger(p))console.log(p)}catch{}' 2>/dev/null)"
+  buyer_port="${buyer_port:-8377}"
+  for ((i = 0; i < 60; i++)); do
+    curl -fsS --max-time 2 "http://127.0.0.1:$buyer_port/_antseed/status" 2>/dev/null | grep -q '"discovering":true' || return 0
+    if [[ "$i" -eq 0 ]]; then step "Waiting for the buyer to discover sellers (up to a minute)"; fi
+    sleep 1
+  done
+  note "Still discovering sellers: for a few more seconds, a model not found yet answers 503 (retry it)."
+}
+
 start_gateway() {
   if gateway_up; then step "The gateway is already running on port $PORT"; return 0; fi
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -105,7 +124,7 @@ start_gateway() {
   # The gateway listens once its buyer answers, which can take up to a minute.
   local i
   for ((i = 0; i < 90; i++)); do
-    if gateway_up; then return 0; fi
+    if gateway_up; then wait_for_sellers; return 0; fi
     kill -0 "$GATEWAY_PID" 2>/dev/null || { tail -n 20 "$LOG_FILE" >&2; die "the gateway exited; see $LOG_FILE"; }
     sleep 1
   done
@@ -151,13 +170,45 @@ install_local() {
   note "Next:      https://antseed.com/docs/quickstart#claim-the-console"
 }
 
+has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
+is_wsl() { [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
+# A graphical login (X11 or Wayland) on this machine. Not SSH (even with X
+# forwarding) or cloud-init, which keep the server install.
+has_desktop() {
+  [[ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ]] || return 1
+  [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" || "${XDG_SESSION_TYPE:-}" == x11 || "${XDG_SESSION_TYPE:-}" == wayland ]]
+}
+
 # The whole script runs from main, so a truncated download executes nothing.
 main() {
+  local mode="" arg args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --local) mode=local ;;
+      --server) mode=server ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- ${args[@]+"${args[@]}"}
   case "$(uname -s)" in
     Linux)
-      if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then install_server "$@"
-      else install_local "$@"; fi ;;
-    Darwin) install_local "$@" ;;
+      if [[ -z "$mode" ]]; then
+        if ! has_systemd; then mode=local
+        elif [[ "$#" -gt 0 ]]; then mode=server
+        elif is_wsl; then mode=local; step "WSL: installing for this user (pass --server for the systemd server install)"
+        elif has_desktop; then mode=local; step "Desktop session: installing for this user (pass --server for the systemd server install)"
+        else mode=server; step "Linux with systemd and no desktop session: installing as a server (pass --local to install for this user only)"
+        fi
+      fi
+      if [[ "$mode" == server ]]; then
+        has_systemd || die "--server needs Linux with systemd; run without it to install for this user"
+        install_server "$@"
+      else
+        install_local "$@"
+      fi ;;
+    Darwin)
+      [[ "$mode" != server ]] || die "the server installer is for Linux with systemd; run without --server on macOS"
+      install_local "$@" ;;
     *) die "this installer supports macOS and Linux (including WSL). For Windows, see $DOCS_URL" ;;
   esac
 }

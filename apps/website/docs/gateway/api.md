@@ -67,13 +67,15 @@ A router counts as a model in the key's policy: a key limited to certain models 
 
 | Method | Route | Purpose |
 |---|---|---|
+| `GET` | `/healthz` | Whether the gateway is up. Needs no key. |
 | `GET` | `/v1/models` | Models on the network. With a key limited to certain models, only those. Free. |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions |
 | `POST` | `/v1/responses` | OpenAI Responses API |
 | `POST` | `/v1/messages` | Anthropic-compatible messages |
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible token count. Free. |
 | `POST` | `/v1/images/generations` | Image generation |
-| `POST` | `/v1/images/edits` | Image editing |
+| `POST` | `/v1/images/edits` | Image editing, one or more images |
+| `POST` | `/v1/audio/speech` | Text to speech; returns the audio file |
 | `POST` | `/api/v1/video/queue`, `/api/v1/video/retrieve` | Venice-format video jobs |
 | `POST` | `/fal/v1/video/queue`, `/fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
 | `GET` | `/v1/key` | Usage and limits of the calling key |
@@ -95,7 +97,19 @@ curl https://gateway.example.com/fal/v1/video/retrieve \
   -d '{"model":"<peerId>@<fal-video-endpoint>","request_id":"<request_id>"}' -o result.out
 ```
 
-Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/api#video-jobs) for the request fields.
+Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/api#video-jobs) for the request fields. Video edits send the source video as `video_url` (inline, up to 64 MiB per request, or a public `https` URL) with `duration` set to its length in whole seconds; see [Edit a video](/docs/api#edit-a-video).
+
+Text to speech uses the OpenAI speech API. List speech models and their voices with `GET /v1/models?type=speech`:
+
+```bash
+curl https://gateway.example.com/v1/audio/speech \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<peerId>@tts-kokoro","input":"Hello from Antseed.","voice":"af_sky"}' \
+  -o hello.mp3
+```
+
+It is charged per character of `input`, only when audio comes back, and counts against the key's limits like any other spend. See [Text to speech](/docs/api#text-to-speech) and [Edit images](/docs/api#edit-images).
 
 To attribute requests to your own end users, send the OpenAI-style `user` field in the body, or an `x-antseed-end-user` header. The gateway records it in the request log and does not forward the header.
 
@@ -169,7 +183,7 @@ Model:     <peerId>@deepseek-v4-flash
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.example.com"
 export ANTHROPIC_AUTH_TOKEN="$ANTSEED_API_KEY"
-export ANTHROPIC_MODEL="<peerId>@qwen3-coder-480b"
+export ANTHROPIC_MODEL="<peerId>@deepseek-v4-flash"
 claude
 ```
 
@@ -187,7 +201,7 @@ env_key = "ANTSEED_API_KEY"
 wire_api = "responses"
 ```
 
-To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
+Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
 ## Check a key's usage and limits
 
@@ -206,6 +220,7 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
     "expires_at": null,
     "topup_enabled": false,
     "buyer_address": "0x…",
+    "balance": { "available_usd": "24.500000", "reserved_usd": "1.000000", "pending_usd": "0.120000", "wallet_usd": "0.000000", "credit_limit_usd": "500.000000", "operator": null, "stale": false },
     "usage": { "requests": 42, "spent_usd": "1.204310", "topped_up_usd": "0.000000", "input_tokens": 180233, "cached_input_tokens": 90112, "output_tokens": 20118 },
     "limits": {
       "daily": { "limit_usd": "2.000000", "spent_usd": "0.410000", "remaining_usd": "1.590000" },
@@ -216,6 +231,26 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
   }
 }
 ```
+
+`usage.requests` counts calls to a model. Listing `/v1/models` or checking a video's status shows in the request log but is not counted.
+
+`balance` is what the wallet paying for the key (`buyer_address`) holds: `available_usd` is free to spend, `reserved_usd` is held for open seller channels, `pending_usd` is the part of it already signed to sellers but not settled yet, `wallet_usd` is USDC in the wallet not yet swept into deposits, `credit_limit_usd` is the most the wallet may hold in deposits, and `operator` is the address its withdrawals and rewards go to. `stale` means the gateway couldn't reach the chain and these are its last known values. `balance` is `null` when the gateway can't read it. Antseed Desktop shows this as its balance, with the local gateway and with a remote one.
+
+### Rewards and savings
+
+```bash
+curl https://gateway.example.com/v1/key/rewards -H "Authorization: Bearer $ANTSEED_API_KEY"
+curl https://gateway.example.com/v1/key/savings -H "Authorization: Bearer $ANTSEED_API_KEY"
+```
+
+```json
+{ "data": { "available": true, "address": "0x…", "pending_ants": "12.5", "current_epoch": 30, "transfers_enabled": false } }
+{ "data": { "retail_usd": 4.2131, "paid_usd": 1.0204, "saved_usd": 3.1927, "matched_requests": 118 } }
+```
+
+`/v1/key/rewards` reports the $ANTS the paying wallet earned from usage, read on the gateway's own chain (`available` is false where rewards aren't live). Claiming needs the wallet's operator, so it happens in the console's Rewards page.
+
+`/v1/key/savings` compares this key's own requests with retail reference prices: what they would have cost at retail, and what they paid. It counts only models with a retail price, free requests at $0 paid. Its usage comes from the gateway's records per model (requests the gateway pruned from its log keep their spend but no longer their tokens if no spend was metered). `data` is `null` when retail prices can't be read (`ANTSEED_COMPARABLE_PRICES_URL`) or no request matched. Both answer `null` rather than an error when they can't be read.
 
 `limits` are the key's own limits (the lower of the admins' and the owner's). Member and workspace budgets can stop a request first; see [Budgets and spend limits](/docs/gateway/budgets).
 

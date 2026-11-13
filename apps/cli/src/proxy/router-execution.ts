@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/query-core'
-import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, effectiveModelReputationScore, hasLiveDiffVerdict, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
-import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
+import { findMissingRouteParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
 import { candidatePricing, InvalidRouterOptionsError, RouterCannotRankError, routerModelResolver, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
@@ -56,8 +56,8 @@ type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
 /**
  * Build the text-model destinations this buyer's policies allow. The router chooses among them.
  * `preferences` apply as for automatic routing: the peer allow and block lists and `minTrustScore`
- * exclude, judged on the same effective reputation (`effectiveModelReputationScore`) automatic
- * routing uses; `maxInputUsdPerMillion` is a soft ranking limit there and never excludes here.
+ * exclude, judged on the same effective reputation (`effectiveModelReputationScore`, including the
+ * live-DIFF verification penalty) automatic routing uses; `maxInputUsdPerMillion` is a soft ranking limit there and never excludes here.
  */
 export function eligibleRouterCandidates(
   request: SerializedHttpRequest,
@@ -82,8 +82,7 @@ export function eligibleRouterCandidates(
     if (!peer || offer.type !== 'text' || (explicitProvider && offer.provider !== explicitProvider)) continue
     if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) continue
     const plan = resolvePeerRoutePlan(peer, protocol, offer.serviceId, offer.provider, 'strict')
-    if (!plan?.serviceId || (requiredParameters.length && plan.selection?.requiresTransform)) continue
-    if (findMissingRequiredParameters(peer, offer.provider, plan.serviceId, requiredParameters).length) continue
+    if (!plan?.serviceId || findMissingRouteParameters(peer, plan, plan.serviceId, requiredParameters).length) continue
     const rewritten = overrideRoutedModelInBody(request.body, request.headers, plan.serviceId)
     // Check peer policy against the model/provider we would actually send, not the automatic alias.
     const policyRequest = { ...request, body: rewritten.body, headers: { ...rewritten.headers, 'x-antseed-provider': offer.provider } }
@@ -98,6 +97,8 @@ export function eligibleRouterCandidates(
       offer.cachedInputUsdPerMillion !== undefined,
       preferCachedPricing,
       offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0,
+      // The verdict of the service the request is sent to, not of the alias that resolved to it.
+      hasLiveDiffVerdict(peer, plan.serviceId),
     )
     if (preferences && !isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) continue
     const key = JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId])
@@ -172,6 +173,8 @@ export async function executeRouterSelection(args: {
   onRoutingRequest?: (requestId: string) => void;
   /** Buyer identity that pays for the ranking (a gateway key's wallet); the default identity when unset. */
   buyerIdentity?: string;
+  /** Send the conversation to the router only on this attested connection (a required TEE check's). */
+  channelBinding?: string;
 }): Promise<RouteRecommendation[]> {
   const { node, client, request, peers, conversationKey, signal } = args
   const routingService = args.selection.service
@@ -203,7 +206,11 @@ export async function executeRouterSelection(args: {
         // Routing and inference are separate purchases, so they need separate billing IDs.
         if (!serviceRequest.requestId || serviceRequest.requestId === request.requestId) throw new Error('Routing purchases require a distinct request ID')
         args.onRoutingRequest?.(serviceRequest.requestId)
-        return node.sendRequest(peer, serviceRequest, { ...options, signal, ...(args.buyerIdentity ? { buyerIdentity: args.buyerIdentity } : {}) })
+        return node.sendRequest(peer, serviceRequest, {
+          ...options, signal,
+          ...(args.buyerIdentity ? { buyerIdentity: args.buyerIdentity } : {}),
+          ...(args.channelBinding ? { channelBinding: args.channelBinding } : {}),
+        })
       },
     }))
     signal.throwIfAborted()

@@ -5,13 +5,26 @@ export const UNIT_BILLING_UNITS_V1 = [
   'completed_requests',
   'video_generations',
   'video_seconds',
+  /** Characters of text a speech service read aloud (`input` of `POST /v1/audio/speech`). */
+  'input_characters',
 ] as const;
 
+/**
+ * Request attributes a billing component can match. Wire ids follow this
+ * order, so new keys are appended. `aspect_ratio` and `audio` (`"true"` or
+ * `"false"`) price a video create by the options the upstream bills by; only
+ * metadata v16+ documents may name them. `reference_video` (`"true"` or
+ * `"false"`) is whether the create sends reference videos, which upstreams
+ * bill on top of the output; only metadata v17+ documents may name it.
+ */
 export const UNIT_BILLING_MATCH_KEYS_V1 = [
   'model',
   'size',
   'quality',
   'resolution',
+  'aspect_ratio',
+  'audio',
+  'reference_video',
 ] as const;
 
 export type UnitBillingUnitV1 = (typeof UNIT_BILLING_UNITS_V1)[number];
@@ -245,14 +258,17 @@ function normalizedUnitCount(usage: UnitBillingUsage, unit: UnitBillingUnitV1): 
   return value;
 }
 
+/** Whether a component applies to a request with these attributes: every `match` entry must equal one. */
+export function componentMatchesAttributes(
+  component: Pick<UnitBillingComponentV1, 'match'>,
+  attributes: UnitBillingContext['attributes'] = {},
+): boolean {
+  return (Object.entries(component.match ?? {}) as Array<[UnitBillingMatchKeyV1, string]>)
+    .every(([key, expected]) => attributes[key] === expected);
+}
+
 function componentMatchesContext(component: UnitBillingComponentV1, context: UnitBillingContext): boolean {
-  const match = component.match;
-  if (!match || Object.keys(match).length === 0) return true;
-  const requestAttributes = context.attributes ?? {};
-  for (const [key, expected] of Object.entries(match) as Array<[UnitBillingMatchKeyV1, string]>) {
-    if (requestAttributes[key] !== expected) return false;
-  }
-  return true;
+  return componentMatchesAttributes(component, context.attributes);
 }
 
 function validateUsageWithinRequestLimits(usage: UnitBillingUsage, context: UnitBillingContext): void {

@@ -33,11 +33,26 @@ const STATE_FILES: Array<{ name: string; role: 'seller' | 'buyer' }> = [
 /**
  * Check if a process with the given PID is alive.
  * Uses `process.kill(pid, 0)` which checks existence without sending a signal.
+ * EPERM means the process exists but belongs to another user.
  */
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Whether the buyer process that last wrote this data dir's buyer.state.json
+ * (`antseed buyer start`, which the desktop app also runs) is still alive.
+ * A pid reused by another process reads as alive.
+ */
+export async function isBuyerProcessAlive(dataDir: string): Promise<boolean> {
+  try {
+    const state = JSON.parse(await readFile(join(dataDir, 'buyer.state.json'), 'utf-8')) as Record<string, unknown>;
+    return typeof state.pid === 'number' && isProcessAlive(state.pid);
   } catch {
     return false;
   }

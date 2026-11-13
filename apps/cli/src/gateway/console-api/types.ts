@@ -757,6 +757,40 @@ export interface PeerVerificationLink {
 /** Mirrors `TeeScope` in `@antseed/node/tee-status`, which the console cannot import. */
 export type PeerTeeScope = 'end-to-end' | 'seller-node'
 
+/** A seller's last announced self health check for one model (signed in its metadata). */
+export interface ServiceHealthView {
+  status: 'healthy' | 'failing' | 'unknown'
+  /** When the evidence behind `status` was gathered, and whether the seller's probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  failingSince: number | null
+  consecutiveFailures: number | null
+  /** Why the last check failed (a fixed code such as `timeout` or `out_of_credit`). */
+  reason: string | null
+  /** The upstream's HTTP status on the failed check. */
+  httpStatus: number | null
+}
+
+/** How a seller says one model served all its buyers in the last hour (signed in its metadata). */
+export interface ServicePerformanceView {
+  requests: number
+  /** 0–1. */
+  successRate: number
+  firstTokenMsP50: number | null
+  firstTokenMsP90: number | null
+  tokensPerSecondP50: number | null
+}
+
+/**
+ * An on-chain auditor verdict on one seller's offer of one model: 'same' (serves the genuine
+ * model) or 'diff' (very likely a different one; routing keeps 10% of its reputation), with the
+ * explorer page of its audit history (null without an explorer or agent id).
+ */
+export interface ModelCheckView {
+  verdict: 'diff' | 'same'
+  auditUrl: string | null
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -773,6 +807,16 @@ export interface Peer {
     paid?: boolean
     /** The free-tier program this service is served under: its own, else the seller-wide one. */
     freeTier?: FreeTierProgramView | null
+    /** The seller's last announced self health check; routing skips a failing service. Absent when not announced. */
+    health?: ServiceHealthView
+    /** The seller's measured performance in the last hour. Absent when not announced. */
+    performance?: ServicePerformanceView
+    /** Speech services: the voices the seller accepts. Absent when not announced. */
+    voices?: string[]
+    /** Speech services: USD per million characters of `input`. Absent when not advertised. */
+    usdPerMillionCharacters?: number
+    /** The live model-check verdict for this service; absent when there is none. */
+    modelCheck?: ModelCheckView
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -786,6 +830,8 @@ export interface Peer {
    * seller is not TEE-capable or the buyer has not verified it yet.
    */
   teeScope: PeerTeeScope | null
+  /** Hosts a TEE-verified seller node sends prompts to, from its attested config; absent when unknown. */
+  teeUpstreams?: string[]
   stakeAnts: string | null
   /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
   agentId: number | null
@@ -793,6 +839,17 @@ export interface Peer {
   freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
+  /** How the buyer built `trustScore`, part by part; absent when it has no breakdown. */
+  trustBreakdown?: TrustBreakdownView
+  /**
+   * Services with a live DIFF verdict on AntseedVerificationResults (lowercase names): auditors found
+   * they very likely serve a different model. Their routing reputation keeps 10%.
+   */
+  diffServices?: string[]
+  /** Services with a live SAME verdict (lowercase names): auditors found they serve the genuine model. */
+  sameServices?: string[]
+  /** Explorer page of each verdict's audit history, keyed by service (lowercase name); absent without an explorer. */
+  verificationUrls?: Record<string, string>
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
   /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
@@ -802,7 +859,7 @@ export interface Peer {
   requests24h: number
 }
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech'
 
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
@@ -864,6 +921,8 @@ export interface NetworkModelOffer {
   cachedInputUsdPerMillion: number | null
   /** Image models: price per image, cheapest to dearest; null when not advertised. */
   usdPerImage: { min: number; max: number } | null
+  /** Speech models: USD per million characters of `input`; absent when not advertised. */
+  usdPerMillionCharacters?: number
   contextLength: number | null
   free: boolean
   /**
@@ -890,6 +949,14 @@ export interface NetworkModelOffer {
   latencyMsP50: number | null
   firstTokenMsP50: number | null
   tokensPerSecondP50: number | null
+  /** The seller's last announced self health check; failing offers are not listed. */
+  health?: ServiceHealthView
+  /** The seller's measured performance in the last hour. */
+  performance?: ServicePerformanceView
+  /** Speech models: the voices this seller accepts. Absent when not announced. */
+  voices?: string[]
+  /** The live model-check verdict for this offer; absent when there is none. */
+  modelCheck?: ModelCheckView
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -919,6 +986,8 @@ export interface NetworkModel {
   verifiedSellers: number
   /** In the buyer's routing order. */
   offers: NetworkModelOffer[]
+  /** Speech models: the voices every offer accepts. Absent when none is known to be. */
+  voices?: string[]
 }
 
 /**
@@ -964,9 +1033,16 @@ export interface RoutePreview {
     reasons: string[]
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
+    /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+    cachedInputUsdPerMillion: number | null
+    /** Trust for this model, as routing judges it: cut to 10% by a live DIFF model check. */
     trustScore: number | null
+    /** The seller's trust before that cut; present only when one applies. */
+    trustScoreBeforeCut?: number
     /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
     selection: RouteSelection | null
+    /** The seller's last announced self health check for the model; a failing one is never routed to. */
+    health?: ServiceHealthView
   }>
 }
 
@@ -1002,6 +1078,7 @@ export interface Preset {
 // GET   /settings                  → Settings
 // PATCH /settings/buyer            BuyerSettingsInput → Settings  (restarts the buyer)
 // PUT   /settings/observability    ObservabilitySettings → Settings
+// PUT   /settings/telemetry        { enabled: boolean } → Settings
 export interface GatewayStatus {
   version: string
   publicUrl: string | null
@@ -1079,6 +1156,8 @@ export interface Settings {
   publicUrl: string | null
   buyer: BuyerSettings
   observability: ObservabilitySettings
+  /** Anonymous product telemetry: this gateway's setup funnel and the buyer it runs (docs/telemetry.md). */
+  telemetry: TelemetrySettings
   auth: AuthConfig
   /**
    * Set by `PATCH /settings/buyer` when a change needs a buyer restart and
@@ -1166,6 +1245,19 @@ export interface ObservabilitySettings {
   retentionDays: number | null
 }
 
+/**
+ * The same switch as the desktop's Preferences → Privacy and
+ * `antseed telemetry enable|disable`: `telemetry.enabled` in the config
+ * file. The gateway and its buyer re-read it, so a change applies at once.
+ */
+export interface TelemetrySettings {
+  /** False when this build has no PostHog project, or the environment turns it off (ANTSEED_TELEMETRY=0, DO_NOT_TRACK=1, CI). */
+  available: boolean
+  enabled: boolean
+  /** Turned off in the config file (here, in the CLI or in the desktop). */
+  userDisabled: boolean
+}
+
 // ── Seller monitoring ────────────────────────────────────────────────────
 // Read-only views of a seller on this host, from its data directory:
 // daemon.state.json (written every second while it runs), seller-events.jsonl
@@ -1181,9 +1273,16 @@ export interface SellerModelHealth {
   /** The seller config's provider name; tells apart upstreams that share a plugin. Older sellers: same as `provider`. */
   providerId: string
   service: string
-  /** False when the seller withdrew the service after failing health probes. */
-  advertised: boolean
+  /** The seller's self health check result, as announced to buyers (who skip failing services). */
+  status: 'healthy' | 'failing' | 'unknown'
+  /** Why the last check failed (a fixed code such as `timeout` or `rate_limited`). */
+  reason: string | null
   consecutiveFailures: number
+  failingSince: number | null
+  /** When the evidence behind `status` was gathered, and whether a probe or a buyer request gave it. */
+  checkedAt: number | null
+  source: 'probe' | 'traffic' | null
+  lastTrafficAt: number | null
   lastProbeAt: number | null
   lastStatusCode: number | null
   lastDetail: string | null
@@ -1195,6 +1294,29 @@ export interface SellerGas {
   balanceEth: number | null
   minBalanceEth: number
   lastCheckedAt: number | null
+  /** Auto-refuel state; null when it is off or unavailable on this chain. */
+  refuel: SellerGasRefuel | null
+}
+
+export interface SellerGasRefuel {
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  usdcLast24h: number
+  lastRefuel: { at: number; usdc: number; txHash: string } | null
+  lastError: string | null
+  /** Why the last attempt did not swap: the daily cap, too little USDC, or too little ETH to pay for the swap. */
+  skipped: 'daily_cap' | 'insufficient_usdc' | 'insufficient_eth' | null
+  nextAttemptAt: number | null
+}
+
+export interface SellerGasRefuelSettings {
+  enabled: boolean
+  triggerBalanceEth: number
+  swapUsdc: number
+  maxUsdcPerDay: number
+  /** Slippage tolerance in basis points; set in config.json only. */
+  slippageBps: number
 }
 
 export interface SellerAlertsState {
@@ -1344,6 +1466,8 @@ export interface SellerSettings {
   maxConcurrentBuyers: number
   healthCheck: { enabled: boolean; intervalMs: number; failureThreshold: number }
   gasCheck: { enabled: boolean; minBalanceEth: number }
+  /** Swap USDC earnings for ETH before the wallet runs out of gas (Base mainnet). */
+  gasRefuel: SellerGasRefuelSettings
   /** The seller-wide program for free models. */
   freeTier: SellerFreeTierProgramSettings
   /** The network's default staked tiers, used where a program sets none. */
@@ -1402,6 +1526,7 @@ export interface SellerSettingsPatch {
   maxConcurrentBuyers?: number
   healthCheck?: { enabled?: boolean; intervalMs?: number; failureThreshold?: number }
   gasCheck?: { enabled?: boolean; minBalanceEth?: number }
+  gasRefuel?: Partial<Omit<SellerGasRefuelSettings, 'slippageBps'>>
   /** The seller-wide program; null removes a limit. */
   freeTier?: SellerFreeTierProgramPatch
   /** null goes back to the built-in list. */
@@ -1539,12 +1664,15 @@ export interface SellerTrustPart {
 
 export interface SellerTrust {
   score: number
-  history: (SellerTrustPart & { channelCount: number; volumeUsdc: number }) | null
+  /** Settled service history, shown next to the score and not part of it. */
+  history: { channelCount: number; volumeUsdc: number } | null
   usage: (SellerTrustPart & { shareBps: number; epoch: number }) | null
   power: (SellerTrustPart & { shareBps: number; epoch: number }) | null
   identity: (SellerTrustPart & { kind: 'github' | 'domain'; claim: string }) | null
   freeModels: (SellerTrustPart & { service: string }) | null
   washFlagged: boolean | null
+  /** What the verification policy did to the score; `null` when it changed nothing. */
+  verification: { multiplierBps: number; sameCount: number; diffCount: number; change: number } | null
 }
 
 export interface SellerStanding {
@@ -1578,7 +1706,7 @@ export interface SellerReputation {
   /** Position by trust score among the sellers in the snapshot. */
   rank: { position: number; of: number } | null
   /** One plain next step per part that has room to grow. */
-  steps: Array<{ part: 'history' | 'usage' | 'power' | 'identity' | 'freeModels' | 'wash' | 'standing'; text: string }>
+  steps: Array<{ part: 'usage' | 'power' | 'identity' | 'freeModels' | 'verification' | 'wash' | 'standing'; text: string }>
   standing: SellerStanding | null
   standingError: string | null
   standingRefreshedAt: number | null
@@ -1699,4 +1827,23 @@ export interface SellerLogQuery {
 export interface SellerRpcDiagnostics {
   process: Record<string, { total: number; lastMinute: number; perMinute: number }>
   daemon: Record<string, { total: number; lastMinute: number; perMinute: number }> | null
+}
+
+/** The parts of a seller's trust score (0-100), as the buyer computed it. Null parts had no data. */
+export interface TrustBreakdownView {
+  /** History contribution from an older buyer daemon, which still scores it; newer buyers send none. */
+  history?: number
+  /** Last epoch's recognized-usage share, 0-30. */
+  usage: number | null
+  /** Staking-power share, 0-70. */
+  power: number | null
+  /** Verified identity, 0-20, and which kind. */
+  identity: { score: number; kind: 'github' | 'domain' } | null
+  /** Free-model bonus, +5. */
+  freeModels: number | null
+  /**
+   * Model-verification effect on the sum: the seller's points multiplier from the verification
+   * policy, and the points it added or (negative) took off. Absent when it changes nothing.
+   */
+  verification?: { multiplierBps: number; sameCount: number; diffCount: number; change: number }
 }

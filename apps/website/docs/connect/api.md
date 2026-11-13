@@ -15,7 +15,7 @@ Use the gateway instead. It puts API keys, spend limits, routing policies and lo
 
 ## Start the buyer
 
-The desktop app runs the buyer for you while its router is on. Without the desktop app:
+The desktop app runs a local gateway, which runs the buyer on this port by default while the app is open (on `buyer.proxyPort` instead, if you changed it in your config). Without the desktop app:
 
 ```bash
 npm install -g @antseed/cli
@@ -62,14 +62,15 @@ Do not publish port 8377 itself, for example with a router port forward, `socat`
 | `POST /v1/messages/count_tokens` | Anthropic token counting, answered locally, never routed or billed |
 | `POST /v1/images/generations` | OpenAI image generation |
 | `POST /v1/images/edits` | OpenAI image editing (multipart) |
-| `POST /v1/systemone` | Typed questions to decision models; see the [decisions skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) |
+| `POST /v1/audio/speech` | OpenAI text to speech; the audio file comes back as it is |
+| `POST /v1/systemone` | Typed questions to decision models; see the [decisions skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-decisions) |
 | `POST /api/v1/video/queue`, `POST /api/v1/video/retrieve` | Venice-format video jobs |
 | `POST /fal/v1/video/queue`, `POST /fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
-| `GET /v1/models`, `GET /v1/models/<id>` | Network-wide model catalog, answered locally and free. Filter with `?type=text`, `images`, `videos` or `decisions`. Routing services are listed only under `?type=router` |
+| `GET /v1/models`, `GET /v1/models/<id>` | Network-wide model catalog, answered locally and free. Filter with `?type=text`, `images`, `videos`, `speech` or `decisions`. Routing services are listed only under `?type=router` |
 
-Your tool's format does not need to match the seller's. The proxy translates between Anthropic Messages, OpenAI Chat Completions and OpenAI Responses when needed. Image endpoints are never translated: the seller must serve `openai-images`.
+Your tool's format does not need to match the seller's. The proxy translates between Anthropic Messages, OpenAI Chat Completions and OpenAI Responses when needed. Image and speech endpoints are never translated: the seller must serve `openai-images` or `openai-audio-speech`.
 
-For video and image pricing, see [Media billing](/docs/provide/media). For how `/v1/models` ranks offers, see [Routing and catalog](/docs/api/routing).
+For video, image and speech pricing, see [Media billing](/docs/provide/media). For how `/v1/models` ranks offers, see [Routing and catalog](/docs/api/routing).
 
 ### Video jobs
 
@@ -87,6 +88,73 @@ curl http://localhost:8377/api/v1/video/retrieve \
 
 Retrieve requests always go to the seller that accepted the job. You pay once, when the finished MP4 is delivered, and the buyer refuses videos priced above $5.00.
 
+#### Edit a video
+
+Video edit models (`inputs` has `video` in `GET /v1/models?type=videos`) take your video as `video_url` and change part of it. Send the video inline as a data URL, or as a public `https` URL. Every edit model needs it inline: the seller measures it and answers `422 invalid_video_duration` for a URL or a `duration` that is not its length. Set `duration` to the video's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 dance.mp4`); that is what you pay for. For a shorter clip, trim the video first.
+
+```bash
+jq -n --rawfile video <(printf 'data:video/mp4;base64,'; base64 < dance.mp4 | tr -d '\n') \
+  '{model: "<peerId>@minimax-h3-max-recast", video_url: $video, duration: "12s",
+    reference_image_urls: ["https://example.com/me.png"], resolution: "768P"}' > edit.json
+curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @edit.json
+```
+
+On fal, `duration` is a number (`12`). A request is at most 64 MiB including base64 (about 47 MB of video); Venice sellers accept at most 32.5 MB, images included. Send `resolution` exactly as the seller lists it (`768P` for Recast, `720p` for Kling and Wan).
+
+Sellers do not check the source; the upstream does. Check it first against the model's published limits: fal's schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<model>`, `x-fal` on `video_url`) or Venice's model list and docs. The `antseed-videos` skill does this for you. A source or field the upstream refuses, or a job that fails after it started (for example Recast or motion control on a video without a person), is closed at once. A video priced above $1.00 then costs the payment channel's opening fee ($0.65 on Base), a cheaper one nothing.
+
+#### Lip-sync a video to audio
+
+Models whose seller announces `audio_url` in `supportedParameters` (`audio` in `capabilities.video.inputs`) animate a character to an audio file, for example narration you recorded or generated with [text to speech](#text-to-speech). Send it as `audio_url`, a data URL or a public `https` URL (WAV or MP3, at most 30 s and 15 MB on Venice). Automatic routing then only picks sellers that take it. The video is priced as usual; the audio adds nothing.
+
+```bash
+jq -n --rawfile face <(printf 'data:image/png;base64,'; base64 < face.png | tr -d '\n') \
+      --rawfile voice <(printf 'data:audio/mpeg;base64,'; base64 < hello.mp3 | tr -d '\n') \
+  '{model: "<peerId>@<video-model>", prompt: "She looks into the camera and says hello",
+    image_url: $face, audio_url: $voice, duration: "5s", resolution: "720p", aspect_ratio: "16:9"}' > lipsync.json
+curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @lipsync.json
+```
+
+Talking-avatar models (`audio` in `capabilities.video.requiredInputs`, no `duration` in `supportedParameters`; for example fal's `fal-ai/kling-video/ai-avatar/v2/pro`) make a video as long as the audio and take no duration of their own. The length you pay for is still `duration`, and it must be the audio's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 hello.mp3`). Send the audio inline as an MP3 or WAV data URL: the seller measures it and answers `422 invalid_video_duration` for a URL, another format, or a `duration` that is not its length, before any payment. The seller removes `duration` before calling fal.
+
+```bash
+jq -n --rawfile face <(printf 'data:image/png;base64,'; base64 < face.png | tr -d '\n') \
+      --rawfile voice <(printf 'data:audio/mpeg;base64,'; base64 < hello.mp3 | tr -d '\n') \
+  '{model: "<peerId>@fal-ai/kling-video/ai-avatar/v2/pro", prompt: "She smiles warmly",
+    image_url: $face, audio_url: $voice, duration: 7}' > avatar.json
+curl http://localhost:8377/fal/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @avatar.json
+```
+
+### Edit images
+
+`POST /v1/images/edits` takes OpenAI's multipart form: `model`, `prompt`, and one `image` file, or several as `image[]` (the OpenAI SDKs send a list that way). Automatic routing only picks sellers that announce `image` in `supportedParameters`. The answer is an OpenAI images response with `b64_json`.
+
+```bash
+curl http://localhost:8377/v1/images/edits \
+  -H 'x-antseed-pin-peer: <peerId>' \
+  -F model=qwen-image-3-pro \
+  -F prompt='Put the cat from the second image on the sofa' \
+  -F 'image[]=@./sofa.png' -F 'image[]=@./cat.png' \
+  | jq -r '.data[0].b64_json' | base64 --decode > edited.png
+```
+
+Image edits are billed per delivered output image (plus any token prices the seller sets). Venice edits take only `n=1`, so a Venice edit is one image however many images it takes in. What else a seller accepts (`quality`, `resolution`, `aspect_ratio`, `moderation`) is listed in its `supportedParameters`.
+
+### Text to speech
+
+`POST /v1/audio/speech` takes OpenAI's JSON body (`model`, `input`, `voice`, optional `response_format` and `speed`) and returns the audio file. Find speech models and their voices with `GET /v1/models?type=speech`: each offer lists its voices under `capabilities.speech.voices`, and `voices` on the model lists those every seller of it accepts.
+
+```bash
+curl -s http://localhost:8377/v1/models?type=speech | jq '.data[] | {id, voices}'
+
+curl http://localhost:8377/v1/audio/speech \
+  -H 'content-type: application/json' \
+  -d '{"model": "<peerId>@tts-kokoro", "input": "Hello from Antseed.", "voice": "af_sky"}' \
+  -o hello.mp3
+```
+
+You pay per character of `input`, only when audio comes back. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
+
 ## Choose the model and seller
 
 The `model` field controls routing:
@@ -94,9 +162,9 @@ The `model` field controls routing:
 | Value | Routing |
 |---|---|
 | `<peerId>@deepseek-v4-flash` | Pins this request to one seller. No failover. |
-| `deepseek-v4-flash` | Automatic routing: the buyer picks the cheapest seller of that model that passes your minimum trust score, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
+| `deepseek-v4-flash` | Automatic routing: among the sellers of that model that pass your minimum trust score, the buyer weighs price against speed and recent success for this request, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
 | `<routerPeerId>@<routerServiceId>` | A routing service picks the model and seller for each request. See [Use a routing service](/docs/api/routing#use-a-routing-service). |
-| `antseed` | Follows the model, seller or router picked in the desktop app. Returns `no_default_route` when the app has no selection. |
+| `antseed` | Follows the default route saved in the buyer (see [Saved router settings](/docs/api/routing#saved-router-settings)). Returns `no_default_route` when none is saved. |
 
 The peer id is 40 hex characters, with or without `0x`. The prefix is stripped before the request reaches the seller.
 
@@ -118,7 +186,7 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 
 ## Tools
 
-- **Desktop app**: connect Claude Code, Codex, OpenCode and others from **Connected apps**. See [Desktop app](/docs/desktop).
+- **Desktop app**: connect Codex, OpenCode and others from **Agents & apps**. The app points them at its local gateway with an API key, not at this proxy. See [Desktop app](/docs/desktop).
 - **CLI wrappers**: `antseed claude`, `antseed codex` and `antseed opencode` launch the tool against the running buyer and pass your other flags through:
 
   ```bash
@@ -140,31 +208,43 @@ Non-streaming responses carry telemetry headers:
 |---|---|
 | `x-antseed-request-id` | Request id |
 | `x-antseed-peer-id` | Seller that served the request |
-| `x-antseed-provider`, `x-antseed-service` | Seller's provider plugin and service id |
+| `x-antseed-provider`, `x-antseed-service` | The provider as the seller announces it (its plugin name, or a 12-character ID when the seller sets `seller.announceProviderIds`) and the service id |
 | `x-antseed-input-tokens`, `x-antseed-cached-input-tokens`, `x-antseed-output-tokens`, `x-antseed-total-tokens` | Token counts |
 | `x-antseed-token-source` | Where the counts came from |
 | `x-antseed-estimated-cost-usd` | Estimated cost |
 | `x-antseed-input-usd-per-million`, `x-antseed-output-usd-per-million`, `x-antseed-cached-input-usd-per-million` | Seller's advertised prices |
 | `x-antseed-latency-ms` | Latency |
-| `x-antseed-peer-reputation` | Seller's reputation score |
+| `x-antseed-peer-address`, `x-antseed-peer-providers` | Seller's network address and provider plugins |
+| `x-antseed-peer-current-load`, `x-antseed-peer-max-concurrency` | Seller's announced load and request limit |
+| `x-antseed-unit-priced` | `1` when the seller charges for this service per unit (an image, a second of video, a speech character), so zero token prices don't make it free; else `0` |
+| `x-antseed-route-selection` | On model-routed requests: why this seller served it, as base64url JSON. See [Which seller served a request](/docs/api/routing#which-seller-served-a-request). |
 
-Streaming responses carry only the request id, seller identity and price headers, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
+Streaming responses carry only the request id, seller identity, price and route-selection headers, plus `x-antseed-first-token-ms`, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
 
 ## Errors
 
 | Status | Code | Meaning |
 |---|---|---|
 | 400 | `missing_routing_target` | The request has no model and no pin. |
-| 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
+| 400 | `no_default_route` | `model: "antseed"` was sent but the buyer has no default route saved. |
 | 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
-| 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
+| 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+| 503 | `discovery_in_progress` | The buyer started less than two minutes ago and is still discovering sellers. It has not found a seller it can use for this model yet. Retry after the `Retry-After` seconds. |
+
+The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
+
+```json
+{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of Antseed credits for this request. ..."}}
+```
+
+In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and the message ends with the reason in brackets, for example `(insufficient_deposits)`.
 
 ## Diagnostics
 
-The proxy serves a local control plane under `/_antseed/` that the desktop app uses:
+The proxy serves a local control plane under `/_antseed/`:
 
 ```bash
 curl -s http://localhost:8377/_antseed/status     # DHT node count, peer count, uptime

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { readSellerEvents, SELLER_EVENTS_FILE } from '@antseed/node'
 import { MeteringStorage } from '@antseed/node/metering'
 import { CHANNEL_KIND, ChannelStore } from '@antseed/node/payments'
-import type { SellerAlertsState, SellerEventView, SellerGas, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
+import type { SellerAlertsState, SellerEventView, SellerGas, SellerGasRefuel, SellerModelHealth, SellerStatus, SellerUsage, SellerUsageDay } from '../gateway/console-api/types.js'
 
 const DAY_MS = 86_400_000
 /** The longest usage series asked for; older cached days are dropped. */
@@ -41,19 +41,33 @@ export async function readDaemonState(dataDir: string): Promise<Record<string, u
   }
 }
 
-/** `modelHealth` from daemon.state.json, withdrawn services first (shared with the metrics exporter). */
+const HEALTH_ORDER: Record<SellerModelHealth['status'], number> = { failing: 0, unknown: 1, healthy: 2 }
+
+function parseHealthStatus(entry: Record<string, unknown>): SellerModelHealth['status'] {
+  if (entry.status === 'healthy' || entry.status === 'failing' || entry.status === 'unknown') return entry.status
+  // Sellers before self health status wrote `advertised` instead.
+  if (entry.advertised === false) return 'failing'
+  return entry.lastProbeAt ? 'healthy' : 'unknown'
+}
+
+/** `modelHealth` from daemon.state.json, failing services first (shared with the metrics exporter). */
 export function parseModelHealth(raw: unknown): SellerModelHealth[] {
   if (!Array.isArray(raw)) return []
   return raw.map((entry: Record<string, unknown>) => ({
     provider: String(entry.provider ?? ''),
     providerId: String(entry.providerId ?? entry.provider ?? ''),
     service: String(entry.service ?? ''),
-    advertised: entry.advertised !== false,
+    status: parseHealthStatus(entry),
+    reason: strOrNull(entry.reason),
     consecutiveFailures: num(entry.consecutiveFailures),
+    failingSince: numOrNull(entry.failingSince),
+    checkedAt: numOrNull(entry.checkedAt),
+    source: entry.source === 'probe' || entry.source === 'traffic' ? entry.source as 'probe' | 'traffic' : null,
+    lastTrafficAt: numOrNull(entry.lastTrafficAt),
     lastProbeAt: numOrNull(entry.lastProbeAt),
     lastStatusCode: numOrNull(entry.lastStatusCode),
     lastDetail: strOrNull(entry.lastDetail),
-  })).sort((a, b) => Number(a.advertised) - Number(b.advertised) || a.service.localeCompare(b.service))
+  })).sort((a, b) => HEALTH_ORDER[a.status] - HEALTH_ORDER[b.status] || a.service.localeCompare(b.service))
 }
 
 /** `gas` from daemon.state.json (shared with the metrics exporter). */
@@ -66,6 +80,25 @@ export function parseGas(raw: unknown): SellerGas | null {
     balanceEth: numOrNull(entry.balanceEth),
     minBalanceEth: num(entry.minBalanceEth),
     lastCheckedAt: numOrNull(entry.lastCheckedAt),
+    refuel: parseGasRefuel(entry.refuel),
+  }
+}
+
+const REFUEL_SKIPS = new Set(['daily_cap', 'insufficient_usdc', 'insufficient_eth'])
+
+function parseGasRefuel(raw: unknown): SellerGasRefuel | null {
+  if (!raw || typeof raw !== 'object') return null
+  const entry = raw as Record<string, unknown>
+  const last = entry.lastRefuel && typeof entry.lastRefuel === 'object' ? entry.lastRefuel as Record<string, unknown> : null
+  return {
+    triggerBalanceEth: num(entry.triggerBalanceEth),
+    swapUsdc: num(entry.swapUsdc),
+    maxUsdcPerDay: num(entry.maxUsdcPerDay),
+    usdcLast24h: num(entry.usdcLast24h),
+    lastRefuel: last ? { at: num(last.at), usdc: num(last.usdc), txHash: String(last.txHash ?? '') } : null,
+    lastError: typeof entry.lastError === 'string' ? entry.lastError : null,
+    skipped: typeof entry.skipped === 'string' && REFUEL_SKIPS.has(entry.skipped) ? entry.skipped as SellerGasRefuel['skipped'] : null,
+    nextAttemptAt: numOrNull(entry.nextAttemptAt),
   }
 }
 

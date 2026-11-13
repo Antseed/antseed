@@ -112,7 +112,7 @@ export function computeReferenceId(
 // Match vectors and observations
 // ---------------------------------------------------------------------------
 
-/** Per-probe outcome: 1 match, 0 discrepancy, null not attempted due to transport failure. */
+/** Per-probe outcome: 1 match, 0 discrepancy, null unscored (no usable answer, or not attempted). */
 export type MatchEntry = 1 | 0 | null;
 export type MatchVector = MatchEntry[];
 

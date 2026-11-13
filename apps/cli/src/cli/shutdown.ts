@@ -40,6 +40,13 @@ export function setupShutdownHandler(callback: ShutdownCallback): void {
   }
 }
 
+/** Shuts down as SIGTERM would, for a stop asked for some other way. */
+export function requestShutdown(): void {
+  // Nothing registered yet (asked before anything started): nothing to clean up.
+  if (runShutdown) void runShutdown();
+  else process.exit(exitCode);
+}
+
 /** Exit code for a restart a supervisor should carry out (systemd `Restart=on-failure` restarts on it; Kubernetes on any exit). */
 export const RESTART_EXIT_CODE = 75;
 

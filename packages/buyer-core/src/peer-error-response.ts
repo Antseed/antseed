@@ -3,6 +3,7 @@ import {
   type SerializedHttpResponse,
 } from '@antseed/protocol/http';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { describeServiceHealth, parseServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE } from '@antseed/protocol/peer-metadata';
 
 const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
   'content_policy_violation',
@@ -12,6 +13,7 @@ const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
   'max_tokens_exceeded',
   'request_too_large',
   'unsupported_parameter',
+  'upstream_upload_timeout',
   'validation_error',
 ]);
 
@@ -280,6 +282,38 @@ export function adaptPeerFaultErrorResponse(
       headers: { ...headers, 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify(body)),
     };
+  }
+  if (details.id === SELLER_SELF_HEALTH_FAILING_CODE && details.error?.antseed_fault !== 'peer') {
+    const health = parseServiceHealth(details.error?.service_health);
+    const service = typeof details.error?.service === 'string' ? details.error.service : null;
+    if (health && service) {
+      // Rebuilt from the seller's structured health fields only: no seller
+      // prose, and describeServiceHealth drops a service name that is not a model id.
+      const pinned = options?.pinned === true;
+      const upstreamStatus = details.error?.upstream_status;
+      const error = {
+        type: requestProtocol === 'anthropic-messages' ? 'api_error' : SELLER_SELF_HEALTH_FAILING_CODE,
+        code: SELLER_SELF_HEALTH_FAILING_CODE,
+        message: [
+          describeServiceHealth(service, health),
+          // Whether other peers were tried is not known here, so this never claims they failed too.
+          pinned ? 'Try another peer or use Auto routing.' : 'Try another peer or another model.',
+        ].join('\n'),
+        service_health: health,
+        ...(typeof upstreamStatus === 'number' && Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599
+          ? { upstream_status: upstreamStatus }
+          : {}),
+        antseed_fault: 'peer',
+        antseed_pinned: pinned,
+        peer_status: response.statusCode,
+      };
+      const body = requestProtocol === 'anthropic-messages' ? { type: 'error', error } : { error };
+      return {
+        ...response,
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      };
+    }
   }
   if (isUserActionablePeerError(response, details.id)) {
     return { ...response, headers };

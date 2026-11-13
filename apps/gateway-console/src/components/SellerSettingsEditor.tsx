@@ -11,6 +11,7 @@ import { formatUnitPrice, unitName } from '../lib/seller'
 import { ErrorAlert } from './ui'
 import { SellerOverrides, SellerRestart } from './SellerRestart'
 import { SellerAddModel } from './SellerAddModel'
+import { InfoTip } from './TrustInfo'
 
 /** Everything the form edits, as typed (numbers stay strings until saved). */
 interface Draft {
@@ -21,6 +22,10 @@ interface Draft {
   healthThreshold: string
   gasEnabled: boolean
   gasMinEth: string
+  refuelEnabled: boolean
+  refuelBelowEth: string
+  refuelUsdc: string
+  refuelMaxPerDay: string
   freePerAddress: string
   freePerIp: string
   freeWindowHours: string
@@ -90,6 +95,10 @@ export function draftOf(settings: SellerSettings): Draft {
     healthThreshold: String(settings.healthCheck.failureThreshold),
     gasEnabled: settings.gasCheck.enabled,
     gasMinEth: String(settings.gasCheck.minBalanceEth),
+    refuelEnabled: settings.gasRefuel.enabled,
+    refuelBelowEth: String(settings.gasRefuel.triggerBalanceEth),
+    refuelUsdc: String(settings.gasRefuel.swapUsdc),
+    refuelMaxPerDay: String(settings.gasRefuel.maxUsdcPerDay),
     freePerAddress: optional(settings.freeTier.maxRequestsPerAddress),
     freePerIp: optional(settings.freeTier.maxRequestsPerIp),
     freeWindowHours: hoursOf(settings.freeTier.windowMs),
@@ -182,6 +191,9 @@ export function draftErrors(draft: Draft, base?: Draft): Record<string, string> 
     healthIntervalSec: check('healthIntervalSec', numberFieldError(draft.healthIntervalSec, { required: true, min: 60, integer: true })),
     healthThreshold: check('healthThreshold', numberFieldError(draft.healthThreshold, { required: true, min: 1, integer: true })),
     gasMinEth: check('gasMinEth', numberFieldError(draft.gasMinEth, { required: true })),
+    refuelBelowEth: check('refuelBelowEth', numberFieldError(draft.refuelBelowEth, { required: true, min: 0.000001 })),
+    refuelUsdc: check('refuelUsdc', numberFieldError(draft.refuelUsdc, { required: true, min: 1 })),
+    refuelMaxPerDay: check('refuelMaxPerDay', numberFieldError(draft.refuelMaxPerDay, { required: true, min: 1 })),
     freePerAddress: check('freePerAddress', numberFieldError(draft.freePerAddress, { min: 1, integer: true })),
     freePerIp: check('freePerIp', numberFieldError(draft.freePerIp, { min: 1, integer: true })),
     freeWindowHours: check('freeWindowHours', numberFieldError(draft.freeWindowHours, { min: 1 / 3600, minText: '1 second (0.0003 hours)' })),
@@ -275,6 +287,12 @@ export function patchOf(base: Draft, draft: Draft): SellerSettingsPatch {
   if (draft.gasEnabled !== base.gasEnabled) gasCheck.enabled = draft.gasEnabled
   if (numChanged(draft.gasMinEth, base.gasMinEth)) gasCheck.minBalanceEth = num(draft.gasMinEth)
   if (Object.keys(gasCheck).length > 0) patch.gasCheck = gasCheck
+  const gasRefuel: NonNullable<SellerSettingsPatch['gasRefuel']> = {}
+  if (draft.refuelEnabled !== base.refuelEnabled) gasRefuel.enabled = draft.refuelEnabled
+  if (numChanged(draft.refuelBelowEth, base.refuelBelowEth)) gasRefuel.triggerBalanceEth = num(draft.refuelBelowEth)
+  if (numChanged(draft.refuelUsdc, base.refuelUsdc)) gasRefuel.swapUsdc = num(draft.refuelUsdc)
+  if (numChanged(draft.refuelMaxPerDay, base.refuelMaxPerDay)) gasRefuel.maxUsdcPerDay = num(draft.refuelMaxPerDay)
+  if (Object.keys(gasRefuel).length > 0) patch.gasRefuel = gasRefuel
   const programOf = (from: Draft) => ({
     maxRequestsPerAddress: numOrNull(from.freePerAddress), maxRequestsPerIp: numOrNull(from.freePerIp), windowMs: windowOf(from.freeWindowHours),
     stakersOnly: from.freeStakersOnly, stakeTiers: tiersOf(from),
@@ -397,14 +415,21 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
           <section className="gc-policy__section">
             <h3>Checks</h3>
             <Switch checked={draft.healthEnabled} disabled={readOnly} onChange={(next) => set('healthEnabled', next)} label="Model health checks"
-              description="Probe every service; withdraw one that keeps failing until it recovers." />
+              description="Probe services without recent buyer traffic; announce one that keeps failing as failing, so buyers skip it until it recovers." />
             <div className="gc-policy__caps">
               {field('healthIntervalSec', 'Every (seconds)')}
-              {field('healthThreshold', 'Failures to withdraw')}
+              {field('healthThreshold', 'Failures to mark failing')}
             </div>
             <Switch checked={draft.gasEnabled} disabled={readOnly} onChange={(next) => set('gasEnabled', next)} label="Gas checks"
               description="Pause advertising while the wallet cannot pay for settlement." />
             <div className="gc-policy__caps">{field('gasMinEth', 'Minimum ETH', { wide: true })}</div>
+            <Switch checked={draft.refuelEnabled} disabled={readOnly || !draft.gasEnabled} onChange={(next) => set('refuelEnabled', next)} label={<RefuelLabel belowEth={draft.refuelBelowEth} swapUsdc={draft.refuelUsdc} maxPerDay={draft.refuelMaxPerDay} slippageBps={settings.gasRefuel.slippageBps} />}
+              description="Swap some USDC earnings for ETH on Uniswap before the wallet runs out. Base mainnet; needs gas checks." />
+            <div className="gc-policy__caps">
+              {field('refuelBelowEth', 'Below ETH')}
+              {field('refuelUsdc', 'Swap USDC')}
+              {field('refuelMaxPerDay', 'Max USDC / day')}
+            </div>
           </section>
         </div>
         <div className="gc-policy__advanced">
@@ -515,3 +540,22 @@ export function SellerSettingsEditor({ settings, restart }: { settings: SellerSe
     </div>
   )
 }
+
+const GAS_DOCS_URL = 'https://antseed.com/docs/provide/payments#gas'
+
+/** The auto-refuel switch label, with where and how the swap happens (in the amounts being edited). */
+function RefuelLabel({ belowEth, swapUsdc, maxPerDay, slippageBps }: { belowEth: string; swapUsdc: string; maxPerDay: string; slippageBps: number }) {
+  return (
+    <span className="gc-inline">
+      Auto-refuel gas
+      <InfoTip label="How auto-refuel swaps" align="center">
+        <span className="gc-tip__title">How the swap works</span>
+        When the wallet holds less than {belowEth.trim() || '…'} ETH, the seller swaps {swapUsdc.trim() || '…'} USDC from it for ETH on Uniswap v3 on Base
+        (USDC/WETH 0.05% pool, at most {slippageBps / 100}% slippage). The ETH lands in the same wallet, which pays the swap's gas, so no
+        other wallet is involved. At most {maxPerDay.trim() || '…'} USDC a day; a failed swap retries later and alerts.{' '}
+        <a href={GAS_DOCS_URL} target="_blank" rel="noreferrer">Seller gas docs</a>
+      </InfoTip>
+    </span>
+  )
+}
+
