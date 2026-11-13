@@ -1,7 +1,7 @@
 {
   "name": "@antseed/payments",
-  "version": "0.1.77",
-  "description": "Buyer payments portal for AntSeed",
+  "version": "0.1.107",
+  "description": "Buyer payments portal for Antseed",
   "files": [
     "dist"
   ],
@@ -20,7 +20,7 @@
     "dev:server": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json"
   },
   "dependencies": {
     "@antseed/node": "workspace:*",

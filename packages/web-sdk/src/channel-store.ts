@@ -117,6 +117,10 @@ export class MemoryChannelStore implements BuyerChannelStore {
         (sum, service) => sum + (service.cumulativeVideoSeconds ?? 0n),
         0n,
       ),
+      cumulativeInputCharacters: services.reduce(
+        (sum, service) => sum + (service.cumulativeInputCharacters ?? 0n),
+        0n,
+      ),
       services,
     };
   }
@@ -159,6 +163,7 @@ interface StoredServiceTotalRecord {
   cumulativeOutputImages?: string;
   cumulativeVideoGenerations?: string;
   cumulativeVideoSeconds?: string;
+  cumulativeInputCharacters?: string;
 }
 
 const DATABASE_VERSION = 1;
@@ -349,6 +354,7 @@ function serviceToRecord(
     cumulativeOutputImages: (service.cumulativeOutputImages ?? 0n).toString(),
     cumulativeVideoGenerations: (service.cumulativeVideoGenerations ?? 0n).toString(),
     cumulativeVideoSeconds: (service.cumulativeVideoSeconds ?? 0n).toString(),
+    cumulativeInputCharacters: (service.cumulativeInputCharacters ?? 0n).toString(),
   };
 }
 
@@ -363,6 +369,7 @@ function serviceFromRecord(record: StoredServiceTotalRecord): SpendingAuthServic
     cumulativeOutputImages: BigInt(record.cumulativeOutputImages ?? '0'),
     cumulativeVideoGenerations: BigInt(record.cumulativeVideoGenerations ?? '0'),
     cumulativeVideoSeconds: BigInt(record.cumulativeVideoSeconds ?? '0'),
+    cumulativeInputCharacters: BigInt(record.cumulativeInputCharacters ?? '0'),
   };
 }
 

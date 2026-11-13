@@ -5,6 +5,7 @@ import {
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
+  withUpstreamSessionHeader,
 } from './conversation-identity.js'
 
 const CURSOR_ENVIRONMENT = `<user_info>
@@ -457,4 +458,25 @@ test('real turns are not mistaken for title turns', () => {
   }), false)
   assert.equal(isTitleGenerationRequest(null), false)
   assert.equal(isTitleGenerationRequest({ model: 'x' }), false)
+})
+
+test('upstream session header: the conversation key under session_id, whatever the client called it', () => {
+  const sessionOf = (headers: Record<string, string>, body: Record<string, unknown> | null) => {
+    const identity = extractConversationIdentity(headers, body)
+    assert.ok(identity)
+    return withUpstreamSessionHeader(headers, identity)['session_id']
+  }
+  // A dash header, as Codex sends it and as a reverse proxy keeps it.
+  assert.equal(sessionOf({ 'session-id': 'codex-1' }, null), 'codex-1')
+  assert.equal(sessionOf({ 'x-session-id': 'oc-1' }, null), 'oc-1')
+  // Only the body says it: OpenAI prompt_cache_key, Claude Code metadata.
+  assert.equal(sessionOf({}, { prompt_cache_key: 'pi-1', input: 'hi' }), 'pi-1')
+  assert.equal(sessionOf({}, { metadata: { user_id: JSON.stringify({ session_id: 'cc-1' }) } }), 'cc-1')
+})
+
+test('upstream session header: a client session_id is kept as sent', () => {
+  const headers = { Session_id: 'client', 'x-session-id': 'other' }
+  const identity = extractConversationIdentity(headers, null)
+  assert.ok(identity)
+  assert.equal(withUpstreamSessionHeader(headers, identity), headers)
 })

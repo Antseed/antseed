@@ -77,9 +77,13 @@ transform buyer and seller points before accounting records them. The historical
 wash-trading policy zeros both sides when the seller's finalized proven wash
 volume reaches 25% of its authenticated historical total. It does not block USDC
 settlement or starter positions, and it does not erase previously recorded points.
+The verification policy then scales both sides by the seller's model-verification
+results: +2% per verified service (up to +50%) and a penalty that grows with the square
+of the services marked DIFF, reaching zero points at five.
 
 See [Reward policies](/docs/reward-policies) for how policies compose, the
-wash-trading rule, and how SP1 proofs are anchored to Base history.
+wash-trading rule, how SP1 proofs are anchored to Base history, and the
+verification bonus and penalty.
 
 ## Emissions and destinations
 
@@ -132,10 +136,10 @@ its budget becomes remainder. The targets are not minimum requirements for
 participating; allocation increases smoothly as the inputs grow.
 
 The usage input is the larger of the epoch's total buyer points and total seller
-points, after points policies. With the deployed pass-through/wash-filter
-behavior, it represents recognized USDC volume without counting buyer and seller
-sides twice. It is not all raw Channels volume, and a different points modifier
-can change how it relates to USDC.
+points, after points policies. It is based on recognized USDC volume without
+counting buyer and seller sides twice, and it is not all raw Channels volume. The
+verification policy scales both sides by the seller's verification results, so the
+usage input moves with them and does not track USDC one to one.
 
 The effective stake target scales with scheduled emissions:
 `400 million ANTS × epoch emission / initial emission`. At the initial 5 million
@@ -146,7 +150,7 @@ and `dynamicUsageConfigAt(epoch)` on the reward contracts.
 
 ### Destinations
 
-USDC protocol fees go to the protocol reserve configured in AntseedRegistry. Team emissions go to the registry's team wallet, reserve emissions to the emissions reserve, and the verification allocation to its controller. See [Contract addresses](/docs/contracts) for the protocol reserve. For pre-migration claims and reserve and team flushes, see [Legacy emissions](/docs/legacy-emissions#escrow-and-flushes).
+USDC protocol fees go to the protocol reserve configured in AntseedRegistry. Team emissions go to the registry's team wallet, reserve emissions to the emissions reserve, and the verification allocation to its controller, the verification results layer, which pays auditors by credits (see [Model verification](/docs/model-verification)); what its auditors never claim stays unminted and is not swept into a remainder. See [Contract addresses](/docs/contracts) for the protocol reserve. For pre-migration claims and reserve and team flushes, see [Legacy emissions](/docs/legacy-emissions#escrow-and-flushes).
 
 ### Unallocated emissions and burns
 
@@ -169,7 +173,8 @@ to the emissions reserve. If the remainder is only 100 ANTS, all 100 is burned;
 30% is a ceiling, not a guaranteed burn every epoch.
 
 Settlement is explicit: after the epoch ends, anyone can call
-`settleEpochRemainder(epoch)` on each reward controller with a remainder. An epoch
+`settleEpochRemainder(epoch)` on each seller-pool or usage reward controller with a
+remainder (the verification results layer has no remainder settlement). An epoch
 ending does not itself execute a burn transaction. The gate's
 `epochBurnedAmount(epoch)` records the emission amount burned for that epoch;
 remainder-settlement events report both the burned and reserve amounts.

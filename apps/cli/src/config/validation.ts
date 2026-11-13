@@ -4,11 +4,15 @@ import type {
   GithubVerificationConfig,
   HierarchicalPricingConfig,
   AntseedConfig,
+  SellerFreeTierCLIConfig,
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
+import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
+import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
+import { sellerAlertsErrors } from './seller-alerts.js';
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -84,6 +88,49 @@ function validateCategoryList(
   }
 }
 
+function validateFallbackUpstreams(
+  path: string,
+  providerCfg: SellerProviderConfig,
+  errors: string[],
+): void {
+  for (const [index, fallback] of (providerCfg.fallbackUpstreams ?? []).entries()) {
+    const fallbackPath = `${path}[${index}]`;
+    if (!/^https?:\/\//i.test(fallback.baseUrl) || !URL.canParse(fallback.baseUrl)) {
+      errors.push(`${fallbackPath}.baseUrl must be an http(s) URL`);
+    }
+    if (fallback.apiKeyEnv !== undefined && fallback.apiKeyEnv.length === 0) {
+      errors.push(`${fallbackPath}.apiKeyEnv must be a non-empty string when provided`);
+    }
+    if (fallback.services === undefined) continue;
+    if (Object.keys(fallback.services).length === 0) {
+      errors.push(`${fallbackPath}.services must list at least one service when provided`);
+    }
+    for (const [serviceId, serviceCfg] of Object.entries(fallback.services)) {
+      if (!(serviceId in providerCfg.services)) {
+        errors.push(`${fallbackPath}.services.${serviceId} is not a service of this provider`);
+      }
+      if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.length === 0) {
+        errors.push(`${fallbackPath}.services.${serviceId}.upstreamModel must be a non-empty string when provided`);
+      }
+    }
+  }
+}
+
+const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+/** The fal image plugin maps each service to its fal edit endpoint. */
+const FAL_IMAGE_PLUGINS = new Set(['fal-image', '@antseed/provider-fal-image']);
+
+/** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
+function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
+  if (!OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) return false;
+  try {
+    const host = new URL(providerCfg.baseUrl ?? '').hostname.toLowerCase();
+    return host === 'venice.ai' || host.endsWith('.venice.ai');
+  } catch {
+    return false;
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -105,10 +152,19 @@ function validateSellerProviders(
         errors.push(`${providerPath}.baseUrl must be a valid URL`);
       }
     }
+    validateFallbackUpstreams(`${providerPath}.fallbackUpstreams`, providerCfg, errors);
     for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
       const servicePath = `${providerPath}.services.${serviceId}`;
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {
         errors.push(`${servicePath}.upstreamModel must be a non-empty string when provided`);
+      }
+      if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
+        errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg) && !FAL_IMAGE_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      }
+      if (serviceCfg.extraProtocols !== undefined && !OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.extraProtocols requires the openai plugin`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
@@ -359,6 +415,7 @@ export function validateConfig(config: AntseedConfig): string[] {
 
   validateBuyerVerification('buyer.verification', config.buyer.verification, errors);
   validateBuyerVerifier('buyer.verifier', config.buyer.verifier, errors);
+  validateFreeTierDelegations(config.buyer.freeTierDelegations, errors);
 
   if (!Number.isInteger(config.seller.maxConcurrentBuyers) || config.seller.maxConcurrentBuyers < 1) {
     errors.push('seller.maxConcurrentBuyers must be an integer >= 1');
@@ -373,6 +430,31 @@ export function validateConfig(config: AntseedConfig): string[] {
     (!Number.isInteger(config.seller.maxUploadBodyBytes) || config.seller.maxUploadBodyBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
   ) {
     errors.push('seller.maxUploadBodyBytes must be an integer >= 1048576');
+  }
+
+  if (
+    config.seller.maxInboundConnections !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
+  ) {
+    errors.push('seller.maxInboundConnections must be an integer >= 1');
+  }
+
+  if (
+    config.seller.maxInboundConnectionsPerIp !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
+  ) {
+    errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (config.seller.announceProviderIds !== undefined && typeof config.seller.announceProviderIds !== 'boolean') {
+    errors.push('seller.announceProviderIds must be a boolean');
+  }
+
+  if (
+    config.seller.inboundIdleTimeoutMs !== undefined &&
+    (!Number.isInteger(config.seller.inboundIdleTimeoutMs) || config.seller.inboundIdleTimeoutMs < 0)
+  ) {
+    errors.push('seller.inboundIdleTimeoutMs must be an integer >= 0');
   }
 
   if (config.seller.agentDir !== undefined) {
@@ -392,6 +474,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       }
     }
   }
+
+  validateNetworkConfig(config, errors);
 
   if (config.seller.publicAddress) {
     const raw = config.seller.publicAddress.trim();
@@ -438,24 +522,47 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
-  if (config.seller.freeTier !== undefined) {
-    const freeTier = config.seller.freeTier;
-    if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
-      errors.push('seller.freeTier requires maxRequestsPerAddress and/or maxRequestsPerIp');
+  if (config.seller.gasRefuel !== undefined && (typeof config.seller.gasRefuel !== 'object' || config.seller.gasRefuel === null || Array.isArray(config.seller.gasRefuel))) {
+    errors.push('seller.gasRefuel must be an object, e.g. { "enabled": false }');
+  } else if (config.seller.gasRefuel !== undefined) {
+    const gasRefuel = config.seller.gasRefuel;
+    if (gasRefuel.enabled !== undefined && typeof gasRefuel.enabled !== 'boolean') {
+      errors.push('seller.gasRefuel.enabled must be a boolean');
     }
-    for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
-      const limit = freeTier[key];
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-        errors.push(`seller.freeTier.${key} must be a positive safe integer`);
-      }
+    const positive = (value: number | undefined) => value === undefined || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+    if (!positive(gasRefuel.triggerBalanceEth)) errors.push('seller.gasRefuel.triggerBalanceEth must be a number > 0');
+    if (!positive(gasRefuel.swapUsdc) || (gasRefuel.swapUsdc !== undefined && gasRefuel.swapUsdc < 1)) {
+      errors.push('seller.gasRefuel.swapUsdc must be a number >= 1');
     }
+    if (!positive(gasRefuel.maxUsdcPerDay)) errors.push('seller.gasRefuel.maxUsdcPerDay must be a number > 0');
     if (
-      freeTier.windowMs !== undefined &&
-      (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
+      gasRefuel.slippageBps !== undefined &&
+      (!Number.isInteger(gasRefuel.slippageBps) || gasRefuel.slippageBps < 1 || gasRefuel.slippageBps > 1_000)
     ) {
-      errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
+      errors.push('seller.gasRefuel.slippageBps must be an integer from 1 to 1000');
     }
   }
+
+  if (config.seller.freeTier !== undefined) {
+    validateFreeTierProgram('seller.freeTier', config.seller.freeTier, errors);
+  }
+  // Free-tier programs are keyed by announced service id, so one id needs one program.
+  const serviceFreeTiers = new Map<string, string>();
+  for (const [providerName, providerCfg] of Object.entries(config.seller.providers)) {
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
+      if (serviceCfg.freeTier === undefined) continue;
+      const path = `seller.providers.${providerName}.services.${serviceId}.freeTier`;
+      validateFreeTierProgram(path, serviceCfg.freeTier, errors, serviceId);
+      const program = JSON.stringify(serviceCfg.freeTier);
+      const previous = serviceFreeTiers.get(serviceId);
+      if (previous !== undefined && previous !== program) {
+        errors.push(`${path} differs from another provider's freeTier for service "${serviceId}"`);
+      }
+      serviceFreeTiers.set(serviceId, program);
+    }
+  }
+
+  errors.push(...sellerAlertsErrors(config.seller.alerts));
 
   const restrictedCountries = config.seller.restrictedCountries;
   if (
@@ -464,6 +571,8 @@ export function validateConfig(config: AntseedConfig): string[] {
   ) {
     errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
   }
+
+  errors.push(...sellerBuyerLimitsErrors(config.seller.buyerLimits));
 
   if (config.seller.freeUsage !== undefined) {
     const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
@@ -476,6 +585,8 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   validateVerifications('seller.verifications', config.seller.verifications, errors);
+
+  appendVerifierConfigErrors('verifier', config.verifier, errors);
 
   if (config.relayer !== undefined) {
     if (config.relayer.enabled !== undefined && typeof config.relayer.enabled !== 'boolean') {
@@ -492,6 +603,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.telemetry !== undefined) {
+    if (typeof config.telemetry !== 'object' || config.telemetry === null || Array.isArray(config.telemetry)) {
+      errors.push('telemetry must be an object');
+    } else if (config.telemetry.enabled !== undefined && typeof config.telemetry.enabled !== 'boolean') {
+      errors.push('telemetry.enabled must be a boolean');
+    }
+  }
+
   return errors;
 }
 
@@ -503,4 +622,125 @@ export function assertValidConfig(config: AntseedConfig): void {
   if (errors.length === 0) return;
 
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
+}
+
+function validateNetworkConfig(config: AntseedConfig, errors: string[]): void {
+  const network = config.network;
+  for (const key of ['dhtPort', 'signalingPort'] as const) {
+    const port = network[key];
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+      errors.push(`network.${key} must be an integer in range 0-65535`);
+    }
+  }
+  if (network.bindHost !== undefined && (typeof network.bindHost !== 'string' || network.bindHost.trim().length === 0)) {
+    errors.push('network.bindHost must be a non-empty string');
+  }
+  for (const key of ['natTraversal', 'noOfficialBootstrap', 'allowPrivateIPs'] as const) {
+    if (network[key] !== undefined && typeof network[key] !== 'boolean') {
+      errors.push(`network.${key} must be a boolean`);
+    }
+  }
+  if (network.dhtOperationTimeoutMs !== undefined && (!Number.isInteger(network.dhtOperationTimeoutMs) || network.dhtOperationTimeoutMs < 1)) {
+    errors.push('network.dhtOperationTimeoutMs must be an integer >= 1');
+  }
+  const authDuration = config.payments.defaultAuthDurationSecs;
+  if (authDuration !== undefined && (!Number.isInteger(authDuration) || authDuration < 1)) {
+    errors.push('payments.defaultAuthDurationSecs must be an integer >= 1');
+  }
+}
+
+function validateFreeTierDelegations(value: unknown, errors: string[]): void {
+  if (value === undefined) return;
+  const path = 'buyer.freeTierDelegations';
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return;
+  }
+  const perBuyer = new Map<string, number>();
+  value.forEach((entry, index) => {
+    const at = `${path}[${index}]`;
+    if (typeof entry !== 'object' || entry === null) {
+      errors.push(`${at} must be an object`);
+      return;
+    }
+    const { staker, buyer, expiresAt, signature } = entry as Record<string, unknown>;
+    for (const [key, address] of [['staker', staker], ['buyer', buyer]] as const) {
+      if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) errors.push(`${at}.${key} must be an address`);
+    }
+    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) < 1) errors.push(`${at}.expiresAt must be a Unix time in seconds`);
+    if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) errors.push(`${at}.signature must be a 65-byte hex signature`);
+    if (typeof buyer === 'string') perBuyer.set(buyer.toLowerCase(), (perBuyer.get(buyer.toLowerCase()) ?? 0) + 1);
+  });
+  for (const [buyer, count] of perBuyer) {
+    if (count > MAX_FREE_TIER_DELEGATIONS) errors.push(`${path} has ${count} delegations for ${buyer}; at most ${MAX_FREE_TIER_DELEGATIONS} count`);
+  }
+}
+
+function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig, errors: string[], serviceId?: string): void {
+  const errorsBefore = errors.length;
+  if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
+    errors.push(`${path} requires maxRequestsPerAddress and/or maxRequestsPerIp`);
+  }
+  for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
+    const limit = freeTier[key];
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (
+    freeTier.windowMs !== undefined &&
+    (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
+  ) {
+    errors.push(`${path}.windowMs must be a safe integer >= 1000`);
+  }
+  if (freeTier.stakeTiers !== undefined) {
+    try {
+      validateFreeTierStakeTiers(freeTier.stakeTiers, `${path}.stakeTiers`);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (freeTier.stakersOnly !== undefined && typeof freeTier.stakersOnly !== 'boolean') {
+    errors.push(`${path}.stakersOnly must be a boolean`);
+  } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
+    errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  if (errors.length > errorsBefore) return;
+  // Otherwise valid limits can still be too long to advertise in peer metadata.
+  try {
+    new SellerFreeTierLimiter(serviceId === undefined ? freeTier : { services: { [serviceId]: freeTier } });
+  } catch {
+    errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+function sellerBuyerLimitsErrors(limits: unknown): string[] {
+  if (limits === undefined) return [];
+  if (!isRecord(limits)) return ['seller.buyerLimits must be an object'];
+  const errors: string[] = [];
+  const positive = (path: string, value: unknown): void => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      errors.push(`${path} must be a positive number`);
+    }
+  };
+  positive('seller.buyerLimits.windowMinutes', limits['windowMinutes']);
+  positive('seller.buyerLimits.maxTokensPerBuyer', limits['maxTokensPerBuyer']);
+  const newBuyers = limits['newBuyers'];
+  if (newBuyers !== undefined) {
+    if (!isRecord(newBuyers)) {
+      errors.push('seller.buyerLimits.newBuyers must be an object');
+    } else {
+      positive('seller.buyerLimits.newBuyers.forHours', newBuyers['forHours']);
+      positive('seller.buyerLimits.newBuyers.maxTokensPerBuyer', newBuyers['maxTokensPerBuyer']);
+      positive('seller.buyerLimits.newBuyers.maxTokensTotal', newBuyers['maxTokensTotal']);
+    }
+  }
+  const weights = limits['serviceWeights'];
+  if (weights !== undefined) {
+    if (!isRecord(weights)) errors.push('seller.buyerLimits.serviceWeights must be an object of service ids to weights');
+    else for (const [service, weight] of Object.entries(weights)) positive(`seller.buyerLimits.serviceWeights.${service}`, weight);
+  }
+  return errors;
 }

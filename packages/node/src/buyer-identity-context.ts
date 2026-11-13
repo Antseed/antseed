@@ -69,6 +69,8 @@ export interface BuyerIdentityContextOptions {
   };
   maxUploadBodyBytes?: number;
   requireSecureTransport?: boolean;
+  /** Free-tier delegations header for this identity's requests, or null. */
+  freeTierDelegationsHeader?: () => string | null;
   shared: BuyerIdentitySharedServices;
   /** Receives payment events, each tagged with this identity's name. */
   emit: (event: string, payload: Record<string, unknown>) => void;
@@ -155,6 +157,7 @@ export class BuyerIdentityContext {
       getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
       getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
       registerPaymentMux: (peerId, mux) => this._paymentMuxes.set(peerId, mux),
+      ...(_options.freeTierDelegationsHeader ? { freeTierDelegationsHeader: _options.freeTierDelegationsHeader } : {}),
     });
   }
 
@@ -194,6 +197,11 @@ export class BuyerIdentityContext {
       this._paymentMuxes.set(peer.peerId, this.negotiator.getOrCreatePaymentMux(peer.peerId, conn));
     }
     return conn;
+  }
+
+  /** Session hash of this identity's encrypted TCP connection to a seller, else null. */
+  getChannelBinding(peerId: PeerId): string | null {
+    return this._connectionManager.getConnection(peerId)?.channelBinding ?? null;
   }
 
   /** The live connection to a seller, if this identity has one. */

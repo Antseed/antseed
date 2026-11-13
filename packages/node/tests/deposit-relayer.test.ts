@@ -58,6 +58,7 @@ function makeRelayer(config?: Partial<ConstructorParameters<typeof DepositRelaye
     estGasCostUsdc: 5_000n,
     fee: FEE,
     profitUsdc: FEE - 5_000n,
+    maxFeePerGasWei: 100_000_000n,
   });
   const sweepSpy = vi.spyOn(relayer.client, 'sweep').mockResolvedValue('0x' + '77'.repeat(32));
   return { relayer, estimateSpy, sweepSpy };
@@ -81,6 +82,8 @@ describe('DepositRelayer', () => {
     expect(statuses).toEqual(['submitted', 'confirmed']);
     expect(mux.sendSweepReceipt.mock.calls[1][0].txHash).toBe('0x' + '77'.repeat(32));
     expect(mux.sendSweepReceipt.mock.calls[1][0].authNonce).toBe(payload.nonce);
+    // Speed-ups of the sweep stop at the gas price where it would stop paying for itself.
+    expect(sweepSpy.mock.calls[0][2]).toEqual({ maxFeePerGasWei: 100_000_000n });
   });
 
   it('drops requests for a different relay address without submitting', async () => {
@@ -153,6 +156,7 @@ describe('DepositRelayer', () => {
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n, // negative
+      maxFeePerGasWei: 0n,
     });
 
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('rejected');
@@ -166,6 +170,7 @@ describe('DepositRelayer', () => {
       estGasCostUsdc: 4_100_150n, // anvil-scale gas cost
       fee: FEE,
       profitUsdc: FEE - 4_100_150n,
+      maxFeePerGasWei: 0n,
     });
 
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('submitted');
@@ -204,6 +209,7 @@ describe('DepositRelayer', () => {
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n,
+      maxFeePerGasWei: 0n,
     });
 
     expect(await relayer.handleSweepRequest(PEER, payload, makeMux())).toBe('rejected');

@@ -160,6 +160,6 @@ describe('checkBuyerReadiness', () => {
 
     const balCheck = checks.find(c => c.name === 'Deposit balance')!;
     expect(balCheck.passed).toBe(false);
-    expect(balCheck.command).toBe('antseed buyer deposit 10');
+    expect(balCheck.command).toBe('antseed buyer deposit');
   });
 });

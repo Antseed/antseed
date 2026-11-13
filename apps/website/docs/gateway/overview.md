@@ -18,11 +18,11 @@ To set one up from scratch, follow the [quickstart](/docs/quickstart). Installat
 
 | Where | Start it with | Good for | Limits |
 |---|---|---|---|
-| Your own computer | `antseed gateway start` | Trying it out, personal use | Keys only work while the computer is on. Other machines can't reach it, unless you listen on your network with `--host 0.0.0.0` (plain HTTP). |
-| A Linux server | The [server installer](/docs/gateway/server) | Teams, CI, hosted tools: anything that should always work | Needs a small server with systemd and, for HTTPS, a domain name. |
-| Your computer, behind a tunnel | `antseed tunnel start`, or **Agents → Internet-accessible endpoint** in the desktop app | A public HTTPS address without moving anything | Keys still stop working when the computer sleeps or goes offline. See [Public tunnels](/docs/tunnels). |
+| Your own computer | `antseed gateway start`, or `antseed gateway service install` to keep it running in the background | Trying it out, personal use | Keys only work while the computer is on. Other machines can't reach it, unless you listen on your network with `--host 0.0.0.0` (plain HTTP). |
+| A Linux server (recommended) | The [server installer](/docs/gateway/server) | Teams, agents, CI, hosted tools, and tools on other machines: anything that should always work | Needs a small server with systemd and, for HTTPS, a domain name. |
+| Your computer, behind a tunnel | `antseed tunnel start` | A public HTTPS address without moving anything | Keys still stop working when the computer sleeps or goes offline. See [Public tunnels](/docs/tunnels). |
 
-A tunnel also publishes the console, including the desktop app's tunnel. Claim it straight away, before anyone else can: in the desktop app, click **Claim console** in the **Internet-accessible endpoint** window; from the CLI, run `antseed gateway console-link` on the same computer and open the one-time link (see [Sign-in and access](/docs/gateway/sign-in#claim-the-console)).
+A tunnel also publishes the console. Claim it straight away, before anyone else can: run `antseed gateway console-link` on the same computer and open the one-time link (see [Sign-in and access](/docs/gateway/sign-in#claim-the-console)).
 
 You can start on your computer and move later: [Move a local gateway to a server](/docs/gateway/migrate) carries every key, member, workspace and wallet across.
 
@@ -45,6 +45,8 @@ Inside a workspace, a member is either a workspace **admin**, who manages that w
 ## A tour of the console
 
 The first time someone opens the console, a short tour shows where everything is. Replay it from the account menu with **Take the tour**. The navigation shows only the pages your role can open:
+
+![The console Overview: spend today, this week and this month against budgets, and spend per day by model](/img/docs/gateway/overview.webp)
 
 - **Overview**: spend, budgets and warnings for the open workspace.
 - **Chat**: talk to any model on the network, paid by your own key. See [Chat](/docs/gateway/chat).

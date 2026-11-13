@@ -7,6 +7,8 @@ export const TEE_REQUIRED_CLAIMS = [
 ] as const
 /** Optional claim: the downstream inference provider also runs in a genuine TEE. */
 export const TEE_PROVIDER_CLAIM = 'antseed-verifier:seller-provider-tee-genuine'
+/** Reported with a passing seller node: the https origins its measured config sends prompts to, comma-separated. */
+export const TEE_UPSTREAMS_CLAIM = 'antseed-verifier:seller-node-upstreams'
 
 export interface TeeClaim {
   claim: string
@@ -53,6 +55,20 @@ export function passedSellerNodeClaims(claims: readonly TeeClaim[]): boolean {
 
 export function teeScope(evidence: Pick<TeeEvidence, 'claims'>): TeeScope {
   return passedClaim(evidence.claims, TEE_PROVIDER_CLAIM) ? 'end-to-end' : 'seller-node'
+}
+
+/** The hosts a verified seller node forwards prompts to, as its attested config names them. */
+export function teeUpstreams(evidence: Pick<TeeEvidence, 'claims'>): string[] {
+  if (!passedClaim(evidence.claims, TEE_UPSTREAMS_CLAIM)) return []
+  const detail = evidence.claims.find((claim) => claim.claim === TEE_UPSTREAMS_CLAIM)?.detail ?? ''
+  const hosts = detail.split(',').flatMap((origin) => {
+    try {
+      return [new URL(origin.trim()).host]
+    } catch {
+      return []
+    }
+  })
+  return [...new Set(hosts)]
 }
 
 export function isFreshSellerNodeEvidence(evidence: TeeEvidence | undefined, now = Date.now()): boolean {

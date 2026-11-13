@@ -1,4 +1,5 @@
 import type {
+  TrustBreakdownView,
   AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole, RouteSelection, ServedSelection,
 } from '../api/types'
 
@@ -14,7 +15,7 @@ export function mockRouteSelection(rank: number, of: number, seed: number, now =
     expectedCostUsd: (0.0011 + rank * 0.0004) / success,
     expectedPriceUsd: 0.0011 + rank * 0.0004,
     expectedSeconds: 2.4 + rank * 0.6,
-    successRate: fresh ? 0.8 : success,
+    successRate: fresh ? 0.95 : success,
     observations: fresh ? 0 : Math.max(1, 34 - rank * 7 + (seed % 5)),
     record: fresh ? 'none' : rank === 3 ? 'other-models' : 'model',
     firstTokenMs: fresh ? null : 280 + rank * 140,
@@ -33,6 +34,8 @@ export function mockRouteSelection(rank: number, of: number, seed: number, now =
     inFlight: rank === 1 ? 2 : 0,
     maxConcurrency: 8,
     routeChainPosition: null,
+    // A seller this buyer has not used yet: routing starts from its own last-hour figures.
+    ...(fresh ? { reported: { requests: 312, successRate: 0.99, firstTokenMsP50: 420, tokensPerSecondP50: 78 } } : {}),
   }
 }
 
@@ -93,6 +96,17 @@ export function seed() {
       inputUsdPerMillion: Number(base.toFixed(2)), outputUsdPerMillion: Number((base * 3.5).toFixed(2)), cachedInputUsdPerMillion: m % 4 === 0 ? null : Number((base / 5).toFixed(3)),
     }
   })
+  // How each mock trust score adds up (usage + power + identity + free models, then model checks); index 5 has no score.
+  const MOCK_TRUST_PARTS: Array<TrustBreakdownView | null> = [
+    { usage: 22, power: 52, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 18, power: 42, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 24, power: 46, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 10, power: 26, identity: null, freeModels: 5 },
+    { usage: 17, power: 42, identity: { score: 6, kind: 'domain' }, freeModels: null, verification: { multiplierBps: 9600, sameCount: 0, diffCount: 1, change: -2.6 } },
+    null,
+    { usage: 15, power: 34, identity: { score: 6, kind: 'domain' }, freeModels: null },
+    { usage: 21, power: 46, identity: { score: 16, kind: 'github' }, freeModels: null },
+  ]
   const names = ['Fake Seller Alpha', 'Fake Seller Beta', 'Fake TEE Gamma', 'Fake Free Delta', 'Fake Seller Epsilon', null, 'Fake Seller Eta', 'Fake Seller Theta']
   const peers: Peer[] = names.map((displayName, index) => ({
     peerId: fakePeerId(index + 1),
@@ -100,9 +114,10 @@ export function seed() {
     services: index === 2 ? manyServices : models.filter((_, m) => (m + index) % 3 !== 0).map((service, m) => {
       const free = index === 3
       const base = 0.2 + ((index * 7 + m * 3) % 10) / 4
-      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'] }
+      return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'], paid: !free }
     }),
-    trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
+    trustScore: [92, 78, 88, 41, 62.4, null, 55, 83][index]!,
+    ...(MOCK_TRUST_PARTS[index] ? { trustBreakdown: MOCK_TRUST_PARTS[index]! } : {}),
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
     verified: index === 2 || index === 0,
     // Obvious fake identities on example domains.
@@ -112,7 +127,14 @@ export function seed() {
     tee: index === 2 || index === 1 || index === 4,
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
+    ...(index === 2 ? { teeUpstreams: ['inference.gamma.example'] } : index === 1 ? { teeUpstreams: ['api.beta.example'] } : {}),
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
+    agentId: 86_900 + index,
+    // Delta's free models come with the default staked tiers.
+    freeTier: index === 3 ? {
+      base: { maxRequestsPerAddress: 1000, maxRequestsPerIp: null, windowMs: 86_400_000 },
+      stakeTiers: [{ minPower: 520_000, multiplier: 5 }, { minPower: 2_600_000, multiplier: 20 }, { minPower: 10_400_000, multiplier: 'unlimited' as const }],
+    } : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
     washFlagged: index === 6,
     lastSeen: now - index * 60_000,
@@ -123,6 +145,49 @@ export function seed() {
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
   // A routing service: sells rankings, not models, so it lists none.
+  // Beta's first model is priced, and free only for its stakers: 45M power (≈ 865k ANTS locked for a year) gets 200 a day.
+  const beta = peers[1]!
+  beta.services = beta.services.map((service, m) => m === 0 ? {
+    ...service,
+    freeTier: { base: { maxRequestsPerAddress: 200, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 45_000_000, multiplier: 1 }] },
+  } : service)
+  const delta = peers[3]!
+  delta.services = delta.services.map((service) => ({ ...service, freeTier: delta.freeTier }))
+  // Each seller's announced self check: buyer traffic or its own probe, Beta's first model out of credit, Eta not checked yet.
+  for (const [index, peer] of peers.entries()) {
+    peer.services = peer.services.map((service, m) => ({
+      ...service,
+      health: index === 1 && m === 0
+        ? { status: 'failing' as const, checkedAt: now - 60_000, source: 'probe' as const, failingSince: now - 18 * 60_000, consecutiveFailures: 4, reason: 'out_of_credit', httpStatus: 402 }
+        : index === 6
+          ? { status: 'unknown' as const, checkedAt: null, source: null, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null }
+          : { status: 'healthy' as const, checkedAt: now - ((index + m) % 5 + 1) * 60_000 * (m % 2 ? 7 : 1), source: (index + m) % 2 ? 'probe' as const : 'traffic' as const, failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null },
+      // The seller's last hour of buyer traffic; idle models have none.
+      ...((index + m) % 4 === 3 ? {} : {
+        performance: {
+          requests: 40 + ((index * 53 + m * 31) % 400),
+          successRate: index === 1 && m === 0 ? 0.31 : 0.9 + ((index + m) % 10) / 100,
+          firstTokenMsP50: 260 + ((index * 7 + m * 3) % 9) * 70,
+          firstTokenMsP90: 900 + ((index + m) % 5) * 300,
+          tokensPerSecondP50: 40 + ((index * 11 + m * 5) % 70),
+        },
+      }),
+    }))
+  }
+  // Model checks: auditors found Epsilon's qwen3-coder-480b is very likely another model (DIFF);
+  // Alpha's and Gamma's offers of it, and Gamma's deepseek-v3.1, check out (SAME).
+  const checks: Array<[number, string[], string[]]> = [[4, ['qwen3-coder-480b'], []], [0, [], ['qwen3-coder-480b']], [2, [], ['deepseek-v3.1', 'qwen3-coder-480b']]]
+  for (const [index, diffServices, sameServices] of checks) {
+    const peer = peers[index]!
+    const verificationUrls = Object.fromEntries([...diffServices, ...sameServices].map((service, n) => [
+      service, `https://antscan.co/verification-service/${peer.agentId}~0x${(index * 16 + n + 1).toString(16).padStart(64, '0')}`,
+    ]))
+    Object.assign(peer, diffServices.length ? { diffServices } : {}, sameServices.length ? { sameServices } : {}, { verificationUrls })
+    peer.services = peer.services.map((service) => {
+      const verdict = diffServices.includes(service.service) ? 'diff' as const : sameServices.includes(service.service) ? 'same' as const : null
+      return verdict ? { ...service, modelCheck: { verdict, auditUrl: verificationUrls[service.service] ?? null } } : service
+    })
+  }
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
   const peerLists: PeerList[] = [
@@ -206,6 +271,7 @@ export function seed() {
       overrides: ['network.metadataFetchTimeoutMs'],
     },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
+    telemetry: { available: true, enabled: false, userDisabled: true },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }
   const chain: ChainInfo = {
@@ -245,6 +311,8 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   const offers = new Map<string, NetworkModelOffer[]>()
   for (const peer of peers) {
     for (const service of peer.services) {
+      // Buyers leave out offers their seller reports failing.
+      if (service.health?.status === 'failing') continue
       const free = service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0
       const list = offers.get(service.service) ?? []
       list.push({
@@ -252,14 +320,20 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
-        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
+        // A live DIFF verdict leaves the offer 10% of its routing reputation.
+        reputationScore: peer.reputationScore !== null && service.modelCheck?.verdict === 'diff' ? peer.reputationScore * 0.1 : peer.reputationScore,
+        trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        ...(service.modelCheck ? { modelCheck: service.modelCheck } : {}),
+        ...(service.health ? { health: service.health } : {}),
+        ...(service.performance ? { performance: service.performance } : {}),
       })
       offers.set(service.service, list)
     }
   }
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
-    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false, agentId: peer.agentId, freeTier: null,
     reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
@@ -276,7 +350,9 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       sellers: ranked.length,
       inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
-      free: ranked.some((offer) => offer.free),
+      free: ranked.some((offer) => offer.free && !offer.freeTier?.base.stakersOnly),
+      freeForStakers: ranked.some((offer) => offer.freeTier?.base.stakersOnly === true),
+      freeAllowance: ranked.some((offer) => !offer.free && offer.freeTier !== null && !offer.freeTier.base.stakersOnly),
       teeSellers: ranked.filter((offer) => offer.tee).length,
       fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,

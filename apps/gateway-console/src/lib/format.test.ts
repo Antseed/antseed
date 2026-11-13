@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeLimits, formatDuration, formatPricePerMillion, formatPriceRange, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
+import { describeLimits, formatDuration, formatElapsed, formatPricePerMillion, formatPriceRange, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
 import { draftToLimits, limitsToDraft } from './limits'
 import { formatAnts } from './ants'
 
@@ -88,5 +88,12 @@ describe('time helpers', () => {
     expect(formatDuration(30_000)).toBe('<1 min')
     expect(shortId('0x1234567890abcdef')).toBe('0x1234…cdef')
     expect(shortId('short')).toBe('short')
+  })
+  it('formats an elapsed timer as mm:ss', () => {
+    expect(formatElapsed(0)).toBe('00:00')
+    expect(formatElapsed(9_999)).toBe('00:09')
+    expect(formatElapsed(151_000)).toBe('02:31')
+    expect(formatElapsed(-5_000)).toBe('00:00')
+    expect(formatElapsed(3_725_000)).toBe('1:02:05')
   })
 })

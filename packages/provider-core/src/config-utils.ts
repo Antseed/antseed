@@ -165,6 +165,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
       normalized.supportedParameters = caps.supportedParameters as ServiceCapabilities['supportedParameters'];
     }
     if (caps.video !== undefined) normalized.video = caps.video as ServiceCapabilities['video'];
+    if (caps.speech !== undefined) normalized.speech = caps.speech as ServiceCapabilities['speech'];
     // Same validator the announce path uses, so anything accepted here is
     // guaranteed to announce instead of failing silently at announce time.
     const fieldErrors = validateServiceCapabilityFields(normalized);
@@ -213,9 +214,89 @@ export function buildServiceApiProtocols(
  * `venice/flux-2-pro` work without treating an unrelated namespace as a model
  * family. Keep generic one-word IDs exact to avoid false positives.
  */
-const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
+const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|flux-3-image$|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
 
 export function isImageModelId(model: string): boolean {
   const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
   return IMAGE_MODEL_ID_PATTERN.test(modelId);
+}
+
+/**
+ * Text-to-speech model IDs served through `POST /v1/audio/speech`: OpenAI's
+ * `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts`, and Venice's `tts-*` family.
+ */
+const SPEECH_MODEL_ID_PATTERN = /^(?:tts-|gpt-4o(?:-mini)?-tts(?:-|$))/;
+
+export function isSpeechModelId(model: string): boolean {
+  const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
+  return SPEECH_MODEL_ID_PATTERN.test(modelId);
+}
+
+/**
+ * One backup upstream from `ANTSEED_FALLBACK_UPSTREAMS_JSON`. The CLI writes
+ * this from `seller.providers.<name>.fallbackUpstreams` with API keys resolved.
+ */
+export interface FallbackUpstreamConfig {
+  baseUrl: string;
+  /** API key for this upstream. Omit to reuse the provider's own key. */
+  apiKey?: string;
+  /** Services this upstream serves. Omit to serve every service of the provider. */
+  services?: string[];
+  /** Announced service -> upstream model at this upstream, over the provider's alias map. */
+  serviceAliasMap?: Record<string, string>;
+  pathRewrite?: Record<string, string>;
+}
+
+export function parseFallbackUpstreamsJson(raw: string | undefined, key = 'ANTSEED_FALLBACK_UPSTREAMS_JSON'): FallbackUpstreamConfig[] | undefined {
+  if (!raw) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`${key} must be valid JSON`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${key} must be an array of upstreams`);
+  }
+
+  // Service IDs are matched case-insensitively; paths are case-sensitive.
+  const stringMap = (value: unknown, field: string, lowercaseKeys: boolean): Record<string, string> | undefined => {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !Object.values(value).every((entry) => typeof entry === 'string' && entry.trim().length > 0)) {
+      throw new Error(`${field} must be an object of non-empty strings`);
+    }
+    return Object.fromEntries(Object.entries(value as Record<string, string>)
+      .map(([k, v]) => [lowercaseKeys ? k.trim().toLowerCase() : k, v.trim()]));
+  };
+
+  const out = parsed.map((entry, index): FallbackUpstreamConfig => {
+    const field = `${key}[${index}]`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${field} must be an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    const baseUrl = typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '';
+    if (!/^https?:\/\//i.test(baseUrl) || !URL.canParse(baseUrl)) {
+      throw new Error(`${field}.baseUrl must be an http(s) URL`);
+    }
+    if (e.apiKey !== undefined && (typeof e.apiKey !== 'string' || e.apiKey.trim().length === 0)) {
+      throw new Error(`${field}.apiKey must be a non-empty string`);
+    }
+    if (e.services !== undefined && (!Array.isArray(e.services) || e.services.length === 0
+      || !e.services.every((service) => typeof service === 'string' && service.trim().length > 0))) {
+      throw new Error(`${field}.services must be a non-empty array of service IDs`);
+    }
+    const serviceAliasMap = stringMap(e.serviceAliasMap, `${field}.serviceAliasMap`, true);
+    const pathRewrite = stringMap(e.pathRewrite, `${field}.pathRewrite`, false);
+    return {
+      baseUrl,
+      ...(typeof e.apiKey === 'string' ? { apiKey: e.apiKey.trim() } : {}),
+      ...(Array.isArray(e.services) ? { services: (e.services as string[]).map((service) => service.trim()) } : {}),
+      ...(serviceAliasMap ? { serviceAliasMap } : {}),
+      ...(pathRewrite ? { pathRewrite } : {}),
+    };
+  });
+  return out.length > 0 ? out : undefined;
 }

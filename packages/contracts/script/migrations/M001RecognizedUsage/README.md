@@ -179,7 +179,7 @@ Writes `history/001-recognized-usage-activated.json` and updates
   of pool-less agents is not accounted, and late stake activates next epoch.
 - Do **not** renounce `AntseedEmissionsGate` ownership before the verification
   rollout: that rollout rotates the editable 10% controller from
-  `VERIFICATION_WALLET` to `AntseedVerification`.
+  `VERIFICATION_WALLET` to `AntseedKbfVerification`.
 - `ANTSToken` and the remaining ownable contracts still require their
   separately reviewed production ownership handoff.
 - Keep `AntseedRegistry` ownership: it is the only key that can open the

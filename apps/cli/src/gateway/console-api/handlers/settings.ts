@@ -1,4 +1,4 @@
-import { readSettings as readSettingsService, setObservabilitySettings, updateBuyerSettings } from '../../services/settings.js'
+import { readSettings as readSettingsService, setObservabilitySettings, setTelemetrySettings, updateBuyerSettings } from '../../services/settings.js'
 import { requestActor, requireOrgAdmin } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import type { ConsoleRouter, Principal } from '../router.js'
@@ -40,6 +40,13 @@ export function registerSettingsRoutes(router: ConsoleRouter, deps: ConsoleDeps)
     const { principal, body } = request
     requireOrgAdmin(principal, store)
     setObservabilitySettings(deps, requestActor(deps, request), body, { mayChangeDestination: principal?.kind === 'member' })
+    return readSettings(deps, principal)
+  })
+
+  router.add('PUT', '/settings/telemetry', async (request) => {
+    const { principal, body } = request
+    requireOrgAdmin(principal, store)
+    await setTelemetrySettings(deps, requestActor(deps, request), body)
     return readSettings(deps, principal)
   })
 }

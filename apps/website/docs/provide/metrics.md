@@ -142,6 +142,20 @@ antseed_seller_receipt_revenue_usd_total
 antseed_seller_receipt_revenue_today_usd
 ```
 
+Seller health metrics come from the running seller's state and are absent while it is not running, including after a crash or kill:
+
+```text
+antseed_seller_model_advertised
+antseed_seller_model_consecutive_failures
+antseed_seller_model_last_status_code
+antseed_seller_model_last_probe_timestamp_seconds
+antseed_seller_gas_balance_eth
+antseed_seller_gas_min_balance_eth
+antseed_seller_gas_depleted
+```
+
+See [Monitoring](/docs/provide/monitoring) for what they mean, the seller dashboard and alerts.
+
 Seller payment metrics (`antseed_seller_payment_*`) come from payment channels and represent USDC-denominated payment flow. Seller receipt metrics (`antseed_seller_receipt_revenue_*`) come from metering/usage receipts and represent metered usage accounting.
 
 ## Read-only behavior

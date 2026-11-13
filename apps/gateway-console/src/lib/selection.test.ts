@@ -27,6 +27,15 @@ describe('seller selection explanations', () => {
     expect(recordSummary({ ...base, record: 'none', observations: 0 })).toMatch(/^No requests yet: assumed 80%/)
   })
 
+  it('starts from the seller-reported figures when the buyer has no record', () => {
+    const reported = { requests: 312, successRate: 0.99, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+    const fresh = { ...base, record: 'none' as const, observations: 0, successRate: 0.95, firstTokenMs: null, tokensPerSecond: null, reported }
+    expect(recordSummary(fresh)).toBe("No requests yet: the seller reports 99% success over its last hour's 312 requests, so routing starts from 95%.")
+    expect(selectionHeadline(fresh)).toMatch(/^seller reports 99% success \(312 last hour\) · 420 ms first token · 78\u00a0tok\/s/)
+    // Too few requests to start from: the default prior stands.
+    expect(recordSummary({ ...fresh, reported: { ...reported, requests: 3 } })).toMatch(/^No requests yet: assumed 80%/)
+  })
+
   it('lists the facts routing used, with the expected cost only when it ranks by it', () => {
     expect(selectionFacts(base)).toEqual([
       '$0.0021 expected per good answer', '96% success over 12 recent requests', '420 ms first token', '80 tok/s',
@@ -63,7 +72,7 @@ describe('seller selection explanations', () => {
 
 describe('ranking a preview', () => {
   const candidate = (peerId: string, patch: Partial<RoutePreview['candidates'][number]>): RoutePreview['candidates'][number] => ({
-    peerId, displayName: null, rank: null, eligible: false, reasons: [], inputUsdPerMillion: 1, outputUsdPerMillion: 2, trustScore: 50, selection: null, ...patch,
+    peerId, displayName: null, rank: null, eligible: false, reasons: [], inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, trustScore: 50, selection: null, ...patch,
   })
   const preview = (sort: RoutePreview['policy']['sort'], candidates: RoutePreview['candidates']): RoutePreview =>
     ({ model: 'm', policy: sort ? { sort } : {}, sources: [], modelAllowed: true, candidates })

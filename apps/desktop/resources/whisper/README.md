@@ -1,6 +1,6 @@
 # Local Whisper resources
 
-AntStation local voice transcription expects:
+Antseed Desktop's local voice transcription expects:
 
 ```txt
 resources/whisper/

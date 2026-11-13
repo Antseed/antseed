@@ -1,10 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { AbstractSigner, InterfaceAbi, TransactionRequest, TransactionResponse } from 'ethers';
+import { Interface, JsonRpcProvider, makeError, NonceManager, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
 import { BaseEvmClient } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
   constructor() {
     super('http://127.0.0.1:1', '0x' + 'aa'.repeat(20));
+    vi.spyOn(this.provider, 'getTransactionReceipt')
+      .mockImplementation(async (hash) => ({ hash, status: 1 }) as unknown as TransactionReceipt);
+  }
+  async waitFor(
+    tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>,
+    speedUp?: () => Promise<Pick<TransactionResponse, 'hash'> | null>,
+  ): Promise<TransactionReceipt> {
+    return this._waitForReceipt(tx, speedUp);
   }
   async exec(signer: AbstractSigner, abi: InterfaceAbi, method: string, ...args: unknown[]): Promise<string> {
     return this._execWrite(signer, abi, method, ...args);
@@ -23,7 +31,7 @@ function signerSendingTo(
     estimateGas,
     sendTransaction: async (tx: TransactionRequest): Promise<TransactionResponse> => {
       sent.push(tx);
-      return { hash: '0x01', wait: async () => ({ hash: '0x01' }) } as unknown as TransactionResponse;
+      return { hash: '0x01', nonce: tx.nonce, from: address, wait: async () => ({ hash: '0x01' }) } as unknown as TransactionResponse;
     },
   };
   return signer as unknown as AbstractSigner;
@@ -133,5 +141,192 @@ describe('BaseEvmClient._execWrite', () => {
     await expect(failing).rejects.toThrow(/execution reverted/);
     await Promise.all([channel, next]);
     expect(sent.map(tx => tx.nonce)).toEqual([10, 11]);
+  });
+});
+
+describe('BaseEvmClient nonce cursor', () => {
+  it('trusts the pending count again once the cursor is stale, so dropped txs leave no gap', async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const client = new TestEvmClient();
+      const sent: TransactionRequest[] = [];
+      const address = '0x' + '12'.repeat(20);
+      const send = () => client.exec(signerSendingTo(sent, address), ABI as unknown as InterfaceAbi, 'transfer', '0x' + '07'.repeat(20), 1n);
+      // The first txs are sent but then dropped: the pending count never moves past 20.
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(20);
+      await send();
+      await send();
+      now += 61_000;
+      await send();
+      expect(sent.map((t) => t.nonce)).toEqual([20, 21, 20]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe('BaseEvmClient speed-ups', () => {
+  it('stops speeding up a dropped tx once its nonce went to a newer one', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      const provider = client.provider as JsonRpcProvider;
+      vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+      vi.spyOn(provider, '_perform').mockImplementation(async (req) => {
+        if (req.method === 'getPriorityFee') return '0xf4240';
+        throw new Error(`unexpected ${req.method}`);
+      });
+      vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+      // Nothing ever mines, and the pending count never counts the sent txs.
+      vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(20);
+      vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
+      const sent: TransactionRequest[] = [];
+      const address = '0x' + '13'.repeat(20);
+      const transfer = (amount: bigint) =>
+        client.exec(signerSendingTo(sent, address), ABI as unknown as InterfaceAbi, 'transfer', '0x' + '08'.repeat(20), amount).catch(() => undefined);
+      const iface = new Interface(ABI as unknown as InterfaceAbi);
+      const amounts = () => sent.map((tx) => (iface.decodeFunctionData('transfer', tx.data as string)[1] as bigint));
+
+      void transfer(1n);
+      await vi.advanceTimersByTimeAsync(65_000);
+      // A was sent and sped up twice, all on nonce 20, with rising tips.
+      expect(amounts()).toEqual([1n, 1n, 1n]);
+      expect(sent.map((tx) => tx.nonce)).toEqual([20, 20, 20]);
+      expect(BigInt(sent[2]!.maxPriorityFeePerGas!)).toBeGreaterThan(BigInt(sent[1]!.maxPriorityFeePerGas!));
+
+      // The cursor is stale, so B gets nonce 20; A must not replace it.
+      void transfer(2n);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(amounts().slice(3).every((amount) => amount === 2n)).toBe(true);
+      expect(sent.slice(3).map((tx) => tx.nonce).every((nonce) => nonce === 20)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('BaseEvmClient speed-ups within a fee limit', () => {
+  it('stops speeding up once a replacement would exceed the max fee per gas allowed', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      const provider = client.provider as JsonRpcProvider;
+      vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+      vi.spyOn(provider, '_perform').mockResolvedValue('0xf4240'); // 0.001 gwei tip
+      vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+      vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(40);
+      vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
+      const sent: TransactionRequest[] = [];
+      // First send: max fee 0.011 gwei. One speed-up fits under 0.016 gwei; the next would not.
+      void (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
+        ._execWriteWithin(signerSendingTo(sent, '0x' + '15'.repeat(20)), 16_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
+        .catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(sent).toHaveLength(2);
+      expect(BigInt(sent[1]!.maxFeePerGas!)).toBeLessThanOrEqual(16_000_000n);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('BaseEvmClient speed-ups with nonce-managing signers', () => {
+  it('never re-sends through a NonceManager, which would send the replacement on a new nonce', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      const provider = client.provider as JsonRpcProvider;
+      vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+      vi.spyOn(provider, '_perform').mockResolvedValue('0xf4240');
+      vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+      vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(30);
+      vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
+      const sent: TransactionRequest[] = [];
+      class ManagedSigner extends NonceManager {
+        override async getAddress() { return '0x' + '14'.repeat(20); }
+        override connect() { return this; }
+        override async estimateGas() { return 21_000n; }
+        override async sendTransaction(tx: TransactionRequest): Promise<TransactionResponse> {
+          // Like NonceManager: the signer's own nonce replaces the one asked for.
+          sent.push({ ...tx, nonce: 77 });
+          return { hash: '0x02', nonce: 77, from: '0x' + '14'.repeat(20) } as unknown as TransactionResponse;
+        }
+      }
+      const signer = new ManagedSigner(signerSendingTo([], '0x' + '14'.repeat(20)));
+      void client.exec(signer, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '09'.repeat(20), 1n).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(sent).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('BaseEvmClient._waitForReceipt', () => {
+  const tx = { hash: '0xabc', from: '0x' + 'ff'.repeat(20), nonce: 3 };
+  const receipt = (status: number) => ({ hash: tx.hash, status }) as unknown as TransactionReceipt;
+
+  it('keeps polling through RPC timeouts instead of failing the wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.mocked(client.provider.getTransactionReceipt)
+        .mockRejectedValueOnce(makeError('request timeout', 'TIMEOUT'))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(receipt(1));
+
+      const waiting = client.waitFor(tx);
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      await expect(waiting).resolves.toMatchObject({ hash: tx.hash, status: 1 });
+      expect(client.provider.getTransactionReceipt).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('throws CALL_EXCEPTION when the tx reverted', async () => {
+    const client = new TestEvmClient();
+    vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(receipt(0));
+
+    await expect(client.waitFor(tx)).rejects.toMatchObject({ code: 'CALL_EXCEPTION' });
+  });
+
+  it('sends a stuck tx again with higher fees, and returns whichever version mines', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(tx.nonce);
+      vi.mocked(client.provider.getTransactionReceipt).mockImplementation(async (hash) =>
+        hash === '0xfaster' ? ({ hash, status: 1 }) as unknown as TransactionReceipt : null);
+      const speedUp = vi.fn(async () => ({ hash: '0xfaster' }));
+
+      const waiting = client.waitFor(tx, speedUp);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(speedUp).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      await expect(waiting).resolves.toMatchObject({ hash: '0xfaster' });
+      expect(speedUp).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('throws when another tx used the nonce', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(null);
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(tx.nonce + 1);
+
+      const waiting = client.waitFor(tx);
+      const settled = expect(waiting).rejects.toThrow(/dropped or replaced/);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
