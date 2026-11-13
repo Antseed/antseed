@@ -7,6 +7,7 @@
 import { isServiceHealthFailing } from '@antseed/node';
 import { DEFAULT_MODEL_ROUTING_PREFERENCES, isModelRouteEligible } from '@antseed/node/model-routing';
 import { record } from './response-fields.js';
+import { clearGatewayRouterCache } from './routers.js';
 import type { GatewayEndpoint } from './service.js';
 
 export type GatewayModelEntry = Record<string, unknown> & { id: string };
@@ -111,4 +112,6 @@ export function toGatewayModel(entry: GatewayModelEntry): GatewayModel {
 export function clearGatewayModelCache(): void {
   cache = null;
   cacheGeneration += 1;
+  // The routers follow the same key and policy.
+  clearGatewayRouterCache();
 }
