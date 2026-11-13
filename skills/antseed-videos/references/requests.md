@@ -1,9 +1,9 @@
 # Requests
 
-Every command uses `curl` and `jq` against the local buyer proxy. Build JSON with `jq`; never interpolate unescaped prompts. Run each block in one shell; if your shell resets between commands, set the variables again from the job file.
+Every command uses `curl` and `jq` against the gateway in `$ANTSEED_PROXY_URL` (see Prerequisites in SKILL.md: when it is not set, ask the user). Build JSON with `jq`; never interpolate unescaped prompts. Run each block in one shell; if your shell resets between commands, set the variables again from the job file.
 
 ```bash
-proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:?No Antseed gateway found. Ask the user which gateway to use and do not pick one yourself.}}"
 auth="authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 

@@ -17,7 +17,8 @@ export const AGENT_SKILL_NAMES = ['antseed-ask', 'antseed-images', 'antseed-vide
 
 /** Written into every installed skill folder; only folders carrying it are updated or removed. */
 const MARKER_FILE = '.antseed-desktop';
-const LEGACY_PROXY_URL = 'http://127.0.0.1:8377';
+/** The skills' gateway lookup, which stops when `$ANTSEED_PROXY_URL` is unset (`${ANTSEED_PROXY_URL:?…}`). */
+const MISSING_GATEWAY = /\$\{ANTSEED_PROXY_URL:\?[^}]*\}/g;
 const LEGACY_KEY_DEFAULT = '${ANTSEED_API_KEY:-antseed-desktop}';
 
 export type AgentSkillTarget = {
@@ -83,13 +84,16 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Points a skill file at this gateway: the default URL becomes the gateway's,
- * and the default key is read from the key file. `$ANTSEED_PROXY_URL` and
- * `$ANTSEED_API_KEY` still win when set (the desktop chat sets them).
+ * Points a skill file at this gateway: where the skill would stop for a
+ * missing `$ANTSEED_PROXY_URL`, it uses the gateway's URL instead, and the
+ * default key is read from the key file. `$ANTSEED_PROXY_URL` and
+ * `$ANTSEED_API_KEY` still win when set (the desktop chat sets them). Other
+ * mentions of an address, such as the CLI buyer the skill may offer the user,
+ * stay as written.
  */
 export function pointSkillAtGateway(text: string, origin: string, keyFile: string): string {
   return text
-    .split(LEGACY_PROXY_URL).join(origin)
+    .replace(MISSING_GATEWAY, () => `\${ANTSEED_PROXY_URL:-${origin}}`)
     .split(LEGACY_KEY_DEFAULT).join(`\${ANTSEED_API_KEY:-$(cat ${shellQuote(keyFile)})}`);
 }
 
