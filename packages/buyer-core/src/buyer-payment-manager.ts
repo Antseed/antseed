@@ -37,6 +37,7 @@ import {
 import {
   estimateCostFromBytes,
   computeCostUsdc,
+  computeUsageCostUsdc,
   type ServicePricing,
 } from './pricing.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUnitV1, UnitBillingUsage } from '@antseed/protocol/billing';
@@ -791,10 +792,9 @@ export class BuyerPaymentManager {
       || delivery.state !== 'verified' || delivery.sellerPeerId !== sellerPeerId) return;
     const usage = delivery.usage;
     const pricing = this.getRequestBilling(requestId)?.tokenPricing ?? this.getSessionPricing(sellerPeerId, record.service);
-    const fresh = usage.inputTokens > usage.cachedInputTokens ? usage.inputTokens - usage.cachedInputTokens : 0n;
     const authenticated = pricing
-      ? computeCostUsdc(Number(fresh), Number(usage.outputTokens), pricing, Number(usage.cachedInputTokens))
-      : fresh + usage.outputTokens + usage.cachedInputTokens > 0n ? record.costUsdc : 0n;
+      ? computeUsageCostUsdc(usage, pricing)
+      : usage.inputTokens + usage.outputTokens + usage.cachedInputTokens > 0n ? record.costUsdc : 0n;
     record.costUsdc = authenticated < record.costUsdc ? authenticated : record.costUsdc;
     record.usage = { inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens };
   }
@@ -2491,15 +2491,20 @@ export class BuyerPaymentManager {
     // the buyer's own signing before a close, signs up to it. The record stays,
     // counted at no cost, so that close still attributes the response's usage.
     // Its worker is credited from signed headroom when there is some (the auth
-    // is re-signed at the same amount with the worker in its tail), otherwise
-    // from a later signed advance.
+    // is re-signed with the worker in its tail), otherwise from a later signed
+    // advance. The re-signed auth is one base unit higher whenever the reserve
+    // allows: the pool contract trusts a tail only from a settlement that
+    // advances the channel (it pays it from what the earlier one held), and
+    // AntseedChannels never re-settles, or checks the signature of a close at,
+    // an amount already settled.
     const countUnsigned = async (): Promise<void> => {
       if (!record) return;
       const counted = [[payload.requestId!, verifiedCostDelta] as const];
       const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
       const credit = this._creditWorkers(sellerPeerId, metadata, 0n, counted, currentCumulative);
       if (credit.metadata !== metadata) {
-        const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, currentCumulative, credit.metadata);
+        const resigned = currentCumulative < ceiling ? currentCumulative + 1n : currentCumulative;
+        const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, resigned, credit.metadata);
         if (typeof spendingAuth === 'string') return;
         this._metadata.set(sellerPeerId, credit.metadata);
         paymentMux.sendSpendingAuth(spendingAuth);

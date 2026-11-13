@@ -29,6 +29,14 @@ interface IAntseedRewardedEpochFloor {
 
 /// @dev AntseedEmissionsV2 mints a seller's reward into a rewards pool,
 ///      locked, unless its unlock policy lets the seller claim directly.
+/// @dev AntseedChannels' public `channels` getter, for a channel's status (1 = Active).
+interface IAntseedChannelState {
+    function channels(bytes32 channelId)
+        external
+        view
+        returns (address, address, uint128, uint128, bytes32, uint256, uint256, uint256, uint8);
+}
+
 interface IAntseedLockingEmissions {
     function sellerRewardsPool() external view returns (address);
 }
@@ -102,6 +110,16 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     mapping(bytes32 => uint128) internal _channelCumulative;
     mapping(bytes32 => mapping(address => uint128)) internal _workerCumulative;
 
+    /// @dev Per channel: the part of its last settlement no worker was attributed
+    ///      (gross, in channel units) and the net USDC it paid for it, held one
+    ///      settlement for a later tail before going to `remainderRecipient`.
+    ///      A buyer may sign headroom first and attribute it to a worker only
+    ///      after that headroom settled; the next settlement pays it from here.
+    mapping(bytes32 => uint256) internal _heldGross;
+    mapping(bytes32 => uint256) internal _heldNet;
+    /// @notice Net USDC held for channels' later tails (never swept as orphaned).
+    uint256 public totalUsdcHeld;
+
     // ─── Worker payout addresses ────────────────────────────────────
     /// @notice Where a worker's credits go (zero = the worker itself).
     mapping(address => address) public payoutOf;
@@ -138,6 +156,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     event AntsClaimed(address indexed account, uint256[] epochs, uint256 amount);
     event AntsClaimedFor(address indexed worker, address indexed payout, uint256[] epochs, uint256 amount);
     event OrphanUsdcSwept(address indexed recipient, uint256 amount);
+    event UnattributedHeld(bytes32 indexed channelId, uint256 gross, uint256 net);
+    event HeldReleased(bytes32 indexed channelId, uint256 net);
     event PayoutSet(address indexed worker, address indexed payout, uint256 nonce);
     event EarningsMoved(address indexed from, address indexed to, uint256 usdcAmount);
     event AgentRegistered(uint256 indexed agentId);
@@ -152,6 +172,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     error NotAgentOwner();
     error EmissionsLocked();
     error NoPayout();
+    error ChannelStillActive();
 
     /// @param _registry AntSeed address book.
     /// @param initialOperator First operator; also the initial operator-fee
@@ -198,6 +219,17 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     {
         netPayout = super.close(channelId, finalAmount, metadata, buyerSig);
         _attribute(channelId, finalAmount, metadata, netPayout);
+        // Closed: no later tail can claim what the channel held.
+        _releaseHeld(channelId, _channelKey(channelId));
+    }
+
+    /// @notice Release what a channel that is no longer active (timed out and
+    ///         withdrawn by its buyer, say) still holds for a later tail to
+    ///         `remainderRecipient`. Callable by anyone.
+    function releaseHeld(bytes32 channelId) external nonReentrant {
+        (,,,,,,,, uint8 status) = IAntseedChannelState(address(_channels())).channels(channelId);
+        if (status == 1) revert ChannelStillActive();
+        _releaseHeld(channelId, _channelKey(channelId));
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -389,7 +421,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         if (recipient == address(0)) revert InvalidAddress();
         IERC20 usdc = _sellerPayoutToken();
         uint256 balance = usdc.balanceOf(address(this));
-        uint256 owed = totalUsdcOwed;
+        uint256 owed = totalUsdcOwed + totalUsdcHeld;
         if (balance <= owed) return;
         uint256 amount = balance - owed;
         usdc.safeTransfer(recipient, amount);
@@ -404,6 +436,13 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///         the current channels contract.
     function channelCumulative(bytes32 channelId) external view returns (uint128) {
         return _channelCumulative[_channelKey(channelId)];
+    }
+
+    /// @notice What `channelId`'s last settlement left unattributed and holds for a
+    ///         later tail (channel units, and the net USDC it paid for them).
+    function heldUnattributed(bytes32 channelId) external view returns (uint256 gross, uint256 net) {
+        bytes32 key = _channelKey(channelId);
+        return (_heldGross[key], _heldNet[key]);
     }
 
     /// @notice What this pool settled on `channelId` and paid `worker` there, read
@@ -467,40 +506,100 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         uint256 delta = uint256(newCumulative) - uint256(last);
         _channelCumulative[key] = newCumulative;
 
+        // Attribution is paid from this settlement's delta first, then from what
+        // the last settlement held unattributed.
+        Split memory split = Split({ fresh: delta, held: _heldGross[key], creditedFresh: 0, creditedHeld: 0 });
+        uint256 heldNet = _heldNet[key];
         uint256 n = _validTailCount(metadata);
-        uint256 credited;
         if (n > 0) {
             uint256 base = metadata.length - _TAIL_TRAILER_BYTES - _ENTRY_BYTES * n;
-            uint256 budget = delta;
             for (uint256 i = 0; i < n; i++) {
                 (address worker, uint128 cumulative) = _readEntry(metadata, base + _ENTRY_BYTES * i);
-                uint128 prev = _workerCumulative[key][worker];
-                if (cumulative <= prev) continue;
-
-                uint256 workerDelta = uint256(cumulative) - uint256(prev);
-                if (workerDelta > budget) workerDelta = budget;
-                if (workerDelta == 0) continue;
-                budget -= workerDelta;
-                // Only what this settlement covered: attribution clamped by the
-                // channel delta stays owed and counts at the next settlement.
-                uint128 paidCumulative = prev + uint128(workerDelta);
-                _workerCumulative[key][worker] = paidCumulative;
-                emit WorkerCumulativeUpdated(channelId, worker, paidCumulative);
-                if (net == 0) continue;
-
-                uint256 amount = (net * workerDelta) / delta;
-                if (amount == 0) continue;
-                credited += amount;
-                address payout = payoutOf[worker];
-                _credit(payout == address(0) ? worker : payout, channelId, amount, hasEpoch, epoch);
+                _payWorker(channelId, key, worker, cumulative, delta, net, heldNet, split, hasEpoch, epoch);
             }
         }
 
-        // credited <= net: Σ floor(net·wdᵢ/delta) ≤ net·Σwdᵢ/delta ≤ net.
-        uint256 remainder = net - credited;
-        if (remainder > 0) _credit(remainderRecipient, channelId, remainder, hasEpoch, epoch);
+        // What the last settlement held and no tail claimed now goes to the remainder.
+        uint256 heldLeft = heldNet - split.creditedHeld;
+        totalUsdcHeld -= heldNet;
+        if (heldLeft > 0) _credit(remainderRecipient, channelId, heldLeft, hasEpoch, epoch);
+        // This settlement's unattributed part waits one settlement for a later tail
+        // (rounding with no gross left goes to the remainder now).
+        uint256 freshLeft = net - split.creditedFresh;
+        if (split.fresh > 0 && freshLeft > 0) {
+            _heldGross[key] = split.fresh;
+            _heldNet[key] = freshLeft;
+            totalUsdcHeld += freshLeft;
+            emit UnattributedHeld(channelId, split.fresh, freshLeft);
+        } else {
+            _heldGross[key] = 0;
+            _heldNet[key] = 0;
+            if (freshLeft > 0) _credit(remainderRecipient, channelId, freshLeft, hasEpoch, epoch);
+        }
 
         emit ChannelAttributed(channelId, delta, net, n, n > 0);
+    }
+
+    /// @dev Attribution budget left in one settlement: its own delta (`fresh`)
+    ///      and what the last held (`held`), in channel units, and the net USDC
+    ///      credited from each so far.
+    struct Split {
+        uint256 fresh;
+        uint256 held;
+        uint256 creditedFresh;
+        uint256 creditedHeld;
+    }
+
+    function _payWorker(
+        bytes32 channelId,
+        bytes32 key,
+        address worker,
+        uint128 cumulative,
+        uint256 delta,
+        uint256 net,
+        uint256 heldNet,
+        Split memory split,
+        bool hasEpoch,
+        uint256 epoch
+    ) internal {
+        uint128 prev = _workerCumulative[key][worker];
+        if (cumulative <= prev) return;
+        uint256 heldGross = _heldGross[key];
+        uint256 workerDelta = uint256(cumulative) - uint256(prev);
+        uint256 fromFresh = workerDelta < split.fresh ? workerDelta : split.fresh;
+        uint256 rest = workerDelta - fromFresh;
+        uint256 fromHeld = rest < split.held ? rest : split.held;
+        if (fromFresh + fromHeld == 0) return;
+        split.fresh -= fromFresh;
+        split.held -= fromHeld;
+        // Only what this settlement covered: attribution beyond it stays owed
+        // and counts at the next settlement.
+        uint128 paidCumulative = prev + uint128(fromFresh + fromHeld);
+        _workerCumulative[key][worker] = paidCumulative;
+        emit WorkerCumulativeUpdated(channelId, worker, paidCumulative);
+
+        // Σ floor(net·fᵢ/delta) ≤ net and Σ floor(heldNet·hᵢ/heldGross) ≤ heldNet.
+        uint256 amount = (net * fromFresh) / delta;
+        split.creditedFresh += amount;
+        if (fromHeld > 0) {
+            uint256 fromHeldNet = (heldNet * fromHeld) / heldGross;
+            split.creditedHeld += fromHeldNet;
+            amount += fromHeldNet;
+        }
+        if (amount == 0) return;
+        address payout = payoutOf[worker];
+        _credit(payout == address(0) ? worker : payout, channelId, amount, hasEpoch, epoch);
+    }
+
+    function _releaseHeld(bytes32 channelId, bytes32 key) internal {
+        uint256 heldNet = _heldNet[key];
+        _heldGross[key] = 0;
+        _heldNet[key] = 0;
+        if (heldNet == 0) return;
+        totalUsdcHeld -= heldNet;
+        (bool hasEpoch, uint256 epoch) = _tryRewardEpoch();
+        _credit(remainderRecipient, channelId, heldNet, hasEpoch, epoch);
+        emit HeldReleased(channelId, heldNet);
     }
 
     function _credit(address account, bytes32 channelId, uint256 amount, bool hasEpoch, uint256 epoch) internal {

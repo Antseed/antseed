@@ -224,16 +224,16 @@ final class WorkerPaymentTests: XCTestCase {
     }
 
     @MainActor
-    func testACutOffAnswerStaysOwedSoCancellingNeverBuysFreeAnswers() {
-        let price = WorkerPayment.Price(input: 1, output: 4)
-        XCTAssertEqual(WorkerPayment.partialCost(outputs: 100, price: price), 400)
-        XCTAssertEqual(WorkerPayment.partialCost(outputs: 0, price: price), 1)
-        let ledger = WorkerPaymentLedger()
-        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+    func testServesOnlyAFewCutOffAnswersPerChannelAndServesAgainOnceTheyAgeOut() {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+        let ledger = WorkerPaymentLedger(now: { now })
+        for _ in 0..<WorkerPayment.maxInterruptedAnswers {
             XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
-            ledger.served(channel: channel, cost: WorkerPayment.partialCost(outputs: 3, price: price))
+            ledger.interrupted(channel: channel)
         }
-        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 0))
+        XCTAssertEqual(ledger.admit(channel: channel, attributed: 0), "2 of this worker's answers on this channel were cut off recently; retry in 1800s")
+        now += WorkerPayment.interruptedWindow
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 0), "neither was owed, so once they age out the buyer is served again")
     }
 
     @MainActor

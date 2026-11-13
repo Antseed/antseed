@@ -327,7 +327,7 @@ async function main() {
   await colonyPool.start();
   cleanup.push(() => colonyPool.stop());
   const sellerNode = new AntseedNode({
-    role: 'seller', dataDir: sellerDir, identity: sellerIdentity, dhtPort: 0, signalingPort: 0, bootstrapNodes, allowPrivateIPs: true,
+    role: 'seller', dataDir: sellerDir, identity: sellerIdentity, dhtPort: 0, signalingPort: 0, bootstrapNodes, noOfficialBootstrap: true, allowPrivateIPs: true,
     sellerContract: { sellerContract: poolAddress }, payments: payments(poolAddress),
   });
   sellerNode.registerProvider(poolProvider);
@@ -422,7 +422,7 @@ async function main() {
   };
   for (const buyer of BUYERS) {
     await step(`Buyer ${buyer.name} discovers the seller on the DHT and gets its top-ranked Macs assigned`);
-    buyer.node = new AntseedNode({ role: 'buyer', dataDir: buyer.dir, identity: buyer.identity, dhtPort: 0, bootstrapNodes, allowPrivateIPs: true, payments: payments(A.channels) });
+    buyer.node = new AntseedNode({ role: 'buyer', dataDir: buyer.dir, identity: buyer.identity, dhtPort: 0, bootstrapNodes, noOfficialBootstrap: true, allowPrivateIPs: true, payments: payments(A.channels) });
     await buyer.node.start();
     cleanup.push(() => buyer.node.stop());
     buyer.peer = await waitFor(async () => {

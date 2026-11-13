@@ -446,21 +446,25 @@ workers serve requests it never pays for.
   that never pays gets two answers per channel, and every channel is an
   on-chain reserve. An answer none of which reached the pool is not owed. One
   cut off after some of it was sent (the buyer cancelled, the model failed,
-  the pool connection dropped) stays owed, at the usage it had reported and
-  never at nothing, since the buyer may hold most of it: cancelling each
-  answer before it completes never gets more than the two unpaid answers.
+  the pool connection dropped) is not owed either, since the buyer can't
+  verify, so never pays for, an answer without its end, but the buyer may hold
+  most of it. So it counts against the channel instead: a worker serves a
+  channel at most 2 such answers in 30 minutes, and serves it again once they
+  are older, so cancelling each answer before it completes gets only a few,
+  and an honest buyer whose answers broke off is never stuck.
 - **No free allowance.** A seller's free allowance on a priced service never
   covers a colony pool's requests: the buyer never signs a payment for an
   answer an allowance covered, so its worker would wait for one forever. Each
   such request is paid as usual.
 - **Headroom pays workers too.** A buyer may sign ahead of what it has
   counted (a seller prompt, a top-up). A verified worker answer that this
-  signed headroom covers is credited from it: the buyer signs the auth again
-  at the same amount with the worker in its tail. What it can credit is the
-  signed amount less every cost counted before, so a tail never adds up to
-  more than the auth signs. If the pool already settled that amount, the
-  contract ignores the new tail, the worker counts it as nothing it can
-  redeem, and the next increase pays it.
+  signed headroom covers is credited from it: the buyer signs the auth again,
+  one base unit higher (at the same amount only when the reserve is full),
+  with the worker in its tail. What it can credit is the signed amount less
+  every cost counted before, so a tail never adds up to more than the auth
+  signs. If the pool already settled the headroom, the contract pays the
+  worker from what that settlement held for a later tail (see the contract
+  section).
 - **Eight workers per channel.** A channel's attribution names at most eight
   workers. The buyer encrypts a request only for workers the channel can
   credit: the ones it credits, the recipients of its requests still awaiting
@@ -725,17 +729,32 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
    (never revert: a buyer must not be able to block settlement).
 4. For each worker, `workerDelta` = its new cumulative amount minus the
    amount already paid to it on this channel (0 if lower), clamped so the sum
-   stays ≤ `delta`. The worker's recorded amount (`workerCumulative`) grows
-   by `workerDelta`, not to the signed amount, so attribution a small delta
-   could not cover stays owed and is paid first from the next settlement.
-5. Credit `net × workerDelta / delta` to each worker. The remainder
-   (unattributed requests and rounding) goes to the owner-set
-   `remainderRecipient`.
-6. Add each credit to the worker's weight for the current emissions epoch.
+   stays ≤ `delta` plus what the channel's last settlement held (below). The
+   worker's recorded amount (`workerCumulative`) grows by `workerDelta`, not
+   to the signed amount, so attribution a settlement could not cover stays
+   owed and is paid first from the next one.
+5. Each worker's `workerDelta` is paid from this settlement's `delta` first,
+   at `net / delta` per unit, then from what the last settlement held, at its
+   own net per unit.
+6. What the last settlement held and no worker claimed goes to the owner-set
+   `remainderRecipient`. This settlement's own unattributed part (and its net)
+   is held in its place, one settlement long; rounding with no unattributed
+   part left goes to the remainder at once. `close` releases what the channel
+   holds to the remainder, and once a channel is no longer active (its buyer
+   timed it out and withdrew) anyone can with `releaseHeld(channelId)`.
+   `heldUnattributed(channelId)` reads it, and `totalUsdcHeld` keeps it out of
+   `sweepOrphanUsdc`.
+7. Add each credit to the worker's weight for the current emissions epoch.
+
+The hold is for headroom: a buyer may sign ahead of what it has counted, and
+attribute that headroom to a worker only once the worker's answer verifies.
+If the pool settled the headroom first, the buyer's re-signed auth (one unit
+higher, so `AntseedChannels` settles it and checks its signature) pays the
+worker from what that settlement held, even when it is the channel's last.
 
 Per-channel cursors are keyed by the channels contract address as well as the
 channel ID, so a channels contract swapped in through the registry starts
-clean. Credited USDC always equals `net`.
+clean. Credited and held USDC always add up to `net`.
 
 Emissions are claimed into the contract by anyone with
 `claimEpochEmissions(epochs)`, only for finished epochs (weights are final

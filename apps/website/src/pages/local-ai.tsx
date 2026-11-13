@@ -47,7 +47,7 @@ const MAC_APP_DOWNLOAD = 'https://github.com/Antseed/antseed/releases/download/c
 const INSTALL = [
   {title: 'Install', body: 'Open the DMG and drag Antseed Colony to Applications. It runs in the menu bar.'},
   {title: 'Join a pool', body: 'Paste the pool’s wss:// address, choose Join, then pick one of the pool’s models. The app downloads it and starts serving.'},
-  {title: 'Link your wallet', body: 'Enter your wallet, copy the link code, and paste it under Rewards → Link a Mac.'},
+  {title: 'Link your wallet', body: 'Choose Link wallet. The app opens the Antseed payments page: connect your wallet and confirm one transaction. Earnings go to that wallet from then on.'},
 ];
 
 const PRIVACY = [

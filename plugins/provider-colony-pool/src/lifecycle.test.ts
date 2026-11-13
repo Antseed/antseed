@@ -6,7 +6,7 @@ import { getBytes, Wallet } from 'ethers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { signTestWorkerPayment } from '@antseed/node/worker-e2e/testing';
-import { generateWorkerEncryptionKey, requestBindingHash, sealRequest, workerKeyHex, type WorkerEncryptionKey, type WorkerPayment } from '@antseed/node/worker-e2e';
+import { generateWorkerEncryptionKey, INTERRUPTED_WINDOW_MS, requestBindingHash, sealRequest, workerKeyHex, type WorkerEncryptionKey, type WorkerPayment } from '@antseed/node/worker-e2e';
 import { WorkerLedger } from './ledger.js';
 import { ColonyPool } from './pool.js';
 import { COLONY_POOL_PROTOCOL_VERSION, encodeBody } from './protocol.js';
@@ -100,7 +100,7 @@ describe('worker lifecycle', () => {
   let key: WorkerEncryptionKey;
   const buyer = Wallet.createRandom();
 
-  function start(opts: { channelVerifier?: ChannelVerifier; channelsDomain?: { chainId: number; channelsAddress: string }; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
+  function start(opts: { channelVerifier?: ChannelVerifier; channelsDomain?: { chainId: number; channelsAddress: string }; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; channelWaitMs?: number; poolSilenceMs?: number; now?: () => number } = {}): PoolWorker {
     key = generateWorkerEncryptionKey();
     worker = new PoolWorker({
       poolUrl: fakePool.url,
@@ -444,12 +444,15 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(4);
   });
 
-  it('keeps an answer cut off after its output was sent owed, so cancelling never buys free answers', async () => {
+  it('serves only a few answers cut off after their output was sent, and serves the buyer again once they age out', async () => {
+    let cutOff = true;
     upstream = await startUpstream((_body, res) => {
+      if (!cutOff) return answer(res);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'most of an answer' } }] })}\n\n`);
     });
-    start({ channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
+    let now = 1_000_000;
+    start({ now: () => now, channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
     const chunked = (id: string): boolean => fakePool.frames.some((f) => f['t'] === 'response-chunk' && f['id'] === id);
     // The buyer takes output, then cancels before the answer completes, twice.
@@ -459,11 +462,17 @@ describe('worker lifecycle', () => {
       fakePool.send({ t: 'cancel', id });
       await waitFor(() => fakePool.errorFor(id) !== undefined);
     }
-    // Both stay owed: a third request is refused before it reaches the model.
+    // A third is refused before it reaches the model.
     await request('x3', { stream: true });
     await waitFor(() => fakePool.errorFor('x3') !== undefined);
-    expect(fakePool.errorFor('x3')).toMatch(/2 unpaid/);
+    expect(fakePool.errorFor('x3')).toMatch(/cut off recently/);
     expect(upstream.bodies).toHaveLength(2);
+    // Neither was owed, so once they age out the same buyer, on the same channel, is served again.
+    cutOff = false;
+    now += INTERRUPTED_WINDOW_MS;
+    await request('x4');
+    await waitFor(() => fakePool.ended('x4'));
+    expect(upstream.bodies).toHaveLength(3);
   });
 
   it('releases a request cancelled before any of its answer was sent', async () => {

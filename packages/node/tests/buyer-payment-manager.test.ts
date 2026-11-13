@@ -889,13 +889,14 @@ describe('BuyerPaymentManager', () => {
       const signed = manager.latestSpendingAuth(sellerPeerId)!;
       expect(BigInt(signed.cumulativeAmount)).toBeGreaterThanOrEqual(19_000n);
       expect(decodeWorkerTail(signed.metadata)).toBeNull();
-      // The answer's NeedAuth asks for 19000, already signed: the same amount is signed again with the worker in its tail.
+      // The answer's NeedAuth asks for 19000, already signed: the auth is signed again with the worker in its
+      // tail, one unit higher, so the pool can settle it even when it already settled the headroom.
       answered();
       mux.sentSpendingAuths.length = 0;
       await needAuth();
       expect(mux.sentSpendingAuths).toHaveLength(1);
       const sent = mux.sentSpendingAuths[0] as { cumulativeAmount: string; metadata: string };
-      expect(sent.cumulativeAmount).toBe(signed.cumulativeAmount);
+      expect(BigInt(sent.cumulativeAmount)).toBe(BigInt(signed.cumulativeAmount) + 1n);
       expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
       // Counted once: the same frame again signs nothing.
       mux.sentSpendingAuths.length = 0;

@@ -139,7 +139,12 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       },
       get usageConsistent() {
         const { authenticated, clear } = sealed.opener.usage;
-        return clear === null || JSON.stringify(clear) === JSON.stringify(authenticated);
+        if (clear === null) return true;
+        // Token counts only: the seller adds its own fields to the clear usage
+        // (estimated_cost), which the worker never authenticated.
+        const a = usageCounts(authenticated);
+        const c = usageCounts(clear);
+        return a.inputTokens === c.inputTokens && a.cachedInputTokens === c.cachedInputTokens && a.outputTokens === c.outputTokens;
       },
       get usage() {
         return workerUsage(sealed.opener.usage.authenticated);

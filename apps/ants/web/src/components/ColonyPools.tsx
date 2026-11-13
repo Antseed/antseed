@@ -111,7 +111,7 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
       {forgetError ? <p className="error-text" role="alert">{forgetError}</p> : null}
       <div className="hero-actions">
         <Input label="Link a Mac" placeholder="antseed-link:…" value={code} onChange={(event) => setCode(event.target.value)} width="lg"
-          hint="In Antseed Colony, enter this wallet and press Link, then paste the code here." />
+          hint="For a Mac running antseed-pool-worker: run it with --link-payout <this wallet> --pool-contract <pool> and paste the code it prints. Antseed Colony links from its own Link wallet button instead." />
         <ActionButton
           label="Link Mac"
           size="sm"

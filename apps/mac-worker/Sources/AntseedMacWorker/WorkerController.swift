@@ -67,6 +67,8 @@ final class WorkerController: ObservableObject {
     @Published private(set) var poolURL: URL?
     /// The service this Mac sells and its checkpoint; nil until the owner picks one.
     @Published private(set) var choice: ModelChoice?
+    /// The chosen model failed to load (download or engine start): the owner may try it again.
+    @Published private(set) var modelLoadFailed = false
     /// The models the pool pins that this app can run, for the owner to pick from.
     @Published private(set) var poolModels: [ModelChoice] = []
     /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
@@ -96,8 +98,8 @@ final class WorkerController: ObservableObject {
     private var active: [String: Task<Void, Never>] = [:]
     /// Streamed answers that have sent response-start.
     private var startedStreams = Set<String>()
-    /// Requests some of whose answer was sent to the pool, with how many streamed outputs it carried.
-    private var sentOutput: [String: Int] = [:]
+    /// Requests some of whose answer was sent to the pool.
+    private var sentOutput = Set<String>()
     private let gate = RequestGate()
     /// The Channels contract channels are checked on, once the RPC's chain id is known.
     private var trustedChannels: String?
@@ -229,6 +231,7 @@ final class WorkerController: ObservableObject {
         let local = LocalModel(modelId: choice.model, engine: config.engineURL, directory: config.dataDirectory)
         model = local
         checkpoint = nil
+        modelLoadFailed = false
         status = .loadingModel(0)
         log("loading \(choice.model) with TensorFold…")
         do {
@@ -244,7 +247,10 @@ final class WorkerController: ObservableObject {
             log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
             return true
         } catch {
-            if model === local, !Task.isCancelled { status = .failed("Model failed to load: \(error.localizedDescription)") }
+            if model === local, !Task.isCancelled {
+                modelLoadFailed = true
+                status = .failed("Model failed to load: \(error.localizedDescription)")
+            }
             return false
         }
     }
@@ -263,6 +269,12 @@ final class WorkerController: ObservableObject {
         // Stop serving the old model while the new one loads.
         disconnect()
         Task { if await load(offer) { rejoin() } }
+    }
+
+    /// Load the chosen model again after it failed to (a download or engine start that broke off).
+    func retryModel() {
+        guard modelLoadFailed, let choice else { return }
+        choose(choice)
     }
 
     /// The services this Mac offers the pool now: its chosen one, once loaded, while sharing.
@@ -484,11 +496,19 @@ final class WorkerController: ObservableObject {
         socket.send(.string(text)) { _ in }
     }
 
-    /// Sends `frame` and waits for the socket to take it: false without a socket, or when the send failed.
-    private func sendConfirmed(_ frame: [String: Any]) async -> Bool {
-        guard let socket, let text = try? jsonString(frame) else { return false }
+    /// Sends a request's `frame` on the pool connection the request came in on, only while it is still
+    /// the current one: a request's frames never reach another pool joined meanwhile.
+    private func send(_ frame: [String: Any], on connection: URLSessionWebSocketTask?) {
+        guard let connection, connection === socket, let text = try? jsonString(frame) else { return }
+        connection.send(.string(text)) { _ in }
+    }
+
+    /// Sends a request's `frame` on its pool connection, as `send(_:on:)`, and waits for it to take it:
+    /// false once that connection is no longer the current one, or when the send failed.
+    private func sendConfirmed(_ frame: [String: Any], on connection: URLSessionWebSocketTask?) async -> Bool {
+        guard !Task.isCancelled, let connection, connection === socket, let text = try? jsonString(frame) else { return false }
         do {
-            try await socket.send(.string(text))
+            try await connection.send(.string(text))
             return true
         } catch {
             return false
@@ -688,15 +708,15 @@ final class WorkerController: ObservableObject {
         var owed: (channel: String, price: WorkerPayment.Price)?
         var answered: (promptTokens: Int, completionTokens: Int)?
         defer {
-            let outputs = sentOutput.removeValue(forKey: id)
+            let cutOff = sentOutput.remove(id) != nil
             if let owed {
                 if let answered {
                     payments.served(channel: owed.channel, cost: WorkerPayment.cost(promptTokens: answered.promptTokens, completionTokens: answered.completionTokens, price: owed.price))
-                } else if let outputs {
+                } else if cutOff {
                     // Output sent and then cut off (cancelled, failed, or the pool connection
-                    // dropped): the buyer may hold most of an answer, so it stays owed. Otherwise
-                    // a buyer could take answer after answer and cancel each before it completes.
-                    payments.served(channel: owed.channel, cost: WorkerPayment.partialCost(outputs: outputs, price: owed.price))
+                    // dropped): not owed, since the buyer never pays for an answer without its end,
+                    // but counted, so cancelling each answer before it completes gets only a few.
+                    payments.interrupted(channel: owed.channel)
                 } else {
                     // Nothing reached the pool: nothing to pay for.
                     payments.released(channel: owed.channel)
@@ -754,18 +774,18 @@ final class WorkerController: ObservableObject {
             generation = try EngineChat.generation(of: request)
         } catch {
             // The buyer's request, not this worker, is at fault: answered, never billed, never failed over.
-            return await refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer)
+            return await refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer, connection: connection)
         }
         // Taken: the pool now gives it the full first-byte deadline instead of failing over.
-        send(["t": "accepted", "id": id])
+        send(["t": "accepted", "id": id], on: connection)
 
         let maxTokens = full ? generation.maxTokens : min(generation.maxTokens, checkLimit)
         do {
             guard let result = try await generateAndSend(id: id, model: model, service: service, chat: chat, maxTokens: maxTokens, promptLimit: promptLimit,
                                                          temperature: generation.temperature, stream: generation.stream,
                                                          sealer: opened.sealer, connection: connection) else {
-                log(sentOutput[id] != nil
-                    ? "the answer was cut off on its way to the pool; what was sent stays owed"
+                log(sentOutput.contains(id)
+                    ? "the answer was cut off on its way to the pool; it counts as cut off, not owed"
                     : "the answer could not be sent to the pool; it is not owed")
                 return
             }
@@ -780,7 +800,7 @@ final class WorkerController: ObservableObject {
 
     /// Runs the model and sends its answer, sealed for the buyer, streamed or whole. Returns the result
     /// only when the pool took the answer whole on the connection the request came in on. Any of the
-    /// answer sent before that is recorded in `sentOutput`, so a cut-off answer stays owed.
+    /// answer sent before that is recorded in `sentOutput`, so a cut-off answer counts against the channel (WorkerPaymentLedger.interrupted).
     private func generateAndSend(
         id: String,
         model: LocalModel,
@@ -798,60 +818,62 @@ final class WorkerController: ObservableObject {
         defer { startedStreams.remove(id) }
         let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
             guard stream else { return }
-            await self?.startStream(id)
+            await self?.startStream(id, connection: connection)
             guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
-            await self?.sendOutput(id, sealed)
+            await self?.sendOutput(id, sealed, connection: connection)
         }
         let usage = EngineChat.Response.usage(result)
         let sent: Bool
         if stream {
-            startStream(id)
+            startStream(id, connection: connection)
             var tail = try sealer.sealEvent("data: " + jsonString(response.finish(result)))
             tail += try sealer.sealEvent("data: " + jsonString(EngineChat.Response.usageEvent(usage)), usage: usage)
             tail += try sealer.sealEvent("data: [DONE]")
             tail += try sealer.finish()
-            sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
-            if sent { sentOutput[id, default: 0] += 1 }
+            sent = await sendConfirmed(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()], on: connection)
+            if sent { sentOutput.insert(id) }
         } else {
             let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
-            sent = await sendBufferedBody(sealed, id: id, status: 200)
-            if sent { sentOutput[id, default: 0] += result.completionTokens }
+            sent = await sendBufferedBody(sealed, id: id, status: 200, connection: connection)
+            if sent { sentOutput.insert(id) }
         }
-        let ended = await sendConfirmed(["t": "response-end", "id": id])
-        return sent && ended && socket === connection ? result : nil
+        guard sent, await sendConfirmed(["t": "response-end", "id": id], on: connection) else { return nil }
+        return socket === connection ? result : nil
     }
 
     /// Answers a request the worker can't serve as asked (a part or role the model
     /// can't read) with a sealed OpenAI error, before any inference.
-    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer) async {
+    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer, connection: URLSessionWebSocketTask?) async {
         let error: [String: Any] = ["error": ["message": message, "type": "invalid_request_error"]]
         guard let body = try? jsonString(error), let sealed = try? sealer.sealBody(Data(body.utf8), usage: nil) else {
             return fail(id, message)
         }
         log("refused a request: \(message)")
-        await sendBufferedBody(sealed, id: id, status: status)
-        send(["t": "response-end", "id": id])
+        if await sendBufferedBody(sealed, id: id, status: status, connection: connection) {
+            send(["t": "response-end", "id": id], on: connection)
+        }
     }
 
-    /// A whole (not streamed) sealed JSON answer: its response-start and its one chunk.
-    /// Sends a whole answer; false when the socket didn't take all of it.
+    /// A whole (not streamed) sealed JSON answer: its response-start and its one chunk, on `connection`.
+    /// False when the connection didn't take all of it; nothing more is sent after a send that failed.
     @discardableResult
-    private func sendBufferedBody(_ sealed: Data, id: String, status: Int) async -> Bool {
-        let started = await sendConfirmed(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
-        return await sendConfirmed(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()]) && started
+    private func sendBufferedBody(_ sealed: Data, id: String, status: Int, connection: URLSessionWebSocketTask?) async -> Bool {
+        guard await sendConfirmed(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]], on: connection) else { return false }
+        return await sendConfirmed(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()], on: connection)
     }
 
     /// Sends one streamed output of `id`'s answer, recording that the buyer may now hold it.
-    private func sendOutput(_ id: String, _ sealed: Data) {
-        sentOutput[id, default: 0] += 1
-        send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+    private func sendOutput(_ id: String, _ sealed: Data, connection: URLSessionWebSocketTask?) {
+        guard connection === socket else { return }
+        sentOutput.insert(id)
+        send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()], on: connection)
     }
 
     /// Starts a streamed answer once, at its first generated output: the pool keeps its first-byte deadline
     /// until response-start, so model startup and prefill get that allowance rather than the idle one.
-    private func startStream(_ id: String) {
+    private func startStream(_ id: String, connection: URLSessionWebSocketTask?) {
         guard startedStreams.insert(id).inserted else { return }
-        send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "text/event-stream"]])
+        send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "text/event-stream"]], on: connection)
     }
 
     // MARK: earnings

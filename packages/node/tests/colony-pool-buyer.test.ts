@@ -113,7 +113,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage' | 'seller-cost'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'seller-cost' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -180,6 +180,8 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; fai
         const parts = [opened.sealer.pushStream(enc(upstream).subarray(0, 0)), opened.sealer.pushStream(new TextEncoder().encode(upstream))];
         // The pool bills more than the worker's sealed usage in a clear line of its own.
         if (opts.streamTamper === 'usage') parts.push(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [], usage: { ...usage, completion_tokens: 50 } })}\n\n`));
+        // The seller adds its cost estimate to the clear usage, as it does for every token-priced answer.
+        if (opts.streamTamper === 'seller-cost') parts.push(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [], usage: { ...usage, estimated_cost: 0.000123 } })}\n\n`));
         // Events the opener ignores: wire bytes without any plaintext.
         if (opts.streamTamper === 'padding') parts.push(new TextEncoder().encode(`data: ${JSON.stringify({ pad: 'x'.repeat(200) })}\n\n`.repeat(50)));
         if (opts.streamTamper !== 'no-end') parts.push(opened.sealer.finishStream());
@@ -197,8 +199,10 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; fai
         sealed = enc(envelope);
       }
       if (opts.tamper) {
-        const envelope = JSON.parse(dec(sealed)) as { antseed_e2e: { ct: string }; usage: { completion_tokens: number } };
-        if (opts.tamper === 'ciphertext') {
+        const envelope = JSON.parse(dec(sealed)) as { antseed_e2e: { ct: string }; usage: { completion_tokens: number; estimated_cost?: number } };
+        if (opts.tamper === 'seller-cost') {
+          envelope.usage.estimated_cost = 0.000123; // the seller's own cost estimate, beside the worker's token counts
+        } else if (opts.tamper === 'ciphertext') {
           const ct = Buffer.from(envelope.antseed_e2e.ct, 'base64');
           ct[0] ^= 1;
           envelope.antseed_e2e.ct = ct.toString('base64');
@@ -382,6 +386,11 @@ describe('buyer requests to colony pools', () => {
   it('fails a response whose billed usage differs from the worker\'s sealed usage', async () => {
     const pool = fakePool({ tamper: 'usage' });
     await expect(pool.handler.sendRequest(peer, chatRequest('t2'))).rejects.toThrow(/failed verification/);
+  });
+
+  it('accepts the seller\'s cost estimate beside the worker\'s token counts, buffered or streamed', async () => {
+    expect((await fakePool({ tamper: 'seller-cost' }).handler.sendRequest(peer, chatRequest('t3'))).statusCode).toBe(200);
+    expect((await fakePool({ streamTamper: 'seller-cost' }).handler.sendRequest(peer, chatRequest('e6', true), { onResponseChunk: () => {} })).statusCode).toBe(200);
   });
 
   it('fails a stream that ends without the worker\'s end marker', async () => {

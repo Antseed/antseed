@@ -2,7 +2,6 @@ import { Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
   answerCostUsdc,
-  partialCostUsdc,
   attributedPayment,
   type ChannelsDomain,
   decryptRequest,
@@ -147,6 +146,8 @@ export interface PoolWorkerOptions {
   channelsDomain?: ChannelsDomain;
   /** Keeps the payment ledger between runs, so a restart never lets earlier payments pay for new answers. */
   ledgerStore?: WorkerLedgerStore;
+  /** The clock cut-off answers age out on (ms; tests). */
+  now?: () => number;
   /**
    * Reads what the pool contract (`pool`, the channel's seller) settled on a
    * channel and credited this worker there. With it, a buyer whose settled
@@ -251,7 +252,7 @@ export class PoolWorker {
   constructor(opts: PoolWorkerOptions) {
     this.opts = opts;
     this.wallet = new Wallet(opts.privateKey);
-    this.payments = new WorkerPaymentLedger(opts.ledgerStore);
+    this.payments = new WorkerPaymentLedger(opts.ledgerStore, opts.now);
   }
 
   get address(): string {
@@ -502,7 +503,7 @@ export class PoolWorker {
       owed = { channel, price };
     }
     let answered: UsageLike | null = null;
-    const progress: ServeProgress = { output: false, whole: false, usage: null };
+    const progress: ServeProgress = { output: false, whole: false };
     try {
       if (bound) this.claimOnce(bound.hash, bound.expires);
       answered = await this.serveOpened(frame, inspected, bound, signal, send, progress);
@@ -510,10 +511,10 @@ export class PoolWorker {
       if (owed) {
         if (answered) this.payments.served(owed.channel, answerCostUsdc(usageCounts(answered), owed.price));
         // Output sent and then cut off (cancelled, failed, or the pool connection
-        // dropped): the buyer may hold most of an answer, so it stays owed, at
-        // what was measured, and never less than something. Otherwise a buyer
-        // could take answer after answer and cancel each before it completes.
-        else if (progress.output && !progress.whole) this.payments.served(owed.channel, partialCostUsdc(progress.usage, owed.price));
+        // dropped): the buyer can't verify, so never pays for, an answer without
+        // its end, yet may hold most of it. Not owed, but counted, so cancelling
+        // each answer before it completes gets only a few (MAX_INTERRUPTED_ANSWERS).
+        else if (progress.output && !progress.whole) this.payments.interrupted(owed.channel);
         // Nothing reached the pool: nothing to pay for.
         else this.payments.released(owed.channel);
       }
@@ -622,15 +623,12 @@ export class PoolWorker {
     const status = await this.forwardUpstream(frame, body, opened.sealer, signal, (out) => {
       const sent = send(out);
       delivered = sent && delivered;
-      if (sent && out.t === 'response-chunk') {
-        progress.output = true;
-        progress.usage = opened.sealer.usage;
-      }
+      if (sent && out.t === 'response-chunk') progress.output = true;
       return sent;
     });
     if (!delivered) {
       this.log(progress.output
-        ? 'the answer was cut off on its way to the pool; what was sent stays owed'
+        ? 'the answer was cut off on its way to the pool; it counts as cut off, not owed'
         : 'the answer could not be sent to the pool; it is not owed');
       return null;
     }
@@ -718,8 +716,6 @@ interface ServeProgress {
   output: boolean;
   /** The pool took the whole answer. */
   whole: boolean;
-  /** The usage the answer had reported when its last chunk was sent. */
-  usage: UsageLike | null;
 }
 
 /** `value`, or a rejection once `signal` aborts. */

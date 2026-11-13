@@ -13,6 +13,10 @@ import Foundation
 enum WorkerPayment {
     /// Answers on one channel served before they are paid, the one being admitted included.
     static let maxUnpaidAnswers = 2
+    /// Answers on one channel that may be cut off after some of it was sent within `interruptedWindow`
+    /// seconds (the node worker's MAX_INTERRUPTED_ANSWERS and INTERRUPTED_WINDOW_MS).
+    static let maxInterruptedAnswers = 2
+    static let interruptedWindow: TimeInterval = 30 * 60
 
     struct Proof {
         /// uint256, big-endian.
@@ -142,12 +146,6 @@ enum WorkerPayment {
         return units > 0 ? (units >= Double(UInt64.max) ? .max : UInt64(units)) : 0
     }
 
-    /// What an answer cut off after `outputs` streamed outputs (about a token each) were sent stays
-    /// owed at: never nothing, so it holds one of the channel's unpaid answers until a payment covers it.
-    static func partialCost(outputs: Int, price: Price) -> UInt64 {
-        max(1, cost(promptTokens: 0, completionTokens: outputs, price: price))
-    }
-
     /// A decimal string as a big-endian uint256; nil when it isn't one.
     static func uint256(decimal: String) -> [UInt8]? {
         guard !decimal.isEmpty, decimal.count <= 78, decimal.allSatisfy(\.isASCII), decimal.allSatisfy(\.isNumber) else { return nil }
@@ -200,10 +198,12 @@ final class WorkerPaymentLedger {
         var settledCost: UInt64 = 0
         /// Signed payments not yet seen settled, each attributing more than the last.
         var checkpoints: [Checkpoint] = []
+        /// When each recent answer was cut off after some of it was sent (unix seconds), oldest first.
+        var interrupted: [Double]? = nil
         /// Requests admitted and still running (never saved: none survive a restart).
         var running = 0
 
-        enum CodingKeys: String, CodingKey { case paid, owed, settledCost, checkpoints }
+        enum CodingKeys: String, CodingKey { case paid, owed, settledCost, checkpoints, interrupted }
     }
 
     private struct Snapshot: Codable {
@@ -214,12 +214,14 @@ final class WorkerPaymentLedger {
     private static let maxChannels = 10_000
     private static let maxCheckpoints = 16
     private let file: URL?
+    private let now: () -> Date
     private var accounts: [String: Account] = [:]
     /// Least recently used first.
     private var order: [String] = []
 
-    init(file: URL? = nil) {
+    init(file: URL? = nil, now: @escaping () -> Date = Date.init) {
         self.file = file
+        self.now = now
         guard let file, let data = try? Data(contentsOf: file),
               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
         accounts = snapshot.channels
@@ -260,6 +262,14 @@ final class WorkerPaymentLedger {
             accounts[key] = account
             return "Payment for this worker's earlier answers on this channel has not arrived (\(account.owed.count) unpaid); retry once it is signed"
         }
+        let since = now().timeIntervalSince1970 - WorkerPayment.interruptedWindow
+        let interrupted = (account.interrupted ?? []).filter { $0 > since }
+        account.interrupted = interrupted
+        if interrupted.count >= WorkerPayment.maxInterruptedAnswers {
+            accounts[key] = account
+            let retryIn = Int((interrupted[0] - since).rounded(.up))
+            return "\(interrupted.count) of this worker's answers on this channel were cut off recently; retry in \(retryIn)s"
+        }
         account.running += 1
         accounts[key] = account
         return nil
@@ -271,6 +281,21 @@ final class WorkerPaymentLedger {
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
         if cost > 0 { account.owed.append(cost) }
+        accounts[key] = account
+        save()
+    }
+
+    /// The admitted request on `channel` was cut off after some of its answer was sent: not owed (the
+    /// buyer can't verify, so never pays for, an answer without its end), but counted, so cancelling
+    /// each answer before it completes gets only `WorkerPayment.maxInterruptedAnswers` per window.
+    func interrupted(channel: String) {
+        let key = channel.lowercased()
+        guard var account = accounts[key] else { return }
+        account.running = max(0, account.running - 1)
+        var interrupted = account.interrupted ?? []
+        interrupted.append(now().timeIntervalSince1970)
+        if interrupted.count > WorkerPayment.maxInterruptedAnswers { interrupted.removeFirst() }
+        account.interrupted = interrupted
         accounts[key] = account
         save()
     }

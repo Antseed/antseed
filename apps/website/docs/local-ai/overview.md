@@ -38,9 +38,9 @@ Three things keep the split honest without trusting the pool operator:
 
 - The pool tells each worker its prices when it joins. A worker serves a paid service only.
 - Each request carries the buyer's latest signed payment on its channel. A worker serves a channel only while that payment covers its earlier answers there, at most one answer behind, so nobody, the pool operator included, gets more than two unpaid answers out of it.
-- An answer the buyer started receiving counts as an answer, even when it is cancelled before it completes, so cancelling never gets work for free.
+- An answer cut off after the buyer started receiving it (cancelled, or the connection dropped) isn't paid, since the buyer can't verify an answer without its end. A worker serves a channel at most two such answers in 30 minutes, so cancelling every answer gets almost no work.
 - Before it counts a payment, the worker reads the pool contract to see what the pool has already settled and paid it on that channel. When a settlement credited the worker less than the buyer signed, the answers that payment covered are owed again until a later payment or settlement pays for them.
-- Each settlement pays the worker its share after the 2% protocol fee and the pool's operator fee (10% by default, 20% at most). Attribution a settlement couldn't cover stays owed and is paid first from the next one.
+- Each settlement pays the worker its share after the 2% protocol fee and the pool's operator fee (10% by default, 20% at most). Attribution a settlement couldn't cover stays owed and is paid first from the next one. A settlement's unattributed part waits one settlement before it goes to the pool, so a worker the buyer attributes it to just after is still paid.
 - Workers keep their account of each channel across restarts.
 
 ### What still takes trust

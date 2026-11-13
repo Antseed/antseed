@@ -50,8 +50,10 @@ export function useColony(enabled: boolean): { colony: ColonyState | null; error
 }
 
 /** Sends one pool transaction from the connected wallet and waits for it to land. */
-function usePoolTransaction(config: PaymentConfig | null) {
-  const { expectedChainId, ensureCorrectNetwork } = usePaymentNetwork(config);
+type PaymentNetwork = ReturnType<typeof usePaymentNetwork>;
+
+/** Sends one pool transaction on the component's payment network (its own usePaymentNetwork, not a second subscription). */
+function usePoolTransaction({ expectedChainId, ensureCorrectNetwork }: Pick<PaymentNetwork, 'expectedChainId' | 'ensureCorrectNetwork'>) {
   const client = usePublicClient({ chainId: expectedChainId });
   const { writeContractAsync } = useWriteContract();
   return useCallback(async (
@@ -82,8 +84,9 @@ interface PayColonyProps {
  */
 export function PayColonyLink({ config, colony, onDone }: PayColonyProps) {
   const { address, isConnected } = useAccount();
-  const { targetChainName, wrongChain, isSwitchingChain } = usePaymentNetwork(config);
-  const send = usePoolTransaction(config);
+  const network = usePaymentNetwork(config);
+  const { targetChainName, wrongChain, isSwitchingChain } = network;
+  const send = usePoolTransaction(network);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -151,8 +154,9 @@ export function PayColonyLink({ config, colony, onDone }: PayColonyProps) {
  */
 export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProps & { reload: () => Promise<ColonyState | null> }) {
   const { address, isConnected } = useAccount();
-  const { targetChainName, wrongChain, isSwitchingChain } = usePaymentNetwork(config);
-  const send = usePoolTransaction(config);
+  const network = usePaymentNetwork(config);
+  const { targetChainName, wrongChain, isSwitchingChain } = network;
+  const send = usePoolTransaction(network);
   const [running, setRunning] = useState(false);
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

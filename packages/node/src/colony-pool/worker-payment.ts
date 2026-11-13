@@ -1,4 +1,4 @@
-import { computeCostUsdc, type ServicePricing } from '@antseed/buyer-core/pricing';
+import { computeUsageCostUsdc, type ServicePricing } from '@antseed/buyer-core/pricing';
 import type { WorkerPaymentProof } from '@antseed/buyer-core/worker-e2e';
 import { makeChannelsDomain, SPENDING_AUTH_TYPES } from '@antseed/protocol/signatures';
 import { decodeWorkerTail } from '@antseed/protocol/worker-attribution';
@@ -21,6 +21,17 @@ export type WorkerPayment = WorkerPaymentProof;
 
 /** Answers on one channel a worker serves before they are paid, the one being admitted included. */
 export const MAX_UNPAID_ANSWERS = 2;
+
+/**
+ * Answers on one channel a worker lets be cut off after some of it was sent
+ * (cancelled, failed, or the pool connection dropped) within
+ * INTERRUPTED_WINDOW_MS. The buyer never pays for such an answer (it can't
+ * verify one without its end), so it isn't owed: it counts here instead, so
+ * cancelling each answer before it completes gets no more than this many, and
+ * an honest buyer whose answers broke off is served again once they age out.
+ */
+export const MAX_INTERRUPTED_ANSWERS = 2;
+export const INTERRUPTED_WINDOW_MS = 30 * 60_000;
 
 /** Per-channel accounts a worker keeps; past this many, the least recently used idle one is dropped. */
 export const MAX_TRACKED_CHANNELS = 10_000;
@@ -95,20 +106,9 @@ export function isChargeablePrice(price: ServicePricing | undefined): price is S
   return Boolean(price && (price.inputUsdPerMillion > 0 || price.outputUsdPerMillion > 0 || (price.cachedInputUsdPerMillion ?? 0) > 0));
 }
 
-/** USDC base units an answer costs at `price`: the buyer's own formula (computeCostUsdc). */
+/** USDC base units an answer costs at `price`: the buyer's own formula (computeUsageCostUsdc). */
 export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint }, price: ServicePricing): bigint {
-  const fresh = usage.inputTokens > usage.cachedInputTokens ? usage.inputTokens - usage.cachedInputTokens : 0n;
-  return computeCostUsdc(Number(fresh), Number(usage.outputTokens), price, Number(usage.cachedInputTokens));
-}
-
-/**
- * What an answer cut off after some of it was sent stays owed at: its measured
- * usage when the stream reported any, and never nothing, so it holds one of the
- * channel's unpaid answers until a payment covers it.
- */
-export function partialCostUsdc(usage: Record<string, unknown> | null, price: ServicePricing): bigint {
-  const cost = answerCostUsdc(usageCounts(usage), price);
-  return cost > 0n ? cost : 1n;
+  return computeUsageCostUsdc(usage, price);
 }
 
 interface ChannelAccount {
@@ -125,11 +125,13 @@ interface ChannelAccount {
    * what it attributed to this worker], each attributing more than the last.
    */
   checkpoints: Array<[bigint, bigint]>;
+  /** When each recent answer on the channel was cut off after some of it was sent (ms), oldest first. */
+  interrupted: number[];
 }
 
 /** A worker ledger as stored between runs: amounts as decimal strings. */
 export interface WorkerLedgerSnapshot {
-  channels: Record<string, { paid: string; owed: string[]; settledCost: string; checkpoints: Array<[string, string]> }>;
+  channels: Record<string, { paid: string; owed: string[]; settledCost: string; checkpoints: Array<[string, string]>; interrupted?: number[] }>;
 }
 
 /** Where a worker keeps its ledger, so a restart never forgets what earlier payments already paid for. */
@@ -140,8 +142,8 @@ export interface WorkerLedgerStore {
 
 /**
  * A worker's account of what each channel owes it. `admit` before serving,
- * then `served` with the answer's cost, or `released` when no answer was
- * delivered. With a store, every change is saved, so a restarted worker
+ * then `served` with the answer's cost, `interrupted` when it was cut off after
+ * some of it was sent, or `released` when none was. With a store, every change is saved, so a restarted worker
  * resumes each channel where it was.
  *
  * Signed attribution is trusted until settlement shows otherwise: the pool
@@ -155,7 +157,7 @@ export interface WorkerLedgerStore {
 export class WorkerPaymentLedger {
   private readonly accounts = new Map<string, ChannelAccount>();
 
-  constructor(private readonly store?: WorkerLedgerStore) {
+  constructor(private readonly store?: WorkerLedgerStore, private readonly now: () => number = Date.now) {
     const snapshot = store?.load();
     if (!snapshot) return;
     for (const [channel, stored] of Object.entries(snapshot.channels)) {
@@ -165,6 +167,7 @@ export class WorkerPaymentLedger {
         settledCost: BigInt(stored.settledCost),
         running: 0,
         checkpoints: stored.checkpoints.map(([c, w]) => [BigInt(c), BigInt(w)]),
+        interrupted: stored.interrupted ?? [],
       });
     }
   }
@@ -172,7 +175,7 @@ export class WorkerPaymentLedger {
   /**
    * Admit a request on `channel` whose payment, at the channel's cumulative
    * amount `cumulative`, attributes `attributed` to this worker; throws when
-   * too many of its answers are unpaid.
+   * too many of its answers are unpaid, or were cut off recently.
    */
   admit(channel: string, attributed: bigint, cumulative = 0n): void {
     const key = channel.toLowerCase();
@@ -186,7 +189,7 @@ export class WorkerPaymentLedger {
       }
       // A channel this worker no longer remembers: what its payment already
       // attributes paid for answers served before, never for new ones.
-      account = { paid: attributed, owed: [], settledCost: attributed, running: 0, checkpoints: [] };
+      account = { paid: attributed, owed: [], settledCost: attributed, running: 0, checkpoints: [], interrupted: [] };
     }
     this.accounts.set(key, account);
     if (attributed > account.paid) {
@@ -202,6 +205,13 @@ export class WorkerPaymentLedger {
       this.save();
       throw new Error(`Payment for this worker's earlier answers on this channel has not arrived (${account.owed.length} unpaid); retry once it is signed`);
     }
+    const since = this.now() - INTERRUPTED_WINDOW_MS;
+    account.interrupted = account.interrupted.filter((at) => at > since);
+    if (account.interrupted.length >= MAX_INTERRUPTED_ANSWERS) {
+      this.save();
+      const retryInS = Math.ceil((account.interrupted[0]! - since) / 1000);
+      throw new Error(`${account.interrupted.length} of this worker's answers on this channel were cut off recently; retry in ${retryInS}s`);
+    }
     account.running++;
     this.save();
   }
@@ -212,6 +222,16 @@ export class WorkerPaymentLedger {
     if (!account) return;
     account.running = Math.max(0, account.running - 1);
     if (cost > 0n) account.owed.push(cost);
+    this.save();
+  }
+
+  /** The admitted request on `channel` was cut off after some of its answer was sent: not owed, but counted (MAX_INTERRUPTED_ANSWERS). */
+  interrupted(channel: string): void {
+    const account = this.accounts.get(channel.toLowerCase());
+    if (!account) return;
+    account.running = Math.max(0, account.running - 1);
+    account.interrupted.push(this.now());
+    if (account.interrupted.length > MAX_INTERRUPTED_ANSWERS) account.interrupted.shift();
     this.save();
   }
 
@@ -288,6 +308,7 @@ export class WorkerPaymentLedger {
         owed: account.owed.map(String),
         settledCost: account.settledCost.toString(),
         checkpoints: account.checkpoints.map(([c, w]) => [c.toString(), w.toString()]),
+        interrupted: account.interrupted,
       };
     }
     this.store.save({ channels });

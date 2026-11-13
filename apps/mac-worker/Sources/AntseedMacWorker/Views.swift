@@ -400,11 +400,16 @@ struct ModelRow: View {
     var body: some View {
         let choice = worker.choice
         let canChange = worker.poolModels.contains { $0 != choice }
-        let showList = !worker.poolModels.isEmpty && (choice == nil || picking)
+        // After a failed load the list stays open: pick the same model to retry it, or another.
+        let showList = !worker.poolModels.isEmpty && (choice == nil || picking || worker.modelLoadFailed)
         SettingRow(icon: "cpu", title: choice.map { "Model · \($0.service)" } ?? "Model",
                    value: choice?.displayName ?? (worker.poolModels.isEmpty ? "Chosen from the pool you join" : "Choose one below"),
-                   actionTitle: picking ? "Cancel" : (choice != nil && canChange ? "Change" : nil),
-                   action: { picking.toggle() }) {
+                   actionTitle: picking ? "Cancel" : (worker.modelLoadFailed ? "Retry" : (choice != nil && canChange ? "Change" : nil)),
+                   action: {
+                       guard !picking, worker.modelLoadFailed else { return picking.toggle() }
+                       guard !snapshot else { return }
+                       worker.retryModel()
+                   }) {
             if showList {
                 VStack(spacing: 6) {
                     ForEach(worker.poolModels, id: \.self) { offer in option(offer) }
@@ -433,7 +438,7 @@ struct ModelRow: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(current ? Theme.accent.opacity(0.5) : Color.clear))
         .opacity(fits ? 1 : 0.55)
         .contentShape(Rectangle())
-        .clickable("Run \(offer.displayName) for \(offer.service)", enabled: fits && !current) {
+        .clickable("Run \(offer.displayName) for \(offer.service)", enabled: fits && (!current || worker.modelLoadFailed)) {
             guard !snapshot else { return }
             picking = false
             worker.choose(offer)

@@ -9,7 +9,8 @@ import {
   isChargeablePrice,
   MAX_TRACKED_CHANNELS,
   MAX_UNPAID_ANSWERS,
-  partialCostUsdc,
+  INTERRUPTED_WINDOW_MS,
+  MAX_INTERRUPTED_ANSWERS,
   usageCounts,
   WorkerPaymentLedger,
   type WorkerLedgerSnapshot,
@@ -210,10 +211,34 @@ describe('worker payments', () => {
     ledger.admit(channel, 30_000n, 130_000n);
   });
 
-  it('owes a cut-off answer at its measured usage, and never at nothing', () => {
-    const price = { inputUsdPerMillion: 1, outputUsdPerMillion: 4 };
-    expect(partialCostUsdc({ prompt_tokens: 1000, completion_tokens: 100 }, price)).toBe(1_400n);
-    expect(partialCostUsdc(null, price)).toBe(1n);
+  it('serves only a few cut-off answers per channel, and serves again once they age out', () => {
+    let now = 1_000_000;
+    const ledger = new WorkerPaymentLedger(undefined, () => now);
+    for (let i = 0; i < MAX_INTERRUPTED_ANSWERS; i++) {
+      ledger.admit(channel, 0n);
+      ledger.interrupted(channel);
+    }
+    // Not owed, so they hold no unpaid answer, but no third is cut off on credit.
+    expect(() => ledger.admit(channel, 0n)).toThrow(/cut off recently; retry in 1800s/);
+    now += INTERRUPTED_WINDOW_MS - 1;
+    expect(() => ledger.admit(channel, 0n)).toThrow(/retry in 1s/);
+    now += 1;
+    ledger.admit(channel, 0n);
+    ledger.served(channel, 9_000n);
+    // A paid answer still counts as unpaid until a payment covers it.
+    ledger.admit(channel, 0n);
+  });
+
+  it('keeps cut-off answers across a restart', () => {
+    let saved: WorkerLedgerSnapshot | null = null;
+    const store: WorkerLedgerStore = { load: () => saved && structuredClone(saved), save: (snapshot) => { saved = structuredClone(snapshot); } };
+    const now = () => 5_000_000;
+    const ledger = new WorkerPaymentLedger(store, now);
+    for (let i = 0; i < MAX_INTERRUPTED_ANSWERS; i++) {
+      ledger.admit(channel, 0n);
+      ledger.interrupted(channel);
+    }
+    expect(() => new WorkerPaymentLedger(store, now).admit(channel, 0n)).toThrow(/cut off recently/);
   });
 
   it('never queues an answer that costs nothing, even behind an unpaid one', () => {

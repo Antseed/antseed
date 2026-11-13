@@ -229,17 +229,24 @@ contract AntseedColonyPoolTest is Test {
     }
 
     function _assertSolvent() internal view {
-        assertEq(usdc.balanceOf(address(pool)), pool.totalUsdcOwed(), "pool usdc == owed");
+        assertEq(usdc.balanceOf(address(pool)), pool.totalUsdcOwed() + pool.totalUsdcHeld(), "pool usdc == owed + held");
+    }
+
+    /// @dev The remainder's credit plus what `ch` holds for a later tail, which
+    ///      goes to the remainder unless a later tail claims it.
+    function _rem(bytes32 ch) internal view returns (uint256) {
+        (, uint256 held) = pool.heldUnattributed(ch);
+        return pool.usdcBalance(remainderSink) + held;
     }
 
     /// @dev Malformed tails must attribute nothing: the full net goes to the
     ///      remainder recipient and no worker cumulative moves.
     function _assertAllToRemainder(bytes memory metadata, address probe) internal {
         bytes32 ch = _reserve(keccak256(metadata), 100e6);
-        uint256 remBefore = pool.usdcBalance(remainderSink);
+        uint256 remBefore = _rem(ch);
         uint256 net = _settleRaw(ch, 100e6, metadata);
         assertGt(net, 0);
-        assertEq(pool.usdcBalance(remainderSink) - remBefore, net, "all net to remainder");
+        assertEq(_rem(ch) - remBefore, net, "all net to remainder");
         assertEq(pool.usdcBalance(probe), 0, "probe worker not credited");
         assertEq(pool.workerCumulative(ch, probe), 0, "probe cumulative untouched");
         assertEq(pool.channelCumulative(ch), 100e6);
@@ -254,25 +261,21 @@ contract AntseedColonyPoolTest is Test {
         uint256 net1 = _settle(ch, 100e6, _e2(workerA, 60e6, workerB, 30e6));
         assertEq(pool.usdcBalance(workerA), (net1 * 60e6) / 100e6);
         assertEq(pool.usdcBalance(workerB), (net1 * 30e6) / 100e6);
-        assertEq(
-            pool.usdcBalance(remainderSink),
-            net1 - (net1 * 60e6) / 100e6 - (net1 * 30e6) / 100e6,
-            "unattributed 10% + dust"
-        );
+        assertEq(_rem(ch), net1 - (net1 * 60e6) / 100e6 - (net1 * 30e6) / 100e6, "unattributed 10% + dust");
 
         // Second settle: channel delta 100, A delta 40, B delta 60.
         uint256 a1 = pool.usdcBalance(workerA);
         uint256 b1 = pool.usdcBalance(workerB);
-        uint256 r1 = pool.usdcBalance(remainderSink);
+        uint256 r1 = _rem(ch);
         uint256 net2 = _settle(ch, 200e6, _e2(workerA, 100e6, workerB, 90e6));
         assertEq(pool.usdcBalance(workerA) - a1, (net2 * 40e6) / 100e6);
         assertEq(pool.usdcBalance(workerB) - b1, (net2 * 60e6) / 100e6);
-        assertEq(pool.usdcBalance(remainderSink) - r1, net2 - (net2 * 40e6) / 100e6 - (net2 * 60e6) / 100e6);
+        assertEq(_rem(ch) - r1, net2 - (net2 * 40e6) / 100e6 - (net2 * 60e6) / 100e6);
 
         assertEq(pool.workerCumulative(ch, workerA), 100e6);
         assertEq(pool.workerCumulative(ch, workerB), 90e6);
         assertEq(pool.channelCumulative(ch), 200e6);
-        assertEq(pool.totalUsdcOwed(), net1 + net2);
+        assertEq(pool.totalUsdcOwed() + pool.totalUsdcHeld(), net1 + net2);
         _assertSolvent();
     }
 
@@ -296,15 +299,15 @@ contract AntseedColonyPoolTest is Test {
         uint256 bGot = pool.usdcBalance(workerB) - 1;
         assertEq(aGot, (net2 * 332) / 997);
         assertEq(bGot, (net2 * 333) / 997);
-        assertEq(pool.usdcBalance(remainderSink), net2 - aGot - bGot);
-        assertGt(pool.usdcBalance(remainderSink), 0);
+        assertEq(_rem(ch), net2 - aGot - bGot);
+        assertGt(_rem(ch), 0);
         _assertSolvent();
     }
 
     function test_noTail_allToRemainder() public {
         bytes32 ch = _reserve(bytes32(uint256(3)), 100e6);
         uint256 net = _settleRaw(ch, 50e6, _head(50e6));
-        assertEq(pool.usdcBalance(remainderSink), net);
+        assertEq(_rem(ch), net);
         _assertSolvent();
     }
 
@@ -337,7 +340,7 @@ contract AntseedColonyPoolTest is Test {
         uint256 net = _settle(ch, 100e6, _e2(workerA, 80e6, workerB, 80e6));
         assertEq(pool.usdcBalance(workerA), (net * 80e6) / 100e6, "A full");
         assertEq(pool.usdcBalance(workerB), (net * 20e6) / 100e6, "B clamped to remaining 20");
-        assertEq(pool.usdcBalance(remainderSink), net - (net * 80e6) / 100e6 - (net * 20e6) / 100e6);
+        assertEq(_rem(ch), net - (net * 80e6) / 100e6 - (net * 20e6) / 100e6);
         // B's stored value is what was paid, so the clamped 60 stays owed.
         assertEq(pool.workerCumulative(ch, workerB), 20e6);
 
@@ -354,15 +357,72 @@ contract AntseedColonyPoolTest is Test {
 
     function test_clampedAttributionNeverPaysTwice() public {
         bytes32 ch = _reserve(bytes32(uint256(61)), 1000e6);
-        // Settled once with nothing for A, then A's 100 lands in a delta of 10.
-        _settle(ch, 90e6, new Entry[](0));
-        _settle(ch, 100e6, _e1(workerA, 100e6));
-        assertEq(pool.workerCumulative(ch, workerA), 10e6);
-        // Later deltas pay the remaining 90 and no more.
-        uint256 a1 = pool.usdcBalance(workerA);
-        uint256 net = _settle(ch, 300e6, _e1(workerA, 100e6));
-        assertEq(pool.usdcBalance(workerA) - a1, (net * 90e6) / 200e6);
+        // A's 150 lands in a delta of 100 with nothing held: 100 is paid now.
+        _settle(ch, 100e6, _e1(workerA, 150e6));
         assertEq(pool.workerCumulative(ch, workerA), 100e6);
+        // Later deltas pay the remaining 50 and no more.
+        uint256 a1 = pool.usdcBalance(workerA);
+        uint256 net = _settle(ch, 300e6, _e1(workerA, 150e6));
+        assertEq(pool.usdcBalance(workerA) - a1, (net * 50e6) / 200e6);
+        assertEq(pool.workerCumulative(ch, workerA), 150e6);
+        uint256 a2 = pool.usdcBalance(workerA);
+        _settle(ch, 400e6, _e1(workerA, 150e6));
+        assertEq(pool.usdcBalance(workerA), a2, "nothing paid twice");
+        _assertSolvent();
+    }
+
+    /// Headroom settled before the buyer attributed it: the buyer signs ahead
+    /// (unattributed), the pool settles that, then the buyer re-signs one unit
+    /// higher with the worker's tail. The worker is paid in full from what the
+    /// earlier settlement held, even when that auth is the channel's last.
+    function test_attributionAfterItsHeadroomSettledIsPaidFromWhatItHeld() public {
+        bytes32 ch = _reserve(bytes32(uint256(62)), 1000e6);
+        uint256 net1 = _settle(ch, 500e6, new Entry[](0));
+        (uint256 heldGross, uint256 heldNet) = pool.heldUnattributed(ch);
+        assertEq(heldGross, 500e6);
+        assertEq(heldNet, net1);
+        assertEq(pool.usdcBalance(remainderSink), 0, "held, not yet the remainder's");
+
+        bytes memory metadata = _meta(500e6 + 1, _e1(workerA, 100e6));
+        bytes memory sig = _signSpend(ch, 500e6 + 1, metadata);
+        vm.prank(operator);
+        uint256 net2 = pool.close(ch, 500e6 + 1, metadata, sig);
+        assertEq(pool.workerCumulative(ch, workerA), 100e6);
+        // 1 unit from the close's own delta, 99,999,999 from what the first settlement held.
+        assertEq(pool.usdcBalance(workerA), net2 + (net1 * (100e6 - 1)) / 500e6);
+        // Closed: the rest of what was held is the remainder's.
+        (heldGross, heldNet) = pool.heldUnattributed(ch);
+        assertEq(heldGross + heldNet, 0);
+        assertEq(pool.usdcBalance(remainderSink), net1 - (net1 * (100e6 - 1)) / 500e6);
+        _assertSolvent();
+    }
+
+    function test_heldUnattributedGoesToTheRemainderAtTheNextSettlement() public {
+        bytes32 ch = _reserve(bytes32(uint256(63)), 1000e6);
+        uint256 net1 = _settle(ch, 100e6, new Entry[](0));
+        uint256 net2 = _settle(ch, 200e6, _e1(workerA, 100e6));
+        // A's 100 came from the second delta; what the first held is released.
+        assertEq(pool.usdcBalance(workerA), net2);
+        assertEq(pool.usdcBalance(remainderSink), net1);
+        (, uint256 heldNet) = pool.heldUnattributed(ch);
+        assertEq(heldNet, 0);
+        _assertSolvent();
+    }
+
+    function test_releaseHeld_onlyOnceTheChannelIsNoLongerActive() public {
+        bytes32 ch = _reserve(bytes32(uint256(64)), 1000e6);
+        uint256 net = _settle(ch, 100e6, new Entry[](0));
+        vm.expectRevert(AntseedColonyPool.ChannelStillActive.selector);
+        pool.releaseHeld(ch);
+        // The buyer times the channel out and withdraws: no settlement will come.
+        vm.prank(buyerOperator);
+        channels.requestClose(ch);
+        vm.warp(block.timestamp + channels.TIMEOUT_GRACE_PERIOD() + 1);
+        vm.prank(buyerOperator);
+        channels.withdraw(ch);
+        pool.releaseHeld(ch);
+        assertEq(pool.usdcBalance(remainderSink), net);
+        assertEq(pool.totalUsdcHeld(), 0);
         _assertSolvent();
     }
 
@@ -1076,20 +1136,20 @@ contract AntseedColonyPoolTest is Test {
             }
             bytes memory m = abi.encodePacked(_head(cum), tail);
 
-            uint256 owedBefore = pool.totalUsdcOwed();
-            uint256 sumBefore;
+            uint256 owedBefore = pool.totalUsdcOwed() + pool.totalUsdcHeld();
+            (, uint256 sumBefore) = pool.heldUnattributed(ch);
             for (uint256 i = 0; i < accounts.length; i++) {
                 sumBefore += pool.usdcBalance(accounts[i]);
             }
             uint256 net = _settleRaw(ch, cum, m);
-            uint256 sumAfter;
+            (, uint256 sumAfter) = pool.heldUnattributed(ch);
             for (uint256 i = 0; i < accounts.length; i++) {
                 sumAfter += pool.usdcBalance(accounts[i]);
             }
             // Duplicate addresses are impossible (distinct high bytes), so
             // the per-account sum is exact.
             if (c != 3) assertEq(sumAfter - sumBefore, net, "sum of credits == net");
-            assertEq(pool.totalUsdcOwed() - owedBefore, net, "owed grows by net");
+            assertEq(pool.totalUsdcOwed() + pool.totalUsdcHeld() - owedBefore, net, "owed and held grow by net");
             _assertSolvent();
         }
     }
