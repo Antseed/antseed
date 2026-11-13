@@ -311,6 +311,8 @@ export function agentSetupPrompt(endpoint: AgentSkillsEndpoint): string {
     `- Base URL: ${endpoint.origin}/v1 (OpenAI-compatible; Anthropic /v1/messages works too)`,
     `- API key: ${endpoint.apiKey} (send it as "Authorization: Bearer <key>")`,
     '- The key is a secret that spends my balance: store it as a secret or environment variable, never print it, and keep it out of logs, files you share and replies.',
+    // The skills fall back to the keyless local buyer when these are unset, which skips this gateway.
+    `- The Antseed skills read the gateway from ANTSEED_PROXY_URL and the key from ANTSEED_API_KEY: when you run one, pass ${endpoint.origin} and the key above in those two, and never fall back to http://127.0.0.1:8377.`,
     '- Models: GET /v1/models?type=text, ?type=images or ?type=videos. Send the bare model id; the gateway picks the seller.',
     '- Text: POST /v1/chat/completions. Images: POST /v1/images/generations (response_format "b64_json"; save data[0].b64_json as a file).',
     '- Videos: follow https://github.com/Antseed/antseed/tree/main/skills/antseed-videos',

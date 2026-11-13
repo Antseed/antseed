@@ -195,6 +195,17 @@ test('the copy prompt carries the base URL and key', () => {
   assert.match(prompt, /secret/);
 });
 
+test('the copy prompt names the variables the skills read, so a pasted agent uses this gateway instead of the local buyer', () => {
+  const prompt = agentSetupPrompt({ origin: 'https://gateway.example', apiKey: 'sk-antseed-test' });
+  const line = prompt.split('\n').find((candidate) => candidate.includes('ANTSEED_PROXY_URL'));
+  assert.ok(line, 'the prompt names ANTSEED_PROXY_URL');
+  assert.match(line, /ANTSEED_API_KEY/);
+  assert.ok(line.includes('https://gateway.example'), 'with this gateway as its value');
+  assert.ok(line.includes('never fall back to http://127.0.0.1:8377'));
+  // The key stays on its own line; the prompt doesn't repeat the secret.
+  assert.equal(prompt.split('sk-antseed-test').length - 1, 1);
+});
+
 test('the automatic sync re-points an agent whose only install lost a skill, and asks for no key when none is left', async () => {
   const options = fixture();
   await installAgentSkills('claude-code', endpoint, options);
