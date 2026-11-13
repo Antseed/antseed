@@ -32,7 +32,7 @@ Both `venice-video` and `fal-video` sellers are supported. The skill writes a jo
 
 ## Prerequisites
 
-Antseed Desktop or `antseed buyer start` must be running, normally at `http://127.0.0.1:8377`, and the buyer needs deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The commands need `curl` and `jq`.
+Antseed Desktop, another Antseed gateway, or `antseed buyer start` must be running, and the buyer needs deposited USDC. The skill uses the gateway in `ANTSEED_PROXY_URL`, with the key in `ANTSEED_API_KEY`. Antseed Desktop sets them for the copies it adds to an agent; otherwise set them yourself. Without them the skill stops and asks which gateway to use; to use your own CLI buyer, set `ANTSEED_PROXY_URL=http://127.0.0.1:8377`. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The commands need `curl` and `jq`.
 
 ## Example
 

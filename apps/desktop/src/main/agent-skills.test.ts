@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { WORKSPACE_APPS_DIR } from './paths.js';
 import {
   agentSetupPrompt,
   agentSkillsKeyFile,
@@ -15,6 +17,8 @@ import {
   syncManagedAgentSkills,
 } from './agent-skills.js';
 
+const MISSING = '${ANTSEED_PROXY_URL:?No Antseed gateway found. Ask the user which gateway to use and do not pick one yourself.}';
+
 function fixture(): { home: string; sourceRoot: string } {
   const root = mkdtempSync(path.join(tmpdir(), 'agent-skills-'));
   const sourceRoot = path.join(root, 'skills');
@@ -22,10 +26,11 @@ function fixture(): { home: string; sourceRoot: string } {
     mkdirSync(path.join(sourceRoot, name, 'references'), { recursive: true });
     writeFileSync(path.join(sourceRoot, name, 'SKILL.md'), [
       '---', `name: ${name}`, 'description: test', '---', '', `# ${name}`, '',
-      'proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"',
+      `proxy_url="\${proxy_url:-${MISSING}}"`,
+      'Or their own CLI buyer at `http://127.0.0.1:8377`, if they say so.',
       'curl -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" "$proxy_url/v1/models"',
     ].join('\n'));
-    writeFileSync(path.join(sourceRoot, name, 'references', 'requests.md'), 'Bearer ${ANTSEED_API_KEY:-antseed-desktop} at http://127.0.0.1:8377\n');
+    writeFileSync(path.join(sourceRoot, name, 'references', 'requests.md'), `proxy_url="\${proxy_url:-${MISSING}}"\nBearer \${ANTSEED_API_KEY:-antseed-desktop}\n`);
   }
   const home = path.join(root, 'home');
   mkdirSync(path.join(home, '.claude'), { recursive: true });
@@ -34,9 +39,27 @@ function fixture(): { home: string; sourceRoot: string } {
 
 const endpoint = { origin: 'http://127.0.0.1:8379', apiKey: 'sk-antseed-test' };
 
-test('pointSkillAtGateway swaps the buyer defaults for the gateway and the key file', () => {
-  const text = pointSkillAtGateway('${ANTSEED_PROXY_URL:-http://127.0.0.1:8377} ${ANTSEED_API_KEY:-antseed-desktop}', 'https://gw.example', "/home/o'neil/.antseed/agent-skills.key");
+test('pointSkillAtGateway swaps the missing-gateway stop for the gateway, and the default key for the key file', () => {
+  const text = pointSkillAtGateway(`${MISSING} \${ANTSEED_API_KEY:-antseed-desktop}`, 'https://gw.example', "/home/o'neil/.antseed/agent-skills.key");
   assert.equal(text, `\${ANTSEED_PROXY_URL:-https://gw.example} \${ANTSEED_API_KEY:-$(cat '/home/o'\\''neil/.antseed/agent-skills.key')}`);
+  // The CLI buyer the skill may offer the user keeps its own address.
+  assert.equal(pointSkillAtGateway('their own CLI buyer at `http://127.0.0.1:8377`', 'https://gw.example', '/k'), 'their own CLI buyer at `http://127.0.0.1:8377`');
+});
+
+test('the real skills, once installed, use this gateway and key with nothing set', async () => {
+  const options = { ...fixture(), sourceRoot: path.resolve(WORKSPACE_APPS_DIR, '..', 'skills') };
+  await installAgentSkills('claude-code', endpoint, { ...options, keyFile: path.join(options.home, '.antseed', 'key') });
+  const skillsDir = path.join(options.home, '.claude', 'skills');
+  const files = ['antseed-ask/SKILL.md', 'antseed-images/SKILL.md', 'antseed-videos/references/requests.md'];
+  for (const file of files) {
+    const text = readFileSync(path.join(skillsDir, file), 'utf8');
+    assert.ok(!text.includes('ANTSEED_PROXY_URL:?'), `${file} still stops for a missing gateway`);
+    const line = text.split('\n').find((candidate) => candidate.startsWith('proxy_url='));
+    assert.ok(line, `${file} has its gateway line`);
+    const run = spawnSync('bash', ['-c', `${line}\nprintf '%s' "$proxy_url"`], { env: { PATH: process.env['PATH'] ?? '' }, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, endpoint.origin, file);
+  }
 });
 
 test('installs the skills for one agent, pointed at the gateway, with a private key file', async () => {
@@ -48,7 +71,10 @@ test('installs the skills for one agent, pointed at the gateway, with a private 
   const skill = readFileSync(path.join(skillsDir, 'antseed-images', 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: antseed-images\n/);
   assert.match(skill, /Your Antseed gateway is at `http:\/\/127\.0\.0\.1:8379`/);
-  assert.ok(!skill.includes('8377') && !skill.includes('antseed-desktop}'));
+  assert.ok(!skill.includes('ANTSEED_PROXY_URL:?') && !skill.includes('antseed-desktop}'));
+  assert.ok(skill.includes('${ANTSEED_PROXY_URL:-http://127.0.0.1:8379}'));
+  // The CLI buyer option keeps its own address.
+  assert.ok(skill.includes('CLI buyer at `http://127.0.0.1:8377`'));
   assert.ok(readFileSync(path.join(skillsDir, 'antseed-videos', 'references', 'requests.md'), 'utf8').includes('http://127.0.0.1:8379'));
   const keyFile = agentSkillsKeyFile(options);
   assert.equal(readFileSync(keyFile, 'utf8').trim(), endpoint.apiKey);

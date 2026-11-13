@@ -16,7 +16,7 @@ You can also point an agent directly at [`SKILL.md`](SKILL.md).
 
 ## Prerequisites
 
-Antseed Desktop or `antseed buyer start` must be running, and the buyer must have sufficient deposited USDC. The skill uses the local buyer proxy, normally at `http://127.0.0.1:8377`.
+Antseed Desktop, another Antseed gateway, or `antseed buyer start` must be running, and the buyer must have sufficient deposited USDC. The skill uses the gateway in `ANTSEED_PROXY_URL`, with the key in `ANTSEED_API_KEY`. Antseed Desktop sets them for the copies it adds to an agent; otherwise set them yourself. Without them the skill stops and asks which gateway to use; to use your own CLI buyer, set `ANTSEED_PROXY_URL=http://127.0.0.1:8377`.
 
 ## Parameters
 
