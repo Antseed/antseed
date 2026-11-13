@@ -48,6 +48,17 @@ export type ChatModel = {
    * defaults pick it last.
    */
   lowTrust?: boolean;
+  /**
+   * A routing service, not a model: it picks the model for each request. Its
+   * id is the `<peerId>@<serviceId>` to send to.
+   */
+  router?: {
+    sellerName: string | null;
+    /** What one pick costs, USD; null when not advertised. */
+    priceUsdPerRequest: number | null;
+    /** How many models it picks from; null when it doesn't say. */
+    models: number | null;
+  };
 };
 
 /** A seller for one model under the key's routing policy, as the gateway's route preview reports it. */

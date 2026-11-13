@@ -753,8 +753,8 @@ importers:
         specifier: ^0.5.2
         version: 0.5.3(encoding@0.1.13)
       '@phala/dstack-verifier-wasm':
-        specifier: 0.1.0-beta.0
-        version: 0.1.0-beta.0
+        specifier: 0.1.0
+        version: 0.1.0
       '@sigstore/bundle':
         specifier: ^4.0.0
         version: 4.0.0
@@ -4536,8 +4536,8 @@ packages:
     engines: {node: '>=14.0.0'}
     hasBin: true
 
-  '@phala/dstack-verifier-wasm@0.1.0-beta.0':
-    resolution: {integrity: sha512-Vy+DH84ZGR1qF0KgnpPczUOa+gdkSVItqUQTc3fgXvtF3a4BIebdqvQzR/9JVe/NL6OO2MJ1vs6Ac4iG5O10Pw==}
+  '@phala/dstack-verifier-wasm@0.1.0':
+    resolution: {integrity: sha512-L7AnfKnylFfOO2UXLlXr9yUWlEdhleCCIUMXe5OSk4J8unjNTbfVHY5MLRKKFoDjJJbReG4LuXW/9KsTc+QS4Q==}
     engines: {node: '>=20.19.0'}
 
   '@pierre/diffs@1.2.12':
@@ -19586,7 +19586,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@phala/dstack-verifier-wasm@0.1.0-beta.0': {}
+  '@phala/dstack-verifier-wasm@0.1.0': {}
 
   '@pierre/diffs@1.2.12(@shikijs/themes@4.5.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:

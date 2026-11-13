@@ -20,3 +20,10 @@ test('names the seller next to the model, even for a pinned model', () => {
   assert.equal(replyModelLabel(reply), 'glm-5.3-flash · Example Seller');
   assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', peerId: 'cd34ef565fa2' } }), 'glm-5.3-flash · cd34ef56');
 });
+
+test('a routed reply names the model the router picked between the router and the seller', () => {
+  const reply = { role: 'assistant', content: [], meta: { service: 'cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34@example-router', servedModel: 'glm-5.3-flash', peerName: 'Example Seller' } };
+  assert.equal(replyModelLabel(reply), 'example-router → glm-5.3-flash · Example Seller');
+  // A seller that serves the model asked for: nothing to add.
+  assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', servedModel: 'glm-5.3-flash', peerName: 'Example Seller' } }), 'glm-5.3-flash · Example Seller');
+});

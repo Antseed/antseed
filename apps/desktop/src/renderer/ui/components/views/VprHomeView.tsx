@@ -15,7 +15,7 @@ import { homeProgress, useHomeProgress } from '../../../modules/app/home-progres
 import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
 import { modelsForPrivacy } from '../../hooks/usePrivateMode';
-import { pickerChatModels } from '../../../modules/chat/models';
+import { findChatModel, pickerChatModels } from '../../../modules/chat/models';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -132,7 +132,7 @@ export function VprHomeView({ onSelectView }: Props) {
                     menuMaxHeight={320}
                     menuAnchor="container"
                   />
-                  {!snap.chatImageModelId && snap.chatSelectedModelId ? (
+                  {!snap.chatImageModelId && snap.chatSelectedModelId && !findChatModel(models, snap.chatSelectedModelId)?.router ? (
                     <ChatSellerPicker
                       modelId={snap.chatSelectedModelId}
                       disabled={false}
