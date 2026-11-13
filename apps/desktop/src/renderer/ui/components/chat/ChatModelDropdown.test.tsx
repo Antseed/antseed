@@ -85,4 +85,7 @@ test('without room for the card, a row\'s second line adds only what its tags do
   assert.equal(modelInlineDetails(glm), 'Z.ai · 200k context');
   const kimi = model({ id: 'moonshotai/kimi-k3', label: 'Kimi K3', inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 });
   assert.match(modelInlineDetails(kimi), /^Moonshot · from \$0\.60/);
+  // Capabilities stay visible too; Free and TEE are the row's own tags.
+  const qwen = model({ id: 'qwen-4-235b', label: 'Qwen 4 235B', tee: true, supportsImages: true, reasoning: true, toolUse: true, freeForStakers: true });
+  assert.equal(modelInlineDetails(qwen), 'Qwen · Free for stakers · Vision · Reasoning · Tools');
 });

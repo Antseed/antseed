@@ -102,15 +102,28 @@ export function cardFits(menuLeft: number, menuRight: number, windowWidth: numbe
   return menuRight + CARD_GAP + CARD_WIDTH <= windowWidth - CARD_GAP || menuLeft - CARD_GAP - CARD_WIDTH >= CARD_GAP;
 }
 
+/** A context window as the picker writes it ("256k"), or null. */
+function contextValue(model: ChatModel): string | null {
+  return model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : null;
+}
+
+/** How many models a router picks from ("4 models"), or null. */
+function routerModelCount(model: ChatModel): string | null {
+  const count = model.router?.models;
+  return count ? `${count} model${count === 1 ? '' : 's'}` : null;
+}
+
 /** What a row's detail card shows, for screen readers, which skip the card. */
 export function modelSummary(model: ChatModel): string {
   const lab = modelLab(model);
+  const context = contextValue(model);
+  const picks = routerModelCount(model);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : lab,
     modelTags(model).map((tag) => tag.label).join(', ') || null,
     modelPrice(model)?.text,
-    model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
-    model.router?.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
+    context ? `${context} context` : null,
+    picks ? `picks from ${picks}` : null,
     !model.router && model.sellers > 0 ? `${model.sellers} seller${model.sellers === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join('. ');
 }
@@ -118,11 +131,16 @@ export function modelSummary(model: ChatModel): string {
 /** The short line a row shows when the card has no room: what the row's tags don't already say. */
 export function modelInlineDetails(model: ChatModel): string {
   const price = modelPrice(model);
+  const context = contextValue(model);
+  const picks = routerModelCount(model);
+  // Free and TEE are tags on the row already.
+  const tags = modelTags(model).filter((tag) => !tag.tone && tag.label !== 'Router').map((tag) => tag.label);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
     price && price.tag !== 'free' ? price.text : null,
-    model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
-    model.router?.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
+    context ? `${context} context` : null,
+    picks ? `picks from ${picks}` : null,
+    ...tags,
   ].filter(Boolean).join(' · ');
 }
 
@@ -218,10 +236,18 @@ export function ChatModelDropdown({
   }, [open, tabs, tab, selected]);
 
   useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!open || !menu) return;
-    const rect = menu.getBoundingClientRect();
-    setCardRoom(cardFits(rect.left, rect.right, window.innerWidth));
+    if (!open) return undefined;
+    const measure = () => {
+      const menu = menuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      setCardRoom(cardFits(rect.left, rect.right, window.innerWidth));
+      setHovered(null);
+    };
+    measure();
+    // A resized window can gain or lose the room beside the menu.
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
   }, [open]);
 
   useEffect(() => {
@@ -300,8 +326,9 @@ export function ChatModelDropdown({
       ? (model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null)
       : lab;
     const price = renderModelPrice(model);
+    const context = contextValue(model);
     const stats = [
-      model.contextWindow ? { value: `${Math.round(model.contextWindow / 1000)}k`, label: 'context' } : null,
+      context ? { value: context, label: 'context' } : null,
       model.router?.models ? { value: String(model.router.models), label: `model${model.router.models === 1 ? '' : 's'} it picks from` } : null,
       !model.router && model.sellers > 0 ? { value: String(model.sellers), label: `seller${model.sellers === 1 ? '' : 's'}` } : null,
     ].filter((stat): stat is NonNullable<typeof stat> => stat !== null);
