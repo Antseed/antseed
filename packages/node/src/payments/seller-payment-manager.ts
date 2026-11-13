@@ -354,6 +354,9 @@ export class SellerPaymentManager {
           metadataHash: '',
           metadata: channel.latestMetadata ?? '',
         });
+      } else {
+        // Only an amount the buyer signed a SpendingAuth for counts as accepted.
+        this._acceptedCumulative.set(channel.sessionId, 0n);
       }
     }
 
@@ -371,6 +374,8 @@ export class SellerPaymentManager {
           metadataHash: '',
           metadata: channel.latestMetadata ?? '',
         });
+      } else {
+        this._acceptedCumulative.set(channel.sessionId, 0n);
       }
     }
   }
@@ -774,7 +779,7 @@ export class SellerPaymentManager {
           sellerEvmAddr,
           buyerEvmAddr,
           nonce: 0,
-          authMax: payload.cumulativeAmount,
+          authMax: '0',
           previousConsumption: reserveMaxAmount.toString(), // repurposed: stores reserveMax
           deadline: reserveDeadline,
           previousSessionId: '',
@@ -2992,8 +2997,8 @@ export class SellerPaymentManager {
 
   /**
    * Take the buyer-supplied auth as our latest when it authorizes strictly more
-   * than what we already hold. Persisted so a crash between here and close()
-   * doesn't lose the higher claim.
+   * than the latest auth in memory. Persisted, its amount with its signature and
+   * metadata, so a crash between here and close() doesn't lose the higher claim.
    */
   private _adoptBuyerCloseAuth(channelId: string, buyerAuth: LatestAuth): void {
     const current = this._latestAuth.get(channelId);
@@ -3010,9 +3015,7 @@ export class SellerPaymentManager {
 
     const stored = this._channelStore.getChannel(channelId);
     if (stored) {
-      stored.authMax = (
-        buyerAuth.cumulativeAmount > BigInt(stored.authMax || '0') ? buyerAuth.cumulativeAmount : BigInt(stored.authMax)
-      ).toString();
+      stored.authMax = buyerAuth.cumulativeAmount.toString();
       stored.latestBuyerSig = buyerAuth.spendingAuthSig;
       stored.latestSpendingAuthSig = buyerAuth.spendingAuthSig;
       stored.latestMetadata = buyerAuth.metadata;
