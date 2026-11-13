@@ -4,8 +4,10 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
+import { DEFAULT_BUYER_IDENTITY } from '@antseed/node';
 import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process';
-import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, sumSavings, withUsageOf, type KeyUsage } from './key-info.js';
+import { parseGatewayKeyInfo, parseKeyRewards, parseKeySavings, parseRetiredUsage, parseWalletKeyUsage, sumSavings, withUsageOf, type KeyUsage } from './key-info.js';
+import { BuyerHistory } from '../payments/buyer-history.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayRewardsSummary, GatewaySavings, GatewayStatus } from '../../shared/gateway-types.js';
 import { applyPrivacyToKeys, publishUnderCurrentPrivacy } from './privacy-keys.js';
@@ -506,6 +508,14 @@ async function readKeyInfo(origin: string, apiKey: string, fresh = false): Promi
   return read.missing ? null : parseGatewayKeyInfo(read.body);
 }
 
+/** Usage from before the local gateway, kept up to date and saved next to the desktop's gateway settings. */
+const buyerHistory = new BuyerHistory(() => path.join(resolveConnectDataDir(), 'desktop-usage-history.json'));
+
+/** What the gateway has sent through the default wallet's buyer: every key paying from it, revoked ones included, read as the owner. */
+async function readWalletKeyUsage(): Promise<KeyUsage | null> {
+  return parseWalletKeyUsage(await runGatewayJson(['key', 'list', '--all']).catch(() => null), DEFAULT_BUYER_IDENTITY);
+}
+
 /** Secrets of every key this desktop made on its local gateway, besides the desktop key. */
 function otherLocalKeySecrets(): string[] {
   return listLocalKeys()
@@ -580,7 +590,8 @@ export async function getGatewayKeySavings(): Promise<{ origin: string; savings:
 /**
  * What the gateway reports for the desktop key (`GET /v1/key`): caps and
  * paying wallet, with requests and spend over every local key the desktop
- * made, so apps with a key of their own count too.
+ * made, so apps with a key of their own count too, plus what the buyer
+ * served before the gateway.
  */
 export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
   try {
@@ -591,8 +602,14 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
       Promise.all(otherLocalKeySecrets().map((secret) => readKeyInfo(origin, secret).catch(() => null))),
       readRetiredUsage(),
     ]);
+    // What the buyer served before the gateway, when the desktop used it
+    // directly, counts too. While the buyer starts the gateway can't name the
+    // paying wallet yet; the local buyer pays from the desktop's signer
+    // (checked before the gateway starts), so saved history shows at once.
+    const wallet = desktop.buyerAddress ?? getSecureIdentity()?.wallet.address ?? null;
+    const history = wallet ? buyerHistory.read(await localBuyerPort(), wallet, readWalletKeyUsage) : null;
     // Apps that stopped using a key of their own keep their history in the totals.
-    return withUsageOf(desktop, [...infos, retired?.usage ?? null].filter((usage): usage is KeyUsage => usage !== null));
+    return withUsageOf(desktop, [...infos, retired?.usage ?? null, history].filter((usage): usage is KeyUsage => usage !== null));
   } catch {
     return null;
   }
