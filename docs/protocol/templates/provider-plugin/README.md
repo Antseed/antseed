@@ -198,7 +198,7 @@ npm run verify
 
 ## Links
 
-- [@antseed/node source](https://github.com/AntSeed/node)
-- [Provider interface](https://github.com/AntSeed/node/tree/main/src/interfaces/seller-provider.ts)
-- [Official Anthropic provider](https://github.com/AntSeed/provider-anthropic)
-- [Official Claude Code provider](https://github.com/AntSeed/provider-claude-code)
+- [@antseed/node source](https://github.com/Antseed/node)
+- [Provider interface](https://github.com/Antseed/node/tree/main/src/interfaces/seller-provider.ts)
+- [Official Anthropic provider](https://github.com/Antseed/provider-anthropic)
+- [Official Claude Code provider](https://github.com/Antseed/provider-claude-code)

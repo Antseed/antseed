@@ -183,9 +183,21 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatches: positiveIntegerSchema.optional(),
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
+  /** How long one seller audit waits for its next answered batch before it gives up (default 10 minutes). */
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
-  /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
-  diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
+  /** The longest one seller audit may take in total, while the seller keeps answering (default 60 minutes). */
+  auditPeerMaxTimeoutMs: positiveIntegerSchema.optional(),
+  /**
+   * Close calls (first-audit p-value from 0.005 up to 0.20) get extra sets of never-seen probes and
+   * are decided on the sets pooled: 2 (default, `kbf-extension-v2`: a second extra set when the first
+   * pooled look is still a close call), 1 (`kbf-extension-v1`: one extra set) or 0 for the single-look rule.
+   */
+  closeCallExtensions: z.number().int().min(0).max(2).optional(),
+  /**
+   * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
+   * Accepted and ignored so configs written for earlier releases still load.
+   */
+  diffConfirmationRuns: z.unknown().optional(),
   /**
    * Sellers are audited only when their price for a model is at most its reference price
    * (OpenRouter by default) times this ratio: 1 (default) is the reference price, 1.1 allows 10% more.
@@ -195,11 +207,22 @@ export const VerifierConfigSchema = strictObject({
   upstreams: z.record(z.string(), VerifierUpstreamSchema).optional(),
   referenceEndpoint: VerifierReferenceEndpointSchema.optional(),
   models: z.record(z.string(), VerifierModelSettingsSchema).optional(),
+  /**
+   * Testing only: audit just these built-in models instead of all of them, so `verifier run`,
+   * `verifier watch` and the round-robin assignment cover only these. Every auditor in a test must
+   * use the same list (the assignment depends on it); never set it on a production verifier.
+   */
+  testModels: z.array(z.string().min(1)).min(1).optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
+  /**
+   * KBF layout-filter passes for new banks (default 1; 0 turns it off). Each pass re-asks every new
+   * probe once the way audits do and drops probes whose answer moves. A bank keeps its own setting.
+   */
+  referenceLayoutFilterPasses: z.number().int().min(0, 'must be an integer >= 0').optional(),
   /**
    * When no thinking-suppression strategy works for a reference model, keep building in
    * "bare" mode with a 50x token budget instead of stopping (KBF reference code: --allow-thinking).

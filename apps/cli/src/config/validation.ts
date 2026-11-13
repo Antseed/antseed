@@ -116,6 +116,21 @@ function validateFallbackUpstreams(
   }
 }
 
+const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+/** The fal image plugin maps each service to its fal edit endpoint. */
+const FAL_IMAGE_PLUGINS = new Set(['fal-image', '@antseed/provider-fal-image']);
+
+/** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
+function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
+  if (!OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) return false;
+  try {
+    const host = new URL(providerCfg.baseUrl ?? '').hostname.toLowerCase();
+    return host === 'venice.ai' || host.endsWith('.venice.ai');
+  } catch {
+    return false;
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -142,6 +157,14 @@ function validateSellerProviders(
       const servicePath = `${providerPath}.services.${serviceId}`;
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {
         errors.push(`${servicePath}.upstreamModel must be a non-empty string when provided`);
+      }
+      if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
+        errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg) && !FAL_IMAGE_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      }
+      if (serviceCfg.extraProtocols !== undefined && !OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.extraProtocols requires the openai plugin`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
@@ -409,6 +432,31 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('seller.maxUploadBodyBytes must be an integer >= 1048576');
   }
 
+  if (
+    config.seller.maxInboundConnections !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
+  ) {
+    errors.push('seller.maxInboundConnections must be an integer >= 1');
+  }
+
+  if (
+    config.seller.maxInboundConnectionsPerIp !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
+  ) {
+    errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (config.seller.announceProviderIds !== undefined && typeof config.seller.announceProviderIds !== 'boolean') {
+    errors.push('seller.announceProviderIds must be a boolean');
+  }
+
+  if (
+    config.seller.inboundIdleTimeoutMs !== undefined &&
+    (!Number.isInteger(config.seller.inboundIdleTimeoutMs) || config.seller.inboundIdleTimeoutMs < 0)
+  ) {
+    errors.push('seller.inboundIdleTimeoutMs must be an integer >= 0');
+  }
+
   if (config.seller.agentDir !== undefined) {
     if (typeof config.seller.agentDir === 'string') {
       if (config.seller.agentDir.trim().length === 0) {
@@ -426,6 +474,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       }
     }
   }
+
+  validateNetworkConfig(config, errors);
 
   if (config.seller.publicAddress) {
     const raw = config.seller.publicAddress.trim();
@@ -522,6 +572,8 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
   }
 
+  errors.push(...sellerBuyerLimitsErrors(config.seller.buyerLimits));
+
   if (config.seller.freeUsage !== undefined) {
     const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
     if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {
@@ -551,6 +603,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.telemetry !== undefined) {
+    if (typeof config.telemetry !== 'object' || config.telemetry === null || Array.isArray(config.telemetry)) {
+      errors.push('telemetry must be an object');
+    } else if (config.telemetry.enabled !== undefined && typeof config.telemetry.enabled !== 'boolean') {
+      errors.push('telemetry.enabled must be a boolean');
+    }
+  }
+
   return errors;
 }
 
@@ -562,6 +622,31 @@ export function assertValidConfig(config: AntseedConfig): void {
   if (errors.length === 0) return;
 
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
+}
+
+function validateNetworkConfig(config: AntseedConfig, errors: string[]): void {
+  const network = config.network;
+  for (const key of ['dhtPort', 'signalingPort'] as const) {
+    const port = network[key];
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+      errors.push(`network.${key} must be an integer in range 0-65535`);
+    }
+  }
+  if (network.bindHost !== undefined && (typeof network.bindHost !== 'string' || network.bindHost.trim().length === 0)) {
+    errors.push('network.bindHost must be a non-empty string');
+  }
+  for (const key of ['natTraversal', 'noOfficialBootstrap', 'allowPrivateIPs'] as const) {
+    if (network[key] !== undefined && typeof network[key] !== 'boolean') {
+      errors.push(`network.${key} must be a boolean`);
+    }
+  }
+  if (network.dhtOperationTimeoutMs !== undefined && (!Number.isInteger(network.dhtOperationTimeoutMs) || network.dhtOperationTimeoutMs < 1)) {
+    errors.push('network.dhtOperationTimeoutMs must be an integer >= 1');
+  }
+  const authDuration = config.payments.defaultAuthDurationSecs;
+  if (authDuration !== undefined && (!Number.isInteger(authDuration) || authDuration < 1)) {
+    errors.push('payments.defaultAuthDurationSecs must be an integer >= 1');
+  }
 }
 
 function validateFreeTierDelegations(value: unknown, errors: string[]): void {
@@ -627,4 +712,35 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
   } catch {
     errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+function sellerBuyerLimitsErrors(limits: unknown): string[] {
+  if (limits === undefined) return [];
+  if (!isRecord(limits)) return ['seller.buyerLimits must be an object'];
+  const errors: string[] = [];
+  const positive = (path: string, value: unknown): void => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      errors.push(`${path} must be a positive number`);
+    }
+  };
+  positive('seller.buyerLimits.windowMinutes', limits['windowMinutes']);
+  positive('seller.buyerLimits.maxTokensPerBuyer', limits['maxTokensPerBuyer']);
+  const newBuyers = limits['newBuyers'];
+  if (newBuyers !== undefined) {
+    if (!isRecord(newBuyers)) {
+      errors.push('seller.buyerLimits.newBuyers must be an object');
+    } else {
+      positive('seller.buyerLimits.newBuyers.forHours', newBuyers['forHours']);
+      positive('seller.buyerLimits.newBuyers.maxTokensPerBuyer', newBuyers['maxTokensPerBuyer']);
+      positive('seller.buyerLimits.newBuyers.maxTokensTotal', newBuyers['maxTokensTotal']);
+    }
+  }
+  const weights = limits['serviceWeights'];
+  if (weights !== undefined) {
+    if (!isRecord(weights)) errors.push('seller.buyerLimits.serviceWeights must be an object of service ids to weights');
+    else for (const [service, weight] of Object.entries(weights)) positive(`seller.buyerLimits.serviceWeights.${service}`, weight);
+  }
+  return errors;
 }

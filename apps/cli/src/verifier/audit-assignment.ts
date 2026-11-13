@@ -42,7 +42,7 @@ export interface RoundRobinAssignmentInput {
 
 /**
  * Splits every audited model across the approved auditors each epoch, rotating round robin, so
- * every model is audited every epoch (a verdict only counts for `validityEpochs` epochs). Assignment
+ * every model is audited every epoch (a KBF verdict only counts for `validityEpochs` epochs, 2 by default). Assignment
  * is off-chain only: the contract credits any approved auditor's audit of any model.
  *
  * Auditors are sorted by address and models by name. In epoch `e`, model `i` goes to auditor
@@ -79,6 +79,38 @@ export function roundRobinAssignmentFor(auditor: string, input: RoundRobinAssign
   const assignment = assignAuditModelsRoundRobin(input).find((entry) => entry.auditor === address)
   if (!assignment) throw new Error(`auditor ${address} is not an approved auditor, so it has no round-robin models`)
   return assignment
+}
+
+/**
+ * The approved auditors in the order they take a model in `epoch`: the model's round-robin auditor
+ * first, then the next auditor in the rotation, and so on. A report on the model that waits for a
+ * confirmation is confirmed by the first auditor in this order that has not reported on it yet, so
+ * confirmations rotate between auditors the same way the assignment does: with two auditors, each
+ * one confirms the other's reports. Empty when the model is not in `availableModels`.
+ */
+export function auditorRotationForModel(model: string, input: RoundRobinAssignmentInput): string[] {
+  const epoch = parseEpoch(input.epoch)
+  const auditors = uniqueAuditors(input.auditors)
+  const index = uniqueModels(input.availableModels).findIndex((entry) => entry.toLowerCase() === model.trim().toLowerCase())
+  if (index < 0 || auditors.length === 0) return []
+  const first = (index + Number(epoch % BigInt(auditors.length))) % auditors.length
+  return auditors.map((_, offset) => auditors[(first + offset) % auditors.length]!)
+}
+
+/**
+ * The models each auditor confirms in `epoch`: those where it is next after the model's round-robin
+ * auditor (`auditorRotationForModel`). It audits the sellers whose DIFF on such a model waits for a
+ * second auditor. Empty for everyone with fewer than two auditors, since nobody can confirm then.
+ */
+export function confirmationAssignments(input: RoundRobinAssignmentInput): Map<string, string[]> {
+  const auditors = uniqueAuditors(input.auditors)
+  const confirms = new Map(auditors.map((auditor) => [auditor, [] as string[]]))
+  if (auditors.length < 2) return confirms
+  for (const model of uniqueModels(input.availableModels)) {
+    const confirmer = auditorRotationForModel(model, input)[1]
+    if (confirmer) confirms.get(confirmer)!.push(model)
+  }
+  return confirms
 }
 
 /**

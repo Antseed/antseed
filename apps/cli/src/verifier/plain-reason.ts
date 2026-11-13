@@ -43,10 +43,11 @@ export function explainSkipReason(reason: string, modelLabel?: string): PlainRea
     }
   }
 
-  if (/DIFF not confirmed/i.test(text)) {
+  if (/close call waiting for extra questions/i.test(text)) {
     return {
-      headline: 'Not submitted: wrong-model result not confirmed',
-      detail: "The answers didn't match, but the auditor couldn't run the confirming recheck, so nothing was recorded on-chain.",
+      headline: 'Not submitted yet: close call',
+      detail: 'The first check was too close to call, so the auditor asks the seller a second set of fresh questions '
+        + 'and decides on both together. That second set has not run yet, so nothing was recorded on-chain.',
     }
   }
 
@@ -90,8 +91,6 @@ export function explainSkipReason(reason: string, modelLabel?: string): PlainRea
 export interface InconclusiveInput {
   code?: string | null
   summary?: string | null
-  /** Verdict of the recheck on fresh probes, when the first check said DIFF. */
-  recheckVerdict?: string | null
   answered?: number | null
   asked?: number | null
 }
@@ -156,19 +155,6 @@ export function explainInconclusive(input: InconclusiveInput): PlainReason {
   const answered = input.answered !== null && input.answered !== undefined && input.asked
     ? ` The seller answered ${input.answered} of ${input.asked} questions.`
     : ''
-  if (input.recheckVerdict === 'SAME') {
-    return {
-      headline: 'Inconclusive: the recheck passed',
-      detail: "The first check didn't match the official model, but a recheck on fresh questions did, so it isn't counted as a wrong model.",
-    }
-  }
-  if (input.recheckVerdict === 'UNDETERMINED') {
-    return {
-      headline: 'Inconclusive: wrong model not confirmed',
-      detail: "The first check didn't match the official model, but the recheck on fresh questions couldn't decide, "
-        + `so it isn't counted as a wrong model.${answered}`,
-    }
-  }
   const known = input.code ? INCONCLUSIVE_BY_CODE[input.code] : undefined
   if (known) return { headline: known.headline, detail: `${known.detail}${answered}` }
   const summary = input.summary?.trim()

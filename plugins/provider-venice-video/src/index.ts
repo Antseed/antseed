@@ -1,14 +1,14 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind, VideoOptions } from '@antseed/node';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, isContentFreeLogging, validateServiceCapabilityFields } from '@antseed/node';
+import { nativeVideoRoute, parseJsonObject, referenceVideoPriceProblem, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   BaseProvider,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
   videoDownloadError,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -64,7 +64,11 @@ function saveDownloadUrls(dataDir: string | undefined, urls: DownloadUrls): void
   }
 }
 
-const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls' } as const;
+const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls', reference_video: 'reference_video_urls' } as const;
+/** Venice's queue field for an audio input (video input kind `audio`). */
+const AUDIO_INPUT_FIELD = 'audio_url';
+/** Reference audio (voice, narration, sound), which Venice takes only alongside a reference image or video. */
+const REFERENCE_AUDIO_FIELD = 'reference_audio_urls';
 
 /**
  * Largest create body Venice accepts. Measured on 2026-10-23: 32.5 MB passed
@@ -91,9 +95,11 @@ export function isVeniceEditModel(model: unknown): boolean {
  * are kept.
  */
 export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null): ServiceCapabilities {
-  const kinds: VideoInputKind[] = ['video', 'reference_image'];
-  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   const configured = capabilities.video ?? {};
+  // Audio follows the seller's inputs when it announced them, else Venice's `audio_input`.
+  const audio = !configured.inputs && veniceConstraints(model)?.audio_input === true;
+  const kinds: VideoInputKind[] = ['video', 'reference_image', ...(audio ? ['audio' as const] : [])];
+  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   // Case-sensitive, as Venice lists them (`768P` for Recast, `720p` for Wan).
   const listed = veniceConstraints(model)?.resolutions;
   const resolutions = Array.isArray(listed) && listed.length > 0 && listed.length <= 16
@@ -148,7 +154,11 @@ export async function veniceReferenceImages(baseUrl: string, apiKey: string, mod
  * image-to-video model takes `image_url`, plus `end_image_url` when
  * `endFrame` is true (Venice's model list does not say, see veniceAcceptsEndFrame).
  * A video-to-video model takes `video_url` and `image_url`, plus
- * `reference_image_urls` when `referenceImages` is true.
+ * `reference_image_urls` when `referenceImages` is true. Audio input
+ * (`audio_url`, e.g. narration to lip-sync to) follows `audio` in the
+ * announced inputs, or Venice's `audio_input` when inputs were not announced.
+ * A model announced with audio and reference images or videos also takes
+ * `reference_audio_urls`, which Venice accepts only next to those.
  */
 export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false, referenceImages = inputs?.includes('reference_image') === true): string[] | null {
   const constraints = veniceConstraints(model);
@@ -163,10 +173,13 @@ export function veniceInputParameters(model: unknown, inputs?: readonly string[]
       : constraints.model_type === 'image-to-video'
         ? [FRAME_FIELDS.first_frame, ...(endFrame ? [FRAME_FIELDS.last_frame] : [])]
         : [];
+  const audioInput = inputs ? inputs.includes('audio') : constraints.audio_input === true;
   const parameters = [
     'prompt',
     'duration',
     ...(edit ? ['video_url'] : []),
+    ...(audioInput ? [AUDIO_INPUT_FIELD] : []),
+    ...(audioInput && !edit && inputs?.some(input => input === 'reference_image' || input === 'reference_video') ? [REFERENCE_AUDIO_FIELD] : []),
     ...(Array.isArray(constraints.resolutions) && constraints.resolutions.length > 0 ? ['resolution'] : []),
     ...(Array.isArray(constraints.aspect_ratios) && constraints.aspect_ratios.length > 0 ? ['aspect_ratio'] : []),
     ...(constraints.audio_configurable === true ? ['audio'] : []),
@@ -199,6 +212,45 @@ export async function veniceAcceptsEndFrame(baseUrl: string, apiKey: string, mod
   } catch {
     return null;
   }
+}
+
+/**
+ * Why a create asks for an aspect ratio or audio the seller did not announce,
+ * or null. Venice prices a clip by its aspect ratio and audio, and the seller's
+ * unit price covers the announced aspect ratios (`video.aspectRatios`) and,
+ * for a silent service (`video.audio: false`), no audio. Another aspect ratio,
+ * or audio from a silent service, would cost Venice a price the seller never
+ * set. A service that makes audio may still be asked for silence: its price
+ * can match `audio`. Unannounced options are not checked. `audioConfigurable` is whether
+ * Venice lets the model's audio be turned off, undefined while unknown: a
+ * silent service can't then make an omitted `audio` silent, so the create must
+ * say `audio: false` itself.
+ */
+export function unannouncedVideoOption(video: VideoOptions | undefined, input: Record<string, unknown>, audioConfigurable?: boolean): string | null {
+  const aspectRatio = input.aspect_ratio;
+  if (video?.aspectRatios && aspectRatio !== undefined && !video.aspectRatios.includes(aspectRatio as string)) {
+    return `aspect_ratio must be one of: ${video.aspectRatios.join(', ')}`;
+  }
+  if (video?.audio === false && input.audio !== undefined && input.audio !== false) {
+    return 'This service generates silent video: audio must be false or omitted';
+  }
+  if (video?.audio === false && input.audio === undefined && audioConfigurable === undefined) {
+    return 'This service generates silent video: send audio: false';
+  }
+  return null;
+}
+
+/**
+ * The create with an omitted option set to the announced one, so Venice makes
+ * (and bills) the clip the seller priced: the first announced aspect ratio, and
+ * no audio for a silent service of a model whose audio can be turned off
+ * (Venice adds audio by default). Null when nothing changes.
+ */
+export function withAnnouncedVideoOptions(video: VideoOptions | undefined, input: Record<string, unknown>, audioConfigurable: boolean): Record<string, unknown> | null {
+  const aspectRatio = input.aspect_ratio === undefined ? video?.aspectRatios?.[0] : undefined;
+  const silent = video?.audio === false && input.audio === undefined && audioConfigurable;
+  if (aspectRatio === undefined && !silent) return null;
+  return { ...input, ...(aspectRatio !== undefined ? { aspect_ratio: aspectRatio } : {}), ...(silent ? { audio: false } : {}) };
 }
 
 function error(request: SerializedHttpRequest, statusCode: number, code: string, message: string) {
@@ -344,6 +396,35 @@ const plugin: AntseedProviderPlugin = {
 
     // Edit models, whose `duration` must be the source length; null until Venice's model list was read.
     let editModels: Set<string> | null = null;
+    // Whether Venice lets each service's audio be turned off (`audio_configurable`); absent while unknown.
+    const audioConfigurable = new Map<string, boolean>();
+
+    /**
+     * Why a create can't be paid for its `duration`, or null. The buyer pays
+     * for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for
+     * the whole source, and a shorter output than `duration` is never charged,
+     * so `duration` must be the measured source length. Without Venice's model
+     * list, a source video marks an edit.
+     */
+    const lengthProblem = (service: string, input: Record<string, unknown> | null): string | null =>
+      input?.video_url !== undefined && (editModels?.has(service) ?? true) ? videoSourceLengthProblem(input.video_url, input.duration) : null;
+
+    /** Why a create can't be served at the seller's price, or null. */
+    const createRefusal = (request: SerializedHttpRequest, service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
+      const unpriced = referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, serviceCapabilities[service]?.video, input);
+      if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
+      const length = lengthProblem(service, input);
+      if (length) return { statusCode: 422, code: 'invalid_video_duration', message: length };
+      const option = input ? unannouncedVideoOption(serviceCapabilities[service]?.video, input, audioConfigurable.get(service)) : null;
+      return option ? { statusCode: 422, code: 'unsupported_video_option', message: option } : null;
+    };
+
+    // Run before any payment, so a refused create costs the buyer nothing.
+    const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
+      const { videoRoute, service } = route(request);
+      if (videoRoute?.action !== 'create' || !service) return null;
+      return createRefusal(request, service, parseJsonObject(request.body));
+    };
 
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
@@ -357,6 +438,10 @@ const plugin: AntseedProviderPlugin = {
         const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
         if (!Array.isArray(data)) return;
         editModels = new Set(services.filter(service => isVeniceEditModel(data.find(entry => entry?.id === service))));
+        for (const service of services) {
+          const constraints = veniceConstraints(data.find(entry => entry?.id === service));
+          if (constraints) audioConfigurable.set(service, constraints.audio_configurable === true);
+        }
         let checks = 0;
         for (const service of services) {
           const model = data.find(entry => entry?.id === service);
@@ -389,8 +474,6 @@ const plugin: AntseedProviderPlugin = {
         // Unknown model fields: buyers fall back to their defaults.
       }
     };
-
-    let activeDownloads = 0;
     // Private (VPS-backed) Venice models return a pre-signed download_url on
     // create instead of streaming the file from retrieve. The seller keeps
     // that URL and streams the file itself, so every video reaches the buyer
@@ -414,15 +497,16 @@ const plugin: AntseedProviderPlugin = {
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
-      // The buyer pays for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for the whole source,
-      // and a shorter output than `duration` is never charged, so `duration` must be the measured source length.
-      // Without Venice's model list, a source video marks an edit.
+      // The seller checks this before payment too (checkRequest).
       const input = parseJsonObject(request.body);
-      if (input?.video_url !== undefined && (editModels?.has(service) ?? true)) {
-        const refused = videoSourceLengthProblem(input.video_url, input.duration);
-        if (refused) return error(request, 422, 'invalid_video_duration', refused);
-      }
-      const response = await relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
+      const refused = createRefusal(request, service, input);
+      if (refused) return error(request, refused.statusCode, refused.code, refused.message);
+      const priced = input ? withAnnouncedVideoOptions(serviceCapabilities[service]?.video, input, audioConfigurable.get(service) === true) : null;
+      const response = await relay.handleRequest({
+        ...request,
+        path: new URL(request.path, 'http://local').pathname,
+        ...(priced ? { body: Buffer.from(JSON.stringify(priced)) } : {}),
+      });
       if (response.statusCode === 413) {
         // Venice answers an oversized body with an HTML page.
         return error(request, 413, 'request_too_large', `Venice accepts request bodies up to ${VENICE_MAX_BODY_BYTES / 1_000_000} MB; send a smaller file or a public https URL`);
@@ -435,18 +519,7 @@ const plugin: AntseedProviderPlugin = {
       return { ...response, headers, body: Buffer.from(JSON.stringify(rest)) };
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: Parameters<NonNullable<Provider['handleRequestStream']>>[1], download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: relay.name,
@@ -458,6 +531,7 @@ const plugin: AntseedProviderPlugin = {
       maxConcurrency,
       getCapacity: () => relay.getCapacity(),
       init,
+      checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
         const models = await readVeniceVideoModels(baseUrl);
@@ -512,7 +586,8 @@ const plugin: AntseedProviderPlugin = {
           }
           const failed = terminalRetrieveFailure(upstream.status, body);
           if (failed) {
-            console.warn(`[venice-video] job ${videoRoute.resourceId} failed: ${failed}`);
+            // A refusal reason can describe the buyer's prompt or media.
+            console.warn(`[venice-video] job ${videoRoute.resourceId} failed${isContentFreeLogging() ? '' : `: ${failed}`}`);
             return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: Buffer.from(JSON.stringify({ status: 'FAILED', error: failed })) };
           }
           return { requestId: request.requestId, statusCode: upstream.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body };

@@ -68,6 +68,15 @@ export interface Provider {
   handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse>;
 
   /**
+   * Optional local check of a request the provider would refuse anyway,
+   * without calling the upstream: for example a video whose paid `duration`
+   * is not the length of its inline source. The seller runs it before any
+   * payment step, so a refused request opens no payment channel and costs the
+   * buyer nothing. Returns null to serve the request.
+   */
+  checkRequest?(req: SerializedHttpRequest): ProviderRequestRefusal | null;
+
+  /**
    * Optional streaming request handler. Implementations should call
    * `callbacks.onResponseStart` once, then `callbacks.onResponseChunk`
    * zero or more times (including a final `done=true` chunk).
@@ -122,6 +131,14 @@ export type UpstreamAccountStatus =
   /** `outOfCredit`: the account's balance is the cause (the seller alerts it as a billing problem). */
   | { status: 'unavailable'; reason: string; outOfCredit?: boolean }
   | { status: 'unknown'; reason?: string };
+
+/** Result of `Provider.checkRequest`: sent to the buyer as `{ error: { code, message } }`. */
+export interface ProviderRequestRefusal {
+  /** A 4xx status. */
+  statusCode: number;
+  code: string;
+  message: string;
+}
 
 export interface ProviderStreamCallbacks {
   signal?: AbortSignal;

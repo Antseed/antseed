@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { setAuditedModelsForTesting } from './audited-models.js'
-import { enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
+import { BUILD_REQUEST_RUNS, buildRequestLimits, enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
 
 setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a' } })
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
@@ -29,7 +29,9 @@ async function fixture(body: (input: Parameters<typeof ensureAuditableReference>
     catalog: async () => { calls.push('catalog'); return null },
     build: async (options) => {
       calls.push('build')
-      assert.equal(options.config?.referenceMaxRequestsPerBuild, 10)
+      // The run's 10 requests per build, within the configured total of 20.
+      assert.equal(options.config?.referenceMaxRequestsPerBuild, 20)
+      assert.equal(options.maxNewRequests, 10)
       assert.ok(options.initialReference)
       return { reference: referenceFixture('model-a', 110), path: 'reference.json',
         cost: { totalUsdMicros: '1', requestCount: 1, models: [], purposes: [] },
@@ -99,7 +101,8 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
     assert.equal(options.settingsReference?.referenceModel, 'model-a')
     assert.deepEqual([...(options.excludedProbeIds ?? [])], ['banked-1', 'banked-2'])
     assert.deepEqual(options.config?.models?.['model-a']?.contrastModels, ['contrast-x'])
-    assert.equal(options.config?.referenceMaxRequestsPerBuild, 10)
+    assert.equal(options.config?.referenceMaxRequestsPerBuild, 20)
+    assert.equal(options.maxNewRequests, 10)
     return { reference: referenceFixture('model-a', 100), path: 'reference.json',
       cost: { totalUsdMicros: '3000000', requestCount: 1, models: [], purposes: [] },
       finalize: async () => { calls.push('finalize') } }
@@ -115,7 +118,7 @@ test('sellers short of unseen questions get fresh questions until each has enoug
   const calls: string[] = []
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)],
   }, {
     capacity: async () => {
       calls.push('capacity')
@@ -143,7 +146,7 @@ test('seller capacity makes no calls when every seller has enough unseen questio
   const calls: string[] = []
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
   }, {
     capacity: async () => {
       calls.push('capacity')
@@ -160,7 +163,7 @@ test('seller capacity stops after the round limit and returns the sellers still 
   let enrolls = 0
   const short = await ensureSellerProbeCapacity({
     model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)], recheck: true,
+    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
   }, {
     capacity: async () => ({ selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 0, neededProbeCount: 200, assignedThisEpoch: false }] }),
     enrollFresh: async () => { enrolls += 1; return { addedProbeCount: 10, costUsdMicros: '1' } },
@@ -188,3 +191,9 @@ test('a model with no bank yet gets its first bank built before the audit', asyn
   await ensureAuditableReference(input, operations)
   assert.deepEqual(calls, ['inspect', 'seed', 'catalog', 'build', 'append', 'inspect', 'finalize'])
 }))
+
+test('a run spends its budget per build; the build total is the configured one or several runs\' budgets', () => {
+  assert.deepEqual(buildRequestLimits(600, undefined), { perRun: 600, total: 600 * BUILD_REQUEST_RUNS })
+  assert.deepEqual(buildRequestLimits(600, 1000), { perRun: 600, total: 1000 })
+  assert.deepEqual(buildRequestLimits(600, 400), { perRun: 400, total: 400 })
+})

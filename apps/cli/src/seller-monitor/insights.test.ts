@@ -53,7 +53,7 @@ test('market, reputation and promote: background snapshot, standing, verificatio
     await call('GET', '/seller/reputation')
     await tick()
     const reputation = (await call('GET', '/seller/reputation')).json
-    assert.deepEqual(reputation.rank, { position: 6, of: 8 })
+    assert.deepEqual(reputation.rank, { position: 3, of: 8 })
     assert.equal(reputation.standing.agentId, 412)
     assert.equal(reputation.steps[0].part, 'standing', 'not eligible yet comes first')
     assert.match(reputation.steps[0].text, /1000 ANTS/)

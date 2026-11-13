@@ -9,7 +9,7 @@ Act as the user's video director. Do not rush to generate: shape the idea, pick 
 
 ## Prerequisites
 
-- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set, otherwise `http://127.0.0.1:8377`.
+- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set (Antseed Desktop points it at its gateway and sets `$ANTSEED_API_KEY`), otherwise `http://127.0.0.1:8377`.
 - The buyer has deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The buyer refuses any single video above $5.00.
 - `curl` and `jq`. Frames are made with the `antseed-images` skill. Video edits also need `ffprobe` (part of `ffmpeg`).
 
@@ -32,7 +32,7 @@ This stage has two approvals, because frames cost money.
 
 **2a. Prompts.**
 
-1. Fetch the chosen model's offers (`/v1/models/<id>`) to see its frame inputs, durations, resolutions, aspect ratios, and the request fields each seller lists (`fields`). Show the user the fields.
+1. Read the chosen model's offers (its entry in `/v1/models?type=videos`; [references/requests.md](references/requests.md#catalog)) to see its frame inputs, durations, resolutions, aspect ratios, and the request fields each seller lists (`fields`). Show the user the fields.
 2. Write the video prompt in the style the chosen model responds to best ([references/prompting.md](references/prompting.md)).
 3. Write the first-frame prompt, and a last-frame prompt when the model takes `last_frame`. Both share one style phrase so the look stays consistent.
 4. Propose the aspect ratio. The frames decide the video's shape, so it is fixed here. `aspect_ratio` is sent only to a seller that lists the ratio ([references/requests.md](references/requests.md#aspect-ratio)).
@@ -61,6 +61,12 @@ If the user uploads frames, skip making them: get their paths (in Antseed Deskto
 After "go", queue the video once, save the job file, wait, and save the MP4 ([references/requests.md](references/requests.md)). Show the finished video (in Antseed Desktop, call `show_media`) and report the path, model, duration, resolution, and price.
 
 For a video longer than the model's longest clip, plan it as several clips in Stage 3 (price each one), then make them one at a time, each starting from the previous clip's last frame, and join them ([references/requests.md](references/requests.md#multi-clip-videos)).
+
+## Lip-sync to audio
+
+When the user wants a character to speak a recorded or generated voice track (make it with text to speech, `POST /v1/audio/speech`), use a model whose seller lists `audio_url` in `fields` (the price step with `audio_in=yes` keeps only those). Make the first frame or reference images as usual, then send the audio as `audio_url` ([references/requests.md](references/requests.md#lip-sync-audio)). The video is priced as usual; the audio adds nothing. Keep the audio within the model's limit (on Venice WAV or MP3, at most 30 s and 15 MB) and pick a duration at least as long as the audio.
+
+Talking-avatar models (`audio` in the offer's `requiredInputs` and no `duration` in `fields`, for example fal's Kling AI Avatar `fal-ai/kling-video/ai-avatar/v2/pro`) animate one face image (the first frame) to the audio and make a video exactly as long as the audio. There is no duration to choose: `duration` is the audio's length in whole seconds, rounded down, and that is what the user pays for. Send the audio inline (MP3 or WAV); the seller measures it and refuses a URL or another length with `422 invalid_video_duration` before any payment. Quote: "<model>, <seconds> s from your audio: $<price>. Go?" ([references/requests.md](references/requests.md#lip-sync-audio)).
 
 ## Edit a video
 

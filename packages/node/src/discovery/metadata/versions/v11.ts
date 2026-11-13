@@ -7,6 +7,7 @@ import { V10_LAYOUT } from "./v10.js";
 export const V11_LAYOUT: MetadataLayout = {
   providerFields: insertBefore(V10_LAYOUT.providerFields, providerLoadField, serviceUnitBillingField),
   peerFields: V10_LAYOUT.peerFields,
+  vocabulary: V10_LAYOUT.vocabulary,
 };
 
-export const metadataV11 = defineMetadataVersion({ version: 11, wideServiceCounts: false, ...V11_LAYOUT });
+export const metadataV11 = defineMetadataVersion({ version: 11, wideServiceCounts: false, servable: false, ...V11_LAYOUT });

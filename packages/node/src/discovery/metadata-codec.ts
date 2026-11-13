@@ -5,7 +5,10 @@ export {
   encodeMetadata,
   encodeMetadataForSigning,
   getMetadataCodec,
+  metadataVersionIntroducing,
   negotiateMetadataVersion,
   SERVED_METADATA_VERSIONS,
   type MetadataVersionCodec,
+  type MetadataVocabulary,
+  type MetadataVocabularyNameKind,
 } from "./metadata/index.js";

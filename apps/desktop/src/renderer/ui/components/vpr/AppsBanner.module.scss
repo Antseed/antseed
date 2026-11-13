@@ -1,0 +1,72 @@
+.banner {
+  position: relative;
+  flex: 0 0 auto;
+  height: clamp(170px, 34vh, 320px);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--bg-surface);
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.8s ease;
+}
+
+.hidden {
+  opacity: 0;
+}
+
+.art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 50%;
+}
+
+/* A left-side haze keeps the title readable over the painting. */
+.hazeDay::after,
+.hazeNight::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.hazeDay::after {
+  background: linear-gradient(90deg, rgba(251, 250, 246, 0.94) 0%, rgba(251, 250, 246, 0.72) 38%, rgba(251, 250, 246, 0) 64%);
+}
+
+.hazeNight::after {
+  background: linear-gradient(90deg, rgba(27, 24, 52, 0.86) 0%, rgba(27, 24, 52, 0.6) 38%, rgba(27, 24, 52, 0) 64%);
+}
+
+/* Title colours follow the art, not the theme setting. */
+.text {
+  position: absolute;
+  left: 34px;
+  top: 50%;
+  max-width: min(50%, 520px);
+  transform: translateY(-50%);
+  color: #2a2d32;
+}
+
+.night .text {
+  color: #f6f2ea;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(32px, 6vh, 50px);
+  font-weight: 470;
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+}
+
+.subtitle {
+  margin: 12px 0 0;
+  font-size: 15.5px;
+  line-height: 1.5;
+  opacity: 0.84;
+}

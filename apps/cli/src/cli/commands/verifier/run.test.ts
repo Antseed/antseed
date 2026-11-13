@@ -25,6 +25,8 @@ import {
   selectVerifierPeer,
   isAssignedMode,
   validateAssignedModeOptions,
+  confirmationPlanKey,
+  unauditedConfirmations,
   type ResumeCandidate,
 } from './run.js'
 
@@ -40,12 +42,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, models, overview, reference, status, submit, rewards, and check workflows', () => {
+test('verifier exposes run, assignment, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'reference', 'rewards', 'run', 'status', 'submit'],
+    ['assignment', 'check', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 
@@ -70,7 +72,8 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--fresh', '--skip-version-check', '--max-rounds'],
+    ['--all', '--auditor', '--peer', '--resume-run', '--fresh', '--skip-version-check',
+      '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
@@ -437,4 +440,30 @@ test('a build that keeps failing is reported once at the end, and a round withou
   assert.match(report, /made no progress/)
   assert.match(report, /fresh questions could not be built \(1\)/)
   assert.match(report, /glm-5\.3: no contrast models selected/)
+})
+
+test('a confirmation the plan cannot audit is reported with its reason, not dropped silently', () => {
+  const target = (agentId: bigint, service: string) => ({ agentId, service, waiting: [{ verdict: 'DIFF' as const, reports: 1, required: 2 }], ownReportedAt: null })
+  const confirmations = new Map([
+    ['gpt-6-astra', new Map([
+      ['1135214', target(1135214n, 'gpt-6-astra')],
+      ['54037', target(54037n, 'gpt-6-astra')],
+      ['777', target(777n, 'gpt-6-astra')],
+    ])],
+    ['grok-4.7', new Map([['42', target(42n, 'grok-4.7')]])],
+  ])
+  const unaudited = unauditedConfirmations({
+    confirmations,
+    plannedModels: ['GPT-6-Astra'],
+    audited: new Set([confirmationPlanKey('gpt-6-astra', 54037n)]),
+    reasons: new Map([[confirmationPlanKey('gpt-6-astra', '1135214'), [
+      'peer d9c0f46fa386… no longer advertises gpt-6-astra',
+      'peer d9c0f46fa386… no longer advertises gpt-6-astra',
+    ]]]),
+  })
+  assert.deepEqual(unaudited.map(({ agentId, reason }) => [agentId, reason]), [
+    [1135214n, 'peer d9c0f46fa386… no longer advertises gpt-6-astra'],
+    [777n, 'the buyer sees no peer for this seller agent now'],
+    [42n, 'grok-4.7 is not audited in this run (see the warnings above)'],
+  ])
 })

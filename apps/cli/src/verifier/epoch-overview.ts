@@ -7,12 +7,13 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './model-audit.js'
+import { extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { normalized } from './utils.js'
 
 /**
  * One page per epoch that shows every seller × audited model the auditor touched, merged across all
- * of the epoch's runs: green SAME, red DIFF (confirmed by a recheck), yellow UNDETERMINED and grey
+ * of the epoch's runs: green SAME, red DIFF (this auditor's report; another auditor confirms it), yellow UNDETERMINED and grey
  * "tried, not submitted". Hovering a grey or yellow dot says why, in the same words AntScan uses.
  */
 export type OverviewCellState = 'same' | 'diff' | 'undetermined' | 'skipped'
@@ -26,7 +27,8 @@ export interface OverviewCell {
   correctRate: number | null
   answered: number | null
   asked: number | null
-  recheck: { status: string; correctRate: number | null } | null
+  /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
+  extension?: { probeCount: number; extraSets: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
   reason: PlainReason | null
   /** How many runs this epoch produced a verdict for this cell. */
@@ -116,14 +118,6 @@ export async function buildEpochOverview(
         const seller = sellerFor(result)
         const previous = seller.cells.get(model)
         const verdict = finalAuditVerdict(result)
-        const recheck = result.recheck
-          ? {
-            status: result.recheck.status,
-            correctRate: result.recheck.parsedProbeCount > 0
-              ? result.recheck.correctProbeCount / result.recheck.parsedProbeCount
-              : null,
-          }
-          : null
         const base = {
           model,
           service: result.service,
@@ -131,15 +125,23 @@ export async function buildEpochOverview(
           correctRate: result.correctRate,
           answered: result.parsedProbeCount,
           asked: result.probeCount,
-          recheck,
+          extension: result.extension
+            ? {
+              probeCount: extensionSets(result).reduce((sum, set) => sum + set.probeCount, 0),
+              extraSets: extensionSets(result).length,
+              firstPValue: result.extension.firstLook.pValue,
+              pooledPValue: latestExtension(result)!.pooled.pValueBinomial,
+              verdict: latestExtension(result)!.pooled.extendNext ? 'still close' : latestExtension(result)!.pooled.verdict,
+            }
+            : null,
         }
         if (verdict === null) {
-          // A first DIFF that was never rechecked is not submitted; keep any earlier verdict.
+          // A close call without its extra questions is not submitted; keep any earlier verdict.
           if (previous && previous.state !== 'skipped') continue
           seller.cells.set(model, {
             ...base,
             state: 'skipped',
-            reason: explainSkipReason('DIFF not confirmed: no recheck on fresh probes', model),
+            reason: explainSkipReason('close call waiting for extra questions', model),
             audits: previous?.audits ?? 0,
           })
           continue
@@ -152,7 +154,6 @@ export async function buildEpochOverview(
             ? explainInconclusive({
               code: result.outcomeReason?.code ?? null,
               summary: result.outcomeReason?.summary ?? null,
-              recheckVerdict: result.recheck?.status ?? null,
               answered: result.parsedProbeCount,
               asked: result.probeCount,
             })
@@ -178,7 +179,6 @@ export async function buildEpochOverview(
           correctRate: null,
           answered: null,
           asked: null,
-          recheck: null,
           reason: explainSkipReason(skip.text, model),
           audits: 0,
         })
@@ -214,7 +214,7 @@ export async function writeEpochOverview(evidenceDir: string, epoch: string, run
 
 const STATE_LABEL: Record<OverviewCellState, string> = {
   same: 'Verified (SAME)',
-  diff: 'Wrong model (DIFF twice)',
+  diff: 'Wrong model (DIFF)',
   undetermined: 'Inconclusive',
   skipped: 'Tried, not submitted',
 }
@@ -228,8 +228,13 @@ function cellDetail(cell: OverviewCell): string[] {
   if (cell.state !== 'skipped' || cell.answered !== null) {
     lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
   }
-  if (cell.recheck) lines.push(`recheck: ${cell.recheck.status}, ${percent(cell.recheck.correctRate)} match`)
-  if (cell.state === 'diff') lines.push('DIFF on both checks')
+  if (cell.extension) {
+    const p = (value: number | null): string => value === null ? '?' : value.toFixed(3)
+    lines.push(`close call (p=${p(cell.extension.firstPValue)}): ${cell.extension.probeCount} extra questions `
+      + `in ${cell.extension.extraSets ?? 1} set(s), `
+      + `pooled p=${p(cell.extension.pooledPValue)} → ${cell.extension.verdict}`)
+  }
+  if (cell.state === 'diff') lines.push('This auditor\'s DIFF; it counts on-chain once another auditor confirms it')
   return lines
 }
 
@@ -240,7 +245,6 @@ export function renderEpochOverview(overview: EpochOverview): string {
     overview.sellers.filter((seller) => [...seller.cells.values()].some((cell) => cell.state === state)).length
   const verifiedSellers = overview.sellers.filter((seller) => isVerified(seller)).length
   const audited = overview.sellers.filter((seller) => [...seller.cells.values()].some((cell) => cell.state !== 'skipped')).length
-  const notConfirmed = all.filter((cell) => cell.state === 'undetermined' && cell.recheck).length
 
   const header = overview.models.map((model) => `<th class="m">${escapeHtml(model)}</th>`).join('')
   const rows = overview.sellers.map((seller) => {
@@ -296,12 +300,12 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <body>
 <main>
 <h1>KBF audits · epoch ${escapeHtml(overview.epoch)}</h1>
-<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A DIFF counts only when a recheck on fresh questions is DIFF too. Hover a dot for details.</div>
+<div class="sub">${overview.runIds.length} run${overview.runIds.length === 1 ? '' : 's'} merged in submit order (a later verdict replaces an earlier one, as on the contract). A close call is decided on extra questions. A DIFF is one auditor's report; on-chain it counts once a second auditor confirms it. Hover a dot for details.</div>
 <div class="cards">
 <div class="card"><h3>AUDITED SELLERS</h3><div class="v">${audited}</div><small>${verifiedSellers} with SAME and no DIFF</small></div>
 <div class="card"><h3>SAME</h3><div class="v">${count('same')}</div><small>services verified</small></div>
-<div class="card"><h3>DIFF (2× CONFIRMED)</h3><div class="v">${count('diff')}</div><small>${sellersWith('diff')} sellers with ≥1 DIFF</small></div>
-<div class="card"><h3>UNDETERMINED</h3><div class="v">${count('undetermined')}</div><small>incl. ${notConfirmed} DIFFs not confirmed</small></div>
+<div class="card"><h3>DIFF REPORTS</h3><div class="v">${count('diff')}</div><small>${sellersWith('diff')} sellers with ≥1 DIFF</small></div>
+<div class="card"><h3>UNDETERMINED</h3><div class="v">${count('undetermined')}</div></div>
 <div class="card"><h3>NOT SUBMITTED</h3><div class="v">${count('skipped')}</div><small>tried, not audited or not confirmed</small></div>
 </div>
 <div class="box">
@@ -336,7 +340,7 @@ function renderCell(cell: OverviewCell): string {
   ].join('')
   const meta = `${cell.model} · service ${cell.service} · run ${cell.runId.slice(0, 10)}…`
     + (cell.audits > 1 ? ` · ${cell.audits} audits` : '')
-  const sup = cell.state === 'diff' ? '<sup>2×</sup>' : cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
+  const sup = cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
   return `<span class="cell" tabindex="0" aria-label="${escapeHtml(`${headline}. ${cell.reason?.detail ?? ''}`)}">`
     + `<span class="dot ${cell.state}"></span>${sup}`
     + `<span class="card-tip" role="tooltip"><b>${escapeHtml(headline)}</b>${lines}<i>${escapeHtml(meta)}</i></span></span>`

@@ -63,7 +63,7 @@ On top of that attribution layer comes **black-box model fingerprinting**. Every
 
 And in keeping with the rest of the architecture, public fingerprint packs will be distributed like torrents — signed, content-addressed bundles that any peer can mirror and verify — rather than through a central database someone would have to trust or could tamper with.
 
-Details: [Model Verification Needs More Than a Label](/blog/model-verification-fingerprint-swarm) · [Model-verification spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/07-model-verification.md)
+Details: [Model Verification Needs More Than a Label](/blog/model-verification-fingerprint-swarm) · [Model-verification spec](https://github.com/Antseed/antseed/blob/main/docs/protocol/spec/07-model-verification.md)
 
 ## What anonymity here does — and doesn't — mean
 
@@ -79,10 +79,10 @@ The practical guidance is simple: match the route to the sensitivity of the work
 
 ## Why the openness matters
 
-Everything described above is inspectable. The protocol implementation is [open source on GitHub](https://github.com/AntSeed/antseed), the smart contracts are deployed and verified on Base (addresses published in the [payments documentation](/docs/payments)), and the full protocol specification is public. You don't have to take any of this post on faith — and that's precisely the point.
+Everything described above is inspectable. The protocol implementation is [open source on GitHub](https://github.com/Antseed/antseed), the smart contracts are deployed and verified on Base (addresses published in the [payments documentation](/docs/payments)), and the full protocol specification is public. You don't have to take any of this post on faith — and that's precisely the point.
 
 Centralized platforms ask you to trust their intentions. Antseed asks you to verify its architecture. In the long run, that's the only kind of trust that scales.
 
 ---
 
-*Want to go deeper? Start with the [protocol overview](/docs/overview), read the [light paper](/docs/lightpaper), or browse the [code](https://github.com/AntSeed/antseed).*
+*Want to go deeper? Start with the [protocol overview](/docs/overview), read the [light paper](/docs/lightpaper), or browse the [code](https://github.com/Antseed/antseed).*

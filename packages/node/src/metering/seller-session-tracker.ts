@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { Identity } from '../p2p/identity.js';
+import type { ProviderTokenPricingUsdPerMillion } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import type { MeteringEvent, SessionMetrics, TokenCount } from '../types/metering.js';
 import type { MeteringStorage } from './storage.js';
 import type { ReceiptGenerator } from './receipt-generator.js';
-import { debugLog, debugWarn } from '../utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
+import { computeCostUsdc } from '../payments/pricing.js';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -141,7 +143,7 @@ export class SellerSessionTracker {
   async recordMetering(input: {
     buyerPeerId: string;
     providerName: string;
-    pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number };
+    pricing: ProviderTokenPricingUsdPerMillion;
     request: SerializedHttpRequest;
     statusCode: number;
     latencyMs: number;
@@ -149,7 +151,7 @@ export class SellerSessionTracker {
     outputBytes: number;
     responseBody: Uint8Array;
     /** Pre-computed usage from parseResponseUsage — avoids re-parsing the same body. */
-    providerUsage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+    providerUsage?: { inputTokens: number; outputTokens: number; freshInputTokens?: number; cachedInputTokens?: number };
     /** Service (model id) the buyer asked for, recorded for the seller's request log. */
     service?: string;
     /** Why the request failed, when the status code does not carry it (the provider call threw). */
@@ -218,10 +220,13 @@ export class SellerSessionTracker {
     }
 
     if (this._receiptGenerator) {
+      // Price cached input at the cached rate, as the channel charge does.
+      const cachedInputTokens = tokens.method === 'provider-usage' ? providerUsage.cachedInputTokens ?? 0 : 0;
+      const freshInputTokens = tokens.method === 'provider-usage'
+        ? providerUsage.freshInputTokens ?? Math.max(0, tokens.inputTokens - cachedInputTokens)
+        : tokens.inputTokens;
       const estimatedCostUsd =
-        (tokens.inputTokens * providerPricingUsdPerMillion.inputUsdPerMillion +
-          tokens.outputTokens * providerPricingUsdPerMillion.outputUsdPerMillion) /
-        1_000_000;
+        Number(computeCostUsdc(freshInputTokens, tokens.outputTokens, providerPricingUsdPerMillion, cachedInputTokens)) / 1_000_000;
       const effectiveUsdPerThousandTokens =
         tokens.totalTokens > 0 ? (estimatedCostUsd / tokens.totalTokens) * 1000 : 0;
       const unitPriceCentsPerThousandTokens = Math.max(0, effectiveUsdPerThousandTokens * 100);
@@ -393,10 +398,14 @@ export class SellerSessionTracker {
 /** Upper bound on a stored request error; enough for an upstream message, never a whole body. */
 const MAX_EVENT_ERROR_CHARS = 300;
 
-/** The message of an error response (`error.message`, `error`, or `message`), else its text, shortened. */
+/**
+ * The message of an error response (`error.message`, `error`, or `message`), else its text,
+ * shortened. In content-free mode only its error code: upstreams quote requests in messages.
+ */
 export function summarizeErrorBody(body: Uint8Array): string | null {
   const text = new TextDecoder().decode(body.subarray(0, 4096)).trim();
   if (!text) return null;
+  if (isContentFreeLogging()) return upstreamErrorCode(text);
   let message = text;
   try {
     const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };

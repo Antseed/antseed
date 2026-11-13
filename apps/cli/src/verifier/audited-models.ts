@@ -17,44 +17,78 @@ export interface AuditedModel {
   upstreamModel: string
   /** Other service names sellers use for the same model. */
   serviceAliases?: readonly string[]
+  /**
+   * OpenRouter endpoint the reference is pinned to (`provider.order`, no fallbacks), as the KBF
+   * reference code pins one provider per model: an unpinned reference is answered by whichever
+   * host OpenRouter picks (often fp4/mxfp4 quantizations), which inflates the self-test error and
+   * makes honest sellers look like a different model. Prefer the model maker's own endpoint.
+   * `verifier.models.<model>.referenceProvider` overrides it; a bank keeps the pin it was built with.
+   */
+  referenceProvider?: readonly string[]
 }
+
+const ANTHROPIC = ['anthropic'] as const
+const GOOGLE = ['google-ai-studio'] as const
+const OPENAI = ['openai'] as const
 
 export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.freeze({
   'claude-fable-5.1': {
     upstreamModel: 'anthropic/claude-fable-5.1',
+    referenceProvider: ANTHROPIC,
     serviceAliases: ['claude-fable-5-1', 'fable-5.1', 'fable-5-1', 'anthropic/claude-fable-5.1'],
   },
   'claude-opus-5.5': {
     upstreamModel: 'anthropic/claude-opus-5.5',
+    referenceProvider: ANTHROPIC,
     serviceAliases: ['claude-opus-5-5', 'opus-5.5', 'opus-5-5', 'anthropic/claude-opus-5.5'],
   },
   'claude-sonnet-5.5': {
     upstreamModel: 'anthropic/claude-sonnet-5.5',
+    referenceProvider: ANTHROPIC,
     serviceAliases: ['claude-sonnet-5-5', 'sonnet-5.5', 'sonnet-5-5', 'anthropic/claude-sonnet-5.5'],
   },
-  'gemini-3-flash-preview': { upstreamModel: 'google/gemini-3-flash-preview' },
+  'gemini-3-flash-preview': { upstreamModel: 'google/gemini-3-flash-preview', referenceProvider: GOOGLE },
   'gemini-3.1-pro-preview': {
     upstreamModel: 'google/gemini-3.1-pro-preview',
+    referenceProvider: GOOGLE,
     serviceAliases: ['gemini-3-1-pro-preview', 'google/gemini-3.1-pro-preview'],
   },
-  'gemini-4-argon': { upstreamModel: 'google/gemini-4-argon', serviceAliases: ['google/gemini-4-argon'] },
-  'gpt-6-astra': { upstreamModel: 'openai/gpt-6-astra', serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'] },
+  'gemini-4-argon': {
+    upstreamModel: 'google/gemini-4-argon',
+    referenceProvider: GOOGLE,
+    serviceAliases: ['google/gemini-4-argon'],
+  },
+  'gpt-6-astra': {
+    upstreamModel: 'openai/gpt-6-astra',
+    referenceProvider: OPENAI,
+    serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'],
+  },
   'gpt-6.1-sol': {
     upstreamModel: 'openai/gpt-6.1-sol',
+    referenceProvider: OPENAI,
     serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
   },
-  'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'] },
-  'deepseek-v4-pro': { upstreamModel: 'deepseek/deepseek-v4-pro', serviceAliases: ['deepseek/deepseek-v4-pro'] },
+  'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', referenceProvider: ['xai'], serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'] },
+  // OpenRouter has no DeepSeek endpoint for this model; Baidu (fp8) had the lowest self-test error
+  // of the hosts that answered past builds.
+  'deepseek-v4-pro': {
+    upstreamModel: 'deepseek/deepseek-v4-pro',
+    referenceProvider: ['baidu/fp8'],
+    serviceAliases: ['deepseek/deepseek-v4-pro'],
+  },
   'deepseek-v4-pro-0813': {
     upstreamModel: 'deepseek/deepseek-v4-pro-0813',
+    referenceProvider: ['deepseek'],
     serviceAliases: ['deepseek/deepseek-v4-pro-0813'],
   },
   'kimi-k3': {
     upstreamModel: 'moonshotai/kimi-k3',
+    referenceProvider: ['moonshotai'],
     serviceAliases: ['moonshotai/kimi-k3', 'moonshot/kimi-k3', 'kimi-k3:fast', 'kimi-k3-fast', 'kimi-k3-fast-api'],
   },
   'kimi-k3.1-pro': {
     upstreamModel: 'moonshotai/kimi-k3.1-pro',
+    referenceProvider: ['moonshotai/mxfp4'],
     serviceAliases: [
       'kimi-k3-1-pro',
       'moonshotai/kimi-k3.1-pro',
@@ -64,6 +98,7 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
   },
   'glm-5.3': {
     upstreamModel: 'z-ai/glm-5.3',
+    referenceProvider: ['z-ai/fp8'],
     serviceAliases: ['glm-5-3', 'z-ai/glm-5.3', 'zai/glm-5.3', 'z-ai-glm-5-3'],
   },
 })

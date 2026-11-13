@@ -124,6 +124,53 @@ test('loadConfig rejects invalid model routing peer ids', async () => {
   );
 });
 
+test('loadConfig keeps imageEditModel only on Venice openai and fal-image providers', async () => {
+  const sellerWith = (plugin: string, baseUrl?: string) => JSON.stringify({
+    seller: {
+      providers: {
+        images: {
+          plugin,
+          ...(baseUrl ? { baseUrl } : {}),
+          services: { 'cover-art': { upstreamModel: 'qwen-image', imageEditModel: ' qwen-edit ' } },
+        },
+      },
+    },
+  });
+  await withTempConfig(sellerWith('openai', 'https://api.venice.ai/api'), async (configPath) => {
+    const config = await loadConfig(configPath);
+    assert.equal(config.seller.providers['images']?.services['cover-art']?.imageEditModel, 'qwen-edit');
+  });
+  for (const [plugin, baseUrl] of [['openai', 'https://api.openai.com'], ['openai', undefined], ['anthropic', 'https://api.venice.ai/api']] as const) {
+    await withTempConfig(sellerWith(plugin, baseUrl), async (configPath) => {
+      await assert.rejects(
+        () => loadConfig(configPath),
+        /images\.services\.cover-art\.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl/,
+      );
+    });
+  }
+});
+
+test('loadConfig accepts the fal-image README configuration with an edit endpoint', async () => {
+  const pricing = { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.06 }] } };
+  for (const plugin of ['fal-image', '@antseed/provider-fal-image']) {
+    await withTempConfig(JSON.stringify({
+      seller: {
+        providers: {
+          'fal-images': {
+            plugin,
+            apiKeyEnv: 'FAL_API_KEY',
+            services: { 'openai/gpt-image-2': { imageEditModel: 'openai/gpt-image-2/edit', categories: ['image', 'creative'], unitBillingModels: pricing } },
+          },
+        },
+      },
+    }), async (configPath) => {
+      const config = await loadConfig(configPath);
+      const service = config.seller.providers['fal-images']?.services['openai/gpt-image-2'];
+      assert.equal(service?.imageEditModel, 'openai/gpt-image-2/edit');
+    });
+  }
+});
+
 test('loadConfig reads nested seller.providers[name].services[id] shape', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -516,6 +563,15 @@ test('loadConfig accepts a verifier with only a reference endpoint', async () =>
     assert.equal(config.verifier?.contrastSelection?.minimumIntelligenceIndex, 30);
     assert.equal(config.verifier?.models, undefined);
   });
+});
+
+test('loadConfig accepts and ignores the retired verifier.diffConfirmationRuns', async () => {
+  for (const diffConfirmationRuns of [0, 1]) {
+    await withTempConfig(JSON.stringify({ verifier: { referenceEndpoint: REFERENCE_ENDPOINT, diffConfirmationRuns } }), async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.verifier?.closeCallExtensions, undefined);
+    });
+  }
 });
 
 test('loadConfig rejects model lists: the audited models are built in', async () => {
@@ -1279,4 +1335,22 @@ test('seller.alerts survives a load and save, and a malformed one is refused', a
   assert.equal(configFromObject({ seller: { alerts: { telegram: { chatId: 42 } } } }).seller.alerts?.telegram?.chatId, 42, 'a numeric chat id is accepted');
   assert.throws(() => configFromObject({ seller: { alerts: { telegram: { chatId: true }, idleMinutes: '5', minSeverity: 'loud' } } }),
     /seller\.alerts\.telegram\.chatId[\s\S]*seller\.alerts\.idleMinutes[\s\S]*seller\.alerts\.minSeverity/);
+});
+
+test('loadConfig reads seller buyerLimits and rejects non-positive ones', async () => {
+  const buyerLimits = { windowMinutes: 60, maxTokensPerBuyer: 40_000_000, newBuyers: { forHours: 72, maxTokensPerBuyer: 2_000_000, maxTokensTotal: 10_000_000 }, serviceWeights: { 'heavy-model': 10 } };
+  await withTempConfig(JSON.stringify({ seller: { buyerLimits } }), async (configPath) => {
+    assert.deepEqual((await loadConfig(configPath)).seller.buyerLimits, buyerLimits);
+  });
+  await withTempConfig(JSON.stringify({ seller: { buyerLimits: { maxTokensPerBuyer: 0, newBuyers: { maxTokensTotal: '5' }, serviceWeights: { 'heavy-model': -1 } } } }), async (configPath) => {
+    await assert.rejects(
+      () => loadConfig(configPath),
+      (err: Error) => {
+        assert.match(err.message, /seller\.buyerLimits\.maxTokensPerBuyer must be a positive number/);
+        assert.match(err.message, /seller\.buyerLimits\.newBuyers\.maxTokensTotal must be a positive number/);
+        assert.match(err.message, /seller\.buyerLimits\.serviceWeights\.heavy-model must be a positive number/);
+        return true;
+      },
+    );
+  });
 });

@@ -6,6 +6,7 @@ import { TrustTip } from '../components/TrustInfo'
 import { DetailList, EmptyState, ErrorAlert, LoadingRows, Panel, StatTile } from '../components/ui'
 import { formatNumber, formatRelative, formatUsd } from '../lib/format'
 import { qk, useSellerReputation } from '../lib/queries'
+import { modelChecksEffect } from '../lib/trust-breakdown'
 import '../styles/seller.scss'
 
 const points = (value: number) => (Math.round(value * 10) / 10).toLocaleString('en-US')
@@ -63,13 +64,15 @@ function TrustTiles({ data }: { data: Reputation }) {
       <div className="gc-grid gc-grid--4">
         <StatTile label={<span className="gc-inline">Trust score <TrustTip /></span>} value={trust.washFlagged ? '0' : points(trust.score)} meter={trust.score / 100} tone="default"
           sub={data.rank ? `#${data.rank.position} of ${data.rank.of} scored sellers` : 'of 100'} />
-        {part('Service history', trust.history, trust.history ? `${formatNumber(trust.history.channelCount)} settled channels, ${formatUsd(trust.history.volumeUsdc)}` : 'No settled channels read')}
-        {part('Recognized usage', trust.usage, trust.usage ? `${share(trust.usage.shareBps)} of epoch ${trust.usage.epoch} usage points` : 'No usage points')}
         {part('Staking power', trust.power, trust.power ? `${share(trust.power.shareBps)} of all pool power` : 'No staking pool')}
+        {part('Recognized usage', trust.usage, trust.usage ? `${share(trust.usage.shareBps)} of epoch ${trust.usage.epoch} usage points` : 'No usage points')}
+        {part('Verified identity', trust.identity, trust.identity ? `${trust.identity.kind === 'domain' ? 'Domain' : 'GitHub'}: ${trust.identity.claim}` : 'No verified domain or GitHub')}
       </div>
       <div className="gc-grid gc-grid--4">
-        {part('Verified identity', trust.identity, trust.identity ? `${trust.identity.kind === 'domain' ? 'Domain' : 'GitHub'}: ${trust.identity.claim}` : 'No verified domain or GitHub')}
         {part('Free model bonus', trust.freeModels, trust.freeModels ? `${trust.freeModels.service} is free` : 'No free model')}
+        <StatTile label="Settled channels" value={trust.history ? formatNumber(trust.history.channelCount) : '—'} sub={trust.history ? `${formatUsd(trust.history.volumeUsdc)} settled. Shown only, not scored` : 'No settled channels read'} />
+        <StatTile label="Model checks" value={trust.verification ? `${trust.verification.change < 0 ? '−' : '+'}${points(Math.abs(trust.verification.change))}` : 'No change'}
+          sub={trust.verification ? modelChecksEffect(trust.verification, trust.score) : 'The verification policy is not changing your score'} />
         <StatTile label="Wash trading" value={trust.washFlagged === null ? 'Unknown' : trust.washFlagged ? 'Flagged' : 'Clear'} sub={trust.washFlagged ? 'The score is 0 while flagged' : 'From the on-chain registry'} />
       </div>
     </>

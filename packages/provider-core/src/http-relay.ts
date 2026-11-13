@@ -4,10 +4,18 @@ import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/node';
 import { swapAuthHeader, validateRequestService } from './auth-swap.js';
 import Bottleneck from 'bottleneck';
 import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-headers.js';
+import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
+/** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
+const COMPLETIONS_PATH = /^[^?]*\/(?:chat\/)?completions\/?(?:\?|$)/i;
+
 export interface RelayConfig {
+  /**
+   * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
+   * and credentials included, to a destination the seller did not configure.
+   */
   redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
@@ -17,6 +25,7 @@ export interface RelayConfig {
   extraHeadersProvider?: () => Promise<Record<string, string> | undefined>;
   maxConcurrency: number;
   allowedServices: string[];
+  /** Timeout awaiting upstream headers or further response-body data, not a total stream-duration limit. */
   timeoutMs?: number;
   /** Lowercase header-name prefixes to strip before forwarding upstream. */
   stripHeaderPrefixes?: string[];
@@ -110,7 +119,8 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return out;
 }
 
-function getHeader(headers: Record<string, string>, name: string): string {
+/** Case-insensitive header lookup; '' when the header is absent. */
+export function getHeader(headers: Record<string, string>, name: string): string {
   const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return entry?.[1] ?? '';
 }
@@ -120,13 +130,24 @@ function multipartBoundary(contentType: string): string {
   return (match?.[1] ?? match?.[2] ?? '').trim();
 }
 
-function readMultipartTextField(body: Uint8Array, contentType: string, fieldName: string): string | null {
+/**
+ * First non-file value of each named multipart field, trimmed, in one pass over
+ * the body. A field missing from the body is missing from the map; an empty
+ * one maps to ''.
+ */
+function readMultipartTextFields(
+  body: Uint8Array,
+  contentType: string,
+  fieldNames: readonly string[],
+): Map<string, string> {
+  const fields = new Map<string, string>();
   const boundary = multipartBoundary(contentType);
-  if (!boundary) return null;
+  if (!boundary) return fields;
+  const wanted = new Set(fieldNames);
   const text = new TextDecoder('latin1').decode(body);
   const delimiter = `--${boundary}`;
   let index = text.indexOf(delimiter);
-  while (index !== -1) {
+  while (index !== -1 && fields.size < wanted.size) {
     index += delimiter.length;
     if (text.startsWith('--', index)) break;
     const headerEnd = text.indexOf('\r\n\r\n', index);
@@ -136,13 +157,12 @@ function readMultipartTextField(body: Uint8Array, contentType: string, fieldName
     const headers = text.slice(index, headerEnd);
     const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
     const name = /name="([^"]*)"/i.exec(params)?.[1] ?? '';
-    if (name === fieldName && !/filename\s*=/i.test(params)) {
-      const raw = body.subarray(headerEnd + 4, next);
-      return new TextDecoder().decode(raw).trim();
+    if (wanted.has(name) && !fields.has(name) && !/filename\s*=/i.test(params)) {
+      fields.set(name, new TextDecoder().decode(body.subarray(headerEnd + 4, next)).trim());
     }
     index = next + 2;
   }
-  return null;
+  return fields;
 }
 
 function setMultipartTextField(
@@ -274,38 +294,45 @@ export class HttpRelay {
       const candidates = this._candidateUpstreams(service);
       for (const [position, { upstream, index }] of candidates.entries()) {
         const isLast = position === candidates.length - 1;
-        let attempt: UpstreamAttempt;
+        let attempt: UpstreamAttempt | undefined;
         try {
-          attempt = await this._fetchUpstream(request, upstream);
-        } catch (err) {
-          if (isLast) throw err;
-          this._coolDown(index, service, null);
-          this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
-          continue;
-        }
-        if (!isLast && FAILOVER_STATUS_CODES.has(attempt.response.status)) {
-          this._coolDown(index, service, attempt.response.headers.get('retry-after'));
-          this._logFailover(service, upstream, candidates[position + 1]!.upstream, `HTTP ${attempt.response.status}`);
-          await attempt.response.body?.cancel().catch(() => undefined);
-          continue;
-        }
-        if (!isStreamingAttempt(attempt)) {
-          // Buffer a complete response before delivering it, so a connection that
-          // drops mid-body can still fail over: nothing has reached the buyer yet.
           try {
-            attempt.body = new Uint8Array(await attempt.response.arrayBuffer());
+            attempt = await this._fetchUpstream(request, upstream);
           } catch (err) {
             if (isLast) throw err;
             this._coolDown(index, service, null);
             this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
             continue;
           }
+          if (!isLast && FAILOVER_STATUS_CODES.has(attempt.response.status)) {
+            this._coolDown(index, service, attempt.response.headers.get('retry-after'));
+            this._logFailover(service, upstream, candidates[position + 1]!.upstream, `HTTP ${attempt.response.status}`);
+            continue;
+          }
+          if (!isStreamingAttempt(attempt)) {
+            // Buffer a complete response before delivering it, so a connection that
+            // drops mid-body can still fail over: nothing has reached the buyer yet.
+            try {
+              attempt.body = await readUpstreamBody(attempt);
+            } catch (err) {
+              const error = attempt.signal.aborted ? attempt.signal.reason : err;
+              if (isLast) throw error;
+              this._coolDown(index, service, null);
+              this._logFailover(service, upstream, candidates[position + 1]!.upstream, error instanceof Error ? error.message : String(error));
+              continue;
+            }
+          }
+          if (attempt.response.status < 400) {
+            this._cooldownUntil.delete(`${index}:${service}`);
+          }
+          await this._deliver(request, attempt);
+          return;
+        } finally {
+          // fetch() resolves at headers, not at the end of the body. Keep its
+          // idle timeout alive through buffering/streaming, then release it on every
+          // completion, failure, or failover (including an unread error body).
+          attempt?.dispose();
         }
-        if (attempt.response.status < 400) {
-          this._cooldownUntil.delete(`${index}:${service}`);
-        }
-        await this._deliver(request, attempt);
-        return;
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -341,6 +368,11 @@ export class HttpRelay {
   }
 
   private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
+    // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
+    const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
+    const requestPath = `${pathname}${search}`;
+    const upstreamPath = upstream.pathRewrite?.[requestPath] ?? requestPath;
+
     // Resolve dynamic auth token if provider uses OAuth / keychain
     let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
       authHeaderName: this._config.authHeaderName,
@@ -369,6 +401,7 @@ export class HttpRelay {
 
     // Swap auth headers
     let swappedRequest = swapAuthHeader(request, effectiveConfig);
+    const pinnedModel = pinnedUpstreamModel(request);
 
     // Normalize the requested service into the upstream model for both JSON
     // and multipart Images API requests. Multipart edits otherwise bypass
@@ -376,14 +409,17 @@ export class HttpRelay {
     if (swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
       const contentType = getHeader(swappedRequest.headers, 'content-type');
       if (/^multipart\/form-data/i.test(contentType.trim())) {
+        const fields = readMultipartTextFields(swappedRequest.body, contentType, ['service', 'model', 'modelId']);
         const requestedService = getHeader(swappedRequest.headers, 'x-antseed-service').trim()
-          || readMultipartTextField(swappedRequest.body, contentType, 'service')
-          || readMultipartTextField(swappedRequest.body, contentType, 'model')
+          || fields.get('service')
+          || fields.get('model')
           || '';
         if (requestedService) {
           const rewrittenService = upstream.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
-          const upstreamModel = rewrittenService || requestedService;
-          const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, 'model', upstreamModel);
+          const upstreamModel = pinnedModel || rewrittenService || requestedService;
+          // Venice's multi-image edit names the model `modelId` and rejects a `model` field.
+          const modelField = !fields.has('model') && fields.has('modelId') ? 'modelId' : 'model';
+          const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, modelField, upstreamModel);
           if (rewrittenBody) swappedRequest = { ...swappedRequest, body: rewrittenBody };
         }
       } else {
@@ -401,6 +437,10 @@ export class HttpRelay {
             }
           }
 
+          if (pinnedModel) {
+            transformed.model = pinnedModel;
+          }
+
           // Normalize: if client sent "service" without "model", copy to "model" for upstream API compat.
           if (transformed.service !== undefined && transformed.model === undefined) {
             transformed.model = transformed.service;
@@ -411,28 +451,25 @@ export class HttpRelay {
           // Force `stream_options.include_usage = true` on streaming OpenAI Chat
           // Completions requests. Without this, strict OpenAI-spec upstreams
           // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
-          // which makes `parseResponseUsage` return zeros and causes the
-          // seller to record `cost=0 (in=0 out=0)` for every request —
-          // effectively giving away inference for free.
+          // and the seller has no figure to bill by.
           //
-          // We only touch `/v1/chat/completions` with `stream:true`, and we
-          // preserve any caller-supplied `stream_options` fields. We don't
-          // override an explicit `include_usage:false` (operators can still
-          // disable via `injectJsonFields` below if they really need to).
-          if (
-            request.path.toLowerCase().startsWith('/v1/chat/completions')
-            && transformed.stream === true
-          ) {
+          // We only touch completions paths on a streaming request, and we
+          // preserve the caller's other `stream_options` fields. A caller's
+          // `include_usage:false` does not count: the figure is what the
+          // answer is billed by. Operators can still disable it via
+          // `injectJsonFields` below if they really need to.
+          if ((COMPLETIONS_PATH.test(requestPath) || COMPLETIONS_PATH.test(upstreamPath)) && transformed.stream) {
             const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
               ? transformed.stream_options as Record<string, unknown>
               : {};
-            if (existing.include_usage === undefined) {
-              transformed.stream_options = { ...existing, include_usage: true };
-            }
+            transformed.stream_options = { ...existing, include_usage: true };
           }
 
-          const isImageRequest = request.path.toLowerCase().startsWith('/v1/images/');
-          const merged = this._config.injectJsonFields && !isImageRequest
+          // Body injection targets chat-style APIs. Image and speech APIs
+          // reject unknown fields (Venice validates them strictly).
+          const lowerPath = requestPath.toLowerCase();
+          const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
+          const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
             : transformed;
 
@@ -445,11 +482,7 @@ export class HttpRelay {
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
-    let path = request.path.startsWith('/') ? request.path : `/${request.path}`;
-    if (upstream.pathRewrite && path in upstream.pathRewrite) {
-      path = upstream.pathRewrite[path]!;
-    }
-    const url = `${base}${path}`;
+    const url = `${base}${upstreamPath}`;
 
     // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
     const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
@@ -459,12 +492,15 @@ export class HttpRelay {
 
     const timeoutMs = this._config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
 
-    const doFetch = async (headers: Record<string, string>): Promise<Response> => {
+    const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      const refreshTimeout = () => {
+        if (!controller.signal.aborted) timeout.refresh();
+      };
       try {
-        return await fetch(url, {
-          redirect: this._config.redirect,
+        const response = await fetch(url, {
+          redirect: this._config.redirect ?? 'error',
           method: swappedRequest.method,
           headers,
           body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
@@ -472,13 +508,20 @@ export class HttpRelay {
             : undefined,
           signal: controller.signal,
         });
+        refreshTimeout();
+        return {
+          response, headers, url, signal: controller.signal, refreshTimeout,
+          dispose: () => {
+            clearTimeout(timeout);
+            controller.abort();
+          },
+        };
       } catch (error) {
+        clearTimeout(timeout);
         if (controller.signal.aborted) {
-          throw new Error(`Upstream request timed out after ${timeoutMs}ms`);
+          throw controller.signal.reason;
         }
         throw error;
-      } finally {
-        clearTimeout(timeout);
       }
     };
 
@@ -491,7 +534,7 @@ export class HttpRelay {
       ? (headers: Record<string, string>) => this._limiter!.schedule(() => doFetch(headers))
       : doFetch;
 
-    const fetchWithRetries = async (): Promise<Response> => {
+    const fetchWithRetries = async (): Promise<UpstreamAttempt> => {
       let lastError: unknown;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
@@ -500,10 +543,11 @@ export class HttpRelay {
         }
 
         try {
-          const response = await runFetch(currentHeaders);
-          if (attempt === maxRetries || (response.status < 500 && !retryableStatusCodes.has(response.status))) {
-            return response;
+          const result = await runFetch(currentHeaders);
+          if (attempt === maxRetries || (result.response.status < 500 && !retryableStatusCodes.has(result.response.status))) {
+            return result;
           }
+          result.dispose();
         } catch (error) {
           lastError = error;
           if (attempt === maxRetries) {
@@ -515,9 +559,10 @@ export class HttpRelay {
       throw (lastError instanceof Error ? lastError : new Error('Upstream request failed after retries'));
     };
 
-    let fetchResponse = await fetchWithRetries();
+    let result = await fetchWithRetries();
 
-    if (fetchResponse.status === 401 && upstream.authHeaderValue === null && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
+    if (result.response.status === 401 && upstream.authHeaderValue === null && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
+      result.dispose();
       const refreshedToken = await this._config.tokenProvider.forceRefresh();
       const isBearer = this._config.authHeaderName === 'authorization';
       const newHeaderValue = isBearer ? `Bearer ${refreshedToken}` : refreshedToken;
@@ -532,10 +577,10 @@ export class HttpRelay {
           };
         }
       }
-      fetchResponse = await fetchWithRetries();
+      result = await fetchWithRetries();
     }
 
-    return { response: fetchResponse, headers: currentHeaders, url };
+    return result;
   }
 
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
@@ -558,13 +603,15 @@ export class HttpRelay {
 
       const reader = fetchResponse.body.getReader();
       let totalStreamBytes = 0;
-      const debugChunks: Uint8Array[] = [];
+      /** The last two bytes streamed (LF is 10): whether a cut stream left a line or an event open. */
+      let tail: number[] = [10, 10];
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
-          if (totalStreamBytes <= 500) debugChunks.push(value);
+          if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
           this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
@@ -572,21 +619,21 @@ export class HttpRelay {
           });
         }
       } catch (err) {
+        const error = attempt.signal.aborted ? attempt.signal.reason : err;
         this._callbacks.onResponseChunk?.({
           requestId: request.requestId,
+          // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
-            `event: error\ndata: ${err instanceof Error ? err.message : 'stream error'}\n\n`
+            `${tail[1] !== 10 ? '\n\n' : tail[0] !== 10 ? '\n' : ''}event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
           ),
           done: false,
         });
       }
       if (totalStreamBytes < 300) {
-        const body = new TextDecoder().decode(
-          debugChunks.reduce((a, b) => { const r = new Uint8Array(a.byteLength + b.byteLength); r.set(a); r.set(b, a.byteLength); return r; }, new Uint8Array(0))
-        );
+        // Never the stream itself: a seller's logs hold no part of an answer.
         let model = 'unknown';
         try { model = JSON.parse(new TextDecoder().decode(request.body))?.model ?? 'unknown'; } catch {}
-        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url}: ${JSON.stringify(body)}`);
+        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
       this._callbacks.onResponseChunk?.({
@@ -596,7 +643,7 @@ export class HttpRelay {
       });
     } else {
       // Complete response
-      const body = attempt.body ?? new Uint8Array(await fetchResponse.arrayBuffer());
+      const body = attempt.body ?? await readUpstreamBody(attempt);
       this._callbacks.onResponse({
         requestId: request.requestId,
         statusCode: fetchResponse.status,
@@ -611,8 +658,38 @@ interface UpstreamAttempt {
   response: Response;
   headers: Record<string, string>;
   url: string;
+  signal: AbortSignal;
+  /** Activity resets the body timeout without capping a healthy stream's duration. */
+  refreshTimeout: () => void;
+  /** Clear the deadline and abort any unread response body before discarding it. */
+  dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
   body?: Uint8Array;
+}
+
+async function readUpstreamBody(attempt: UpstreamAttempt): Promise<Uint8Array> {
+  if (!attempt.response.body) return new Uint8Array(0);
+  const reader = attempt.response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      attempt.refreshTimeout();
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
@@ -627,10 +704,11 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
   if (request.method === 'GET' || request.method === 'HEAD') return '';
   const contentType = getHeader(request.headers, 'content-type');
   if (/^multipart\/form-data/i.test(contentType.trim())) {
-    return (getHeader(request.headers, 'x-antseed-service').trim()
-      || readMultipartTextField(request.body, contentType, 'service')
-      || readMultipartTextField(request.body, contentType, 'model')
-      || '').toLowerCase();
+    // The header wins, so an image-bearing body is only scanned without one.
+    const fromHeader = getHeader(request.headers, 'x-antseed-service').trim();
+    if (fromHeader) return fromHeader.toLowerCase();
+    const fields = readMultipartTextFields(request.body, contentType, ['service', 'model']);
+    return (fields.get('service') || fields.get('model') || '').toLowerCase();
   }
   try {
     const decoded = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown> | null;

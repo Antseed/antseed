@@ -310,6 +310,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 /* Something about money needs attention (no authorized wallet, a reserve ready to withdraw). */
 .gc-attention { flex: 0 0 auto; width: 0.4375rem; height: 0.4375rem; border-radius: 999px; background: var(--as-warning); }
+/* A passed model check: the same dot in green. */
+.gc-attention--ok { background: var(--as-success); }
+.gc-trust-cell .gc-attention { display: inline-block; margin-right: 0.375rem; transform: translateY(-1px); }
 .gc-nav__attention { margin-left: auto; }
 /* A setting the running buyer takes from elsewhere: amber dot + one line, no box. */
 .gc-override { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--as-text-secondary); }
@@ -387,6 +390,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-figure { min-width: 0; }
 .gc-figure__label { color: var(--as-text-secondary); font-size: 0.8125rem; }
 .gc-figure__value { font-size: 1.0625rem; font-weight: 550; font-variant-numeric: tabular-nums; margin-top: 0.1875rem; letter-spacing: -0.01em; }
+.gc-figure__note { color: var(--as-text-secondary); font-size: 0.8125rem; margin-top: 0.125rem; }
 .gc-figure__value--strong { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; }
 .gc-wallet-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--as-border); }
 
@@ -751,7 +755,9 @@ li + li > .gc-choice { border-top: 1px solid var(--as-border); }
 /* A payment on its way into the credits: amber dot + one line, emphasised so it does not read as a failed payment. */
 .gc-pending { color: var(--as-text-primary); font-size: 0.8125rem; flex-wrap: nowrap; align-items: baseline; .gc-attention { transform: translateY(-1px); } }
 /* A model's seller self check failing, inside a row's meta: amber dot + one line. */
-.gc-health-failing { display: inline-flex; align-items: baseline; gap: 0.375rem; color: var(--as-text-primary); .gc-attention { transform: translateY(-1px); } }
+/* One status line in a row's meta (service health, model check); `--attention` leads with the amber dot. */
+.gc-status-line { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.375rem; }
+.gc-status-line--attention, .gc-status-line--ok { color: var(--as-text-primary); .gc-attention { transform: translateY(-1px); } }
 /* An alert at the top of a panel, above its figures. */
 .gc-panel-alert { margin-bottom: 1.25rem; }
 /* A section someone was just sent to: a brief ring so the jump is visible even without scrolling. */

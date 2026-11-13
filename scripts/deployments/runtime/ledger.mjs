@@ -21,7 +21,9 @@ export async function loadContext(migration, network, overrides = {}) {
   migration.validateBaseline?.(canonical);
   const rpcUrl = overrides.rpcUrl ?? process.env[rpcEnvName(network)];
   if (!rpcUrl) throw new Error(`${rpcEnvName(network)} is required`);
-  const slug = `${migration.id.toLowerCase()}-${network}`;
+  // A migration that replaced an earlier release under the same id names its own checkpoint, so a
+  // checkout that ran the earlier release never resumes from that release's checkpoint.
+  const slug = `${migration.checkpointName ?? migration.id.toLowerCase()}-${network}`;
   return {
     migrationId: migration.id,
     network,

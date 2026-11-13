@@ -9,6 +9,23 @@ class TestClient extends BaseEvmClient {
 const baseFee = 5_000_000n; // 0.005 gwei, a quiet Base block
 const newClient = () => new TestClient('http://127.0.0.1:1', '0x0000000000000000000000000000000000000001', undefined, 8453);
 
+/** A JSON-RPC provider whose suggested tip and recent-block tips (eth_feeHistory 10th percentile) are stubbed. */
+function rpcWithTips(suggested: bigint, recent: bigint[] | Error) {
+  const network = Network.from(8453);
+  const provider = new JsonRpcProvider('http://127.0.0.1:1', network, { staticNetwork: network });
+  vi.spyOn(provider, '_perform').mockImplementation(async (req) => {
+    if (req.method !== 'getPriorityFee') throw new Error(`unexpected ${req.method}`);
+    return `0x${suggested.toString(16)}`;
+  });
+  vi.spyOn(provider, 'send').mockImplementation(async (method) => {
+    if (method !== 'eth_feeHistory') throw new Error(`unexpected ${method}`);
+    if (recent instanceof Error) throw recent;
+    return { reward: recent.map((tip) => [`0x${tip.toString(16)}`]) };
+  });
+  vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: baseFee } as never);
+  return provider;
+}
+
 function fakeProvider(perform: () => Promise<unknown>, block: unknown = { baseFeePerGas: baseFee }) {
   return { getBlock: async () => block, _perform: perform } as unknown as AbstractProvider;
 }
@@ -55,6 +72,27 @@ describe('BaseEvmClient fee fields', () => {
     const fees = await client.feeFields();
     expect(fees.maxPriorityFeePerGas).toBe(DEFAULT_PRIORITY_FEE_WEI);
     expect(fees.maxPriorityFeePerGas).toBeLessThan(1_000_000_000n);
+  });
+
+  it('raises a tip the RPC suggests below what recent blocks include', async () => {
+    // The RPC suggests 0.001 gwei while recent blocks' low-end tips are around 0.02 gwei.
+    const client = newClient().withProvider(rpcWithTips(1_000_000n, [20_000_000n, 13_000_000n, 22_000_000n]));
+    expect(await client.feeFields()).toEqual({ maxPriorityFeePerGas: 20_000_000n, maxFeePerGas: baseFee * 2n + 20_000_000n });
+  });
+
+  it('keeps the suggested tip when it is above recent blocks', async () => {
+    const client = newClient().withProvider(rpcWithTips(30_000_000n, [20_000_000n]));
+    expect((await client.feeFields()).maxPriorityFeePerGas).toBe(30_000_000n);
+  });
+
+  it('caps how far recent blocks raise the tip', async () => {
+    const client = newClient().withProvider(rpcWithTips(1_000_000n, [5_000_000_000n]));
+    expect((await client.feeFields()).maxPriorityFeePerGas).toBe(100_000_000n);
+  });
+
+  it('uses the suggested tip when fee history cannot be read', async () => {
+    const client = newClient().withProvider(rpcWithTips(2_000_000n, new Error('method not found')));
+    expect((await client.feeFields()).maxPriorityFeePerGas).toBe(2_000_000n);
   });
 
   it('leaves pricing to the signer when the base fee cannot be read', async () => {

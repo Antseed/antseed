@@ -61,7 +61,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_PASSPHRASE_FILE` | all | File whose first line is the passphrase; used when `ANTSEED_PASSPHRASE` is not set, and keeps it out of the process environment |
 | `ANTSEED_IDENTITY_HEX` | all | Wallet private key (64 hex characters) to use instead of `identity.key`. Removed from the environment after it is read |
 | `ANTSEED_BASE_RPC_URL` | buyer, seller, gateway | Base JSON-RPC URL; overrides `payments.crypto.rpcUrl`. `seller start --base-rpc-url` takes precedence |
-| `ANTSEED_ENABLE_SETTLEMENT` | buyer, seller | `false` runs without payments. On a seller, `true` keeps payments on even when the RPC does not answer at startup |
+| `ANTSEED_ENABLE_SETTLEMENT` | buyer, seller | `false` runs without payments. On a seller, `true` skips the startup RPC check and keeps payments on. Without it, a seller with priced services won't start if the RPC does not answer |
 | `ANTSEED_SKIP_PLUGIN_UPDATE_CHECK` | all | `1` skips the plugin update check (air-gapped hosts, CI) |
 | `ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION` | buyer | Overrides `buyer.maxPricing.defaults.inputUsdPerMillion` (default 100) |
 | `ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION` | buyer | Overrides `buyer.maxPricing.defaults.outputUsdPerMillion` (default 100) |
@@ -93,6 +93,8 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_DEFAULT_DEPOSIT_USDC` | seller | Read by `seller start` but currently has no effect: the node does not use the value |
 | `ANTSEED_SETTLEMENT_IDLE_MS` | seller | Idle time before the seller settles a channel, in milliseconds (default 600000) |
 | `ANTSEED_MAX_UPLOAD_BODY_BYTES` | seller | Largest accepted request body; overrides `seller.maxUploadBodyBytes` |
+| `ANTSEED_MAX_INBOUND_CONNECTIONS` | seller | Buyer connections held open at once; overrides `seller.maxInboundConnections` |
+| `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` | seller | Idle time before a buyer connection with no channel open is closed, in milliseconds; `0` keeps them. Overrides `seller.inboundIdleTimeoutMs` |
 | `ANTSEED_VERIFIER_SDKS` | seller | Comma-separated verifier SDK ids the seller supports, first is the default (same as `seller start --verifiers`) |
 | `ANTSEED_VERIFIER_*`, `ANTSEED_TEE_PEER_ID` | TEE seller | TEE attestation settings. See [TEE provider](/docs/provide/tee) and [Verify TEE](/docs/verify-tee) |
 | `ANTSEED_METRICS_ROLE`, `ANTSEED_METRICS_HOST`, `ANTSEED_METRICS_PORT`, `ANTSEED_METRICS_PATH`, `ANTSEED_METRICS_INSTANCE` | metrics | Defaults for the matching `antseed metrics serve` flags. See [Metrics](/docs/provide/metrics) |

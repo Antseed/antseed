@@ -5,8 +5,14 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
+  AUDITOR_FAILURE_ATTEMPTS,
+  CONFIRMATION_ATTEMPTS,
   countPlan,
   epochCellKey,
+  heldForConfirmationRecheck,
+  SELLER_RETRY_SPACING_SECONDS,
+  sellerRetryDueAt,
+  sellerRetryWaitUntil,
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
@@ -68,9 +74,9 @@ test('the latest result per model and seller wins and decides the action', () =>
         result('b', 'UNDETERMINED', { outcomeReason: buyerRefused }),
         result('c', 'UNDETERMINED', { outcomeReason: sellerDown }),
         result('d', 'UNDETERMINED', { outcomeReason: sellerDown }),
-        result('e', 'DIFF', { recheckPending: { reason: 'no fresh questions' } as never }),
+        result('e', 'DIFF'),
         result('f', 'UNDETERMINED'),
-        result('g', 'DIFF', { recheck: { status: 'DIFF' } as never }),
+        result('g', 'DIFF'),
       ],
       skipped: [{
         peerId: 'h', displayName: null, agentId: '8', service: 'svc', status: 'SKIPPED', code: 'price_above_reference',
@@ -88,22 +94,141 @@ test('the latest result per model and seller wins and decides the action', () =>
   ])
   const action = (peer: string) => cells.get(epochCellKey('m', peer))!
   assert.equal(action('a').action, 'done')
-  assert.equal(action('b').action, 'retry', 'our buyer refused it: retried every run')
-  assert.equal(action('b').attempts, 2)
+  assert.equal(action('b').action, 'done', 'our buyer refuses it on every attempt: not retried')
+  assert.equal(action('b').permanent, true)
+  assert.equal(action('b').attempts, 0, 'failures caused by the auditor do not use up the seller\'s retries')
+  assert.equal(action('b').auditorAttempts, 2)
   assert.equal(action('c').action, 'retry', 'seller failed once: one retry')
   assert.equal(action('d').action, 'done', 'seller failed twice: finished for this epoch')
-  assert.equal(action('e').action, 'recheck')
-  assert.equal(action('e').state, 'pending_diff')
+  assert.equal(action('e').state, 'diff', 'a first DIFF is final for this auditor; another auditor confirms it')
+  assert.equal(action('e').action, 'done')
   assert.equal(action('f').action, 'done', 'answered but too close to call: asking again repeats it')
   assert.equal(action('g').state, 'diff')
   assert.equal(action('g').action, 'done')
   assert.equal(action('h').action, 'audit', 'a price skip is re-evaluated each run')
   assert.equal(action('i').action, 'retry')
   assert.equal(action('i').blame, 'auditor')
-  assert.deepEqual(countPlan(cells.values()), { done: 4, retryAuditor: 2, retrySeller: 1, recheck: 1, audit: 1 })
+  assert.deepEqual(countPlan(cells.values()), { done: 6, retryAuditor: 1, retrySeller: 1, extend: 0, audit: 1 })
 })
 
-test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF waits for its recheck', () => {
+test('a failure caused by the auditor does not use up the seller\'s retry', () => {
+  // Our buyer proxy mixed up request IDs, then the seller timed out once.
+  const ourAuthBug = {
+    code: 'response_auth_invalid', source: 'response_auth', retryable: true, affectedBatchCount: 21, totalBatchCount: 21,
+    nextAction: 'resume audit', summary: 'buyer proxy request ID mismatch (a06e1ead != b7ecb4bc)',
+  } as const
+  const deadline = { ...sellerDown, code: 'deadline_exceeded', summary: 'seller sent no answer for 600000ms' } as const
+  // Runs four hours apart, so each seller failure counts (SELLER_RETRY_SPACING_SECONDS).
+  const cell = (...reasons: Array<typeof ourAuthBug | typeof deadline>) => mergeEpochRuns(EPOCH, reasons.map((reason, index) => (
+    run(`r${index}`, `2026-10-28T${String(4 * index).padStart(2, '0')}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: reason })] }])
+  ))).get(epochCellKey('m', 'a'))!
+
+  const afterOurBug = cell(ourAuthBug, ourAuthBug, deadline)
+  assert.equal(afterOurBug.blame, 'seller')
+  assert.equal(afterOurBug.attempts, 1)
+  assert.equal(afterOurBug.action, 'retry', 'only one of the three audits was the seller\'s failure')
+  assert.equal(cell(ourAuthBug, deadline, deadline).action, 'done', 'two seller failures finish the cell')
+
+  // Failures and runtime skips caused by the auditor are left out too.
+  const cells = mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{
+    model: 'm',
+    failures: [
+      { peerId: 'b', agentId: '2', service: 'svc', status: 'FAILED', reason: 'no probe bank exists for m' },
+      { peerId: 'c', agentId: '3', service: 'svc', status: 'FAILED', reason: 'seller closed the stream', outcomeReason: sellerDown },
+    ],
+  }])])
+  assert.equal(cells.get(epochCellKey('m', 'b'))!.attempts, 0)
+  assert.equal(cells.get(epochCellKey('m', 'c'))!.attempts, 1)
+})
+
+test('seller failures less than SELLER_RETRY_SPACING_SECONDS apart count as one, and the retry waits for it', () => {
+  // A seller's upstream usage limit can outlast a retry two hours later.
+  const failure = (runId: string, at: string) => run(runId, at, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }])
+  assert.equal(SELLER_RETRY_SPACING_SECONDS, 3 * 60 * 60)
+  const close = mergeEpochRuns(EPOCH, [
+    failure('r1', '2026-10-28T14:23:00.000Z'),
+    failure('r2', '2026-10-28T16:17:00.000Z'),
+  ]).get(epochCellKey('m', 'a'))!
+  assert.equal(close.attempts, 1)
+  assert.equal(close.action, 'retry')
+  assert.equal(sellerRetryDueAt(close), Date.parse('2026-10-28T16:17:00.000Z') / 1_000 + SELLER_RETRY_SPACING_SECONDS)
+  // An auditor failure has no such wait.
+  const ours = mergeEpochRuns(EPOCH, [run('r1', '2026-10-28T14:23:00.000Z', [{
+    model: 'm', results: [result('b', 'UNDETERMINED', { outcomeReason: { ...sellerDown, summary: 'seller audit reached its time limit of 3600000ms' } })],
+  }])]).get(epochCellKey('m', 'b'))!
+  assert.equal(ours.blame, 'auditor')
+  assert.equal(sellerRetryDueAt(ours), null)
+})
+
+test('an automatic resume of a seller failure waits for the retry spacing; only --resume-run skips it', () => {
+  const at = '2026-10-28T14:23:00.000Z'
+  const cell = mergeEpochRuns(EPOCH, [run('r1', at, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }])]).get(epochCellKey('m', 'a'))!
+  const failedAt = Date.parse(at) / 1_000
+  const dueAt = failedAt + SELLER_RETRY_SPACING_SECONDS
+  // An hour later the retry cell is still an automatic resume candidate, and it waits.
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, false), dueAt)
+  assert.equal(sellerRetryWaitUntil(cell, dueAt + 1, false), null, 'runs once the spacing has passed')
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, true), null, 'an explicit --resume-run repair is not held')
+  assert.equal(sellerRetryWaitUntil(undefined, failedAt, false), null)
+})
+
+test('the fixed audit deadline of earlier releases was the auditor\'s limit; no answer for the idle limit is the seller\'s', () => {
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller audit deadline exceeded after 600000ms' }), 'auditor')
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller audit reached its time limit of 3600000ms' }), 'auditor')
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller sent no answer for 600000ms' }), 'seller')
+})
+
+test('failures caused by the auditor are retried up to AUDITOR_FAILURE_ATTEMPTS times per epoch', () => {
+  // Without a limit, a seller our side keeps failing is audited again every run.
+  const ourTimeout = {
+    code: 'request_timeout', source: 'transport', retryable: true, affectedBatchCount: 17, totalBatchCount: 17,
+    nextAction: 'resume audit', summary: 'buyer proxy request timed out after 120000ms',
+  } as const
+  const cell = (count: number) => mergeEpochRuns(EPOCH, Array.from({ length: count }, (_, index) => (
+    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: ourTimeout })] }])
+  ))).get(epochCellKey('m', 'a'))!
+  assert.equal(AUDITOR_FAILURE_ATTEMPTS, 3)
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS - 1).action, 'retry')
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS).action, 'done')
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS).attempts, 0, 'still none of the seller\'s retries used')
+  // A failure that repeats on every attempt is not retried at all.
+  const refused = mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{
+    model: 'm',
+    failures: [{ peerId: 'b', agentId: '2', service: 'svc', status: 'FAILED', reason: buyerRefused.summary, outcomeReason: buyerRefused }],
+  }])]).get(epochCellKey('m', 'b'))!
+  assert.equal(refused.blame, 'auditor')
+  assert.equal(refused.action, 'done')
+})
+
+test('an UNDETERMINED caused by the auditor is never submitted', async () => {
+  // Our buyer refuses the seller: its "coverage 0" UNDETERMINED says nothing about the model.
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-auditor-'))
+  try {
+    const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'UNDETERMINED', { outcomeReason: buyerRefused }),
+      result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
+      result('c', 'SAME'),
+    ] }])]
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    const path = join(directory, 'r1.summary.json')
+    await writeJsonAtomic(path, runs[0]!.summaries[0])
+    runs[0]!.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b', 'c'], 'the seller\'s own failure and the SAME are submitted')
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
+    assert.match(summary.failures[0]!.reason, /^not submitted: UNDETERMINED caused by this auditor .*not retried/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF replaces a SAME', () => {
   const cells = mergeEpochRuns(EPOCH, [
     run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
       result('a', 'UNDETERMINED', { outcomeReason: sellerDown }),
@@ -111,13 +236,13 @@ test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF wait
     ] }]),
     run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [
       result('a', 'SAME'),
-      result('b', 'DIFF', { recheckPending: { reason: 'x' } as never }),
+      result('b', 'DIFF'),
     ] }]),
   ])
   assert.equal(cells.get(epochCellKey('m', 'a'))!.state, 'same')
-  assert.equal(cells.get(epochCellKey('m', 'b'))!.state, 'pending_diff')
+  assert.equal(cells.get(epochCellKey('m', 'b'))!.state, 'diff')
   const [row] = epochModelRows(cells.values())
-  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, pendingRecheck: 1, failed: 0, skipped: 0, left: 1 })
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 1, undetermined: 0, closeCalls: 0, failed: 0, skipped: 0, left: 0 })
 })
 
 test('runs of another epoch or with a mismatched run id are ignored', () => {
@@ -153,6 +278,122 @@ test('the epoch submission manifest holds the merged result per seller and chang
     assert.deepEqual(summary.results.map((entry) => [entry.peerId, entry.status]), [['a', 'SAME'], ['b', 'SAME']])
     const fewer = await writeEpochSubmissionManifest(directory, { ...state, manifests: [runs[0]!.manifest] })
     assert.notEqual(fewer.runId, manifest.runId)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a close call waiting for extra questions is pending_extension, not submitted, and counted as left', () => {
+  const grey = {
+    decisionRule: 'kbf-extension-v1' as const,
+    responseAuthVerified: true,
+    stats: { selfHamming: 30, selfTotal: 300, targetHamming: 22, targetTotal: 100, selfCoverage: 1, targetCoverage: 1, p0Cp99: 0.155, pValueBinomial: 0.05 },
+  }
+  const cells = mergeEpochRuns(EPOCH, [
+    run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'SAME'),
+      result('b', 'SAME', { ...grey, extensionPending: { reason: 'no fresh questions', since: 'x' } }),
+    ] }]),
+  ])
+  const cell = cells.get(epochCellKey('m', 'b'))!
+  assert.equal(cell.state, 'pending_extension')
+  assert.equal(cell.action, 'extend')
+  assert.equal(cell.reason, 'no fresh questions')
+  assert.equal(countPlan(cells.values()).extend, 1)
+  const [row] = epochModelRows(cells.values())
+  assert.deepEqual({ ...row }, { model: 'm', same: 1, diff: 0, undetermined: 0, closeCalls: 1, failed: 0, skipped: 0, left: 1 })
+})
+
+test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CONFIRMATION_ATTEMPTS; a close call is not', () => {
+  const confirming = (peerId: string, extra: Partial<ModelVerificationTargetResult> = {}) => (
+    result(peerId, 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true, ...extra })
+  )
+  const attempts = (count: number, last: ModelVerificationTargetResult) => Array.from({ length: count }, (_, index) => (
+    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [index === count - 1 ? last : confirming(last.peerId)] }])
+  ))
+  const cell = (runs: ReturnType<typeof run>[], peerId: string) => mergeEpochRuns(EPOCH, runs).get(epochCellKey('m', peerId))!
+  assert.equal(CONFIRMATION_ATTEMPTS, 3)
+
+  // An ordinary seller failure is done after two attempts; a confirmation gets a third.
+  const second = cell(attempts(2, confirming('a')), 'a')
+  assert.equal(second.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(second), true)
+  const spaced = [0, 4].map((hour, index) => run(`s${index}`, `2026-10-28T0${hour}:00:00.000Z`, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }]))
+  assert.equal(cell(spaced, 'a').action, 'done')
+  // After the last attempt the UNDETERMINED is submitted.
+  const third = cell(attempts(3, confirming('a')), 'a')
+  assert.equal(third.action, 'done')
+  assert.equal(heldForConfirmationRecheck(third), false)
+  // A re-check that answers decides the cell.
+  assert.equal(cell(attempts(2, result('a', 'DIFF', { confirmsDiff: true })), 'a').state, 'diff')
+  // A close call that stayed undecided after its extra questions is final: asking again repeats it.
+  const tie = cell(attempts(1, result('a', 'UNDETERMINED', { confirmsDiff: true })), 'a')
+  assert.equal(tie.action, 'done')
+  assert.equal(heldForConfirmationRecheck(tie), false)
+})
+
+test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {
+  const extension = (extra: Partial<NonNullable<ModelVerificationTargetResult['extension']>> = {}) => ({
+    rule: 'kbf-extension-v2', auditId: 'x', status: 'UNDETERMINED', referenceId: 'ref', probeCount: 10, parsedProbeCount: 10,
+    correctProbeCount: 10, responseAuthVerified: true, stats: null, cost: emptyAuditCostSummary(), evidencePath: '/x', evidenceHash: '0x01',
+    firstLook: { status: 'UNDETERMINED', pValue: 0.5 },
+    pooled: { selfHamming: 0, selfTotal: 0, targetHamming: 0, targetTotal: 0, pValueBinomial: 0.5, verdict: 'UNDETERMINED', verdictReason: null },
+    ...extra,
+  }) as unknown as NonNullable<ModelVerificationTargetResult['extension']>
+  // The close call waited for its extra questions in one run and was extended in the next.
+  const cell = (last: ModelVerificationTargetResult) => mergeEpochRuns(EPOCH, [
+    run('r0', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [result('a', 'UNDETERMINED', { confirmsDiff: true, extensionPending: { reason: 'close call', since: '' } } as Partial<ModelVerificationTargetResult>)] }]),
+    run('r1', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [last] }]),
+  ]).get(epochCellKey('m', 'a'))!
+
+  // Extra sets that failed (an outcome reason) or answered without verified ResponseAuth.
+  const timedOut = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, outcomeReason: sellerDown, extension: extension() }))
+  assert.equal(timedOut.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(timedOut), true)
+  const unverified = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, extension: extension({ responseAuthVerified: false }) }))
+  assert.equal(unverified.action, 'retry')
+  assert.equal(heldForConfirmationRecheck(unverified), true)
+  // A close call still undecided after answering every extra question is final.
+  const tie = cell(result('a', 'UNDETERMINED', { confirmsDiff: true, extension: extension() }))
+  assert.equal(tie.action, 'done')
+  assert.equal(heldForConfirmationRecheck(tie), false)
+  // Not a confirmation: no waiting DIFF depends on it, so a failed extension is not audited again.
+  assert.equal(cell(result('a', 'UNDETERMINED', { outcomeReason: sellerDown, extension: extension() })).action, 'done')
+})
+
+test('a result of the retired DIFF self-recheck that ended UNDETERMINED is audited again', () => {
+  const legacy = (status: ModelVerificationTargetResult['status']) => ({
+    ...result('a', status),
+    recheck: { status: 'SAME', auditId: 'r', evidencePath: '/r', evidenceHash: '0x02' },
+  }) as ModelVerificationTargetResult
+  const cell = (last: ModelVerificationTargetResult) => (
+    mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [last] }])]).get(epochCellKey('m', 'a'))!
+  )
+  assert.equal(cell(legacy('UNDETERMINED')).action, 'audit')
+  // Both checks found DIFF: the result is the first check's DIFF, which is still valid.
+  assert.equal(cell(legacy('DIFF')).action, 'done')
+})
+
+test('the submission leaves out a held confirmation UNDETERMINED and says why', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-held-'))
+  try {
+    const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }),
+      result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
+    ] }])]
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    const path = join(directory, 'r1.summary.json')
+    await writeJsonAtomic(path, runs[0]!.summaries[0])
+    runs[0]!.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    // Only the ordinary UNDETERMINED is submitted (and retried); the confirmation's waits for its re-check.
+    assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b'])
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
+    assert.match(summary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

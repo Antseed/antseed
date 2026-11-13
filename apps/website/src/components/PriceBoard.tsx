@@ -1,4 +1,4 @@
-import type {ReactNode} from 'react';
+import {useEffect, useRef, useState, type ReactNode} from 'react';
 import {
   Anthropic,
   OpenAI,
@@ -65,11 +65,31 @@ function CheckIcon() {
   );
 }
 
-export function PriceBoard({count = 4, delay = 120}: {count?: number; delay?: number}) {
-  const rows = useMarketplaceShowcase(count);
+export function PriceBoard({count = 4, delay = 120, deferFetch = false}: {count?: number; delay?: number; deferFetch?: boolean}) {
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const [enabled, setEnabled] = useState(!deferFetch);
+  const rows = useMarketplaceShowcase(count, {enabled});
+
+  useEffect(() => {
+    if (enabled) return undefined;
+    if (!deferFetch || typeof IntersectionObserver === 'undefined') {
+      setEnabled(true);
+      return undefined;
+    }
+    const el = rowsRef.current;
+    if (!el) return undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setEnabled(true);
+        observer.disconnect();
+      }
+    }, {rootMargin: '300px'});
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [deferFetch, enabled]);
   return (
     <Reveal className={styles.priceCard} delay={delay}>
-      <img className={styles.priceAnt} src="/img/home/antdots-b.png" alt="" aria-hidden="true" />
+      <img className={styles.priceAnt} src="/img/home/antdots-b.webp" alt="" aria-hidden="true" width={854} height={964} loading="lazy" decoding="async" />
       <div className={styles.priceHead}>
         <span>Official API Price</span>
         <a
@@ -82,7 +102,7 @@ export function PriceBoard({count = 4, delay = 120}: {count?: number; delay?: nu
           <span className={styles.priceLiveArrow}><ArrowRight /></span>
         </a>
       </div>
-      <div className={styles.priceRows}>
+      <div className={styles.priceRows} ref={rowsRef}>
         {rows.map((row) => {
           const Glyph = VENDOR_GLYPHS[row.vendorKey];
           return (

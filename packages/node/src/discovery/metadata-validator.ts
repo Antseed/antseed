@@ -1,6 +1,6 @@
 import type { DomainVerificationMethod, PeerMetadata } from "./peer-metadata.js";
 import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_PERFORMANCE_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, parseServicePerformance, type ServiceHealth } from "./peer-metadata.js";
-import { encodeMetadata } from "./metadata-codec.js";
+import { encodeMetadata, getMetadataCodec, metadataVersionIntroducing, type MetadataVocabulary, type MetadataVocabularyNameKind } from "./metadata-codec.js";
 import { MAX_PUBLIC_ADDRESS_LENGTH, parsePublicAddress } from "./public-address.js";
 import { isUnitBilledProtocol, validateUnitBillingModelForProtocolV1, validateUnitBillingModelV1 } from "../billing/unit.js";
 
@@ -20,6 +20,7 @@ export const MAX_GITHUB_REPOSITORY_LENGTH = 100;
 export const MAX_SERVICE_CATEGORIES_PER_SERVICE = 64;
 export const MAX_SERVICE_CATEGORY_LENGTH = 32;
 export const MAX_SERVICE_API_PROTOCOLS_PER_SERVICE = 4;
+/** Components per unit billing model in v10-v15 documents; v16+ allow more (see each version's vocabulary). */
 export const MAX_BILLING_COMPONENTS_PER_MODEL = 8;
 export const MAX_BILLING_MATCH_ENTRIES_PER_COMPONENT = 3;
 export const MAX_BILLING_MATCH_VALUE_BYTES = 32;
@@ -93,8 +94,31 @@ export interface ValidationError {
   message: string;
 }
 
+/**
+ * The version that introduced `name` when `vocabulary` (the document's own
+ * version's) does not know it yet; undefined when it does, or when no version
+ * knows it (other checks report unknown names).
+ */
+function beyondVocabulary(
+  vocabulary: MetadataVocabulary | undefined,
+  kind: MetadataVocabularyNameKind,
+  name: string,
+): number | undefined {
+  if (!vocabulary || (vocabulary[kind] as ReadonlySet<string>).has(name)) return undefined;
+  return metadataVersionIntroducing(kind, name);
+}
+
+function vocabularyOf(version: number): MetadataVocabulary | undefined {
+  try {
+    return getMetadataCodec(version).vocabulary;
+  } catch {
+    return undefined;
+  }
+}
+
 export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
   const errors: ValidationError[] = [];
+  const vocabulary = vocabularyOf(metadata.version);
 
   // version
   if (metadata.version < MIN_SUPPORTED_METADATA_VERSION || metadata.version > METADATA_VERSION) {
@@ -533,6 +557,13 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
               message: "Service API protocol values must be unique per service",
             });
           }
+          const protocolTooNew = beyondVocabulary(vocabulary, "protocols", normalized);
+          if (protocolTooNew) {
+            errors.push({
+              field: `providers[${i}].serviceApiProtocols.${serviceName}[${j}]`,
+              message: `Service API protocol "${normalized}" requires metadata version ${protocolTooNew}`,
+            });
+          }
           deduped.add(normalized);
         }
       }
@@ -594,13 +625,21 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
               message,
             });
           }
-          if (model.components.length > MAX_BILLING_COMPONENTS_PER_MODEL) {
+          const maxComponents = vocabulary?.maxBillingComponents ?? MAX_BILLING_COMPONENTS_PER_MODEL;
+          if (model.components.length > maxComponents) {
             errors.push({
               field: `providers[${i}].serviceUnitBillingModels.${serviceName}.${protocol}.components`,
-              message: `Billing component count ${model.components.length} exceeds max ${MAX_BILLING_COMPONENTS_PER_MODEL}`,
+              message: `Billing component count ${model.components.length} exceeds max ${maxComponents}`,
             });
           }
           model.components.forEach((component, componentIndex) => {
+            const unitTooNew = beyondVocabulary(vocabulary, "units", component.unit);
+            if (unitTooNew) {
+              errors.push({
+                field: `providers[${i}].serviceUnitBillingModels.${serviceName}.${protocol}.components[${componentIndex}].unit`,
+                message: `Billing unit "${component.unit}" requires metadata version ${unitTooNew}`,
+              });
+            }
             const matchEntries = Object.entries(component.match ?? {});
             if (matchEntries.length > MAX_BILLING_MATCH_ENTRIES_PER_COMPONENT) {
               errors.push({
@@ -609,6 +648,13 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
               });
             }
             for (const [key, value] of matchEntries) {
+              const keyTooNew = beyondVocabulary(vocabulary, "matchKeys", key);
+              if (keyTooNew) {
+                errors.push({
+                  field: `providers[${i}].serviceUnitBillingModels.${serviceName}.${protocol}.components[${componentIndex}].match.${key}`,
+                  message: `Billing match key "${key}" requires metadata version ${keyTooNew}`,
+                });
+              }
               const byteLength = new TextEncoder().encode(value).length;
               if (byteLength > MAX_BILLING_MATCH_VALUE_BYTES) {
                 errors.push({
@@ -662,6 +708,12 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
         }
         for (const message of validateServiceCapabilityFields(caps)) {
           errors.push({ field, message });
+        }
+        for (const option of Object.keys(caps)) {
+          const optionTooNew = beyondVocabulary(vocabulary, "capabilityOptions", option);
+          if (optionTooNew) {
+            errors.push({ field, message: `Service capability "${option}" requires metadata version ${optionTooNew}` });
+          }
         }
       }
     }

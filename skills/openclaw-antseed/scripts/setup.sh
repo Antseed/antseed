@@ -1,39 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Setup Antseed buyer proxy for OpenClaw
+# Connect OpenClaw to Antseed through a gateway.
+#
+# With a gateway of your own, pass its base URL and key in the environment.
+# Without one, this sets up a gateway on this computer as a background service
+# (launchd on macOS, a systemd user service on Linux; no root needed) and creates a
+# key for OpenClaw. Either way the key is kept in a file only you can read and
+# never appears on a command line.
 #
 # Usage:
-#   ./setup.sh --service moonshotai/kimi-k2.5 [--port 5005] [--bootstrap HOST:PORT] [--service-flag]
+#   ./setup.sh --service <model-id> [--service-name <name>] [--context-window <n>] [--max-tokens <n>]
 #
 # Examples:
-#   ./setup.sh --service moonshotai/kimi-k2.5
-#   ./setup.sh --service moonshotai/kimi-k2.5 --port 5005 --bootstrap 108.128.178.49:6882 --service-flag
-#   ANTSEED_BASE_URL=https://example.com/v1 ANTSEED_API_KEY=antseed_... ./setup.sh --service moonshotai/kimi-k2.5
+#   ./setup.sh --service deepseek-v4-flash
+#   ANTSEED_BASE_URL=https://gateway.example.com/v1 ANTSEED_API_KEY=... ./setup.sh --service kimi-k2.6
 
-PORT=5005
 SERVICE=""
 SERVICE_NAME=""
-BOOTSTRAP=""
-INSTALL_SERVICE=false
 CONTEXT_WINDOW=131072
 MAX_TOKENS=8192
+SECRETS_DIR="$HOME/.antseed/openclaw"
+LOCAL_BASE_URL="http://localhost:8379/v1"
 
 usage() {
   cat <<EOF
-Usage: $0 --service <service-id> [options]
+Usage: $0 --service <model-id> [options]
 
 Required:
-  --service <id>            Service ID available on the network (e.g., moonshotai/kimi-k2.5)
+  --service <id>            Model id from the network catalog (e.g. deepseek-v4-flash)
 
 Options:
-  --service-name <name>     Display name for the service (default: derived from service ID)
-  --port <n>                Buyer proxy port (default: 5005)
-  --bootstrap <host:port>   Bootstrap node address (e.g., 108.128.178.49:6882)
-  --context-window <n>      Service context window size (default: 131072)
-  --max-tokens <n>          Service max output tokens (default: 8192)
-  --service-flag            Install as systemd service
+  --service-name <name>     Display name in OpenClaw (default: "<id> via Antseed")
+  --context-window <n>      Context window size (default: 131072)
+  --max-tokens <n>          Max output tokens (default: 8192)
   -h, --help                Show this help
+
+Environment:
+  ANTSEED_BASE_URL, ANTSEED_API_KEY   Use your own gateway instead of setting one up here
+  OPENCLAW_CONFIG_PATH                OpenClaw config (default: ~/.openclaw/openclaw.json)
 EOF
   exit 1
 }
@@ -42,134 +47,83 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --service) SERVICE="$2"; shift 2 ;;
     --service-name) SERVICE_NAME="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --bootstrap) BOOTSTRAP="$2"; shift 2 ;;
     --context-window) CONTEXT_WINDOW="$2"; shift 2 ;;
     --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
-    --service-flag) INSTALL_SERVICE=true; shift ;;
+    # Older versions installed a buyer service with this flag; the gateway service replaces it.
+    --service-flag) shift ;;
     --help|-h) usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
 done
 
-if [ -z "$SERVICE" ]; then
-  echo "Error: --service is required"
-  usage
-fi
+[ -n "$SERVICE" ] || { echo "Error: --service is required"; usage; }
+[ -n "$SERVICE_NAME" ] || SERVICE_NAME="$SERVICE via Antseed"
 
-if [ -z "$SERVICE_NAME" ]; then
-  SERVICE_NAME="$SERVICE via Antseed"
-fi
+command -v openclaw >/dev/null || { echo "Error: openclaw not found. Install OpenClaw first."; exit 1; }
+OPENCLAW_CONFIG="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
+[ -f "$OPENCLAW_CONFIG" ] || { echo "Error: OpenClaw config not found at $OPENCLAW_CONFIG"; exit 1; }
 
-BASE_URL="${ANTSEED_BASE_URL:-http://127.0.0.1:${PORT}/v1}"
-API_KEY="${ANTSEED_API_KEY:-antseed-p2p}"
+mkdir -p "$SECRETS_DIR"
+chmod 700 "$SECRETS_DIR"
 
-echo "==> Installing Antseed CLI..."
-if ! command -v antseed &>/dev/null; then
-  npm install -g @antseed/cli
-fi
-echo "  CLI version: $(antseed --version)"
-
-echo "==> Installing buyer proxy plugin..."
-antseed plugin add @antseed/router-local </dev/null 2>&1 | tail -3 || true
-
-# Add bootstrap node if specified
-if [ -n "$BOOTSTRAP" ]; then
-  BOOTSTRAP_HOST="${BOOTSTRAP%%:*}"
-  BOOTSTRAP_PORT="${BOOTSTRAP##*:}"
-  echo "==> Adding bootstrap node ${BOOTSTRAP_HOST}:${BOOTSTRAP_PORT}..."
-  if [ -f ~/.antseed/config.json ]; then
-    python3 -c "
-import json, sys
-cfg = json.load(open('$HOME/.antseed/config.json'))
-nodes = cfg.setdefault('bootstrapNodes', [])
-entry = {'host': '${BOOTSTRAP_HOST}', 'port': int('${BOOTSTRAP_PORT}')}
-if entry not in nodes:
-    nodes.append(entry)
-json.dump(cfg, open('$HOME/.antseed/config.json', 'w'), indent=2)
-print('  Added to ~/.antseed/config.json')
-"
+if [ -n "${ANTSEED_BASE_URL:-}" ] && [ -n "${ANTSEED_API_KEY:-}" ]; then
+  echo "==> Using the gateway at $ANTSEED_BASE_URL"
+  printf '%s\n' "$ANTSEED_BASE_URL" > "$SECRETS_DIR/base-url"
+  (umask 077 && printf '%s\n' "$ANTSEED_API_KEY" > "$SECRETS_DIR/api-key")
+else
+  echo "==> Setting up a gateway on this computer"
+  if ! antseed gateway --help 2>/dev/null | grep '^  service ' >/dev/null; then
+    echo "  Installing the Antseed CLI (this can take a few minutes)..."
+    npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
+  fi
+  echo "  CLI version: $(antseed --version)"
+  if ! antseed gateway service status >/dev/null 2>&1; then
+    antseed gateway service install
+  fi
+  printf '%s\n' "$LOCAL_BASE_URL" > "$SECRETS_DIR/base-url"
+  # A key saved by an earlier run is reused while the gateway still accepts it.
+  if [ -s "$SECRETS_DIR/api-key" ] && printf 'header = "Authorization: Bearer %s"\n' "$(cat "$SECRETS_DIR/api-key")" \
+      | curl -s -K - -o /dev/null -w '%{http_code}' -m 15 "$LOCAL_BASE_URL/models" | grep -qx 200; then
+    echo "  Reusing the gateway key saved in $SECRETS_DIR/api-key"
   else
-    echo "  Warning: ~/.antseed/config.json not found. Create it first with 'antseed buyer start --help' or 'antseed seller setup'."
+    (umask 077 && antseed gateway key create --label openclaw | sed -n 's/^API key: //p' > "$SECRETS_DIR/api-key")
+    [ -s "$SECRETS_DIR/api-key" ] || { echo "Error: could not create a gateway key"; exit 1; }
+    echo "  Created a gateway key for OpenClaw (saved in $SECRETS_DIR/api-key)"
   fi
 fi
 
-echo "==> Configuring OpenClaw service provider..."
-if ! command -v openclaw &>/dev/null; then
-  echo "Error: openclaw not found. Install it first: npm install -g openclaw"
-  exit 1
-fi
-
-OPENCLAW_CONFIG="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
-if [ ! -f "$OPENCLAW_CONFIG" ]; then
-  echo "Error: OpenClaw config not found at $OPENCLAW_CONFIG"
-  exit 1
-fi
-
-python3 -c "
-import json, sys
-
-cfg = json.load(open('${OPENCLAW_CONFIG}'))
-
-# Set up service provider
-providers = cfg.setdefault('models', {}).setdefault('providers', {})
-providers['antseed'] = {
-    'baseUrl': '${BASE_URL}',
-    'apiKey': '${API_KEY}',
-    'authHeader': True,
-    'api': 'anthropic-messages',
-    'models': [{
-        'id': '${SERVICE}',
-        'name': '${SERVICE_NAME}',
-        'reasoning': False,
-        'input': ['text'],
-        'contextWindow': ${CONTEXT_WINDOW},
-        'maxTokens': ${MAX_TOKENS}
-    }]
+echo "==> Configuring OpenClaw..."
+python3 - "$SECRETS_DIR" "$OPENCLAW_CONFIG" "$SERVICE" "$SERVICE_NAME" "$CONTEXT_WINDOW" "$MAX_TOKENS" <<'PY'
+import json, os, sys
+secrets_dir, config_path, model, name, context_window, max_tokens = sys.argv[1:7]
+base_url = open(os.path.join(secrets_dir, "base-url")).read().strip()
+api_key = open(os.path.join(secrets_dir, "api-key")).read().strip()
+with open(config_path) as f:
+    cfg = json.load(f)
+cfg.setdefault("models", {}).setdefault("providers", {})["antseed"] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "authHeader": True,
+    "api": "openai-completions",
+    "models": [{"id": model, "name": name, "reasoning": False, "input": ["text"],
+                "contextWindow": int(context_window), "maxTokens": int(max_tokens)}],
 }
+cfg.setdefault("agents", {}).setdefault("defaults", {}).setdefault("model", {})["primary"] = f"antseed/{model}"
+tmp = config_path + ".tmp"
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+    json.dump(cfg, f, indent=2)
+os.replace(tmp, config_path)
+print(f"  Provider configured: antseed/{model}")
+print(f"  Endpoint: {base_url}")
+print(f"  Default model set: antseed/{model}")
+PY
 
-# Set as default service
-cfg.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {})['primary'] = 'antseed/${SERVICE}'
-
-json.dump(cfg, open('${OPENCLAW_CONFIG}', 'w'), indent=2)
-print('  Provider configured: antseed/${SERVICE}')
-print('  Endpoint: ${BASE_URL}')
-print('  Default service set: antseed/${SERVICE}')
-"
-
-if [ "$INSTALL_SERVICE" = true ]; then
-  echo "==> Installing systemd service..."
-  ANTSEED_BIN=$(command -v antseed)
-  sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<SERVICE
-[Unit]
-Description=Antseed Buyer Proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$(whoami)
-ExecStart=${ANTSEED_BIN} buyer start --router local --port ${PORT}
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=antseed-buyer
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now antseed-buyer
-  echo "  Service installed and started"
-else
+if [ -z "${ANTSEED_BASE_URL:-}" ]; then
   echo ""
-  echo "==> To start the buyer proxy:"
-  echo "  antseed buyer start --router local --port ${PORT}"
-  echo ""
-  echo "  Or install as a service with: $0 --service ${SERVICE} --service-flag"
+  echo "==> Funding: 'antseed buyer balance' shows what's available."
+  echo "    Add USDC on Base with 'antseed buyer deposit --no-watch', or pay by card in the console"
+  echo "    ('antseed gateway console-link', then Wallet & Funding)."
 fi
-
 echo ""
 echo "==> Apply the changes with: openclaw gateway restart"
 echo "==> Done"

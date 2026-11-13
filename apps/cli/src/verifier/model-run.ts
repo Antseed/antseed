@@ -17,9 +17,15 @@ import {
   hasMissingKbfAnswers,
   parseKbfAnswers,
   queryProfileHash,
+  isKbfTokenLimitFinishReason,
+  kbfResponseFinishReason,
+  reportedReasoningTokens,
+  stripKbfThinkBlocks,
   verifyKbf,
+  type FingerprintStats,
   type KbfProbe,
   type KbfReferenceV1,
+  type KbfVerdictStats,
 } from '@antseed/fingerprints'
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -34,6 +40,7 @@ import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import {
+  addAuditCostSummaries,
   deriveProxyAuditId,
   parseProxyAuditExchangeCost,
   summarizeAuditExchangeCosts,
@@ -43,8 +50,18 @@ import {
   type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditEvidenceV1,
   type ProxyAuditSkipEvidenceV1,
+  type SellerThinkingDiscoveryAttemptV1,
+  type SellerThinkingDiscoveryV1,
   type VerificationSkipCode,
 } from './proxy-evidence.js'
+import {
+  THINKING_DISCOVERY_PROBES,
+  THINKING_DISCOVERY_TIMEOUT_MS,
+  ThinkingDiscoveryError,
+  discoverThinkingSuppression,
+  thinkingStrategyRequest,
+  type ThinkingDiscoveryProbe,
+} from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
@@ -82,21 +99,85 @@ function exportedResponseAuthRecord(record: StoredResponseAuth): Omit<StoredResp
   return exported
 }
 
+/**
+ * When a seller audit gives up: after `idleMs` of waiting on the seller without an answered batch, or
+ * `maxMs` after its first request. A slow seller that keeps answering finishes its batches; a fixed
+ * total cut off honest reasoning models whose 16 to 23 batches take 30 to 90 seconds each.
+ *
+ * The idle clock runs only while a batch request is out to the seller. Time the auditor spends on its
+ * own work between batches (writing the checkpoint, waiting for a slot in the run's shared batch
+ * limiter) is not the seller's silence and does not count against it.
+ */
 class LazyAuditDeadline {
   readonly controller = new AbortController()
-  private timer: ReturnType<typeof setTimeout> | null = null
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private maxTimer: ReturnType<typeof setTimeout> | null = null
+  private cause: 'idle' | 'max' | null = null
+  private inFlight = 0
+  private idleLeftMs: number
+  private idleRunningSince = 0
 
-  constructor(readonly timeoutMs: number) {}
+  constructor(readonly idleMs: number, readonly maxMs: number) {
+    this.idleLeftMs = idleMs
+  }
 
+  /** A batch request goes out to the seller: the idle clock runs while any request is out. */
   start(): AbortSignal {
-    this.timer ??= setTimeout(() => this.controller.abort(), this.timeoutMs)
+    if (this.controller.signal.aborted) return this.controller.signal
+    if (!this.maxTimer) this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    this.inFlight += 1
+    if (this.inFlight === 1) this.runIdle(this.idleLeftMs)
     return this.controller.signal
   }
 
+  /**
+   * A batch request came back. An answered batch gives the seller another `idleMs` for the next one;
+   * once no request is out the idle clock pauses until the next one goes out.
+   */
+  finish(answered: boolean): void {
+    if (this.inFlight === 0 || this.controller.signal.aborted) return
+    this.inFlight -= 1
+    if (answered) this.idleLeftMs = this.idleMs
+    else this.idleLeftMs = Math.max(0, this.idleLeftMs - (Date.now() - this.idleRunningSince))
+    if (this.inFlight > 0) this.runIdle(this.idleLeftMs)
+    else if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
+  }
+
+  /** Why the audit stopped, for its outcome reason. */
+  describe(): string {
+    return this.cause === 'max'
+      ? `${AUDIT_MAX_TIME_TEXT} ${this.maxMs}ms`
+      : `${AUDIT_IDLE_TEXT} ${this.idleMs}ms`
+  }
+
   close(): void {
-    if (this.timer) clearTimeout(this.timer)
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    if (this.maxTimer) clearTimeout(this.maxTimer)
+  }
+
+  private runIdle(ms: number): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleRunningSince = Date.now()
+    this.idleTimer = setTimeout(() => this.abort('idle'), ms)
+  }
+
+  private abort(cause: 'idle' | 'max'): void {
+    if (this.controller.signal.aborted) return
+    this.cause = cause
+    this.close()
+    this.controller.abort()
   }
 }
+
+/** Outcome text of an audit stopped because the seller answered nothing for the idle limit. */
+export const AUDIT_IDLE_TEXT = 'seller sent no answer for'
+/** Outcome text of an audit stopped at its total time limit (the auditor's limit, not the seller's fault). */
+export const AUDIT_MAX_TIME_TEXT = 'seller audit reached its time limit of'
+/** Default total time limit of one seller audit. */
+export const DEFAULT_AUDIT_MAX_TIMEOUT_MS = 60 * 60_000
 
 export interface BuyerProxySnapshot {
   baseUrl: string
@@ -112,7 +193,10 @@ export interface ProxyVerificationContext {
   evidenceDir: string
   checkpointRootDir?: string
   requestTimeoutMs: number
+  /** How long a seller audit waits for its next answered batch before it gives up. */
   auditTimeoutMs: number
+  /** The longest a seller audit may take in total; defaults to `DEFAULT_AUDIT_MAX_TIMEOUT_MS`. */
+  auditMaxTimeoutMs?: number
   responseAuthReader: ResponseAuthReader
   batchConcurrency: number
   batchConcurrencyPromotionLatencyMs: number
@@ -121,6 +205,21 @@ export interface ProxyVerificationContext {
   sleepFn?: (delayMs: number) => Promise<void>
   randomFn?: () => number
   writeCheckpoint?: (path: string, checkpoint: ModelAuditCheckpointV1) => Promise<void>
+  /**
+   * When set, each audit first discovers how to turn off the seller's hidden reasoning, as the KBF
+   * reference code does for every endpoint it queries, and sends the batches that way (see
+   * `SellerThinkingDiscoveryV1`). Shared by one run, keyed by seller and service, so a seller's
+   * extra sets reuse its discovery. Without it, sellers get the reference's suppression.
+   */
+  sellerThinking?: Map<string, Promise<SellerThinkingDiscoveryV1>>
+}
+
+/** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
+interface SellerRequestSettings {
+  queryProfile: KbfReferenceV1['queryProfile']
+  thinking: KbfThinkingSuppression | null
+  maxTokens: number
+  requestTimeoutMs: number
 }
 
 /**
@@ -145,8 +244,8 @@ export interface ModelAuditCheckpointV1 {
   auditId: string
   parentAuditId: string | null
   reservationAuditId?: string
-  /** Set on checkpoints of a DIFF recheck, which a resume never repairs as a first check. */
-  diffRecheck?: true
+  /** Set on checkpoints of a close-call extension set, which a resume never repairs as a first check. */
+  extension?: true
   runId: string
   epoch: string
   model: string
@@ -166,6 +265,12 @@ export interface ModelVerificationTargetResult {
   service: string
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  /**
+   * This audit answered another auditor's DIFF on this service waiting for this auditor's
+   * confirmation. An UNDETERMINED from a seller failure is then audited again before it is
+   * submitted (see `CONFIRMATION_ATTEMPTS`). Local only; not part of the submitted evidence.
+   */
+  confirmsDiff?: boolean
   auditId: string
   parsedProbeCount: number
   probeCount: number
@@ -177,26 +282,54 @@ export interface ModelVerificationTargetResult {
   cumulativeCost?: AuditCostSummaryV1
   evidencePath: string
   evidenceHash: string
-  /** Second check on fresh probes after a first DIFF; `status` above is then the final verdict. */
-  recheck?: ModelVerificationRecheckV1
   /**
-   * Set on a first DIFF whose recheck could not run (no fresh questions, reference endpoint down or
-   * out of credits, seller unreachable for the recheck). Nothing is submitted for it; the next
-   * `verifier run` in the same epoch rechecks it without repeating the first check.
+   * Close-call rule this first audit is decided by (`kbf-extension-v2`: up to two extra sets;
+   * `kbf-extension-v1`: one). Absent on audits from before close calls were extended (and with
+   * `verifier.closeCallExtensions = 0`): those keep the single-look rule.
    */
-  recheckPending?: { reason: string; since: string }
+  decisionRule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+  /** This set's own KBF statistics, as in its evidence file. */
+  stats?: FingerprintStats
+  /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
+  responseAuthVerified?: boolean
+  /**
+   * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
+   * verdict on both sets pooled.
+   */
+  extension?: ModelVerificationExtensionV1
+  /**
+   * Second extra set (`kbf-extension-v2`), asked when the first set pooled with `extension` was
+   * still a close call; its `pooled` is the look over all three sets.
+   */
+  extension2?: ModelVerificationExtensionV1
+  /**
+   * Set on a close-call first audit whose extension could not run. Nothing is submitted for it; the
+   * next `verifier run` in the same epoch extends it without repeating the first audit.
+   */
+  extensionPending?: { reason: string; since: string }
 }
 
-export interface ModelVerificationRecheckV1 {
+export interface ModelVerificationExtensionV1 {
+  rule: 'kbf-extension-v1' | 'kbf-extension-v2'
   auditId: string
+  /** The extension set's own single-set verdict (never used on its own). */
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   referenceId: string
   probeCount: number
   parsedProbeCount: number
   correctProbeCount: number
+  responseAuthVerified: boolean
+  /** This extra set's own KBF statistics, as in its evidence file (absent on `kbf-extension-v1` records). */
+  stats?: FingerprintStats
   cost: AuditCostSummaryV1
   evidencePath: string
   evidenceHash: string
+  firstLook: { status: 'SAME' | 'DIFF' | 'UNDETERMINED'; pValue: number | null }
+  /**
+   * The look over the first set and every extra set up to this one. `extendNext` is true when that
+   * look was still a close call and one more set decides (`verdict` is then UNDETERMINED).
+   */
+  pooled: KbfVerdictStats & { verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'; verdictReason: string | null; extendNext?: boolean }
 }
 
 export interface ModelVerificationFailure {
@@ -304,15 +437,18 @@ export function classifyVerificationTarget(
     }
   }
 
-  const offer = resolveAdvertisedOffer(peer, match.service)
-  if (!offer) {
+  const advertised = resolveAdvertisedOffer(peer, match.service)
+  if (!advertised || advertised.kind === 'invalid') {
     return {
       eligible: false,
       code: 'policy_rejected',
       service,
-      reason: `could not read a valid advertised price for ${service}`,
+      reason: advertised?.kind === 'invalid'
+        ? `the advertised price for ${service} is invalid (${advertised.problem}), so the buyer refuses it · not audited`
+        : `could not read a valid advertised price for ${service}`,
     }
   }
+  const offer = advertised.offer
 
   const priceRejection = auditPriceRejection(offer, policy.priceCap)
   if (priceRejection) {
@@ -340,10 +476,18 @@ export function classifyVerificationTargetServices(
     ?? { eligible: false, code: 'model_not_advertised', service: null, reason: 'model not advertised' }
 }
 
+/**
+ * The seller's price for the model, as the buyer's router reads it: a provider's offer for the
+ * service (or that provider's defaults) is final, so an invalid one is refused rather than replaced
+ * by a cheaper or valid fallback, which would let the audit pick a seller the buyer never routes to.
+ */
 function resolveAdvertisedOffer(
   peer: PeerInfo,
   normalizedModel: string,
-): TokenPricingUsdPerMillion | null {
+):
+  | { kind: 'valid'; offer: TokenPricingUsdPerMillion }
+  | { kind: 'invalid'; problem: string }
+  | null {
   const providers = [
     ...peer.providers,
     ...(peer.metadata?.providers ?? []).map((entry) => entry.provider),
@@ -365,23 +509,37 @@ function resolveAdvertisedOffer(
 
     if (!matrixService && !announcedService && !announcementServicePrice) continue
     const offer = matrixService ?? announcementServicePrice ?? matrixEntry?.defaults ?? announcement?.defaultPricing
-    if (isValidOffer(offer)) return offer
+    if (isValidOffer(offer)) return { kind: 'valid', offer }
+    if (offer) return { kind: 'invalid', problem: offerProblem(offer) }
   }
 
   if (
     isFiniteNonNegative(peer.defaultInputUsdPerMillion)
     && isFiniteNonNegative(peer.defaultOutputUsdPerMillion)
   ) {
-    return {
+    const offer: TokenPricingUsdPerMillion = {
       inputUsdPerMillion: peer.defaultInputUsdPerMillion,
       outputUsdPerMillion: peer.defaultOutputUsdPerMillion,
       ...(isFiniteNonNegative(peer.defaultCachedInputUsdPerMillion)
         ? { cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion }
         : {}),
     }
+    return isValidOffer(offer) ? { kind: 'valid', offer } : { kind: 'invalid', problem: offerProblem(offer) }
   }
 
   return null
+}
+
+/** What makes an advertised offer invalid for the buyer's router, in a few words. */
+function offerProblem(offer: TokenPricingUsdPerMillion): string {
+  const cached = offer.cachedInputUsdPerMillion
+  if (
+    isFiniteNonNegative(offer.inputUsdPerMillion) && isFiniteNonNegative(offer.outputUsdPerMillion)
+    && cached !== undefined && isFiniteNonNegative(cached) && cached > offer.inputUsdPerMillion
+  ) {
+    return `cached input $${cached} per 1M is above input $${offer.inputUsdPerMillion}`
+  }
+  return 'a price is missing, negative or not a number'
 }
 
 function isValidOffer(offer: TokenPricingUsdPerMillion | undefined): offer is TokenPricingUsdPerMillion {
@@ -415,14 +573,17 @@ export async function verifyModelTarget(input: {
     epoch: string
     model: string
   }
-  diffRecheck?: boolean
+  extension?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
   const batches = createDomainHomogeneousKbfBatches(
     input.reference.probes,
     KBF_PROBES_PER_REQUEST,
     (values) => [...values],
   )
-  const deadline = new LazyAuditDeadline(input.context.auditTimeoutMs)
+  const deadline = new LazyAuditDeadline(
+    input.context.auditTimeoutMs,
+    Math.max(input.context.auditTimeoutMs, input.context.auditMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS),
+  )
   const auditId = input.auditId ?? canonicalHashBytes32({
     domain: 'antseed-verifier-provisional-audit-v1',
     peerId: input.target.peerId,
@@ -449,6 +610,14 @@ export async function verifyModelTarget(input: {
     omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
     omitThinking: input.resume?.exchanges.some((exchange) => exchange.omittedThinkingSuppression === true) ?? false,
   }
+  const discovery = pending.length > 0 && input.context.sellerThinking
+    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
+    : null
+  const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
+  const sellerThinkingEvidence = discovery
+    ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
+    : {}
+  const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
@@ -459,7 +628,7 @@ export async function verifyModelTarget(input: {
       auditId,
       parentAuditId: input.resume?.parentAuditId ?? null,
       reservationAuditId: input.resume?.reservationAuditId ?? auditId,
-      ...(input.diffRecheck ? { diffRecheck: true as const } : {}),
+      ...(input.extension ? { extension: true as const } : {}),
       runId: input.checkpointIdentity?.runId ?? '',
       epoch: input.checkpointIdentity?.epoch ?? '',
       model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
@@ -494,16 +663,24 @@ export async function verifyModelTarget(input: {
       input.context.batchConcurrency,
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
         if (checkpointFailure) throw checkpointFailure
-        const exchange = await executeProxyProbeBatch(
-        { ...input.context, signal: deadline.start() },
-        input.target,
-        input.service,
-        input.reference,
-        probes,
-        batchIndex,
-        control.reduceToOne,
-        sampling,
-        )
+        let answered = false
+        let exchange: ProxyAuditEvidenceExchangeV1
+        try {
+          exchange = await executeProxyProbeBatch(
+          { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
+          input.target,
+          input.service,
+          input.reference,
+          probes,
+          batchIndex,
+          settings,
+          control.reduceToOne,
+          sampling,
+          )
+          answered = exchange.status === 'succeeded'
+        } finally {
+          deadline.finish(answered)
+        }
         exchangeByBatch.set(batchIndex, exchange)
         await persistCheckpoint()
         if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
@@ -525,9 +702,9 @@ export async function verifyModelTarget(input: {
             input.context,
             input.target,
             input.service,
-            input.reference,
             probes,
             batchIndex,
+            settings,
             error.exchange.outcomeReason!,
           ))
         }
@@ -557,6 +734,7 @@ export async function verifyModelTarget(input: {
         referenceId: input.reference.referenceId,
         referenceModel: input.reference.referenceModel,
       },
+      ...sellerThinkingEvidence,
       exchange: error.exchange,
       result: {
         status: 'SKIPPED',
@@ -613,9 +791,11 @@ export async function verifyModelTarget(input: {
     ? fragment.verdictReason
     : 'one or more successful proxy batches lacked valid verified ResponseAuth'
   const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
-  const cumulativeCost = summarizeAuditExchangeCosts(exchanges)
+  // Discovery requests are paid for like batches, so the audit that sent them counts them.
+  const withDiscovery = (summary: AuditCostSummaryV1) => discoveryCost ? addAuditCostSummaries(summary, discoveryCost) : summary
+  const cumulativeCost = withDiscovery(summarizeAuditExchangeCosts(exchanges))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex)))
+  const cost = withDiscovery(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
@@ -645,6 +825,7 @@ export async function verifyModelTarget(input: {
       selfTest: input.reference.selfTest,
       probes: input.reference.probes,
     },
+    ...sellerThinkingEvidence,
     exchanges,
     ...(input.resume ? {
       resume: {
@@ -693,6 +874,8 @@ export async function verifyModelTarget(input: {
     cumulativeCost,
     evidencePath: written.path,
     evidenceHash: written.evidenceHash,
+    stats: fragment.stats,
+    responseAuthVerified: authenticated,
   }
 }
 
@@ -726,21 +909,22 @@ export async function readModelAuditCheckpoints(
 }
 
 async function executeProxyProbeBatch(
-  context: ProxyVerificationContext & { signal: AbortSignal },
+  context: ProxyVerificationContext & { signal: AbortSignal; describeDeadline?: () => string },
   target: PeerInfo,
   service: string,
   reference: KbfReferenceV1,
   probes: KbfProbe[],
   batchIndex: number,
+  settings: SellerRequestSettings,
   onRateLimited?: () => void,
   sampling: AuditSamplingState = { omit: false },
 ): Promise<ProxyAuditEvidenceExchangeV1> {
   const promptVariantId = pickKbfPromptVariantId()
   let samplingOmitted = sampling.omit
   let thinkingOmitted = sampling.omitThinking === true
-  const thinking = kbfTargetThinkingSuppression(reference)
+  const thinking = settings.thinking
   let { url, headers, body, request } = buildProxyBatchRequest(
-    context, target, service, reference, probes, promptVariantId, samplingOmitted, thinkingOmitted,
+    context, target, service, probes, promptVariantId, settings, samplingOmitted, thinkingOmitted,
   )
   const samplingEvidence = () => ({
     ...(samplingOmitted ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
@@ -779,7 +963,7 @@ async function executeProxyProbeBatch(
     const controller = new AbortController()
     const abortRequest = () => controller.abort()
     context.signal.addEventListener('abort', abortRequest, { once: true })
-    const timer = setTimeout(() => controller.abort(), context.requestTimeoutMs)
+    const timer = setTimeout(() => controller.abort(), settings.requestTimeoutMs)
     try {
       const response = await fetchFn(url, {
         method: 'POST',
@@ -808,7 +992,7 @@ async function executeProxyProbeBatch(
           sampling.omitThinking = true
           thinkingOmitted = true
           ;({ url, headers, body, request } = buildProxyBatchRequest(
-            context, target, service, reference, probes, promptVariantId, samplingOmitted, true,
+            context, target, service, probes, promptVariantId, settings, samplingOmitted, true,
           ))
           continue
         }
@@ -816,7 +1000,7 @@ async function executeProxyProbeBatch(
           sampling.omit = true
           samplingOmitted = true
           ;({ url, headers, body, request } = buildProxyBatchRequest(
-            context, target, service, reference, probes, promptVariantId, true, thinkingOmitted,
+            context, target, service, probes, promptVariantId, settings, true, thinkingOmitted,
           ))
           continue
         }
@@ -862,8 +1046,13 @@ async function executeProxyProbeBatch(
         }
         break
       }
-      const completion = extractCompletionText(responseBody)
-      const answers = completion === null
+      const extracted = extractCompletionText(responseBody)
+      // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
+      const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
+      // A reply cut off at the token limit is not scored: the model was still writing (often
+      // reasoning in the reply), so its numbers are not its answers. It is asked again below.
+      const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
+      const answers = completion === null || truncated
         ? new Array<number | null>(probes.length).fill(null)
         : parseKbfAnswers(completion, probes.length)
       const malformedOutput = answers.every((answer) => answer === null)
@@ -914,7 +1103,7 @@ async function executeProxyProbeBatch(
         cost: attemptCost,
         attemptCosts: [...attemptCosts],
         outcomeReason: responseAuth.status === 'verified'
-          ? malformedOutput ? malformedOutputReason(requestId) : null
+          ? truncated ? truncatedOutputReason(requestId) : malformedOutput ? malformedOutputReason(requestId) : null
           : responseAuthReason(responseAuth.status, responseAuth.failureReason, requestId),
         responseAuth: {
           requestId: responseAuth.requestId,
@@ -944,14 +1133,14 @@ async function executeProxyProbeBatch(
     } catch (error) {
       if (error instanceof VerificationSkipSignal) throw error
       lastFailure = context.signal.aborted
-        ? `seller audit deadline exceeded after ${context.auditTimeoutMs}ms`
+        ? deadlineText(context)
         : controller.signal.aborted
-          ? `buyer proxy request timed out after ${context.requestTimeoutMs}ms`
+          ? `buyer proxy request timed out after ${settings.requestTimeoutMs}ms`
         : asError(error).message
       lastOutcomeReason = context.signal.aborted
-        ? deadlineReason(context.auditTimeoutMs)
+        ? deadlineReason(deadlineText(context))
         : controller.signal.aborted
-          ? requestTimeoutReason(context.requestTimeoutMs)
+          ? requestTimeoutReason(settings.requestTimeoutMs)
           : lastOutcomeReason.summary === 'proxy request failed'
             ? transportReason(lastFailure)
             : lastOutcomeReason
@@ -966,8 +1155,8 @@ async function executeProxyProbeBatch(
   }
   if (best) return finalizeBest(best)
   if (context.signal.aborted) {
-    lastFailure = `seller audit deadline exceeded after ${context.auditTimeoutMs}ms`
-    lastOutcomeReason = deadlineReason(context.auditTimeoutMs)
+    lastFailure = deadlineText(context)
+    lastOutcomeReason = deadlineReason(lastFailure)
   }
   const completedAt = Date.now()
   return {
@@ -994,6 +1183,229 @@ async function executeProxyProbeBatch(
       signedPreimages: null,
       failureReason: 'proxy batch did not complete successfully',
     },
+  }
+}
+
+/**
+ * The seller's thinking suppression for this audit: discovered once per run for each seller and
+ * service (`fresh` for the audit that sent the discovery requests), then shared by its other audits.
+ */
+async function sellerThinkingFor(
+  context: ProxyVerificationContext,
+  target: PeerInfo,
+  service: string,
+  reference: KbfReferenceV1,
+  sampling: AuditSamplingState,
+): Promise<{ record: SellerThinkingDiscoveryV1; fresh: boolean }> {
+  const cache = context.sellerThinking!
+  const key = `${target.peerId.replace(/^0x/i, '').toLowerCase()}\u0000${service}`
+  const cached = cache.get(key)
+  if (cached) return { record: await cached, fresh: false }
+  const discovered = discoverSellerThinking(context, target, service, reference, sampling)
+  cache.set(key, discovered)
+  const record = await discovered
+  // A failed discovery (the seller was down for a moment) is not reused: the next audit of the
+  // seller discovers again instead of sending its batches without suppression.
+  if (record.strategy === null && cache.get(key) === discovered) cache.delete(key)
+  return { record, fresh: true }
+}
+
+/** Waits between the tries of one discovery strategy after a 429, 5xx or network error. */
+const DISCOVERY_RETRY_DELAYS_MS = [5_000, 15_000] as const
+/**
+ * Strategies in a row that must fail every try with no answer before the seller counts as down and
+ * the remaining strategies are not sent. One failed strategy is not enough: a single 502 from a
+ * seller that answers its first batch seconds later would drop its discovery.
+ */
+const DISCOVERY_OUTAGE_STRATEGIES = 2
+
+/**
+ * `discover_thinking_strategy` from the KBF reference code, run on the seller as the reference code
+ * runs it on every endpoint it queries: each strategy is sent the fixed ten-question batch, and the
+ * first giving at least 5 answers with zero reasoning tokens is kept (`bare` may think); else `bare`
+ * with 50x the token budget. When none works (the seller is down, or refuses every request), the
+ * audit sends the reference's suppression as before and its batches record what went wrong. Never
+ * rejects.
+ */
+async function discoverSellerThinking(
+  context: ProxyVerificationContext,
+  target: PeerInfo,
+  service: string,
+  reference: KbfReferenceV1,
+  sampling: AuditSamplingState,
+): Promise<SellerThinkingDiscoveryV1> {
+  const fetchFn = context.fetchFn ?? fetch
+  const sleepFn = context.sleepFn ?? sleep
+  const randomFn = context.randomFn ?? Math.random
+  const url = `${context.proxy.baseUrl}/v1/chat/completions`
+  const overall = new AbortController()
+  const overallTimer = setTimeout(() => overall.abort(), context.auditTimeoutMs)
+  const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts'>> = []
+  // A seller that failed every try of DISCOVERY_OUTAGE_STRATEGIES strategies in a row with no answer
+  // (transport error or 5xx) is down, not refusing a field: the remaining strategies are not sent,
+  // and the batches record the outage.
+  let unreachable: { status: number | null; failure: string } | null = null
+  let outages = 0
+  const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
+    const record = { requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'] }
+    sent.push(record)
+    if (unreachable) return { ok: false, ...unreachable, failure: `not sent, seller unreachable: ${unreachable.failure}` }
+    let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
+    // As in the reference code: 429, 5xx and network errors are tried up to three times, and any
+    // other 4xx means the seller refuses this strategy.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (overall.signal.aborted) {
+        return { ok: false, status: null, failure: `thinking discovery exceeded ${context.auditTimeoutMs}ms` }
+      }
+      const requestId = randomUUID()
+      record.requestIds.push(requestId)
+      const chat = buildKbfChatRequestBody(service, THINKING_DISCOVERY_PROBES, { maxTokens })
+      const payload: Record<string, unknown> = {
+        ...chat,
+        ...(request.assistantPrefill
+          ? { messages: [...chat.messages, { role: 'assistant', content: request.assistantPrefill }] }
+          : {}),
+        ...request.overrides,
+        temperature: 0,
+        stream: false,
+      }
+      if (sampling.omit) for (const field of KBF_OPTIONAL_SAMPLING_FIELDS) delete payload[field]
+      const controller = new AbortController()
+      const abort = () => controller.abort()
+      overall.signal.addEventListener('abort', abort, { once: true })
+      // A seller that is not suppressed yet is still thinking, so this is the slowest request sent.
+      const timer = setTimeout(abort, THINKING_DISCOVERY_TIMEOUT_MS)
+      try {
+        const { response, responseBody } = await context.batchLimiter.run(async () => {
+          const response = await fetchFn(url, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-antseed-pin-peer': target.peerId,
+              'x-antseed-request-id': requestId,
+            },
+            body: new TextEncoder().encode(JSON.stringify(payload)),
+            signal: controller.signal,
+          })
+          return { response, responseBody: new Uint8Array(await response.arrayBuffer()) }
+        })
+        const cost = parseProxyAuditExchangeCost(Object.fromEntries(response.headers.entries()))
+        if (cost) record.attemptCosts.push(cost)
+        if (response.ok) {
+          outages = 0
+          return {
+            ok: true,
+            content: extractCompletionText(responseBody),
+            reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
+            truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
+          }
+        }
+        const text = responseText(responseBody)
+        failure = { status: response.status, failure: sanitizeOutcomeSummary(text.slice(0, 300)) }
+        if (!sampling.omit && isKbfSamplingFieldRejection(response.status, text)) {
+          sampling.omit = true
+          continue
+        }
+        if (response.status !== 429 && response.status < 500) {
+          outages = 0
+          return { ok: false, ...failure }
+        }
+      } catch (error) {
+        failure = {
+          status: null,
+          failure: controller.signal.aborted && !overall.signal.aborted
+            ? `request timed out after ${THINKING_DISCOVERY_TIMEOUT_MS}ms`
+            : asError(error).message,
+        }
+      } finally {
+        clearTimeout(timer)
+        overall.signal.removeEventListener('abort', abort)
+      }
+      if (attempt < 3) {
+        const delay = DISCOVERY_RETRY_DELAYS_MS[attempt - 1]!
+        await sleepWithSignal(Math.round(delay * (0.75 + randomFn() * 0.5)), overall.signal, sleepFn)
+      }
+    }
+    if (failure.status === null || failure.status >= 500 || failure.status === 429) {
+      outages += 1
+      if (outages >= DISCOVERY_OUTAGE_STRATEGIES) unreachable = failure
+    }
+    return { ok: false, ...failure }
+  }
+  const withRequests = (attempts: ThinkingDiscoveryError['attempts']): SellerThinkingDiscoveryAttemptV1[] => attempts.map((attempt, index) => ({
+    ...attempt,
+    requestIds: sent[index]?.requestIds ?? [],
+    attemptCosts: sent[index]?.attemptCosts ?? [],
+  }))
+  const budget = reference.queryProfile.maxTokensPerRequest
+  try {
+    const result = await discoverThinkingSuppression({
+      model: service,
+      label: `seller ${target.peerId}`,
+      // Audits always send OpenAI Chat Completions to the buyer proxy.
+      supportsPrefill: true,
+      probe,
+    })
+    return {
+      method: 'kbf-reference-code-2026-09-30',
+      strategy: result.strategy,
+      maxTokens: Math.max(budget, result.maxTokens ?? 0),
+      attempts: withRequests(result.attempts),
+    }
+  } catch (error) {
+    return {
+      method: 'kbf-reference-code-2026-09-30',
+      strategy: null,
+      maxTokens: budget,
+      attempts: withRequests(error instanceof ThinkingDiscoveryError ? error.attempts : []),
+      failure: sanitizeOutcomeSummary(asError(error).message),
+    }
+  } finally {
+    clearTimeout(overallTimer)
+  }
+}
+
+/** Request settings for a seller's batches: its discovered suppression, or the reference's. */
+function sellerRequestSettings(
+  context: ProxyVerificationContext,
+  reference: KbfReferenceV1,
+  discovery: SellerThinkingDiscoveryV1 | null,
+): SellerRequestSettings {
+  const base = {
+    queryProfile: reference.queryProfile,
+    maxTokens: reference.queryProfile.maxTokensPerRequest,
+    requestTimeoutMs: context.requestTimeoutMs,
+  }
+  if (!discovery || discovery.strategy === null) return { ...base, thinking: kbfTargetThinkingSuppression(reference) }
+  const request = thinkingStrategyRequest(discovery.strategy)
+  const thinking = Object.keys(request.overrides).length === 0 && !request.assistantPrefill
+    ? null
+    : {
+      strategy: discovery.strategy,
+      overrides: request.overrides,
+      ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
+    }
+  return {
+    ...base,
+    thinking,
+    maxTokens: discovery.maxTokens,
+    // A seller that thinks on every request gets as long per request as discovery gave it.
+    requestTimeoutMs: discovery.strategy === 'bare-expanded'
+      ? Math.max(context.requestTimeoutMs, THINKING_DISCOVERY_TIMEOUT_MS)
+      : context.requestTimeoutMs,
+  }
+}
+
+function summarizeDiscoveryCosts(attempts: SellerThinkingDiscoveryAttemptV1[]): AuditCostSummaryV1 {
+  const priced = attempts.flatMap((attempt) => attempt.attemptCosts)
+  const answered = attempts.filter((attempt) => attempt.requestIds.length > 0)
+  return {
+    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
+    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
+    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
+    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
+    pricedExchangeCount: answered.filter((attempt) => attempt.attemptCosts.length > 0).length,
+    missingCostExchangeCount: answered.filter((attempt) => attempt.attemptCosts.length === 0).length,
   }
 }
 
@@ -1157,12 +1569,14 @@ export function buildKbfProbeRequestBody(
   promptVariantId: string,
   omitSampling = false,
   thinking: KbfThinkingSuppression | null = null,
+  maxTokens = queryProfile.maxTokensPerRequest,
 ): Uint8Array {
-  // Audits send the canonical KBF body plus the reference's thinking suppression,
-  // as the KBF reference code does for every endpoint. Other reference-endpoint
+  // Audits send the canonical KBF body plus the seller's own thinking suppression
+  // (or the reference's), and a larger budget for a seller that thinks anyway, as
+  // the KBF reference code does for every endpoint. Other reference-endpoint
   // settings (omitted fields, provider pins) never reach sellers.
   const chat = buildKbfChatRequestBody(service, probes, {
-    maxTokens: queryProfile.maxTokensPerRequest,
+    maxTokens,
     variantId: promptVariantId,
   })
   const requestBody: Record<string, unknown> = {
@@ -1184,9 +1598,9 @@ function buildProxyBatchRequest(
   context: ProxyVerificationContext,
   target: PeerInfo,
   service: string,
-  reference: KbfReferenceV1,
   probes: KbfProbe[],
   promptVariantId: string,
+  settings: SellerRequestSettings,
   omitSampling: boolean,
   omitThinking = false,
 ): {
@@ -1202,8 +1616,8 @@ function buildProxyBatchRequest(
     'x-antseed-capture-response-auth-preimages': '1',
   }
   const body = buildKbfProbeRequestBody(
-    service, reference.queryProfile, probes, promptVariantId, omitSampling,
-    omitThinking ? null : kbfTargetThinkingSuppression(reference),
+    service, settings.queryProfile, probes, promptVariantId, omitSampling,
+    omitThinking ? null : settings.thinking, settings.maxTokens,
   )
   const bodyBase64 = Buffer.from(body).toString('base64')
   return {
@@ -1224,13 +1638,13 @@ function notAttemptedExchange(
   context: ProxyVerificationContext,
   target: PeerInfo,
   service: string,
-  reference: KbfReferenceV1,
   probes: KbfProbe[],
   batchIndex: number,
+  settings: SellerRequestSettings,
   terminalReason: VerificationOutcomeReasonV1,
 ): ProxyAuditEvidenceExchangeV1 {
   const promptVariantId = pickKbfPromptVariantId()
-  const { request } = buildProxyBatchRequest(context, target, service, reference, probes, promptVariantId, false)
+  const { request } = buildProxyBatchRequest(context, target, service, probes, promptVariantId, settings, false)
   const now = Date.now()
   return {
     batchIndex,
@@ -1312,6 +1726,20 @@ function summarizeUndeterminedReason(
   }
 }
 
+/** A reply that stopped at the token limit: the seller's model was still writing, so it is not scored. */
+function truncatedOutputReason(requestId: string): VerificationOutcomeReasonV1 {
+  return {
+    code: 'malformed_output',
+    summary: 'successful authenticated response stopped at the token limit, so its answers are not scored',
+    retryable: false,
+    source: 'provider',
+    affectedBatchCount: 1,
+    totalBatchCount: 1,
+    nextAction: 'seller must return parseable output',
+    requestId,
+  }
+}
+
 function malformedOutputReason(requestId: string): VerificationOutcomeReasonV1 {
   return {
     code: 'malformed_output',
@@ -1325,10 +1753,14 @@ function malformedOutputReason(requestId: string): VerificationOutcomeReasonV1 {
   }
 }
 
-function deadlineReason(timeoutMs: number): VerificationOutcomeReasonV1 {
+function deadlineText(context: { auditTimeoutMs: number; describeDeadline?: () => string }): string {
+  return context.describeDeadline?.() ?? `${AUDIT_IDLE_TEXT} ${context.auditTimeoutMs}ms`
+}
+
+function deadlineReason(summary: string): VerificationOutcomeReasonV1 {
   return {
     code: 'deadline_exceeded',
-    summary: `seller audit deadline exceeded after ${timeoutMs}ms`,
+    summary,
     retryable: true,
     source: 'transport',
     affectedBatchCount: 1,

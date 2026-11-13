@@ -30,6 +30,19 @@ function withContrastModels(config: VerifierCLIConfig, service: string, contrast
   config.models = { ...models, [key]: { ...models[key], contrastModels: [...contrastModels] } }
 }
 
+/** Runs' budgets one build may spend in total when `verifier.referenceMaxRequestsPerBuild` is not set. */
+export const BUILD_REQUEST_RUNS = 3
+
+/**
+ * A run's `maxRequests` is what each build may spend in that run; an unfinished build continues from
+ * its checkpoint in the next run with another budget, up to its total: the configured
+ * `referenceMaxRequestsPerBuild`, or `BUILD_REQUEST_RUNS` runs' budgets.
+ */
+export function buildRequestLimits(maxRequests: number, configuredTotal: number | undefined): { perRun: number; total: number } {
+  const total = configuredTotal ?? maxRequests * BUILD_REQUEST_RUNS
+  return { perRun: Math.min(maxRequests, total), total }
+}
+
 export async function ensureAuditableReference(input: {
   model: string
   banksDir: string
@@ -60,13 +73,12 @@ export async function ensureAuditableReference(input: {
     if (initialReference) {
       withContrastModels(config, entry[0], initialReference.contrasts.map((contrast) => contrast.model))
     }
-    config.referenceMaxRequestsPerBuild = Math.min(
-      input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
-    )
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    config.referenceMaxRequestsPerBuild = limits.total
     const sizing = resolveReferenceSizingPolicy(config)
     input.log?.(
       `enrollment required: ${status.totalProbeCount} banked; maximum ${sizing.maximumProbeCount} probes, `
-      + `${config.referenceMaxRequestsPerBuild} physical requests per model (including retries and checkpoint history)`,
+      + `up to ${limits.perRun} physical requests in this run and ${limits.total} for the whole build (including retries and earlier runs)`,
     )
     const catalog = await operations.catalog(config)
     const built = await operations.build({
@@ -78,6 +90,7 @@ export async function ensureAuditableReference(input: {
       requestLimiter: input.requestLimiter,
       initialReference,
       log: input.log,
+      maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
@@ -98,7 +111,7 @@ export async function ensureAuditableReference(input: {
 
 /**
  * Builds a brand-new reference (fresh questions) and appends it to the bank, keeping the bank's
- * contrast models. Used when a DIFF recheck needs probes the seller has never seen.
+ * contrast models. Used when a seller has seen too much of the bank for an audit or a close call's extra set.
  */
 export async function enrollFreshProbes(input: {
   model: string
@@ -125,10 +138,11 @@ export async function enrollFreshProbes(input: {
       throw new Error(`no reference configuration for ${input.model}`)
     }
     if (bank) withContrastModels(config, entry[0], bank.contrastModels)
-    config.referenceMaxRequestsPerBuild = Math.min(
-      input.maxRequests, config.referenceMaxRequestsPerBuild ?? input.maxRequests,
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    config.referenceMaxRequestsPerBuild = limits.total
+    input.log?.(
+      `generating fresh probes: up to ${limits.perRun} physical requests in this run, ${limits.total} for the whole build`,
     )
-    input.log?.(`generating fresh probes: at most ${config.referenceMaxRequestsPerBuild} physical requests`)
     const catalog = await operations.catalog(config)
     const built = await operations.build({
       model: input.model,
@@ -140,6 +154,7 @@ export async function enrollFreshProbes(input: {
       log: input.log,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
+      maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
@@ -162,7 +177,7 @@ export const SELLER_CAPACITY_ENROLLMENT_ROUNDS = 3
 
 /**
  * Makes sure every seller about to be audited has enough questions it has never been given: one
- * audit set (unless it already has one this epoch) plus a DIFF recheck set. A bank can be ready
+ * audit set (unless it already has one this epoch). A bank can be ready
  * as a whole while the sellers audited in earlier epochs have seen most of it; for them, fresh
  * questions are built and added to the bank (up to `SELLER_CAPACITY_ENROLLMENT_ROUNDS` builds).
  * Returns the sellers still short afterwards, which will fail with BANK_EXHAUSTED.
@@ -175,7 +190,6 @@ export async function ensureSellerProbeCapacity(input: {
   maxRequests: number
   epoch: string
   sellerPeerIds: readonly string[]
-  recheck: boolean
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
@@ -187,7 +201,7 @@ export async function ensureSellerProbeCapacity(input: {
   const shortSellers = async () => {
     const capacity = await operations.capacity({
       banksDir: input.banksDir, model: input.model, epoch: input.epoch,
-      sellerPeerIds: input.sellerPeerIds, recheck: input.recheck, config: input.config,
+      sellerPeerIds: input.sellerPeerIds, config: input.config,
     })
     return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
   }

@@ -1,4 +1,4 @@
-import { TRUST_FREE_MODELS_BONUS, TRUST_WEIGHTS } from '@antseed/node'
+import { TRUST_FREE_MODELS_BONUS, TRUST_IDENTITY_BONUS, TRUST_WEIGHTS } from '@antseed/node'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { peerServices } from '../gateway/console-api/handlers/network-mapping.js'
@@ -150,6 +150,26 @@ export function marketView(rows: readonly PeerRow[], myPeerId: string | null, mi
   return { network, found: Boolean(myRow), services, notOffered }
 }
 
+/** Settled service history of a trust breakdown: shown next to the score, not part of it. */
+function settledHistory(value: unknown): SellerTrust['history'] {
+  const entry = record(value)
+  const channelCount = num(entry['channelCount'])
+  return channelCount === null ? null : { channelCount, volumeUsdc: (num(entry['totalVolumeUsdcMicros']) ?? 0) / 1_000_000 }
+}
+
+/** What the verification policy did to a trust breakdown; an older buyer reports `penalty` instead of `change`. */
+function verificationEffect(value: unknown): SellerTrust['verification'] {
+  const entry = record(value)
+  const multiplierBps = num(entry['multiplierBps'])
+  if (multiplierBps === null) return null
+  return {
+    multiplierBps,
+    sameCount: num(entry['sameCount']) ?? 0,
+    diffCount: num(entry['diffCount']) ?? 0,
+    change: num(entry['change']) ?? -(num(entry['penalty']) ?? 0),
+  }
+}
+
 /** The buyer-computed trust breakdown of a peer row, with each part's maximum. */
 export function trustOfRow(row: PeerRow | undefined): SellerTrust | null {
   if (!row) return null
@@ -157,7 +177,7 @@ export function trustOfRow(row: PeerRow | undefined): SellerTrust | null {
   const score = num(trust['score'])
   if (score === null) {
     const fallback = num(row['onChainReputationScore'])
-    return fallback === null ? null : { score: fallback, history: null, usage: null, power: null, identity: null, freeModels: null, washFlagged: typeof row['onChainWashFlagged'] === 'boolean' ? row['onChainWashFlagged'] as boolean : null }
+    return fallback === null ? null : { score: fallback, history: null, usage: null, power: null, identity: null, freeModels: null, washFlagged: typeof row['onChainWashFlagged'] === 'boolean' ? row['onChainWashFlagged'] as boolean : null, verification: null }
   }
   const part = <T extends object>(value: unknown, max: number, extra: (entry: Record<string, unknown>) => T) => {
     const entry = record(value)
@@ -166,27 +186,31 @@ export function trustOfRow(row: PeerRow | undefined): SellerTrust | null {
   }
   return {
     score,
-    history: part(trust['history'], TRUST_WEIGHTS.history, (entry) => ({ channelCount: num(entry['channelCount']) ?? 0, volumeUsdc: (num(entry['totalVolumeUsdcMicros']) ?? 0) / 1_000_000 })),
+    history: settledHistory(trust['history']),
     usage: part(trust['usage'], TRUST_WEIGHTS.usage, (entry) => ({ shareBps: num(entry['shareBps']) ?? 0, epoch: num(entry['epoch']) ?? 0 })),
     power: part(trust['power'], TRUST_WEIGHTS.power, (entry) => ({ shareBps: num(entry['shareBps']) ?? 0, epoch: num(entry['epoch']) ?? 0 })),
-    identity: part(trust['identity'], TRUST_WEIGHTS.identity, (entry) => ({ kind: entry['kind'] === 'domain' ? 'domain' as const : 'github' as const, claim: String(entry['claim'] ?? '') })),
+    identity: part(trust['identity'], TRUST_IDENTITY_BONUS, (entry) => ({ kind: entry['kind'] === 'domain' ? 'domain' as const : 'github' as const, claim: String(entry['claim'] ?? '') })),
     freeModels: part(trust['freeModels'], TRUST_FREE_MODELS_BONUS, (entry) => ({ service: String(entry['service'] ?? '') })),
     washFlagged: typeof trust['washFlagged'] === 'boolean' ? trust['washFlagged'] as boolean : null,
+    verification: verificationEffect(trust['verification']),
   }
 }
 
 /** A plain next step for each part with room to grow, biggest gain first. */
 export function trustSteps(trust: SellerTrust | null): SellerReputation['steps'] {
-  if (!trust) return [{ part: 'history', text: 'Buyers have no trust score for this seller yet. It appears once the seller is discovered and its on-chain history is read; serving paid requests builds it.' }]
+  if (!trust) return [{ part: 'standing', text: 'Buyers have no trust score for this seller yet. It appears once the seller is discovered and its on-chain data is read; a seller pool with stake and paid requests build it.' }]
   if (trust.washFlagged) return [{ part: 'wash', text: 'The wash-trading registry flags this seller, so its trust score is 0 whatever else it has. Only genuine, independent buyers count.' }]
   const steps: Array<SellerReputation['steps'][number] & { gain: number }> = []
   const room = (part: { score: number; max: number } | null, max: number) => max - (part?.score ?? 0)
-  if (room(trust.history, TRUST_WEIGHTS.history) > 1) steps.push({ part: 'history', gain: room(trust.history, TRUST_WEIGHTS.history), text: `Settle more paid sessions: history counts settled channels (full at 100) and settled volume (full at $100). Now ${trust.history?.channelCount ?? 0} channels, $${(trust.history?.volumeUsdc ?? 0).toFixed(2)}.` })
-  if (!trust.identity) steps.push({ part: 'identity', gain: TRUST_WEIGHTS.identity, text: 'Verify a domain or a GitHub account under Promote. Up to 20 points, more for an older domain or a GitHub account with real history.' })
-  else if (room(trust.identity, TRUST_WEIGHTS.identity) > 1) steps.push({ part: 'identity', gain: room(trust.identity, TRUST_WEIGHTS.identity), text: `Your ${trust.identity.kind === 'domain' ? 'domain' : 'GitHub'} claim (${trust.identity.claim}) earns ${trust.identity.score.toFixed(1)} of 20; an older domain or a GitHub account with more public history scores higher.` })
+  if (!trust.identity) steps.push({ part: 'identity', gain: TRUST_IDENTITY_BONUS, text: `Verify a domain or a GitHub account under Promote. Up to ${TRUST_IDENTITY_BONUS} points, more for an older domain or a GitHub account with real history.` })
+  else if (room(trust.identity, TRUST_IDENTITY_BONUS) > 1) steps.push({ part: 'identity', gain: room(trust.identity, TRUST_IDENTITY_BONUS), text: `Your ${trust.identity.kind === 'domain' ? 'domain' : 'GitHub'} claim (${trust.identity.claim}) earns ${trust.identity.score.toFixed(1)} of ${TRUST_IDENTITY_BONUS}; an older domain or a GitHub account with more public history scores higher.` })
   if (room(trust.usage, TRUST_WEIGHTS.usage) > 1) steps.push({ part: 'usage', gain: room(trust.usage, TRUST_WEIGHTS.usage), text: 'Grow recognized usage: your pool\'s share of last week\'s usage points. Points need a seller pool and come from real paid traffic.' })
   if (room(trust.power, TRUST_WEIGHTS.power) > 1) steps.push({ part: 'power', gain: room(trust.power, TRUST_WEIGHTS.power), text: 'Attract stake to your pool (or stake ANTS into it yourself with antseed ants stake): power is the pool\'s share of all staking power.' })
   if (!trust.freeModels) steps.push({ part: 'freeModels', gain: TRUST_FREE_MODELS_BONUS, text: 'Offer one model for free (input and output at $0) for a 5-point bonus.' })
+  if (trust.verification && trust.verification.change < 0) {
+    const { change, diffCount, multiplierBps } = trust.verification
+    steps.push({ part: 'verification', gain: -change, text: `Model checks take ${(-change).toFixed(1)} points off your score: ${diffCount} DIFF ${diffCount === 1 ? 'verdict' : 'verdicts'} leave your points at ${Math.round(multiplierBps / 100)}%, and routing counts only 10% of your score for a DIFF model. Serve exactly the models you announce so new audits clear them.` })
+  }
   return steps.sort((a, b) => b.gain - a.gain).map(({ part, text }) => ({ part, text }))
 }
 

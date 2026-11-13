@@ -115,6 +115,17 @@ export interface ConnectionManagerOptions {
    * the peer with INBOUND_REFUSED_MESSAGE and closes. Default: accept every address.
    */
   acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /**
+   * Inbound peer connections (buyers that sent an intro or hello) held at once;
+   * past it a new peer is answered with INBOUND_AT_CAPACITY_MESSAGE. Metadata
+   * requests never count against it. Default DEFAULT_MAX_INBOUND_CONNECTIONS.
+   */
+  maxInboundConnections?: number;
+  /**
+   * Inbound sockets accepted from one IP at once. Default DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
+   * raise it for a seller every buyer reaches through one address (a TLS gateway or forwarder).
+   */
+  maxInboundConnectionsPerIp?: number;
 }
 type InitialWireMessage =
   | {
@@ -156,6 +167,7 @@ const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000;
  */
 const MAX_DATA_CHANNEL_BUFFERED_BYTES = 64 * 1024 * 1024;
 export const INBOUND_REFUSED_MESSAGE = "This seller does not accept connections from your location.";
+export const INBOUND_AT_CAPACITY_MESSAGE = "This seller is at its connection limit. Try again later.";
 const LOCAL_CONNECTION_CAPABILITIES = [
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
@@ -253,6 +265,15 @@ export class PeerConnection extends EventEmitter {
   /** True for encrypted TCP framing or a (DTLS) data channel; false for legacy plaintext TCP. */
   get isEncryptedTransport(): boolean {
     return this._crypto !== null || this._dataChannel !== null;
+  }
+
+  /**
+   * Hex session hash of this encrypted TCP connection, the same on both ends. A TEE seller binds
+   * it into its attestation quote so the buyer knows this connection terminates in the TEE.
+   * Null on WebRTC and plaintext connections.
+   */
+  get channelBinding(): string | null {
+    return this._crypto ? this._crypto.channelBinding.toString("hex") : null;
   }
 
   get transportDescription(): "webrtc" | "tcp-encrypted" | "tcp-plaintext" {
@@ -471,7 +492,18 @@ function normalizeCapabilities(value: unknown): string[] {
  * connection per buyer identity per seller, so a gateway with many identities
  * opens many connections from the same address.
  */
-const MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+export const DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+/**
+ * Inbound peer connections a listener holds at once by default. A buyer keeps
+ * its connection open between requests, so a busy seller holds one per active buyer.
+ */
+export const DEFAULT_MAX_INBOUND_CONNECTIONS = 2048;
+/**
+ * Inbound sockets not yet known to be a peer: waiting for their first line, or
+ * answering a metadata request. Both end within seconds, so this stays small
+ * however many peers are connected.
+ */
+const MAX_PENDING_INBOUND_SOCKETS = 256;
 
 /** Manages all peer connections and optional inbound listening. */
 export class ConnectionManager extends EventEmitter {
@@ -487,6 +519,10 @@ export class ConnectionManager extends EventEmitter {
   private _requireSecureTransport: boolean;
   private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
+  private readonly _maxInboundConnections: number;
+  private readonly _maxInboundConnectionsPerIp: number;
+  private _pendingInboundSockets = new Set<Socket>();
+  private _inboundPeerSockets = new Set<Socket>();
   private readonly _introReplayGuard = new NonceReplayGuard();
   private static _knownEndpoints = new Map<PeerId, PeerEndpoint>();
   private static _detectedTransportMode: TransportMode | null = null;
@@ -497,6 +533,8 @@ export class ConnectionManager extends EventEmitter {
     this._transportMode = ConnectionManager._detectTransportMode();
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
     this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
+    this._maxInboundConnections = options?.maxInboundConnections ?? DEFAULT_MAX_INBOUND_CONNECTIONS;
+    this._maxInboundConnectionsPerIp = options?.maxInboundConnectionsPerIp ?? DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -568,10 +606,14 @@ export class ConnectionManager extends EventEmitter {
     }
 
     this._server = net.createServer((socket) => {
+      if (this._pendingInboundSockets.size >= MAX_PENDING_INBOUND_SOCKETS) {
+        socket.destroy();
+        return;
+      }
       const ip = socket.remoteAddress ?? 'unknown';
       const refused = Boolean(this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress));
       const current = this._ipConnectionCounts.get(ip) ?? 0;
-      if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
+      if (current >= this._maxInboundConnectionsPerIp) {
         socket.destroy();
         return;
       }
@@ -579,7 +621,10 @@ export class ConnectionManager extends EventEmitter {
       // Keepalive set here for all inbound sockets (WebRTC signaling + TCP).
       // TCP ("intro") sockets will have it re-applied in attachRawSocket — harmless.
       socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
+      this._pendingInboundSockets.add(socket);
       socket.once('close', () => {
+        this._pendingInboundSockets.delete(socket);
+        this._inboundPeerSockets.delete(socket);
         const count = this._ipConnectionCounts.get(ip) ?? 1;
         if (count <= 1) {
           this._ipConnectionCounts.delete(ip);
@@ -589,8 +634,6 @@ export class ConnectionManager extends EventEmitter {
       });
       this._handleInboundSocket(socket, refused);
     });
-
-    this._server.maxConnections = 256;
 
     await new Promise<void>((resolve, reject) => {
       this._server!.once("error", reject);
@@ -974,6 +1017,15 @@ export class ConnectionManager extends EventEmitter {
         return;
       }
 
+      // Peers are counted apart from pending sockets, so a full house of buyers never blocks metadata requests.
+      // A peer that is already connected replaces its old connection when accepted, so it needs no new slot.
+      if (this._inboundPeerSockets.size >= this._maxInboundConnections && !this._hasLiveConnection(verified.peerId)) {
+        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_AT_CAPACITY_MESSAGE }) + LINE_SEPARATOR);
+        return;
+      }
+      this._pendingInboundSockets.delete(socket);
+      this._inboundPeerSockets.add(socket);
+
       const remoteCapabilities = normalizeCapabilities(intro.capabilities);
 
       if (intro.type === "intro") {
@@ -1016,6 +1068,11 @@ export class ConnectionManager extends EventEmitter {
     socket.on("close", () => {
       clearTimeout(timeout);
     });
+  }
+
+  private _hasLiveConnection(peerId: PeerId): boolean {
+    const existing = this._connections.get(peerId);
+    return existing !== undefined && existing.state !== ConnectionState.Closed && existing.state !== ConnectionState.Failed;
   }
 
   private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean, initialData: Buffer): void {

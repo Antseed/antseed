@@ -3,6 +3,7 @@ import {
   computeCostUsdc,
   estimateCostFromBytes,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   estimateTokensFromText,
   isFreeUnitBillingModel,
   validateUnitBillingModelV1,
@@ -32,6 +33,28 @@ describe('pricing utilities', () => {
     // Code typically has more tokens per byte than prose
     expect(tokens).toBeGreaterThan(8);
     expect(tokens).toBeLessThan(30);
+  });
+
+  // ── estimateTokensFromBytesSampled ──
+
+  it('estimateTokensFromBytesSampled is exact for bodies up to 64 KiB', () => {
+    const body = new TextEncoder().encode(JSON.stringify({ input: 'Explain the code below. '.repeat(2000) }));
+    expect(body.length).toBeLessThanOrEqual(64 * 1024);
+    expect(estimateTokensFromBytesSampled(body)).toBe(estimateTokensFromBytes(body));
+  });
+
+  it('estimateTokensFromBytesSampled stays close to the full estimate for large bodies', () => {
+    const turns = Array.from({ length: 400 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      content: i % 3
+        ? `function handler${i}(req, res) {\n  const body = JSON.parse(req.body);\n  return res.status(200).json({ ok: true, id: ${i} });\n}\n`.repeat(8)
+        : `Turn ${i}: please review the change and point out anything that could break in production. `.repeat(12),
+    }));
+    const body = new TextEncoder().encode(JSON.stringify({ model: 'm', input: turns }));
+    expect(body.length).toBeGreaterThan(256 * 1024);
+    const exact = estimateTokensFromBytes(body);
+    const sampled = estimateTokensFromBytesSampled(body);
+    expect(Math.abs(sampled - exact) / exact).toBeLessThan(0.1);
   });
 
   // ── estimateTokensFromText ──

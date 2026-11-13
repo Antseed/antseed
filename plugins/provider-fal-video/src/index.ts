@@ -1,43 +1,32 @@
-import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
+import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, referenceVideoPriceProblem, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
+  FAL_PLATFORM_URL,
+  FAL_SCHEMA_URL,
+  falEndpointInput,
+  falErrorReason,
+  falUpstreamAccountStatus,
+  isFalEndpointId,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
+  readFalAccount,
+  readFalModelStatuses,
+  readVideoJson as readJson,
   videoDownloadError as error,
   videoDownloadSignal,
+  videoJsonResponse as json,
+  videoSubmitTimeoutMs,
 } from '@antseed/provider-core';
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
-export const FAL_PLATFORM_URL = 'https://api.fal.ai';
-export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
+export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falErrorReason };
 export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
-const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
-const HEALTH_CHECK_TIMEOUT_MS = 15_000;
-/** Endpoint IDs per fal model-list request. */
-const MODEL_LOOKUP_BATCH = 50;
-const MODEL_LOOKUP_PAUSE_MS = 200;
-/** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
-const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
-
-function json(request: SerializedHttpRequest, statusCode: number, body: Record<string, unknown>) {
-  return {
-    requestId: request.requestId,
-    statusCode,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: Buffer.from(JSON.stringify(body)),
-  };
-}
-
-async function readJson(response: Response): Promise<Record<string, unknown> | null> {
-  const body = Buffer.from(await response.arrayBuffer());
-  return body.length <= MAX_JSON_BYTES ? parseJsonObject(body) : null;
-}
 
 /** What an endpoint's fal input schema says about its fields. */
 export interface FalInputSchema {
@@ -55,16 +44,12 @@ export interface FalInputSchema {
 
 /** Reads an endpoint's input fields, required fields, source length range and resolutions from its fal OpenAPI schema. */
 export function falInputSchema(schema: Record<string, unknown> | null, endpointId: string): FalInputSchema | null {
-  const paths = schema?.paths as Record<string, any> | undefined;
-  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
-  if (typeof ref !== 'string') return null;
-  const input = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!];
-  const properties = input?.properties;
-  if (!properties || typeof properties !== 'object') return null;
+  const input = falEndpointInput(schema, endpointId);
+  if (!input) return null;
+  const { properties } = input;
   const fields = Object.keys(properties).sort();
-  if (fields.length === 0) return null;
   const parameters = validateServiceCapabilityFields({ supportedParameters: fields }).length === 0 ? fields : null;
-  const required = Array.isArray(input.required) ? input.required.filter((field: unknown): field is string => typeof field === 'string' && fields.includes(field)) : [];
+  const required = input.required.filter(field => fields.includes(field));
   const limits = properties.video_url?.['x-fal'];
   const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
   const min = number(limits?.min_duration);
@@ -125,9 +110,18 @@ export function falEditRule(input: FalInputSchema | null): FalEditRule | null {
  * takes). Options the seller configured are kept.
  */
 export function withEditInputs(capabilities: ServiceCapabilities, input: FalInputSchema | null, rule: FalEditRule | null): ServiceCapabilities {
-  if (!input || !rule) return capabilities;
-  const kinds = (Object.keys(EDIT_INPUT_FIELDS) as VideoInputKind[]).filter(kind => EDIT_INPUT_FIELDS[kind].some(field => input.fields.includes(field)));
-  const required = kinds.filter(kind => EDIT_INPUT_FIELDS[kind].some(field => input.required.includes(field)));
+  return input && rule ? withSchemaInputs(capabilities, input, EDIT_INPUT_FIELDS) : capabilities;
+}
+
+/**
+ * Video options from an endpoint's schema: the media inputs its fields take
+ * (`fieldsByKind`) and require, the source lengths fal takes as durations,
+ * and the resolutions. Options the seller configured are kept.
+ */
+function withSchemaInputs(capabilities: ServiceCapabilities, input: FalInputSchema, fieldsByKind: Partial<Record<VideoInputKind, readonly string[]>>): ServiceCapabilities {
+  const fieldsOf = (kind: VideoInputKind) => fieldsByKind[kind] ?? [];
+  const kinds = (Object.keys(fieldsByKind) as VideoInputKind[]).filter(kind => fieldsOf(kind).some(field => input.fields.includes(field)));
+  const required = kinds.filter(kind => fieldsOf(kind).some(field => input.required.includes(field)));
   const configured = capabilities.video ?? {};
   const inputs = configured.inputs ? [...configured.inputs, ...kinds.filter(kind => !configured.inputs!.includes(kind))] : kinds;
   const requiredInputs = configured.requiredInputs ?? (required.length > 0 ? required : undefined);
@@ -152,7 +146,45 @@ export function withEditInputs(capabilities: ServiceCapabilities, input: FalInpu
 const FRAME_INPUT_FIELDS = {
   first_frame: ['image_url', 'start_image_url', 'first_frame_url', 'first_image_url'],
   last_frame: ['end_image_url', 'tail_image_url', 'last_frame_url', 'last_image_url'],
+  reference_video: ['video_urls', 'reference_video_urls'],
 } as const;
+
+/**
+ * The common reference-media names (Venice's, and other sellers') and the fal
+ * field each one is. fal's Seedance reference-to-video takes `image_urls`,
+ * `audio_urls` and `video_urls`; the seller announces the common names too and
+ * renames them before the request goes to fal, so one request works on either.
+ */
+export const FAL_REFERENCE_ALIASES = {
+  reference_image_urls: 'image_urls',
+  reference_audio_urls: 'audio_urls',
+  reference_video_urls: 'video_urls',
+} as const;
+
+type FalReferenceAlias = keyof typeof FAL_REFERENCE_ALIASES;
+
+/** The common names an endpoint takes: those whose fal field it has and whose own name it lacks. */
+export function falReferenceAliases(fields: readonly string[]): FalReferenceAlias[] {
+  return (Object.keys(FAL_REFERENCE_ALIASES) as FalReferenceAlias[])
+    .filter(alias => fields.includes(FAL_REFERENCE_ALIASES[alias]) && !fields.includes(alias));
+}
+
+/**
+ * Renames the common reference names in a create to the endpoint's fal fields,
+ * in place. `fields` is the endpoint's schema, or undefined when it was not
+ * read (then every common name is renamed). Returns why the create can't be
+ * renamed (both names sent), or null.
+ */
+export function renameFalReferenceAliases(input: Record<string, unknown>, fields: readonly string[] | undefined): string | null {
+  for (const alias of Object.keys(FAL_REFERENCE_ALIASES) as FalReferenceAlias[]) {
+    const field = FAL_REFERENCE_ALIASES[alias];
+    if (input[alias] === undefined || fields?.includes(alias)) continue;
+    if (input[field] !== undefined) return `Send ${alias} or ${field}, not both`;
+    input[field] = input[alias];
+    delete input[alias];
+  }
+  return null;
+}
 
 /**
  * Adds the frame inputs an endpoint's fields take (for example Kling's
@@ -168,50 +200,60 @@ export function withFrameInputs(capabilities: ServiceCapabilities): ServiceCapab
   return added.length > 0 ? { ...capabilities, video: { ...capabilities.video, inputs: [...inputs, ...added] } } : capabilities;
 }
 
+/** Request fields that set a video's length. */
+const LENGTH_FIELDS = ['duration', 'num_frames'];
+
+/**
+ * Whether an endpoint makes a video as long as its input audio, as talking
+ * avatars such as Kling AI Avatar do: it requires `audio_url`, takes no source
+ * video, and has no field that sets the length. fal bills it by that length,
+ * so the buyer pays for a `duration` that must be the audio's measured length;
+ * the seller removes `duration` before the request goes to fal.
+ */
+export function falFollowsAudio(input: FalInputSchema | null): boolean {
+  return !!input && input.required.includes('audio_url') && !input.fields.includes('video_url')
+    && !LENGTH_FIELDS.some(field => input.fields.includes(field));
+}
+
+/** Fields of an endpoint that follows its audio that carry each media input. */
+const AUDIO_INPUT_FIELDS: Partial<Record<VideoInputKind, readonly string[]>> = {
+  ...FRAME_INPUT_FIELDS,
+  reference_image: ['reference_image_urls', 'image_urls'],
+  audio: ['audio_url'],
+};
+
+/** Video options of an endpoint that follows its audio: the media inputs its fields take and require. */
+export function withAudioInputs(capabilities: ServiceCapabilities, input: FalInputSchema | null): ServiceCapabilities {
+  return input && falFollowsAudio(input) ? withSchemaInputs(capabilities, input, AUDIO_INPUT_FIELDS) : capabilities;
+}
+
 /** Time allowed to send a create to fal and get its answer: 60 s plus 1 s per 256 KB of body, at most 10 min. */
-export function falSubmitTimeoutMs(bodyBytes: number): number {
-  return Math.min(10 * 60_000, 60_000 + Math.ceil(bodyBytes / (256 * 1024)) * 1000);
-}
+export const falSubmitTimeoutMs = videoSubmitTimeoutMs;
 
 /**
- * A readable reason from a fal error body: `detail` as a string, the
- * messages of a validation `detail` list, or `error` / `message`.
+ * Upload an inline `data:video/...;base64` or `data:audio/...;base64` source
+ * to fal's file storage (as fal's own clients do) and return its URL, kept
+ * for a day. Some fal endpoints (Kling motion control, OmniHuman) accept only
+ * a URL for `video_url` or `audio_url`. Anything else is returned unchanged.
  */
-export function falErrorReason(body: Record<string, unknown> | null): string | undefined {
-  if (!body) return undefined;
-  const detail = body.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail.slice(0, 500);
-  if (Array.isArray(detail)) {
-    const messages = detail.map(item => {
-      const entry = item as { msg?: unknown; loc?: unknown } | null;
-      if (typeof entry?.msg !== 'string') return null;
-      const field = Array.isArray(entry.loc) ? entry.loc.filter(part => part !== 'body').join('.') : '';
-      return field ? `${field}: ${entry.msg}` : entry.msg;
-    }).filter((message): message is string => !!message);
-    if (messages.length > 0) return messages.join('; ').slice(0, 500);
-  }
-  for (const key of ['error', 'message', 'error_type'] as const) {
-    const value = body[key];
-    if (typeof value === 'string' && value.trim()) return value.slice(0, 500);
-  }
-  return detail === undefined || detail === null ? undefined : JSON.stringify(detail).slice(0, 500);
-}
-
-/**
- * Upload an inline `data:video/...;base64` source to fal's file storage (as
- * fal's own clients do) and return its URL, kept for a day. Some fal
- * endpoints (Kling motion control) accept only a URL for `video_url`.
- * Anything else is returned unchanged.
- */
-async function uploadInlineVideo(source: unknown, authorization: string, signal: AbortSignal): Promise<unknown> {
+async function uploadInlineMedia(source: unknown, kind: 'video' | 'audio', authorization: string, signal: AbortSignal): Promise<unknown> {
   if (typeof source !== 'string') return source;
-  const match = /^data:(video\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
-  if (!match) return source;
-  const contentType = match[1]!.toLowerCase();
+  const match = /^data:([a-z]+\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
+  const mediaType = match?.[1]?.toLowerCase();
+  if (!match || !mediaType?.startsWith(`${kind}/`)) return source;
+  const bytes = Buffer.from(source.slice(match[0].length), 'base64');
+  // Audio was measured as MP3 or WAV by its bytes, whatever its label.
+  let contentType = mediaType;
+  let fileName = mediaType === 'video/quicktime' ? 'source.mov' : 'source.mp4';
+  if (kind === 'audio') {
+    const isWav = bytes.subarray(0, 4).toString('latin1') === 'RIFF';
+    contentType = isWav ? 'audio/wav' : 'audio/mpeg';
+    fileName = isWav ? 'source.wav' : 'source.mp3';
+  }
   const initiate = await fetch(FAL_STORAGE_URL, {
     method: 'POST',
     headers: { authorization, 'content-type': 'application/json', 'x-fal-object-lifecycle': JSON.stringify({ expiration_duration_seconds: 86_400 }) },
-    body: JSON.stringify({ content_type: contentType, file_name: contentType === 'video/quicktime' ? 'source.mov' : 'source.mp4' }),
+    body: JSON.stringify({ content_type: contentType, file_name: fileName }),
     redirect: 'error',
     signal,
   });
@@ -224,7 +266,7 @@ async function uploadInlineVideo(source: unknown, authorization: string, signal:
   const upload = await fetch(uploadUrl, {
     method: 'PUT',
     headers: { 'content-type': contentType },
-    body: Buffer.from(source.slice(match[0].length), 'base64'),
+    body: bytes,
     redirect: 'error',
     signal,
   });
@@ -238,89 +280,11 @@ export function falAppId(endpointId: string): string {
   return endpointId.split('/').slice(0, 2).join('/');
 }
 
-type FalAccount =
-  | { status: 'ok'; balanceUsd: number }
-  | { status: 'rejected'; reason: string }
-  | { status: 'no_permission' }
-  | { status: 'unknown'; reason: string };
-
 /** Startup notice when the seller key cannot read the fal balance. */
 export const FAL_BALANCE_CHECK_OFF =
   'fal balance check is off: FAL_VIDEO_API_KEY lacks the billing:usage:read permission. '
   + 'Running out of fal credits will not stop this seller advertising. '
   + 'To turn the check on, give the key that permission (fal presets BILLING, READONLY or FULL) and restart.';
-
-/**
- * Read fal's public model list for the given endpoint IDs: endpoint ID →
- * status (`active`, `deprecated`, ...). IDs missing from the result no longer
- * exist on fal. Returns null when fal does not answer clearly. fal answers a
- * whole lookup with `404 Endpoint(s) not found` when any one requested
- * endpoint is unknown, so such a lookup is repeated per endpoint, one at a
- * time with a short pause, stopping at the first unclear answer (for example
- * a rate limit). The seller's key is sent because fal rate-limits anonymous
- * lookups.
- */
-async function readFalModelStatuses(platformUrl: string, authorization: string, services: string[]): Promise<Map<string, string> | null> {
-  const statuses = new Map<string, string>();
-  const lookup = async (ids: string[]): Promise<boolean> => {
-    const query = new URLSearchParams(ids.map((id): [string, string] => ['endpoint_id', id]));
-    const response = await fetch(`${platformUrl}/v1/models?${query}`, {
-      headers: { authorization },
-      redirect: 'error',
-      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
-    });
-    if (response.status === 404) {
-      const error = (await readJson(response))?.error as { message?: unknown } | undefined;
-      if (error?.message !== 'Endpoint(s) not found') return false;
-      if (ids.length === 1) return true;
-      for (const id of ids) {
-        await new Promise(resolve => setTimeout(resolve, MODEL_LOOKUP_PAUSE_MS));
-        if (!await lookup([id])) return false;
-      }
-      return true;
-    }
-    if (!response.ok) return false;
-    const models = (await readJson(response))?.models;
-    if (!Array.isArray(models)) return false;
-    for (const model of models as Array<{ endpoint_id?: unknown; metadata?: { status?: unknown } }>) {
-      if (typeof model?.endpoint_id === 'string') {
-        statuses.set(model.endpoint_id, typeof model.metadata?.status === 'string' ? model.metadata.status : 'active');
-      }
-    }
-    return true;
-  };
-  try {
-    for (let start = 0; start < services.length; start += MODEL_LOOKUP_BATCH) {
-      if (!await lookup(services.slice(start, start + MODEL_LOOKUP_BATCH))) return null;
-    }
-    return statuses;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read the account's credit balance with the seller key. fal answers 401 for
- * an invalid key and 403 for a valid key without the `billing:usage:read`
- * permission.
- */
-async function readFalAccount(platformUrl: string, authorization: string): Promise<FalAccount> {
-  try {
-    const response = await fetch(`${platformUrl}/v1/account/billing?expand=credits`, {
-      headers: { authorization },
-      redirect: 'error',
-      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
-    });
-    if (response.status === 401) return { status: 'rejected', reason: 'fal rejected the API key (HTTP 401)' };
-    if (response.status === 403) return { status: 'no_permission' };
-    if (!response.ok) return { status: 'unknown', reason: `fal billing check returned HTTP ${response.status}` };
-    const credits = (await readJson(response))?.credits as { current_balance?: unknown } | undefined;
-    if (typeof credits?.current_balance !== 'number') return { status: 'unknown', reason: 'fal billing check returned no balance' };
-    return { status: 'ok', balanceUsd: credits.current_balance };
-  } catch (cause) {
-    return { status: 'unknown', reason: `fal billing check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
-  }
-}
 
 const plugin: AntseedProviderPlugin = {
   name: 'fal-video',
@@ -355,7 +319,7 @@ const plugin: AntseedProviderPlugin = {
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const invalid = services.find(service => service.length > 64 || !ENDPOINT_ID.test(service));
+    const invalid = services.find(service => !isFalEndpointId(service));
     if (invalid) throw new Error(`Invalid fal endpoint ID: ${invalid}`);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);
@@ -382,6 +346,10 @@ const plugin: AntseedProviderPlugin = {
 
     // Video-to-video endpoints: `duration` must be the source length, and is removed when fal takes none.
     const editRules = new Map<string, FalEditRule>();
+    // Endpoints whose video is as long as their audio: `duration` must be the audio length, and is removed.
+    const audioServices = new Set<string>();
+    // Each endpoint whose fal schema was read, with its input fields.
+    const schemaFields = new Map<string, readonly string[]>();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
     const init = async () => {
@@ -390,18 +358,24 @@ const plugin: AntseedProviderPlugin = {
           const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(service)}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
           const input = response.ok ? falInputSchema(await readJson(response), service) : null;
           const capabilities = serviceCapabilities[service]!;
-          if (input?.parameters && !capabilities.supportedParameters) capabilities.supportedParameters = input.parameters;
+          if (input?.parameters && !capabilities.supportedParameters) {
+            capabilities.supportedParameters = [...input.parameters, ...falReferenceAliases(input.fields)].sort();
+          }
+          if (input) schemaFields.set(service, input.fields);
           const rule = falEditRule(input);
           if (rule) {
             editRules.set(service, rule);
             serviceCapabilities[service] = withEditInputs(capabilities, input, rule);
+          } else if (falFollowsAudio(input)) {
+            audioServices.add(service);
+            serviceCapabilities[service] = withAudioInputs(capabilities, input);
           }
         } catch {
           // Unknown input fields: buyers fall back to the common names.
         }
       }));
       for (const service of services) {
-        if (!editRules.has(service)) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
+        if (!editRules.has(service) && !audioServices.has(service)) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
       }
       const account = await readFalAccount(FAL_PLATFORM_URL, authorization);
       if (account.status === 'no_permission') {
@@ -418,8 +392,49 @@ const plugin: AntseedProviderPlugin = {
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
     };
 
+    /**
+     * Whether a create's video is as long as its audio. Without the endpoint's
+     * schema, an `audio_url` without a source video marks one, unless the
+     * service's configured fields include one that sets the length.
+     */
+    const followsAudio = (service: string, input: Record<string, unknown>) => audioServices.has(service)
+      || (!schemaFields.has(service) && input.audio_url !== undefined && input.video_url === undefined
+        && !LENGTH_FIELDS.some(field => serviceCapabilities[service]!.supportedParameters?.includes(field)));
+
+    /**
+     * Why a create can't be paid for its `duration`, or null. The buyer pays
+     * for `duration`, so for an edit it must be the source's measured length
+     * (see FalEditRule), and for an endpoint that follows its audio the
+     * audio's (see falFollowsAudio). The schema decides first: an extra
+     * `video_url` on an endpoint that follows its audio does not change what
+     * it is paid by. Without the endpoint's schema, a source video marks an edit.
+     */
+    const lengthProblem = (service: string, input: Record<string, unknown>): string | null => {
+      if (audioServices.has(service)) return audioSourceLengthProblem(input.audio_url, input.duration);
+      if (editRules.has(service) || input.video_url !== undefined) return videoSourceLengthProblem(input.video_url, input.duration);
+      if (followsAudio(service, input)) return audioSourceLengthProblem(input.audio_url, input.duration);
+      return null;
+    };
+
+    /** Why a create's reference videos are not covered by the service's price, or null. */
+    const referencePriceProblem = (request: SerializedHttpRequest, service: string, body: Record<string, unknown>) =>
+      referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, undefined, body);
+
+    // Run before any payment, so a refused create costs the buyer nothing.
+    const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
+      const { videoRoute, service } = route(request);
+      if (videoRoute?.action !== 'create' || !service) return null;
+      const body = parseJsonObject(request.body);
+      if (!body) return null;
+      const unpriced = referencePriceProblem(request, service, body);
+      if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
+      const renamed = renameFalReferenceAliases({ ...body }, schemaFields.get(service));
+      if (renamed) return { statusCode: 400, code: 'invalid_video_request', message: renamed };
+      const refused = lengthProblem(service, body);
+      return refused ? { statusCode: 422, code: 'invalid_video_duration', message: refused } : null;
+    };
+
     let active = 0;
-    let activeDownloads = 0;
 
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
@@ -431,18 +446,21 @@ const plugin: AntseedProviderPlugin = {
       try {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
-        // The buyer pays for an edit's `duration`, so it must be the source's measured length (see FalEditRule).
-        // Without the endpoint's schema, a source video marks an edit. An endpoint that takes no `duration` gets none.
-        const rule = editRules.get(service);
-        if (rule || input.video_url !== undefined) {
-          const refused = videoSourceLengthProblem(input.video_url, input.duration);
-          if (refused) return error(request, 422, 'invalid_video_duration', refused);
-          if (rule?.outputFollowsSource) delete input.duration;
-        }
+        // The seller checks these before payment too (checkRequest).
+        const unpriced = referencePriceProblem(request, service, body);
+        if (unpriced) return error(request, 400, 'unsupported_video_input', unpriced);
+        const refused = lengthProblem(service, input);
+        if (refused) return error(request, 422, 'invalid_video_duration', refused);
+        const renamed = renameFalReferenceAliases(input, schemaFields.get(service));
+        if (renamed) return error(request, 400, 'invalid_video_request', renamed);
+        const followsAudioLength = followsAudio(service, input);
+        // An endpoint that takes no `duration` gets none: its output follows the source or the audio.
+        if (editRules.get(service)?.outputFollowsSource || audioServices.has(service)) delete input.duration;
         // The upload of a large inline source counts toward the timeout: allow 60 s plus 1 s per 256 KB.
         const signal = AbortSignal.timeout(falSubmitTimeoutMs(request.body.length));
-        // An inline source goes to fal's storage first: some endpoints take video_url only as a URL.
-        if (input.video_url !== undefined) input.video_url = await uploadInlineVideo(input.video_url, authorization, signal);
+        // An inline source goes to fal's storage first: some endpoints take video_url or audio_url only as a URL.
+        if (input.video_url !== undefined) input.video_url = await uploadInlineMedia(input.video_url, 'video', authorization, signal);
+        if (followsAudioLength) input.audio_url = await uploadInlineMedia(input.audio_url, 'audio', authorization, signal);
         const upstream = await fetch(`${baseUrl}/${service}`, {
           method: 'POST',
           headers: { authorization, 'content-type': 'application/json' },
@@ -467,18 +485,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: ProviderStreamCallbacks, download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: 'fal-video',
@@ -490,6 +497,7 @@ const plugin: AntseedProviderPlugin = {
       maxConcurrency,
       getCapacity: () => ({ current: active, max: maxConcurrency }),
       init,
+      checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
         const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, checked);
@@ -512,12 +520,7 @@ const plugin: AntseedProviderPlugin = {
           warnOnce(FAL_BALANCE_CHECK_OFF);
           return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
         }
-        if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
-        if (account.status === 'unknown') return account;
-        if (account.balanceUsd <= minBalanceUsd) {
-          return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum`, outOfCredit: true };
-        }
-        return { status: 'available', balanceUsd: account.balanceUsd };
+        return falUpstreamAccountStatus(account, minBalanceUsd);
       },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);

@@ -4,7 +4,7 @@ Every command uses `curl` and `jq` against the local buyer proxy. Build JSON wit
 
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
-auth='authorization: Bearer antseed-desktop'
+auth="authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Catalog
@@ -35,10 +35,12 @@ curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" | jq -r 
      ([.peers[] | "\(.displayName // .peerId[0:8])(\(.reputationScore // 0 | floor))"] | join(" "))]
   | map(tostring) | @tsv'
 
-# One model's offers: protocol, options, pricing.
+# One model's offers: protocol, options, pricing. The catalog entry carries them
+# (the gateway serves only the list, not /v1/models/<id>).
 model_file="$(mktemp)"
-curl -sS --fail-with-body -H "$auth" \
-  "$proxy_url/v1/models/$(jq -rn --arg id "$model" '$id|@uri')" > "$model_file"
+curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" \
+  | jq -e --arg id "$model" '.data[] | select(.id == $id)' > "$model_file" \
+  || { echo "No video model with id $model" >&2; exit 1; }
 jq '.peers[] | {peerId, protocol, video: .capabilities.video, fields: .capabilities.supportedParameters, price: .unitBillingModels[.protocol].components}' "$model_file"
 
 # Image models for frames: id, inputs, $ per image (low-high), seller count, sellers that take output_format.
@@ -54,11 +56,11 @@ Match the user's model case-insensitively against `id` and `aliases`. Several fa
 
 ## Price
 
-Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it neither advertises `last_frame` nor lists an end-frame field in `fields` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
+Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, `audio_in=yes` when an `audio_url` is sent (sellers that do not list `audio_url` are left out), and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it neither advertises `last_frame` nor lists an end-frame field in `fields` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
 
 ```bash
 jq --argjson dur "$duration" --arg res "${resolution:-}" \
-   --arg last "${last_frame:-}" --arg refs "${refs:-}" --arg ratio "${aspect_ratio:-}" '
+   --arg last "${last_frame:-}" --arg refs "${refs:-}" --arg ratio "${aspect_ratio:-}" --arg audio_in "${audio_in:-}" '
   [.peers[]
    | .capabilities.video as $v | .serviceId as $svc
    | select(($v.durationsSeconds // [$dur]) | index($dur))
@@ -69,6 +71,7 @@ jq --argjson dur "$duration" --arg res "${resolution:-}" \
    | select(if $refs == "yes" then ($v.inputs // [] | index("reference_image")) != null
             else ($v.requiredInputs // [] | index("reference_image")) == null end)
    | select($ratio == "" or (($v.aspectRatios // [$ratio]) | index($ratio)))
+   | select($audio_in != "yes" or (.capabilities.supportedParameters // [] | index("audio_url")))
    | [.unitBillingModels[.protocol].components[]
       | select((.match.resolution // $res) == $res and (.match.model // $svc) == $svc)] as $parts
    | select($parts | length > 0)
@@ -182,6 +185,25 @@ unset first_url last_url
 echo "references: $(jq length "$refs_json")"
 ```
 
+## Lip-sync audio
+
+To make a character speak an audio track, set `voice_file` to its path (not `audio`, which is the sound on/off switch) and write it as a data URL to `audio_url_file` before [Create once](#create-once); the create block sends it as `audio_url`. Price with `audio_in=yes` so only sellers that take it are listed. WAV or MP3 only:
+
+```bash
+audio_url_file="$(mktemp)"
+case "$(file -b --mime-type "$voice_file")" in
+  audio/mpeg) mime=audio/mpeg ;; audio/x-wav|audio/wav|audio/vnd.wave) mime=audio/wav ;;
+  *) echo "audio must be MP3 or WAV: $voice_file" >&2; false ;;
+esac && { printf 'data:%s;base64,' "$mime"; base64 < "$voice_file" | tr -d '\n'; } > "$audio_url_file"
+```
+
+A talking-avatar model (the offer's `video.requiredInputs` has `audio` and `fields` has no `duration`) makes a video exactly as long as the audio, so `duration` is not a choice: set it to the audio's length in whole seconds, rounded down (at least 1), before [Price](#price). The seller measures the inline audio and refuses any other value with `422 invalid_video_duration` before payment; the number in its message is the length it measured.
+
+```bash
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$voice_file" | awk '{ s = int($1); print (s < 1 ? 1 : s) }')"
+echo "duration: $duration s (the audio's length)"
+```
+
 ## Create once
 
 Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` and `peer_id` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` only when the chosen Price entry has `sendRatio: true`; otherwise leave it unset ([Aspect ratio](#aspect-ratio)). Set `audio=false` only when the user wants a silent video and the seller advertises `audio`; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
@@ -230,11 +252,13 @@ else
   jq -n --arg model "$route_model" --rawfile prompt prompt.txt --arg duration "$dur" \
     --arg resolution "${resolution:-}" --arg aspect_ratio "${aspect_ratio:-}" --arg audio "${audio:-}" --arg audio_field "$audio_field" \
     --arg first_field "${first_field:-image_url}" --arg last_field "${last_field:-end_image_url}" --arg ref_field "${ref_field:-reference_image_urls}" \
-    --rawfile first "${first_url:-/dev/null}" --rawfile last "${last_url:-/dev/null}" --slurpfile refs "${refs_json:-/dev/null}" '
+    --rawfile first "${first_url:-/dev/null}" --rawfile last "${last_url:-/dev/null}" --slurpfile refs "${refs_json:-/dev/null}" \
+    --rawfile voice "${audio_url_file:-/dev/null}" '
     {model: $model, prompt: ($prompt | rtrimstr("\n")), duration: $duration}
     + (if $first != "" then {($first_field): $first} else {} end)
     + (if $last != "" then {($last_field): $last} else {} end)
     + (if ($refs[0] // []) != [] then {($ref_field): $refs[0]} else {} end)
+    + (if $voice != "" then {audio_url: $voice} else {} end)
     + (if $resolution != "" then {resolution: $resolution} else {} end)
     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)
     + (if $audio != "" then {($audio_field): ($audio == "true")} else {} end)' > "$body"
@@ -589,12 +613,13 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `video_not_delivered` on wait: the seller says the job finished but sends no video. Nothing is charged. Waiting longer or trying the same seller again will most likely fail the same way, so rename the job file to `<name>.failed.job.json` and offer the next seller from the price list; create with it once the user agrees.
 - `404 video_route_not_found` on wait: the buyer has no record of this job (wrong id, or the buyer's record expired). Delete the job file; nothing is charged.
 - `429 video_download_busy`: the buyer runs at most two status checks or downloads at once; the loop keeps waiting.
+- `429 one_off_channel_backoff` on create: too many of this buyer's recent videos on this seller ended unpaid, or too many are starting at once, so it won't open another payment channel yet. Nothing started and nothing is charged. Do not retry in a loop: tell the user the wait the message names and ask before trying again, or offer the next seller.
 - `status: unknown`: the seller is up but could not read the job's state from its video service; the loop keeps polling and stops after 5 minutes of it, keeping the job.
 - `502 status: seller_unreachable`: the seller holding the job could not be reached; the loop retries it, then keeps the job so it can resume later.
 - `502 video_download_failed` without a `status`: the seller started sending the video and the stream broke; the loop retries it.
 - `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
 - Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
 - `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for a video edit's source, see [Inline or URL](#inline-or-url)).
-- `422 invalid_video_duration` on create: an edit is paid by its source length, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
+- `422 invalid_video_duration` on create: an edit is paid by its source length, and a talking avatar by its audio's length, so the seller measured it. Send the source video (or the audio, as MP3 or WAV) inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started. Current sellers refuse before the payment channel opens, so nothing is charged; an older seller refuses after it and keeps the opening fee on a video above $1.00, so measure first as in [Source](#source) or [Lip-sync audio](#lip-sync-audio).
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

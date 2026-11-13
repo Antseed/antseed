@@ -81,6 +81,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'provide/become-a-provider',
+        'provide/test-locally',
         'provide/config',
         'provide/media',
         'provide/verified-identity',
@@ -93,11 +94,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Verifiers',
+      label: 'Model Verification',
       className: 'sidebar-icon sidebar-icon--verify',
       collapsible: true,
       collapsed: true,
       items: [
+        'verify/overview',
+        'verify/buyers',
+        'verify/providers',
         'verify/become-a-verifier',
         'verify/audits',
       ],
