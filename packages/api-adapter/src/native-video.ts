@@ -1,5 +1,8 @@
+import { componentMatchesAttributes, type UnitBillingComponentV1, type UnitBillingMatchKeyV1 } from '@antseed/protocol/billing';
 import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse } from './types.js';
-import { extractRequestBodyFields, parseJsonObject } from './utils.js';
+import { extractRequestBodyFields, headerValue, parseJsonObject } from './utils.js';
+import { inlineVideoSeconds } from './mp4.js';
+import { inlineAudioSeconds } from './speech-audio.js';
 
 export type { NativeVideoProtocol };
 
@@ -17,7 +20,7 @@ const VENICE_QUEUE_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const VENICE_AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
 
 /**
- * fal's own API puts the model in the URL. AntSeed routes on the body `model`,
+ * fal's own API puts the model in the URL. Antseed routes on the body `model`,
  * so fal video uses fixed paths with the fal endpoint ID as `model`; the
  * seller rebuilds fal's queue URLs from it.
  */
@@ -74,9 +77,9 @@ export const VIDEO_MIN_DURATION_RATIO = 0.9;
  */
 export function nativeVideoDelivered(response: SerializedHttpResponse, requestedDurationSeconds?: number): boolean {
   if (response.statusCode !== 200 || !response.streamedBody) return false;
-  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const contentType = headerValue(response.headers, 'content-type');
   const durationMs = response.streamedBody.videoDurationMs;
-  if (!contentType?.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
+  if (!contentType.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
   return !requestedDurationSeconds || durationMs >= requestedDurationSeconds * 1000 * VIDEO_MIN_DURATION_RATIO;
 }
 
@@ -100,20 +103,124 @@ export interface NativeVideoFacts {
   action: NativeVideoRoute['action'];
   duration?: number;
   resolution?: string;
+  aspectRatio?: string;
+  /** Whether the create asks for audio: `audio`, or fal's `generate_audio`. */
+  audio?: boolean;
+  /** Whether the create sends reference videos (`reference_video_urls`, or fal's `video_urls`), for a create. */
+  referenceVideo?: boolean;
 }
 
-export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFacts | undefined {
+/** Create fields that carry reference videos, by protocol. fal's own name is `video_urls`. */
+export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string[]> = {
+  'venice-video': ['reference_video_urls'],
+  'fal-video': ['reference_video_urls', 'video_urls'],
+};
+
+/**
+ * The inline sources whose length bounds what an upstream bills: the video plugins pass these to
+ * `videoSourceLengthProblem` and `audioSourceLengthProblem`. A seller checks each is spelled exactly.
+ */
+export const VIDEO_SOURCE_FIELDS: readonly string[] = ['video_url', 'audio_url'];
+
+/** Every request field `nativeVideoFacts` reads from a create, beside its service. A seller checks each is spelled exactly. */
+export const VIDEO_CREATE_FIELDS: readonly string[] = [
+  'duration', 'resolution', 'aspect_ratio', 'audio', 'generate_audio', ...new Set(Object.values(REFERENCE_VIDEO_FIELDS).flat()),
+];
+
+/** The announced video options a create's price depends on (a subset of `VideoOptions`). */
+export interface NativeVideoPricedOptions {
+  aspectRatios?: readonly string[];
+  audio?: boolean;
+}
+
+/**
+ * The attributes a video create is priced by. A create that leaves out its
+ * aspect ratio is priced at the service's first announced one, and one that
+ * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
+ * those values upstream, so the price is the clip's. Other protocols price what
+ * the create names, so one leaving out a priced option matches no component.
+ * `reference_video` is `"true"` or `"false"`: whether the create sends reference videos.
+ */
+export function nativeVideoAttributes(
+  service: string,
+  video: NativeVideoFacts,
+  options: NativeVideoPricedOptions | undefined,
+): Partial<Record<UnitBillingMatchKeyV1, string>> {
+  const defaults = video.protocol === 'venice-video' ? options : undefined;
+  const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
+  const audio = video.audio ?? defaults?.audio;
+  return {
+    model: service,
+    ...(video.resolution ? { resolution: video.resolution } : {}),
+    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+    ...(audio !== undefined ? { audio: String(audio) } : {}),
+    ...(video.referenceVideo !== undefined ? { reference_video: String(video.referenceVideo) } : {}),
+  };
+}
+
+/**
+ * Why a create's reference videos can't be served at the service's price, or
+ * null. Upstreams bill reference videos on top of the output, so a create that
+ * sends one needs a `reference_video: "true"` component whose every match
+ * applies to it (a surcharge for 720p does not cover a 480p create). An
+ * unreadable create is left to the other checks.
+ */
+export function referenceVideoPriceProblem(
+  request: SerializedHttpRequest,
+  service: string,
+  components: readonly Pick<UnitBillingComponentV1, 'match'>[] | undefined,
+  options?: NativeVideoPricedOptions,
+  parsedBody?: Record<string, unknown> | null,
+): string | null {
+  let video: NativeVideoFacts | undefined;
+  try {
+    video = nativeVideoFacts(request, parsedBody);
+  } catch {
+    return null;
+  }
+  if (!video?.referenceVideo) return null;
+  const attributes = nativeVideoAttributes(service, video, options);
+  const priced = components?.some((component) => component.match?.reference_video === 'true'
+    && componentMatchesAttributes(component, attributes));
+  return priced ? null : 'This service does not take reference videos at these options';
+}
+
+/** Whether a create body sends at least one reference video. */
+export function sendsReferenceVideo(protocol: NativeVideoProtocol, body: Record<string, unknown>): boolean {
+  return REFERENCE_VIDEO_FIELDS[protocol].some((field) => {
+    const value = body[field];
+    return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '';
+  });
+}
+
+/**
+ * The facts a video request is priced by. `parsedBody` is the request's body
+ * when the caller already parsed it (null when it is not a JSON object), so a
+ * large inline-media body is not parsed twice.
+ */
+export function nativeVideoFacts(request: SerializedHttpRequest, parsedBody?: Record<string, unknown> | null): NativeVideoFacts | undefined {
   const route = nativeVideoRoute(request);
   if (!route) return undefined;
   if (route.action === 'retrieve') return { protocol: route.protocol, action: route.action };
-  const body = parseJsonObject(request.body);
+  const body = parsedBody === undefined ? parseJsonObject(request.body) : parsedBody;
   if (!body) throw new Error('Video submission requires a JSON object');
   const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
+  // Billing reads only these plain types and prices any other value as absent, which a looser upstream might not.
+  for (const name of ['audio', 'generate_audio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'boolean') throw new Error(`Video "${name}" must be true or false`);
+  }
+  for (const name of ['resolution', 'aspect_ratio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'string') throw new Error(`Video "${name}" must be text`);
+  }
+  const audio = route.protocol === 'fal-video' ? body.generate_audio ?? body.audio : body.audio;
   return {
     protocol: route.protocol, action: route.action,
     ...(duration === undefined ? {} : { duration }),
     ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
+    ...(typeof body.aspect_ratio === 'string' ? { aspectRatio: body.aspect_ratio } : {}),
+    ...(typeof audio === 'boolean' ? { audio } : {}),
+    referenceVideo: sendsReferenceVideo(route.protocol, body),
   };
 }
 
@@ -149,4 +256,41 @@ function positiveInteger(value: unknown): number | undefined | null {
   if (value === undefined) return undefined;
   const parsed = typeof value === 'string' && /^[0-9]+$/.test(value.trim()) ? Number(value.trim()) : value;
   return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Why a video edit can't go upstream, or null. The buyer pays for its
+ * `duration`, but the upstream bills at least the whole source, and an output
+ * cut short by the source is never charged (VIDEO_MIN_DURATION_RATIO). So the
+ * source must be an inline video the seller can measure and `duration` its
+ * length in whole seconds, rounded down (at least 1).
+ */
+export function videoSourceLengthProblem(videoUrl: unknown, duration: unknown): string | null {
+  return sourceLengthProblem(
+    inlineVideoSeconds(videoUrl),
+    duration,
+    'A video edit is paid by its source length: send the source inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length',
+  );
+}
+
+/**
+ * Why a video whose length follows its input audio (a talking avatar) can't
+ * go upstream, or null. The model takes no `duration`: its output is as long
+ * as `audio_url`, and the upstream bills it by that length. So the audio must
+ * be an inline MP3 or WAV the seller can measure, and the `duration` the
+ * buyer pays for its length in whole seconds, rounded down (at least 1).
+ */
+export function audioSourceLengthProblem(audioUrl: unknown, duration: unknown): string | null {
+  return sourceLengthProblem(
+    inlineAudioSeconds(audioUrl),
+    duration,
+    'This model makes a video as long as its audio and is paid by that length: send audio_url inline as an MP3 or WAV data:audio/...;base64 URL, so the seller can measure its length',
+  );
+}
+
+function sourceLengthProblem(seconds: number | null, duration: unknown, notMeasurable: string): string | null {
+  if (seconds === null) return notMeasurable;
+  const expected = Math.max(seconds, 1);
+  const declared = typeof duration === 'string' ? Number(duration.trim().replace(/s$/, '')) : duration;
+  return declared === expected ? null : `duration must be the source length in whole seconds, rounded down: ${expected}`;
 }

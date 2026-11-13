@@ -12,7 +12,6 @@ export function useFundingStatus(): FundingStatus {
     creditLimit: state.creditsCreditLimitUsdc,
     minFirstDeposit: state.creditsMinFirstDepositUsdc,
     depositFee: state.creditsDepositFeeUsdc,
-    channels: state.creditsChannels,
   }), shallowEqual);
   return useMemo(() => deriveFundingStatus(snap), [snap]);
 }

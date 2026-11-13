@@ -198,7 +198,7 @@ test('POST card-link validates input and access', async () => {
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', outsider, { amountUsd: 10, provider: 'crossmint' }), 403)
   const noKey = setup({ loadWallet: async () => null })
   await rejectsWith(call(noKey, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10, provider: 'crossmint' }), 409, 'wallet_unavailable')
-  const locked = setup({ loadWallet: async () => { throw new Error('encrypted by the AI VPN') } })
+  const locked = setup({ loadWallet: async () => { throw new Error('encrypted by Antseed Desktop') } })
   await rejectsWith(call(locked, 'POST', '/workspaces/ws_default/wallet/card-link', member, { amountUsd: 10, provider: 'crossmint' }), 409, 'wallet_unavailable')
 })
 
@@ -618,8 +618,11 @@ test('an operator change seen by sync drops cached rewards and asks the buyer to
   operator = OPERATOR
   now += 5_000
   await call(router, 'POST', '/workspaces/ws_team/wallet/operator/sync', member, {})
-  await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.ok(buyer.requests.some((req) => req.url === '/_antseed/balances?fresh=1&identity=team-a'))
+  // The balance refresh is fire-and-forget: wait for it to reach the buyer instead of a fixed
+  // 20 ms, which a loaded CI runner overshot.
+  const refreshed = () => buyer.requests.some((req) => req.url === '/_antseed/balances?fresh=1&identity=team-a')
+  for (const deadline = Date.now() + 5_000; !refreshed() && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.ok(refreshed())
   await call(router, 'GET', '/workspaces/ws_team/rewards', member)
   assert.equal(rewardReads, 2, 'rewards re-read with the new operator')
 })

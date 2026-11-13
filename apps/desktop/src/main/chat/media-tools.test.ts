@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   createChatImagePathTool,
+  createChatVideoPathTool,
   createShowMediaTool,
   detectChatMedia,
   resolveBundledChatSkillPaths,
@@ -68,15 +69,34 @@ test('get_chat_image_path returns only image attachments from the current chat',
   });
 });
 
-test('resolveBundledChatSkillPaths returns the bundled image and video skills', async () => {
+test('get_chat_video_path returns an uploaded MP4 path and refuses images', async () => {
   await withTempDir(async (dir) => {
-    for (const name of ['antseed-images', 'antseed-videos']) {
+    const videoPath = path.join(dir, 'video-1.mp4');
+    const imagePath = path.join(dir, 'image-1.png');
+    await writeFile(videoPath, MP4);
+    await writeFile(imagePath, PNG);
+    const tool = createChatVideoPathTool('conversation-1', async (_conversationId, attachmentId) => (
+      attachmentId === 'video-1' ? videoPath : attachmentId === 'image-1' ? imagePath : null
+    ));
+    const result = await tool.execute('tool-1', { attachmentId: 'video-1' }, undefined, undefined, {} as never);
+    assert.deepEqual(result.content, [{ type: 'text', text: videoPath }]);
+    const image = await tool.execute('tool-2', { attachmentId: 'image-1' }, undefined, undefined, {} as never);
+    assert.equal((image as { isError?: boolean }).isError, true);
+    const missing = await tool.execute('tool-3', { attachmentId: 'nope' }, undefined, undefined, {} as never);
+    assert.equal((missing as { isError?: boolean }).isError, true);
+  });
+});
+
+test('resolveBundledChatSkillPaths returns the bundled image, video and decision skills', async () => {
+  await withTempDir(async (dir) => {
+    for (const name of ['antseed-images', 'antseed-videos', 'antseed-decisions']) {
       await mkdir(path.join(dir, name), { recursive: true });
       await writeFile(path.join(dir, name, 'SKILL.md'), '---\nname: test\ndescription: test\n---\n');
     }
     assert.deepEqual(resolveBundledChatSkillPaths([dir]), [
       path.join(dir, 'antseed-images'),
       path.join(dir, 'antseed-videos'),
+      path.join(dir, 'antseed-decisions'),
     ]);
   });
 });

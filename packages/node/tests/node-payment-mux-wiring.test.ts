@@ -75,6 +75,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
       expect.objectContaining({ statusCode: 200 }),
       undefined,
       'req-payment-mux',
+      request.body,
     );
     expect(
       getOrCreatePaymentMux.mock.invocationCallOrder[0],
@@ -176,7 +177,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
       {
         localPeerId: 'a'.repeat(40) as PeerId,
         negotiator: {
-          bpm: { trackRequestService },
+          bpm: { trackRequestService, releaseRequestCoverage: vi.fn() },
           getOrCreatePaymentMux: vi.fn().mockReturnValue({}),
           prepareFreeUsageOpen,
           trackFreeUsageRequestService,
@@ -201,7 +202,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
     await handler.sendRequest(peer, request);
 
     expect(trackFreeUsageRequestService).toHaveBeenCalledWith('req-free-usage', 'gpt-free');
-    expect(prepareFreeUsageOpen).toHaveBeenCalledWith(peer, conn);
+    expect(prepareFreeUsageOpen).toHaveBeenCalledWith(peer, conn, null);
     expect(trackRequestService).not.toHaveBeenCalled();
     expect(estimateCostFromResponse).not.toHaveBeenCalled();
   });
@@ -246,7 +247,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
       {
         localPeerId: 'a'.repeat(40) as PeerId,
         negotiator: {
-          bpm: { trackRequestService: vi.fn() },
+          bpm: { trackRequestService: vi.fn(), releaseRequestCoverage: vi.fn() },
           getOrCreatePaymentMux: vi.fn().mockReturnValue({}),
           prepareFreeUsageOpen,
           trackFreeUsageRequestService: vi.fn(),
@@ -271,7 +272,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
     const response = await handler.sendRequest(peer, request);
 
     expect(response.statusCode).toBe(200);
-    expect(prepareFreeUsageOpen).toHaveBeenCalledWith(peer, conn);
+    expect(prepareFreeUsageOpen).toHaveBeenCalledWith(peer, conn, null);
     expect(sendProxyRequest).toHaveBeenCalledOnce();
   });
 
@@ -336,7 +337,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
 
     expect(response.statusCode).toBe(200);
     expect(freeUsageManager.trackRequestService).toHaveBeenCalledWith('req-free-only', 'gpt-free');
-    expect(freeUsageManager.prepareOpen).toHaveBeenCalledWith(peer, expect.any(PaymentMux));
+    expect(freeUsageManager.prepareOpen).toHaveBeenCalledWith(peer, expect.any(PaymentMux), null);
     expect(sendProxyRequest).toHaveBeenCalledOnce();
   });
 
@@ -415,6 +416,7 @@ describe('BuyerRequestHandler payment mux wiring', () => {
       expect.objectContaining({ statusCode: 200 }),
       undefined,
       'req-relock',
+      request.body,
     );
   });
 });

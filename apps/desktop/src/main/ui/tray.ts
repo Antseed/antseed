@@ -47,9 +47,3 @@ export function createDesktopTray(options: DesktopTrayOptions): void {
     tray?.popUpContextMenu();
   });
 }
-
-export function updateDesktopTray(options: Partial<Omit<DesktopTrayOptions, 'iconPath'>> = {}): void {
-  if (!currentOptions) return;
-  currentOptions = { ...currentOptions, ...options };
-  rebuildMenu();
-}

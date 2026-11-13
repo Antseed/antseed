@@ -1,6 +1,6 @@
 {
   "name": "@antseed/node",
-  "version": "0.2.151",
+  "version": "0.2.180",
   "description": "Antseed Network protocol SDK — P2P inference marketplace",
   "type": "module",
   "files": [
@@ -45,13 +45,29 @@
       "import": "./dist/discovery/verifier-capabilities.js",
       "types": "./dist/discovery/verifier-capabilities.d.ts"
     },
+    "./free-tier-program": {
+      "import": "./dist/payments/free-tier-program.js",
+      "types": "./dist/payments/free-tier-program.d.ts"
+    },
+    "./free-tier-stake": {
+      "import": "./dist/payments/free-tier-stake.js",
+      "types": "./dist/payments/free-tier-stake.d.ts"
+    },
     "./tee-status": {
       "import": "./dist/verification/tee-status.js",
       "types": "./dist/verification/tee-status.d.ts"
     },
+    "./gateway-process": {
+      "import": "./dist/gateway-process.js",
+      "types": "./dist/gateway-process.d.ts"
+    },
     "./model-identity": {
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
+    },
+    "./retail-prices": {
+      "import": "./dist/retail-prices.js",
+      "types": "./dist/retail-prices.d.ts"
     },
     "./model-metadata": {
       "import": "./dist/model-metadata.js",

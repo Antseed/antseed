@@ -1,5 +1,7 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { BUDGET_PERIODS, type BudgetLimits, type BudgetPeriod } from '../../../gateway/limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc } from '../../../gateway/money.js'
 import { GatewayStore, type ApiKeyRecord, type MemberRecord, type WorkspaceRecord } from '../../../gateway/store.js'
@@ -9,7 +11,7 @@ import { loadConfig } from '../../../config/loader.js'
 import { portInUse } from '../../../gateway/bundle.js'
 import { loadOrCreateControlSecret, runningGatewayBuyerPort } from '../../../gateway/buyer-control.js'
 import { probeBuyerPolicySupport } from '../../../gateway/buyer-policy-probe.js'
-import { GatewayBuyer } from '../../../gateway/buyer-process.js'
+import { GatewayBuyer, superviseAttachedBuyer } from '../../../gateway/buyer-process.js'
 import { defaultBuyerClient, type BuyerClient } from '../../../gateway/console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../../../gateway/console-api/router.js'
 import { CLI_ACTOR, PolicyProblemError, type Actor, type ServiceContext } from '../../../gateway/services/context.js'
@@ -17,6 +19,7 @@ import { liveBuyerAddresses } from '../../../gateway/services/wallet-address.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
+import { observeCliGatewayAudit } from '../../../telemetry/gateway.js'
 
 export const DEFAULT_GATEWAY_PORT = 8379
 
@@ -114,6 +117,20 @@ export function addBuyerPortOption(cmd: Command): Command {
   return cmd.option('--buyer-port <number>', 'port of the running buyer (default: the running gateway\'s buyer, else buyer.proxyPort from config)', parsePositiveInteger)
 }
 
+/**
+ * `--config` and `--data-dir` default independently (`~/.antseed/config.json` and
+ * `~/.antseed`), so on a host that runs several roles the buyer limits printed by
+ * `settings show` and `routing preview` can come from another role's file without
+ * saying so. Returns a note when `--data-dir` holds a config that is not the one
+ * being read, so the numbers are not mistaken for this gateway's.
+ */
+export function configSourceNote(configPath: string, dataDir: string): string | null {
+  const sibling = join(dataDir, 'config.json')
+  if (resolve(sibling) === resolve(configPath)) return null
+  if (!existsSync(sibling)) return null
+  return `${sibling} exists but is not read; pass --config ${sibling} to use it`
+}
+
 /** Opens the store, runs `fn` and closes it; service errors become plain CLI errors with flag hints. */
 export async function withGateway<T>(cmd: Command, fn: (gateway: CliGateway) => Promise<T> | T): Promise<T> {
   const { dataDir, config: configPath } = getGlobalOptions(cmd)
@@ -145,12 +162,15 @@ export async function withGateway<T>(cmd: Command, fn: (gateway: CliGateway) => 
       return defaultBuyerClient({ buyerPort: await buyerPort(), controlSecret: loadOrCreateControlSecret(dataDir) })
     },
   }
+  // Setup-funnel telemetry for steps taken here rather than in the running gateway (docs/telemetry.md).
+  const flushTelemetry = observeCliGatewayAudit(store, { configPath, dataDir })
   try {
     return await fn(gateway)
   } catch (error) {
     throw cliError(error)
   } finally {
     store.close()
+    await flushTelemetry?.()
   }
 }
 
@@ -277,19 +297,32 @@ export async function startGatewayBuyer(
   globalOptions: { dataDir: string; config: string; verbose: boolean },
   log: (message: string) => void,
 ): Promise<GatewayBuyer | null> {
+  const startBuyer = (): GatewayBuyer => {
+    const buyer = new GatewayBuyer({
+      buyerPort,
+      dataDir: globalOptions.dataDir,
+      configPath: globalOptions.config,
+      verbose: globalOptions.verbose,
+      onLog: log,
+    })
+    buyer.start()
+    return buyer
+  }
   if (await portInUse(buyerPort)) {
     log(`using the buyer already running on port ${buyerPort}`)
+    // Shutdown runs last-registered first, and the gateway registers after this
+    // returns, so it stops before any buyer started here.
+    setupShutdownHandler(superviseAttachedBuyer({
+      isRunning: () => portInUse(buyerPort),
+      start: () => {
+        log(`the buyer on port ${buyerPort} is gone; starting one`)
+        return startBuyer()
+      },
+    }))
     return null
   }
   log(`starting a buyer on port ${buyerPort} (run your own with --no-buyer)`)
-  const buyer = new GatewayBuyer({
-    buyerPort,
-    dataDir: globalOptions.dataDir,
-    configPath: globalOptions.config,
-    verbose: globalOptions.verbose,
-    onLog: log,
-  })
-  buyer.start()
+  const buyer = startBuyer()
   // Shutdown runs last-registered first, so the gateway stops before its buyer.
   setupShutdownHandler(() => buyer.stop())
   // Serve once the buyer answers the gateway, so the first requests do not

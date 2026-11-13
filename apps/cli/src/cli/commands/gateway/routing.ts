@@ -8,7 +8,7 @@ import type { GatewayStore } from '../../../gateway/store.js'
 import { formatUsdPerMillion } from '../network/pricing-format.js'
 import { printResolved } from './key.js'
 import { addConfirmOptions, addPolicyOptions, describePolicy, policyFromOptions } from './policy-options.js'
-import { addBuyerPortOption, printJson, requireKey, requireMember, requireWorkspace, withGateway } from './shared.js'
+import { addBuyerPortOption, configSourceNote, printJson, requireKey, requireMember, requireWorkspace, withGateway } from './shared.js'
 
 interface TargetOptions { key?: string; workspace?: string; member?: string; preset?: string }
 
@@ -82,7 +82,7 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
   ))
     .option('--all', 'also list ineligible sellers', false)
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: TargetOptions & { model: string; all: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer, configPath }) => {
+    .action((options: TargetOptions & { model: string; all: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer, configPath, dataDir }) => {
       const preview = await previewRoute(store, await buyer(), options.model.trim(), previewTarget(store, options), undefined, configPath)
       if (options.json) {
         printJson(preview)
@@ -96,7 +96,9 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
       const levels = preview.sources.filter((source) => source.level !== 'buyer' && source.policy && Object.keys(source.policy).length > 0).map((source) => source.level)
       console.log(`${chalk.bold('Policy from:')} ${levels.length ? levels.join(' → ') : 'no gateway-side restrictions'}`)
       const buyerLimits = preview.sources.find((source) => source.level === 'buyer')?.policy
-      if (buyerLimits) console.log(`${chalk.bold('Buyer config:')} ${describePolicy(buyerLimits, store).join('; ')} ${chalk.dim('(every key narrows it)')}`)
+      if (buyerLimits) console.log(`${chalk.bold('Buyer config:')} ${describePolicy(buyerLimits, store).join('; ')} ${chalk.dim(`(every key narrows it; from ${configPath})`)}`)
+      const configNote = configSourceNote(configPath, dataDir)
+      if (configNote) console.log(chalk.yellow(`Note: ${configNote}.`))
       const shown = preview.candidates.filter((candidate) => options.all || candidate.eligible)
       if (shown.length === 0) {
         console.log(chalk.yellow(preview.candidates.length ? 'No eligible seller; rerun with --all to see why.' : 'No seller offers this model right now.'))

@@ -1,6 +1,7 @@
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import docsSearchPlugin from './plugins/docs-search';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -146,6 +147,8 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    // Docs search index for src/theme/SearchBar (the ⌘K modal).
+    docsSearchPlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).
@@ -199,7 +202,7 @@ const config: Config = {
           name: 'Antseed',
           url: 'https://antseed.com',
           sameAs: [
-            'https://github.com/AntSeed/antseed',
+            'https://github.com/Antseed/antseed',
             'https://x.com/antseed',
             'https://t.me/antseed',
           ],
@@ -211,21 +214,22 @@ const config: Config = {
           'Reputation-based provider scoring',
           'TEE attestation for privacy-preserving inference',
           'AI agents with on-demand knowledge and custom tools',
-          'Desktop app (AI VPN)',
+          'Antseed Desktop',
           'Agent-to-agent commerce support',
         ],
-        downloadUrl: 'https://github.com/AntSeed/antseed/releases',
+        downloadUrl: 'https://github.com/Antseed/antseed/releases',
         softwareVersion: desktopPkg.version,
-        license: 'https://github.com/AntSeed/antseed/blob/main/LICENSE',
+        license: 'https://github.com/Antseed/antseed/blob/main/LICENSE',
       }),
     },
   ],
 
   themeConfig: {
     announcementBar: {
-      id: 'foundation-funding-2-4m',
+      // A new id, so people who closed the previous bar still see this one.
+      id: 'antseed-points-launch',
       content:
-        '<a class="funding-announcement" href="/blog/antseed-foundation-raises-2-4m/"><strong>We raised $2.4M, led by Spark Capital.</strong><span>Read the announcement <span aria-hidden="true">→</span></span></a>',
+        '<a class="funding-announcement" href="https://antseedpoints.com" target="_blank" rel="noopener noreferrer"><strong>Antseed Points are live: get rewarded for using AI.</strong><span>Visit antseedpoints.com <span aria-hidden="true">↗</span></span></a>',
       backgroundColor: '#001E12',
       textColor: '#FFFFFF',
       isCloseable: true,
@@ -283,6 +287,11 @@ const config: Config = {
             {
               type: 'html',
               value:
+                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
+            },
+            {
+              type: 'html',
+              value:
                 '<a class="usecase" href="/privacy"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5l6 2.5v4.5c0 3.6-2.6 6.3-6 7.5-3.4-1.2-6-3.9-6-7.5V5l6-2.5z"/><path d="M7.5 10l1.8 1.8L12.8 8"/></svg></span><span class="usecase__body"><span class="usecase__title">For privacy</span><span class="usecase__desc">No sign-up, runs on your machine</span></span></a>',
             },
           ],
@@ -297,6 +306,7 @@ const config: Config = {
           rel: 'noopener noreferrer',
           className: 'header-pricing-link',
         },
+        {type: 'search', position: 'right'},
         {
           type: 'docSidebar',
           sidebarId: 'docs',

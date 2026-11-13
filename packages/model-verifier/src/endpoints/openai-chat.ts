@@ -14,6 +14,7 @@ export interface OpenAIChatEndpointOptions {
 
 export class OpenAIChatEndpoint implements ModelEndpoint {
   readonly label: string
+  readonly supportsPrefill = true
 
   constructor(private readonly options: OpenAIChatEndpointOptions) {
     this.label = trimTrailingSlash(options.baseUrl)
@@ -31,13 +32,14 @@ export class OpenAIChatEndpoint implements ModelEndpoint {
         messages: [
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },
+          ...(request.assistantPrefill ? [{ role: 'assistant', content: request.assistantPrefill }] : []),
         ],
         temperature: request.temperature,
-        top_p: request.topP,
         max_tokens: request.maxTokens,
+        ...request.extraBody,
         ...this.options.extraBody,
       },
-      timeoutMs: this.options.timeoutMs ?? 120_000,
+      timeoutMs: request.timeoutMs ?? this.options.timeoutMs ?? 120_000,
       ...(signal ? { signal } : {}),
       ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
       readUsage: (parsed) => {

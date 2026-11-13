@@ -1,4 +1,5 @@
 import type { PeerInfo } from '@antseed/node'
+import { canonicalModelKey } from '@antseed/node/model-identity'
 
 /**
  * Enumerate the model/service catalog advertised by discovered peers, so
@@ -46,6 +47,28 @@ export function advertisedServices(peer: PeerInfo): Map<string, string> {
     for (const service of Object.keys(entry.services ?? {})) add(service)
   }
   return services
+}
+
+/**
+ * The peer's advertised service for a configured model id, matched the way buyers route:
+ * an exact (case-insensitive) id first, then the same canonical model key, so
+ * `anthropic/claude-opus-5.5` or `claude-opus-5-5` is audited as `claude-opus-5.5`.
+ * Returns the normalized id and the peer's own spelling.
+ */
+export function findAdvertisedService(
+  peer: PeerInfo,
+  service: string,
+): { service: string; advertised: string } | null {
+  const services = advertisedServices(peer)
+  const normalized = service.trim().toLowerCase()
+  const exact = services.get(normalized)
+  if (exact) return { service: normalized, advertised: exact }
+  const key = canonicalModelKey(normalized)
+  if (key.length === 0) return null
+  for (const [candidate, advertised] of services) {
+    if (canonicalModelKey(candidate) === key) return { service: candidate, advertised }
+  }
+  return null
 }
 
 /**

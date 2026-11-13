@@ -5,12 +5,15 @@ import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
 import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
+import { createKeyWalletReader } from './key-wallet.js'
+import { fetchComparableRetailPrices } from '../retail-prices.js'
 import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
+import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
 const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
@@ -150,6 +153,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   // an older buyer would ignore the header and route unrestricted.
   const policyProbe = new BuyerPolicyProbe({ buyerPort, secret: controlSecret, onLog: options.onLog })
   const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
+  const keyWallet = createKeyWalletReader({ buyerPort, secret: controlSecret, configPath: options.configPath, fetchRetailPrices: fetchComparableRetailPrices })
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
@@ -175,6 +179,13 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     }
     : null
   const listenHost = options.listenHost ?? '127.0.0.1'
+  // Setup-funnel telemetry (docs/telemetry.md): one step per audit entry that marks one.
+  const telemetry = new GatewayTelemetry({
+    configPath: options.configPath,
+    dataDir: options.dataDir,
+    ...(options.onLog ? { onLog: options.onLog } : {}),
+  })
+  store.setAuditObserver((record) => telemetry.observeAudit(record))
   const consoleHandler = options.createConsole?.({
     store,
     buyerPort,
@@ -192,6 +203,9 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     accounting,
     buyerPort,
     identityAddress,
+    identityBalance: (name, balanceOptions) => keyWallet.balance(name, balanceOptions),
+    walletRewards: (address) => keyWallet.rewards(address),
+    retailPrices: () => keyWallet.retailPrices(),
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),
     videoBudgetEnforced: () => spendFeed.videoBudgetEnforced,
@@ -206,13 +220,16 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   } catch (error) {
     policyProbe.stop()
     accounting.dispose()
+    store.setAuditObserver(null)
     store.close()
+    await telemetry.stop()
     throw error
   }
   const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()
   await policyProbe.start()
   consoleHandler?.listening?.(port)
+  void telemetry.start()
 
   return {
     port,
@@ -224,7 +241,9 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
       await server.stop()
       await spendFeed.stop()
       accounting.dispose()
+      store.setAuditObserver(null)
       store.close()
+      await telemetry.stop()
     },
   }
 }

@@ -1,9 +1,10 @@
 # @antseed/web-sdk
 
-Browser buyer SDK for AntSeed. Connects to unmodified sellers over WebRTC
+Browser buyer SDK for Antseed. Connects to unmodified sellers over WebRTC
 DataChannels (signaled through an [@antseed/relay](../../apps/relay)) and pays
-per request with in-browser EIP-712 signatures. No native modules; the only
-runtime dependency is ethers.
+per request with in-browser EIP-712 signatures. No native modules; the runtime
+dependencies are ethers and the workspace's own `@antseed/buyer-core` and
+`@antseed/protocol`.
 
 ```ts
 import { AntseedWebClient } from '@antseed/web-sdk';
@@ -96,8 +97,9 @@ the explicit `ephemeral()` API:
 So 402 negotiation, ReserveAuth/AuthAck, NeedAuth cost validation, cumulative
 SpendingAuth metadata, streaming, and chunked uploads behave identically to
 the node buyer. One browser-specific override: uploads chunk above 192 KiB
-(not 512 KiB) to stay under the ~256 KiB SCTP message ceiling browsers
-negotiate with libdatachannel sellers. Defaults target Base mainnet; override
+(not the shared 240 KiB `ANTSEED_UPLOAD_THRESHOLD_BYTES`) to keep more headroom
+under the ~256 KiB SCTP message ceiling browsers negotiate with libdatachannel
+sellers. Defaults target Base mainnet; override
 `payment.*` for other chains.
 
 The relay bridge is closed as soon as the DataChannel opens — it is only

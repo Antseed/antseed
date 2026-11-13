@@ -248,6 +248,36 @@ test('candidate construction applies buyer routing preferences like automatic ro
   assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, maxInputUsdPerMillion: 0.5 }, () => true).length, 1)
 })
 
+test('a live DIFF verdict drops a router candidate below the trust minimum, per service', () => {
+  const diffPeer = {
+    ...peer,
+    onChainDiffServices: ['model-a'],
+    onChainVerificationFetchedAt: Date.now(),
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: {
+      'model-a': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      'model-b': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+    } } },
+    providerServiceApiProtocols: { openai: { services: { 'model-a': ['openai-chat-completions'], 'model-b': ['openai-chat-completions'] } } },
+  } as PeerInfo
+  const kept = eligibleRouterCandidates(request, [diffPeer], [], DEFAULT_MODEL_ROUTING_PREFERENCES, () => true)
+  assert.deepEqual(kept.map(candidate => candidate.serviceId), ['model-b'])
+  // Without preferences there is no trust minimum, so the DIFF service stays listed.
+  assert.equal(eligibleRouterCandidates(request, [diffPeer], [], null, () => true).length, 2)
+})
+
+test('a router candidate is judged by the DIFF verdict of the service it resolves to, not its alias', () => {
+  const services = ['glm-5.3', 'glm-5-3', 'z-ai-glm-5-3']
+  const aliased = {
+    ...peer,
+    // Only the resolved destination is flagged; the other advertised names resolve to it.
+    onChainDiffServices: ['glm-5-3'],
+    onChainVerificationFetchedAt: Date.now(),
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: Object.fromEntries(services.map(id => [id, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }])) } },
+    providerServiceApiProtocols: { openai: { services: Object.fromEntries(services.map(id => [id, ['openai-chat-completions']])) } },
+  } as PeerInfo
+  assert.deepEqual(eligibleRouterCandidates(request, [aliased], [], DEFAULT_MODEL_ROUTING_PREFERENCES, () => true), [])
+})
+
 test('routing purchases are registered before dispatch with their own request ID', async () => {
   const tracked: string[] = []
   const client: ModelRoutingClientApi = {

@@ -1,18 +1,23 @@
 import type {
   ImageRequestFacts,
   ProviderResponseFacts,
+  SpeechRequestFacts,
   TokenUsage,
 } from '@antseed/api-adapter';
 import {
   extractImageRequestFacts,
+  extractSpeechRequestFacts,
+  speechAudioDelivered,
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
+  nativeVideoAttributes,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type {
   UnitBillingContext,
   UnitBillingMatchKeyV1,
@@ -26,7 +31,7 @@ import {
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
-import { NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
 import { routingWireProtocol } from '@antseed/protocol/routing';
 
 const ZERO_TOKEN_USAGE: TokenUsage = {
@@ -40,6 +45,7 @@ const ZERO_TOKEN_USAGE: TokenUsage = {
 export type BillingRequestFacts =
   | { kind: 'image'; image: ImageRequestFacts }
   | { kind: 'video'; video: NativeVideoFacts }
+  | { kind: 'speech'; speech: SpeechRequestFacts }
   /** `candidateIds`: the ids the rank request sent; a ranking is billable only when it names one. */
   | { kind: 'routing'; protocol: RoutingProtocol; candidateIds: string[] };
 
@@ -62,6 +68,8 @@ export interface CaptureUnitBillingArgs {
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
   request: SerializedHttpRequest;
+  /** The service's announced video options: what an omitted aspect ratio or audio setting means. */
+  videoOptions?: VideoOptions;
 }
 
 export interface UnitBillingAdapter {
@@ -125,10 +133,40 @@ const videoBillingAdapter: UnitBillingAdapter = {
   measure: extractVideoResponseUsage,
 };
 
+// Speech is billed by the characters of `input`, and only when audio came back:
+// a refused voice or any other error answer is free.
+const speechBillingAdapter: UnitBillingAdapter = {
+  name: 'speech billing',
+  units: ['input_characters'],
+  protocols: AUDIO_SPEECH_PROTOCOLS,
+  capture: (args) => {
+    const speech = extractSpeechRequestFacts(parseJsonObject(args.request.body));
+    if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
+    return {
+      context: {
+        sellerPeerId: args.sellerPeerId,
+        provider: args.provider,
+        service: args.service,
+        serviceApiProtocol: args.serviceApiProtocol,
+        attributes: { model: args.service },
+        unitLimits: { input_characters: speech.characters },
+      },
+      requestUsage: { units: { input_characters: speech.characters } },
+      requestFacts: { kind: 'speech', speech },
+    };
+  },
+  measure: (response, requestFacts) => {
+    if (requestFacts.kind !== 'speech') return wrongFacts('speech billing', requestFacts);
+    const delivered = speechAudioDelivered(response, requestFacts.speech.responseFormat);
+    return { usage: { units: { input_characters: delivered ? requestFacts.speech.characters : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+  },
+};
+
 const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
   imageBillingAdapter,
   routingBillingAdapter,
   videoBillingAdapter,
+  speechBillingAdapter,
 ];
 
 function adapterForProtocol(protocol: ServiceApiProtocol): UnitBillingAdapter | undefined {
@@ -205,7 +243,7 @@ function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
       service: args.service,
       serviceApiProtocol: args.serviceApiProtocol,
       unitLimits: requestUsage.units,
-      attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) },
+      attributes: videoAttributes(args.service, video, args.videoOptions),
     },
     requestUsage,
     requestFacts: { kind: 'video', video },
@@ -314,6 +352,15 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
       ...(facts.requestedImages !== undefined ? { output_images: facts.requestedImages } : {}),
     },
   };
+}
+
+/** The attributes a video create is priced by (see `nativeVideoAttributes`). */
+export function videoAttributes(
+  service: string,
+  video: NativeVideoFacts,
+  options: VideoOptions | undefined,
+): Partial<Record<UnitBillingMatchKeyV1, string>> {
+  return nativeVideoAttributes(service, video, options);
 }
 
 function imageAttributes(

@@ -1,7 +1,7 @@
 /**
- * The AntSeed plugin contract this SDK implements, vendored so the published package is
+ * The Antseed plugin contract this SDK implements, vendored so the published package is
  * self-contained (no external type dependency, no peer dependency to build). These interfaces
- * mirror the AntSeed runtime's plugin surface, which loads this SDK's default and `prover` exports
+ * mirror the Antseed runtime's plugin surface, which loads this SDK's default and `prover` exports
  * structurally. Keep them in sync if that contract changes.
  */
 
@@ -37,6 +37,12 @@ export interface SellerResponse {
   statusCode: number
   headers: Record<string, string>
   body: Uint8Array
+  /**
+   * Buyer-local, never sent by the seller: hex session hash of the buyer's encrypted connection
+   * that carried this response. The seller node passes its side of it to the prover in the
+   * x-antseed-channel-binding request header.
+   */
+  channelBinding?: string
 }
 
 export interface VerifyContext {

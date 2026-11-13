@@ -50,6 +50,20 @@ export type RouteSelection = {
   maxConcurrency: number | null
   /** Position in an explicit route chain of the policy, when one orders it. */
   routeChainPosition: number | null
+  /**
+   * How the seller says this model served all its buyers in the last hour.
+   * With no record of its own (`record: 'none'`), the buyer starts from these
+   * figures instead of its defaults. Absent when the seller announces none.
+   */
+  reported?: ReportedPerformance
+}
+
+/** Seller-announced figures for one model (metadata v14 `servicePerformance`). */
+export type ReportedPerformance = {
+  requests: number
+  successRate: number
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
 }
 
 /** On a served request: how this seller came to serve it. */
@@ -133,6 +147,25 @@ export function parseRouteSelection(value: unknown): RouteSelection | null {
     inFlight,
     maxConcurrency: count(s.maxConcurrency),
     routeChainPosition: count(s.routeChainPosition),
+    ...withReported(parseReported(s.reported)),
+  }
+}
+
+function withReported(reported: ReportedPerformance | null): { reported?: ReportedPerformance } {
+  return reported ? { reported } : {}
+}
+
+function parseReported(value: unknown): ReportedPerformance | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const r = value as Record<string, unknown>
+  const requests = count(r.requests)
+  const successRate = num(r.successRate)
+  if (requests === null || successRate === null) return null
+  return {
+    requests,
+    successRate: Math.min(1, Math.max(0, successRate)),
+    firstTokenMsP50: num(r.firstTokenMsP50),
+    tokensPerSecondP50: num(r.tokensPerSecondP50),
   }
 }
 

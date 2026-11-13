@@ -10,6 +10,14 @@ name: Publish npm packages
 #   - ANTSEED_COMPARABLE_PRICES_URL repo variable: retail-prices models API
 #     baked into release builds as the savings baseline (see
 #     scripts/bake-comparable-prices-url.mjs).
+#   - POSTHOG_HOST and POSTHOG_PROJECT_API_KEY repo variables: the public
+#     PostHog project the CLI, buyer and gateway send telemetry to
+#     (scripts/bake-desktop-telemetry-config.mjs, docs/telemetry.md).
+#
+# Once the CLI version on this commit is on npm, the run also creates a
+# GitHub release tagged cli-v<version> (scripts/github-release-notes.mjs). It is never marked
+# Latest: the desktop app's auto-updater and download links read the latest
+# release, which must stay the desktop's.
 
 on:
   workflow_dispatch:
@@ -27,9 +35,16 @@ jobs:
     name: Build, test & publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # Whether this run publishes a CLI version npm didn't have, so the
+      # release job knows to wait for the registry to serve it.
+      cli-new: ${{ steps.cli-new.outputs.new }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # npm-publish-plan.mjs reads the history to find unbumped dependencies.
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -51,10 +66,25 @@ jobs:
       - name: Publish plan
         run: node scripts/npm-publish-plan.mjs
 
+      - name: Is the CLI version new on npm
+        id: cli-new
+        run: |
+          node --input-type=module -e "
+            import { onNpm } from './scripts/npm-registry.mjs';
+            const { name, version } = JSON.parse((await import('node:fs')).readFileSync('apps/cli/package.json', 'utf8'));
+            console.log('new=' + !(await onNpm(name, version)));
+          " >> "$GITHUB_OUTPUT"
+
       - name: Bake comparable-prices URL
         env:
           ANTSEED_COMPARABLE_PRICES_URL: ${{ vars.ANTSEED_COMPARABLE_PRICES_URL }}
         run: node scripts/bake-comparable-prices-url.mjs --require
+
+      - name: Bake telemetry config
+        env:
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+        run: node scripts/bake-desktop-telemetry-config.mjs --require
 
       # Build in dependency order; tier4 desktop and the standalone web apps
       # are not published to npm, so only the CLI is built from tier4.
@@ -67,8 +97,14 @@ jobs:
           pnpm --filter=@antseed/cli run build
           pnpm --filter=@antseed/network-stats run build
 
+      # e2e runs after everything else, as in ci.yml: it builds packages/node and
+      # apps/cli (e2e/global-setup.ts), and a rebuild while the CLI tests import
+      # those dist/ files fails them with "does not provide an export named …".
       - name: Test
-        run: pnpm -r run test
+        run: pnpm -r --filter '!@antseed/e2e' run test
+
+      - name: Test (e2e)
+        run: pnpm --filter '@antseed/e2e' run test
 
       # --no-git-checks: the bake step dirties the working tree on purpose.
       # Private packages (e.g. @antseed/ui) are skipped automatically.
@@ -82,3 +118,53 @@ jobs:
           --filter @antseed/relay
           publish --access public --no-git-checks
           ${{ inputs.dry_run && '--dry-run' || '' }}
+
+  # Its own job, so only this one holds a token that can write to the repo
+  # (dependency installs and tests in the publish job never see it).
+  github-release:
+    name: GitHub release
+    needs: publish
+    # Also after a failed publish: the CLI may be on npm already, and the
+    # script checks npm, so a run that published nothing makes no release
+    # (after its wait, if the failure came after the CLI was found new).
+    if: ${{ !inputs.dry_run && !cancelled() }}
+    runs-on: ubuntu-latest
+    # The script waits up to NPM_WAIT_MINUTES for npm to serve the new CLI.
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    steps:
+      # Pinned to commits: this job can write to the repository.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # github-release-notes.mjs lists the PRs since the previous CLI bump.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # npm can take a long time to serve a version it just accepted. Wait
+          # only when this run published the CLI: a rerun or a run with no new
+          # CLI reads npm once.
+          NPM_WAIT_MINUTES: ${{ needs.publish.outputs.cli-new == 'true' && '60' || '0' }}
+        run: |
+          version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/release-notes.md")
+          if [ -z "$version" ]; then
+            echo "This CLI version is not on npm; no GitHub release."
+            exit 0
+          fi
+          if gh release view "cli-v${version}" >/dev/null 2>&1; then
+            echo "Release cli-v${version} already exists."
+            exit 0
+          fi
+          # Each contributor in the notes' Thanks section hears the release is
+          # out from the maintainer who merged their PR: Reviewant posts it as
+          # them, not this workflow.
+          gh release create "cli-v${version}" --target "$GITHUB_SHA" --title "CLI ${version}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false

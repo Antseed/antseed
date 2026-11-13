@@ -72,7 +72,7 @@ function AuthGate() {
           This link is missing a valid session or is no longer valid. Open a fresh link to continue.
         </p>
         <p className="muted small">
-          <strong>Using the AntSeed desktop app?</strong><br />
+          <strong>Using the Antseed desktop app?</strong><br />
           Go to <strong>Rewards</strong>, then select <strong>Claim rewards</strong> or <strong>Manage staking</strong>. To use another browser, choose{' '}
           <strong>Copy link</strong> beside the action and paste it into the browser where you use your wallet.
         </p>

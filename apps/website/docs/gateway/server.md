@@ -17,13 +17,13 @@ A [gateway](/docs/gateway) is most useful when it is always on. The gateway inst
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain gateway.example.com
 ```
 
-The short form does the same: on a Linux server with systemd, `install.sh` downloads `install-gateway.sh` and runs it as root through `sudo`, passing every option through.
+The short form does the same: on Linux with systemd, `install.sh` downloads `install-gateway.sh` and runs it as root through `sudo`, passing every option through. It does this when you pass an option, or with none when there is no desktop session (over SSH, or from cloud-init). From a desktop session it installs for your user instead; add `--server` to get the server install there.
 
 ```bash
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-[Read the script](https://antseed.com/install-gateway.sh) before running it. Its source is [`apps/website/static/install-gateway.sh`](https://github.com/AntSeed/antseed/blob/main/apps/website/static/install-gateway.sh) in the Antseed repository. It validates every option before it changes anything, then:
+[Read the script](https://antseed.com/install-gateway.sh) before running it. Its source is [`apps/website/static/install-gateway.sh`](https://github.com/Antseed/antseed/blob/main/apps/website/static/install-gateway.sh) in the Antseed repository. It validates every option before it changes anything, then:
 
 1. Installs Node.js 24 and the Antseed CLI under `/opt/antseed`, without touching any Node.js already on the server.
 2. Creates an `antseed` system user whose home, `/var/lib/antseed`, holds the wallets and the gateway database.
@@ -169,6 +169,8 @@ Updating takes two steps, as in the desktop app:
 
 1. **Download** installs the new version next to the running one. The gateway keeps serving on the old version.
 2. **Restart & update** switches to it and restarts the buyer and gateway. The console reloads once the gateway is back.
+
+While it runs, the console shows the step it is on (downloading, restarting the buyer, waiting for in-flight requests to finish, starting the new gateway, checking it), an elapsed timer and a step bar. The whole update usually takes one to three minutes. Most of it is the gateway's drain: it stops taking new requests and lets long responses finish, for up to 90 seconds, before it restarts. The console is served by the gateway, so during the drain and restart it shows "The gateway is restarting" and reconnects by itself. Servers installed before step reporting existed show the timer without steps until the installer is run again.
 
 `antseed update` on the server does both at once. The services run as the unprivileged `antseed` user and cannot change `/opt/antseed`, so the console and `antseed update` only create `/var/lib/antseed/update-request`. The installer's `antseed-update.path` unit then starts the root `antseed-update.service`, which installs `@antseed/cli@latest` (the request can only pick the step, not another version) and records the result in `/var/lib/antseed-update/status.json`. **Restart & update** installs the version that was downloaded, even if npm has a newer one by then. Like the installer, the service runs `npm install` as root, so the package's install scripts, and those of its native dependencies, run as root too. An update the service could not finish (stopped, timed out after 15 minutes, or cut off by a reboot) shows as failed, and the services go back to the previous version when it was stopped part way. Logs: `journalctl -u antseed-update`.
 

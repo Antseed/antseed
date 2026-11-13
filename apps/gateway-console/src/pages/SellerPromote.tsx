@@ -1,0 +1,256 @@
+import { useEffect, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Button, CopyButton, TextField, useToast } from '@antseed/ui'
+import { api } from '../api'
+import type { SellerPromote as Promote, SellerVerificationStatus } from '../api/types'
+import { RefreshFailed, SellerPage } from '../components/SellerPage'
+import { Badge, CodeBlock, EmptyState, ErrorAlert, LoadingRows, Mono, Panel } from '../components/ui'
+import { formatRelative } from '../lib/format'
+import { qk, useSellerCard, useSellerPromote } from '../lib/queries'
+import { localBuyerExample } from '../lib/snippets'
+import '../styles/seller.scss'
+
+/** Help buyers find and trust this seller: profile link, a shareable card, usage snippets and identity verification. */
+export default function SellerPromote() {
+  const promote = useSellerPromote()
+  return (
+    <SellerPage title="Promote" description={() => 'Share your seller, and verify a domain or GitHub account so buyers can trust it.'}>
+      {() => {
+        if (promote.isLoading) return <LoadingRows rows={6} />
+        if (promote.error && !promote.data) return <ErrorAlert error={promote.error} onRetry={() => void promote.refetch()} />
+        const data = promote.data!
+        return (
+          <>
+            {promote.error && <RefreshFailed error={promote.error} />}
+            {!data.peerId && <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />The seller has not reported its peer id yet. Start it once to fill in links and snippets.</p>}
+            <div className="gc-grid gc-grid--2">
+              <ProfilePanel data={data} />
+              <CardPanel data={data} />
+            </div>
+            <SnippetsPanel data={data} />
+            <VerificationPanel data={data} />
+          </>
+        )
+      }}
+    </SellerPage>
+  )
+}
+
+function ProfilePanel({ data }: { data: Promote }) {
+  return (
+    <Panel title="Public profile" description="Your page on the explorer: stake, volume and history anyone can check.">
+      <div className="gc-stack">
+        {data.profileUrl ? (
+          <div className="gc-inline gc-inline--wrap">
+            <a className="gc-link gc-seller-wrap" href={data.profileUrl} target="_blank" rel="noreferrer">{data.profileUrl.replace(/^https?:\/\//, '')}</a>
+            <CopyButton value={data.profileUrl} />
+          </div>
+        ) : <p className="gc-muted">No explorer is configured for this chain.</p>}
+        {data.peerId && <div className="gc-inline gc-inline--wrap"><span className="gc-fineprint">Peer id</span><Mono>{data.peerId}</Mono><CopyButton value={data.peerId} /></div>}
+      </div>
+    </Panel>
+  )
+}
+
+function download(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1_000)
+}
+
+function CardPanel({ data }: { data: Promote }) {
+  // Rendered by the seller service (the same SVG `antseed seller promote --card` writes).
+  const card = useSellerCard(data.trustScore)
+  const toast = useToast()
+  const svg = card.data ?? null
+  const slug = (data.displayName || 'antseed-seller').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'antseed-seller'
+  const png = () => {
+    if (!svg) return
+    const image = new Image()
+    image.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1200
+      canvas.height = 680
+      canvas.getContext('2d')!.drawImage(image, 0, 0, 1200, 680)
+      canvas.toBlob((blob) => { if (blob) download(blob, `${slug}.png`); else toast('Could not convert the card to PNG. Download the SVG instead.') }, 'image/png')
+    }
+    image.onerror = () => toast('Could not convert the card to PNG. Download the SVG instead.')
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  }
+  return (
+    <Panel title="Seller card" description="Your name, trust score and prices, ready to post.">
+      {card.isLoading ? <LoadingRows rows={4} /> : card.error && !card.data ? <ErrorAlert error={card.error} onRetry={() => void card.refetch()} /> : (
+        <div className="gc-seller-card">
+          <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg ?? '')}`} alt={`Seller card for ${data.displayName || 'this seller'}`} width={600} height={340} />
+          <div className="gc-actions gc-actions--start">
+            <Button size="sm" variant="outline" onClick={() => svg && download(new Blob([svg], { type: 'image/svg+xml' }), `${slug}.svg`)}>Download SVG</Button>
+            <Button size="sm" variant="outline" onClick={png}>Download PNG</Button>
+          </div>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function SnippetsPanel({ data }: { data: Promote }) {
+  const peer = data.peerId ?? '<peerId>'
+  const ids = data.services.map((service) => `${peer}@${service.service}`).join('\n')
+  // On the API the model is called on: chat for a text model, images for an image model.
+  const example = localBuyerExample(peer, data.services)
+  return (
+    <Panel title="Send buyers straight to you" description="A model id with your peer id in front always routes to you, in the gateway console, any OpenAI-compatible client or the local buyer.">
+      {data.services.length === 0 ? <EmptyState title="No models" body="The seller's config lists no services." /> : (
+        <div className="gc-grid gc-grid--2">
+          <CodeBlock label="Pinned model ids" code={ids} />
+          {example?.code
+            ? <CodeBlock label="Through a local buyer (antseed buyer start)" code={example.code} />
+            : <p className="gc-muted">{example?.service} is called on its own API (not chat or images), so there is no one-line example. Buyers pin it with the model id.</p>}
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function StatusBadge({ status }: { status: SellerVerificationStatus | null }) {
+  if (!status) return <Badge tone="neutral">Not checked</Badge>
+  return status.verified ? <Badge tone="success">Verified</Badge> : <Badge tone="warning">Not verified yet</Badge>
+}
+
+type GithubClaim = { username: string; repository: string }
+const domainsOf = (data: Promote) => data.domains.map((entry) => entry.domain)
+const githubOf = (data: Promote): GithubClaim[] => data.github.map((entry) => ({ username: entry.username, repository: entry.repository }))
+
+/**
+ * A claims list after the saved list changed underneath the editor: the new
+ * saved claims, minus the ones removed here, plus the ones added here, with a
+ * claim edited here (say a GitHub account's repository) kept as edited.
+ */
+export function reconcileClaims<T>(draft: T[], base: T[], next: T[], keyOf: (item: T) => string): T[] {
+  const byKey = (items: T[]) => new Map(items.map((item) => [keyOf(item), item]))
+  const [inDraft, inBase] = [byKey(draft), byKey(base)]
+  const same = (a: T, b: T) => JSON.stringify(a) === JSON.stringify(b)
+  const removed = new Set([...inBase.keys()].filter((key) => !inDraft.has(key)))
+  const kept = next.filter((item) => !removed.has(keyOf(item))).map((item) => {
+    const mine = inDraft.get(keyOf(item))
+    const was = inBase.get(keyOf(item))
+    return mine && was && !same(mine, was) ? mine : item
+  })
+  const keptKeys = new Set(kept.map(keyOf))
+  return [...kept, ...draft.filter((item) => !inBase.has(keyOf(item)) && !keptKeys.has(keyOf(item)))]
+}
+
+const githubKey = (claim: GithubClaim) => claim.username.toLowerCase()
+
+function VerificationPanel({ data }: { data: Promote }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [domains, setDomains] = useState(() => domainsOf(data))
+  const [github, setGithub] = useState(() => githubOf(data))
+  const [newDomain, setNewDomain] = useState('')
+  const [newGithub, setNewGithub] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [base, setBase] = useState(() => ({ domains: domainsOf(data), github: githubOf(data) }))
+  // Saved claims can change elsewhere (CLI, another tab); keep only this editor's own additions and removals.
+  useEffect(() => {
+    const next = { domains: domainsOf(data), github: githubOf(data) }
+    setDomains((draft) => reconcileClaims(draft, base.domains, next.domains, (domain) => domain))
+    setGithub((draft) => reconcileClaims(draft, base.github, next.github, githubKey))
+    setBase(next)
+    // Only a change of the saved claims should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+  const changed = JSON.stringify([domains, github]) !== JSON.stringify([base.domains, base.github])
+  type Claims = { domains: string[]; github: GithubClaim[] }
+  const save = useMutation({
+    mutationFn: (submitted: Claims) => api.seller.saveVerifications({
+      domains: submitted.domains.map((domain) => ({ domain })),
+      github: submitted.github.map(({ username, repository }) => (repository && repository.toLowerCase() !== username.toLowerCase() ? { username, repository } : { username })),
+    }),
+    onSuccess: (next, submitted) => {
+      queryClient.setQueryData(qk.sellerPromote, next)
+      void queryClient.invalidateQueries({ queryKey: qk.sellerCard })
+      void queryClient.invalidateQueries({ queryKey: qk.sellerReputation })
+      const stored = { domains: domainsOf(next), github: githubOf(next) }
+      setBase(stored)
+      // Claims edited while the save was in flight stay; the rest takes the saved list.
+      setDomains((current) => reconcileClaims(current, submitted.domains, stored.domains, (domain) => domain))
+      setGithub((current) => reconcileClaims(current, submitted.github, stored.github, githubKey))
+      setSaved(true)
+      toast('Saved. Restart the seller to announce the claims.')
+    },
+  })
+  // A check refreshes only the statuses shown next to saved claims; unsaved edits stay.
+  const check = useMutation({ mutationFn: api.seller.checkVerifications, onSuccess: (next) => queryClient.setQueryData(qk.sellerPromote, next) })
+  const readOnly = !data.writable
+  const claimFor = (domain: string) => data.domains.find((entry) => entry.domain === domain)
+  const githubFor = (username: string) => data.github.find((entry) => entry.username.toLowerCase() === username.toLowerCase())
+
+  return (
+    <Panel title="Verify your identity" description="A verified domain or GitHub account shows next to your name and adds up to 20 trust points. Publish the proof, list the claim here, then restart the seller."
+      actions={<Button size="sm" variant="outline" disabled={check.isPending || (data.domains.length === 0 && data.github.length === 0)} onClick={() => check.mutate()}>{check.isPending ? 'Checking…' : 'Check now'}</Button>}>
+      <div className="gc-stack">
+        {readOnly && <p className="gc-seller-notice"><span className="gc-attention" aria-hidden="true" />{data.readOnlyReason}</p>}
+        {check.error ? <ErrorAlert error={check.error} title="Could not check" /> : null}
+        {domains.map((domain) => {
+          const claim = claimFor(domain)
+          return (
+            <div key={`d:${domain}`} className="gc-seller-claim">
+              <div className="gc-seller-claim__head"><span><strong>{domain}</strong> <span className="gc-fineprint">domain</span></span>
+                <span className="gc-inline">{claim ? <StatusBadge status={claim.status} /> : <Badge tone="neutral">Unsaved</Badge>}
+                  {!readOnly && <Button size="sm" variant="link" aria-label={`Remove ${domain}`} onClick={() => setDomains(domains.filter((entry) => entry !== domain))}>Remove</Button>}</span>
+              </div>
+              {claim?.status && !claim.status.verified && claim.status.error && <p className="gc-fineprint">Last check {formatRelative(claim.status.checkedAt)}: {claim.status.error}</p>}
+              {claim && (
+                <div className="gc-grid gc-grid--2">
+                  <CodeBlock label={`DNS TXT record on ${claim.txtName}`} code={claim.txtValue} />
+                  <CodeBlock label={`Or serve ${claim.wellKnownUrl}`} code={claim.wellKnownBody} />
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {github.map((entry) => {
+          const claim = githubFor(entry.username)
+          return (
+            <div key={`g:${entry.username}`} className="gc-seller-claim">
+              <div className="gc-seller-claim__head"><span><strong>github.com/{entry.username}</strong> <span className="gc-fineprint">GitHub</span></span>
+                <span className="gc-inline">{claim ? <StatusBadge status={claim.status} /> : <Badge tone="neutral">Unsaved</Badge>}
+                  {!readOnly && <Button size="sm" variant="link" aria-label={`Remove github.com/${entry.username}`} onClick={() => setGithub(github.filter((item) => item.username !== entry.username))}>Remove</Button>}</span>
+              </div>
+              {claim?.status && !claim.status.verified && claim.status.error && <p className="gc-fineprint">Last check {formatRelative(claim.status.checkedAt)}: {claim.status.error}</p>}
+              {claim && <CodeBlock label={`Commit antseed.json to github.com/${claim.username}/${claim.repository} (public), so it is served at ${claim.proofUrl}`} code={claim.proofBody} />}
+            </div>
+          )
+        })}
+        {domains.length === 0 && github.length === 0 && <p className="gc-muted">No claims yet.</p>}
+        {!readOnly && (
+          <div className="gc-grid gc-grid--2">
+            <div className="gc-inline">
+              <TextField size="sm" label="Add a domain" placeholder="example.com" value={newDomain} onChange={(event) => setNewDomain(event.target.value)} />
+              <Button size="sm" variant="outline" className="gc-seller-inline-button" disabled={!newDomain.trim()} onClick={() => { setDomains([...new Set([...domains, newDomain.trim().toLowerCase()])]); setNewDomain('') }}>Add</Button>
+            </div>
+            <div className="gc-inline">
+              <TextField size="sm" label="Add a GitHub account" placeholder="username or username/repository" value={newGithub} onChange={(event) => setNewGithub(event.target.value)} />
+              <Button size="sm" variant="outline" className="gc-seller-inline-button" disabled={!newGithub.trim()} onClick={() => {
+                const [username, repository] = newGithub.trim().replace(/^@/, '').replace(/^https?:\/\/github\.com\//, '').split('/')
+                if (username && !github.some((item) => item.username.toLowerCase() === username.toLowerCase())) setGithub([...github, { username, repository: repository || username }])
+                setNewGithub('')
+              }}>Add</Button>
+            </div>
+          </div>
+        )}
+        {saved && !changed && <p className="gc-seller-notice" role="status"><span className="gc-attention" aria-hidden="true" />Saved to config.json. Restart the seller to announce the claims; buyers then check them.</p>}
+        {save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
+        {!readOnly && (
+          <div className="gc-actions">
+            <span className="gc-fineprint gc-actions__note">{changed ? 'Applies when the seller restarts.' : 'No changes.'}</span>
+            <Button disabled={!changed || save.isPending} onClick={() => save.mutate({ domains, github })}>{save.isPending ? 'Saving…' : 'Save'}</Button>
+          </div>
+        )}
+      </div>
+    </Panel>
+  )
+}

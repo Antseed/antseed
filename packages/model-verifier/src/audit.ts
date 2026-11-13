@@ -1,6 +1,15 @@
 import { randomInt } from 'node:crypto'
 import {
+  ThinkingDiscoveryError,
+  discoverThinkingSuppression,
+  isKbfTokenLimitFinishReason,
+  reportedReasoningTokens,
+  stripKbfThinkBlocks,
+  thinkingStrategyRequest,
+  THINKING_DISCOVERY_PROBES,
+  THINKING_DISCOVERY_TIMEOUT_MS,
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_LOW_COVERAGE_RETRIES,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
@@ -9,6 +18,9 @@ import {
   computeMatchVector,
   getKbfPromptVariant,
   isKbfSamplingFieldRejection,
+  isKbfThinkingSuppressionRejection,
+  kbfTargetThinkingSuppression,
+  hasMissingKbfAnswers,
   parseKbfAnswers,
   subsetReferenceSelfTest,
   verifyKbf,
@@ -16,6 +28,9 @@ import {
   type KbfProbe,
   type KbfReferenceV1,
   type MatchEntry,
+  type ThinkingDiscoveryAttemptV1,
+  type ThinkingDiscoveryProbe,
+  type ThinkingDiscoveryStrategy,
 } from '@antseed/fingerprints'
 import type { ModelBatchRequest, ModelEndpoint } from './endpoint.js'
 
@@ -28,8 +43,16 @@ export interface AuditOptions {
   probeCount?: number
   minimumPower?: number
   minCoverage?: number
+  /** Fraction of answers a DIFF needs (default 0.8); below it a significant result is UNDETERMINED. */
+  minDiffCoverage?: number
   concurrency?: number
   maxAttempts?: number
+  /**
+   * First discover how to turn off the endpoint's hidden reasoning, as the KBF reference code does
+   * for every endpoint it queries (default true); see `AuditThinkingDiscovery`. False sends the
+   * reference's thinking suppression and budget instead.
+   */
+  discoverThinking?: boolean
   signal?: AbortSignal
   /** Uniform integer in [0, max); injectable for deterministic tests. */
   randomInt?: (max: number) => number
@@ -42,6 +65,10 @@ export interface AuditBatchRecord {
   promptVariantId: string
   /** Sampling fields left out after the endpoint refused them; absent when the canonical request was sent. */
   omittedSamplingFields?: string[]
+  /** True when the endpoint refused the reference's thinking suppression and the batch was sent without it. */
+  omittedThinkingSuppression?: true
+  /** True when the kept reply stopped at the token limit; its answers are not scored. */
+  truncated?: true
   attempts: number
   status: 'succeeded' | 'failed'
   failureReason: string | null
@@ -51,8 +78,25 @@ export interface AuditBatchRecord {
   raw: { requestBase64: string; responseBase64: string; status: number } | null
 }
 
+/**
+ * How the endpoint's hidden reasoning was turned off (KBF reference code `discover_thinking_strategy`):
+ * each strategy was sent a fixed ten-question batch and the first giving at least 5 answers with
+ * zero reasoning tokens is used (`bare` may think); else `bare-expanded`, 50x the token budget.
+ */
+export interface AuditThinkingDiscovery {
+  method: 'kbf-reference-code-2026-09-30'
+  /** Strategy the batches used; null when none worked and the reference's suppression was sent. */
+  strategy: ThinkingDiscoveryStrategy | null
+  /** `max_tokens` of each batch request. */
+  maxTokens: number
+  attempts: ThinkingDiscoveryAttemptV1[]
+  failure?: string
+}
+
 export interface AuditResult {
   target: { endpoint: string; model: string }
+  /** Absent when the audit ran with `discoverThinking: false`. */
+  thinkingDiscovery?: AuditThinkingDiscovery
   referenceId: string
   referenceModel: string
   probeIds: string[]
@@ -73,6 +117,8 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
     ...(options.probeCount !== undefined ? { probeCount: options.probeCount } : {}),
   })
 
+  const thinkingDiscovery = options.discoverThinking === false ? null : await discoverEndpointThinking(options, model)
+  const settings = batchSettings(options.reference, thinkingDiscovery)
   const batches = chunk(probes, KBF_PROBES_PER_REQUEST)
   const records: AuditBatchRecord[] = new Array(batches.length)
   let next = 0
@@ -81,7 +127,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
     while (next < batches.length) {
       const batchIndex = next++
       const variantId = KBF_PROMPT_VARIANT_IDS[draw(KBF_PROMPT_VARIANT_IDS.length)]!
-      records[batchIndex] = await runBatch(options, model, batches[batchIndex]!, batchIndex, variantId)
+      records[batchIndex] = await runBatch(options, model, batches[batchIndex]!, batchIndex, variantId, settings)
       completed++
       options.onBatch?.({ completed, total: batches.length })
     }
@@ -96,10 +142,14 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   // A batch that never returned is a transport failure (null), not a wrong answer.
   const matchVector = computeMatchVector(answers, probes)
     .map((entry, index): MatchEntry => (transportFailed[index] ? null : entry))
-  const evaluation = verifyKbf(subset, { answers, matchVector }, { minCoverage: options.minCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minCoverage })
+  const evaluation = verifyKbf(subset, { answers, matchVector }, {
+    minCoverage: options.minCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minCoverage,
+    minDiffCoverage: options.minDiffCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  })
 
   return {
     target: { endpoint: options.endpoint.label, model },
+    ...(thinkingDiscovery ? { thinkingDiscovery } : {}),
     referenceId: options.reference.referenceId,
     referenceModel: options.reference.referenceModel,
     probeIds: probes.map((probe) => probe.id),
@@ -183,6 +233,7 @@ async function runBatch(
   probes: readonly KbfProbe[],
   batchIndex: number,
   promptVariantId: string,
+  settings: BatchSettings,
 ): Promise<AuditBatchRecord> {
   const maxAttempts = options.maxAttempts ?? 3
   const profile = options.reference.queryProfile
@@ -190,32 +241,62 @@ async function runBatch(
     model,
     system: getKbfPromptVariant(promptVariantId).systemPrompt,
     user: buildKbfPrompt(probes, 0, promptVariantId),
+    // No top_p: the KBF reference code sends only model, messages, temperature
+    // and max_tokens, and several upstreams reject top_p.
     temperature: profile.auditTemperature,
-    topP: profile.generationSettings.topP,
-    maxTokens: profile.maxTokensPerRequest,
+    maxTokens: settings.maxTokens,
+    ...(settings.timeoutMs ? { timeoutMs: settings.timeoutMs } : {}),
   }
+  // The endpoint's own discovered suppression, or the reference's without discovery.
+  const thinking = settings.thinking
+  if (thinking) {
+    if (Object.keys(thinking.overrides).length > 0) request.extraBody = { ...thinking.overrides }
+    if (thinking.assistantPrefill) request.assistantPrefill = thinking.assistantPrefill
+  }
+  let omittedThinking = false
   let lastFailure = 'not attempted'
   let omittedSampling = false
+  let calls = 0
+  let lowCoverageRetries = 0
+  let best: { record: AuditBatchRecord; scored: number } | null = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await options.endpoint.call(request, options.signal)
+    calls++
+    if (!result.ok && thinking && !omittedThinking && isKbfThinkingSuppressionRejection(result.status, result.message)) {
+      omittedThinking = true
+      delete request.extraBody
+      delete request.assistantPrefill
+      attempt--
+      continue
+    }
     if (!result.ok && !omittedSampling && isKbfSamplingFieldRejection(result.status, result.message)) {
       omittedSampling = true
       delete request.temperature
-      delete request.topP
       attempt--
       continue
     }
     if (result.ok) {
-      return {
+      // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
+      // A reply cut off at the token limit is not scored: the model was still writing, so
+      // its numbers may come from reasoning rather than answers. It is asked again below.
+      const truncated = isKbfTokenLimitFinishReason(result.finishReason)
+      const answers = truncated
+        ? probes.map(() => null)
+        : parseKbfAnswers(stripKbfThinkBlocks(result.text), probes.length)
+      const matches = computeMatchVector(answers, probes)
+      const scored = matches.filter((match) => match !== null).length
+      const record: AuditBatchRecord = {
         batchIndex,
         probeIds: probes.map((probe) => probe.id),
         promptVariantId,
         ...(omittedSampling ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
-        attempts: attempt,
+        ...(omittedThinking ? { omittedThinkingSuppression: true as const } : {}),
+        ...(truncated ? { truncated: true as const } : {}),
+        attempts: calls,
         status: 'succeeded',
         failureReason: null,
         completion: result.text,
-        answers: parseKbfAnswers(result.text, probes.length),
+        answers,
         usage: result.usage ?? null,
         raw: {
           requestBase64: Buffer.from(result.raw.request).toString('base64'),
@@ -223,11 +304,23 @@ async function runBatch(
           status: result.raw.status,
         },
       }
+      if (!best || scored > best.scored) best = { record, scored }
+      // Any missing or unreadable answer means the batch is asked again (up to twice),
+      // keeping the attempt with the most answers. KBF re-asks only above half missing;
+      // audits ask for every answer because a DIFF needs 80% of them.
+      if (hasMissingKbfAnswers(matches) && lowCoverageRetries < KBF_LOW_COVERAGE_RETRIES) {
+        lowCoverageRetries++
+        attempt--
+        continue
+      }
+      return { ...best.record, attempts: calls }
     }
     lastFailure = result.message
+    if (best) return { ...best.record, attempts: calls }
     if (!result.retryable || attempt === maxAttempts) break
     await delay(result.retryAfterMs ?? 1000 * 2 ** (attempt - 1), options.signal)
   }
+  if (best) return { ...best.record, attempts: calls }
   return {
     batchIndex,
     probeIds: probes.map((probe) => probe.id),
@@ -239,6 +332,114 @@ async function runBatch(
     answers: probes.map(() => null),
     usage: null,
     raw: null,
+  }
+}
+
+interface BatchSettings {
+  thinking: { overrides: Record<string, unknown>; assistantPrefill?: string } | null
+  maxTokens: number
+  timeoutMs?: number
+}
+
+function batchSettings(reference: KbfReferenceV1, discovery: AuditThinkingDiscovery | null): BatchSettings {
+  const budget = reference.queryProfile.maxTokensPerRequest
+  if (!discovery || discovery.strategy === null) return { thinking: kbfTargetThinkingSuppression(reference), maxTokens: budget }
+  const request = thinkingStrategyRequest(discovery.strategy)
+  const thinking = Object.keys(request.overrides).length === 0 && !request.assistantPrefill
+    ? null
+    : { overrides: request.overrides, ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}) }
+  return {
+    thinking,
+    maxTokens: discovery.maxTokens,
+    // An endpoint that thinks on every request gets as long per request as discovery gave it.
+    ...(discovery.strategy === 'bare-expanded' ? { timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS } : {}),
+  }
+}
+
+/**
+ * `discover_thinking_strategy` from the KBF reference code, run on the audited endpoint as the
+ * reference code runs it on every endpoint it queries. When nothing works (the endpoint is down or
+ * refuses every request), the batches send the reference's suppression and record what went wrong.
+ */
+async function discoverEndpointThinking(options: AuditOptions, model: string): Promise<AuditThinkingDiscovery> {
+  const budget = options.reference.queryProfile.maxTokensPerRequest
+  let omitTemperature = false
+  // An endpoint that failed every try of two strategies in a row with no answer is down, not
+  // refusing a field. One failed strategy is not enough: a brief outage would drop the discovery.
+  let unreachable: { status: number | null; failure: string } | null = null
+  let outages = 0
+  const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
+    if (unreachable) return { ok: false, ...unreachable, failure: `not sent, endpoint unreachable: ${unreachable.failure}` }
+    let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
+    // As in the reference code: 429, 5xx and network errors are tried up to three times, and any
+    // other 4xx means the endpoint refuses this strategy.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const call: ModelBatchRequest = {
+        model,
+        system: getKbfPromptVariant().systemPrompt,
+        user: buildKbfPrompt(THINKING_DISCOVERY_PROBES),
+        maxTokens,
+        // An endpoint not suppressed yet is still thinking, so this is the slowest request sent.
+        timeoutMs: THINKING_DISCOVERY_TIMEOUT_MS,
+        ...(omitTemperature ? {} : { temperature: 0 }),
+        ...(Object.keys(request.overrides).length > 0 ? { extraBody: { ...request.overrides } } : {}),
+        ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
+      }
+      const result = await options.endpoint.call(call, options.signal)
+      if (result.ok) {
+        outages = 0
+        return {
+          ok: true,
+          content: result.text,
+          reasoningTokens: reportedReasoningTokens(Buffer.from(result.raw.response).toString('utf8')),
+          truncated: isKbfTokenLimitFinishReason(result.finishReason),
+        }
+      }
+      // A 2xx without completion text is an answer with nothing parseable (the model ran out of
+      // tokens thinking), as the reference code counts it, not a failure to retry.
+      if (result.status !== undefined && result.status >= 200 && result.status < 300) {
+        outages = 0
+        return { ok: true, content: null, reasoningTokens: 0 }
+      }
+      failure = { status: result.status ?? null, failure: result.message.slice(0, 300) }
+      if (!omitTemperature && isKbfSamplingFieldRejection(result.status, result.message)) {
+        omitTemperature = true
+        continue
+      }
+      if (!result.retryable) {
+        outages = 0
+        return { ok: false, ...failure }
+      }
+      if (attempt < 3) await delay(result.retryAfterMs ?? 5000 * 3 ** (attempt - 1), options.signal)
+    }
+    if (failure.status === null || failure.status >= 500 || failure.status === 429) {
+      outages += 1
+      if (outages >= 2) unreachable = failure
+    }
+    return { ok: false, ...failure }
+  }
+  try {
+    const found = await discoverThinkingSuppression({
+      model,
+      label: options.endpoint.label,
+      supportsPrefill: options.endpoint.supportsPrefill ?? true,
+      probe,
+    })
+    return {
+      method: 'kbf-reference-code-2026-09-30',
+      strategy: found.strategy,
+      maxTokens: Math.max(budget, found.maxTokens ?? 0),
+      attempts: found.attempts,
+    }
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    return {
+      method: 'kbf-reference-code-2026-09-30',
+      strategy: null,
+      maxTokens: budget,
+      attempts: error instanceof ThinkingDiscoveryError ? error.attempts : [],
+      failure: error instanceof Error ? error.message : String(error),
+    }
   }
 }
 

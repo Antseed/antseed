@@ -3,6 +3,7 @@ import {
   CANONICAL_KBF_DOMAINS,
   type CanonicalKbfDomainKey,
 } from './canonical-kbf-domains.js'
+import { findAuditedModelKey } from './audited-models.js'
 
 const PEER_ID_PATTERN = /^[0-9a-fA-F]{40}$/
 const canonicalDomainKeys = new Set<string>(CANONICAL_KBF_DOMAINS.map((domain) => domain.key))
@@ -94,13 +95,16 @@ export const VerifierModelUpstreamSchema = strictObject({
   pricing: VerifierModelPricingSchema.optional(),
 })
 
-export const VerifierReferenceModelSchema = strictObject({
-  enabled: z.boolean().optional(),
-  serviceAliases: uniqueStringsSchema(
-    'must be a string array when provided',
-    'must not duplicate the model service or another alias',
-  ).optional(),
-  upstreamModel: nonEmptyStringSchema,
+const excludedDomainsSchema = z.array(canonicalDomainSchema).superRefine((domains, context) => {
+  if (new Set(domains).size !== domains.length) {
+    context.addIssue({ code: 'custom', message: 'must not contain duplicates' })
+  }
+  if (domains.length >= CANONICAL_KBF_DOMAINS.length) {
+    context.addIssue({ code: 'custom', message: 'must leave at least one canonical KBF domain enabled' })
+  }
+})
+
+const modelSettingsShape = {
   pricing: VerifierModelPricingSchema.optional(),
   referenceRoute: VerifierAntseedReferenceRouteSchema.optional(),
   referenceProvider: VerifierReferenceProviderSchema.optional(),
@@ -109,14 +113,27 @@ export const VerifierReferenceModelSchema = strictObject({
     'must be a string array when provided',
     'must not contain duplicates',
   ).optional(),
-  excludedDomains: z.array(canonicalDomainSchema).superRefine((domains, context) => {
-    if (new Set(domains).size !== domains.length) {
-      context.addIssue({ code: 'custom', message: 'must not contain duplicates' })
-    }
-    if (domains.length >= CANONICAL_KBF_DOMAINS.length) {
-      context.addIssue({ code: 'custom', message: 'must leave at least one canonical KBF domain enabled' })
-    }
-  }).optional(),
+  excludedDomains: excludedDomainsSchema.optional(),
+}
+
+/**
+ * Optional settings for one built-in audited model (`verifier.models.<model>`). The model list
+ * itself and each model's reference id are built in (`audited-models.ts`).
+ */
+export const VerifierModelSettingsSchema = strictObject({
+  ...modelSettingsShape,
+  /** No longer supported: every auditor audits every model assigned to it. */
+  enabled: z.unknown().optional(),
+})
+
+/** A built-in audited model merged with the verifier's settings for it. */
+export const VerifierReferenceModelSchema = strictObject({
+  ...modelSettingsShape,
+  serviceAliases: uniqueStringsSchema(
+    'must be a string array when provided',
+    'must not duplicate the model service or another alias',
+  ).optional(),
+  upstreamModel: nonEmptyStringSchema,
 })
 
 export const VerifierContrastModelSchema = strictObject({
@@ -134,9 +151,6 @@ export const VerifierContrastSelectionSchema = strictObject({
   minimumIntelligenceIndex: z.number().finite().min(0).optional(),
 })
 
-const verifierModelsSchema = z.record(z.string(), VerifierReferenceModelSchema)
-  .refine((models) => Object.keys(models).length > 0, 'must not be empty')
-
 const contrastModelBankSchema = z.record(z.string(), VerifierContrastModelSchema)
   .refine((models) => Object.keys(models).length > 0, 'must not be empty')
 
@@ -147,11 +161,18 @@ export const VerifierReferenceEndpointSchema = strictObject({
   sourceId: nonEmptyStringSchema,
   trust: z.enum(['smoke', 'trusted']),
   antseedPeerId: z.string().regex(PEER_ID_PATTERN, 'must be a 40-character hex peer id').optional(),
-  models: verifierModelsSchema,
+  /** No longer supported: the audited model list is built in. Per-model settings go in `verifier.models`. */
+  models: z.unknown().optional(),
   contrastModelBank: contrastModelBankSchema.optional(),
 })
 
+const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/
+
 export const VerifierConfigSchema = strictObject({
+  /** Auditor address used by `verifier run` for model assignment and by `submit`/`rewards`. */
+  auditor: z.string().trim().regex(ADDRESS_PATTERN, 'must be a 0x-prefixed 20-byte address').optional(),
+  /** Encrypted JSON keystore (e.g. a Foundry keystore) that signs `submit` and `rewards --claim`. */
+  keystore: nonEmptyStringSchema.optional(),
   referencesDir: nonEmptyStringSchema.optional(),
   banksDir: nonEmptyStringSchema.optional(),
   evidenceDir: nonEmptyStringSchema.optional(),
@@ -162,17 +183,51 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatches: positiveIntegerSchema.optional(),
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
+  /** How long one seller audit waits for its next answered batch before it gives up (default 10 minutes). */
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
-  /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
-  diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
+  /** The longest one seller audit may take in total, while the seller keeps answering (default 60 minutes). */
+  auditPeerMaxTimeoutMs: positiveIntegerSchema.optional(),
+  /**
+   * Close calls (first-audit p-value from 0.005 up to 0.20) get extra sets of never-seen probes and
+   * are decided on the sets pooled: 2 (default, `kbf-extension-v2`: a second extra set when the first
+   * pooled look is still a close call), 1 (`kbf-extension-v1`: one extra set) or 0 for the single-look rule.
+   */
+  closeCallExtensions: z.number().int().min(0).max(2).optional(),
+  /**
+   * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
+   * Accepted and ignored so configs written for earlier releases still load.
+   */
+  diffConfirmationRuns: z.unknown().optional(),
+  /**
+   * Sellers are audited only when their price for a model is at most its reference price
+   * (OpenRouter by default) times this ratio: 1 (default) is the reference price, 1.1 allows 10% more.
+   */
+  auditPriceRatio: z.number().finite().positive('must be a finite number > 0').optional(),
   contrastSelection: VerifierContrastSelectionSchema.optional(),
   upstreams: z.record(z.string(), VerifierUpstreamSchema).optional(),
   referenceEndpoint: VerifierReferenceEndpointSchema.optional(),
+  models: z.record(z.string(), VerifierModelSettingsSchema).optional(),
+  /**
+   * Testing only: audit just these built-in models instead of all of them, so `verifier run`,
+   * `verifier watch` and the round-robin assignment cover only these. Every auditor in a test must
+   * use the same list (the assignment depends on it); never set it on a production verifier.
+   */
+  testModels: z.array(z.string().min(1)).min(1).optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
+  /**
+   * KBF layout-filter passes for new banks (default 1; 0 turns it off). Each pass re-asks every new
+   * probe once the way audits do and drops probes whose answer moves. A bank keeps its own setting.
+   */
+  referenceLayoutFilterPasses: z.number().int().min(0, 'must be an integer >= 0').optional(),
+  /**
+   * When no thinking-suppression strategy works for a reference model, keep building in
+   * "bare" mode with a 50x token budget instead of stopping (KBF reference code: --allow-thinking).
+   */
+  referenceAllowThinking: z.boolean().optional(),
   referenceMaxConcurrentRequests: positiveIntegerSchema.optional(),
   referenceMaxConcurrentRequestsPerModel: positiveIntegerSchema.optional(),
   referenceMinimumProbeCount: probeCountSchema.optional(),
@@ -198,32 +253,54 @@ export const VerifierConfigSchema = strictObject({
   }
 
   const endpoint = config.referenceEndpoint
-  if (!endpoint) return
-
   const usesOpenRouterCatalog = config.contrastSelection?.catalogSource === 'openrouter'
+    || (config.contrastSelection?.catalogSource === undefined && endpoint?.contrastModelBank === undefined)
   const maxContrastModels = config.contrastSelection?.maxModels ?? 3
-  if (usesOpenRouterCatalog && endpoint.contrastModelBank !== undefined) {
+  if (config.contrastSelection?.catalogSource === 'openrouter' && endpoint?.contrastModelBank !== undefined) {
     context.addIssue({
       code: 'custom',
       path: ['referenceEndpoint', 'contrastModelBank'],
       message: 'must be omitted when contrastSelection.catalogSource is "openrouter"',
     })
   }
+  if (endpoint?.models !== undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['referenceEndpoint', 'models'],
+      message: 'is no longer supported: the audited model list is built into the CLI. '
+        + 'Remove it and put per-model settings (upstream, referenceProvider, contrastModels, excludedDomains) in verifier.models',
+    })
+  }
 
-  let requiresAutomaticSelection = false
-  for (const [service, model] of Object.entries(endpoint.models)) {
-    const modelPath = ['referenceEndpoint', 'models', service] as const
-    if (model.serviceAliases) {
-      const normalizedServices = [service, ...model.serviceAliases].map((value) => value.trim().toLowerCase())
-      if (new Set(normalizedServices).size !== normalizedServices.length) {
-        context.addIssue({
-          code: 'custom',
-          path: [...modelPath, 'serviceAliases'],
-          message: 'must not duplicate the model service or another alias',
-        })
-      }
+  const settingsKeys = new Map<string, string>()
+  for (const service of Object.keys(config.models ?? {})) {
+    const key = findAuditedModelKey(service)
+    if (!key) {
+      context.addIssue({
+        code: 'custom',
+        path: ['models', service],
+        message: 'is not an audited model; the audited model list is built into the CLI',
+      })
+    } else if (settingsKeys.has(key)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['models', service],
+        message: `configures the same model as verifier.models.${settingsKeys.get(key)}`,
+      })
+    } else {
+      settingsKeys.set(key, service)
     }
+  }
 
+  for (const [service, model] of Object.entries(config.models ?? {})) {
+    const modelPath = ['models', service] as const
+    if (model.enabled !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: [...modelPath, 'enabled'],
+        message: 'is no longer supported: an auditor audits every model assigned to it. Remove it',
+      })
+    }
     if (model.referenceProvider && model.referenceRoute) {
       context.addIssue({
         code: 'custom',
@@ -262,8 +339,6 @@ export const VerifierConfigSchema = strictObject({
         })
       }
     }
-
-    const hasExplicitContrasts = (model.contrastModels?.length ?? 0) > 0
     if ((model.contrastModels?.length ?? 0) > maxContrastModels) {
       context.addIssue({
         code: 'custom',
@@ -275,24 +350,9 @@ export const VerifierConfigSchema = strictObject({
       context.addIssue({
         code: 'custom',
         path: [...modelPath, 'pricing'],
-        message: 'must be omitted when contrastSelection.catalogSource is "openrouter"',
-      })
-    } else if (!usesOpenRouterCatalog && !hasExplicitContrasts && model.enabled !== false && model.pricing === undefined) {
-      context.addIssue({
-        code: 'custom',
-        path: [...modelPath, 'pricing'],
-        message: 'is required for automatic contrast-model selection',
+        message: 'must be omitted when contrast models come from the OpenRouter catalog',
       })
     }
-    if (model.enabled !== false && !hasExplicitContrasts) requiresAutomaticSelection = true
-  }
-
-  if (!usesOpenRouterCatalog && requiresAutomaticSelection && endpoint.contrastModelBank === undefined) {
-    context.addIssue({
-      code: 'custom',
-      path: ['referenceEndpoint', 'contrastModelBank'],
-      message: 'is required when an enabled model has no explicit contrastModels',
-    })
   }
 })
 
@@ -302,6 +362,7 @@ export type VerifierModelPricingConfig = z.infer<typeof VerifierModelPricingSche
 export type VerifierAntseedReferenceRouteConfig = z.infer<typeof VerifierAntseedReferenceRouteSchema>
 export type VerifierReferenceProviderConfig = z.infer<typeof VerifierReferenceProviderSchema>
 export type VerifierReferenceModelConfig = z.infer<typeof VerifierReferenceModelSchema>
+export type VerifierModelSettings = z.infer<typeof VerifierModelSettingsSchema>
 export type VerifierContrastModelConfig = z.infer<typeof VerifierContrastModelSchema>
 export type VerifierUpstreamConfig = z.infer<typeof VerifierUpstreamSchema>
 export type VerifierReferenceEndpointConfig = z.infer<typeof VerifierReferenceEndpointSchema>

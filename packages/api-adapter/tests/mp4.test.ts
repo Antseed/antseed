@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createMp4Inspector, nativeVideoDelivered } from '../src/index.js';
+import { createMp4Inspector, nativeVideoDelivered, videoSourceLengthProblem } from '../src/index.js';
+import { inlineVideoSeconds } from '../src/mp4.js';
 
 function box(type: string, body: Uint8Array): Uint8Array {
   const out = new Uint8Array(8 + body.length);
@@ -75,5 +76,80 @@ describe('nativeVideoDelivered for streamed downloads', () => {
     expect(delivered(mp4(2_000))).toBe(true);
     expect(delivered(mp4(10_000), 10, 'text/html')).toBe(false);
     expect(delivered(new TextEncoder().encode('not a video'), 10)).toBe(false);
+  });
+});
+
+describe('inline source length', () => {
+  const dataUrl = (bytes: Uint8Array, mime = 'video/mp4') => `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
+  const ftyp = () => box('ftyp', new TextEncoder().encode('isom\0\0\0\0isom'));
+  const u32 = (...values: number[]) => {
+    const out = new Uint8Array(values.length * 4);
+    values.forEach((value, i) => new DataView(out.buffer).setUint32(i * 4, value));
+    return out;
+  };
+  interface TrackOptions { handler?: string; samples?: [count: number, delta: number]; sampleSizes?: number; elstMs?: number }
+  /** A track (timescales 1000) whose media header, sample table and optional edit list say how long it is. */
+  const track = (ms: number, options: TrackOptions = {}) => {
+    const { handler = 'vide', samples = [1, ms], sampleSizes = samples[0], elstMs } = options;
+    const mdhd = mvhd(ms).slice();
+    mdhd.set(new TextEncoder().encode('mdhd'), 4);
+    const hdlr = box('hdlr', concat(u32(0, 0), new TextEncoder().encode(handler), u32(0, 0, 0), new Uint8Array(1)));
+    const stbl = box('stbl', concat(box('stts', u32(0, 1, ...samples)), box('stsz', u32(0, 0, sampleSizes))));
+    const edts = elstMs === undefined ? new Uint8Array(0) : box('edts', box('elst', u32(0, 1, elstMs, 0, 0x10000)));
+    return box('trak', concat(edts, box('mdia', concat(mdhd, hdlr, box('minf', stbl)))));
+  };
+  const file = (movieMs: number, ...tracks: Uint8Array[]) =>
+    dataUrl(concat(ftyp(), box('moov', concat(mvhd(movieMs), ...tracks)), box('mdat', new Uint8Array(64))));
+
+  it('measures the source in whole seconds, rounded down', () => {
+    expect(inlineVideoSeconds(file(12_700, track(12_700)))).toBe(12);
+    expect(inlineVideoSeconds(file(600, track(600)))).toBe(0);
+    expect(inlineVideoSeconds(file(5_000, track(5_000)).replace('video/mp4', 'video/quicktime'))).toBe(5);
+  });
+
+  it('measures a file whose headers claim a shorter length at its real one', () => {
+    // Every header says 3 s, the samples add up to 300 x 41 ms = 12.3 s.
+    expect(inlineVideoSeconds(file(3_000, track(3_000, { samples: [300, 41] })))).toBe(12);
+    // A sample table that counts 1 of 300 samples hides the rest: refused.
+    expect(inlineVideoSeconds(file(1_000, track(1_000, { samples: [1, 1_000], sampleSizes: 300 })))).toBeNull();
+  });
+
+  it('measures a trimmed track by its edit list, not its leftover samples', () => {
+    // A copy trim keeps samples from the previous keyframe (4.5 s) and plays 3.2 s of them.
+    expect(inlineVideoSeconds(file(3_200, track(4_500, { elstMs: 3_200 })))).toBe(3);
+  });
+
+  it('measures video tracks only', () => {
+    // A 7.2 s audio track next to a 5.1 s video: the upstream renders 5 s.
+    expect(inlineVideoSeconds(file(7_200, track(5_100), track(7_200, { handler: 'soun' })))).toBe(5);
+    expect(inlineVideoSeconds(file(7_200, track(7_200, { handler: 'soun' })))).toBeNull();
+  });
+
+  it('is null for anything but a readable inline MP4', () => {
+    expect(inlineVideoSeconds('https://example.com/source.mp4')).toBeNull();
+    expect(inlineVideoSeconds(file(5_000, track(5_000)).replace('video/mp4', 'image/png'))).toBeNull();
+    expect(inlineVideoSeconds('data:video/mp4;base64,!!!')).toBeNull();
+    expect(inlineVideoSeconds(dataUrl(new TextEncoder().encode('<html>')))).toBeNull();
+    expect(inlineVideoSeconds(undefined)).toBeNull();
+    // Fragmented: the samples are in moof boxes outside moov.
+    expect(inlineVideoSeconds(file(0, track(0), box('mvex', new Uint8Array(0))))).toBeNull();
+    // A track box that runs past moov hides the real track: refused, not measured from mvhd.
+    const overrun = track(12_000);
+    new DataView(overrun.buffer).setUint32(0, overrun.length + 100);
+    expect(inlineVideoSeconds(file(3_000, overrun))).toBeNull();
+    // A media timescale of 0 can't be read.
+    const noTimescale = track(12_000);
+    const at = Buffer.from(noTimescale).indexOf('mdhd') + 4 + 12;
+    new DataView(noTimescale.buffer).setUint32(at, 0);
+    expect(inlineVideoSeconds(file(3_000, noTimescale))).toBeNull();
+  });
+
+  it('asks for the measured length as duration', () => {
+    const source = file(12_700, track(12_700));
+    expect(videoSourceLengthProblem(source, 12)).toBeNull();
+    expect(videoSourceLengthProblem(source, '12s')).toBeNull();
+    expect(videoSourceLengthProblem(source, 3)).toContain('rounded down: 12');
+    expect(videoSourceLengthProblem(file(600, track(600)), 1)).toBeNull();
+    expect(videoSourceLengthProblem('https://example.com/source.mp4', 12)).toContain('inline');
   });
 });

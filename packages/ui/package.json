@@ -2,7 +2,7 @@
   "name": "@antseed/ui",
   "version": "0.0.0",
   "private": true,
-  "description": "Shared AntSeed React UI primitives and design tokens",
+  "description": "Shared Antseed React UI primitives and design tokens",
   "type": "module",
   "sideEffects": [
     "**/*.scss"
