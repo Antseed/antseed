@@ -4,9 +4,9 @@
  */
 
 import type { Message } from '@mariozechner/pi-ai';
-import { LOCALHOST_URL } from '../constants.js';
-import type { ChatServiceProtocol } from './service-catalog.js';
-import { PROXY_RUNTIME_API_KEY } from './proxy-service.js';
+import type { GatewayEndpoint } from '../gateway/service.js';
+import type { ChatServiceProtocol } from './gateway-model.js';
+import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 
 export function sanitizeGeneratedConversationTitle(value: unknown): string | null {
   const cleaned = String(value ?? '')
@@ -147,16 +147,14 @@ export function extractGeneratedTitleFromResponsesSse(text: string): string | nu
 }
 
 export async function generateConversationTitleWithModel({
-  proxyPort,
+  endpoint,
   serviceId,
   protocol,
-  peerId,
   userMessage,
 }: {
-  proxyPort: number;
+  endpoint: GatewayEndpoint;
   serviceId: string;
   protocol: ChatServiceProtocol;
-  peerId: string | null;
   userMessage: string;
 }): Promise<string | null> {
   const titleInstructions = 'You write short, accurate chat titles.';
@@ -168,12 +166,10 @@ export async function generateConversationTitleWithModel({
   ].join('\n');
   const headers: Record<string, string> = {
     'content-type': 'application/json',
-    authorization: `Bearer ${PROXY_RUNTIME_API_KEY}`,
-    'x-api-key': PROXY_RUNTIME_API_KEY,
+    ...gatewayRequestHeaders(endpoint),
   };
-  if (peerId) headers['x-antseed-pin-peer'] = peerId;
 
-  let url = `${LOCALHOST_URL}:${proxyPort}/v1/messages`;
+  let url = `${endpoint.origin}/v1/messages`;
   let body: Record<string, unknown> = {
     model: serviceId,
     max_tokens: 64,
@@ -182,7 +178,7 @@ export async function generateConversationTitleWithModel({
   };
 
   if (protocol === 'openai-chat-completions') {
-    url = `${LOCALHOST_URL}:${proxyPort}/v1/chat/completions`;
+    url = `${endpoint.origin}/v1/chat/completions`;
     body = {
       model: serviceId,
       max_tokens: 256,
@@ -192,7 +188,7 @@ export async function generateConversationTitleWithModel({
       ],
     };
   } else if (protocol === 'openai-responses') {
-    url = `${LOCALHOST_URL}:${proxyPort}/v1/responses`;
+    url = `${endpoint.origin}/v1/responses`;
     headers.accept = 'text/event-stream';
     body = {
       model: serviceId,

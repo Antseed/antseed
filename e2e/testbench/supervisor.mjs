@@ -781,6 +781,13 @@ async function main() {
     desktopInstance: name.slice(0, 40),
   });
   const specs = new Map(sellers.map((seller) => [seller.id, seller.spec]));
+  /** A seller's Base-like RPC link; only `chain.rpc: 'base'` has one. */
+  const sellerRpcLink = (id) => {
+    if (!specs.has(id)) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
+    const link = state.rpcLinks.get(`seller:${id}`);
+    if (!link) throw Object.assign(new Error(`Seller ${id} has no RPC link to hold a topUp() on; it needs chain.rpc: 'base'`), { statusCode: 409 });
+    return link;
+  };
   step('waiting for the buyer to discover the sellers');
   await discover(sellers.map((seller) => seller.id));
   log('Buyer discovered all testbench sellers');
@@ -875,6 +882,19 @@ async function main() {
         }
         if (Object.keys(faults).length) log(`Mock ${params.id} faults ${JSON.stringify(mock.setFaults(faults))} (control request)`);
         return { latencyMs: mock.state.latencyMs, faults: mock.state.faults };
+      },
+      // The seller's Base-like RPC link keeps its next topUp() transaction back (`arm`) until `drop` answers it with an
+      // error, unsent: a restart in between is a seller that stopped with a verified top-up not yet on-chain.
+      'GET /sellers/:id/top-up-hold': ({ params }) => sellerRpcLink(params.id).topUpHoldState(),
+      'POST /sellers/:id/top-up-hold': ({ params, body }) => {
+        const link = sellerRpcLink(params.id);
+        if (body.action === 'arm') {
+          void link.holdTopUp().then(() => log(`Seller ${params.id}: topUp() transaction held at the RPC link`));
+          log(`Seller ${params.id}: holding the next topUp() transaction (control request)`);
+          return link.topUpHoldState();
+        }
+        if (body.action === 'drop') return { dropped: link.dropHeldTopUp() };
+        throw Object.assign(new Error('action must be arm or drop'), { statusCode: 400 });
       },
       'GET /sellers/:id/deliveries': ({ params }) => {
         const mock = state.mocks.get(params.id);

@@ -29,6 +29,7 @@ export const GATES = {
   faults: { minOk: 0.7, allowedFailures: /^(500:server_error|502:Upstream error: fetch failed|stream-truncated)$/ },
   'restart-buyer': { minOk: 0.85, restart: true },
   'restart-seller': { minOk: 0.75, restart: true },
+  'restart-seller-topup': { minOk: 0.75, restart: true },
   'issue-1050': { minOk: 0.95 },
 };
 
@@ -177,7 +178,8 @@ async function chatRequest({ proxyUrl, model, load }, index, results, { tag, ran
  * (`[req:TAG]`, so the mock ledger can say what was delivered), a `streamRatio` share streamed, an `abortRatio`
  * share abandoned by the client, an `imageRatio` share as image generations. `restart` ({ atFraction, run })
  * pauses new requests while `run()` restarts a peer once that share of the load is done; requests already in
- * flight finish or fail on their own. Returns the per-request records, the client summary and restart timing.
+ * flight finish or fail on their own. With `when` (a promise) in place of `atFraction`, the restart starts once it
+ * resolves during the load, and never after. Returns the per-request records, the client summary and restart timing.
  * Each request's tag and draws are fixed up front by its index, so which worker sends it, and when, cannot change them.
  */
 export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, random = Math.random, onRequest }) {
@@ -186,11 +188,21 @@ export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, r
   const plans = Array.from({ length: load.requests }, () => ({ tag: randomTag(random), random: createPrng(Math.floor(random() * 2 ** 32)) }));
   const results = [];
   const startedAt = Date.now();
-  const restartAt = load.restart ? Math.floor(load.requests * load.restart.atFraction) : -1;
+  const restartAt = load.restart?.atFraction != null ? Math.floor(load.requests * load.restart.atFraction) : -1;
   let paused = null;
   let restart = null;
   let next = 0;
   let done = 0;
+  let finished = false;
+  const startRestart = () => {
+    const stoppedAt = Date.now();
+    restart = (async () => {
+      const info = await load.restart.run();
+      return { stoppedAt: stoppedAt - startedAt, downMs: Date.now() - stoppedAt, ...(info ?? {}) };
+    })();
+    paused = restart.finally(() => { paused = null; });
+  };
+  load.restart?.when?.then(() => { if (!restart && !finished) startRestart(); }, () => {});
   const worker = async () => {
     while (next < load.requests) {
       // Back to the limit check after a pause: the workers that waited may outnumber the requests left.
@@ -203,17 +215,11 @@ export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, r
         : await chatRequest({ proxyUrl, model, load }, index, results, plan);
       done += 1;
       onRequest?.(record);
-      if (done === restartAt && !restart) {
-        const stoppedAt = Date.now();
-        restart = (async () => {
-          const info = await load.restart.run();
-          return { stoppedAt: stoppedAt - startedAt, downMs: Date.now() - stoppedAt, ...(info ?? {}) };
-        })();
-        paused = restart.finally(() => { paused = null; });
-      }
+      if (done === restartAt && !restart) startRestart();
     }
   };
   await Promise.all(Array.from({ length: load.concurrency }, worker));
+  finished = true;
   const restartInfo = restart ? await restart : null;
   return { results, startedAt, loadMs: Date.now() - startedAt, restart: restartInfo, client: clientSummary(results, { startedAt, restart: restartInfo }) };
 }

@@ -17,6 +17,6 @@ export function resolveInstancePorts(instanceName) {
   return {
     renderer: 5174 + slot,
     payments: 3118 + slot,
-    systemProxy: 8378 + slot,
+    gateway: 9379 + slot,
   };
 }

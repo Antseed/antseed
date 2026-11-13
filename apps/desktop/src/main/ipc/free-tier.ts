@@ -7,7 +7,7 @@ import { sharedChainContext } from '../payments/shared-chain.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { mergeConfig, readConfig } from '../runtime/config-io.js';
-import { resolveStakingChain } from '../staking/configuration.js';
+import { resolveStakingChain } from '../payments/chain-config.js';
 import { getMainWindow } from '../ui/window.js';
 
 interface FreeTierSharing {
