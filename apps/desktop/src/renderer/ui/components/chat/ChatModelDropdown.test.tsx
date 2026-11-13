@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../../types/bridge';
-import { centeredScrollTop, holdEnterInSearch, modelLab, pickerTabFor } from './ChatModelDropdown';
+import { centeredScrollTop, holdEnterInSearch, initialPickerTab, modelLab, modelSummary, pickerLists, pickerTabFor } from './ChatModelDropdown';
 
 test('Enter in the model search does not submit the composer form around it', () => {
   const pressed = (key: string) => {
@@ -44,4 +44,29 @@ test('a row shows its lab only for models a known lab makes', () => {
   // An app's name inside a model id isn't a lab.
   assert.equal(modelLab(model({ id: 'goose-coder', label: 'goose-coder' })), null);
   assert.equal(modelLab(model({ id: 'kimi-router', label: 'Kimi router', router: { sellerName: 'Example Seller', priceUsdPerRequest: 0, models: 4 } })), null);
+});
+
+test('with the model in use not listed, the picker opens on a tab that has models', () => {
+  const image = model({ type: 'image' });
+  assert.equal(initialPickerTab(null, ['image']), 'image');
+  assert.equal(initialPickerTab(null, ['auto']), 'auto');
+  assert.equal(initialPickerTab(image, ['auto', 'text', 'image']), 'image');
+  assert.equal(initialPickerTab(null, ['auto', 'text']), 'text');
+});
+
+test('Free narrows Text and Image, never the routers on Auto', () => {
+  const router = model({ id: 'r', label: 'Router', router: { sellerName: null, priceUsdPerRequest: 0.001, models: 3 } });
+  const paid = model({ id: 'paid', label: 'Paid' });
+  const free = model({ id: 'free', label: 'Free', free: true });
+  const lists = pickerLists([router, paid, free], '', true);
+  assert.deepEqual(lists.auto, [router]);
+  assert.deepEqual(lists.text, [free]);
+});
+
+test('a row tells screen readers what its detail card shows', () => {
+  const kimi = model({ id: 'moonshotai/kimi-k3', label: 'Kimi K3', tee: true, supportsImages: true, sellers: 6, contextWindow: 256000, inputUsdPerMillion: 0.6, outputUsdPerMillion: 2.5 });
+  const summary = modelSummary(kimi);
+  for (const part of ['Moonshot', 'TEE', 'Vision', 'per M', '256k context', '6 sellers']) assert.ok(summary.includes(part), part);
+  const router = model({ id: 'r', label: 'Router', router: { sellerName: 'Example Seller', priceUsdPerRequest: 0, models: 4 } });
+  assert.equal(modelSummary(router), 'by Example Seller. Router. Free picks. picks from 4 models');
 });

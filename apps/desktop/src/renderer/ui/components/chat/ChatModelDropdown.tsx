@@ -41,19 +41,26 @@ type ChatModelDropdownProps = {
  * model id. Text models drive the conversation; image models switch Send to
  * image generation.
  */
-function renderModelPrice(model: ChatModel) {
+/** A model's price in words, and whether it reads as a tag (free) or plain text. */
+export function modelPrice(model: ChatModel): { text: string; tag?: 'free' | 'plain' } | null {
   if (model.router) {
     const price = model.router.priceUsdPerRequest;
     // Only the pick is free; the model it picks may charge.
-    if (price === 0) return <span className={styles.tag}>Free picks</span>;
-    return price ? `$${price} per pick` : null;
+    if (price === 0) return { text: 'Free picks', tag: 'plain' };
+    return price ? { text: `$${price} per pick` } : null;
   }
-  if (model.free) return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
-  if (model.minImageUsd) return `from $${model.minImageUsd} per image`;
+  if (model.free) return { text: 'Free', tag: 'free' };
+  if (model.minImageUsd) return { text: `from $${model.minImageUsd} per image` };
   // Not free to everyone, so a $0 price here is a stakers-only offer (the only sellers it has).
-  if (isFreeOffer(model)) return model.stakersOnlyFreeSellerIds?.length ? <span className={styles.tag}>Free for stakers</span> : null;
-  if (model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null) return `from ${formatPriceRange(model)}`;
+  if (isFreeOffer(model)) return model.stakersOnlyFreeSellerIds?.length ? { text: 'Free for stakers', tag: 'plain' } : null;
+  if (model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null) return { text: `from ${formatPriceRange(model)}` };
   return null;
+}
+
+function renderModelPrice(model: ChatModel) {
+  const price = modelPrice(model);
+  if (!price?.tag) return price?.text ?? null;
+  return <span className={`${styles.tag}${price.tag === 'free' ? ` ${styles.tagFree}` : ''}`}>{price.text}</span>;
 }
 
 /** The search box sits inside Home's composer form, where Enter would send the draft. */
@@ -74,6 +81,32 @@ export function pickerTabFor(model: ChatModel | null | undefined): PickerTab {
   return model?.type === 'image' ? 'image' : 'text';
 }
 
+/** The tab the picker opens on: the model in use's, or the first tab that lists anything. */
+export function initialPickerTab(selected: ChatModel | null | undefined, tabs: readonly PickerTab[]): PickerTab {
+  const own = pickerTabFor(selected);
+  return tabs.includes(own) || tabs.length === 0 ? own : tabs[0]!;
+}
+
+/** Each tab's rows. Free narrows Text and Image only: a router's pick is priced alone, and Auto has no Free toggle. */
+export function pickerLists(models: ChatModel[], query: string, freeOnly: boolean): Record<PickerTab, ChatModel[]> {
+  const { routers } = filterChatModels(models, query, null);
+  const { text, image } = filterChatModels(models, query, freeOnly ? 'free' : null);
+  return { auto: routers, text, image };
+}
+
+/** What a row's detail card shows, for screen readers, which skip the card. */
+export function modelSummary(model: ChatModel): string {
+  const lab = modelLab(model);
+  return [
+    model.router?.sellerName ? `by ${model.router.sellerName}` : lab,
+    modelTags(model).map((tag) => tag.label).join(', ') || null,
+    modelPrice(model)?.text,
+    model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k context` : null,
+    model.router?.models ? `picks from ${model.router.models} model${model.router.models === 1 ? '' : 's'}` : null,
+    !model.router && model.sellers > 0 ? `${model.sellers} seller${model.sellers === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join('. ');
+}
+
 /** The lab whose mark a row shows, or null for a model no known lab makes. */
 export function modelLab(model: ChatModel): string | null {
   if (model.router) return null;
@@ -91,9 +124,13 @@ function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'te
   return [
     model.router ? { label: 'Router', title: 'Picks the model for each message' } : null,
     model.free ? { label: 'Free', tone: 'free' as const } : null,
-    model.tee ? (model.teeEndToEnd
-      ? { label: 'TEE end to end', tone: 'tee' as const, title: 'Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE' }
-      : { label: 'TEE', tone: 'tee' as const, title: 'Some of its sellers run in a verified TEE; their model provider may not' }) : null,
+    model.tee ? {
+      label: model.teeEndToEnd ? 'TEE end to end' : 'TEE',
+      tone: 'tee' as const,
+      title: model.teeEndToEnd
+        ? 'Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE'
+        : 'Some of its sellers run in a verified TEE; their model provider may not',
+    } : null,
     model.freeForStakers ? { label: 'Free for stakers', title: 'Some sellers serve it free to their stakers' } : null,
     model.type === 'text' && model.supportsImages ? { label: 'Vision' } : null,
     model.reasoning ? { label: 'Reasoning' } : null,
@@ -131,10 +168,7 @@ export function ChatModelDropdown({
   const [freeOnly, setFreeOnly] = useState(false);
   const [tab, setTab] = useState<PickerTab>('text');
   const [hovered, setHovered] = useState<Hovered | null>(null);
-  const lists = useMemo(() => {
-    const { routers, text, image } = filterChatModels(models, query, freeOnly ? 'free' : null);
-    return { auto: routers, text, image };
-  }, [models, query, freeOnly]);
+  const lists = useMemo(() => pickerLists(models, query, freeOnly), [models, query, freeOnly]);
   // Tabs for the kinds the gateway lists at all, so a filter can't hide a tab.
   const tabs = useMemo(() => {
     const kinds = new Set(models.map(pickerTabFor));
@@ -153,7 +187,7 @@ export function ChatModelDropdown({
       return;
     }
     // Open on the tab of the model in use.
-    setTab(pickerTabFor(selected));
+    setTab(initialPickerTab(selected, tabs.map(([key]) => key)));
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- only when it opens
 
   useEffect(() => {
@@ -198,6 +232,7 @@ export function ChatModelDropdown({
         className={`${styles.pickerRow}${active ? ` ${styles.active}` : ''}`}
         role="option"
         aria-selected={active}
+        aria-label={`${model.label}. ${modelSummary(model)}`}
         onMouseEnter={(event) => showDetails(model, event.currentTarget)}
         onFocus={(event) => showDetails(model, event.currentTarget)}
         onClick={() => {
