@@ -170,10 +170,15 @@ export function findAdvertisedServiceOffer(
 ): NetworkServiceOffer | null {
   const requestedKey = canonicalModelKey(requestedService)
   if (!requestedKey) return null
-  const offers = buildNetworkServiceOffers([peer], { includeFailing }).filter((offer) => (
-    offer.provider.toLowerCase() === provider.toLowerCase()
-    && isRequestedServiceMatch(offer.serviceId, requestedService)
-  ))
+  const wantedProvider = provider.toLowerCase()
+  // Only the matching services are built: a seller announces hundreds, and
+  // route planning asks for one of them per seller, per model.
+  const offers = buildNetworkServiceOffers([peer], {
+    includeFailing,
+    modelKey: requestedKey,
+    only: (offerProvider, serviceId) => offerProvider.toLowerCase() === wantedProvider
+      && isRequestedServiceMatch(serviceId, requestedService),
+  })
   if (CODING_ONLY_SERVICE_ID.test(requestedService)) {
     return offers[0] ?? null
   }

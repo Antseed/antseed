@@ -92,6 +92,7 @@ export class ChannelStore {
     updateReceiptAck: Database.Statement;
     getActiveChannels: Database.Statement;
     getActiveChannelsByBuyer: Database.Statement;
+    getBuyerPaymentChannelsByStatus: Database.Statement;
     getTotalsByPeerAndBuyer: Database.Statement;
     deleteServiceTotals: Database.Statement;
     insertServiceTotal: Database.Statement;
@@ -244,6 +245,9 @@ export class ChannelStore {
       ),
       getActiveChannels: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC',
+      ),
+      getBuyerPaymentChannelsByStatus: this._db.prepare(
+        'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND status = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
       ),
       getActiveChannelsByBuyer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC',
@@ -432,6 +436,14 @@ export class ChannelStore {
     const rows = this._db.prepare(
       'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
     ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
+  /** A buyer's channels in one status, newest first, read through the buyer/status index. */
+  getBuyerPaymentChannelsByStatus(buyerEvmAddr: string, status: string): StoredChannel[] {
+    const rows = this._stmts.getBuyerPaymentChannelsByStatus.all(
+      CHANNEL_ROLE.BUYER, buyerEvmAddr, status, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF,
+    ) as ChannelRow[];
     return rows.map(rowToChannel);
   }
 
