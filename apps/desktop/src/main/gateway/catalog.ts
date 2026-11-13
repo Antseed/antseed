@@ -111,6 +111,16 @@ function imageInputSellerIds(peers: Array<Record<string, unknown>>): string[] {
   return sellerIds(peers, peerTakesImages);
 }
 
+/** Each seller's price per image, for the seller picker: the route preview prices tokens only. */
+function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string, number> {
+  const prices: Record<string, number> = {};
+  for (const peer of peers) {
+    const price = finiteNumber(peer['minImageUsdPerImage']);
+    if (typeof peer['peerId'] === 'string' && price !== null && price >= 0) prices[normalizeSellerId(peer['peerId'])] = price;
+  }
+  return prices;
+}
+
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
   for (const key of ['context_length', 'context_window']) {
     const value = Number(entry[key]);
@@ -181,6 +191,7 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
   const contextWindow = entryContextWindow(entry);
   const imageSellers = imageInputSellerIds(peers);
   const reasoningSellers = sellerIds(peers, peerReasons);
+  const imagePrices = type === 'image' ? imageUsdBySeller(peers) : {};
   return {
     id: entry.id,
     label: name,
@@ -189,6 +200,7 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
     supportsImages: entrySupportsImages(entry, peers),
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
+    ...(Object.keys(imagePrices).length > 0 ? { imageUsdBySeller: imagePrices } : {}),
     ...entryOfferSummary(entry, peers, options),
     ...(entryReasonsEverywhere(entry, peers) ? { reasoningEverySeller: true } : {}),
     ...(reasoningSellers.length > 0 ? { reasoningSellerIds: reasoningSellers } : {}),

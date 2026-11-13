@@ -25,6 +25,12 @@ type ChatModelDropdownProps = {
   onOpen?: () => void;
   onOpenChange?: (open: boolean) => void;
   onRetry?: () => void;
+  /**
+   * Video and decision models can't be picked: the chat model runs them through
+   * its skills. Puts a prompt for one into the message box; without it those
+   * rows only copy the prompt.
+   */
+  onUsePrompt?: (prompt: string) => void;
   /** Caps the menu's height where there is less room below than in the chat header. */
   menuMaxHeight?: number;
   /**
@@ -73,12 +79,23 @@ export function centeredScrollTop(itemTop: number, itemHeight: number, menuHeigh
   return Math.max(0, itemTop - headerHeight - (menuHeight - headerHeight - itemHeight) / 2);
 }
 
-export type PickerTab = 'auto' | 'text' | 'image';
+export type PickerTab = 'auto' | 'text' | 'image' | 'video' | 'decision';
+
+/** Tabs whose models the chat model runs through a skill: listed, never picked. */
+export const PROMPT_TABS: ReadonlySet<PickerTab> = new Set(['video', 'decision']);
 
 /** The tab a model is listed under: routers under Auto, then by type. */
 export function pickerTabFor(model: ChatModel | null | undefined): PickerTab {
   if (model?.router) return 'auto';
-  return model?.type === 'image' ? 'image' : 'text';
+  if (model?.type === 'image' || model?.type === 'video' || model?.type === 'decision') return model.type;
+  return 'text';
+}
+
+/** The message that has the chat model run a video or decision model through its skill. */
+export function skillPrompt(model: ChatModel): string {
+  return model.type === 'video'
+    ? `Make a video with the model ${model.id} (antseed-videos skill) of: `
+    : `Use the decision model ${model.id} (antseed-decisions skill) to answer: `;
 }
 
 /** The tab the picker opens on: the model in use's, or the first tab that lists anything. */
@@ -90,10 +107,17 @@ export function initialPickerTab(selected: ChatModel | null | undefined, tabs: r
 /** Each tab's rows. Free narrows Text and Image only: a router's pick is priced alone, and Auto has no Free toggle. */
 export function pickerLists(models: ChatModel[], query: string, freeOnly: boolean): Record<PickerTab, ChatModel[]> {
   const { routers, text, image } = filterChatModels(models, query, null);
+  const needle = query.trim().toLowerCase();
+  const ofType = (type: string) => models
+    .filter((model) => model.type === type && !model.router
+      && (!needle || model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle)))
+    .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
   return {
     auto: routers,
     text: freeOnly ? text.filter((model) => model.free) : text,
     image: freeOnly ? image.filter((model) => model.free) : image,
+    video: ofType('video'),
+    decision: ofType('decision'),
   };
 }
 
@@ -133,8 +157,9 @@ export function modelInlineDetails(model: ChatModel): string {
   const price = modelPrice(model);
   const context = contextValue(model);
   const picks = routerModelCount(model);
-  // Free and TEE are tags on the row already.
-  const tags = modelTags(model).filter((tag) => !tag.tone && tag.label !== 'Router').map((tag) => tag.label);
+  // Free and the TEE tag are on the row already.
+  const onRow = new Set(['Router', 'Free', teeTag(model)?.label]);
+  const tags = modelTags(model).filter((tag) => !onRow.has(tag.label)).map((tag) => tag.label);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
     price && price.tag !== 'free' ? price.text : null,
@@ -156,18 +181,25 @@ function ModelMark({ model, size }: { model: ChatModel; size: number }) {
   return <BrandIcon brand={modelLab(model) ? resolveBrandKey(model.id, model.label) : 'generic'} size={size} />;
 }
 
+// As the gateway console words it (TeeBadge): Full when the attestation reaches
+// the model provider, Partial when only the seller node is attested.
+const FULL_TEE = 'Full TEE: the seller node and its model provider both run in verified TEEs.';
+const PARTIAL_TEE = 'Partial TEE: only the seller node runs in a verified TEE. Its model provider is not TEE-attested and may see requests.';
+
+/** The model's TEE tag: Full TEE when some seller is sealed end to end, Partial TEE when only seller nodes are. */
+function teeTag(model: ChatModel): { label: string; tone?: 'tee'; title: string } | null {
+  if (!model.tee) return null;
+  return model.teeEndToEnd
+    ? { label: 'Full TEE', tone: 'tee', title: FULL_TEE }
+    : { label: 'Partial TEE', title: PARTIAL_TEE };
+}
+
 /** Tags for the detail card, most telling first. */
 function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'tee'; title?: string }> {
   return [
     model.router ? { label: 'Router', title: 'Picks the model for each message' } : null,
     model.free ? { label: 'Free', tone: 'free' as const } : null,
-    model.tee ? {
-      label: model.teeEndToEnd ? 'TEE end to end' : 'TEE',
-      tone: 'tee' as const,
-      title: model.teeEndToEnd
-        ? 'Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE'
-        : 'Some of its sellers run in a verified TEE; their model provider may not',
-    } : null,
+    teeTag(model),
     model.freeForStakers ? { label: 'Free for stakers', title: 'Some sellers serve it free to their stakers' } : null,
     model.type === 'text' && model.supportsImages ? { label: 'Vision' } : null,
     model.reasoning ? { label: 'Reasoning' } : null,
@@ -190,6 +222,7 @@ export function ChatModelDropdown({
   menuMaxHeight,
   menuAnchor = 'trigger',
   menuPlacement = 'below',
+  onUsePrompt,
 }: ChatModelDropdownProps) {
   const [open, setOpen] = useState(false);
   useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
@@ -207,11 +240,18 @@ export function ChatModelDropdown({
   const [hovered, setHovered] = useState<Hovered | null>(null);
   // No room for the card beside the menu (a narrow window, Home's full-width menu): rows carry the details.
   const [cardRoom, setCardRoom] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copiedId) return undefined;
+    const timer = setTimeout(() => setCopiedId(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copiedId]);
   const lists = useMemo(() => pickerLists(models, query, freeOnly), [models, query, freeOnly]);
   // Tabs for the kinds the gateway lists at all, so a filter can't hide a tab.
   const tabs = useMemo(() => {
     const kinds = new Set(models.map(pickerTabFor));
-    return ([['auto', 'Auto'], ['text', 'Text'], ['image', 'Image']] as const).filter(([key]) => kinds.has(key));
+    return ([['auto', 'Auto'], ['text', 'Text'], ['image', 'Image'], ['video', 'Video'], ['decision', 'Decision']] as const)
+      .filter(([key]) => kinds.has(key));
   }, [models]);
   const hasFree = useMemo(() => models.some((model) => model.free), [models]);
   const shown = lists[tab];
@@ -289,6 +329,7 @@ export function ChatModelDropdown({
 
   function renderModel(model: ChatModel) {
     const active = model === selected;
+    const tee = teeTag(model);
     return (
       <button
         key={model.id}
@@ -313,10 +354,55 @@ export function ChatModelDropdown({
         )}
         <span className={styles.pickerTags}>
           {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
-          {model.tee && <span className={`${styles.tag} ${styles.tagTee}`}>{model.teeEndToEnd ? 'TEE end to end' : 'TEE'}</span>}
+          {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
           {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
         </span>
       </button>
+    );
+  }
+
+  /** A video or decision row: not pickable; it starts or copies a prompt for the chat model. */
+  function renderPromptModel(model: ChatModel) {
+    const prompt = skillPrompt(model);
+    return (
+      <div
+        key={model.id}
+        className={`${styles.pickerRow} ${styles.pickerPromptRow}${cardRoom ? '' : ` ${styles.pickerRowTall}`}`}
+        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
+      >
+        <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
+        {cardRoom ? <span className={styles.pickerName}>{model.label}</span> : (
+          <span className={styles.pickerNameGroup}>
+            <span className={styles.pickerName}>{model.label}</span>
+            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
+          </span>
+        )}
+        <span className={styles.pickerTags}>
+          {onUsePrompt && (
+            <button
+              type="button"
+              className={styles.pickerAction}
+              aria-label={`Use ${model.label} in the chat`}
+              onClick={() => {
+                setOpen(false);
+                onUsePrompt(prompt);
+              }}
+            >
+              Use in chat
+            </button>
+          )}
+          <button
+            type="button"
+            className={styles.pickerAction}
+            aria-label={`Copy a prompt for ${model.label}`}
+            onClick={() => {
+              void navigator.clipboard?.writeText(prompt).then(() => setCopiedId(model.id)).catch(() => {});
+            }}
+          >
+            {copiedId === model.id ? 'Copied' : 'Copy prompt'}
+          </button>
+        </span>
+      </div>
     );
   }
 
@@ -404,7 +490,7 @@ export function ChatModelDropdown({
                   aria-label="Search models"
                 />
               </label>
-              {hasFree && tab !== 'auto' && (
+              {hasFree && (tab === 'text' || tab === 'image') && (
                 <button
                   type="button"
                   className={`${styles.freeFilter}${freeOnly ? ` ${styles.freeFilterOn}` : ''}`}
@@ -443,8 +529,13 @@ export function ChatModelDropdown({
               )}
             </div>
           )}
+          {!error && PROMPT_TABS.has(tab) && shown.length > 0 && (
+            <div className={styles.modelDropdownStatus}>
+              {tab === 'video' ? 'Video models' : 'Decision models'} run through your chat model: start a prompt for one, or copy it.
+            </div>
+          )}
           {!error && shown.length === 0 && <div className={styles.modelDropdownStatus}>{emptyText}</div>}
-          {shown.map(renderModel)}
+          {shown.map(PROMPT_TABS.has(tab) ? renderPromptModel : renderModel)}
           {hovered && renderDetails(hovered)}
         </div>
       )}
