@@ -163,7 +163,9 @@ test('the thinking form follows the per-model table', () => {
     ['claude-3-7-sonnet@20250219', 'budget'],
     ['claude-3-5-sonnet-20241022', null],
     ['claude-3-opus-latest', null],
-    ['claude-mythos-preview', null],
+    // Mythos Preview has no version in its id.
+    ['claude-mythos-preview', 'adaptive'],
+    ['anthropic.claude-mythos-preview', 'adaptive'],
     ['gpt-5.5', null],
   ];
   for (const [modelId, mode] of cases) assert.equal(anthropicThinkingMode(modelId), mode, modelId);
@@ -177,6 +179,8 @@ test('thinking levels map to effort, xhigh only where the model has it', () => {
   assert.equal(anthropicEffort('xhigh', 'claude-opus-4-7'), 'xhigh');
   assert.equal(anthropicEffort('xhigh', 'claude-opus-4-6'), 'high');
   assert.equal(anthropicEffort('xhigh', 'claude-sonnet-4-6'), 'high');
+  assert.equal(anthropicEffort('xhigh', 'claude-mythos-5-2'), 'xhigh');
+  assert.equal(anthropicEffort('xhigh', 'claude-mythos-preview'), 'high');
 });
 
 test('shaping keeps other output_config fields and the rest of the body', () => {

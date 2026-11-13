@@ -61,7 +61,8 @@ const THINKING_THRESHOLDS = {
   sonnet: { adaptive: [4, 6], xhigh: [5, 0], budget: [3, 7] },
   haiku: { adaptive: [5, 0], xhigh: [5, 0], budget: [4, 0] },
   fable: { adaptive: [0, 0], xhigh: [0, 0], budget: [0, 0] },
-  mythos: { adaptive: [0, 0], xhigh: [0, 0], budget: [0, 0] },
+  // Mythos Preview (no version in its id, read as 0.0) is adaptive without `xhigh`.
+  mythos: { adaptive: [0, 0], xhigh: [5, 0], budget: [0, 0] },
 } as const satisfies Record<string, { adaptive: Version; xhigh: Version; budget: Version }>;
 
 type ClaudeFamily = keyof typeof THINKING_THRESHOLDS;
@@ -76,6 +77,8 @@ function isClaudeFamily(name: string | undefined): name is ClaudeFamily {
 const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?!\d)/;
 // Claude 3 ids name the version first: `claude-3-7-sonnet-20250219`, `claude-3-opus-latest`.
 const VERSION_FIRST_CLAUDE_RE = /claude[-._](\d)(?:[-._](\d))?[-._](opus|sonnet|haiku)(?![a-z])/;
+// Mythos Preview has no version in its id.
+const MYTHOS_PREVIEW_RE = /claude[-._]mythos[-._]preview(?![\da-z])/;
 
 function claudeVersion(modelId: string): { family: ClaudeFamily; version: Version } | null {
   const id = splitPinnedModel(modelId).modelId.trim().toLowerCase();
@@ -85,7 +88,7 @@ function claudeVersion(modelId: string): { family: ClaudeFamily; version: Versio
   if (versionFirst && isClaudeFamily(versionFirst[3])) {
     return { family: versionFirst[3], version: [Number(versionFirst[1]), Number(versionFirst[2] ?? 0)] };
   }
-  return null;
+  return MYTHOS_PREVIEW_RE.test(id) ? { family: 'mythos', version: [0, 0] } : null;
 }
 
 function atLeast(version: Version, since: Version): boolean {
