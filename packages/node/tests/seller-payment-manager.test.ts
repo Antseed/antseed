@@ -750,6 +750,32 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)).toMatchObject({ reserveMaxAmount: null, latestReserveAuthSig: null, latestReserveDeadline: null });
   });
 
+  it('asks the buyer for spend above its signed amount as soon as a top-up lands', async () => {
+    const channelId = makeChannelId(125);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    // The buyer signed the confirmed deposit; the last response cost more, and the top-up covers it.
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 1_000_000n, reserveMaxAmount: '1000000',
+    }), mux);
+    manager.recordSpend(channelId, 1_050_000n);
+    vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    const needAuthsBefore = mux.sentNeedAuths.length;
+
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '25'.repeat(32),
+    }), mux);
+    expect(await manager.waitForRunningTopUps(1_000)).toBe(true);
+
+    expect(manager.getReserveMax(channelId)).toBe(2_000_000n);
+    expect(mux.sentNeedAuths.slice(needAuthsBefore)).toEqual([expect.objectContaining({
+      channelId,
+      requiredCumulativeAmount: '1050000',
+      currentAcceptedCumulative: '1000000',
+    })]);
+  });
+
   it('ignores a replay of the top-up being submitted, so it is never sent again after it lands', async () => {
     const channelId = makeChannelId(121);
     await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {

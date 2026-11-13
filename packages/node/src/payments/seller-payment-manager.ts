@@ -185,6 +185,8 @@ export class SellerPaymentManager {
    */
   private readonly _activeBuyers = new Set<string>();
   private readonly _buyerDisconnectMarkers = new Map<string, object>();
+  /** buyerPeerId -> the payment connection of its latest SpendingAuth, to prompt it after a top-up lands. */
+  private readonly _buyerPaymentMuxes = new Map<string, PaymentMux>();
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
@@ -606,6 +608,7 @@ export class SellerPaymentManager {
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
+    this._buyerPaymentMuxes.set(buyerPeerId, paymentMux);
     const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer. A one-off
     // channel gets its own lock so opening it (reserve + topUp on-chain) never
@@ -1762,6 +1765,7 @@ export class SellerPaymentManager {
             this._topUpInFlight.delete(channelId);
           }
           if (outcome === 'permanent-failure') break;
+          if (outcome === 'succeeded') this._promptCatchUpAfterTopUp(buyerPeerId, channelId);
           // After a success, a higher top-up queued meanwhile goes next; after
           // a retryable failure, only a newer request retries it.
           if (outcome === 'succeeded' ? !this._pendingTopUp.has(channelId) : !this._topUpsWanted.has(channelId)) break;
@@ -1774,6 +1778,31 @@ export class SellerPaymentManager {
       }
     });
     this._topUpsRunning.set(channelId, run);
+  }
+
+  /**
+   * After a top-up lands, ask the buyer to sign any spend above what it has
+   * signed. While the top-up was pending the buyer signed only up to the
+   * confirmed deposit, and it can't see the top-up land: without this prompt
+   * the rest stays unsigned until the next request, or the close, asks.
+   */
+  private _promptCatchUpAfterTopUp(buyerPeerId: string, channelId: string): void {
+    const paymentMux = this._buyerPaymentMuxes.get(buyerPeerId);
+    if (!paymentMux || this._connectionsClosed) return;
+    const spent = this._spent.get(channelId) ?? 0n;
+    const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
+    if (spent <= accepted || spent > (this._reserveMax.get(channelId) ?? 0n)) return;
+    try {
+      paymentMux.sendNeedAuth({
+        channelId,
+        requiredCumulativeAmount: spent.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        deposit: this._channelStore.getChannel(channelId)?.authMax ?? '0',
+      });
+      debugLog(`[SellerPayment] Asked for the catch-up auth after topUp: channel=${channelId.slice(0, 18)}... spent=${spent} accepted=${accepted}`);
+    } catch (err) {
+      debugWarn(`[SellerPayment] Failed to send catch-up NeedAuth after topUp: ${this._formatError(err)}`);
+    }
   }
 
   /**
@@ -2243,6 +2272,7 @@ export class SellerPaymentManager {
   // ── Disconnect handling ───────────────────────────────────────
 
   onBuyerDisconnect(buyerPeerId: string): void {
+    this._buyerPaymentMuxes.delete(buyerPeerId);
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) return;
     this._buyerDisconnectMarkers.set(buyerPeerId, {});
