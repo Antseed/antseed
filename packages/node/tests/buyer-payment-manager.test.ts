@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { id, keccak256, Wallet } from 'ethers';
 import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
+import { BuyerRequestHandler } from '../src/buyer-request-handler.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -413,6 +414,62 @@ describe('BuyerPaymentManager', () => {
       // The seller asked for nothing above what is signed.
       expect(manager.refusedClaimTotal(sellerPeerId)).toBe(0n);
       expectPriceMismatch(await laterRequest(negotiator, sellerPeerId, channelId), 'charged more than the prices it announces');
+    });
+
+    it('holds the live channel only, not for a delayed 402 about a channel it replaced', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-under-quoted-old-channel');
+      const oldChannelId = `0x${'ab'.repeat(32)}`;
+      expect(oldChannelId).not.toBe(channelId);
+
+      expectPriceMismatch(await underQuoted(negotiator, sellerPeerId, 'old-channel', {
+        requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId: oldChannelId,
+      }), 'asked for a higher price than it announces');
+
+      expect(manager.hasRefusedClaim(sellerPeerId)).toBe(false);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '50000',
+      }, mux);
+      expect(lastSigned()).toBe('50000');
+    });
+
+    it('holds the channel when the seller asks for payment on a route priced at zero', async () => {
+      const { sellerPeerId, negotiator, channelId } = await openWithVerifiedResponse('seller-zero-route-open');
+      const signedBefore = mux.sentSpendingAuths.length;
+      const freePeer = {
+        peerId: toPeerId(sellerPeerId),
+        providers: ['openai'],
+        providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+      };
+      const connection = { state: 'open', send: vi.fn(), on: vi.fn(), off: vi.fn() };
+      const handler = new BuyerRequestHandler({}, {
+        localPeerId: identity.peerId,
+        negotiator,
+        verificationStorage: null,
+        verificationSampler: null,
+        getConnection: async () => connection as never,
+        getMux: () => ({
+          sendProxyRequest: (request: { requestId: string }, onResponse: (value: unknown, metadata: { streamingStart: boolean }) => void) =>
+            onResponse(paymentRequired(request.requestId, {
+              requiredCumulativeAmount: '95000', currentSpent: '95000', currentAcceptedCumulative: '20010', channelId,
+            }), { streamingStart: false }),
+          cancelProxyRequest: vi.fn(),
+          activeRequestCount: () => 1,
+        }) as never,
+        getVerificationMux: () => ({}) as never,
+        registerPaymentMux: vi.fn(),
+      });
+
+      const answer = await handler.sendRequest(freePeer, chat('zero-route-open'));
+      expect(answer.statusCode).toBe(409);
+      expect(Buffer.from(answer.body).toString()).toContain('announces as free');
+
+      // The catch-up NeedAuth the seller sends with its 402, naming no request.
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, currentAcceptedCumulative: '20010', deposit: '1000000', requiredCumulativeAmount: '95000',
+      }, mux);
+      await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 95_000n, 'zero-route-open');
+      expect(mux.sentSpendingAuths).toHaveLength(signedBefore);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_010n);
     });
 
     it('records nothing when there is no channel to hold', async () => {

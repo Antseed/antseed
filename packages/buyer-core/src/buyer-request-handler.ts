@@ -264,8 +264,9 @@ export class BuyerRequestHandler {
         }
         // Without a price the buyer cannot check what it is charged, so it
         // sends nothing: the seller serves nothing and nothing is signed.
+        // An announced token price must be readable; with none, a unit model prices the route.
         const priceKnown = billingRoute
-          ? Boolean(billingRoute.tokenPricing || billingRoute.unitModel)
+          ? (billingRoute.tokenPricing ? isReadableTokenPricing(billingRoute.tokenPricing) : Boolean(billingRoute.unitModel))
           : Boolean(findPeerServicePricing(peer, requestedService)
             || Object.values(peer.providerServiceUnitBillingModels ?? {}).some((models) => models.services[requestedService]));
         if (!priceKnown) {
@@ -586,6 +587,9 @@ export class BuyerRequestHandler {
         `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
         `which it announces as free — refusing instead of negotiating`,
       );
+      // Hold an open channel too: the seller's catch-up NeedAuth would otherwise
+      // be signed from its overdraft window. The 402's target is not read here.
+      negotiator.bpm?.refusePaymentDemand(peer.peerId, null);
       return adaptPeerResponse(paymentNegotiationFailureResponse(response, 'price_mismatch', PRICE_MISMATCH_MESSAGE));
     }
 
@@ -887,8 +891,9 @@ function selectTokenPricing(
 ): SelectedBillingRoute["tokenPricing"] {
   const providerPricing = peer.providerPricing?.[provider];
   const pricing = providerPricing?.services?.[service] ?? providerPricing?.defaults;
-  // An unreadable price is unknown: never billed by, never read as free.
-  if (pricing) return isReadableTokenPricing(pricing) ? pricing : undefined;
+  // An unreadable price stays on the route, so the send gate refuses it
+  // instead of billing by another price (isZeroTokenPricing never reads it as free).
+  if (pricing) return pricing;
   return announcedDefaultPricing(peer);
 }
 

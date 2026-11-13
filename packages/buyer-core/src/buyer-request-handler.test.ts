@@ -66,7 +66,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     trackFreeUsageRequestService: vi.fn(),
     prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn(), refusePaymentDemand: vi.fn() },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -331,6 +331,8 @@ describe('BuyerRequestHandler route priced at zero', () => {
     });
     expect(handle402).not.toHaveBeenCalled();
     expect(sendProxyRequest).toHaveBeenCalledOnce();
+    // An open channel is held, so the seller's catch-up NeedAuth is not signed either.
+    expect(negotiator.bpm.refusePaymentDemand).toHaveBeenCalledWith(freePeer.peerId, null);
     expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith(freePeer.peerId, 'zero-route-request');
     expect(negotiator.bpm.releaseRequestCoverage.mock.invocationCallOrder[0])
       .toBeLessThan(negotiator.bpm.markRequestCovered.mock.invocationCallOrder[0]!);
@@ -429,6 +431,26 @@ describe('BuyerRequestHandler route with no announced price', () => {
       const unreadable = peer({ providerPricing } as Partial<BuyerPeerView>);
       expectRefusedBeforeSending(await handled.handler.sendRequest(unreadable, chat()), handled);
     }
+  });
+
+  it('refuses a unit-billed route whose announced token price it cannot read, instead of billing its tokens at another price', async () => {
+    const handled = makeHandler([response(200, { ok: true })]);
+    const perImage = peer({
+      defaultInputUsdPerMillion: 3,
+      defaultOutputUsdPerMillion: 15,
+      providerPricing: {
+        openai: {
+          defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 },
+          services: { 'image-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: -1 } },
+        },
+      },
+      providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },
+      providerServiceUnitBillingModels: {
+        openai: { services: { 'image-model': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } } },
+      },
+    });
+    const answer = await handled.handler.sendRequest(perImage, request('/v1/images/generations', { model: 'image-model', prompt: 'a cube', n: 1 }));
+    expectRefusedBeforeSending(answer, handled);
   });
 
   it('still sends a request priced by a readable provider price', async () => {

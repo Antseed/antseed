@@ -53,7 +53,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
     refusedClaimTotal: vi.fn().mockReturnValue(0n),
-    refusePriceAboveAnnounced: vi.fn(),
+    refusePaymentDemand: vi.fn(),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     replayReserveAmount: vi.fn().mockReturnValue(100_000n),
@@ -768,6 +768,39 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    it('answers price_mismatch instead of replacing a channel held while its recovery read the chain', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue({ ...makeActiveSession(peer.peerId), authMax: '500' });
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(500n);
+      // The hold makes the catch-up sign nothing.
+      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+      (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      });
+      const readChain = channelsClient.getSession as ReturnType<typeof vi.fn>;
+      const onChain = await readChain();
+      // A parallel request's 402 holds the channel while this one reads the chain.
+      readChain.mockImplementation(async () => {
+        (bpm.refusedClaimTotal as ReturnType<typeof vi.fn>).mockReturnValue(75_000n);
+        return onChain;
+      });
+
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: paymentRequiredPayload.minBudgetPerRequest,
+        suggestedAmount: paymentRequiredPayload.suggestedAmount,
+        requiredCumulativeAmount: '600',
+      }), peer, conn, makeRequest());
+
+      expect(result.action).toBe('return');
+      const answer = (result as { response: SerializedHttpResponse }).response;
+      expect(answer.statusCode).toBe(409);
+      expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+    });
+
     it('retires a missing on-chain session before negotiating a new reserve', async () => {
       const activeSession = makeActiveSession(peer.peerId);
       (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(activeSession);
@@ -996,6 +1029,8 @@ describe('BuyerPaymentNegotiator', () => {
           inputUsdPerMillion: 3,
           outputUsdPerMillion: 15,
         }), peer, conn, makeRequest()));
+        // The channel is held, so the catch-up NeedAuth for the same target is not signed either.
+        expect(bpm.refusePaymentDemand).toHaveBeenCalledWith(peer.peerId, 85119n);
       });
 
       it('refuses a cached-input price above the input price when the route announces no cached price', async () => {

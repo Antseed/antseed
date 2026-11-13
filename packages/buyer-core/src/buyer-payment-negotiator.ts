@@ -991,6 +991,11 @@ export class BuyerPaymentNegotiator {
         ? safeBigInt(String(directPaymentBody.requiredCumulativeAmount))
         : null;
 
+    // The channel the 402 is about, and the live one (see the stale-channel check below).
+    const paymentChannelId = buffered?.channelId
+      ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
+    const session = this._bpm.getActiveSession(peer.peerId);
+
     // The seller states what it charges for this request. Above the price the
     // route was chosen at, it would charge more than it announces: refuse
     // before any channel, extension or signature. A one-off (video) 402
@@ -1013,8 +1018,11 @@ export class BuyerPaymentNegotiator {
         `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
       );
       // The seller's catch-up NeedAuth for the same target would otherwise be
-      // signed from the open channel's overdraft window.
-      this._bpm.refusePriceAboveAnnounced(peer.peerId, requiredCumulativeTarget);
+      // signed from the open channel's overdraft window. A delayed 402 about a
+      // channel since replaced says nothing about the live one.
+      if (paymentChannelId == null || paymentChannelId.toLowerCase() === session?.sessionId.toLowerCase()) {
+        this._bpm.refusePaymentDemand(peer.peerId, requiredCumulativeTarget);
+      }
       return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
     }
     // With no price at all the buyer cannot check what it is charged: it opens,
@@ -1093,9 +1101,6 @@ export class BuyerPaymentNegotiator {
     // Retiring on it would ghost the replacement (with requests in parallel,
     // an exhausted 402 for the old channel often lands after another request
     // replaced it): wait for the replacement's negotiation and retry on it.
-    const paymentChannelId = buffered?.channelId
-      ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
-    const session = this._bpm.getActiveSession(peer.peerId);
     if (session && paymentChannelId != null && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase()) {
       debugLog(
         `[BuyerNegotiator] ${channelExhausted ? 'Exhausted ' : ''}402 from ${peer.peerId.slice(0, 12)}... is about channel ` +
@@ -1151,6 +1156,10 @@ export class BuyerPaymentNegotiator {
       }
       if (recovered) {
         return { action: 'retry' };
+      }
+      // Held while it recovered (a parallel request's 402): never retire or replace it.
+      if (this._bpm.hasRefusedClaim(peer.peerId)) {
+        return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
       }
 
       // Older stored sessions for this seller (e.g. from a reserve that never
@@ -1918,6 +1927,8 @@ export class BuyerPaymentNegotiator {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
       this._assertLiveChannel(peer.peerId, session.sessionId);
     }
+    // Held while this read the chain: close, extend and retire nothing (the caller answers price_mismatch).
+    if (this._bpm.hasRefusedClaim(peer.peerId)) return false;
     const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
     const deposit = onChain.channel.deposit;
     if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
@@ -2000,6 +2011,8 @@ export class BuyerPaymentNegotiator {
         // lands, instead of the channel being retired with a top-up on its way.
         cumulativeAfter = await signedAfterExtend();
       }
+      // Held while the catch-up was signed: it signed nothing for that reason, not a wedged channel.
+      if (cumulativeAfter <= cumulativeBefore && this._bpm.hasRefusedClaim(peer.peerId)) return false;
       if (cumulativeAfter <= cumulativeBefore) {
         // extendCurrentSpendingAuth was a no-op — the overdraft window and reserve ceiling
         // are both wedged. Retire the session so the caller negotiates a fresh channel
