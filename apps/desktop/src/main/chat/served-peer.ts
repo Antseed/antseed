@@ -7,6 +7,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 const SERVED_PEER_HEADER = 'x-antseed-peer-id';
+/** The model the seller served: under a router, the one the router picked. */
+const SERVED_MODEL_HEADER = 'x-antseed-service';
 /** The event names that end a Responses or Anthropic Messages stream. */
 const END_EVENTS: ReadonlySet<string> = new Set(['response.completed', 'message_stop']);
 
@@ -35,7 +37,7 @@ export function isStreamEndLine(line: string): boolean {
 }
 
 type ChatRun = {
-  onPeer: (peerId: string) => void;
+  onPeer: (peerId: string, servedModel: string | null) => void;
   /** Reading of the latest stream response; true when it reached its end. */
   lastStream: Promise<boolean> | null;
 };
@@ -72,7 +74,7 @@ function observeFetch(): void {
     const run = currentRun.getStore();
     if (!run) return response;
     const peerId = servedPeerFromResponse(response);
-    if (peerId) run.onPeer(peerId);
+    if (peerId) run.onPeer(peerId, servedModelFromResponse(response));
     if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
       run.lastStream = reachedStreamEnd(response.clone());
     }
@@ -85,7 +87,7 @@ function observeFetch(): void {
  * inside it. `lastStreamEnded` resolves once `run` is over: false when the
  * last stream it read stopped before its end.
  */
-export function trackChatRun<T>(onPeer: (peerId: string) => void, run: () => Promise<T>): { result: Promise<T>; lastStreamEnded: () => Promise<boolean> } {
+export function trackChatRun<T>(onPeer: (peerId: string, servedModel: string | null) => void, run: () => Promise<T>): { result: Promise<T>; lastStreamEnded: () => Promise<boolean> } {
   observeFetch();
   const chatRun: ChatRun = { onPeer, lastStream: null };
   return {
@@ -96,4 +98,8 @@ export function trackChatRun<T>(onPeer: (peerId: string) => void, run: () => Pro
 
 export function servedPeerFromResponse(response: Response): string | null {
   return response.headers.get(SERVED_PEER_HEADER)?.trim() || null;
+}
+
+export function servedModelFromResponse(response: Response): string | null {
+  return response.headers.get(SERVED_MODEL_HEADER)?.trim() || null;
 }

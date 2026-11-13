@@ -28,6 +28,19 @@ test('reports the seller for requests inside a run, and only those', async () =>
   assert.deepEqual(seen, ['abc123']);
 });
 
+test('reports the model the seller served with it, as a router picked it', async () => {
+  respond = () => new Response('{}', { headers: { 'x-antseed-peer-id': 'abc123', 'x-antseed-service': 'glm-5.3-flash' } });
+  const seen: Array<[string, string | null]> = [];
+  await trackChatRun((peerId, servedModel) => seen.push([peerId, servedModel]), async () => {
+    await fetch('http://gateway.test/v1/chat/completions');
+  }).result;
+  respond = () => new Response('{}', { headers: { 'x-antseed-peer-id': 'abc123' } });
+  await trackChatRun((peerId, servedModel) => seen.push([peerId, servedModel]), async () => {
+    await fetch('http://gateway.test/v1/chat/completions');
+  }).result;
+  assert.deepEqual(seen, [['abc123', 'glm-5.3-flash'], ['abc123', null]]);
+});
+
 for (const end of ['data: [DONE]', 'data: {"choices":[{"finish_reason":"stop"}]}', 'event: response.completed', 'event: message_stop']) {
   test(`a stream ending with ${end} reached its end`, async () => {
     assert.equal(await streamEnded(() => `data: {"text":"hi"}\n\n${end}\n\n`), true);
