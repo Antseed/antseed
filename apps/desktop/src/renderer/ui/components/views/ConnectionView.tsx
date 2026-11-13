@@ -1,5 +1,5 @@
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
-import { VprBackTitle, VprCard } from '../vpr/VprKit';
+import { VprCard, VprPage } from '../vpr/VprKit';
 import styles from './DiagnosticsView.module.scss';
 
 type ConnectionViewProps = {
@@ -26,13 +26,14 @@ export function ConnectionView({ onSelectView }: ConnectionViewProps) {
   ];
 
   return (
-    <section className={`view view-connection ${styles.view}`} role="tabpanel">
+    <section className="view view-connection view-pinned-header" role="tabpanel">
+      <VprPage
+        title="Connection details"
+        backFallback="help"
+        subtitle="Node status, network stats and data sources."
+        action={<span className={`${styles.badge} ${badgeTone}`}>{connectionMeta.label}</span>}
+      >
       <div className={styles.stack}>
-        <div className={styles.headRow}>
-          <VprBackTitle title="Connection" fallback="help" />
-          <span className={`${styles.badge} ${badgeTone}`}>{connectionMeta.label}</span>
-        </div>
-
         {sections.map((section) => (
           <VprCard key={section.title} className={styles.card}>
             <span className={styles.cardTitle}>{section.title}</span>
@@ -40,6 +41,7 @@ export function ConnectionView({ onSelectView }: ConnectionViewProps) {
           </VprCard>
         ))}
       </div>
+      </VprPage>
     </section>
   );
 }

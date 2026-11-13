@@ -438,14 +438,29 @@ function isRateLimited(body: unknown): boolean {
   })
 }
 
-/** An RPC URL without its path or query, which is where providers put API keys. */
+/**
+ * An RPC URL reduced to its http(s) origin, safe to print or log. Providers put API keys in the
+ * path, the query or the userinfo, so any of those becomes "/…". Anything that is not an http(s)
+ * URL becomes a fixed placeholder, never the input or the parser's error.
+ */
 export function redact(url: string): string {
+  let parsed: URL
   try {
-    const parsed = new URL(url)
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname.length > 1 || parsed.search ? '/…' : ''}`
+    parsed = new URL(url)
   } catch {
-    return 'RPC endpoint'
+    return '<invalid RPC URL>'
   }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '<invalid RPC URL>'
+  const hidden = parsed.pathname.length > 1 || parsed.search || parsed.hash || parsed.username || parsed.password
+  return `${parsed.origin}${hidden ? '/…' : ''}`
+}
+
+/**
+ * `text` with every http(s) URL in it passed through `redact`. For error messages that can quote
+ * an RPC URL, such as ethers' `info.requestUrl`. A URL runs to the next space, quote or angle bracket.
+ */
+export function redactUrlsIn(text: string): string {
+  return text.replace(/\bhttps?:\/\/[^\s"'<>`]+/gi, (url) => redact(url))
 }
 
 function retryAfter(value: string | null | undefined): number | null {

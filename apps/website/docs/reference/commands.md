@@ -47,6 +47,9 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed gateway start` | Run the gateway and its console locally; also starts a buyer | `--port` (8379), `--host` (127.0.0.1), `--public-url <url>`, `--no-buyer`, `--buyer-port`, `--no-console`, `--x402-facilitator <url\|cdp\|payai>`, `--topup-min-usd` (2), `--topup-max-usd` (500) |
+| `antseed gateway service install` | Run `gateway start` as a background service that starts at login and restarts if it exits: a launchd agent on macOS, a systemd user service on Linux; no root. Run it again to update the service | `--port` (8379), `--wait <seconds>` (120; 0 to not wait) |
+| `antseed gateway service status` | Whether the service is installed, running and answering; exits 1 when it isn't answering | `--port` (8379) |
+| `antseed gateway service uninstall` | Stop the service and remove it; keys, wallets and settings stay | |
 | `antseed gateway console-link` | Print the one-time owner setup link, or the console URL once it has an owner | `--recover`, `--member <id\|email>`, `--public-url`, `--port` |
 | `antseed gateway peers` | Sellers the running buyer knows, with trust, TEE, prices and this gateway's 24 h stats | `--model <id>`, `--tee` |
 | `antseed gateway settings show` | Show buyer and observability settings | `--reveal` |
@@ -69,6 +72,7 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | `antseed gateway key topup <id> on\|off` | Allow or stop x402 top-ups of the key's wallet | |
 | `antseed gateway key rotate <id>` | Issue a new secret; the old one stops working | |
 | `antseed gateway key revoke <id>` | Revoke a key immediately | |
+| `antseed gateway key usage <ids...>` | Requests, spend and savings summed over keys, revoked ones included | `--json` |
 | `antseed gateway key policy show <id>` | Show both policy layers and the effective policy | `--preset <slug>` |
 | `antseed gateway key policy set <id>` | Set a key's routing policy | `--layer admin\|owner`, [policy flags](#routing-policy-flags) |
 | `antseed gateway key policy clear <id>` | Remove a key's policy at one layer | `--layer admin\|owner` |

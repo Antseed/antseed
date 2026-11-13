@@ -1,6 +1,6 @@
 {
   "name": "@antseed/ants",
-  "version": "0.1.60",
+  "version": "0.1.65",
   "description": "ANTS staking dashboard and service layer for the Antseed CLI",
   "files": [
     "dist"
@@ -9,8 +9,7 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./service": "./dist/service/index.js",
-    "./invite-allowance": "./dist/invite-allowance.js"
+    "./service": "./dist/service/index.js"
   },
   "scripts": {
     "build": "npm run build:server && npm run build:web",

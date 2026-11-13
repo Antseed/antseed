@@ -42,12 +42,6 @@ export async function referredBuyers(ctx: AntsContext): Promise<ReferredBuyersVi
   return referredBuyersFromIndexed(await referrerFromExplorer(ctx));
 }
 
-/** `referral` and `referredBuyers` from one Antscan request. */
-export async function referrerOverview(ctx: AntsContext, dataDir: string): Promise<{ referral: ReferralView; buyers: ReferredBuyersView }> {
-  const indexed = await referrerFromExplorer(ctx);
-  return { referral: await referralFromIndexed(ctx, dataDir, indexed), buyers: referredBuyersFromIndexed(indexed) };
-}
-
 function referrerFromExplorer(ctx: AntsContext): Promise<IndexedReferrer | null> {
   return ctx.chain.referralsAddress ? indexedReferrer(ctx.indexer(), ctx.buyerAddress) : Promise.resolve(null);
 }

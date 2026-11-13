@@ -5,9 +5,11 @@ Relays native Venice video requests to the Venice API.
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-venice-video
 export VENICE_VIDEO_API_KEY=<seller-api-key>
+antseed config seller add-provider video --plugin venice-video
 ```
+
+`add-provider` installs the plugin.
 
 - `VENICE_VIDEO_API_KEY`: Venice API key, sent as a bearer token
 - `VENICE_VIDEO_BASE_URL`: optional, defaults to `https://api.venice.ai`
@@ -33,7 +35,7 @@ Venice's model list does not say which image-to-video models accept a last frame
 
 With `antseed seller start`, set this per service as `seller.providers.<name>.services.<id>.capabilities`.
 
-At startup the seller reads Venice's video model list (`GET /api/v1/models?type=video`) and announces the queue fields each model takes as `supportedParameters`: `prompt`, `duration`, `resolution` and `aspect_ratio` when the model lists values, `audio` when it is configurable, and the frame fields for the `video.inputs` you announce (`image_url`, `end_image_url`, `reference_image_urls`). When you announce none, image-to-video models get `image_url`, plus `end_image_url` when the startup check says the model takes a last frame. Buyers send only the fields listed. A service that sets `supportedParameters` itself keeps it. If the list cannot be read or does not include the model, the service is announced without it.
+At startup the seller reads Venice's video model list (`GET /api/v1/models?type=video`) and announces the queue fields each model takes as `supportedParameters`: `prompt`, `duration`, `resolution` and `aspect_ratio` when the model lists values, `audio` when it is configurable, and the frame fields for the `video.inputs` you announce (`image_url`, `end_image_url`, `reference_image_urls`, `reference_video_urls`). A model announced with `audio` and `reference_image` or `reference_video` also gets `reference_audio_urls` (Venice takes reference audio only next to a reference image or video). When you announce none, image-to-video models get `image_url`, plus `end_image_url` when the startup check says the model takes a last frame. Buyers send only the fields listed. A service that sets `supportedParameters` itself keeps it. If the list cannot be read or does not include the model, the service is announced without it.
 
 ### Aspect ratio and audio
 
@@ -49,6 +51,17 @@ Buyers price a create that leaves out `aspect_ratio` at the first announced one,
 - `video.audio`: `false` (a silent service) refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default). While Venice's model list hasn't been read (or lacks the model), a create without `audio` is refused instead, so it must say `audio: false`.
 
 A service with `video.audio: true` accepts `audio: false`; give it its own price if Venice charges less. Options you don't announce are relayed as sent.
+
+### Reference videos
+
+Venice bills `reference_video_urls` by their length on top of the clip (Seedance 2.5 R2V, 10 s at 720p: $2.89 alone, $4.32 with 15 s of reference video; `POST /api/v1/video/quote` takes `reference_video_total_duration`). A create that sends reference videos is priced with `reference_video: "true"` (metadata v17): add a flat `video_generations` charge for the most reference video Venice takes (30 s in total), set at the shortest clip, where it adds the most (720p 16:9: +$4.72 at 4 s, +$1.70 at 30 s), plus a $0 `video_generations` component so creates without one still match:
+
+```json
+{ "unit": "video_generations", "priceUsd": 0 },
+{ "unit": "video_generations", "priceUsd": 4.72, "match": { "resolution": "720p", "reference_video": "true" } }
+```
+
+Without such a component matching the create (resolution, aspect ratio and audio included), a create that sends `reference_video_urls` is answered `400 unsupported_video_input` before payment and without calling Venice. Reference images and audio don't change Venice's price.
 
 ### Video edits
 

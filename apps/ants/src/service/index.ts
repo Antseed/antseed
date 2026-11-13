@@ -13,7 +13,7 @@ export { verification, proofStatus, submitProof } from './verification.js';
 export type { SubmitProofResult } from './verification.js';
 export { seller, registerBinding, claimStarter } from './seller.js';
 export {
-  referral, referredBuyers, referrerOverview, referralBindingFromExplorer, refereeBonus, refereeBonusFromExplorer, issueInvite, createInvite,
+  referral, referredBuyers, referralBindingFromExplorer, refereeBonus, refereeBonusFromExplorer, issueInvite, createInvite,
   claimReferralRewards, claimRefereeRewards, InviteQuotaError, NO_INVITE_QUOTA_MESSAGE,
 } from './referrals.js';
 export { builders, claimBuilderRewards, normalizeBuilderAgentIds, registerClientAgent } from './builders.js';
@@ -24,4 +24,3 @@ export type { StepReporter } from './steps.js';
 export { validateSellerProofArtifact, sellerProofId } from '@antseed/node/payments';
 export type { SellerProofArtifact } from '@antseed/node/payments';
 export * from '../api-types.js';
-export type { CreatedInviteView, InviteAllowanceView } from '../api-types.js';

@@ -24,8 +24,8 @@ and nothing reaches the chain until someone uses it. It is shared as a link:
 https://antseed.com/invite/<invite>
 ```
 
-Antseed Desktop also opens the same invite as `antseed://invite/<invite>`, and
-the CLI accepts either the link or the bare `<invite>` code.
+The CLI accepts either the link or the bare `<invite>` code. Antseed Desktop
+does not create or redeem invites yet.
 
 Every invite:
 
@@ -58,14 +58,6 @@ You can create invites from any Antseed client that holds your wallet. Each one
 picks a free invite slot at random, so creating invites from several installs
 of the same wallet rarely produces the same invite.
 
-### Desktop
-
-Open **Rewards**. The **Your invites** card shows how many invites you have
-left this week. Click **Create link**, then **Copy**, and send the link. Below
-it, Desktop lists the wallets that joined with your invites and what each has
-earned you. Without enough activity last week the button is disabled and the
-card explains why.
-
 ### CLI
 
 ```bash
@@ -89,7 +81,7 @@ Add `--json` for machine-readable output.
 **Referral rewards** card with your invites left this week, your payable
 referral rewards and a table of the buyers you referred. Invites are signed by
 the local Antseed wallet, so when the dashboard is driven by a browser wallet
-it points you to `antseed referral invite` (or Desktop) to create one.
+it points you to `antseed referral invite` to create one.
 
 ## Redeem an invite
 
@@ -102,29 +94,7 @@ invite never blocks a request. Once bound, your inviter is permanent.
 ### From the invite link
 
 Opening `https://antseed.com/invite/<invite>` shows who invited you and the
-date the invite expires, with three ways in: a download button for Antseed Desktop,
-**Open in Antseed** (the `antseed://invite/<invite>` deep link, for Desktop
-already installed), or a CLI command to copy.
-
-### Desktop
-
-Paste the code or link into the **Invite code** field and click
-**Use invite**. Desktop checks it as you type and shows who it is from or why
-it cannot be used. The field appears:
-
-- on the setup screen during onboarding;
-- on **Rewards**, in a **Have an invite?** card;
-- in **Preferences → Referral**.
-
-The field is shown only while your wallet has no inviter and no pending invite.
-After that, Rewards and Preferences show **Invited by** with the inviter's
-address, marked pending until the first request binds it. While it is pending,
-**Change** replaces it with another invite and **Remove** drops it (for example
-when it expired or someone else used it first); once bound it cannot change.
-
-The `antseed://invite/<invite>` deep link fills the same field: during
-onboarding on the setup screen, afterwards by opening **Rewards** with the
-invite prefilled (over a pending invite too, to replace it).
+date the invite expires, with the CLI command that redeems it.
 
 ### CLI
 
@@ -193,10 +163,8 @@ Antscan's list of your referred buyers. Only the authorized wallet can claim or 
   claim cannot be made.
 
 A wallet can be both an inviter and an invited user; the two claims are
-separate. Claim from the ANTS dashboard (`antseed ants`, **Rewards**). In
-Desktop, **Claim rewards** and the **Invite bonus** card's **Claim** open the
-same dashboard in your browser, because claiming needs the authorized wallet's
-signature.
+separate. Claim from the ANTS dashboard (`antseed ants`, **Rewards**), which asks the
+authorized wallet to sign.
 
 ## Rules
 

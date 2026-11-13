@@ -454,7 +454,7 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
       buyer.peerId,
       { version: 1, channelId: CHANNEL_ID },
       mux,
-      // The catch-up wait resolves immediately: no auth will arrive in a unit test.
+      // No buyer answers the NeedAuth here, so the close waits out the catch-up window.
     );
 
     expect(result.status).toBe('rejected');
@@ -466,6 +466,29 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(needAuth.channelId).toBe(CHANNEL_ID);
     expect(needAuth.requiredCumulativeAmount).toBe('750000');
   }, 10_000);
+
+  it('asks for the catch-up auth before waiting, so a buyer that answers gets its close', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 750_000n);
+
+    // The buyer never heard about the extra spend (e.g. a NeedAuth lost to a
+    // seller restart); it signs as soon as the seller asks.
+    mux.sendNeedAuth = (payload: unknown) => {
+      mux.sentNeedAuths.push(payload);
+      const required = BigInt((payload as { requiredCumulativeAmount: string }).requiredCumulativeAmount);
+      void buildSpendingAuth(buyer, required).then((auth) => manager.handleSpendingAuth(buyer.peerId, auth, mux));
+    };
+
+    const result = await manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+
+    expect(result.status).toBe('closed');
+    expect(result.finalAmount).toBe('750000');
+    expect(mux.sentNeedAuths).toHaveLength(1);
+  });
 
   it('accepts a buyer signature that covers the outstanding spend', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);

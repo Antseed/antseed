@@ -1,20 +1,17 @@
 /**
  * IPC surface for app-level queries: version and locale, first-run setup
- * state, the signing identity, voice transcription, and price references.
+ * state, the signing identity, and voice transcription.
  */
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
-import { stakingSessions } from '../staking/portal.js';
+import { restartLocalGatewayForNewIdentity } from '../gateway/service.js';
+import { identityImportRefusal } from '../runtime/identity-import.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
 import {
-  getOpenRouterReferencePrices,
-} from '../billing/openrouter-catalog.js';
-import {
   ensureSecureIdentity,
   exportIdentityPrivateKeyHex,
-  getSecureIdentity,
   importIdentityPrivateKeyHex,
 } from '../identity.js';
 import {
@@ -26,16 +23,6 @@ import {
 import { watchConnectedAppFirstRequest } from '../telemetry/connected-app-watch.js';
 import { syncBuyerTelemetryConsent } from '../telemetry/buyer-consent.js';
 import { setDesktopTelemetryChoiceInConfig } from '../telemetry/host-env.js';
-import {
-  checkReferralInvite,
-  clearPendingReferralInvite,
-  createReferralInvite,
-  getRefereeBonus,
-  getReferralInvites,
-  getReferralStatus,
-  redeemReferralInvite,
-} from '../referrals.js';
-import { takePendingInviteLink } from '../deep-links.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -77,15 +64,6 @@ export function registerAppIpc(): void {
   ipcMain.handle('app:get-setup-status', () => ({
     ...getAppSetupStatus(),
   }));
-
-  ipcMain.handle('referral:get-status', () => getReferralStatus());
-  ipcMain.handle('referral:check-invite', (_event, value: string) => checkReferralInvite(String(value ?? '')));
-  ipcMain.handle('referral:redeem-invite', (_event, value: string) => redeemReferralInvite(String(value ?? '')));
-  ipcMain.handle('referral:clear-invite', () => clearPendingReferralInvite());
-  ipcMain.handle('referral:get-invites', () => getReferralInvites());
-  ipcMain.handle('referral:create-invite', () => createReferralInvite());
-  ipcMain.handle('referral:get-referee', () => getRefereeBonus());
-  ipcMain.handle('referral:take-deep-link', (event) => takePendingInviteLink(event.sender));
 
   // Returns the macOS UI language (e.g. 'he', 'ar-EG', 'en-US') as Electron sees
   // it. This is the same locale that drives the system window-chrome direction,
@@ -177,25 +155,6 @@ export function registerAppIpc(): void {
     return { ok: true };
   });
 
-  ipcMain.handle('openrouter:reference-prices', () => getOpenRouterReferencePrices());
-
-  ipcMain.handle('identity:get', async () => {
-    try {
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      if (!identity) {
-        return { ok: false, data: null, error: 'Identity not available (safeStorage may not be ready)' };
-      }
-      return {
-        ok: true,
-        data: { peerId: identity.peerId },
-        error: null,
-      };
-    } catch (err) {
-      return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
   ipcMain.handle('identity:export-key', async () => {
     try {
       await ensureSecureIdentity();
@@ -227,15 +186,17 @@ export function registerAppIpc(): void {
       if (typeof rawKey !== 'string') {
         return { ok: false, error: 'Private key must be a string' };
       }
+      // Before any staking reset or identity work: attach-only desktops never replace a signer.
+      const refused = identityImportRefusal();
+      if (refused) return refused;
       await ensureSecureIdentity();
-      const result = await stakingSessions.reset(async () => {
-        const imported = await importIdentityPrivateKeyHex(rawKey);
-        if (imported.ok) await stopPaymentsPortal();
-        return imported;
-      });
+      const result = await importIdentityPrivateKeyHex(rawKey);
       if (result.ok) {
+        await stopPaymentsPortal();
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();
+        const blocked = await restartLocalGatewayForNewIdentity();
+        if (blocked) return { ok: false, error: blocked };
       }
       return result;
     } catch (err) {

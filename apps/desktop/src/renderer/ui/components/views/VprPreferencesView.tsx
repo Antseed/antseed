@@ -1,42 +1,219 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { GlobalIcon, Moon02Icon, Sun02Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { routesForSelectedModel } from '../../../modules/catalog/view-models';
-import { peerAccessSummaryLabel } from '../../../modules/routing/peer-access';
-import { buildVprPeerOptions } from '../../../modules/routing/tools';
-import { reputationScaleLabel, sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from '../../../modules/catalog/seller-format';
-import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
-import { useActions } from '../../hooks/useActions';
+import { ArrowUpRight01Icon, Moon02Icon, Sun02Icon } from '@hugeicons/core-free-icons';
+import { Button, ConfirmDialog, Segmented, TextField } from '@antseed/ui';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
-import type { ReferralStatus } from '../../../types/bridge';
-import { useReferralStatus } from '../../hooks/useReferralStatus';
-import { ReferralStatusRow } from '../ReferralStatusRow';
-import { formatUsdShort, VprCard, VprPage, VprSettingRow, VprSlider, VprToggle } from '../vpr/VprKit';
-import { VprPeerAccessDialog } from './VprPeerAccessDialog';
-import { usePublicEndpointModal } from '../tunnels/PublicEndpointModal';
+import type { GatewayKeyMode, GatewayMode, GatewaySettings, GatewaySettingsPatch } from '../../../types/bridge';
+import { appsResource, reloadPrivacyForNewGateway, gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
+import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
+import { VprFreeTierCard } from './VprFreeTierCard';
 import styles from './VprPreferencesView.module.scss';
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 
 const TELEMETRY_DOC_URL = 'https://github.com/Antseed/antseed/blob/main/docs/telemetry.md';
 
+/**
+ * Which gateway the desktop uses and how its keys are split. Switching
+ * gateway, key mode or rotating keys re-points every connected app.
+ */
+function GatewaySection() {
+  const gateway = useCachedResource(gatewayResource);
+  const [settings, setSettings] = useState<GatewaySettings | null>(null);
+  const [mode, setMode] = useState<GatewayMode>('local');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteKey, setRemoteKey] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.antseedDesktop?.gatewayGetSettings?.()?.then((loaded) => {
+      if (!loaded) return;
+      setSettings(loaded);
+      setMode(loaded.mode);
+      setRemoteUrl(loaded.remoteUrl ?? '');
+    });
+  }, []);
+
+  const apply = async (label: string, patch: GatewaySettingsPatch) => {
+    const bridge = window.antseedDesktop;
+    if (!bridge?.gatewayUpdateSettings) return;
+    setBusy(label);
+    setMessage(null);
+    try {
+      const result = await bridge.gatewayUpdateSettings(patch);
+      if (!result.ok || !result.settings) {
+        setMessage(result.error ?? 'Could not save the gateway settings');
+        // Validation failures leave settings unchanged, but starting the gateway
+        // or reconnecting apps can fail after saving. Read back the actual mode.
+        const saved = await bridge.gatewayGetSettings?.();
+        if (saved) {
+          setSettings(saved);
+          setMode(saved.mode);
+        }
+        return;
+      }
+      setSettings(result.settings);
+      setMode(result.settings.mode);
+      setRemoteKey('');
+      setMessage('Saved. Connected apps now use the new settings.');
+    } finally {
+      // Refresh consumers even on failure: settings may already have changed.
+      void gatewayResource.refresh();
+      void appsResource.refresh();
+      void reloadPrivacyForNewGateway();
+      setBusy(null);
+    }
+  };
+
+  // Asked in the app's own dialog: Electron has no native confirm().
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
+  const rotate = async () => {
+    setConfirmingRotate(false);
+    const bridge = window.antseedDesktop;
+    if (!bridge?.gatewayRotateKeys) return;
+    setBusy('rotate');
+    setMessage(null);
+    try {
+      const result = await bridge.gatewayRotateKeys();
+      setMessage(result.ok ? 'New keys created and connected apps updated.' : (result.error ?? 'Could not replace the keys'));
+      void appsResource.refresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openConsole = (path: string) => {
+    void window.antseedDesktop?.gatewayOpenConsole?.(path)?.then((result) => {
+      if (result && !result.ok) setMessage(result.error ?? 'Could not open your gateway');
+    });
+  };
+
+  const current = settings?.mode ?? 'local';
+  const remoteDirty = mode === 'remote' && (
+    current !== 'remote'
+    || remoteUrl.trim() !== (settings?.remoteUrl ?? '')
+    || remoteKey.trim().length > 0
+  );
+  const status = gateway.data?.status;
+
+  return (
+    <div className={styles.appearanceSection}>
+      <span className={styles.sectionLabel}>Gateway</span>
+      <VprCard className={styles.card}>
+        <VprSettingRow
+          title="Gateway"
+          hint={mode === 'local'
+            ? 'Runs on this computer and pays from this app’s balance.'
+            : 'Use a gateway someone runs for you (your team, or your own server).'}
+          control={(
+            <Segmented<GatewayMode>
+              label="Gateway"
+              value={mode}
+              options={[
+                { value: 'local', label: 'This computer', disabled: busy !== null },
+                { value: 'remote', label: 'Remote', disabled: busy !== null },
+              ]}
+              onChange={(value) => {
+                setMode(value);
+                setMessage(null);
+                if (value === 'local' && current !== 'local') void apply('mode', { mode: 'local' });
+              }}
+            />
+          )}
+        />
+        {mode === 'remote' ? (
+          <form
+            className={styles.remoteForm}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void apply('remote', {
+                mode: 'remote',
+                remoteUrl: remoteUrl.trim(),
+                ...(remoteKey.trim() ? { remoteApiKey: remoteKey.trim() } : {}),
+              });
+            }}
+          >
+            <TextField
+              label="Gateway URL"
+              value={remoteUrl}
+              placeholder="https://gateway.example.com"
+              spellCheck={false}
+              onChange={(event) => setRemoteUrl(event.currentTarget.value)}
+            />
+            <TextField
+              label="API key"
+              type="password"
+              value={remoteKey}
+              placeholder={settings?.hasRemoteKey ? 'Saved — paste a new key to replace it' : 'antseed_…'}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(event) => setRemoteKey(event.currentTarget.value)}
+            />
+            <div className={styles.formActions}>
+              <Button type="submit" size="sm" disabled={!remoteDirty || busy !== null || !remoteUrl.trim() || (!settings?.hasRemoteKey && !remoteKey.trim())}>
+                {busy === 'remote' ? 'Connecting…' : 'Use this gateway'}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+        <VprSettingRow
+          title="A key per app"
+          hint={current === 'remote'
+            ? 'A remote gateway’s keys are managed in its console.'
+            : 'Give every connected app its own API key, so your gateway shows usage and limits per app. Off: one key for everything.'}
+          control={(
+            <VprToggle
+              checked={(settings?.keyMode ?? 'shared') === 'per-app'}
+              disabled={current === 'remote' || busy !== null}
+              onChange={(next) => { void apply('keyMode', { keyMode: (next ? 'per-app' : 'shared') as GatewayKeyMode }); }}
+              ariaLabel="A key per app"
+            />
+          )}
+        />
+        <div className={styles.formActions}>
+          <Button
+            variant="outline"
+            size="sm"
+            trailingIcon={<HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={2} />}
+            onClick={() => openConsole('/keys')}
+          >
+            Manage API keys
+          </Button>
+          {current === 'local' ? (
+            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => setConfirmingRotate(true)}>
+              {busy === 'rotate' ? 'Replacing…' : 'Replace keys'}
+            </Button>
+          ) : null}
+        </div>
+        {status && !status.reachable && status.lastError ? (
+          <p className={styles.formNote} role="alert">{status.lastError}</p>
+        ) : null}
+        {message ? <p className={styles.formNote} role="status">{message}</p> : null}
+      </VprCard>
+      <ConfirmDialog
+        isOpen={confirmingRotate}
+        onClose={() => setConfirmingRotate(false)}
+        title="Replace the desktop’s API keys?"
+        body="The old keys stop working, and connected apps get the new ones (running apps restart)."
+        tone="primary"
+        confirmLabel="Replace keys"
+        onConfirm={() => { void rotate(); }}
+      />
+    </div>
+  );
+}
+
 export function VprPreferencesView({ onSelectView }: Props) {
-  const actions = useActions();
-  const { status: tunnelStatus, openPublicEndpointModal } = usePublicEndpointModal();
-  const snap = useUiSelector((state) => ({
-    preferences: state.vprRoutingPreferences,
-    selection: state.vprRouteSelection,
-    discoverRows: state.discoverRows,
-    lastPeers: state.lastPeers,
-    floatAutoOpen: state.vprFloatAutoOpen,
-    floatShowRoutedPeer: state.vprFloatShowRoutedPeer,
-  }), shallowEqual);
+  const gateway = useCachedResource(gatewayResource);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => activeThemeMode());
-  const [accessOpen, setAccessOpen] = useState(false);
   const [telemetryStatus, setTelemetryStatus] = useState<TelemetryStatus | null>(null);
-  // Read on entry: a pending invite binds with the first paid or free request.
-  const { status: referral, reload: loadReferral } = useReferralStatus();
+  const [exportKeyOpen, setExportKeyOpen] = useState(false);
+  const [importKeyOpen, setImportKeyOpen] = useState(false);
+  const local = gateway.data?.status.mode !== 'remote';
 
   useEffect(() => {
     let cancelled = false;
@@ -66,180 +243,44 @@ export function VprPreferencesView({ onSelectView }: Props) {
       .catch(() => setTelemetryStatus(previousStatus));
   };
 
-  const peerOptions = useMemo(
-    () => buildVprPeerOptions(snap.lastPeers, snap.discoverRows),
-    [snap.lastPeers, snap.discoverRows],
-  );
-  const { allowedPeerIds, blockedPeerIds } = snap.preferences;
-  const accessSummary = peerAccessSummaryLabel(allowedPeerIds.length, blockedPeerIds.length);
-
   const selectTheme = (mode: ThemeMode) => {
     applyThemeMode(mode);
     setThemeMode(mode);
   };
 
-  const pinnedRoute = useMemo(() => {
-    if (snap.selection.mode !== 'pinned-peer' || !snap.selection.peerId) return null;
-    const routes = routesForSelectedModel(snap.discoverRows, snap.selection.model);
-    return routes.find((route) => route.peerId === snap.selection.peerId) ?? null;
-  }, [snap.discoverRows, snap.selection]);
-
   return (
     <section className={`view view-vpr-preferences view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Preferences" backFallback="home">
-      <div className={styles.stack}>
-        <p className={styles.lede}>These preferences apply to every model with Auto select turned on</p>
+      <VprPage title="Settings" root subtitle="Your gateway, wallet, privacy and appearance.">
+      <div className={`${styles.stack} ${styles.columns}`}>
+        <GatewaySection />
 
-        <div className={styles.settings}>
-          <VprSettingRow
-            title="Auto select seller"
-            caption="(Price + Trust preference)"
-            hint="Applies to every model set to Auto. Off pauses routing everywhere - providers stay on their last pick."
-            control={(
-              <VprToggle
-                checked={snap.preferences.autoRouting}
-                onChange={(next) => actions.updateVprRoutingPreferences({ autoRouting: next })}
-                ariaLabel="Auto select seller"
+        {local ? (
+          <div className={styles.appearanceSection}>
+            <span className={styles.sectionLabel}>Wallet</span>
+            <VprCard className={styles.card}>
+              <VprSettingRow
+                title="Add funds"
+                hint="Card or USDC. Balance, spend and limits are in your gateway."
+                control={(
+                  <button type="button" className={styles.accessManage} onClick={() => onSelectView?.('deposit')}>
+                    Add funds
+                  </button>
+                )}
               />
-            )}
-          />
-
-          <VprSettingRow
-            title="Prefer free peers when available"
-            hint="Adds a strong routing bonus to zero-cost offers."
-            control={(
-              <VprToggle
-                checked={snap.preferences.preferFreePeers}
-                onChange={(next) => actions.updateVprRoutingPreferences({ preferFreePeers: next })}
-                ariaLabel="Prefer free peers when available"
+              <VprSettingRow
+                title="Signer key"
+                hint="The key that pays for requests from this computer. Back it up, or import one you already use."
+                control={(
+                  <span className={styles.formActions}>
+                    <button type="button" className={styles.accessManage} onClick={() => setExportKeyOpen(true)}>Back up</button>
+                    <button type="button" className={styles.accessManage} onClick={() => setImportKeyOpen(true)}>Import</button>
+                  </span>
+                )}
               />
-            )}
-          />
-
-          <div className={styles.sliderGroup}>
-            <div className={styles.sliderHead}>
-              <span className={styles.sliderTitle}>Minimum trust score</span>
-              <span className={styles.sliderReading}>
-                <span className={styles.sliderReadingLabel}>Reputation</span>
-                <span className={styles.sliderReadingValue}>{reputationScaleLabel(snap.preferences.minTrustScore)}</span>
-              </span>
-            </div>
-            <VprSlider
-              min={0}
-              max={100}
-              step={5}
-              value={snap.preferences.minTrustScore}
-              onChange={(next) => actions.updateVprRoutingPreferences({ minTrustScore: next })}
-              ariaLabel="Minimum trust score"
-            />
-            <div className={styles.sliderHint}>Providers rated below this are never used</div>
-          </div>
-
-          <div className={styles.sliderGroup}>
-            <div className={styles.sliderHead}>
-              <span className={styles.sliderTitle}>Price preference</span>
-              <span className={styles.sliderReadingSmall}>
-                {formatUsdShort(snap.preferences.maxInputUsdPerMillion)}/m tok
-              </span>
-            </div>
-            <VprSlider
-              min={0}
-              max={25}
-              step={0.5}
-              value={snap.preferences.maxInputUsdPerMillion}
-              onChange={(next) => actions.updateVprRoutingPreferences({ maxInputUsdPerMillion: next })}
-              ariaLabel="Price preference"
-            />
-            <div className={styles.sliderHint}>Sellers above this input price receive a strong ranking penalty</div>
-          </div>
-
-          <VprSettingRow
-            title="Seller access"
-            caption={`(${accessSummary})`}
-            hint="Block sellers you never want used, or allow a few to use only those."
-            control={(
-              <button
-                type="button"
-                className={styles.accessManage}
-                onClick={() => setAccessOpen(true)}
-              >
-                Manage sellers
-              </button>
-            )}
-          />
-        </div>
-
-        {pinnedRoute ? (
-          <div className={styles.pinnedSection}>
-            <span className={styles.pinnedLabel}>Automatically select this seller</span>
-            <VprCard>
-              <button
-                type="button"
-                className={styles.pinnedRow}
-                onClick={() => actions.clearVprPinnedPeer()}
-                title="Unpin this seller"
-              >
-                <HugeiconsIcon icon={Tick02Icon} size={16} strokeWidth={2} className={styles.pinnedCheck} />
-                <span className={styles.pinnedText}>
-                  <span className={styles.pinnedName}>
-                    {pinnedRoute.peerDisplayName || pinnedRoute.peerLabel || pinnedRoute.peerId}
-                  </span>
-                  <span className={styles.pinnedMeta}>
-                    {sellerMetaLabel(pinnedRoute)}
-                    {snap.selection.model?.label ? ` · ${snap.selection.model.label}` : ''}
-                  </span>
-                </span>
-                <span className={styles.pinnedScore} title={sellerReputationExplanation(pinnedRoute)}>{sellerReputationLabel(pinnedRoute)}</span>
-              </button>
             </VprCard>
+            <VprFreeTierCard />
           </div>
         ) : null}
-
-        <div className={styles.appearanceSection}>
-          <span className={styles.sectionLabel}>Floating window</span>
-          <VprCard className={styles.card}>
-            <VprSettingRow
-              title="Show on traffic"
-              hint="Show the floating window on its own when a connected app starts sending requests."
-              control={(
-                <VprToggle
-                  checked={snap.floatAutoOpen}
-                  onChange={(next) => actions.setVprFloatAutoOpen?.(next)}
-                  ariaLabel="Show floating window on traffic"
-                />
-              )}
-            />
-            <VprSettingRow
-              title="Show routed peer"
-              hint="Show the seller each chat's requests actually went through in chat lists and next to its model."
-              control={(
-                <VprToggle
-                  checked={snap.floatShowRoutedPeer}
-                  onChange={(next) => actions.setVprFloatShowRoutedPeer?.(next)}
-                  ariaLabel="Show routed peer"
-                />
-              )}
-            />
-          </VprCard>
-        </div>
-
-        <div className={styles.appearanceSection}>
-          <span className={styles.sectionLabel}>Connectivity</span>
-          <VprCard className={styles.card}>
-            <VprSettingRow
-              title="Internet-accessible endpoint"
-              hint={tunnelStatus?.running ? 'Running and ready for Cursor, agents, and hosted clients.' : 'Configure an authenticated public URL for remote apps and agents.'}
-              control={(
-                <button type="button" className={styles.accessManage} onClick={openPublicEndpointModal}>
-                  <HugeiconsIcon icon={GlobalIcon} size={13} strokeWidth={1.8} />
-                  {tunnelStatus?.running ? 'Manage' : 'Set up'}
-                </button>
-              )}
-            />
-          </VprCard>
-        </div>
-
-        <VprReferralSetting status={referral} onRedeemed={loadReferral} />
 
         <div className={styles.appearanceSection}>
           <span className={styles.sectionLabel}>Privacy</span>
@@ -248,7 +289,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
               title="Product telemetry"
               hint={telemetryStatus?.available === false
                 ? 'Telemetry is unavailable in this build or has been disabled by configuration.'
-                : 'Help improve AI VPN by sharing coarse feature usage and reliability information, plus each request\'s token counts, timings, estimated cost and the seller that answered, linked to your public on-chain address. Prompts, messages, files, and your balance are never collected.'}
+                : 'Help improve Antseed by sharing coarse feature usage and reliability information, plus each request\'s token counts, timings, estimated cost and the seller that answered, linked to your public on-chain address. Prompts, messages, files, and your balance are never collected.'}
               control={(
                 <VprToggle
                   checked={telemetryStatus?.enabled ?? false}
@@ -273,7 +314,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
           <VprCard className={styles.card}>
             <VprSettingRow
               title="Theme"
-              hint="Applies to every AI VPN window."
+              hint="Applies to every Antseed window."
               control={(
                 <div className={styles.themeSegment} role="radiogroup" aria-label="Theme">
                   {([
@@ -300,30 +341,12 @@ export function VprPreferencesView({ onSelectView }: Props) {
       </div>
       </VprPage>
 
-      <VprPeerAccessDialog
-        isOpen={accessOpen}
-        onClose={() => setAccessOpen(false)}
-        preferences={snap.preferences}
-        peerOptions={peerOptions}
-        onSetListing={actions.setVprPeerListing}
-        onClearAllowlist={() => actions.updateVprRoutingPreferences({ allowedPeerIds: [] })}
+      <ExportSignerKeyDialog isOpen={exportKeyOpen} onClose={() => setExportKeyOpen(false)} />
+      <ImportSignerKeyDialog
+        isOpen={importKeyOpen}
+        onClose={() => setImportKeyOpen(false)}
+        onImported={() => { void gatewayResource.refresh(); }}
       />
     </section>
-  );
-}
-
-/**
- * Who invited this wallet, the invite it carries until bound, or the invite
- * field. Hidden until known and on networks without referrals.
- */
-export function VprReferralSetting({ status, onRedeemed }: { status: ReferralStatus | null; onRedeemed?: () => void }) {
-  if (!status || !status.configured) return null;
-  return (
-    <div className={styles.appearanceSection}>
-      <span className={styles.sectionLabel}>Referral</span>
-      <VprCard className={styles.card}>
-        <ReferralStatusRow status={status} onRedeemed={onRedeemed} />
-      </VprCard>
-    </div>
   );
 }

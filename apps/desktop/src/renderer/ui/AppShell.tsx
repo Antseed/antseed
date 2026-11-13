@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ViewHost } from './components/ViewHost';
 import { SetupScreen } from './components/SetupScreen';
-import { receiveInviteLink } from './hooks/useIncomingInvite';
 import { preloadViews, viewsForPreload } from './components/viewRegistry';
 import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
-import { VIEW_NAMES, type ViewName } from './types';
+import type { ViewName } from './types';
 import { VprShell } from './components/VprShell';
 import { recordUserAction, telemetrySurfaceForView } from '../modules/telemetry/actions';
+import { useCachedResource } from '../modules/app/cached-resource';
+import { gatewayResource } from '../modules/app/vpr-resources';
 
 type IdleCallbackHandle = ReturnType<typeof setTimeout> | number;
 
@@ -14,6 +15,35 @@ type IdleCallbackHandle = ReturnType<typeof setTimeout> | number;
     user gets in no matter how far discovery came. Only the plugin install may
     hold longer — the app is unusable without the router plugin. */
 const SETUP_MAX_VISIBLE_MS = 120_000;
+/** The launch loader waits this long at most for the gateway (its own start gives up after 90 s). */
+const GATEWAY_START_MAX_MS = 100_000;
+const GATEWAY_START_POLL_MS = 1_000;
+
+/**
+ * True once the gateway has answered at least once this launch, its start has
+ * failed (then the app shows why), or the wait ran out. Until then the app
+ * shows the launch loader instead of a "gateway unreachable" home.
+ */
+function useGatewayLaunchSettled(): boolean {
+  const status = useCachedResource(gatewayResource).data?.status;
+  const [settled, setSettled] = useState(false);
+  const mountedAtRef = useRef(Date.now());
+  const done = settled || (status !== undefined && (status.reachable || !status.starting));
+  useEffect(() => {
+    if (done) {
+      setSettled(true);
+      return undefined;
+    }
+    // The resource polls every few seconds; while starting, look every second.
+    const poll = setInterval(() => { void gatewayResource.refresh(); }, GATEWAY_START_POLL_MS);
+    const cap = setTimeout(() => setSettled(true), Math.max(0, GATEWAY_START_MAX_MS - (Date.now() - mountedAtRef.current)));
+    return () => {
+      clearInterval(poll);
+      clearTimeout(cap);
+    };
+  }, [done]);
+  return done;
+}
 
 function scheduleRoutePreload(callback: () => void): () => void {
   const win = window as unknown as {
@@ -35,13 +65,11 @@ export function AppShell() {
     appSetupStatusKnown: state.appSetupStatusKnown,
     appSetupNeeded: state.appSetupNeeded,
     appSetupComplete: state.appSetupComplete,
-    chatServiceCount: state.chatServiceOptions.length,
-    chatPanelExpanded: state.chatPanelExpanded,
-    // A default model backed by a trusted free route — what first-run setup
-    // is actually for. The provisional flag clears exactly when routing
-    // confirms a free-backed default (or the user picks a model).
-    freeDefaultReady: state.vprRouteSelection.model !== null && !state.vprDefaultModelProvisional,
+    chatServiceCount: state.chatModels.length,
+    // A model to chat with — what first-run setup is waiting for.
+    freeDefaultReady: state.chatSelectedModelId !== null,
   }), shallowEqual);
+  const gatewaySettled = useGatewayLaunchSettled();
   const [activeView, setActiveView] = useState<ViewName>('home');
   const [setupVisible, setSetupVisible] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
@@ -132,55 +160,23 @@ export function AppShell() {
   }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, hasServices, setupDismissed]);
 
   const showSetup = setupVisible;
+  const showLaunchLoader = !showSetup && !gatewaySettled;
 
   useEffect(() => {
-    return window.antseedDesktop?.onNavigateView?.((viewName) => {
-      if (!(VIEW_NAMES as readonly string[]).includes(viewName)) return;
-      handleSelectView(viewName as ViewName);
-    });
-  }, [handleSelectView]);
-
-  // antseed://invite/<invite>: prefill the invite field (setup screen, or
-  // Rewards once the app is in use; Preferences shares the same field).
-  const showSetupRef = useRef(showSetup);
-  showSetupRef.current = showSetup;
-  useEffect(() => {
-    const bridge = window.antseedDesktop;
-    const open = (invite: string | null) => {
-      if (!invite) return;
-      receiveInviteLink(invite);
-      if (!showSetupRef.current) handleSelectView('rewards');
-    };
-    // Subscribe first: asking for the held invite tells the main process this
-    // renderer is listening, so later links are pushed instead of held.
-    const unsubscribe = bridge?.onReferralDeepLink?.(open);
-    void bridge?.referralTakeDeepLink?.().then(open).catch(() => {});
-    return unsubscribe;
-  }, [handleSelectView]);
-
-  useEffect(() => {
-    if (showSetup) return undefined;
+    if (showSetup || showLaunchLoader) return undefined;
 
     void preloadViews(viewsForPreload('eager'));
 
     return scheduleRoutePreload(() => {
       void preloadViews(viewsForPreload('idle'));
     });
-  }, [showSetup]);
-
-  useEffect(() => {
-    if (showSetup) return;
-    // Chat supports both window sizes: wide (standard preset, conversation
-    // list showing) by default, thin when the user collapses the panel.
-    if (activeView === 'chat' && snap.chatPanelExpanded) {
-      void window.antseedDesktop?.applyWindowPreset?.('standard');
-      return;
-    }
-    void window.antseedDesktop?.applyWindowView?.(activeView);
-  }, [activeView, showSetup, snap.chatPanelExpanded]);
+  }, [showSetup, showLaunchLoader]);
 
   if (showSetup) {
     return <SetupScreen />;
+  }
+  if (showLaunchLoader) {
+    return <SetupScreen startingGateway />;
   }
 
   return (

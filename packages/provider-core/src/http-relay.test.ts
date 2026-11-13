@@ -129,6 +129,79 @@ describe('HttpRelay', () => {
     expect(upstreamBody).toEqual({ model: 'venice-sd35', prompt: 'A seedling' });
   });
 
+  it('judges a media request by the path it sends, however the path is written', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ allowedServices: ['venice-sd35'], injectJsonFields: { venice_parameters: { include_venice_system_prompt: false } } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({
+      path: '/v1/./images/generations',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'venice-sd35', prompt: 'A seedling' })),
+    }));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array))).toEqual({ model: 'venice-sd35', prompt: 'A seedling' });
+  });
+
+  it('applies a path rewrite to the path it sends, however the path is written', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v4/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/./chat/completions' }));
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v4/chat/completions');
+  });
+
+  it('matches a path rewrite key exactly, query string included', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions?api-version=1': '/v4/chat/completions?api-version=2' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?api-version=1' }));
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?client_version=1' }));
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.com/v4/chat/completions?api-version=2',
+      'https://api.example.com/v1/chat/completions?client_version=1',
+    ]);
+  });
+
+  it('asks for usage when a path rewrite points at a completions path', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/generate': '/v1/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/generate', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/chat/completions');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
+  });
+
+  it('asks for usage on a completions path rewritten to one that does not look like it', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v1/text/chatcompletion_v2' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/text/chatcompletion_v2');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
+  });
+
   it('does not inject chat-only fields into speech requests', async () => {
     fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2]), { status: 200, headers: { 'content-type': 'audio/mpeg' } }));
 
@@ -554,16 +627,89 @@ describe('HttpRelay', () => {
       expect(upstreamBody().stream_options).toEqual({ include_obfuscation: false, include_usage: true });
     });
 
-    it('does not override an explicit include_usage:false (operator escape hatch)', async () => {
+    it('asks for usage even when the caller sets include_usage:false', async () => {
       fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
       const { relay } = relayWith();
       await relay.handleRequest(chatCompletionsRequest({
         model: 'minimax-m2.7-highspeed',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-        stream_options: { include_usage: false },
+        stream_options: { include_usage: false, include_obfuscation: false },
       }));
-      expect(upstreamBody().stream_options).toEqual({ include_usage: false });
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true, include_obfuscation: false });
+    });
+
+    it.each([
+      ['a dot segment', '/v1/./chat/completions'],
+      ['a parent segment', '/x/../v1/chat/completions'],
+      ['an encoded dot segment', '/v1/%2e/chat/completions'],
+      ['backslashes', '/v1\\chat\\completions'],
+      ['no leading slash', 'v1/chat/completions'],
+    ])('asks for usage on a chat path written with %s, and sends the path it decided by', async (_shape, path) => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path,
+        body: new TextEncoder().encode(JSON.stringify({
+          model: 'minimax-m2.7-highspeed',
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.example.com/v1/chat/completions');
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it.each([
+      ['no version prefix', '/chat/completions'],
+      ['a deployment prefix', '/openai/deployments/d1/chat/completions'],
+      ['legacy completions', '/v1/completions'],
+      ['a trailing slash', '/v1/chat/completions/'],
+      ['a leading double slash', '//v1/chat/completions'],
+    ])('asks for usage on a completions path with %s', async (_shape, path) => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path,
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', stream: true })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://api.example.com${path}`);
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it('judges the path alone, not a query string that names a completions path', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path: '/v1/messages?next=/chat/completions',
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', messages: [], stream: true })),
+      }));
+      expect(upstreamBody().stream_options).toBeUndefined();
+    });
+
+    it('keeps the query string of a chat path it normalizes', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path: '/v1/./chat/completions?beta=true',
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', messages: [], stream: true })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.example.com/v1/chat/completions?beta=true');
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it('asks for usage when stream is truthy but not the literal true, as lenient upstreams accept', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(chatCompletionsRequest({
+        model: 'minimax-m2.7-highspeed',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: 1,
+      }));
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
     });
 
     it('leaves non-streaming chat-completions requests untouched', async () => {
@@ -836,6 +982,27 @@ describe('HttpRelay', () => {
       expect(responses.map((res) => res.statusCode)).toEqual([200]);
       expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toContain('event: error');
       expect(chunks.at(-1)!.done).toBe(true);
+    });
+
+    it('ends a stream cut mid-line or mid-event with an error event of its own', async () => {
+      for (const [streamed, closing] of [['data: {"choices":[{"delta":{"content":"Se', '\n\n'], ['data: {"partial":true}\n', '\n'], ['data: {"partial":true}\n\n', '']] as const) {
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(streamed));
+          },
+          // The cut comes on the next read, after the bytes above were delivered.
+          pull(controller) {
+            controller.error(new Error('ECONNRESET'));
+          },
+        }, { highWaterMark: 0 }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+        const chunks: SerializedHttpResponseChunk[] = [];
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => {}, onResponseChunk: (chunk) => chunks.push(chunk) });
+
+        await relay.handleRequest(kimiRequest());
+
+        expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toBe(`${streamed}${closing}event: error\ndata: ECONNRESET\n\n`);
+      }
     });
 
     it('only uses a fallback for the services it lists', async () => {

@@ -16,7 +16,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 16;
+export const METADATA_VERSION = 17;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -47,6 +47,12 @@ export const SPEECH_METADATA_VERSION = 15;
  * before). Older documents leave such services out.
  */
 export const VIDEO_OPTION_PRICING_METADATA_VERSION = 16;
+/**
+ * First version whose unit billing components may match a video create's
+ * `reference_video` (whether it sends reference videos). Older documents leave
+ * such services out.
+ */
+export const REFERENCE_VIDEO_PRICING_METADATA_VERSION = 17;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",

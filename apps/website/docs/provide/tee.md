@@ -28,11 +28,11 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 Buyers accept a seller node that runs Antseed's official TEE seller image as a dstack (Phala) confidential VM app. The image runs on a distroless runtime with no shell, package manager, runtime plugin installs or dashboard, so its operator has no way into it. From the quote and the evidence the seller sends with it, the buyer checks that:
 
-- MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK;
+- MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK, or the seller sent its VM config and full event log and a local lite check of those against the quote returns an approved OS image hash. No hosted verifier is required;
 - the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository's main branch, which the seller proves with the image's signed build record (the buyer checks it offline against Sigstore's public trust root);
-- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and optionally the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
+- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, no pre-launch or init scripts, and the seller config inline, named after the SHA-256 of its content (`compose.mjs` writes it) so that a config change always recreates the seller container. Only secrets (the identity key, API keys and optionally the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
 
-Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/Antseed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases or images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }`).
+Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/Antseed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases, OS image hashes or seller images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "osImages": [{ name, hash }], "images": [{ version, digest }] }`). `osImages` hashes are 64 lowercase hex and identify the dstack OS, not the seller container image.
 
 ## 1. Write your seller config
 
@@ -74,7 +74,7 @@ phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
 
 The CLI always writes an empty `init_script` into the app compose. Buyers on verifier 0.1.5 or later accept it while it stays empty; earlier ones reject any `init_script` and report `app compose option init_script is not allowed`.
 
-The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
+The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Existing seller images keep passing on the measurement table. The lite OS path needs an updated seller image whose prover sends `vmConfig` and `rawEventLog` with the quote. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 
 ## 4. Confirm you're advertising
 
@@ -168,7 +168,7 @@ Buyers accept an image as soon as the workflow builds it, through its build reco
 
 | Symptom | Cause |
 |---|---|
-| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS the verifier doesn't list (a new dstack release needs adding to the verifier), an image without a build record from the workflow on main (use one it built; the seller fetches the record from `ghcr.io`, like the image), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
+| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS the measurement table doesn't list and no local lite check (a new dstack release needs adding, or an updated seller image that sends `vmConfig` and `rawEventLog`), an image without a build record from the workflow on main (use one it built; the seller fetches the record from `ghcr.io`, like the image), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
 | `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |

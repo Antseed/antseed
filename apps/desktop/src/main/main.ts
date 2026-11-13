@@ -3,26 +3,25 @@ import {
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   ipcMain,
-  dialog,
+  safeStorage,
 } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import electronUpdater from 'electron-updater';
 const { autoUpdater } = electronUpdater;
 import {
   ProcessManager,
-  resolveConnectDataDir,
   type RuntimeMode,
   type RuntimeProcessState,
-  type StartOptions,
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
-import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desktop-gateway.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
-import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
-import type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
-import { parseRuntimeActivityFromLog } from './runtime/log-parser.js';
+import { telegramSettingsPath } from './telegram/store.js';
+import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
+import type { LogEvent } from './runtime/log-parser.js';
+import { isAttachOnly } from './runtime/attach-only.js';
 import {
   setPluginAppendLog,
   ensureDefaultPlugin,
@@ -40,18 +39,17 @@ import { createDesktopTray } from './ui/tray.js';
 import { ensureConfig } from './runtime/config-io.js';
 import { registerAttachmentScheme, installAttachmentProtocol } from './chat/attachments/protocol.js';
 import { disableSandboxIfAppImageCannotSandbox } from './linux-sandbox.js';
-import { deliverDeepLinksTo, registerDeepLinks } from './deep-links.js';
-import { isMultiInstanceDevelopment } from './dev-instance.js';
 import {
   APP_ICON_PATH,
   APP_NAME,
   INTERNAL_APP_NAME,
+  LEGACY_INTERNAL_APP_NAME,
+  RENAMED_FROM_LEGACY,
   TRAY_ICON_PATH,
   errorDetails,
   errorMessage,
   getAppSetupStatus,
   getMacUpdateInstallHint,
-  isDesktopDebugEnabled,
   isDev,
   rendererUrl,
   setAppSetupStatus,
@@ -59,29 +57,26 @@ import {
   type UpdateStatus,
 } from './app-context.js';
 import {
-  buildSystemProxyTrayMenu,
-  clearSystemProxySettings,
-  clearSystemProxyTransportSettings,
-  getActiveSystemProxyState,
-  initSystemProxyRuntime,
-  loadPersistedSystemProxyState,
-  refreshTrayMenu,
-  restoreSystemProxyProfilesAtLaunch,
-  startSystemProxyWatchdog,
-  stopManagedRuntimes,
-} from './system-proxy/runtime.js';
-import { LOCALHOST_URL } from './constants.js';
+  initConnectedApps,
+  reconnectAllApps,
+  resumeConnectedAppsAfterAbortedQuit,
+  releaseConnectedAppsOnQuit,
+} from './connected-apps/patching/connection.js';
+import { closeLocalGateway, ensureLocalGateway, holdLocalGatewayUntil, initGatewayService, reopenLocalGateway } from './gateway/service.js';
+import { gatewaySettingsPath, getGatewaySettings } from './gateway/settings.js';
+import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
+import { isMultiInstanceDevelopment } from './dev-instance.js';
+import { runSafeStorageExport } from './safe-storage-export.js';
+import { exportWithOldName, gatewaySettingsStore, migrateEncryptedStores, wholeFileStore } from './app-rename.js';
+import { releaseLegacySystemProxy } from './connected-apps/patching/legacy-os-proxy.js';
 import { registerAppIpc } from './ipc/app.js';
 import { registerDesktopIpc } from './ipc/desktop.js';
-import { registerFloatIpc } from './ipc/float.js';
-import { registerStakingIpc } from './ipc/staking.js';
 import { registerFreeTierIpc } from './ipc/free-tier.js';
-import { stakingSessions } from './staking/portal.js';
 import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
-import { registerSystemProxyIpc } from './ipc/system-proxy.js';
+import { registerConnectedAppsIpc } from './ipc/connected-apps.js';
+import { registerGatewayIpc, syncInstalledAgentSkills } from './ipc/gateway.js';
 import { registerTelegramIpc } from './ipc/telegram.js';
-import { registerPublicTunnelIpc } from './ipc/public-tunnel.js';
 import {
   effectiveLaunchTarget,
 } from './connected-apps/profile-targets.js';
@@ -89,31 +84,55 @@ import {
   stopPaymentsPortal,
 } from './payments/portal.js';
 import { ACTIVE_CONFIG_PATH } from './runtime/active-config.js';
-import {
-  restoreOsSystemProxySync,
-} from './system-proxy/os-settings.js';
-import {
-  DEFAULT_SYSTEM_PROXY_PORT,
-} from './system-proxy/profiles.js';
-import { resolveBuyerProxyPort } from './runtime/active-config.js';
 import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
 import { setDesktopTelemetryChoiceInConfig, setDesktopTelemetryHost } from './telemetry/host-env.js';
 import { syncBuyerTelemetryConsent } from './telemetry/buyer-consent.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
 import { cachedBuyerBalanceIsZero, refreshCreditsInfo } from './payments/credits.js';
-import { consoleUpdatePaths, createConsoleUpdates } from './public-tunnel/console-updates.js';
 
-// Re-export types that may be used by other main-process modules
-export type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
-export type { DashboardNetworkPeer, DashboardNetworkStats, DashboardNetworkResult } from './runtime/peer-cache.js';
-export type { InstalledPlugin } from './runtime/plugins.js';
+// Internal runtime name (INTERNAL_APP_NAME, app-context.ts): on macOS the
+// safeStorage encryption key lives in the "<app.setName value> Safe Storage"
+// keychain entry, and the default userData path derives from it too. Renaming
+// it rotates the key; app-rename.ts moves the userData folder and re-encrypts
+// identity.enc and the gateway key secrets whenever the new name's key can't
+// read them.
+// User-visible surfaces use APP_NAME.
 
-// Internal runtime name — NEVER change this value. On macOS the safeStorage
-// encryption key lives in the "<app.setName value> Safe Storage" keychain
-// entry, and the default userData path derives from it too. Renaming it
-// rotates the key and orphans every existing identity.enc. User-visible
-// surfaces use APP_NAME below instead.
+/** Launch switches that decide how safeStorage reaches its key (and whether Electron starts at all as root). */
+function keyStoreSwitches(argv: readonly string[]): string[] {
+  return argv.filter((arg) => arg === '--no-sandbox' || arg === '--use-mock-keychain' || arg.startsWith('--password-store='));
+}
+
+async function migrateStoresAfterRename(): Promise<void> {
+  const log = (line: string) => console.log(`[desktop] rename: ${line}`);
+  try {
+    const oldUserData = path.join(app.getPath('appData'), LEGACY_INTERNAL_APP_NAME);
+    const result = await migrateEncryptedStores({
+      stores: [wholeFileStore(encryptedIdentityPath()), wholeFileStore(telegramSettingsPath()), gatewaySettingsStore(gatewaySettingsPath())],
+      markerDir: app.getPath('userData'),
+      oldName: LEGACY_INTERNAL_APP_NAME,
+      newName: INTERNAL_APP_NAME,
+      safeStorage,
+      // The helper runs under the old name. Its userData only matters on
+      // Windows (the key is in `Local State`): the old folder when it is still
+      // there, else the moved one.
+      decryptWithOldName: (blobs) => exportWithOldName({
+        execPath: process.execPath,
+        // The helper reads the key the way this launch would: the same sandbox
+        // and key store switches (Linux --no-sandbox, --password-store=...).
+        appArgs: [...(app.isPackaged ? [] : [app.getAppPath()]), ...keyStoreSwitches(process.argv)],
+        oldName: LEGACY_INTERNAL_APP_NAME,
+        userData: existsSync(oldUserData) ? oldUserData : app.getPath('userData'),
+        blobs,
+      }),
+      log,
+    });
+    if (!result.skipped) log(`migrated ${result.migrated.length}, failed ${result.failed.length}`);
+  } catch (err) {
+    log(`failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 const APP_STARTED_AT_MS = Date.now();
 
@@ -149,120 +168,34 @@ async function recordTelemetryCleanShutdown(): Promise<void> {
 // inside whenReady() once Electron's protocol module is usable.
 registerAttachmentScheme();
 
-// antseed://invite/<invite> links. One instance owns them (Windows and Linux
-// pass the link to a second process); dev multi-instance runs opt out.
-let showMainWindowFromDeepLink: (() => void) | null = null;
-if (!registerDeepLinks({
-  singleInstance: !isMultiInstanceDevelopment(),
-  onSecondInstance: () => showMainWindowFromDeepLink?.(),
-})) {
-  app.exit(0);
-}
-
 disableSandboxIfAppImageCannotSandbox();
 
+// The safeStorage export helper (app-rename.ts) does its one job and exits;
+// the guards below keep the app itself from starting in that process.
+if (IS_SAFE_STORAGE_EXPORT) runSafeStorageExport();
+
+// One app at a time: a second launch (e.g. a relaunch after an update while
+// the app already reopened) brings the open window forward instead of
+// starting a second gateway. Development instances run side by side on
+// purpose, and the export helper takes no lock.
+if (!IS_SAFE_STORAGE_EXPORT && !isMultiInstanceDevelopment()) {
+  if (!app.requestSingleInstanceLock()) {
+    app.exit(0);
+  } else {
+    app.on('second-instance', () => {
+      const win = getMainWindow();
+      if (!win) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    });
+  }
+}
+
 const logBuffer: LogEvent[] = [];
-let lastRuntimeActivityHash = '';
-
-/**
- * Kill any leftover process still listening on the buyer proxy port after the
- * desktop's own runtime child was stopped. The CLI reuses a compatible
- * listener instead of failing on EADDRINUSE, so an orphaned runtime from an
- * earlier session can keep the proxy alive — chats keep working and the UI
- * reads as connected even though Stop was pressed. Only processes from our
- * own runtime family (node/antseed/electron) are reaped.
- */
-async function killOrphanBuyerProxy(): Promise<void> {
-  if (process.platform === 'win32') return;
-  try {
-    const port = await resolveBuyerProxyPort();
-    const out = execFileSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const pids = out
-      .split(/\s+/)
-      .map((raw) => Number(raw))
-      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
-    for (const pid of pids) {
-      let command = '';
-      try {
-        command = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }).trim();
-      } catch {
-        continue; // Already gone.
-      }
-      if (!/node|antseed|electron/i.test(command)) continue;
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        // Already gone.
-      }
-    }
-  } catch {
-    // lsof unavailable or nothing listening — nothing to reap.
-  }
-}
-
-async function requestBuyerPeerRefresh(): Promise<void> {
-  const port = await resolveBuyerProxyPort();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
-
-  try {
-    const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/peers/refresh`, {
-      method: 'POST',
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = text ? JSON.parse(text) as Record<string, unknown> : {};
-    } catch {
-      payload = {};
-    }
-
-    if (!response.ok || payload['ok'] !== true) {
-      const error = typeof payload['error'] === 'string' && payload['error'].trim().length > 0
-        ? payload['error']
-        : `Buyer proxy returned HTTP ${response.status}`;
-      throw new Error(error);
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`Timed out refreshing peers via buyer proxy on port ${port}`);
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Unable to refresh peers via buyer proxy on port ${port}: ${message}`);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ── Runtime Activity & Log Wiring ──
-
-function emitRuntimeActivity(activity: RuntimeActivityEvent): void {
-  const hash = [
-    activity.mode,
-    activity.stage,
-    activity.tone,
-    activity.message,
-    activity.requestId ?? '',
-    activity.peerId ?? '',
-  ].join('|');
-
-  if (hash === lastRuntimeActivityHash) {
-    return;
-  }
-  lastRuntimeActivityHash = hash;
-  getMainWindow()?.webContents.send('runtime:activity', activity);
-}
 
 function emitRuntimeState(): void {
   getMainWindow()?.webContents.send('runtime:state', getCombinedProcessState());
-  refreshTrayMenu();
 }
 
 function appendLog(mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', line: string): void {
@@ -273,14 +206,7 @@ function appendLog(mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', li
   }
 
   getMainWindow()?.webContents.send('runtime:log', event);
-  const activity = parseRuntimeActivityFromLog(event);
-  if (activity) {
-    emitRuntimeActivity(activity);
-  }
   emitRuntimeState();
-  if (mode === 'system-proxy' && stream === 'system' && /^Process exited|^Started system-proxy/.test(line)) {
-    refreshTrayMenu();
-  }
 }
 
 // Wire up callbacks for extracted modules
@@ -289,23 +215,50 @@ setPluginAppendLog(appendLog);
 // When the peer set changes, tell the renderer to refresh the service catalog.
 onPeersChanged(() => {
   getMainWindow()?.webContents.send('peers:changed');
-  refreshTrayMenu();
 });
 const processManager = new ProcessManager((mode, stream, line) => {
   appendLog(mode, stream, line);
 });
 
-initSystemProxyRuntime({
-  appName: APP_NAME,
-  appendLog,
-  processManager,
-  effectiveLaunchTarget: (profileName) => effectiveLaunchTarget(profileName),
-});
-
-// ── Payments Portal ──
+initGatewayService({ processManager, appendLog });
+// Not in the export helper: it restores retired apps' configs.
+if (!IS_SAFE_STORAGE_EXPORT) {
+  initConnectedApps({
+    appendLog,
+    effectiveLaunchTarget: (profileName) => effectiveLaunchTarget(profileName),
+  });
+}
 
 async function stopDesktopServices(): Promise<void> {
-  await Promise.all([telegramBridge.stop(), stopManagedRuntimes(), stopPaymentsPortal(), stakingSessions.stop()]);
+  await Promise.all([
+    telegramBridge.stop(),
+    // The gateway stops even if restoring the apps' configs failed.
+    releaseConnectedAppsOnQuit().catch((err: unknown) => {
+      appendLog('gateway', 'system', `Releasing connected apps failed: ${err instanceof Error ? err.message : String(err)}`);
+    }).then(() => closeLocalGateway()),
+    stopPaymentsPortal(),
+  ]);
+}
+
+/**
+ * Undoes `stopDesktopServices` when the app didn't quit after all (an update
+ * that failed to install): the gateway starts again, apps are re-pointed at
+ * it and the Telegram bridge resumes.
+ */
+async function resumeDesktopServices(): Promise<void> {
+  resumeConnectedAppsAfterAbortedQuit();
+  try {
+    await reopenLocalGateway();
+    await reconnectAllApps();
+    await syncInstalledAgentSkills();
+  } catch (err) {
+    appendLog('gateway', 'system', `Restarting services after a failed update failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 }
 
 function getCombinedProcessState(): RuntimeProcessState[] {
@@ -316,84 +269,44 @@ function getCombinedProcessState(): RuntimeProcessState[] {
 // Each group lives in ipc/<domain>.ts; anything they need from this file is
 // passed in rather than reached for.
 registerPaymentsIpc();
-registerStakingIpc();
 registerFreeTierIpc();
 registerDesktopIpc();
 registerAppIpc();
-registerFloatIpc();
-registerSystemProxyIpc({ processManager });
-const publicTunnelRuntime = registerPublicTunnelIpc({ processManager });
+registerConnectedAppsIpc();
+registerGatewayIpc({
+  onEndpointChanged: () => {
+    piChatEngine.invalidateModelCatalog();
+    getMainWindow()?.webContents.send('gateway:changed');
+  },
+});
 registerRuntimeIpc({
   processManager,
   logBuffer,
-  appendLog,
   getCombinedProcessState,
-  killOrphanBuyerProxy,
-  requestBuyerPeerRefresh,
 });
 
-// Allowlisted top-level keys that the renderer is permitted to update via IPC.
-// Any key not in this set is stripped before the request is forwarded to the
-// dashboard API, preventing a compromised renderer from overwriting arbitrary
-// config fields.
-
-// ── Credits / Deposits Balance ──
-
-// ── Incoming USDC watcher + P2P relay sweep ──
-//
-// The buyer daemon owns the hot-wallet watcher: it polls the USDC balance,
-// treats any increase as an incoming deposit (QR transfer or Coinbase Onramp
-// delivery), signs an EIP-3009 authorization addressed to the
-// AntseedDepositRelay contract, and offers it to connected peers; a
-// permissionless relayer submits it on-chain and earns the contract's fixed
-// USDC fee (docs/protocol/spec/09-deposit-sweep.md). The hot wallet never
-// needs ETH. While the in-app deposit panel is open, the renderer promotes
-// the daemon's watcher to a fast cadence and mirrors its progress events
-// (payments/deposit-sweep.ts).
+// Created here, before any IPC handler can run, and settled in whenReady.
+let settlePluginInstall: (install: Promise<unknown>) => void = () => {};
+holdLocalGatewayUntil(new Promise<void>((resolve, reject) => {
+  // Without the router plugin the buyer exits or runs without routing: no start at all.
+  settlePluginInstall = (install) => {
+    void install.then(() => resolve(), (err: unknown) => reject(new Error(
+      `The router plugin could not be installed, so the local gateway can't start (${err instanceof Error ? err.message : String(err)}). Restart Antseed Desktop to try again.`,
+    )));
+  };
+}));
 
 // ── AI Chat IPC Handlers ──
 const piChatEngine = registerPiChatHandlers({
   ipcMain,
   sendToRenderer: (channel, payload) => {
     getMainWindow()?.webContents.send(channel, payload);
-    // Tee every chat event into the bus so the Telegram bridge can follow
-    // stream deltas, completions, and tool-approval requests.
+    // Tee every chat event into the bus so the Telegram bridge can follow it.
     emitChatEvent(channel, payload);
   },
   configPath: ACTIVE_CONFIG_PATH,
-  isBuyerRuntimeRunning: () => getCombinedProcessState().some((state) => state.mode === "connect" && state.running),
-  ensureBuyerRuntimeStarted: async () => {
-    const connectState = getCombinedProcessState().find((state) => state.mode === 'connect');
-    if (connectState?.running) {
-      return true;
-    }
-
-    await ensureSecureIdentity();
-
-    const startOptions: StartOptions = {
-      mode: 'connect',
-      router: 'local',
-      ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
-      env: {
-        ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...secureIdentityEnv(),
-      },
-    };
-
-    try {
-      await processManager.start(startOptions);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.toLowerCase().includes('already running')) {
-        return true;
-      }
-      appendLog('connect', 'system', `Chat-triggered buyer runtime start failed: ${message}`);
-      return false;
-    }
-  },
   appendSystemLog: (line) => {
-    appendLog("connect", "system", line);
+    appendLog('gateway', 'system', line);
   },
   recordFirstChatStarted: async (input) => {
     const telemetry = await telemetryReady;
@@ -437,19 +350,10 @@ const piChatEngine = registerPiChatHandlers({
   },
 });
 
-// The Claude Desktop gateway advertises the same curated picker rows the
-// in-app dropdown (and Telegram bridge) offer, behind Claude's model ids.
-setClaudeDesktopGatewayModelSource(() => (
-  (piChatEngine.getModelPicker()?.models ?? []).map((model) => ({
-    label: model.label,
-    model: model.serviceId,
-  }))
-));
-
 // ── Telegram bridge ──
 const telegramBridge = createTelegramBridge({
   engine: piChatEngine,
-  appendLog: (line) => { appendLog('connect', 'system', line); },
+  appendLog: (line) => { appendLog('gateway', 'system', line); },
   onStatusChanged: (status) => {
     getMainWindow()?.webContents.send('telegram:status-changed', status);
   },
@@ -457,14 +361,8 @@ const telegramBridge = createTelegramBridge({
 
 registerTelegramIpc({ telegramBridge });
 
-/* ------------------------------------------------------------------ */
-/*  Floating always-on-top pill window                                  */
-/* ------------------------------------------------------------------ */
-
-// Cache the latest display payload so a freshly opened float window can be
-// primed before the main window's next periodic update.
-
 app.whenReady().then(async () => {
+  if (IS_SAFE_STORAGE_EXPORT) return;
   installAttachmentProtocol();
   app.setName(INTERNAL_APP_NAME);
   app.setAboutPanelOptions({
@@ -476,7 +374,11 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && APP_ICON_PATH && app.dock) {
     app.dock.setIcon(APP_ICON_PATH);
   }
-  const hadExistingIdentity = hasStoredIdentity();
+  // Before anything reads an encrypted store under the new name.
+  if (RENAMED_FROM_LEGACY) await migrateStoresAfterRename();
+  const hadExistingIdentity = !isAttachOnly() && hasStoredIdentity();
+  // Attach-only loads the testbench buyer key from its data dir (memory only,
+  // never the keychain) so balance and wallet views show the fork wallet.
   await ensureSecureIdentity();
   telemetryReady = initializeTelemetry(hadExistingIdentity);
   await telemetryReady;
@@ -495,7 +397,6 @@ app.whenReady().then(async () => {
     // Until this write succeeds, buyers start with the env off switch.
     setDesktopTelemetryChoiceInConfig(await syncBuyerTelemetryConsent(!readyTelemetry.isUserOptedOut()));
   }
-  loadPersistedSystemProxyState();
 
   const showMainWindow = () => {
     const existingWindow = getMainWindow();
@@ -505,101 +406,30 @@ app.whenReady().then(async () => {
       return;
     }
     createWindow({ appName: APP_NAME, appIconPath: APP_ICON_PATH, isDev, rendererUrl });
-    // Windows only, and the reason this is here rather than on `app`:
-    // 'before-quit' is NOT emitted when the app goes down with an OS shutdown,
-    // restart or logout, so this is the last chance to hand the proxy setting
-    // back — and there is only time for the synchronous restore. Without it
-    // the machine reboots into a system proxy pointing at nothing.
-    getMainWindow()?.on('session-end', () => {
-      restoreOsSystemProxySync();
-    });
   };
 
   showMainWindow();
-  showMainWindowFromDeepLink = showMainWindow;
-  deliverDeepLinksTo(getMainWindow, showMainWindow);
-
-  void publicTunnelRuntime.restoreAtLaunch().then((result) => {
-    if (result && !result.ok) {
-      appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${result.error ?? 'Unknown error'}`);
-    }
-  }).catch((err) => {
-    appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
-
-  // Fail open before anything else. Whatever the OS proxy is set to right now
-  // was left behind by the previous run — and if that run ended in a crash,
-  // a force-quit or an OS shutdown, it still points at a proxy that is not
-  // running, which is the whole machine offline. Restore it unconditionally
-  // and let the reconnect below re-arm it only once a proxy really listens.
-  // Fire-and-forget so clean launches don't block window creation on
-  // networksetup/reg calls; only the state files differ between the two cases
-  // (persisted state is the reconnect memory and must survive).
-  const systemProxyFailOpen = (getActiveSystemProxyState()
-    ? clearSystemProxyTransportSettings()
-    : clearSystemProxySettings()
-  ).catch((err) => {
-    appendLog('system-proxy', 'system', `System Proxy cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
-  startSystemProxyWatchdog();
-
-  const showFloatingWindow = () => {
-    const win = getMainWindow();
-    if (win) {
-      win.webContents.send('desktop:open-floating-window');
-      return;
-    }
-    showMainWindow();
-    getMainWindow()?.webContents.once('did-finish-load', () => {
-      getMainWindow()?.webContents.send('desktop:open-floating-window');
-    });
-  };
-
-  const toggleMainConnection = () => {
-    const running = getCombinedProcessState().some((state) => state.mode === 'connect' && state.running);
-    getMainWindow()?.webContents.send(running ? 'desktop:disconnect-main' : 'desktop:connect-main');
-  };
 
   createDesktopTray({
     appName: APP_NAME,
     iconPath: TRAY_ICON_PATH,
     onShow: showMainWindow,
-    buildMenu: () => buildSystemProxyTrayMenu(showMainWindow, showFloatingWindow, toggleMainConnection),
-  });
-  refreshTrayMenu();
-
-  const restoredState = getActiveSystemProxyState();
-  const restoredProfiles = Array.isArray(restoredState?.['activeProfileNames'])
-    ? restoredState['activeProfileNames'].filter((name: unknown): name is string => typeof name === 'string')
-    : [];
-  if (restoredProfiles.length > 0 && typeof restoredState?.['peerId'] === 'string') {
-    const restorePeerId = restoredState['peerId'];
-    const restoreDefaultModel = typeof restoredState['defaultModel'] === 'string'
-      ? restoredState['defaultModel'] as string
-      : undefined;
-    // Sequenced after the fail-open above, or the clear could land after the
-    // child has already re-armed the setting and silently disconnect it.
-    void systemProxyFailOpen.then(() => restoreSystemProxyProfilesAtLaunch({
-      peerId: restorePeerId,
-      port: DEFAULT_SYSTEM_PROXY_PORT,
-      profiles: restoredProfiles,
-      defaultModel: restoreDefaultModel,
-      servedModels: [],
-      profileSwitch: true,
-    })).catch((err) => {
-      appendLog('system-proxy', 'system', `System Proxy auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
-
-  // Resume the Telegram bridge if a bot was connected in a previous session.
-  // Needs app-ready because the token store decrypts via safeStorage.
-  void telegramBridge.start().catch((err) => {
-    appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    buildMenu: () => [
+      { label: `Show ${APP_NAME}`, click: showMainWindow },
+      { label: 'Quit', click: () => app.quit() },
+    ],
   });
 
-  // Payments portal starts lazily on first open (via payments:open-portal IPC)
+  // Releases before the gateway could leave the OS proxy pointing at their
+  // local system proxy after a crash; nothing listens there any more.
+  void releaseLegacySystemProxy();
 
-  void ensureDefaultPlugin('@antseed/router-local', {
+  // A testbench desktop (attach-only) uses the testbench's plugins as they are.
+  if (isAttachOnly()) setAppSetupStatus({ needed: false, complete: true });
+  // The buyer loads the router plugin, and installing it replaces the plugins
+  // folder, so the gateway only starts once the install has succeeded. Failure
+  // is logged inside ensureDefaultPlugin, and every gateway start then says so.
+  const pluginReady = isAttachOnly() ? Promise.resolve() : ensureDefaultPlugin('@antseed/router-local', {
     getAppSetupNeeded: () => getAppSetupStatus().needed,
     setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
     getAppSetupComplete: () => getAppSetupStatus().complete,
@@ -608,9 +438,44 @@ app.whenReady().then(async () => {
     onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
     getMainWindow,
     appendLog,
-  }).catch(() => {
-    // Failure is already logged via appendLog inside ensureDefaultPlugin.
   });
+
+  // The local gateway (and its buyer) comes up with the app; connected apps
+  // are re-pointed at it once it serves. Nothing to start for a remote one.
+  settlePluginInstall(pluginReady);
+  // Apps and skills follow only a gateway that started (or a remote one). A
+  // remote gateway needs no local router, so a failed install doesn't hold it
+  // up; ensureLocalGateway still waits for the install before any local start.
+  const launchGateway = getGatewaySettings().mode === 'local'
+    ? pluginReady.then(() => ensureLocalGateway())
+    : ensureLocalGateway();
+  void launchGateway
+    .then(
+      async () => {
+        await reconnectAllApps().catch((err) => {
+          appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        // The gateway may have replaced a key it no longer accepts while starting.
+        await syncInstalledAgentSkills().catch((err) => {
+          appendLog('gateway', 'system', `Updating agent skills failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      (err) => {
+        appendLog('gateway', 'system', `Gateway start failed: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
+
+  // Resume the Telegram bridge if a bot was connected in a previous session.
+  // Needs app-ready because the token store decrypts via safeStorage.
+  // A testbench desktop never resumes a bot: real Telegram users would get
+  // testbench replies.
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  // Payments portal starts lazily on first open (via payments:open-portal IPC)
 
   // Auto-update: check for updates silently on launch and every 30 minutes.
   // If an in-flight download stops emitting progress events for a couple of
@@ -643,38 +508,6 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('app:get-update-status', () => lastUpdateStatus);
 
-  // The gateway console the public tunnel serves can ask for an update too
-  // (see public-tunnel/console-updates.ts), in the banner's two steps:
-  // Download, then Restart & update. An install asked for before the
-  // download finished restarts as soon as it is ready, since nobody may be
-  // at this computer to click.
-  let installWhenReady = false;
-  // What electron-updater holds downloaded; unlike updateVersion, an error does not clear it.
-  let downloadedVersion: string | null = null;
-  const consoleUpdates = createConsoleUpdates({
-    paths: consoleUpdatePaths(resolveConnectDataDir()),
-    appVersion: app.getVersion(),
-    // A finished download stays usable after a failed install (the banner then shows the error).
-    download: () => {
-      if (updatePhase === 'ready' && downloadedVersion) consoleUpdates.downloaded(downloadedVersion);
-      else startUpdateDownload();
-    },
-    install: async () => {
-      installWhenReady = true;
-      if (updatePhase === 'ready' && downloadedVersion) {
-        updateVersion = downloadedVersion;
-        const result = await installDownloadedUpdate();
-        if (!result.ok) throw new Error(result.error);
-        return;
-      }
-      startUpdateDownload();
-    },
-    check: () => {
-      void autoUpdater.checkForUpdates().catch(() => {});
-    },
-    log: (message) => appendLog('connect', 'system', message),
-  });
-
   const clearStallWatchdog = () => {
     if (downloadStallInterval) {
       clearInterval(downloadStallInterval);
@@ -689,16 +522,16 @@ app.whenReady().then(async () => {
     const details = errorDetails(error);
     const hint = getMacUpdateInstallHint();
     console.error(`[auto-update] ${context}:`, details);
-    appendLog('connect', 'system', `Auto-update ${context}: ${message}`);
+    appendLog('gateway', 'system', `Auto-update ${context}: ${message}`);
     clearStallWatchdog();
     if (isInstallingUpdate) {
       isQuitting = false;
+      // Services were stopped for the install; the app keeps running, so they come back.
+      void resumeDesktopServices();
     }
     isInstallingUpdate = false;
     sendUpdateStatus({ status: 'error', version: updateVersion, message, details, hint });
     updateVersion = null;
-    installWhenReady = false;
-    consoleUpdates.failed(message);
     return { ok: false, error: message, details, hint };
   };
 
@@ -744,8 +577,6 @@ app.whenReady().then(async () => {
     updateVersion = info.version;
     sendUpdateStatus({ status: 'available', version: info.version });
   });
-  autoUpdater.on('update-available', (info) => consoleUpdates.checked(info.version));
-  autoUpdater.on('update-not-available', () => consoleUpdates.checked(app.getVersion()));
 
   const startUpdateDownload = (): void => {
     if (updatePhase === 'downloading' || updatePhase === 'ready') return;
@@ -793,12 +624,6 @@ app.whenReady().then(async () => {
     }
     pendingReadyVersion = null;
     sendUpdateStatus({ status: 'ready', version });
-    consoleUpdates.downloaded(version);
-    if (installWhenReady) {
-      void installDownloadedUpdate().then((result) => {
-        if (!result.ok) consoleUpdates.failed(result.error ?? 'the update did not install');
-      });
-    }
   };
 
   if (process.platform === 'darwin') {
@@ -813,7 +638,6 @@ app.whenReady().then(async () => {
   autoUpdater.on('update-downloaded', (info) => {
     updatePhase = 'ready';
     updateVersion = info.version;
-    downloadedVersion = info.version;
     clearStallWatchdog();
     clearDownloadRetry();
     if (updateCheckInterval) {
@@ -839,8 +663,7 @@ app.whenReady().then(async () => {
     // switching mid-check must not raise an "Update failed" banner. The
     // periodic re-check retries on its own.
     if (!isInstallingUpdate && updatePhase !== 'downloading') {
-      appendLog('connect', 'system', `Auto-update check failed (will retry): ${message}`);
-      consoleUpdates.checked(null, message);
+      appendLog('gateway', 'system', `Auto-update check failed (will retry): ${message}`);
       return;
     }
 
@@ -854,7 +677,7 @@ app.whenReady().then(async () => {
     ) {
       if (downloadRetryTimer) return; // a retry is already scheduled
       downloadRetries += 1;
-      appendLog('connect', 'system', `Auto-update download interrupted (${message}) — retry ${downloadRetries}/${MAX_DOWNLOAD_RETRIES} in 15s`);
+      appendLog('gateway', 'system', `Auto-update download interrupted (${message}) — retry ${downloadRetries}/${MAX_DOWNLOAD_RETRIES} in 15s`);
       downloadRetryTimer = setTimeout(() => {
         downloadRetryTimer = null;
         startStallWatchdog();
@@ -913,7 +736,7 @@ app.whenReady().then(async () => {
       // padding the user-visible gap before the relaunch.
       'i=0; while kill -0 "$APP_PID" 2>/dev/null && [ "$i" -lt 180 ]; do sleep 1; i=$((i+1)); done',
       // The install gap has no UI at all — reassure via a system notification.
-      'osascript -e \'display notification "Installing the update — the app will reopen shortly." with title "Antseed AI VPN"\' >/dev/null 2>&1 || true',
+      'osascript -e \'display notification "Installing the update — the app will reopen shortly." with title "Antseed Desktop"\' >/dev/null 2>&1 || true',
       'j=0; while [ "$j" -lt 3 ]; do',
       '  sleep 2',
       '  launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running" && exit 0',
@@ -931,7 +754,6 @@ app.whenReady().then(async () => {
     child.unref();
   };
 
-  // Declared as a function so the console's updater above can call it.
   async function installDownloadedUpdate(): Promise<InstallUpdateResult> {
     if (isInstallingUpdate) {
       return { ok: true };
@@ -953,7 +775,6 @@ app.whenReady().then(async () => {
     }
   }
   ipcMain.handle('app:install-update', () => installDownloadedUpdate());
-  consoleUpdates.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -980,24 +801,9 @@ app.on('before-quit', (event) => {
   }
 
   event.preventDefault();
-  try {
-    stakingSessions.pauseWrites();
-  } catch {
-    dialog.showMessageBoxSync({
-      type: 'info', title: 'Staking action in progress',
-      message: 'Wait for your staking action to finish before quitting VPR.',
-      detail: 'You can follow its progress in the staking dashboard.',
-    });
-    return;
-  }
   isQuitting = true;
-
-  // First, and synchronously: the async teardown below waits on child
-  // processes and can be cut short (Windows gives an app only a few seconds
-  // to quit at logout/shutdown before killing it). An OS proxy left pointing
-  // at the dead port breaks networking machine-wide, so it must not be
-  // downstream of anything that can block.
-  restoreOsSystemProxySync();
+  // The gateway may take a while to finish requests in flight; nothing is left to do in the windows.
+  for (const window of BrowserWindow.getAllWindows()) window.hide();
 
   // Briefly flush the final close event and clear the local crash marker before
   // exit, otherwise delivery is lost or the next launch reports a false crash.
@@ -1010,13 +816,11 @@ app.on('before-quit', (event) => {
 // Ensure child processes are cleaned up if the main process receives a terminal
 // stop signal before before-quit fires.
 process.on('SIGINT', () => {
-  restoreOsSystemProxySync();
   const telemetryShutdown = recordTelemetryCleanShutdown();
   void Promise.allSettled([stopDesktopServices(), telemetryShutdown]).finally(() => process.exit(0));
 });
 
 process.on('SIGTERM', () => {
-  restoreOsSystemProxySync();
   const telemetryShutdown = recordTelemetryCleanShutdown();
   void Promise.allSettled([stopDesktopServices(), telemetryShutdown]).finally(() => process.exit(0));
 });

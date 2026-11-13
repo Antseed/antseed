@@ -28,36 +28,11 @@
  * Usage: node scripts/npm-publish-plan.mjs
  * Exits non-zero on invariant violations or registry errors.
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { root, publishablePackages } from './publishable-packages.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-// Must match the --filter set in .github/workflows/npm-publish.yml.
-const GROUP_DIRS = ['packages', 'plugins'];
-const EXTRA_DIRS = ['apps/cli', 'apps/network-stats', 'apps/payments', 'apps/ants', 'apps/gateway-console', 'apps/relay'];
-
-function readPackage(dir) {
-  const manifestPath = join(root, dir, 'package.json');
-  if (!existsSync(manifestPath)) return null;
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  if (manifest.private) return null;
-  return { dir, name: manifest.name, version: manifest.version, dependencies: manifest.dependencies ?? {} };
-}
-
-const packages = [];
-for (const group of GROUP_DIRS) {
-  for (const entry of readdirSync(join(root, group))) {
-    const pkg = readPackage(join(group, entry));
-    if (pkg) packages.push(pkg);
-  }
-}
-for (const dir of EXTRA_DIRS) {
-  const pkg = readPackage(dir);
-  if (pkg) packages.push(pkg);
-}
+const packages = publishablePackages();
 
 async function publishedVersions(name) {
   const res = await fetch(`https://registry.npmjs.org/${name.replace('/', '%2F')}`, {

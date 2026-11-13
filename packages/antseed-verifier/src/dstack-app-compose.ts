@@ -21,7 +21,11 @@ export type { SellerUpstream } from './seller-config-rules.js'
  *     without the matching token.
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
- *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
+ *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json, named
+ *     seller-config-<SHA-256 of its content>. Docker compose recreates a container only when its
+ *     service definition changes, and inline config content isn't part of it, so with any other
+ *     name a config-only update could keep the old container running the old config while buyers
+ *     read the new one.
  *   - environment: the literal settings LITERAL_ENV allows; secrets only as `NAME: ${NAME}` for
  *     the names checkHiddenSecrets allows, plus `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`.
  *     No `$` anywhere else, because compose substitutes variables in every value, the inline
@@ -45,6 +49,11 @@ const CONFIG_PATH = '/etc/antseed/config.json'
 const DATA_DIR = '/var/lib/antseed'
 const DSTACK_SOCKET = '/var/run/dstack.sock'
 const IMAGE = /^[a-z0-9][a-z0-9._/:-]*@(sha256:[0-9a-f]{64})$/
+
+/** The name a seller config must have in the compose file: it changes with every content change. */
+export function sellerConfigName(content: string): string {
+  return `seller-config-${createHash('sha256').update(content, 'utf8').digest('hex')}`
+}
 
 /** Whether any key or string anywhere in a value contains "$". */
 function hasVariableReference(value: unknown): boolean {
@@ -116,6 +125,7 @@ function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage
   check(isObj(top) && Object.keys(top).length === 1 && typeof ref['source'] === 'string', 'the seller config must be one inline config')
   const content = top[ref['source']]
   check(isObj(content) && Object.keys(content).length === 1 && typeof content['content'] === 'string', 'the seller config must be inline content')
+  check(ref['source'] === sellerConfigName(content['content']), 'the seller config must be named seller-config-<SHA-256 of its content> (regenerate the compose with compose.mjs)')
   const { upstreams, apiKeyEnvs } = checkSellerConfig(parseJson(content['content'], 'seller config'))
   checkHiddenSecrets(secrets, apiKeyEnvs)
   return { image, upstreams, secrets }

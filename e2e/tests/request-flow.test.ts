@@ -137,10 +137,10 @@ describe('Request flow: buyer sends request to seller via P2P', () => {
 
     // Assert all responses are successful
     for (let i = 0; i < responses.length; i++) {
-      expect(responses[i].statusCode).toBe(200);
-      expect(responses[i].requestId).toBe(requests[i].requestId);
+      expect(responses[i]!.statusCode).toBe(200);
+      expect(responses[i]!.requestId).toBe(requests[i]!.requestId);
 
-      const body = JSON.parse(new TextDecoder().decode(responses[i].body));
+      const body = JSON.parse(new TextDecoder().decode(responses[i]!.body));
       expect(body.type).toBe('message');
       expect(body.content[0].text).toBe('Hello from mock provider!');
     }

@@ -10,7 +10,7 @@ import {useEffect, useState} from 'react';
 import Head from '@docusaurus/Head';
 import Layout from '@theme/Layout';
 import {useLocation} from '@docusaurus/router';
-import {Button, PageHero} from '../components/ui';
+import {PageHero} from '../components/ui';
 import {DownloadButton} from '../components/DownloadButton';
 import {CommandChip} from '../components/CommandChip';
 import {decodeInvite, inviteExpiry, recoverInviter, shortAddress, type Invite} from '../lib/invite';
@@ -65,16 +65,11 @@ export default function InvitePage() {
             )}
             note={invite && !expired && (
               <>
-                <p>Using the CLI?</p>
+                <p>Redeem it with the Antseed CLI before your first request:</p>
                 <CommandChip command={`npm i -g @antseed/cli && antseed referral redeem ${decoded!.raw}`} token={decoded!.raw} size="md" />
               </>
             )}>
-            <DownloadButton variant="dark" />
-            {invite && !expired && (
-              <Button variant="ghost" size="lg" href={`antseed://invite/${decoded!.raw}`}>
-                Open in Antseed
-              </Button>
-            )}
+            {(!invite || expired) && <DownloadButton variant="dark" />}
           </PageHero>
         )}
       </main>
