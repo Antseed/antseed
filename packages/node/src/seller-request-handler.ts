@@ -1889,6 +1889,14 @@ export class SellerRequestHandler {
       // A streamed 429 is held back so its upstream body can be replaced before the buyer sees it.
       let heldRateLimit = false;
       const sent: Uint8Array[] = [];
+      // A provider that fails mid-stream leaves its last line or event held here: it is sent
+      // (rewritten) before the failure, so the buyer has every byte and the error frame follows them.
+      const sendHeld = (): void => {
+        const rest = events?.flush();
+        if (!rest?.length) return;
+        sent.push(rest);
+        streamCallbacks.onResponseChunk({ requestId: request.requestId, data: rest, done: false });
+      };
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
         onResponseStart: (start) => {
@@ -1916,6 +1924,9 @@ export class SellerRequestHandler {
           if (!chunk.done && data.length === 0) return;
           return streamCallbacks.onResponseChunk({ ...chunk, data });
         },
+      }).catch((err: unknown) => {
+        sendHeld();
+        throw err;
       });
       // The returned body is what the buyer was sent, so usage and payment read the same bytes.
       if (events) return { ...withHeaders(response), body: concatBytes(sent) };
