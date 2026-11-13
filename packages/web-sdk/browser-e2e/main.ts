@@ -48,7 +48,8 @@ window.runAntseedAcceptance = async (config) => {
     payment: { rpcUrl: '' },
   });
   try {
-    const session = await client.connect(config.sellerPeerId);
+    // A relay static seller announces nothing: give the session the price this seller serves at (free).
+    const session = await client.connect(config.sellerPeerId, { defaultInputUsdPerMillion: 0, defaultOutputUsdPerMillion: 0 });
     const response = await session.request({
       path: '/v1/messages',
       provider: 'browser-acceptance',
@@ -92,7 +93,8 @@ window.runPaidAntseedAcceptance = async (config) => {
     } as never,
   });
   try {
-    const session = await client.connect(config.sellerPeerId);
+    // A relay static seller announces nothing: give the session the price this seller charges (its 402).
+    const session = await client.connect(config.sellerPeerId, { defaultInputUsdPerMillion: 3000, defaultOutputUsdPerMillion: 15000 });
     const response = await session.request({
       path: '/v1/messages',
       headers: { 'x-browser-paid': '1' },

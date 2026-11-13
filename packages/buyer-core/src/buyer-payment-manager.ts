@@ -2759,6 +2759,11 @@ export class BuyerPaymentManager {
     this._requestService.track(requestId, service);
   }
 
+  /** The service the buyer asked for in `requestId`, as tracked when it was sent. */
+  getRequestService(requestId: string): string | undefined {
+    return this._requestService.get(requestId);
+  }
+
   trackRequestBilling(requestId: string, entry: BuyerRequestBillingEntry): void {
     this._cleanupRequestBillingCache();
     this._requestService.track(requestId, entry.context.service);

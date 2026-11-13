@@ -114,6 +114,88 @@ describe('AntseedWebClient.create', () => {
     await client.close();
   });
 
+  it('connects by peer id with the prices the seller announces', async () => {
+    const peerId = '65'.repeat(20);
+    const fetchSellers = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      peers: [{
+        peerId,
+        version: 12,
+        region: 'global',
+        timestamp: Date.now(),
+        signature: '0xsig',
+        capabilities: [],
+        providers: [{
+          provider: 'openai',
+          services: ['test-model'],
+          defaultPricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 },
+          maxConcurrency: 2,
+          currentLoad: 0,
+        }],
+      }],
+      static: [],
+      updatedAt: new Date().toISOString(),
+    }), { status: 200 }));
+    vi.spyOn(SellerConnection, 'connect').mockResolvedValue(mockConnection(true).connection);
+    const client = AntseedWebClient.ephemeral({
+      relayUrl: 'http://relay.invalid',
+      wallet: Wallet.createRandom(),
+      payment: { rpcUrl: '' },
+      env: {
+        RTCPeerConnection: class {} as unknown as typeof RTCPeerConnection,
+        WebSocket: class {} as never,
+      },
+    });
+
+    // Not listed yet: connect looks the seller up once.
+    const looked = await client.connect(peerId);
+    expect(fetchSellers).toHaveBeenCalledOnce();
+    // Listed by the last sellers() call: no second lookup.
+    const remembered = await client.connect(peerId);
+    expect(fetchSellers).toHaveBeenCalledOnce();
+    for (const session of [looked, remembered]) {
+      expect(session.peer).toMatchObject({
+        peerId,
+        defaultInputUsdPerMillion: 3,
+        defaultOutputUsdPerMillion: 15,
+        providerPricing: { openai: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
+      });
+    }
+    await client.close();
+  });
+
+  it('refuses a paid request on a session with no announced price, without sending it to the seller', async () => {
+    const peerId = '64'.repeat(20);
+    // A static seller only: the relay lists it but carries no announcement.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      peers: [],
+      static: [{ peerId, host: 'static.example', port: 8917 }],
+      updatedAt: new Date().toISOString(),
+    }), { status: 200 }));
+    const { connection } = mockConnection(true);
+    vi.spyOn(SellerConnection, 'connect').mockResolvedValue(connection);
+    const client = AntseedWebClient.ephemeral({
+      relayUrl: 'http://relay.invalid',
+      wallet: Wallet.createRandom(),
+      payment: { rpcUrl: '' },
+      env: {
+        RTCPeerConnection: class {} as unknown as typeof RTCPeerConnection,
+        WebSocket: class {} as never,
+      },
+    });
+
+    const session = await client.connect(peerId);
+    // A path no standard adapter reshapes, so the buyer's own body comes back as written.
+    const response = await session.request({ path: '/custom/generate', body: JSON.stringify({ model: 'test-model' }) });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({
+      error: 'payment_negotiation_failed',
+      reason: 'price_unknown',
+    });
+    expect(connection.send).not.toHaveBeenCalled();
+    await client.close();
+  });
+
   it('replaces the payment mux when reconnecting a stale transport', async () => {
     const oldConnection = mockConnection(true);
     const newConnection = mockConnection(true);

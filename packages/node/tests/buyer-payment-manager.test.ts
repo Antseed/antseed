@@ -205,7 +205,7 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
-  it('verifies cost at the announced price after a negotiation, not a higher price the seller states in its 402', async () => {
+  it('verifies cost at the announced price after a negotiation, not another price the seller states in its 402', async () => {
     const sellerPeerId = toPeerId(fakePeerId('seller-states-more'));
     const negotiator = new BuyerPaymentNegotiator(
       identity,
@@ -224,12 +224,13 @@ describe('BuyerPaymentManager', () => {
       defaultInputUsdPerMillion: 0.6,
       defaultOutputUsdPerMillion: 1.2,
     };
+    // A lower stated price: a higher one is refused before the negotiation.
     const paymentRequired = {
       error: 'payment_required',
       minBudgetPerRequest: '10000',
       suggestedAmount: '100000',
-      inputUsdPerMillion: 3,
-      outputUsdPerMillion: 15,
+      inputUsdPerMillion: 0.3,
+      outputUsdPerMillion: 0.6,
     };
 
     const result = await negotiator.handle402(

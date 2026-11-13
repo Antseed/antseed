@@ -975,13 +975,17 @@ export class BuyerPaymentNegotiator {
     // buffered frame is kept per seller and can be another request's.
     const statedForRequest = buffered ? (buffered.requestId === req.requestId ? buffered : null) : bodyRequirements;
     const routeBilling = this._bpm.getRequestBilling(req.requestId);
-    const aboveRoute = statedForRequest && routeBilling?.tokenPricing
-      ? priceAboveRoute(statedForRequest, routeBilling.tokenPricing)
+    const service = routeBilling ? routeBilling.context.service : this._bpm.getRequestService(req.requestId);
+    // A request with no billing route is verified at the session pricing this
+    // negotiation stores, so it is held to that price.
+    const routePricing = routeBilling ? routeBilling.tokenPricing : this._negotiatedPricing(peer, service);
+    const aboveRoute = statedForRequest && routePricing
+      ? priceAboveRoute(statedForRequest, routePricing)
       : null;
     if (aboveRoute) {
       debugWarn(
         `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
-        `for ${routeBilling?.context.service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
+        `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
       );
       return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
     }
@@ -1584,6 +1588,12 @@ export class BuyerPaymentNegotiator {
       pending.reject(buyerFault('Node stopped', 'node-stopped'));
     }
     this._pendingCloseRequests.clear();
+  }
+
+  /** What getSessionPricing returns for `service` once a negotiation has stored this peer's pricing map. */
+  private _negotiatedPricing(peer: BuyerPeerView, service: string | undefined): ServicePricing | undefined {
+    const map = this._buildPricingMap(peer);
+    return (service ? map?.services[service] : undefined) ?? map?.defaults;
   }
 
   /**

@@ -63,6 +63,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     recordDeliveredResponse: vi.fn(),
     recordObservedUnitUsage: vi.fn(),
     getRequestBilling: vi.fn().mockReturnValue(undefined),
+    getRequestService: vi.fn().mockReturnValue(undefined),
     getSessionPricing: vi.fn().mockReturnValue(null),
     maxPerRequestUsdc: 100_000n,
     maxVideoRequestUsdc: 5_000_000n,
@@ -1010,6 +1011,48 @@ describe('BuyerPaymentNegotiator', () => {
         const result = await negotiator.handle402(stating(stated), peer, conn, makeRequest());
         expect(result.action).toBe('retry');
         expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+
+      describe('on a request with no billing route', () => {
+        function serviceTracked(service: string | undefined) {
+          (bpm.getRequestBilling as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+          (bpm.getRequestService as ReturnType<typeof vi.fn>).mockReturnValue(service);
+        }
+
+        it('refuses a higher price than the announced default it will be verified at', async () => {
+          serviceTracked('k3');
+          confirmLocks();
+          const announced = { ...peer, defaultInputUsdPerMillion: 0.6, defaultOutputUsdPerMillion: 1.2 };
+          expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), announced, conn, makeRequest()));
+        });
+
+        it('still negotiates the price it announces for the service, above its defaults', async () => {
+          serviceTracked('k3');
+          confirmLocks();
+          const announced = {
+            ...peer,
+            defaultInputUsdPerMillion: 0.6,
+            defaultOutputUsdPerMillion: 1.2,
+            providerPricing: {
+              openai: {
+                defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 },
+                services: { k3: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
+              },
+            },
+          };
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), announced, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+        });
+
+        it('compares nothing when the buyer has no price for the request', async () => {
+          serviceTracked('k3');
+          confirmLocks();
+          const unpriced = { peerId: peer.peerId, lastSeen: peer.lastSeen, providers: [] } as PeerInfo;
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), unpriced, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+        });
       });
 
       it('still negotiates a per-image route whose 402 states zero token prices', async () => {

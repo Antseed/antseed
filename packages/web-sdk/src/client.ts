@@ -148,6 +148,8 @@ export class AntseedWebClient {
   readonly negotiator: BuyerPaymentNegotiator;
   private readonly sessions = new Map<PeerId, SessionWiring>();
   private readonly sessionPromises = new Map<PeerId, Promise<SessionWiring>>();
+  /** The sellers from the last successful `sellers()` call, by peer id. */
+  private announcedSellers = new Map<string, SellerSummary>();
   private closed = false;
 
   constructor(
@@ -336,10 +338,16 @@ export class AntseedWebClient {
         byId.set(peer.peerId, peer);
       }
     }
+    this.announcedSellers = byId;
     return [...byId.values()];
   }
 
-  /** Connect to a seller. `peer` extras (pricing, metadata) improve cost validation. */
+  /**
+   * Connect to a seller. Its prices come from its announcement: the summary
+   * passed in, or, for a peer id, the one `sellers()` returned for it. A
+   * seller with no announcement (a relay's static seller) needs its prices
+   * in `peer`. Without a price, paid requests are refused before they are sent.
+   */
   async connect(
     seller: string | SellerSummary,
     peer: Partial<BuyerPeerView> = {},
@@ -347,12 +355,27 @@ export class AntseedWebClient {
     this.assertOpen();
     const sellerPeerId = typeof seller === 'string' ? seller : seller.peerId;
     const peerId = toPeerId(sellerPeerId.toLowerCase());
-    const sellerView = typeof seller === 'string'
-      ? {}
-      : seller as unknown as Partial<BuyerPeerView>;
+    const [sellerView] = await Promise.all([
+      typeof seller === 'string'
+        ? this.announcedSeller(peerId)
+        : seller as unknown as Partial<BuyerPeerView>,
+      this.requireSession(peerId),
+    ]);
     const peerView: BuyerPeerView = { ...sellerView, ...peer, peerId };
-    await this.requireSession(peerId);
     return new SellerSession(this, peerView);
+  }
+
+  /** The seller's announcement, from the last `sellers()` call or a fresh one; empty when there is none. */
+  private async announcedSeller(peerId: PeerId): Promise<Partial<BuyerPeerView>> {
+    const remembered = this.announcedSellers.get(peerId);
+    if (remembered) return remembered;
+    try {
+      await this.sellers();
+    } catch {
+      // The relay did not answer, or its snapshot is stale: connect without an announcement.
+      return {};
+    }
+    return this.announcedSellers.get(peerId) ?? {};
   }
 
   /** @internal */

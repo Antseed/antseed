@@ -224,7 +224,8 @@ beforeAll(async () => {
 
   const sellers = await client.sellers();
   expect(sellers.map((s) => s.peerId)).toContain(sellerPeerId);
-  session = await client.connect(sellerPeerId);
+  // A relay static seller announces nothing: give the session the price it charges (PRICE_402_BODY).
+  session = await client.connect(sellerPeerId, { defaultInputUsdPerMillion: 3000, defaultOutputUsdPerMillion: 15000 });
 }, 60_000);
 
 afterAll(async () => {
