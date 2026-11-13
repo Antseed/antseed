@@ -8,20 +8,25 @@ import { DEFAULT_BUYER_IDENTITY } from '@antseed/node';
  */
 export type BuyerSignerCheck = 'match' | 'mismatch' | 'unknown';
 
-/** The buyer's default identity address (`GET /_antseed/buyer-identities`), or null when it can't be read. */
-export async function liveBuyerAddress(buyerPort: number, timeoutMs = 3_000): Promise<string | null> {
+/** `GET` a local buyer API route as JSON; null when it doesn't answer, answers an error, or isn't JSON. */
+export async function fetchBuyerJson(port: number, pathname: string, timeoutMs: number): Promise<unknown> {
   try {
-    const response = await fetch(`http://127.0.0.1:${buyerPort}/_antseed/buyer-identities`, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       return null;
     }
-    const body = await response.json() as { identities?: Array<{ name?: unknown; address?: unknown }> };
-    const entry = body.identities?.find((identity) => identity.name === DEFAULT_BUYER_IDENTITY);
-    return typeof entry?.address === 'string' ? entry.address : null;
+    return await response.json();
   } catch {
     return null;
   }
+}
+
+/** The buyer's default identity address (`GET /_antseed/buyer-identities`), or null when it can't be read. */
+export async function liveBuyerAddress(buyerPort: number, timeoutMs = 3_000): Promise<string | null> {
+  const body = await fetchBuyerJson(buyerPort, '/_antseed/buyer-identities', timeoutMs) as { identities?: Array<{ name?: unknown; address?: unknown }> } | null;
+  const entry = body?.identities?.find((identity) => identity.name === DEFAULT_BUYER_IDENTITY);
+  return typeof entry?.address === 'string' ? entry.address : null;
 }
 
 export function compareBuyerSigner(buyerAddress: string | null, signerAddress: string | null): BuyerSignerCheck {

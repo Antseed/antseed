@@ -1410,7 +1410,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                     onRetry={() => void actions.refreshChatModels(true)}
                     menuPlacement="above"
                   />
-                  {!imageMode && snap.chatSelectedModelId ? (
+                  {!imageMode && snap.chatSelectedModelId && !selectedTextModel?.router ? (
                     <ChatSellerPicker
                       onOpenChange={setSellerMenuOpen}
                       modelId={snap.chatSelectedModelId}
