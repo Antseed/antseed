@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { streamSimple, type Model } from '@mariozechner/pi-ai';
+import { streamSimple } from '@mariozechner/pi-ai';
 import { AuthStorage, compact, generateSummary, ModelRegistry } from '@mariozechner/pi-coding-agent';
 
-import { anthropicEffort, anthropicThinkingMode, registerGatewayAnthropic, shapeAnthropicThinking, type ThinkingLevel } from './anthropic-thinking.js';
+import { anthropicEffort, anthropicThinkingMode, registerGatewayAnthropic, shapeAnthropicThinking, type AnthropicGatewayModel, type ThinkingLevel } from './anthropic-thinking.js';
 import { GATEWAY_PROVIDER_ID, makeGatewayModel } from './gateway-model.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
@@ -13,8 +13,8 @@ const STOP = 'stop before sending';
 // every request for that protocol through the chat's stream function.
 registerGatewayAnthropic(ModelRegistry.inMemory(AuthStorage.inMemory()), GATEWAY_PROVIDER_ID);
 
-function gatewayModel(modelId: string, reasoning: boolean): Model<'anthropic-messages'> {
-  return makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, reasoning }) as Model<'anthropic-messages'>;
+function gatewayModel(modelId: string, reasoning: boolean): AnthropicGatewayModel {
+  return makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, reasoning }) as AnthropicGatewayModel;
 }
 
 /**

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeGatewayModel } from './gateway-model.js';
+import type { AnthropicGatewayModel } from './anthropic-thinking.js';
 import { recommendAppModels, resolveEntryProtocol, toChatModel, toChatModels } from '../gateway/catalog.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
@@ -118,12 +119,11 @@ test('thinking needs every seller to declare reasoning, or the pinned one', () =
   assert.equal(toChatModel({ id: 'm' }).reasoningEverySeller, undefined);
 });
 
-test('an Anthropic model reasons only when its sellers do and its form of thinking is known', () => {
-  const anthropic = (modelId: string, reasoning?: boolean) => makeGatewayModel({ modelId, endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, ...(reasoning === undefined ? {} : { reasoning }) }).reasoning;
-  assert.deepEqual(
-    [anthropic('claude-haiku-5-5', true), anthropic('claude-haiku-5-5', false), anthropic('claude-haiku-5-5'), anthropic('code-helper', true)],
-    [true, false, false, false],
-  );
+test('an Anthropic model carries its sellers\' reasoning flag, and stays reasoning for pi so a saved thinking level is never lowered', () => {
+  const anthropic = (reasoning?: boolean) => makeGatewayModel({ modelId: 'claude-haiku-5-5', endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, ...(reasoning === undefined ? {} : { reasoning }) }) as AnthropicGatewayModel;
+  assert.deepEqual([anthropic(true).sellersReason, anthropic(false).sellersReason, anthropic().sellersReason], [true, false, false]);
+  // pi lowers a session's level to `off`, and saves that, for a model whose `reasoning` is false.
+  assert.deepEqual([anthropic(true).reasoning, anthropic(false).reasoning], [true, true]);
   // The OpenAI protocols keep their own reasoning handling.
   assert.equal(makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-responses', supportsImages: false }).reasoning, true);
 });

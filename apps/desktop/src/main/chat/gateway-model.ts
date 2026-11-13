@@ -10,7 +10,7 @@ import type { Model } from '@mariozechner/pi-ai';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { gatewayRequestHeaders } from '../gateway/request-headers.js';
-import { anthropicThinkingMode } from './anthropic-thinking.js';
+import type { AnthropicGatewayModel } from './anthropic-thinking.js';
 
 /** pi-ai provider id for gateway models; never sent on the wire. */
 export const GATEWAY_PROVIDER_ID = 'antseed-gateway';
@@ -39,7 +39,7 @@ export const DESKTOP_SESSION_HEADER = 'x-vpr-session-id';
 type GatewayChatModel =
   | Model<'openai-completions'>
   | Model<'openai-responses'>
-  | Model<'anthropic-messages'>;
+  | AnthropicGatewayModel;
 
 /**
  * pi-ai model definition aimed at the gateway. The key goes in as the runtime
@@ -56,10 +56,7 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     name: modelId,
     provider: GATEWAY_PROVIDER_ID,
     baseUrl,
-    // Over Anthropic Messages a model asked to think must be one whose form of
-    // thinking is known (`anthropic-thinking.ts`); otherwise pi-ai sends no
-    // `thinking` field. The OpenAI protocols keep pi-ai's own handling.
-    reasoning: protocol === 'anthropic-messages' ? reasoning && anthropicThinkingMode(modelId) !== null : true,
+    reasoning: true,
     input: (supportsImages ? ['text', 'image'] : ['text']) as ('text' | 'image')[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: contextWindow ?? ANTSEED_MODEL_CONTEXT_WINDOW,
@@ -84,5 +81,6 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
   if (protocol === 'openai-responses') {
     return { ...base, api: 'openai-responses' as const };
   }
-  return { ...base, api: 'anthropic-messages' as const };
+  // Over Anthropic Messages the request's `thinking` field is decided in `anthropic-thinking.ts`.
+  return { ...base, api: 'anthropic-messages' as const, sellersReason: reasoning };
 }

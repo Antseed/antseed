@@ -23,8 +23,15 @@ import { splitPinnedModel } from '../../shared/pinned-model.js';
 /** A request's thinking level: pi sends its level as the `reasoning` option, and none for `off`. */
 export type ThinkingLevel = 'off' | LibraryThinkingLevel;
 
-/** pi-coding-agent's default level (`DEFAULT_THINKING_LEVEL`, not exported), used when settings name none. */
-export const DEFAULT_CHAT_THINKING_LEVEL: ThinkingLevel = 'medium';
+/**
+ * A gateway model over Anthropic Messages. pi's own `reasoning` flag stays
+ * true, so pi never lowers a chat's saved thinking level; whether to ask for
+ * thinking is the sellers' flag, carried here to the stream function.
+ */
+export type AnthropicGatewayModel = Model<'anthropic-messages'> & {
+  /** The sellers that can serve the request declare reasoning (`modelReasons`). */
+  sellersReason: boolean;
+};
 
 /**
  * `adaptive` with `output_config.effort` and `display: "summarized"`, or
@@ -169,7 +176,7 @@ export const streamGatewayAnthropic: StreamFunction<'anthropic-messages', Simple
     onPayload: async (payload, payloadModel) => {
       const shaped = shapeAnthropicThinking(payload, {
         modelId: model.id,
-        reasoning: model.reasoning,
+        reasoning: (model as Partial<AnthropicGatewayModel>).sellersReason === true,
         level: options?.reasoning ?? 'off',
       });
       return (await options?.onPayload?.(shaped, payloadModel)) ?? shaped;
