@@ -133,8 +133,9 @@ export function modelInlineDetails(model: ChatModel): string {
   const price = modelPrice(model);
   const context = contextValue(model);
   const picks = routerModelCount(model);
-  // Free and TEE are tags on the row already.
-  const tags = modelTags(model).filter((tag) => !tag.tone && tag.label !== 'Router').map((tag) => tag.label);
+  // Free and the TEE tag are on the row already.
+  const onRow = new Set(['Router', 'Free', teeTag(model)?.label]);
+  const tags = modelTags(model).filter((tag) => !onRow.has(tag.label)).map((tag) => tag.label);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
     price && price.tag !== 'free' ? price.text : null,
@@ -156,18 +157,25 @@ function ModelMark({ model, size }: { model: ChatModel; size: number }) {
   return <BrandIcon brand={modelLab(model) ? resolveBrandKey(model.id, model.label) : 'generic'} size={size} />;
 }
 
+// As the gateway console words it (TeeBadge): Full when the attestation reaches
+// the model provider, Partial when only the seller node is attested.
+const FULL_TEE = 'Full TEE: the seller node and its model provider both run in verified TEEs.';
+const PARTIAL_TEE = 'Partial TEE: only the seller node runs in a verified TEE. Its model provider is not TEE-attested and may see requests.';
+
+/** The model's TEE tag: Full TEE when some seller is sealed end to end, Partial TEE when only seller nodes are. */
+function teeTag(model: ChatModel): { label: string; tone?: 'tee'; title: string } | null {
+  if (!model.tee) return null;
+  return model.teeEndToEnd
+    ? { label: 'Full TEE', tone: 'tee', title: FULL_TEE }
+    : { label: 'Partial TEE', title: PARTIAL_TEE };
+}
+
 /** Tags for the detail card, most telling first. */
 function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'tee'; title?: string }> {
   return [
     model.router ? { label: 'Router', title: 'Picks the model for each message' } : null,
     model.free ? { label: 'Free', tone: 'free' as const } : null,
-    model.tee ? {
-      label: model.teeEndToEnd ? 'TEE end to end' : 'TEE',
-      tone: 'tee' as const,
-      title: model.teeEndToEnd
-        ? 'Some of its sellers are sealed end to end: the seller and its model provider both run in a verified TEE'
-        : 'Some of its sellers run in a verified TEE; their model provider may not',
-    } : null,
+    teeTag(model),
     model.freeForStakers ? { label: 'Free for stakers', title: 'Some sellers serve it free to their stakers' } : null,
     model.type === 'text' && model.supportsImages ? { label: 'Vision' } : null,
     model.reasoning ? { label: 'Reasoning' } : null,
@@ -289,6 +297,7 @@ export function ChatModelDropdown({
 
   function renderModel(model: ChatModel) {
     const active = model === selected;
+    const tee = teeTag(model);
     return (
       <button
         key={model.id}
@@ -313,7 +322,7 @@ export function ChatModelDropdown({
         )}
         <span className={styles.pickerTags}>
           {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
-          {model.tee && <span className={`${styles.tag} ${styles.tagTee}`}>{model.teeEndToEnd ? 'TEE end to end' : 'TEE'}</span>}
+          {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
           {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
         </span>
       </button>

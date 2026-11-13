@@ -89,3 +89,9 @@ test('without room for the card, a row\'s second line adds only what its tags do
   const qwen = model({ id: 'qwen-4-235b', label: 'Qwen 4 235B', tee: true, supportsImages: true, reasoning: true, toolUse: true, freeForStakers: true });
   assert.equal(modelInlineDetails(qwen), 'Qwen · Free for stakers · Vision · Reasoning · Tools');
 });
+
+test('TEE tags read as the gateway console does: Full when sealed end to end, Partial otherwise', () => {
+  assert.match(modelSummary(model({ tee: true, teeEndToEnd: true })), /Full TEE/);
+  assert.match(modelSummary(model({ tee: true })), /Partial TEE/);
+  assert.doesNotMatch(modelSummary(model({})), /TEE/);
+});
