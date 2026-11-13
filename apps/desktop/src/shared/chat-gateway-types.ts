@@ -19,6 +19,8 @@ export type ChatModel = {
   free: boolean;
   /** Cheapest price per image for an image model; null otherwise. */
   minImageUsd: number | null;
+  /** An image model's price per image, by seller (lowercase, no 0x): what the seller picker shows. */
+  imageUsdBySeller?: Record<string, number>;
   /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
