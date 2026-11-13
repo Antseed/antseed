@@ -181,6 +181,119 @@ describe('completed-request seller payments', () => {
       lastRequestCost: '80000', billingUsage: { version: 1, units: { output_images: '2' } },
     }));
   });
+  describe('streamed image and speech answers, which unit billing could not count', () => {
+    const encoder = new TextEncoder();
+    function unitHarness() {
+      const harness = setup();
+      harness.provider.services = ['alpha-route', 'image', 'speech'];
+      harness.provider.pricing = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
+      harness.provider.serviceApiProtocols = { ...harness.provider.serviceApiProtocols, image: ['openai-images'], speech: ['openai-audio-speech'] };
+      harness.provider.serviceUnitBillingModels = {
+        ...harness.provider.serviceUnitBillingModels,
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+        speech: { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      };
+      harness.provider.handleRequestStream = undefined;
+      return harness;
+    }
+    /** An answer the upstream streams: delivered, but not in a shape the unit counters read. */
+    const streamed = (events: unknown[]) => async (request: SerializedHttpRequest) => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' },
+      body: encoder.encode(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')),
+    });
+    const imageEvents = [{ type: 'image_generation.completed', b64_json: 'aGVsbG8=' }, { type: 'image_generation.completed', b64_json: 'd29ybGQ=' }];
+    const json = (body: unknown) => encoder.encode(JSON.stringify(body));
+    const headers = { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' };
+    function multipart(fields: Array<[string, string]>) {
+      const parts = fields.map(([name, value]) => `--b0undary\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+      const file = '--b0undary\r\nContent-Disposition: form-data; name="image"; filename="in.png"\r\nContent-Type: image/png\r\n\r\nPNG\r\n';
+      return { body: encoder.encode(`${parts.join('')}${file}--b0undary--\r\n`), headers: { 'content-type': 'multipart/form-data; boundary=b0undary', 'x-antseed-provider': 'alpha' } };
+    }
+    async function expectRefused(harness: ReturnType<typeof unitHarness>, request: Partial<SerializedHttpRequest>) {
+      const response = await harness.send('refused', request);
+      expect({ status: response.statusCode, served: vi.mocked(harness.provider.handleRequest).mock.calls.length }).toEqual({ status: 400, served: 0 });
+      expect(JSON.parse(new TextDecoder().decode(response.body)).error?.code).toBe('invalid_billing_request');
+      expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    }
+
+    it('refuses a streamed image request before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+      await expectRefused(harness, { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', n: 2, stream: true }) });
+    });
+
+    it('refuses a streamed image edit before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+      await expectRefused(harness, { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'true']]) });
+    });
+
+    it('refuses a streamed image request under another spelling of its stream option, before serving it', async () => {
+      for (const body of [json({ model: 'image', prompt: 'A tree', Stream: true }), json({ model: 'image', prompt: 'A tree', stream: 'false' })]) {
+        const harness = unitHarness();
+        vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(imageEvents));
+        await expectRefused(harness, { path: '/v1/images/generations', headers, body });
+      }
+      const harness = unitHarness();
+      const edit = multipart([['model', 'image'], ['prompt', 'A tree']]);
+      const body = new TextDecoder().decode(edit.body).replace('--b0undary--', '--b0undary\r\nContent-Disposition: form-data; name=stream\r\n\r\ntrue\r\n--b0undary--');
+      await expectRefused(harness, { path: '/v1/images/edits', headers: edit.headers, body: encoder.encode(body) });
+    });
+
+    it('refuses a speech request streamed as events before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed([{ type: 'speech.audio.delta', audio: 'aGVsbG8=' }, { type: 'speech.audio.done' }]));
+      await expectRefused(harness, { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) });
+    });
+
+    it('serves and bills a speech request that asks for the audio itself', async () => {
+      const harness = unitHarness();
+      // An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz).
+      const mp3 = new Uint8Array(417 * 3);
+      for (let frame = 0; frame < 3; frame++) mp3.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: mp3,
+      }));
+      const response = await harness.send('speech', { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'audio' }) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { input_characters: '11' } } }));
+    });
+
+    it('serves and bills an image request that asks for no stream', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] }),
+      }));
+      const response = await harness.send('served', { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', n: 2, stream: false }) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
+    });
+
+    it('serves and bills an image edit whose form says stream=false, handing the provider the form without it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] }),
+      }));
+      const response = await harness.send('served', { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'false']]) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
+      const forwarded = new TextDecoder().decode(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].body);
+      expect(forwarded).toContain('name="prompt"');
+      expect(forwarded).not.toMatch(/stream/i);
+    });
+
+    it('serves and bills an image edit whose prompt and file only quote a stream field', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: {}, body: json({ data: [{ b64_json: 'aGVsbG8=' }] }),
+      }));
+      const edit = multipart([['model', 'image'], ['prompt', 'A sign reading\r\nContent-Disposition: form-data; name=stream\r\n\r\ntrue']]);
+      const body = new TextDecoder().decode(edit.body).replace('\r\n\r\nPNG\r\n', '\r\n\r\nPNG form-data; name="stream"\r\n');
+      const response = await harness.send('served', { path: '/v1/images/edits', headers: edit.headers, body: encoder.encode(body) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 40_000n);
+    });
+  });
 });
 
 function makeProvider(inputUsdPerMillion: number, outputUsdPerMillion: number, opts: {

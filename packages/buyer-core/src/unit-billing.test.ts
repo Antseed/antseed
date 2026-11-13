@@ -147,3 +147,108 @@ describe('unit billing adapters', () => {
     expect(() => estimateUnitRequestCost(completed, imageContext, { units: { completed_requests: 1 } })).toThrow('completed_requests is not supported for openai-images');
   });
 });
+
+describe('streamed image answers', () => {
+  const encoder = new TextEncoder();
+  const capture = (serviceApiProtocol: 'openai-images' | 'openai-chat-completions', path: string, body: unknown) => captureUnitBillingContext({
+    sellerPeerId: 'a'.repeat(40), provider: 'openai', service: 'image', serviceApiProtocol,
+    request: { requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
+  });
+
+  it('refuses before the request an image request that asks for a stream, which it could not count', () => {
+    for (const stream of [true, 'true', 1]) {
+      expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream }), String(stream)).toThrow(/"stream"/);
+    }
+    for (const key of ['Stream', 'STREAM', '\u017ftream', ' stream', 'stream[]', 'str\u200beam', 'str\u00adeam', '\uff53\uff54\uff52\uff45\uff41\uff4d']) {
+      expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', [key]: true }), JSON.stringify(key)).toThrow(/"stream"/);
+    }
+    expect(capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream: false }).context.unitLimits).toEqual({ output_images: 1 });
+  });
+
+  it('refuses values not every reader takes as false, as a buyer fault', () => {
+    for (const stream of ['false', 0, '']) {
+      expect(() => capture('openai-images', '/v1/images/generations', { model: 'image', prompt: 'A tree', stream }), JSON.stringify(stream)).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
+    }
+  });
+
+  const form = (part: string) => [
+    '--b\r\nContent-Disposition: form-data; name="model"\r\n\r\nimage\r\n',
+    `--b\r\nContent-Disposition: form-data; ${part}`,
+    '--b--\r\n',
+  ].join('');
+  const captureForm = (body: string, contentType = 'multipart/form-data; boundary=b') => captureUnitBillingContext({
+    sellerPeerId: 'a'.repeat(40), provider: 'openai', service: 'image', serviceApiProtocol: 'openai-images',
+    request: { requestId: 'r', method: 'POST', path: '/v1/images/edits', headers: { 'content-type': contentType }, body: encoder.encode(body) },
+  });
+
+  it('refuses a form that names a stream field in any way a lenient parser reads it', () => {
+    for (const part of [
+      'name="stream"\r\n\r\ntrue\r\n',
+      'name=stream\r\n\r\ntrue\r\n',
+      "name*=utf-8''stream\r\n\r\ntrue\r\n",
+      'name="stream"; filename=""\r\n\r\ntrue\r\n',
+      `name="Stream"\r\n\r\n${' '.repeat(5000)}true\r\n`,
+      '\r\n name="stream"\r\n\r\ntrue\r\n',
+      'name="stream"\n\ntrue\n',
+      // Only a text part named exactly `stream` that says exactly `false` is the default.
+      'name="Stream"\r\n\r\nfalse\r\n',
+      'name="stream"\r\n\r\nFalse\r\n',
+      'name="stream"\r\n\r\nfalse \r\n',
+      'name="stream"; filename="f"\r\n\r\nfalse\r\n',
+      "name=\"stream\"; name*=utf-8''x\r\n\r\nfalse\r\n",
+    ]) {
+      expect(() => captureForm(form(part)), JSON.stringify(part)).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
+    }
+  });
+
+  it('serves a form whose stream field says false, the default', () => {
+    expect(captureForm(form('name="stream"\r\n\r\nfalse\r\n')).requestFacts.kind).toBe('image');
+  });
+
+  it('reads field names from part headers only, never from a prompt or file', () => {
+    const quoted = [
+      '--b\r\nContent-Disposition: form-data; name="model"\r\n\r\nimage\r\n',
+      '--b\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nA sign reading\r\nContent-Disposition: form-data; name=stream\r\n\r\ntrue\r\n',
+      '--b\r\nContent-Disposition: form-data; name="image"; filename="in.png"\r\nContent-Type: image/png\r\n\r\nPNG form-data; name="stream"\r\n',
+      '--b--\r\n',
+    ].join('');
+    expect(captureForm(quoted).requestFacts.kind).toBe('image');
+  });
+
+  it('finds a stream field hidden by a delimiter mid-line, a bracketed name or a content type naming many boundaries', () => {
+    expect(() => captureForm(form('x="--b"; name="stream"\r\n\r\ntrue\r\n'))).toThrow(/"stream"/);
+    expect(() => captureForm(form('name="[stream]"\r\n\r\ntrue\r\n'))).toThrow(/"stream"/);
+    const boundaries = Array.from({ length: 50 }, (_, index) => `boundary=x${index}`).join('; ');
+    expect(() => captureForm(form('name="stream"\r\n\r\ntrue\r\n'), `multipart/form-data; ${boundaries}; boundary=b`)).toThrow(/"stream"/);
+  });
+
+  it('reads hostile part headers in time linear in their size', () => {
+    const fast = (part: string) => {
+      const started = performance.now();
+      try {
+        captureForm(form(part));
+      } catch {
+        // Refused or served, only the time matters here.
+      }
+      return performance.now() - started;
+    };
+    // A pattern that backtracked took seconds on these.
+    for (const part of [
+      `name${' '.repeat(200_000)}x\r\n\r\nv\r\n`,
+      `name*${' '.repeat(200_000)}x\r\n\r\nv\r\n`,
+      `name="a"; filename${' '.repeat(200_000)}x\r\n\r\nv\r\n`,
+      `${'name="a '.repeat(25_000)}\r\n\r\nv\r\n`,
+    ]) {
+      expect(fast(part), part.slice(0, 12)).toBeLessThan(250);
+    }
+  });
+
+  it('reads a body it cannot split into parts as one header block, and JSON under a form content type', () => {
+    expect(() => captureForm('Content-Disposition: form-data; name="stream"\r\n\r\ntrue', 'multipart/form-data; boundary=missing')).toThrow(/"stream"/);
+    expect(() => captureForm(JSON.stringify({ model: 'image', prompt: 'A tree', stream: true }), 'multipart/mixed')).toThrow(/"stream"/);
+  });
+
+  it('leaves a streamed chat request to token billing', () => {
+    expect(capture('openai-chat-completions', '/v1/chat/completions', { model: 'chat', messages: [], stream: true }).requestFacts.kind).toBe('image');
+  });
+});

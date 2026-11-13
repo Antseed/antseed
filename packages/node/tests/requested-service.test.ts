@@ -164,6 +164,15 @@ describe('billedRequestBody', () => {
       await expectFormReadAlike(request);
     });
 
+    it('leaves out a stream field that says false, the default, and hands on any other', () => {
+      const forwarded = (...parts: Part[]) => new TextDecoder().decode(written(multipart(model, field('prompt', 'A tree'), ...parts)).request.body);
+      expect(forwarded(field('stream', 'false'))).not.toContain('stream');
+      expect(forwarded(field('stream', 'false'))).toContain('name="prompt"');
+      for (const kept of [field('stream', 'true'), field('stream', 'False'), field('Stream', 'false'), ['Content-Disposition: form-data; name="stream"; filename="f"', 'false'] as Part]) {
+        expect(forwarded(kept), kept[0]).toContain(kept[0].match(/name="([^"]+)"/)![1]);
+      }
+    });
+
     it('hands on the decoys under the name the seller read, and no other', async () => {
       const entries = await expectFormReadAlike(multipart(model, ['Content-Disposition: form-data; name="decoy"; foo="a\\\\"; bar="x; name=model; y"', 'other']));
       expect(entries).toEqual([['model', 'svc'], ['decoy', 'other']]);

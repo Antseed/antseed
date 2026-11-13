@@ -49,6 +49,17 @@ describe('speech billing', () => {
       .toEqual(['output_images is not supported for openai-audio-speech']);
   });
 
+  it('refuses before the request one that asks for the audio as a stream of events, which it could not bill', () => {
+    const body = { model: 'tts-elevenlabs-turbo-v2-5', input: 'Hello', voice: 'Rachel' };
+    expect(() => capture({ ...body, stream_format: 'sse' })).toThrow(/stream_format/);
+    expect(() => capture({ ...body, Stream_Format: 'sse' })).toThrow(/stream_format/);
+    for (const key of ['streamFormat', 'stream-format', 'STREAM FORMAT', 'stream\u00ad_format']) {
+      expect(() => capture({ ...body, [key]: 'sse' }), key).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
+    }
+    expect(() => capture({ ...body, stream_format: 'audio', 'stream_format[]': 'sse' })).toThrow(/stream_format/);
+    expect(capture({ ...body, stream_format: 'audio' }).requestUsage).toEqual({ units: { input_characters: 5 } });
+  });
+
   it('reserves the price of the input before the request', () => {
     const captured = capture();
     expect(captured.requestUsage).toEqual({ units: { input_characters: 1000 } });
