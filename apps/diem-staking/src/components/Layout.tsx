@@ -2,8 +2,8 @@
 // DualCards, Footer. These don't depend on on-chain state (ClaimBanner and
 // Hero take a couple of computed values as props so they can show the max rate /
 // pool TVL). Every VPR download link flows through `useVprDownload`
-// so Mac + Windows visitors get a direct installer href — same behaviour as
-// antseed.com.
+// so Mac, Windows and Linux visitors get a download-proxy href — same
+// behaviour as antseed.com.
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
