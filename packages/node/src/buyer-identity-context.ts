@@ -1,5 +1,5 @@
 import type { Identity } from "./p2p/identity.js";
-import type { UsageAttribution } from "./payments/evm/signatures.js";
+import type { UsageAttribution } from "@antseed/protocol/signatures";
 import type { PeerId, PeerInfo } from "./types/peer.js";
 import type { SerializedHttpRequest, SerializedHttpResponse } from "./types/http.js";
 import { ConnectionState } from "./types/connection.js";

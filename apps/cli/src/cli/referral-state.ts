@@ -1,4 +1,4 @@
-import { referralBindingFromExplorer } from '@antseed/ants'
+import { referralBindingFromExplorer, shortAddress } from '@antseed/ants'
 import {
   clientIdFromAgentId,
   pendingInvite,
@@ -7,6 +7,7 @@ import {
   referrerOfLookup,
   syncReferralState,
   type ReferralInvite,
+  type ReferralLookup,
   type ReferralLookups,
   type ReferralScope,
   type ReferralState,
@@ -38,17 +39,18 @@ export function referralScope(chain: { evmChainId: number; referralsAddress?: st
  * Antscan, or while it reports none, `referrerOf` is read on a backoff
  * instead. Nothing is looked up without a referrals client.
  */
-export function referralLookups(options: { explorerApiUrl?: string | undefined; client: Pick<ReferralsClient, 'referrerOf'> | null }): ReferralLookups {
+export function referralLookups(options: {
+  explorerApiUrl?: string | undefined
+  client: Pick<ReferralsClient, 'referrerOf'> | null
+  /** Used instead of a fresh Antscan read when an explorer is configured (a caller that already has the answer). */
+  explorer?: ReferralLookup
+}): ReferralLookups {
   const { explorerApiUrl, client } = options
   if (!client) return {}
   return {
-    explorer: explorerApiUrl ? (buyer) => referralBindingFromExplorer(explorerApiUrl, buyer) : null,
+    explorer: explorerApiUrl ? options.explorer ?? ((buyer) => referralBindingFromExplorer(explorerApiUrl, buyer)) : null,
     chain: referrerOfLookup(client),
   }
-}
-
-export function shortWallet(address: string): string {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
 /**
@@ -113,15 +115,15 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
   const syncState = options.syncState ?? syncReferralState
   const attributionOptions = { clientAgentId: options.clientAgentId, clientAgentIds: options.clientAgentIds, ...(options.env ? { env: options.env } : {}) }
   let carrying = false
+  // referral.json's mtime as last read, shared by the chain sync and the local poll.
   let lastMtime = await referralStateMtimeMs(dataDir)
-  let localMtime = lastMtime
   // A slow sync must not overwrite the result of a newer read.
   let generation = 0
   const install = (referralState: ReferralState | null, current: number): void => {
     if (current !== generation) return
     const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
     if (attribution.invite && !carrying) {
-      log?.(`Referral: carrying the invite from ${referralState?.referrer?.slice(0, 10) ?? 'your inviter'}… until a settlement binds it on-chain.`)
+      log?.(`Referral: carrying the invite from ${referralState?.referrer ? shortAddress(referralState.referrer) : 'your inviter'} until a settlement binds it on-chain.`)
     } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
       log?.('Referral: invite is bound on-chain; no longer carried in signed metadata.')
     }
@@ -144,8 +146,8 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
     if (!scope) return
     // Taken before the read: a write during the read is picked up by the next check.
     const mtime = await referralStateMtimeMs(dataDir)
-    if (mtime === localMtime) return
-    localMtime = mtime
+    if (mtime === lastMtime) return
+    lastMtime = mtime
     const current = ++generation
     const referralState = await readReferralState(dataDir, scope)
     install(referralState, current)

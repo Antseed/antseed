@@ -33,6 +33,11 @@ async function agentOwners(ctx: AntsContext, agentIds: number[]): Promise<Array<
   });
 }
 
+/** Valid agent ids, first occurrence kept, capped at `MAX_BUILDER_AGENTS` in requested order. */
+export function normalizeBuilderAgentIds(ids: number[]): number[] {
+  return [...new Set(ids.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, MAX_BUILDER_AGENTS);
+}
+
 /**
  * Builders-program view for the requested client agent ids plus the chain's
  * first-party client ids this wallet owns. No registry call enumerates a
@@ -41,11 +46,6 @@ async function agentOwners(ctx: AntsContext, agentIds: number[]): Promise<Array<
  * does not index) is read over RPC. Hidden without an explorer that indexes
  * the builders program.
  */
-/** Valid agent ids, first occurrence kept, capped at `MAX_BUILDER_AGENTS` in requested order. */
-export function normalizeBuilderAgentIds(ids: number[]): number[] {
-  return [...new Set(ids.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, MAX_BUILDER_AGENTS);
-}
-
 export async function builders(ctx: AntsContext, agentIds: number[]): Promise<BuildersView> {
   const indexer = ctx.indexer();
   if (!ctx.chain.clientRewardsAddress || !indexer?.builders) return { available: false, agents: [] };

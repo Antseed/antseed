@@ -59,7 +59,7 @@ import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
-import type { UsageAttribution } from "./payments/evm/signatures.js";
+import type { UsageAttribution } from "@antseed/protocol/signatures";
 import {
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,

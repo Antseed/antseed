@@ -6,6 +6,7 @@ import {
   issueInvite,
   refereeBonusFromExplorer,
   referral,
+  shortAddress,
   type AntsChainConfig,
   type AntsContext,
   type CreatedInviteView,
@@ -23,7 +24,7 @@ import {
   type ReferralState,
   type ReferralsClient,
 } from '@antseed/node'
-import { referralLookups, referralScope, shortWallet } from '../referral-state.js'
+import { referralLookups, referralScope } from '../referral-state.js'
 import { ants, loadAntsContext, printJson } from './ants/shared.js'
 
 /**
@@ -101,7 +102,7 @@ export async function redeemReferralInvite(options: {
 export function formatRedeemResult(result: Awaited<ReturnType<typeof redeemReferralInvite>>): string[] {
   if (!result.ok) return [chalk.red(`Can't use this invite: ${result.reason}`)]
   return [
-    chalk.green(`Invite from ${shortWallet(result.referrer)} saved.`),
+    chalk.green(`Invite from ${shortAddress(result.referrer)} saved.`),
     `Binds with your first paid or free request through \`antseed buyer start\` (before week ${inviteExpiryEpoch(result.invite)}).`,
     'Then you earn bonus $ANTS on your usage for 12 weeks.',
   ]
@@ -122,11 +123,14 @@ export async function referralStatus(context: ReferralCommandContext): Promise<R
   const configured = !!scope
   // One Antscan read serves both the referee card and the binding hint.
   const refereeRead = configured ? refereeBonusFromExplorer(chain.explorerApiUrl, ctx.address) : Promise.resolve(null)
-  const lookups = referralLookups({ explorerApiUrl: chain.explorerApiUrl, client: ctx.referrals() })
-  if (lookups.explorer) lookups.explorer = async () => {
-    const view = await refereeRead
-    return view?.available ? view.referrer : undefined
-  }
+  const lookups = referralLookups({
+    explorerApiUrl: chain.explorerApiUrl,
+    client: ctx.referrals(),
+    explorer: async () => {
+      const view = await refereeRead
+      return view?.available ? view.referrer : undefined
+    },
+  })
   const [state, referee, invites] = await Promise.all([
     scope ? syncReferralState(dataDir, scope, lookups).catch(() => readReferralState(dataDir, scope)) : null,
     refereeRead,
@@ -147,7 +151,7 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
 
   const boundTo = referee.referrer ?? (state?.state === 'bound' ? state.referrer : undefined)
   if (boundTo) {
-    lines.push(`Invited by ${shortWallet(boundTo)}${referee.boundEpoch !== null ? ` (week ${referee.boundEpoch})` : ''}.`)
+    lines.push(`Invited by ${shortAddress(boundTo)}${referee.boundEpoch !== null ? ` (week ${referee.boundEpoch})` : ''}.`)
     if (referee.available) {
       const window = referee.weeksLeft === null
         ? (referee.windowEnd !== null ? `through week ${referee.windowEnd}` : 'active')
@@ -155,7 +159,7 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
       lines.push(`Invite bonus: ${window} · ${ants(referee.payable)} payable. Paid to your authorized wallet.`)
     }
   } else if (state?.state === 'invited') {
-    lines.push(`Invite from ${shortWallet(state.referrer ?? '')} pending. Binds with your first paid or free request.`)
+    lines.push(`Invite from ${shortAddress(state.referrer ?? '')} pending. Binds with your first paid or free request.`)
   } else {
     lines.push('No inviter. Redeem an invite with: antseed referral redeem <invite>')
   }
