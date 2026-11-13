@@ -136,7 +136,23 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const inputTokens = load ? Math.max(1, Math.ceil(prompt.length / 4)) : FIXED_IMAGE_INPUT_TOKENS;
     const latency = load ? between(requestRandom(tag), latencyRangeMs) : 0;
     if (load) await sleep(latency);
-    const entry = record(tag, { status: 'ok', started: true, image: true, n, model: body.model, prompt: inputTokens, latencyMs: latency, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
+    const stream = body.stream === true;
+    const entry = record(tag, { status: 'ok', started: true, image: true, stream, n, model: body.model, prompt: inputTokens, latencyMs: latency, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
+    if (stream) {
+      // OpenAI's stream for its GPT image models (`stream: true`, API reference and SDK event types):
+      // `partial_images` (0-3) partial events, then one completed event with the final image and the usage.
+      const created_at = Math.floor(Date.now() / 1000);
+      const image = { b64_json: png.toString('base64'), background: body.background ?? 'auto', created_at, output_format: body.output_format ?? 'png', quality: body.quality ?? 'auto', size: body.size ?? 'auto' };
+      const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+      const partials = Math.max(0, Math.min(3, Number(body.partial_images ?? 0)));
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+      for (let index = 0; index < n; index += 1) {
+        for (let partial = 0; partial < partials; partial += 1) response.write(event('image_generation.partial_image', { ...image, partial_image_index: partial }));
+        response.write(event('image_generation.completed', { ...image, usage: { input_tokens: inputTokens, output_tokens: 0, total_tokens: inputTokens, input_tokens_details: { text_tokens: inputTokens, image_tokens: 0 } } }));
+      }
+      response.end();
+      return entry;
+    }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({
       created: Math.floor(Date.now() / 1000),
