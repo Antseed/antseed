@@ -159,3 +159,14 @@ test('the system prompt only mentions the tools the chat has', async () => {
   assert.doesNotMatch(web, /scratch directory/)
   assert.match(systemPrompt({}), /no tools/)
 })
+
+test('a model whose sellers charge for cached input is not free in the console chat', () => {
+  const models = mapChatModels({
+    data: [
+      { id: 'cached', type: 'text', peers: [{ peerId: 'AA', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.1 }] },
+      { id: 'zero', type: 'text', peers: [{ peerId: 'BB', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 }] },
+    ],
+  })
+  assert.equal(models.find((model) => model.id === 'cached')?.free, false)
+  assert.equal(models.find((model) => model.id === 'zero')?.free, true)
+})

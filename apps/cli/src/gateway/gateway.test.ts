@@ -4,9 +4,12 @@ import { test } from 'node:test'
 import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed } from '../proxy/spend-attribution.js'
 import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
+import { keysUsage } from './key-savings.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
-import { GatewayServer, workspaceOutOfCreditsBody, type GatewayTopupOptions } from './server.js'
+import { retailTokenCostUsd } from '@antseed/node/retail-prices'
+import { canonicalModelKey } from '@antseed/node'
+import { GatewayServer, workspaceOutOfCreditsBody, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
@@ -63,7 +66,7 @@ async function request(port: number, path: string, options: { method?: string; k
   })
 }
 
-const BUYER_OUT_OF_CREDITS = 'You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
+const BUYER_OUT_OF_CREDITS = 'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
 const OPENAI_OUT_OF_CREDITS = { error: { type: 'api_error', code: 'antseed_buyer_fault', message: BUYER_OUT_OF_CREDITS, param: 'insufficient_deposits' } }
 const ANTHROPIC_OUT_OF_CREDITS = { type: 'error', error: { type: 'antseed_buyer_fault', message: `${BUYER_OUT_OF_CREDITS} (insufficient_deposits)` } }
 
@@ -152,6 +155,7 @@ async function startGateway(
   topup: GatewayTopupOptions | null = null,
   settleGraceMs = 50,
   identityAddress: (name: string) => Promise<string | null> = TEST_IDENTITY_ADDRESS,
+  extra: Partial<GatewayServerOptions> = {},
 ) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs })
   const feed = new SpendFeedPoller({
@@ -170,6 +174,7 @@ async function startGateway(
     refreshSpendFeed: () => feed.pollOnce(),
     videoBudgetEnforced: () => feed.videoBudgetEnforced,
     onLog: (message) => logs.push(message),
+    ...extra,
   })
   const port = await server.start()
   return {
@@ -251,6 +256,24 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
   }
 })
 
+test('gateway answers /healthz without a key and without logging a rejected sign-in', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 0 })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const health = await request(gateway.port, '/healthz')
+    assert.equal(health.status, 200)
+    assert.deepEqual(JSON.parse(health.body), { status: 'ok' })
+    assert.equal(gateway.logs.some((line) => line.includes('rejected')), false)
+    assert.equal((await request(gateway.port, '/v1/models')).status, 401)
+    assert.equal(gateway.logs.some((line) => line.includes('rejected authentication')), true)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway pays with the key\'s buyer identity and ignores the client\'s choice', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000 })
@@ -269,6 +292,99 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
 
     const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
     assert.equal(info.buyer_address, '0x00000000000000000000000000000000000000aa')
+    // No balance reader wired: the field is there, and says it doesn't know.
+    assert.equal(info.balance, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key reports the balance of the wallet that pays for the key', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    identityBalance: async (name) => {
+      asked.push(name)
+      return { available: '12.500000', reserved: '0.250000', pending: '0.100000', wallet: '2.000000', creditLimit: '100.000000', operator: null, stale: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
+    assert.deepEqual(info.balance, {
+      available_usd: '12.500000', reserved_usd: '0.250000', pending_usd: '0.100000',
+      wallet_usd: '2.000000', credit_limit_usd: '100.000000', operator: null, stale: false,
+    })
+    assert.deepEqual(asked, ['team-a'])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/rewards reports the paying wallet\'s rewards, and null when they can\'t be read', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: 'team-b', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    walletRewards: async (address) => {
+      asked.push(address)
+      return { available: true, pendingAnts: '3.5', currentEpoch: 12, transfersEnabled: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: team.secret })).body).data
+    assert.deepEqual(info, { available: true, address: '0x00000000000000000000000000000000000000aa', pending_ants: '3.5', current_epoch: 12, transfers_enabled: false })
+    assert.deepEqual(asked, ['0x00000000000000000000000000000000000000aa'])
+    // A wallet with no known address has no rewards to read.
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: other.secret })).body).data, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/savings compares the key\'s own requests with retail prices', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 100_000 })
+  const team = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const price = { input: 10, output: 30, cachedInput: null }
+  let prices: Map<string, typeof price> | null = new Map([[canonicalModelKey('example-model'), price]])
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, { retailPrices: async () => prices })
+  try {
+    const body = JSON.stringify({ model: 'example-model', messages: [] })
+    for (let i = 0; i < 2; i++) assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: team.secret, body })).status, 200)
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: other.secret, body })).status, 200)
+    await gateway.feed.pollOnce()
+
+    const savings = JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data
+    const retail = 2 * retailTokenCostUsd(100, 0, 20, price)
+    assert.equal(savings.matched_requests, 2)
+    assert.equal(savings.paid_usd, 0.2)
+    assert.equal(savings.retail_usd, Math.round(retail * 10_000) / 10_000)
+    assert.equal(savings.saved_usd, Math.round(Math.max(0, retail - 0.2) * 10_000) / 10_000)
+
+    prices = null
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data, null)
+
+    // The owner's view keeps a retired key's history: revoked, its own secret can't read it.
+    const current = new Map([[canonicalModelKey('example-model'), price]])
+    store.revokeKey(team.key.id)
+    assert.equal((await request(gateway.port, '/v1/key', { key: team.secret })).status, 401)
+    const both = keysUsage(store, [team.key.id, other.key.id, 'key_unknown'], current)
+    assert.equal(both.requests, 3)
+    assert.equal(both.spent_usd, '0.300000')
+    assert.equal(both.savings?.matched_requests, 3)
+    assert.equal(both.savings?.paid_usd, 0.3)
+    assert.equal(keysUsage(store, [team.key.id], null).savings, null)
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -1877,7 +1993,7 @@ test('the buyer\'s out-of-credits 402 names the workspace and its funding, and k
   assert.match(anthropic.error.message, /^This API key's workspace \(Default\) is out of Antseed credits/)
   assert.match(anthropic.error.message, /under Wallet & Funding, then retry\./)
   assert.match(anthropic.error.message, /\(insufficient_deposits\)$/)
-  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|Antseed app/)
+  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|Antseed Desktop/)
 
   // Any other 402 passes through unchanged.
   const other = { error: { type: 'insufficient_quota', code: 'spend_limit_reached', message: 'This API key reached its daily spend limit of $1.00.' } }
