@@ -3,6 +3,7 @@ dist/
 bundled-runtime/
 cli-dist/
 release/
+release-bridge/
 *.log
 .DS_Store
 .runtime-native-meta.json
