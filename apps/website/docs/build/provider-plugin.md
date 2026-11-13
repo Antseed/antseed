@@ -17,7 +17,7 @@ Antseed is for differentiated services: TEE-secured inference, agents and skills
 
 A plugin is an ES module npm package. You can name it anything; you don't need an `@antseed` scope. The CLI loads `dist/index.js` from the installed package and uses the export (default or named) that has `type: 'provider'` and a `createProvider()` function. Exactly one such export is allowed.
 
-A starting template with a `npm run verify` check lives in [`docs/protocol/templates/provider-plugin`](https://github.com/AntSeed/antseed/tree/main/docs/protocol/templates/provider-plugin).
+A starting template with a `npm run verify` check lives in [`docs/protocol/templates/provider-plugin`](https://github.com/Antseed/antseed/tree/main/docs/protocol/templates/provider-plugin).
 
 ```json title="package.json"
 {
@@ -71,7 +71,7 @@ interface ConfigField {
 | `OPENAI_BASE_URL`, `OPENAI_API_KEY` | `baseUrl` and the variable named by `apiKeyEnv` |
 | `OPENAI_PATH_REWRITE_JSON` | `pathRewrite` |
 
-The last two rows use the `OPENAI_` prefix for any plugin other than the built-in `local-llm`, `typesafe`, `venice-video` and `fal-video`. To use a provider's `baseUrl` in your plugin, declare and read `OPENAI_BASE_URL`, or have sellers set your own variable in the environment.
+The last two rows use the `OPENAI_` prefix for any plugin other than the built-in `local-llm`, `typesafe`, `venice-video`, `fal-video`, `fal-image`, `alibaba-video` and `irp-router`. To use a provider's `baseUrl` in your plugin, declare and read `OPENAI_BASE_URL`, or have sellers set your own variable in the environment.
 
 `@antseed/provider-core` exports parsers for these values: `parseCsv`, `parseServicePricingJson`, `parseServiceAliasMap`, `parseServiceCapabilitiesJson` and `parseServiceUnitBillingModelsJson`.
 
@@ -123,7 +123,7 @@ interface ProviderStreamCallbacks {
 }
 ```
 
-Buyers send standard API requests: the request your plugin receives has the path, headers and JSON body the buyer's client sent (for example an OpenAI chat completion), with the service ID in the body's `model` field. The seller's categories from `config.json` are applied for you; you don't need to set `serviceCategories`.
+Buyers send standard API requests: the request your plugin receives has the path and headers the buyer's client sent and a standard body (for example an OpenAI chat completion), with the service ID in the body's `model` field. When the seller reads the service from the body, the body is the one it priced, written again by the seller: JSON arrives labelled `application/json`, and a form arrives with the seller's own boundary and plain part headers, so your plugin and its upstream read the fields the seller billed. Routing-protocol requests and video retrieves, which do not name their service in the body, arrive as the buyer sent them. The seller refuses a body that names more than one service and sets the `x-antseed-service` header to the service it bills, so a plugin can rely on either. It also refuses a path that is not written plainly (an empty, `.` or `..` segment, or a character outside letters, digits and `. _ ~ : / -`). The seller passes on every other field, the query and the request headers as the buyer sent them, apart from its own `x-antseed-*` headers and the content type, so if your upstream uses any of them to choose another model or a dearer tier (a fallback list such as `models` or `fallbacks`, a deployment in the path, a header), refuse or remove them in your plugin: only your plugin knows what its upstream reads. The seller's categories from `config.json` are applied for you; you don't need to set `serviceCategories`.
 
 ### API protocols
 
@@ -141,11 +141,11 @@ The node charges the buyer from the token usage in your response body. It reads 
 
 Declare `ANTSEED_SERVICE_CAPABILITIES_JSON` in `configSchema` and set `serviceCapabilities` from it to announce context windows, modalities and other [capabilities](/docs/provide/config#capabilities).
 
-To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image and video services](/docs/provide/media).
+To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `openai-audio-speech` (`input_characters`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image, video and speech services](/docs/provide/media).
 
 ### Health checks
 
-The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed.
+The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed; their failed buyer requests count as the checks.
 
 ## Example: relay to an HTTP upstream
 
@@ -215,7 +215,7 @@ const plugin: AntseedProviderPlugin = {
 export default plugin
 ```
 
-The built-in [`local-llm` plugin](https://github.com/AntSeed/antseed/tree/main/plugins/provider-local-llm) is a complete example of this pattern. To produce responses yourself instead of relaying, implement `Provider` directly: return a `SerializedHttpResponse` with the request's `requestId`, a status code, headers and a body in the format the buyer's API expects, including a `usage` object.
+The built-in [`local-llm` plugin](https://github.com/Antseed/antseed/tree/main/plugins/provider-local-llm) is a complete example of this pattern. To produce responses yourself instead of relaying, implement `Provider` directly: return a `SerializedHttpResponse` with the request's `requestId`, a status code, headers and a body in the format the buyer's API expects, including a `usage` object.
 
 ## Install the plugin into a seller
 
@@ -252,4 +252,4 @@ You can differentiate a service without writing a plugin by wrapping it in an an
 }
 ```
 
-The model decides when to load knowledge or call tools, and buyers see only the final response. See [Seller configuration](/docs/provide/config#ant-agent) for per-service agents and the [`@antseed/ant-agent` README](https://github.com/AntSeed/antseed/tree/main/packages/ant-agent) for the full manifest, including custom tools.
+The model decides when to load knowledge or call tools, and buyers see only the final response. See [Seller configuration](/docs/provide/config#ant-agent) for per-service agents and the [`@antseed/ant-agent` README](https://github.com/Antseed/antseed/tree/main/packages/ant-agent) for the full manifest, including custom tools.

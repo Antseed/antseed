@@ -71,6 +71,21 @@ describe('computeKbfVerdict', () => {
     expect(computeKbfVerdict({ ...input, minCoverage: 0.5 }).verdict).toBe('UNDETERMINED');
   });
 
+  it('a DIFF needs minDiffCoverage; a SAME only needs minCoverage', () => {
+    // 70 of 100 scored (coverage 0.7), 40 mismatches against a ~1% reference: clearly significant.
+    const diffInput = { selfHamming: 3, selfTotal: 224, targetMatchVector: vector(30, 40, 30) };
+    expect(computeKbfVerdict(diffInput).verdict).toBe('DIFF');
+    const strict = computeKbfVerdict({ ...diffInput, minDiffCoverage: 0.8 });
+    expect(strict.verdict).toBe('UNDETERMINED');
+    expect(strict.verdictReason).toMatch(/below the 0.8 a DIFF needs/);
+    expect(strict.stats.pValueBinomial).not.toBeNull();
+    // Same coverage, all matches: SAME is unaffected.
+    const sameInput = { selfHamming: 3, selfTotal: 224, targetMatchVector: vector(70, 0, 30) };
+    expect(computeKbfVerdict({ ...sameInput, minDiffCoverage: 0.8 }).verdict).toBe('SAME');
+    // At or above 0.8 the DIFF stands.
+    expect(computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(40, 40, 20), minDiffCoverage: 0.8 }).verdict).toBe('DIFF');
+  });
+
   it('UNDETERMINED when nothing parsed', () => {
     const { verdict } = computeKbfVerdict({
       selfHamming: 0,

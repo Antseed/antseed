@@ -23,7 +23,7 @@ const provider = new BaseProvider({
   name: 'my-provider',
   services: ['model-a', 'model-b'],
   pricing: { defaults: { inputUsdPerMillion: 10, cachedInputUsdPerMillion: 1, outputUsdPerMillion: 10 } },
-  serviceCategories: { 'model-a': ['coding'] },
+  serviceApiProtocols: { 'model-a': ['openai-chat-completions'], 'model-b': ['openai-chat-completions'] },
   relay: {
     baseUrl: 'https://api.example.com',
     authHeaderName: 'Authorization',
@@ -37,6 +37,8 @@ const provider = new BaseProvider({
   },
 });
 ```
+
+`BaseProvider` also takes optional `serviceUnitBillingModels` and `serviceCapabilities`. Service categories are not part of its config: the CLI sets them from the seller's `config.json`.
 
 ### Token Providers
 
@@ -52,7 +54,7 @@ const provider = new BaseProvider({
 
 ### HttpRelay
 
-Low-level HTTP relay with concurrency control, SSE streaming support, model validation, and optional request model rewriting (`serviceRewriteMap`). Used internally by `BaseProvider`.
+Low-level HTTP relay with concurrency control, SSE streaming support, model validation, and optional request model rewriting (`serviceRewriteMap`). Used internally by `BaseProvider`. Other `relay` options include `pathRewrite`, `injectJsonFields`, `throttle`, `retryOn5xx`, `retryOn401`, `timeoutMs`, `fallbackUpstreams` and `redirect` (upstream redirects fail by default).
 
 ## Usage in Plugins
 

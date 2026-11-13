@@ -25,7 +25,7 @@ export function registerVerifierReferenceCommand(verifier: Command): void {
   reference
     .command('build [model]')
     .description('Build and append references for one configured model or every underpowered model')
-    .option('--all', 'build references for enabled models without a reusable powered bank')
+    .option('--all', 'build references for audited models without a reusable powered bank')
     .action(async (modelValue: string | undefined, options: { all?: boolean }, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)

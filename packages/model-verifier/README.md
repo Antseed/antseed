@@ -32,6 +32,15 @@ instead of `--reference`. The verifier checks the audit evidence against its has
 uses the largest KBF reference the audit published. `antseed verifier check <model>`
 (in `@antseed/cli`) finds the latest on-chain audit for you.
 
+Before the probes, the audit works out how to turn off the endpoint's hidden reasoning,
+as the KBF reference code does for every endpoint: it tries `reasoning: {effort: "none"}`,
+`reasoning: {effort: "minimal"}`, `thinking: {type: "disabled"}`, `enable_thinking: false`,
+a `<think></think>` prefill (OpenAI only) and nothing, each on a fixed ten-question batch,
+and keeps the first giving at least 5 answers with no reasoning tokens. An endpoint that
+thinks whatever it is sent gets 50 times the token budget (40,000 tokens per request).
+The result's `thinkingDiscovery` records the attempts; `discoverThinking: false` sends the
+reference's suppression instead.
+
 Use `--protocol anthropic` for Messages-API endpoints, `--out audit.json` to keep the
 raw request and response bytes, and `--json` for machine-readable output.
 
@@ -55,4 +64,4 @@ const { reference } = await resolveAuditReference('ipfs://<audit-cid>')
 ```
 
 Any transport can be audited by implementing `ModelEndpoint`, so anyone can re-check
-an `AntseedVerification` audit against its published evidence.
+an `AntseedKbfVerification` audit against its published evidence.

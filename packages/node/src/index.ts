@@ -15,8 +15,8 @@ export {
   type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
-export type { Provider, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
-export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
+export type { Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
+export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER, ANTSEED_REQUIRE_TEE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
@@ -30,6 +30,7 @@ export {
   type UpstreamAccountEvent,
 } from './health/model-health-checker.js';
 export { isUpstreamOutOfCredit } from './health/upstream-credit.js';
+export { requestBodyFields, requestBodyService } from './requested-service.js';
 export {
   GasHealthMonitor,
   DEFAULT_GAS_CHECK_INTERVAL_MS,
@@ -91,6 +92,7 @@ export {
   compareNetworkServiceOfferPrice,
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
+  speechOfferUsdPerCharacter,
 } from './discovery/service-catalog.js';
 
 // Fault attribution — lets consumers tell a dead peer from a broken buyer.
@@ -105,6 +107,7 @@ export {
 } from './errors.js';
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
+export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -140,6 +143,8 @@ export {
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   isNativeVideoProtocol,
+  AUDIO_SPEECH_PROTOCOLS,
+  isAudioSpeechProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -171,6 +176,12 @@ export {
   type ServiceCapabilityModality,
   type VideoInputKind,
   type VideoOptions,
+  type SpeechOptions,
+  type AudioSpeechProtocol,
+  SPEECH_METADATA_VERSION,
+  VIDEO_OPTION_PRICING_METADATA_VERSION,
+  REFERENCE_VIDEO_PRICING_METADATA_VERSION,
+  speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
   type ProviderAnnouncement,
@@ -231,6 +242,7 @@ export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   estimateTokensFromText,
   type ServicePricing,
 } from './payments/pricing.js';
@@ -288,6 +300,7 @@ export {
 export { signData, verifySignature, signUtf8, verifyUtf8 } from './p2p/identity.js';
 export {
   getDebugFilters,
+  isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
@@ -310,6 +323,7 @@ export {
   RECEIVE_WITH_AUTHORIZATION_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,
@@ -344,6 +358,8 @@ export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js'
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,
@@ -459,13 +475,13 @@ export {
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
-export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
+export { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER } from './interfaces/plugin.js'
 
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
   computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
-  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
+  TRUST_FULL_SHARE_BPS, TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_IDENTITY_BONUS, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
   type TrustBreakdown,
 } from './reputation/trust-score.js';
 export {
@@ -475,12 +491,26 @@ export {
 } from './reputation/identity-history.js';
 export { TrustSignalsClient, type TrustSignals, type TrustSignalsAddresses } from './payments/evm/trust-signals-client.js';
 export {
+  DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
+  VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
+  hasLiveSameVerdict,
+  liveVerificationVerdict,
   normalizedModelReputationScore,
+  verificationServiceKey,
   type ModelReputationSource,
+  type VerificationDiffSource,
 } from './reputation/model-reputation.js';
+export { verificationServiceUrl } from './reputation/model-verification-links.js';
+export {
+  VERIFICATION_POINTS_BPS,
+  VERIFICATION_POINTS_MAX_BONUS_BPS,
+  verificationPointsMultiplierBps,
+  type VerificationPointsRates,
+} from './reputation/verification-points.js';
 export {
   buildSybilContext,
   computeOnChainSybilRisk,
@@ -523,3 +553,4 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

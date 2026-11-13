@@ -1,18 +1,14 @@
+/**
+ * IPC surface of the built-in chat. The chat is a plain API client of the
+ * gateway: it lists the gateway's models, sends each turn to the gateway with
+ * the desktop's key, and persists conversations as pi sessions.
+ */
+import { PendingRuns } from './pending-runs.js';
+import { sendStreamHandler } from './send-options.js';
 import { randomUUID } from 'node:crypto';
-import { checkBuyerRoute, forgetBuyerRoute, isBuyerRouteKnown, writeBuyerRoute, type ExternalBuyerRouteChange } from './buyer-route.js';
-import { isRoutingSelection } from '@antseed/node';
-import { readFile } from 'node:fs/promises';
-import { getNetworkStats } from '../runtime/fetch-network-stats.js';
-import { raceBudget } from './race-budget.js';
-import { type ChatStreamStopReason } from './stream-stop.js';
-import {
-  normalizeChatPeerSelectionRequest,
-  type ChatPeerSelectionRequest,
-  type ChatRouteMode,
-} from './peer-selection.js';
+import path from 'node:path';
 import {
   prepareChatAttachments,
-  type PreparedChatAttachment,
   type RawChatAttachment,
 } from './attachments/prepare.js';
 import {
@@ -22,20 +18,20 @@ import {
   sweepOrphanAttachments,
 } from './attachments/store.js';
 import {
+  CHAT_DATA_DIR,
   CHAT_WORKSPACE_DIR,
-  getWorkspaceGitStatus,
   loadChatWorkspaceDir,
   persistChatWorkspaceDir,
 } from './workspace.js';
+import { ChatOrganizationStore, flagsFor, type ConversationFlags } from './chat-organization.js';
+import { GitBranchCache } from './git-branch.js';
 import {
-  getPeerPermissionMode,
+  getModelPermissionMode,
   normalizePermissionMode,
-  setPeerPermissionMode,
-  type ChatPermissionMode,
+  setModelPermissionMode,
   type ToolApprovalDecision,
   type ToolApprovalRequest,
 } from './permissions.js';
-import { DEFAULT_BUYER_STATE_PATH, LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
 import {
   classifyServiceCategory,
@@ -45,103 +41,52 @@ import {
   type TelemetryEventProperties,
 } from '../telemetry/events.js';
 import { classifyDiscoveryFailure } from '../telemetry/classify.js';
-import type { RawPeerHealth } from '../runtime/peer-cache.js';
-import {
-  buildChatServiceCatalogFromNetworkModels,
-  buildChatServiceCatalogFromPersistedPeers,
-  type ChatServiceCatalogEntry,
-  type ChatServiceProtocol,
-} from './service-catalog.js';
-import { enrichDomainVerificationLinks } from '../connected-apps/domain-site-metadata.js';
-import { isNativeVideoProtocol, resolveChainConfig } from '@antseed/node';
-import { collectPeerVerificationLinks } from '@antseed/node/discovery';
 import { augmentChatToolPath } from './tool-env.js';
-import type { AiConversation } from './conversation-types.js';
-import {
-  buildDiscoverRows,
-  isCatalogEntryAllowedByBuyerMax,
-  isPriceAllowedByBuyerMax,
-  limitChatServiceCatalogEntries,
-  loadBuyerMaxPricingDefaults,
-  normalizeTrustBreakdown,
-  updateServiceProtocolMap,
-  updateServiceProviderHints,
-  type BuyerStateDiscoveredPeer,
-  type DiscoverRowEntry,
-} from './service-discovery.js';
-import { isPortReachable, resolveProxyPort } from './proxy-service.js';
-import { isChatServiceProtocol } from './normalize.js';
-import {
-  normalizeModelPickerSnapshot,
-  type ModelPickerSnapshot,
-} from '../../shared/model-picker.js';
-import {
-  isPersistedPeerBindingPinned,
-  PiConversationStore,
-  projectPersistedConversationRoute,
-} from './conversation-store.js';
-import { createStreamingRunner } from './streaming-run.js';
+import { normalizeServiceId } from './normalize.js';
+import { PiConversationStore } from './conversation-store.js';
+import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
+import type { PiChatEngine } from './engine-types.js';
+import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
+import { fetchRoutePreview } from '../gateway/route-preview.js';
+import { splitPinnedModel } from '../../shared/pinned-model.js';
+import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
+import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
+import { clearGatewayModelCache, fetchGatewayModelEntries, type GatewayModelEntry } from '../gateway/models.js';
+import { fetchGatewayRouters } from '../gateway/routers.js';
 import type {
   ActiveRun,
   ChatStreamErrorPayload,
   RegisterPiChatHandlersOptions,
 } from './engine-types.js';
 import type { FirstModelShownSignal } from '../../shared/telemetry.js';
+import { finiteNumber } from '../gateway/response-fields.js';
 
 augmentChatToolPath();
 
-const BUYER_ROUTE_WATCH_INTERVAL_MS = 15_000;
+export type { PiChatEngine } from './engine-types.js';
 
-/**
- * Programmatic surface over the chat engine for non-renderer frontends
- * (currently the Telegram bridge). Events still flow through the
- * sendToRenderer callback — tee it into the chat event bus to observe them.
- */
-export type PiChatEngine = {
-  createConversation(
-    service?: string,
-    provider?: string,
-    peerId?: string,
-    routeMode?: ChatRouteMode,
-  ): Promise<AiConversation>;
-  sendMessageStream(
-    conversationId: string,
-    userMessage: string,
-    options?: { service?: string; peerId?: string; permissionMode?: ChatPermissionMode },
-  ): Promise<{ ok: boolean; error?: string; stopReason?: ChatStreamStopReason }>;
-  abort(conversationId?: string): Promise<void>;
-  /** Resolves a pending tool approval; returns false when the id is unknown (already decided). */
-  resolveToolApproval(id: string, decision: ToolApprovalDecision): boolean;
-  getProxyPort(): Promise<number>;
-  /**
-   * Discovered network service catalog, sorted the way the chat UI lists
-   * models and narrowed to entries within the buyer's routing policy — the
-   * buyer proxy refuses pinned peers outside the pricing limits, so offering
-   * them would only manufacture 502s.
-   */
-  discoverServiceCatalog(): Promise<ChatServiceCatalogEntry[]>;
-  /**
-   * Latest curated model-picker list pushed by the renderer (favorites first,
-   * then recommended — the same rows as the in-app model dropdown). Null until
-   * the renderer's first push after launch.
-   */
-  getModelPicker(): ModelPickerSnapshot | null;
-  /** Rebinds a conversation's model/peer — same semantics as the chat UI's model dropdown. */
-  selectPeer(request: ChatPeerSelectionRequest): Promise<{ ok: boolean; error?: string }>;
-  /**
-   * Sets the buyer default route (the sticky "current model" new conversations
-   * inherit) and tells the renderer so the UI selection follows suit.
-   */
-  setDefaultRoute(peerId: string, service: string, provider?: string): Promise<{ ok: boolean; error?: string }>;
-};
+type OfferPricing = ResolvedChatModel['offers'][number];
+
+/** Seller offers listed under a gateway entry, reduced to the prices telemetry buckets. */
+function entryOffers(entry: GatewayModelEntry | undefined): OfferPricing[] {
+  const peers = Array.isArray(entry?.['peers']) ? entry['peers'] as unknown[] : [];
+  return peers
+    .filter((peer): peer is Record<string, unknown> => Boolean(peer) && typeof peer === 'object')
+    .map((peer) => {
+      const offer: OfferPricing = {};
+      for (const key of ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion', 'minImageUsdPerImage', 'maxImageUsdPerImage'] as const) {
+        const value = finiteNumber(peer[key]);
+        if (value !== null) offer[key] = value;
+      }
+      return offer;
+    });
+}
 
 export function registerPiChatHandlers({
   ipcMain,
   sendToRenderer,
   configPath,
-  isBuyerRuntimeRunning,
-  ensureBuyerRuntimeStarted,
   appendSystemLog,
   recordFirstChatStarted,
   recordFirstModelShown,
@@ -149,17 +94,21 @@ export function registerPiChatHandlers({
   recordChatRequestStarted,
   recordChatRequestFinished,
   recordDiscoveryFailed,
+  getChatSendTelemetryContext,
+  recordPremiumBlocked,
 }: RegisterPiChatHandlersOptions): PiChatEngine {
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
+  const organization = new ChatOrganizationStore(path.join(CHAT_DATA_DIR, 'organization.json'));
+  const gitBranches = new GitBranchCache();
   const activeRunsByConversation = new Map<string, ActiveRun>();
+  const pendingRuns = new PendingRuns();
   const activeImageRunsByConversation = new Map<string, AbortController>();
-  const serviceProviderHints = new Map<string, string[]>();
-  /** Cached payment-required info from 402 responses, keyed by conversationId. */
-  const cachedPaymentRequired = new Map<string, Record<string, unknown>>();
-  const serviceProtocolMap = new Map<string, ChatServiceProtocol>();
-  const preferredPeerByConversationId = new Map<string, string>();
   const pendingToolApprovals = new Map<string, { conversationId: string; resolve: (decision: ToolApprovalDecision) => void }>();
+  /** Entries from the last successful `/v1/models` read, for telemetry context. */
+  let lastEntries: GatewayModelEntry[] = [];
+
+  // ── Tool approvals ──
 
   const requestToolApproval = (request: ToolApprovalRequest): Promise<ToolApprovalDecision> => {
     return new Promise((resolve) => {
@@ -177,39 +126,18 @@ export function registerPiChatHandlers({
     }
   };
 
-  ipcMain.handle('chat:peer-permission-mode-get', async (_event, peerId: unknown) => {
-    try {
-      const mode = await getPeerPermissionMode(typeof peerId === 'string' ? peerId : null);
-      return { ok: true, mode };
-    } catch (error) {
-      return { ok: false, error: asErrorMessage(error) };
-    }
-  });
-
-  ipcMain.handle('chat:peer-permission-mode-set', async (_event, payload: { peerId?: unknown; mode?: unknown }) => {
-    try {
-      const peerId = typeof payload?.peerId === 'string' ? payload.peerId : null;
-      const mode = normalizePermissionMode(payload?.mode);
-      await setPeerPermissionMode(peerId, mode);
-      return { ok: true, mode };
-    } catch (error) {
-      return { ok: false, error: asErrorMessage(error) };
-    }
-  });
-
   const resolveToolApproval = (id: string, decision: ToolApprovalDecision): boolean => {
     const pending = pendingToolApprovals.get(id);
     if (!pending) return false;
     pendingToolApprovals.delete(id);
     pending.resolve(decision);
-    // Any surface may decide first; tell the others the request is settled.
     sendToRenderer('chat:tool-approval-cleared', { id, conversationId: pending.conversationId });
     return true;
   };
 
   ipcMain.handle('chat:tool-approval-decision', async (_event, payload: { id?: unknown; decision?: unknown }) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';
-    const decision = payload?.decision === 'allow_once' || payload?.decision === 'always_allow_peer'
+    const decision: ToolApprovalDecision = payload?.decision === 'allow_once' || payload?.decision === 'always_allow'
       ? payload.decision
       : 'deny';
     if (!resolveToolApproval(id, decision)) {
@@ -218,119 +146,83 @@ export function registerPiChatHandlers({
     return { ok: true };
   });
 
-  const cacheFallbackPaymentRequired = (conversationId: string, suggestedAmount: string): void => {
-    const peerId = preferredPeerByConversationId.get(conversationId) ?? null;
-    if (!peerId) {
-      return;
+  // Agent access ("Ask first" / "Full access") is remembered per model.
+  ipcMain.handle('chat:permission-mode-get', async (_event, modelId: unknown) => {
+    try {
+      // Remembered per model, whichever seller a chat pins.
+      return { ok: true, mode: await getModelPermissionMode(splitPinnedModel(normalizeServiceId(modelId)).modelId || null) };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
     }
-    const existing = cachedPaymentRequired.get(conversationId) ?? {};
-    cachedPaymentRequired.set(conversationId, {
-      ...existing,
-      peerId,
-      suggestedAmount,
-    });
-  };
+  });
+
+  ipcMain.handle('chat:permission-mode-set', async (_event, payload: { modelId?: unknown; mode?: unknown }) => {
+    try {
+      const mode = normalizePermissionMode(payload?.mode);
+      await setModelPermissionMode(splitPinnedModel(normalizeServiceId(payload?.modelId)).modelId || null, mode);
+      return { ok: true, mode };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
+  });
+
+  // ── Runs ──
 
   const emitChatStreamError = (payload: ChatStreamErrorPayload): void => {
     sendToRenderer('chat:ai-stream-error', payload);
   };
 
-  const emitPaymentRequiredStreamError = (
-    conversationId: string,
-    suggestedAmount: string,
-  ): ChatStreamStopReason => {
-    const stopReason: ChatStreamStopReason = {
-      kind: 'payment_required',
-      source: 'billing',
-      retryable: false,
-      message: 'Payment is required before the stream can continue.',
-    };
-    emitChatStreamError({
-      conversationId,
-      error: `payment_required:${suggestedAmount}`,
-      stopReason,
-    });
-    return stopReason;
-  };
-
   const clearActiveRun = (run: ActiveRun | null): void => {
-    if (!run) {
-      return;
-    }
-
+    if (!run) return;
     cancelPendingToolApprovalsForConversation(run.conversationId);
-
     try {
       run.unsubscribe();
     } catch {
       // Ignore listener cleanup failures.
     }
-
     try {
       run.session.dispose();
     } catch {
       // Ignore disposal races.
     }
-
     if (activeRunsByConversation.get(run.conversationId) === run) {
       activeRunsByConversation.delete(run.conversationId);
     }
   };
 
   const abortAndClearActiveRun = async (run: ActiveRun | null): Promise<void> => {
-    if (!run) {
-      return;
-    }
-
+    if (!run) return;
     try {
       await run.session.abort();
     } catch {
       // Ignore abort races.
     }
-
     clearActiveRun(run);
   };
 
-  const isProxyAvailable = async (port: number): Promise<boolean> => {
-    return await isPortReachable(port);
-  };
+  // ── Models ──
 
-  const waitForBuyerProxy = async (port: number, timeoutMs = 20_000): Promise<boolean> => {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      try {
-        if (await isProxyAvailable(port)) {
-          return true;
-        }
-      } catch {
-        // transient error — keep polling
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+  const resolveModel = async (endpoint: GatewayEndpoint, modelId: string): Promise<ResolvedChatModel> => {
+    try {
+      const entries = await fetchGatewayModelEntries(endpoint);
+      lastEntries = entries;
+      // A pinned `peer@model` is described by its model's entry, found by
+      // any of its ids since the listed one can change between reads.
+      const entry = findGatewayEntry(entries, modelId) ?? undefined;
+      return { model: entry ? toChatModel(entry) : null, offers: entryOffers(entry) };
+    } catch (error) {
+      appendSystemLog(`Gateway model list unavailable; sending "${modelId}" as a plain chat model: ${asErrorMessage(error)}`);
+      return { model: null, offers: [] };
     }
-    return false;
   };
 
-  let lastServiceCatalogEntries: ChatServiceCatalogEntry[] = [];
-  let lastBuyerEligibleServiceCatalogEntries: ChatServiceCatalogEntry[] = [];
-  let lastServiceCatalogRefreshAt = 0;
-
-  const modelTelemetryContext = (
-    service: string,
-    peerId: string | null,
-  ): TelemetryEventProperties['model_selected'] => {
-    const normalizedService = service.trim().toLowerCase();
-    const catalogOffers = lastServiceCatalogEntries.filter((entry) => (
-      entry.id.trim().toLowerCase() === normalizedService
-      && (!peerId || entry.peerId === peerId)
-    ));
-    const eligibleOffers = lastBuyerEligibleServiceCatalogEntries.filter((entry) => (
-      entry.id.trim().toLowerCase() === normalizedService
-      && (!peerId || entry.peerId === peerId)
-    ));
-    const pricing = modelPricingSnapshot(eligibleOffers);
+  const modelTelemetryContext = (requested: string): TelemetryEventProperties['model_selected'] => {
+    const { modelId, peerId } = splitPinnedModel(requested);
+    const entry = findGatewayEntry(lastEntries, modelId) ?? undefined;
+    const pricing = modelPricingSnapshot(entryOffers(entry));
     return {
-      public_model_id: publicModelId(service, catalogOffers.length > 0),
-      service_category: classifyServiceCategory(service),
+      public_model_id: publicModelId(modelId, entry !== undefined),
+      service_category: classifyServiceCategory(modelId),
       route_mode: peerId ? 'pinned' : 'auto',
       pricing_tier: pricing.pricingTier,
       has_free_eligible_offer: pricing.hasFreeEligibleOffer,
@@ -338,433 +230,117 @@ export function registerPiChatHandlers({
     };
   };
 
-  const recordModelSelection = (
-    service: string,
-    peerId: string | null,
-  ): void => {
+  const recordModelSelection = (modelId: string): void => {
     if (!recordModelSelected) return;
     try {
-      const selectionKey = JSON.stringify([
-        service.trim().toLowerCase(),
-        peerId?.trim() ?? null,
-      ]);
-      void Promise.resolve(recordModelSelected(
-        modelTelemetryContext(service, peerId),
-        selectionKey,
-      )).catch(() => {});
+      void Promise.resolve(recordModelSelected(modelTelemetryContext(modelId), JSON.stringify([splitPinnedModel(modelId).modelId.toLowerCase()])))
+        .catch(() => {});
     } catch {
       // Telemetry must never affect model selection.
     }
   };
-  const SERVICE_CATALOG_DEBOUNCE_MS = 5_000;
-  let serviceCatalogRefreshPromise: Promise<ChatServiceCatalogEntry[]> | null = null;
 
-  const loadPersistedServiceCatalog = async (): Promise<ChatServiceCatalogEntry[]> => {
-    try {
-      const raw = await readFile(DEFAULT_BUYER_STATE_PATH, 'utf-8');
-      return limitChatServiceCatalogEntries(buildChatServiceCatalogFromPersistedPeers(JSON.parse(raw)));
-    } catch {
-      return [];
-    }
-  };
-
-  const refreshServiceCatalogFromNetwork = async (): Promise<ChatServiceCatalogEntry[]> => {
-    // Deduplicate concurrent calls
-    if (serviceCatalogRefreshPromise) return serviceCatalogRefreshPromise;
-    // Debounce rapid calls (e.g. UI refreshes)
-    if (Date.now() - lastServiceCatalogRefreshAt < SERVICE_CATALOG_DEBOUNCE_MS && lastServiceCatalogEntries.length > 0) {
-      return lastServiceCatalogEntries;
-    }
-
-    serviceCatalogRefreshPromise = (async () => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5_000);
-      let port = 0;
-      try {
-        port = await resolveProxyPort(configPath);
-        const response = await fetch(`${LOCALHOST_URL}:${port}/v1/models`, { signal: controller.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const entries = buildChatServiceCatalogFromNetworkModels(await response.json());
-        const limited = limitChatServiceCatalogEntries(entries);
-        const resolved = limited.length > 0 ? limited : await loadPersistedServiceCatalog();
-        updateServiceProviderHints(serviceProviderHints, resolved);
-        updateServiceProtocolMap(serviceProtocolMap, resolved);
-        lastServiceCatalogRefreshAt = Date.now();
-        lastServiceCatalogEntries = resolved;
-        return resolved;
-      } catch (error) {
-        appendSystemLog(`Desktop model catalog refresh failed (proxy :${String(port)}/v1/models): ${asErrorMessage(error)}`);
-        if (lastServiceCatalogEntries.length > 0) return lastServiceCatalogEntries;
-        const persisted = await loadPersistedServiceCatalog();
-        lastServiceCatalogEntries = persisted;
-        return persisted;
-      } finally {
-        clearTimeout(timer);
-      }
-    })().finally(() => { serviceCatalogRefreshPromise = null; });
-
-    return serviceCatalogRefreshPromise;
-  };
-
-  // The catalog offered to non-renderer frontends (Telegram): only entries
-  // the buyer routing policy will actually accept. The renderer applies the
-  // same filter in chat:ai-list-discover-rows; without it here, /model
-  // offered peers the buyer proxy then rejected with a policy 502.
-  const discoverPolicyAllowedCatalog = async (): Promise<ChatServiceCatalogEntry[]> => {
-    const entries = await refreshServiceCatalogFromNetwork();
-    const buyerMaxPricing = await loadBuyerMaxPricingDefaults(configPath);
-    const eligibleEntries = entries.filter((entry) => isCatalogEntryAllowedByBuyerMax(entry, buyerMaxPricing));
-    lastBuyerEligibleServiceCatalogEntries = eligibleEntries;
-    // Telegram picks chat models from this list; native video services
-    // cannot run through the chat pipeline.
-    return eligibleEntries.filter((entry) => !isNativeVideoProtocol(entry.protocol));
-  };
-
-  // Curated model-picker snapshot pushed by the renderer — see
-  // shared/model-picker.ts. Main only caches the latest push.
-  let modelPickerSnapshot: ModelPickerSnapshot | null = null;
-  ipcMain.handle('chat:sync-model-picker', (_event, payload: unknown) => {
-    const normalized = normalizeModelPickerSnapshot(payload);
-    if (normalized) modelPickerSnapshot = normalized;
-    return { ok: normalized != null };
-  });
-
-  const resolveProtocolForSend = async (serviceId: string): Promise<ChatServiceProtocol> => {
-    const normalizedServiceId = serviceId.trim().toLowerCase();
-    const existing = serviceProtocolMap.get(normalizedServiceId);
-    if (existing) {
-      return existing;
-    }
-
-    const refreshed = await refreshServiceCatalogFromNetwork();
-    const match = refreshed.find((entry) => (
-      entry.id.trim().toLowerCase() === normalizedServiceId
-      && isChatServiceProtocol(entry.protocol)
-    ));
-    return match && isChatServiceProtocol(match.protocol)
-      ? match.protocol
-      : 'anthropic-messages';
-  };
-
-  // Built here rather than beside the other helpers because it needs
-  // `resolveProtocolForSend`; every caller lives further down.
-  const runStreamingPrompt = createStreamingRunner({
-    store,
-    activeRunsByConversation,
-    cachedPaymentRequired,
-    preferredPeerByConversationId,
-    configPath,
-    sendToRenderer,
-    appendSystemLog,
-    isBuyerRuntimeRunning,
-    ensureBuyerRuntimeStarted,
-    requestToolApproval,
-    cacheFallbackPaymentRequired,
-    emitChatStreamError,
-    emitPaymentRequiredStreamError,
-    clearActiveRun,
-    abortAndClearActiveRun,
-    isProxyAvailable,
-    waitForBuyerProxy,
-    resolveProtocolForSend,
-    getServiceCatalogEntries: () => lastServiceCatalogEntries,
-    getBuyerEligibleServiceCatalogEntries: () => lastBuyerEligibleServiceCatalogEntries,
-    ...(recordFirstChatStarted ? { recordFirstChatStarted } : {}),
-    ...(recordChatRequestStarted ? { recordChatRequestStarted } : {}),
-    ...(recordChatRequestFinished ? { recordChatRequestFinished } : {}),
-  });
-
-  ipcMain.handle('chat:ai-get-proxy-status', async () => {
-    const port = await resolveProxyPort(configPath);
-    const running = await isProxyAvailable(port);
-    return {
-      ok: true,
-      data: {
-        running,
-        port,
-      },
-    };
-  });
-
-  ipcMain.handle('api:try-proxy-request', async (
-    _event,
-    params: { port: number; path: string; method: string; headers: Record<string, string>; body: string },
-  ) => {
-    try {
-      const url = `${LOCALHOST_URL}:${params.port}${params.path}`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60_000);
-      const res = await fetch(url, {
-        method: params.method || 'POST',
-        headers: params.headers || {},
-        body: params.body || undefined,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const text = await res.text();
-      return { ok: true, status: res.status, body: text, error: null as string | null };
-    } catch (e) {
-      const err = e as Error;
-      return { ok: false, status: 0, body: '', error: err?.message ?? String(e) };
-    }
-  });
-
-  type PeerMeteringStats = {
-    totalSessions: number;
-    totalRequests: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-    firstSessionAt: number | null;
-    lastSessionAt: number | null;
-  };
-
-  // Phase budgets for the discover-rows pipeline. The renderer drops the IPC
-  // result after 30s (CHAT_SERVICE_LIST_TIMEOUT_MS) — the sum of these plus
-  // the local file reads must stay comfortably under that, or the model list
-  // never populates while the runtime looks healthy. Generous enough for a
-  // slow machine or connection to finish each phase; a phase that still
-  // overruns is skipped for this cycle, not fatal.
-  const CATALOG_PHASE_BUDGET_MS = 8_000;
-  const METERING_FETCH_TIMEOUT_MS = 4_000;
-  const METERING_PHASE_BUDGET_MS = 5_000;
-  const ENRICHMENT_BUDGET_MS = 4_000;
-  const NETWORK_STATS_BUDGET_MS = 8_000;
-  const DISCOVER_ROWS_SLOW_MS = 3_000;
-  /** Last successful per-peer metering, reused when a cycle's fetch times out. */
-  const lastMeteringStats = new Map<string, PeerMeteringStats>();
-  let discoverRowsEverSucceeded = false;
-
-  ipcMain.handle('chat:ai-list-discover-rows', async () => {
+  ipcMain.handle('chat:list-models', async (_event, payload: { force?: unknown } | undefined) => {
     const startedAt = Date.now();
-    const phaseMs: Array<[string, number]> = [];
-    let phaseStartedAt = startedAt;
-    const endPhase = (name: string): void => {
-      const now = Date.now();
-      phaseMs.push([name, now - phaseStartedAt]);
-      phaseStartedAt = now;
-    };
     try {
-      const buyerMaxPricing = await loadBuyerMaxPricingDefaults(configPath);
-      const entries = (await raceBudget(
-        refreshServiceCatalogFromNetwork(),
-        CATALOG_PHASE_BUDGET_MS,
-        () => lastServiceCatalogEntries,
-      )).filter((entry) => isCatalogEntryAllowedByBuyerMax(entry, buyerMaxPricing));
-      lastBuyerEligibleServiceCatalogEntries = entries;
-      endPhase('catalog');
-
-      const buyerPort = await resolveProxyPort(configPath);
-      const statsMap = new Map<string, PeerMeteringStats>();
-      // Per-peer lifetime metering. The buyer-proxy exposes
-      // /_antseed/metering/<peerId>; fetch in parallel for every catalog peer.
-      const uniqueCatalogPeerIds = Array.from(new Set(
-        entries.map((e) => e.peerId ?? '').filter((p) => p.length > 0)
-      ));
-      await raceBudget(Promise.all(uniqueCatalogPeerIds.map(async (peerId) => {
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), METERING_FETCH_TIMEOUT_MS);
-          let body: Record<string, unknown> | null;
-          try {
-            const resp = await fetch(
-              `${LOCALHOST_URL}:${buyerPort}/_antseed/metering/${encodeURIComponent(peerId)}`,
-              { signal: controller.signal },
-            );
-            if (!resp.ok) return;
-            body = await resp.json() as Record<string, unknown> | null;
-          } finally {
-            clearTimeout(timer);
-          }
-          if (!body || typeof body !== 'object') return;
-          const sessions = Number(body.lifetimeSessions) || 0;
-          const reqs = Number(body.lifetimeRequests) || 0;
-          const inTok = Number(body.lifetimeInputTokens) || 0;
-          const outTok = Number(body.lifetimeOutputTokens) || 0;
-          const firstAt = typeof body.lifetimeFirstSessionAt === 'number' ? body.lifetimeFirstSessionAt : null;
-          const lastAt = typeof body.lifetimeLastSessionAt === 'number' ? body.lifetimeLastSessionAt : null;
-          if (sessions === 0 && reqs === 0 && inTok === 0 && outTok === 0 && firstAt == null && lastAt == null) return;
-          const stats: PeerMeteringStats = {
-            totalSessions: sessions,
-            totalRequests: reqs,
-            totalInputTokens: inTok,
-            totalOutputTokens: outTok,
-            firstSessionAt: firstAt,
-            lastSessionAt: lastAt,
-          };
-          statsMap.set(peerId, stats);
-          lastMeteringStats.set(peerId, stats);
-        } catch {
-          // Timed out or unreachable — reuse the last known values so a slow
-          // cycle doesn't blank the lifetime columns.
-          const previous = lastMeteringStats.get(peerId);
-          if (previous) statsMap.set(peerId, previous);
-        }
-      })), METERING_PHASE_BUDGET_MS, () => []);
-      endPhase('metering');
-
-      let discoveredPeersMap: Record<string, BuyerStateDiscoveredPeer> = {};
-      let peerHealthMap: Record<string, RawPeerHealth> = {};
-      try {
-        const raw = await readFile(DEFAULT_BUYER_STATE_PATH, 'utf-8');
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        if (parsed.peerHealth && typeof parsed.peerHealth === 'object' && !Array.isArray(parsed.peerHealth)) {
-          peerHealthMap = parsed.peerHealth as Record<string, RawPeerHealth>;
-        }
-        const arr = Array.isArray(parsed.discoveredPeers) ? parsed.discoveredPeers : [];
-        const enrichmentTasks: Array<Promise<void>> = [];
-        for (const p of arr) {
-          if (p && typeof p === 'object' && typeof (p as { peerId?: unknown }).peerId === 'string') {
-            const rec = p as Record<string, unknown>;
-            const peerId = rec.peerId as string;
-            const peerRecord: BuyerStateDiscoveredPeer = {
-              trust: normalizeTrustBreakdown(rec.trust),
-              onChainAgentId: typeof rec.onChainAgentId === 'number' ? rec.onChainAgentId : null,
-              onChainPoolStakeAnts: typeof rec.onChainPoolStakeAnts === 'number' && Number.isFinite(rec.onChainPoolStakeAnts)
-                ? rec.onChainPoolStakeAnts
-                : null,
-              onChainChannelCount: typeof rec.onChainChannelCount === 'number' ? rec.onChainChannelCount : null,
-              onChainGhostCount: typeof rec.onChainGhostCount === 'number' ? rec.onChainGhostCount : null,
-              onChainTotalVolumeUsdcMicros: typeof rec.onChainTotalVolumeUsdcMicros === 'number' ? rec.onChainTotalVolumeUsdcMicros : null,
-              onChainLastSettledAtSec: typeof rec.onChainLastSettledAtSec === 'number' ? rec.onChainLastSettledAtSec : null,
-              onChainReputationScore: typeof rec.onChainReputationScore === 'number' ? rec.onChainReputationScore : null,
-              onChainWashFlagged: typeof rec.onChainWashFlagged === 'boolean' ? rec.onChainWashFlagged : null,
-              onChainSybilRisk: typeof rec.onChainSybilRisk === 'number' ? rec.onChainSybilRisk : null,
-              onChainSybilFlags: Array.isArray(rec.onChainSybilFlags)
-                ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')
-                : [],
-              sellerContract: typeof rec.sellerContract === 'string' ? rec.sellerContract : undefined,
-              capabilities: Array.isArray(rec.capabilities)
-                ? rec.capabilities.filter((c: unknown): c is string => typeof c === 'string')
-                : [],
-              verificationLinks: collectPeerVerificationLinks({ verificationResults: rec.verificationResults }),
-              peerIconUrl: null,
-            };
-            discoveredPeersMap[peerId] = peerRecord;
-            enrichmentTasks.push(
-              enrichDomainVerificationLinks(peerRecord.verificationLinks).then((links) => {
-                peerRecord.verificationLinks = links;
-                peerRecord.peerIconUrl = links.find((link) => link.kind === 'domain' && link.faviconUrl)?.faviconUrl ?? null;
-              }),
-            );
-          }
-        }
-        // Budgeted: already-cached domains resolve instantly; first-seen
-        // domains keep resolving in the background and land in the
-        // per-domain cache for the next cycle.
-        await raceBudget(Promise.all(enrichmentTasks), ENRICHMENT_BUDGET_MS, () => []);
-      } catch {
-        // No state file yet
-      }
-      endPhase('enrichment');
-
-      // Network-wide stats from the chain explorer (aggregator fallback). On
-      // non-mainnet chains and on any failure this returns an empty map and
-      // buildDiscoverRows falls back to local stats.
-      const networkStats = await (async () => {
-        try {
-          const raw = await readFile(configPath, 'utf8');
-          const parsed = JSON.parse(raw) as Record<string, unknown>;
-          const payments = (parsed.payments && typeof parsed.payments === 'object') ? parsed.payments as Record<string, unknown> : {};
-          const overrides = (payments.crypto && typeof payments.crypto === 'object') ? payments.crypto as Record<string, unknown> : {};
-          const selectedChain = (typeof overrides.chainId === 'string' && overrides.chainId.trim().length > 0)
-            ? overrides.chainId
-            : 'base-mainnet';
-          const cc = resolveChainConfig({ chainId: selectedChain });
-          return await getNetworkStats({
-            explorerApiUrl: cc.explorerApiUrl,
-            networkStatsUrl: cc.networkStatsUrl,
-          }, { budgetMs: NETWORK_STATS_BUDGET_MS });
-        } catch {
-          return new Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>();
-        }
-      })();
-      endPhase('network-stats');
-
-      const rows = (await buildDiscoverRows(entries, statsMap, discoveredPeersMap, networkStats, peerHealthMap))
-        .filter((row) => isPriceAllowedByBuyerMax(
-          row.inputUsdPerMillion,
-          row.outputUsdPerMillion,
-          row.cachedInputUsdPerMillion,
-          buyerMaxPricing,
-        ));
-      endPhase('build');
-
-      const totalMs = Date.now() - startedAt;
-      if (totalMs >= DISCOVER_ROWS_SLOW_MS) {
-        const breakdown = phaseMs.map(([name, ms]) => `${name}=${String(ms)}ms`).join(' ');
-        appendSystemLog(`Service discovery slow: ${String(totalMs)}ms (${breakdown}) — ${String(rows.length)} row(s) from ${String(entries.length)} service(s)`);
-      }
-      if (!discoverRowsEverSucceeded) {
-        discoverRowsEverSucceeded = true;
-        appendSystemLog(`Service discovery ready: ${String(rows.length)} row(s) from ${String(entries.length)} service(s) in ${String(totalMs)}ms`);
-      }
-      return { ok: true, data: rows };
+      const endpoint = await getGatewayEndpoint();
+      const options = { force: payload?.force === true };
+      // Routers lead the picker. Without them the models still list.
+      const [entries, routers] = await Promise.all([
+        fetchGatewayModelEntries(endpoint, options),
+        fetchGatewayRouters(endpoint, options).catch((error: unknown): ChatModel[] => {
+          appendSystemLog(`Chat router list failed: ${asErrorMessage(error)}`);
+          return [];
+        }),
+      ]);
+      lastEntries = entries;
+      // Every model, those no trusted seller serves marked: the picker lists
+      // the apps' set and still finds a chat's model among the rest.
+      const models: ChatModel[] = toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
+      return { ok: true, data: [...routers, ...models] };
     } catch (error) {
-      const totalMs = Date.now() - startedAt;
-      appendSystemLog(`Service discovery failed after ${String(totalMs)}ms: ${asErrorMessage(error)}`);
+      const message = asErrorMessage(error);
+      appendSystemLog(`Chat model list failed: ${message}`);
       if (recordDiscoveryFailed) {
         try {
           void Promise.resolve(recordDiscoveryFailed({
-            duration_bucket: durationBucket(totalMs),
-            failure_code: classifyDiscoveryFailure(asErrorMessage(error)),
+            duration_bucket: durationBucket(Date.now() - startedAt),
+            failure_code: classifyDiscoveryFailure(message),
           })).catch(() => {});
         } catch {
-          // Telemetry must never replace the original discovery failure.
+          // Telemetry must never replace the original failure.
         }
       }
-      return { ok: false, data: [] as DiscoverRowEntry[], error: asErrorMessage(error) };
+      return { ok: false, data: [] as ChatModel[], error: message };
     }
   });
+
+  /** Sellers for a model under this app's key and routing policy, for the seller picker. */
+  ipcMain.handle('chat:route-preview', async (_event, payload: { model?: unknown; force?: unknown } | undefined) => {
+    const model = normalizeServiceId(payload?.model);
+    if (!model) return { ok: false, error: 'Model is required' };
+    try {
+      return { ok: true, data: await fetchRoutePreview(await getGatewayEndpoint(), model, { force: payload?.force === true }) };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
+  });
+
+  const sellerName = (peerId: string): string | null => {
+    const wanted = peerId.toLowerCase();
+    for (const entry of lastEntries) {
+      const peers = Array.isArray(entry['peers']) ? entry['peers'] as Array<Record<string, unknown>> : [];
+      const peer = peers.find((candidate) => String(candidate['peerId'] ?? '').toLowerCase() === wanted);
+      if (typeof peer?.['displayName'] === 'string' && peer['displayName'].trim()) return peer['displayName'].trim();
+    }
+    return null;
+  };
+
+  const privacyGate: PrivacyGate = { whenSettled: whenPrivacySettled, mode: currentPrivacyMode };
+  const runStreamingPrompt = createStreamingRunner({
+    store,
+    activeRunsByConversation,
+    pendingRuns,
+    configPath,
+    sendToRenderer,
+    appendSystemLog,
+    getEndpoint: () => getGatewayEndpoint(),
+    resolveModel,
+    requestToolApproval,
+    emitChatStreamError,
+    clearActiveRun,
+    abortAndClearActiveRun,
+    sellerName,
+    privacy: privacyGate,
+    ...(recordFirstChatStarted ? { recordFirstChatStarted } : {}),
+    ...(recordChatRequestStarted ? { recordChatRequestStarted } : {}),
+    ...(recordChatRequestFinished ? { recordChatRequestFinished } : {}),
+    ...(getChatSendTelemetryContext ? { getChatSendTelemetryContext } : {}),
+    ...(recordPremiumBlocked ? { recordPremiumBlocked } : {}),
+  });
+
+  // ── Conversations ──
 
   ipcMain.handle('chat:ai-list-conversations', async () => {
-    const conversations = await store.list();
-    const enriched = conversations.map((c) => {
-      const peerId = preferredPeerByConversationId.get(c.id) || c.peerId;
-      if (peerId && !preferredPeerByConversationId.has(c.id)) {
-        preferredPeerByConversationId.set(c.id, peerId);
-      }
-      return isPersistedPeerBindingPinned({ peerId: c.peerId ?? '', routeMode: c.routeMode })
-        ? { ...c, peerId, routeMode: 'pinned' as const }
-        : projectPersistedConversationRoute(c);
-    });
-    return { ok: true, data: enriched };
+    const [summaries, flags] = await Promise.all([store.list(), organization.read()]);
+    const data = await Promise.all(summaries.map(async (summary) => {
+      const gitBranch = summary.workspacePath ? await gitBranches.get(summary.workspacePath) : null;
+      return { ...summary, ...flagsFor(flags, summary.id), ...(gitBranch ? { gitBranch } : {}) };
+    }));
+    return { ok: true, data };
   });
 
-  ipcMain.handle('chat:ai-get-workspace', async () => {
-    const workspaceDir = await loadChatWorkspaceDir();
-    return {
-      ok: true,
-      data: {
-        current: workspaceDir,
-        default: CHAT_WORKSPACE_DIR,
-      },
-    };
-  });
-
-  ipcMain.handle('chat:ai-get-workspace-git-status', async () => {
+  ipcMain.handle('chat:ai-set-conversation-flags', async (_event, id: string, flags: ConversationFlags) => {
     try {
-      const workspaceDir = await loadChatWorkspaceDir();
-      return {
-        ok: true,
-        data: await getWorkspaceGitStatus(workspaceDir),
-      };
+      const conversationId = typeof id === 'string' ? id.trim() : '';
+      if (!conversationId) return { ok: false, error: 'Conversation not found' };
+      const patch: ConversationFlags = {};
+      if (typeof flags?.pinned === 'boolean') patch.pinned = flags.pinned;
+      if (typeof flags?.archived === 'boolean') patch.archived = flags.archived;
+      return { ok: true, data: await organization.setFlags(conversationId, patch) };
     } catch (error) {
-      return {
-        ok: false,
-        error: asErrorMessage(error),
-      };
+      return { ok: false, error: asErrorMessage(error) };
     }
-  });
-
-  ipcMain.handle('chat:ai-set-workspace', async (_event, workspaceDir: string) => {
-    const current = await persistChatWorkspaceDir(workspaceDir);
-    return {
-      ok: true,
-      data: {
-        current,
-        default: CHAT_WORKSPACE_DIR,
-      },
-    };
   });
 
   ipcMain.handle('chat:ai-get-conversation', async (_event, id: string) => {
@@ -772,56 +348,39 @@ export function registerPiChatHandlers({
     if (!conversation) {
       return { ok: false, error: 'Conversation not found' };
     }
-    const routedConversation = projectPersistedConversationRoute(conversation);
-    const peerId = preferredPeerByConversationId.get(id) || conversation.peerId;
-    if (peerId) preferredPeerByConversationId.set(id, peerId);
-    const enriched = conversation.routeMode === 'pinned' && peerId
-      ? { ...routedConversation, peerId, routeMode: 'pinned' as const }
-      : routedConversation;
-    return { ok: true, data: enriched };
+    return { ok: true, data: conversation };
   });
 
-  const createConversation = async (
-    service?: string,
-    provider?: string,
-    peerId?: string,
-    routeMode?: ChatRouteMode,
-  ): Promise<AiConversation> => {
-    const trimmedPeerId = routeMode === 'pinned' ? peerId?.trim() ?? '' : '';
-    const peerLabel = trimmedPeerId
-      ? lastServiceCatalogEntries.find((e) => e.peerId === trimmedPeerId)?.peerLabel
-      : undefined;
-    const conversation = await store.create(service, provider, trimmedPeerId || undefined, peerLabel, routeMode);
-    if (trimmedPeerId) {
-      preferredPeerByConversationId.set(conversation.id, trimmedPeerId);
-    } else {
-      preferredPeerByConversationId.delete(conversation.id);
+  ipcMain.handle('chat:ai-create-conversation', async (_event, model: unknown) => {
+    const modelId = normalizeServiceId(model);
+    if (!modelId) return { ok: false, error: 'Choose a model before starting a chat.' };
+    try {
+      return { ok: true, data: await store.create(modelId) };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
     }
-    return conversation;
-  };
+  });
 
-  ipcMain.handle('chat:ai-create-conversation', async (
-    _event,
-    service: string,
-    provider?: string,
-    peerId?: string,
-    routeMode?: ChatRouteMode,
-  ) => {
-    return {
-      ok: true,
-      data: await createConversation(
-        service,
-        provider,
-        peerId,
-        routeMode === 'auto' || routeMode === 'pinned' ? routeMode : undefined,
-      ),
-    };
+  ipcMain.handle('chat:ai-set-model', async (_event, conversationId: unknown, model: unknown) => {
+    const id = typeof conversationId === 'string' ? conversationId.trim() : '';
+    const modelId = normalizeServiceId(model);
+    if (!modelId) return { ok: false, error: 'Model is required' };
+    try {
+      if (id) await store.setModel(id, modelId);
+      recordModelSelection(modelId);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
   });
 
   ipcMain.handle('chat:ai-delete-conversation', async (_event, id: string) => {
-    preferredPeerByConversationId.delete(id);
-    cachedPaymentRequired.delete(id);
     await store.delete(id);
+    try {
+      await organization.forget(id);
+    } catch (err) {
+      appendSystemLog(`Failed to clear pin/archive for conversation ${id}: ${asErrorMessage(err)}`);
+    }
     // Best effort: wipe any raw attachment bytes we persisted for this
     // conversation. Failures are swallowed so a stuck directory doesn't
     // block the primary delete from returning ok.
@@ -859,13 +418,27 @@ export function registerPiChatHandlers({
     return { ok: true };
   });
 
+  // ── Workspace ──
+
+  ipcMain.handle('chat:ai-get-workspace', async () => {
+    const workspaceDir = await loadChatWorkspaceDir();
+    return { ok: true, data: { current: workspaceDir, default: CHAT_WORKSPACE_DIR } };
+  });
+
+  ipcMain.handle('chat:ai-set-workspace', async (_event, workspaceDir: string) => {
+    const current = await persistChatWorkspaceDir(workspaceDir);
+    return { ok: true, data: { current, default: CHAT_WORKSPACE_DIR } };
+  });
+
+  // ── Attachments, images, sends ──
+
   ipcMain.handle('chat:prepare-attachments', async (_event, conversationId: string, attachments: RawChatAttachment[]) => {
     try {
       const trimmedId = typeof conversationId === 'string' ? conversationId.trim() : '';
       // Guard the filesystem boundary: only run the disk-backed storage
       // path when the renderer supplied a conversationId we can vouch for.
-      // Otherwise fall back to the legacy pure-prepare behaviour — the
-      // LLM pipeline still works, we just can't offer native previews.
+      // Otherwise fall back to the pure-prepare behaviour — the LLM
+      // pipeline still works, we just can't offer native previews.
       const storage = trimmedId && isSafeId(trimmedId)
         ? async (raw: { id: string; name: string; mimeType: string; size: number }, buffer: Buffer): Promise<string> => {
             const attachmentId = randomUUID();
@@ -884,15 +457,14 @@ export function registerPiChatHandlers({
 
   ipcMain.handle('chat:generate-image', async (_event, payload: unknown) => {
     const request = payload && typeof payload === 'object'
-      ? payload as { conversationId?: unknown; prompt?: unknown; peerId?: unknown; moderation?: unknown; service?: unknown; sourceImageAttachmentId?: unknown }
+      ? payload as { conversationId?: unknown; prompt?: unknown; model?: unknown; moderation?: unknown; sourceImageAttachmentId?: unknown; requirePrivate?: unknown; allowPrivateHistory?: unknown }
       : {};
     const conversationId = typeof request.conversationId === 'string' ? request.conversationId.trim() : '';
     const prompt = typeof request.prompt === 'string' ? request.prompt.trim() : '';
-    const peerId = typeof request.peerId === 'string' ? request.peerId.trim() : '';
     const moderation = request.moderation === 'auto' || request.moderation === 'low'
       ? request.moderation
       : undefined;
-    const service = typeof request.service === 'string' ? request.service.trim() : '';
+    const service = normalizeServiceId(request.model);
     const sourceImageAttachmentId = typeof request.sourceImageAttachmentId === 'string'
       ? request.sourceImageAttachmentId.trim()
       : '';
@@ -911,15 +483,25 @@ export function registerPiChatHandlers({
     const controller = new AbortController();
     activeImageRunsByConversation.set(conversationId, controller);
     try {
-      const proxyPort = await resolveProxyPort(configPath);
-      return await generateChatImage(store, proxyPort, {
+      // An image goes out under whichever policy the switch settles on, like a text send.
+      // An image edit sends an earlier image of the chat, so its history counts too.
+      const mustBePrivate = requiresPrivate(
+        { requirePrivate: request.requirePrivate === true, allowPrivateHistory: request.allowPrivateHistory === true },
+        (await store.get(conversationId))?.messages ?? [],
+      );
+      const refused = await passPrivacyGate(privacyGate, mustBePrivate);
+      if (refused) return { ok: false, error: refused };
+      const requireTee = mustBePrivate || currentPrivacyMode() === 'private';
+      const endpoint = { ...await getGatewayEndpoint(), ...(requireTee ? { requireTee } : {}) };
+      return await generateChatImage(store, endpoint, {
         conversationId,
         prompt,
-        ...(peerId ? { peerId } : {}),
         ...(moderation ? { moderation } : {}),
         service,
         ...(sourceImageAttachmentId ? { sourceImageAttachmentId } : {}),
-      }, { signal: controller.signal });
+      }, { signal: controller.signal, sellerName, privacyMode: currentPrivacyMode });
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
     } finally {
       if (activeImageRunsByConversation.get(conversationId) === controller) {
         activeImageRunsByConversation.delete(conversationId);
@@ -927,25 +509,7 @@ export function registerPiChatHandlers({
     }
   });
 
-  ipcMain.handle(
-    'chat:ai-send-stream',
-    async (_event, conversationId: string, userMessage: string, service?: string, _provider?: string, attachments?: PreparedChatAttachment[], peerId?: string, permissionMode?: unknown) => {
-      // `_provider` is accepted for IPC ABI compatibility with older
-      // renderers but ignored — the buyer proxy resolves the route plan
-      // from the pinned peer + the service ID without a provider hint.
-      return await runStreamingPrompt(conversationId, userMessage, service, attachments, peerId, permissionMode);
-    },
-  );
-
-  ipcMain.handle(
-    'chat:ai-send',
-    async (_event, conversationId: string, userMessage: string, service?: string, _provider?: string, attachments?: PreparedChatAttachment[], peerId?: string, permissionMode?: unknown) => {
-      // `_provider` is accepted for IPC ABI compatibility with older
-      // renderers but ignored — the buyer proxy resolves the route plan
-      // from the pinned peer + the service ID without a provider hint.
-      return await runStreamingPrompt(conversationId, userMessage, service, attachments, peerId, permissionMode);
-    },
-  );
+  ipcMain.handle('chat:ai-send-stream', sendStreamHandler(runStreamingPrompt));
 
   const abortConversations = async (conversationId?: string): Promise<void> => {
     const trimmedConversationId = typeof conversationId === 'string' ? conversationId.trim() : '';
@@ -956,6 +520,7 @@ export function registerPiChatHandlers({
       ? [activeImageRunsByConversation.get(trimmedConversationId)].filter((run): run is AbortController => Boolean(run))
       : Array.from(activeImageRunsByConversation.values());
     for (const controller of imageRuns) controller.abort();
+    pendingRuns.abort(trimmedConversationId || undefined);
     await Promise.all(activeRuns.map((run) => abortAndClearActiveRun(run)));
   };
 
@@ -964,124 +529,12 @@ export function registerPiChatHandlers({
     return { ok: true };
   });
 
-  const applyPeerSelection = async (payload: ChatPeerSelectionRequest | string | null): Promise<{ ok: boolean; error?: string }> => {
-    const { conversationId, peerId, service, provider, routeMode } = normalizeChatPeerSelectionRequest(payload);
-    const pinnedPeerId = routeMode === 'pinned' ? peerId : null;
-
-    if (conversationId) {
-      if (!pinnedPeerId && service === 'antseed') {
-        try {
-          const port = await resolveProxyPort(configPath);
-          const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/conversations/update`, {
-            method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(5_000),
-            body: JSON.stringify({ id: `vpr:${conversationId}`, pinnedModel: null, peerSource: 'auto' }),
-          });
-          if (!response.ok && response.status !== 404) return { ok: false, error: 'Could not clear the previous conversation route' };
-        } catch (error) {
-          return { ok: false, error: asErrorMessage(error) };
-        }
-      }
-      if (pinnedPeerId) {
-        preferredPeerByConversationId.set(conversationId, pinnedPeerId);
-        const peerLabel = lastServiceCatalogEntries.find((entry) => entry.peerId === pinnedPeerId)?.peerLabel;
-        await store.setPeer(conversationId, pinnedPeerId, peerLabel, 'pinned');
-      } else {
-        preferredPeerByConversationId.delete(conversationId);
-        await store.clearPeer(conversationId);
-      }
-      if (service) {
-        await store.setModel(conversationId, provider ?? undefined, service);
-        recordModelSelection(service, pinnedPeerId);
-      }
-    }
-
-    if (!pinnedPeerId) {
-      return { ok: true };
-    }
-
-    // Eager connection warmup via buyer proxy
-    const proxyPort = await resolveProxyPort(configPath);
-    try {
-      const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/connect`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ peerId: pinnedPeerId }),
-      });
-      const result = await response.json() as { ok: boolean; error?: string };
-      return { ok: result.ok, error: result.error };
-    } catch (err) {
-      return { ok: false, error: asErrorMessage(err) };
-    }
-  };
-
-  ipcMain.handle('chat:ai-select-peer', async (_event, payload: ChatPeerSelectionRequest | string | null) => applyPeerSelection(payload));
-
-  // Keep the buyer proxy's default route (`antseed` model alias, and the
-  // route the Telegram bridge reads) on the renderer's current AI VPN selection.
-  // Best-effort: the buyer proxy may not be running yet — the renderer calls
-  // this again on its catalog poll, so the route lands once the proxy is up.
-  const setBuyerDefaultRoute = async (selection: unknown): Promise<{ ok: boolean; error?: string }> => {
-    if (!isRoutingSelection(selection)) return { ok: false, error: 'Invalid routing selection' };
-    try {
-      const proxyPort = await resolveProxyPort(configPath);
-      return await writeBuyerRoute(proxyPort, selection);
-    } catch (err) {
-      return { ok: false, error: asErrorMessage(err) };
-    }
-  };
-
-  // Routers saved in the buyer proxy by other clients (CLI, gateway, another
-  // window, a restart) win over the desktop selection; main pushes them on the
-  // same event the Telegram bridge uses for model changes.
-  const emitBuyerRouteChange = (change: ExternalBuyerRouteChange | null): boolean => {
-    if (!change) return false;
-    sendToRenderer('chat:default-route-changed', 'router' in change
-      ? { peerId: '', service: '', provider: null, router: change.router }
-      : { peerId: change.peerId, service: change.service, provider: null });
-    return true;
-  };
-
-  const buyerRouteWatch = setInterval(() => {
-    if (!isBuyerRuntimeRunning()) {
-      forgetBuyerRoute();
-      return;
-    }
-    void resolveProxyPort(configPath).then(checkBuyerRoute).then(emitBuyerRouteChange).catch(() => forgetBuyerRoute());
-  }, BUYER_ROUTE_WATCH_INTERVAL_MS);
-  buyerRouteWatch.unref?.();
-
-  ipcMain.handle('chat:set-buyer-default-route', async (_event, payload: { selection?: unknown }) => {
-    if (!isBuyerRouteKnown()) {
-      try {
-        if (emitBuyerRouteChange(await checkBuyerRoute(await resolveProxyPort(configPath)))) return { ok: true };
-      } catch {
-        forgetBuyerRoute();
-      }
-    }
-    return setBuyerDefaultRoute(payload?.selection);
-  });
-
-  ipcMain.handle('chat:get-routing-services', async () => {
-    try {
-      const proxyPort = await resolveProxyPort(configPath);
-      const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/routing-services`, { signal: AbortSignal.timeout(5_000) });
-      if (response.status === 404) {
-        return { ok: false, error: `The buyer on port ${proxyPort} does not support routing services. Stop the older buyer in its owning app or terminal, then start this VPR buyer. Toggling a shared dev instance only reattaches to the old buyer.` };
-      }
-      if (!response.ok) throw new Error(`Routing discovery failed (${response.status})`);
-      return await response.json();
-    } catch (error) {
-      return { ok: false, error: asErrorMessage(error) };
-    }
-  });
-
   ipcMain.handle('telemetry:first-model-shown', (_event, payload: unknown) => {
     const signal = payload as Partial<FirstModelShownSignal> | null;
     const service = typeof signal?.service === 'string' ? signal.service.trim() : '';
-    const peerId = typeof signal?.peerId === 'string' ? signal.peerId.trim() : '';
     if (!service || !recordFirstModelShown) return { ok: false };
     try {
-      void Promise.resolve(recordFirstModelShown(modelTelemetryContext(service, peerId || null))).catch(() => {});
+      void Promise.resolve(recordFirstModelShown(modelTelemetryContext(service))).catch(() => {});
     } catch {
       // Telemetry must never affect model rendering.
     }
@@ -1089,25 +542,24 @@ export function registerPiChatHandlers({
   });
 
   return {
-    createConversation,
-    sendMessageStream: (conversationId, userMessage, options) => runStreamingPrompt(
-      conversationId,
-      userMessage,
-      options?.service,
-      undefined,
-      options?.peerId,
-      options?.permissionMode,
-    ),
+    invalidateModelCatalog: () => {
+      clearGatewayModelCache();
+      lastEntries = [];
+    },
+    createConversation: (model) => store.create(model),
+    hasConversation: async (conversationId) => (await store.get(conversationId)) !== null,
+    setConversationModel: (conversationId, model) => store.setModel(conversationId, model),
+    getConversationModel: async (conversationId) => (await store.get(conversationId))?.service || null,
+    sendMessageStream: async (conversationId, userMessage) => runStreamingPrompt(conversationId, userMessage),
     abort: abortConversations,
     resolveToolApproval,
-    getProxyPort: () => resolveProxyPort(configPath),
-    discoverServiceCatalog: discoverPolicyAllowedCatalog,
-    getModelPicker: () => modelPickerSnapshot,
-    selectPeer: applyPeerSelection,
-    setDefaultRoute: async (peerId, service, provider) => {
-      const result = await setBuyerDefaultRoute({ kind: 'model', model: peerId ? `${peerId}@${service}` : service });
-      if (result.ok) sendToRenderer('chat:default-route-changed', { peerId, service, provider: provider ?? null });
-      return result;
+    listModels: async () => {
+      // Not the minute-long cache: the list narrows the moment Private turns on.
+      await whenPrivacySettled();
+      const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
+      lastEntries = entries;
+      // Free models first, a trusted seller's before a low-trust one; the rest still resolve a saved pick.
+      return recommendAppModels(toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
     },
   };
 }

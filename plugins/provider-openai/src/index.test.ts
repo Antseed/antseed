@@ -16,6 +16,7 @@ describe('provider-openai plugin', () => {
     expect(keys).toContain('OPENAI_PROVIDER_FLAVOR');
     expect(keys).toContain('OPENAI_UPSTREAM_PROVIDER');
     expect(keys).toContain('ANTSEED_SERVICE_ALIAS_MAP_JSON');
+    expect(keys).toContain('ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON');
     expect(keys).toContain('ANTSEED_INPUT_USD_PER_MILLION');
     expect(keys).toContain('ANTSEED_OUTPUT_USD_PER_MILLION');
     expect(keys).toContain('ANTSEED_MAX_CONCURRENCY');
@@ -242,8 +243,51 @@ describe('provider-openai plugin', () => {
 
     for (const service of imageServices) {
       expect(provider.serviceApiProtocols?.[service]).toEqual(['openai-images']);
-      expect(provider.serviceCapabilities?.[service]).toEqual({ outputs: ['image'] });
+      expect(provider.serviceCapabilities?.[service]).toEqual({
+        outputs: ['image'],
+        inputs: ['text'],
+      });
     }
+  });
+
+  it('advertises Venice image input only for explicitly paired edit services', async () => {
+    const provider = await plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_BASE_URL: 'https://api.venice.ai/api',
+      ANTSEED_ALLOWED_SERVICES: 'grok-imagine-image-quality,venice-sd35',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: JSON.stringify({
+        'grok-imagine-image-quality': 'grok-imagine-quality-edit',
+      }),
+      ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({
+        'grok-imagine-image-quality': { supportedParameters: ['quality'] },
+        'venice-sd35': { inputs: ['text', 'image'] },
+      }),
+    });
+
+    expect(provider.serviceCapabilities?.['grok-imagine-image-quality']).toEqual({
+      outputs: ['image'],
+      inputs: ['text', 'image'],
+      supportedParameters: ['image', 'moderation', 'quality'],
+    });
+    expect(provider.serviceCapabilities?.['venice-sd35']).toEqual({
+      outputs: ['image'],
+      inputs: ['text'],
+    });
+  });
+
+  it('rejects edit mappings for unknown or non-image services', () => {
+    expect(() => plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_PROVIDER_FLAVOR: 'venice',
+      ANTSEED_ALLOWED_SERVICES: 'venice-sd35',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"missing":"qwen-edit"}',
+    })).toThrow('unknown service "missing"');
+    expect(() => plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_PROVIDER_FLAVOR: 'venice',
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.5',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"gpt-5.5":"qwen-edit"}',
+    })).toThrow('non-image service "gpt-5.5"');
   });
 
   it('does not advertise image services for openrouter flavor yet', async () => {

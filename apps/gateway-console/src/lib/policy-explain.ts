@@ -5,6 +5,7 @@
  */
 import type { Peer, PeerList, RoutePreview, RoutingPolicy } from '../api/types'
 import { formatPricePerMillion, shortId } from './format'
+import { DIFF_ROUTING_SHARE, hasDiffVerdict } from './model-check'
 import { normalizePeerId } from './peer-id'
 import { expandLists } from './policy-match'
 
@@ -59,14 +60,27 @@ export function policySentences(policy: RoutingPolicy | null | undefined, peers:
 type Candidate = RoutePreview['candidates'][number]
 type Source = RoutePreview['sources'][number]
 
-/** Why a level's policy keeps the candidate out, or null when it does not. */
+/**
+ * Why a level's policy keeps the candidate out, or null when it does not. Every level's trust
+ * minimum is judged per model, so a seller with a live DIFF verdict on the model counts at 10%.
+ */
 function exclusion(policy: RoutingPolicy, candidate: Candidate, peer: Peer | undefined, model: string): string | null {
   const id = normalizePeerId(candidate.peerId)
   if (policy.blockedPeerIds?.some((entry) => normalizePeerId(entry) === id)) return 'blocks it'
   if (policy.allowedPeerIds && !policy.allowedPeerIds.some((entry) => normalizePeerId(entry) === id)) return 'does not allow it'
   if (policy.requireTee && peer && !peer.tee) return 'requires a TEE'
   if (policy.requireVerified && peer && !peer.verified) return 'requires a verified seller'
-  if (policy.minTrustScore !== undefined && (candidate.trustScore ?? 0) < policy.minTrustScore) return `requires trust ${policy.minTrustScore}+ (it has ${Math.round(candidate.trustScore ?? 0)})`
+  if (policy.minTrustScore !== undefined) {
+    // A buyer that cut the score already says so (`trustScoreBeforeCut`): its `trustScore` is the
+    // one routing judged. Older buyers send the raw score; cut it here from the peer's verdicts.
+    const before = candidate.trustScoreBeforeCut
+    const raw = before ?? candidate.trustScore ?? 0
+    const cut = before !== undefined || hasDiffVerdict(peer, model)
+    const trust = before !== undefined ? candidate.trustScore ?? 0 : cut ? raw * DIFF_ROUTING_SHARE : raw
+    if (trust < policy.minTrustScore) {
+      return `requires trust ${policy.minTrustScore}+ (it has ${Math.round(trust)}${cut ? `, ${Math.round(DIFF_ROUTING_SHARE * 100)}% of ${Math.round(raw)} after a DIFF model check` : ''})`
+    }
+  }
   if (policy.minReputation !== undefined && peer && (peer.reputationScore ?? 0) < policy.minReputation) return `requires reputation ${policy.minReputation}+`
   if (policy.maxInputUsdPerMillion !== undefined && candidate.inputUsdPerMillion !== null && candidate.inputUsdPerMillion > policy.maxInputUsdPerMillion) {
     return `caps input at ${formatPricePerMillion(policy.maxInputUsdPerMillion)}/M (it asks ${formatPricePerMillion(candidate.inputUsdPerMillion)})`

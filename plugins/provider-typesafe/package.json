@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-typesafe",
-  "version": "0.1.7",
+  "version": "0.1.12",
   "description": "TypeSafe System One decision-model provider plugin for Antseed",
   "type": "module",
   "files": [

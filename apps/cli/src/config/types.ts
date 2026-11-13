@@ -1,5 +1,6 @@
 import type {
   FreeTierDelegation,
+  SellerBuyerLimitsConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -46,6 +47,10 @@ export interface SellerServiceConfig {
    * `"deepseek-v3.1"` with upstreamModel `"deepseek-ai/DeepSeek-V3.1"`.
    */
   upstreamModel?: string;
+  /** Native image-edit model paired with this advertised generation service. */
+  imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -283,6 +288,21 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Announce each provider by an ID instead of its plugin name, so buyers don't see which
+   * plugin (and upstream) serves a model. Default: false while older buyers, which refuse a
+   * pinned request naming a provider the peer doesn't announce, are still in use.
+   */
+  announceProviderIds?: boolean;
+  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
    * default). Chosen in `antseed seller setup`; overridden at launch by
@@ -323,6 +343,13 @@ export interface SellerCLIConfig {
   restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
+  /**
+   * Per-buyer load limits: tokens (uncached input + output) each buyer may
+   * use from each provider in a rolling window, tighter for buyers whose first
+   * channel with this seller is recent, with optional per-service weights.
+   * Over a limit, requests are answered 429 with retry-after. Off unless set.
+   */
+  buyerLimits?: SellerBuyerLimitsConfig;
 }
 
 /**
@@ -410,6 +437,8 @@ export interface PaymentsCLIConfig {
   maxReserveAmountUsdc?: string;
   /** Most the buyer pays for one video in base units; a gateway reserves up to this while a video is priced. Default: "5000000" ($5.00). */
   maxVideoRequestUsdc?: string;
+  /** Validity in seconds of the auths the node signs. Default: the node's (900 for a ReserveAuth). */
+  defaultAuthDurationSecs?: number;
   /**
    * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via
@@ -444,9 +473,11 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
-    /** Deployed AntseedVerification contract address */
+    /** Deployed AntseedKbfAudits contract address (the KBF source auditors submit to; holds the approved auditors) */
     verificationContractAddress?: string;
-    /** Deployment block of the verification contract; floor for verifier event scans */
+    /** AntseedVerificationResults address; discovered from the KBF contract when unset */
+    verificationResultsAddress?: string;
+    /** Deployment block of the KBF audits contract; floor for verifier event scans */
     verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;
@@ -462,6 +493,7 @@ export interface PaymentsCLIConfig {
     legacyEmissionsEscrowAddress?: string;
     washTradingRegistryAddress?: string;
     pointsPolicyRegistryAddress?: string;
+    verificationPointsPolicyAddress?: string;
     /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
@@ -492,6 +524,20 @@ export interface RelayerCLIConfig {
 export interface NetworkCLIConfig {
   /** Additional bootstrap nodes for DHT discovery (host:port pairs) */
   bootstrapNodes: string[];
+  /** UDP port for the DHT; 0 lets the OS choose. Default: 6881 for a seller, OS-assigned for a buyer. `--dht-port` wins. */
+  dhtPort?: number;
+  /** TCP port for seller signaling; 0 lets the OS choose. Default: 6882. `--signaling-port` wins. */
+  signalingPort?: number;
+  /** Local address the DHT and signaling sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. */
+  natTraversal?: boolean;
+  /** Use only `bootstrapNodes` and never contact the official DHT nodes. Default: false. */
+  noOfficialBootstrap?: boolean;
+  /** Accept private and loopback addresses in DHT lookups. Default: true for a buyer, false for a seller. */
+  allowPrivateIPs?: boolean;
+  /** Timeout of one DHT operation in ms. Default: the node's. */
+  dhtOperationTimeoutMs?: number;
 }
 
 /**
@@ -517,4 +563,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

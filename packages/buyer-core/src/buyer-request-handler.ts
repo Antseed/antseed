@@ -74,6 +74,10 @@ export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
 
 export interface RequestExecutionOptions {
+  /**
+   * Ends the request. Aborted with the default reason, the caller gave the request up, and the seller may still
+   * bill it up to what it allows. Aborted with any other reason (a timeout), the caller gave up on the seller.
+   */
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
   controlPlane?: boolean;
@@ -83,6 +87,11 @@ export interface RequestExecutionOptions {
   captureResponseAuthPreimages?: boolean;
   /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
   maxVideoCostUsdc?: bigint;
+  /**
+   * Send only on the connection with this session hash: the one a seller's TEE attestation was
+   * bound to. A request that would go out on any other connection is refused before sending.
+   */
+  channelBinding?: string;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -154,6 +163,12 @@ export class BuyerRequestHandler {
 
     const conn = await this._deps.getConnection(peer);
     debugLog(`[BuyerRequest] Connection to ${peer.peerId.slice(0, 12)}... state=${conn.state}`);
+    if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
+      throw buyerFault(
+        `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
+        'buyer-tee-connection-changed',
+      );
+    }
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
@@ -200,9 +215,11 @@ export class BuyerRequestHandler {
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Name the provider the request is billed under, so the seller serves it
-    // through the same upstream instead of choosing one by itself.
-    if (billingRoute && !extractRequestedProvider(req)) {
-      req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    // through the same upstream instead of choosing one by itself. This also
+    // replaces a provider the peer does not announce (see selectProviderForService).
+    if (billingRoute && extractRequestedProvider(req) !== billingRoute.provider.toLowerCase()) {
+      const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.toLowerCase() !== "x-antseed-provider"));
+      req = { ...req, headers: { ...headers, "x-antseed-provider": billingRoute.provider } };
     }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -274,6 +291,7 @@ export class BuyerRequestHandler {
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
       const isDownload = videoRoute?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      let requestSent = false;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;
@@ -316,6 +334,14 @@ export class BuyerRequestHandler {
         cleanupConnectionListener();
         debugWarn(`[BuyerRequest] Request ${req.requestId.slice(0, 8)} aborted by caller`);
         mux.cancelProxyRequest(req.requestId);
+        // The seller is not told, so it may finish the generation and bill it: bound that by what the request
+        // allows. Only when the caller gave the request up (see RequestExecutionOptions.signal): a timeout or a
+        // closed connection is the seller's to cause, and counting it would pay a seller for answering nothing.
+        const callerGaveUp = (abortSignal?.reason as { name?: unknown } | undefined)?.name === 'AbortError';
+        if (requestSent && callerGaveUp && negotiator && !isFreeService) {
+          const partial = { ...(streamStartResponse ?? { requestId: req.requestId, statusCode: 200, headers: {} }), body: concatChunks(streamChunks) };
+          if (!isCoveredByFreeAllowance(partial)) negotiator.estimateCostFromPartialResponse(peer, req, partial, requestedService);
+        }
         reject(new Error(`Request ${req.requestId} aborted`));
       };
 
@@ -371,6 +397,7 @@ export class BuyerRequestHandler {
         reject(error);
       };
 
+      requestSent = true;
       mux.sendProxyRequest(
         req,
         (response: SerializedHttpResponse, metadata) => {
@@ -477,7 +504,34 @@ export class BuyerRequestHandler {
       );
     });
 
-    const response = await executeRequest();
+    // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
+    const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
+    // A control-plane call is never charged, so it is not named to the payment manager.
+    const paidRequestId = negotiator ? req.requestId : undefined;
+    // Provider video APIs may use HTTP 402 for their own errors; only start
+    // Antseed payment negotiation when the response is our payment contract.
+    const startsPaymentNegotiation = (answer: SerializedHttpResponse): boolean => answer.statusCode === 402
+      && Boolean(negotiator)
+      && !externalSpendingAuth
+      && (!videoRoute || isPaymentRequired402(answer));
+    const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
+      bpm?.beginPaidRequest(peer.peerId);
+      let answered = false;
+      try {
+        const answer = await executeRequest();
+        answered = true;
+        // Price what arrived before anything else runs: the seller's NeedAuth
+        // for it is the next frame, travels on another mux, and is judged
+        // against this. A 402 the buyer retries leaves nothing to charge.
+        if (negotiator && !isFreeService && !startsPaymentNegotiation(answer)) {
+          this._estimatePaidCost(negotiator, peer, req, answer, requestedService);
+        }
+        return answer;
+      } finally {
+        bpm?.endPaidRequest(peer.peerId, paidRequestId, answered);
+      }
+    };
+    const response = await executeCountedRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -498,16 +552,11 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
-    // Provider video APIs may use HTTP 402 for their own errors; only start
-    // AntSeed payment negotiation when the response is our payment contract.
-    if (
-      response.statusCode === 402
-      && negotiator
-      && !externalSpendingAuth
-      && (!videoRoute || isPaymentRequired402(response))
-    ) {
+    if (negotiator && startsPaymentNegotiation(response)) {
       // Parallel requests can leave the seller's spend several requests ahead
-      // of the signed cumulative. Keep catching up while the gap shrinks.
+      // of the signed cumulative. Keep catching up while the gap shrinks or
+      // the seller accepts more: other requests finishing can widen the gap
+      // even while the buyer is paying.
       let paymentResponse = response;
       let retriedResponse: SerializedHttpResponse;
       for (let retry = 1; ; retry++) {
@@ -516,17 +565,15 @@ export class BuyerRequestHandler {
           return adaptPeerResponse(result.response);
         }
         startTime = Date.now();
-        retriedResponse = await executeRequest();
-        const previousGap = catchUpGap(paymentResponse);
-        const gap = catchUpGap(retriedResponse);
-        if (gap == null || previousGap == null) break;
-        if (gap >= previousGap || retry >= MAX_CATCH_UP_RETRIES) {
+        retriedResponse = await executeCountedRequest();
+        const previous = catchUpState(paymentResponse);
+        const current = catchUpState(retriedResponse);
+        if (current == null || previous == null) break;
+        const progressing = current.gap < previous.gap || current.accepted > previous.accepted;
+        if (!progressing || retry >= MAX_CATCH_UP_RETRIES) {
           return adaptPeerResponse(catchUpIncompleteResponse(retriedResponse));
         }
         paymentResponse = retriedResponse;
-      }
-      if (!isFreeService) {
-        this._estimatePaidCost(negotiator, peer, retriedResponse, requestedService, req.requestId);
       }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
@@ -540,9 +587,6 @@ export class BuyerRequestHandler {
       return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
-    if (negotiator && !isFreeService) {
-      this._estimatePaidCost(negotiator, peer, response, requestedService, req.requestId);
-    }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
       peer,
@@ -594,16 +638,17 @@ export class BuyerRequestHandler {
   private _estimatePaidCost(
     negotiator: BuyerPaymentNegotiator,
     peer: BuyerPeerView,
+    request: SerializedHttpRequest,
     response: SerializedHttpResponse,
     service: string | undefined,
-    requestId: string,
   ): void {
+    const { requestId } = request;
     if (isCoveredByFreeAllowance(response)) {
       debugLog(`[BuyerRequest] ${peer.peerId.slice(0, 12)}... served ${service ?? 'request'} from its free allowance`);
       negotiator.bpm.markRequestCovered(peer.peerId, requestId);
       return;
     }
-    negotiator.estimateCostFromResponse(peer, response, service, requestId);
+    negotiator.estimateCostFromResponse(peer, response, service, requestId, request.body);
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection, freeTierDelegations: string | null): void {
@@ -724,12 +769,14 @@ export function selectBillingRoute(
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
   const tokenPricing = selectTokenPricing(peer, provider, service);
+  const videoOptions = peer.providerServiceCapabilities?.[provider]?.services[service]?.video;
   return {
     sellerPeerId: peer.peerId,
     provider,
     service,
     serviceApiProtocol,
     ...(unitModel ? { unitModel } : {}),
+    ...(videoOptions ? { videoOptions } : {}),
     ...(tokenPricing ? { tokenPricing } : {}),
   };
 }
@@ -741,15 +788,14 @@ function selectProviderForService(
   request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
-  if (requestedProvider) {
-    const provider = providers.find(
-      (candidate) => candidate.toLowerCase() === requestedProvider,
-    );
-    if (provider && providerOffersService(peer, provider, service)) {
-      return provider;
-    }
-    return null;
+  const named = requestedProvider
+    ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
+    : undefined;
+  if (named) {
+    return providerOffersService(peer, named, service) ? named : null;
   }
+  // No provider named, or one the peer does not announce (a pin from before
+  // sellers announced provider IDs, or a plugin name): choose one.
 
   // Mirrors the seller's matchProvider: a native video request needs a
   // provider serving its protocol, and takes the first one, so a job's
@@ -883,10 +929,11 @@ function isPaymentRequired402(response: SerializedHttpResponse): boolean {
 const MAX_CATCH_UP_RETRIES = 2;
 
 /**
- * Unsigned spend a seller catch-up 402 asks for (required - accepted), or null
- * when the response is not a catch-up 402 (exhausted channels carry a code).
+ * A seller catch-up 402's unsigned spend (required - accepted) and accepted
+ * amount, or null when the response is not a catch-up 402 (exhausted
+ * channels carry a code).
  */
-function catchUpGap(response: SerializedHttpResponse): bigint | null {
+function catchUpState(response: SerializedHttpResponse): { gap: bigint; accepted: bigint } | null {
   if (response.statusCode !== 402) return null;
   try {
     const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
@@ -894,18 +941,22 @@ function catchUpGap(response: SerializedHttpResponse): bigint | null {
     const required = BigInt(String(body.requiredCumulativeAmount));
     const accepted = BigInt(String(body.currentAcceptedCumulative));
     if (body.reserveMaxAmount != null && required > BigInt(String(body.reserveMaxAmount))) return null;
-    return required > accepted ? required - accepted : 0n;
+    return { gap: required > accepted ? required - accepted : 0n, accepted };
   } catch {
     return null;
   }
 }
 
-/** Buyer-authored error for a catch-up that is still short after the retries. */
+/**
+ * Buyer-authored error for a catch-up that is still short after the retries.
+ * The channel is fine and the next attempt usually succeeds, so it is a
+ * retryable 503: routers fail over and clients retry.
+ */
 function catchUpIncompleteResponse(response: SerializedHttpResponse): SerializedHttpResponse {
   return {
     ...response,
-    statusCode: 409,
-    headers: { ...response.headers, 'content-type': 'application/json' },
+    statusCode: 503,
+    headers: { ...response.headers, 'content-type': 'application/json', 'retry-after': '2' },
     body: new TextEncoder().encode(JSON.stringify({
       error: 'payment_negotiation_failed',
       reason: 'catch_up_incomplete',

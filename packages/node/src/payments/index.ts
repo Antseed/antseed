@@ -49,6 +49,10 @@ export {
   verifierVerdict,
   VERIFIER_VERDICT,
   MAX_RESULTS_PER_MODEL_AUDIT,
+  MAX_AUDITOR_PROFILE_NAME_BYTES,
+  MAX_AUDITOR_PROFILE_URI_BYTES,
+  VERIFICATION_REWARDS_OFF,
+  validateAuditorProfile,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -62,7 +66,10 @@ export type {
   SubmitModelAuditInput,
   ServiceAuditedEvent,
   ModelAuditedEvent,
+  AuditorSetEvent,
   AuditorCredits,
+  AuditorProfile,
+  RequiredReports,
   VerifierServiceStatus,
   VerifierVerdict,
   VerifierVerdictName,
@@ -84,6 +91,7 @@ export {
   SET_OPERATOR_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,
@@ -174,6 +182,8 @@ export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './seller-buyer-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,
@@ -226,6 +236,7 @@ export {
   computeCostUsdc,
   estimateCostFromBytes,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   isFreeUnitBillingModel,
   validateUnitBillingModelV1,
 } from './pricing.js';

@@ -1,0 +1,112 @@
+{
+  "release": "003-verification-split",
+  "status": "active",
+  "sourceCommit": "9152657b322b96a87b3fc66b05583084af25e5f1",
+  "contracts": {
+    "verificationResults": {
+      "address": "0xf2c8482ad2a348854698e93f41fe3cc32307687c",
+      "deploymentBlock": 53490135,
+      "transactionHash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
+      "runtimeCodeHash": "0x009587b654e97d9ede4ef93f31b209fb11d0ad7bd3ca3045b35414746339563f",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "kbfAudits": {
+      "address": "0xe57ab03423a3835571f7d68ac1e23cf8a2763343",
+      "deploymentBlock": 53490136,
+      "transactionHash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
+      "runtimeCodeHash": "0xcaff68b12caea99b21bbf4322531c43861cfa2928d5a8c11afb3bf8bc5b1921c",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "verificationPointsPolicy": {
+      "address": "0x5d677f5edd69e69c664e3f7fa80f1d3dd61a2212",
+      "deploymentBlock": 53490137,
+      "transactionHash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
+      "runtimeCodeHash": "0x60f473a045e408ac9a57a4f59ce7cb1d2fecc90f1809718b44778428ede14e0a",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    }
+  },
+  "transactions": [
+    {
+      "action": "deploy AntseedVerificationResults",
+      "hash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
+      "blockNumber": 53490135,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedKbfAudits",
+      "hash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
+      "blockNumber": 53490136,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedVerificationPointsPolicy",
+      "hash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
+      "blockNumber": 53490137,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
+    },
+    {
+      "action": "setSource(address,bool)",
+      "hash": "0xb24a27989c548f4d0b1501b73b202e20b3f934ddbe551a112b0d6613c9eff58e",
+      "blockNumber": 53490138,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
+    },
+    {
+      "action": "setSourceShareBps(address,uint16)",
+      "hash": "0xf642a903e5b5af7a9619dac82b089f188a5c1aba722765fa750cf2ce0377b5be",
+      "blockNumber": 53490139,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
+    }
+  ],
+  "verificationConfiguration": {
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerClaimPolicy": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+    "poolCanTransfer": true,
+    "lastLockedEpoch": 21,
+    "releaseBps": 1000,
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
+    "verificationRegistry": {
+      "registry": "0xf33fC901BFa97326379A369401F4490E231B69B0",
+      "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+      "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
+      "deploymentNonce": 10349,
+      "resultsAddress": "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+      "kbfAddress": "0xe57aB03423A3835571F7d68AC1E23CF8a2763343",
+      "policyAddress": "0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212",
+      "bonusBps": 0
+    }
+  },
+  "notes": "M003 deploys the verification results layer, the KBF audit source and the verification points policy, and wires KBF as a source with the whole verification bucket. It approves no auditors and does not register the policy in the points policy registry; the owners do that separately, so verdicts change no seller points until then.",
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453
+}

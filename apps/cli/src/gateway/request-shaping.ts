@@ -5,6 +5,12 @@ export const PRESET_MODEL_PREFIX = '@preset/'
 export const END_USER_HEADER = 'x-antseed-end-user'
 const MAX_END_USER_LENGTH = 256
 
+/** The policy the request itself adds on top of its key's, or null. */
+export function requestedPolicy(header: string | undefined): { requireTee: true } | null {
+  const value = header?.trim().toLowerCase()
+  return value && value !== '0' && value !== 'false' ? { requireTee: true } : null
+}
+
 export function presetSlug(model: string | null): string | null {
   return model?.startsWith(PRESET_MODEL_PREFIX) ? model.slice(PRESET_MODEL_PREFIX.length) : null
 }

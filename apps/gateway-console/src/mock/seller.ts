@@ -139,13 +139,14 @@ export function mockSellerReputation(now = Date.now()): SellerReputation {
   return {
     network: network(now), found: true,
     trust: {
-      score: 47.7, history: { score: 31.2, max: 50, channelCount: 125, volumeUsdc: 74.88 }, usage: { score: 8.4, max: 20, shareBps: 756, epoch: 27 },
-      power: { score: 3.1, max: 10, shareBps: 372, epoch: 28 }, identity: null, freeModels: { score: 5, max: 5, service: 'gemma-4-e4b' }, washFlagged: false,
+      score: 74.8, history: { channelCount: 125, volumeUsdc: 74.88 }, usage: { score: 21.8, max: 30, shareBps: 756, epoch: 27 },
+      power: { score: 43.8, max: 70, shareBps: 372, epoch: 28 }, identity: null, freeModels: { score: 5, max: 5, service: 'gemma-4-e4b' }, washFlagged: false,
+      verification: { multiplierBps: 10_600, sameCount: 3, diffCount: 0, change: 4.2 },
     },
-    rank: { position: 6, of: 8 },
+    rank: { position: 3, of: 8 },
     steps: [
+      { part: 'power', text: "Attract stake to your pool (or stake ANTS into it yourself with antseed ants stake): power is the pool's share of all staking power." },
       { part: 'identity', text: 'Verify a domain or a GitHub account under Promote. Up to 20 points, more for an older domain or a GitHub account with real history.' },
-      { part: 'history', text: 'Settle more paid sessions: history counts settled channels (full at 100) and settled volume (full at $100). Now 125 channels, $74.88.' },
       { part: 'usage', text: "Grow recognized usage: your pool's share of last week's usage points. Points need a seller pool and come from real paid traffic." },
     ],
     standing: { address: FAKE_PEER, agentId: 412, identityRegistered: true, registryBound: true, eligible: true, minPoolStake: '1000', poolActiveStake: '18250',

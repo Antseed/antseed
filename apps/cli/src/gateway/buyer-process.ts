@@ -1,18 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { identityPassphraseEnv, PASSPHRASE_ENV } from '@antseed/node'
+import { TELEMETRY_HOST_ENV } from '@antseed/telemetry'
 import { PASSPHRASE_STDIN_ENV } from '../cli/wallet-passphrase.js'
-import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
+import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
+import { BUYER_STOP_TIMEOUT_MS } from '../shutdown-timeouts.js'
 
 /** A buyer that exits sooner than this after starting counts as failing to start. */
 const QUICK_EXIT_MS = 30_000
 const MAX_QUICK_EXITS = 3
 const RESTART_DELAY_MS = 1_000
-/**
- * The buyer drains requests in flight and closes its payment channels on the
- * way out; only kill it once its own shutdown deadline has passed.
- */
-export const BUYER_STOP_TIMEOUT_MS = BUYER_SHUTDOWN_DEADLINE_MS + 15_000
+export { BUYER_STOP_TIMEOUT_MS } from '../shutdown-timeouts.js'
 
 export interface GatewayBuyerOptions {
   buyerPort: number
@@ -30,7 +28,8 @@ export function spawnCliBuyer(args: string[], cli: string[] = [...process.execAr
   // buyer over its stdin, not in its environment, where the OS keeps it readable for as
   // long as the process runs. ANTSEED_PASSPHRASE_FILE is inherited and read by the buyer itself.
   const passphrase = identityPassphraseEnv()[PASSPHRASE_ENV]
-  const env: NodeJS.ProcessEnv = { ...process.env, ANTSEED_SUPERVISED: '1' }
+  // ANTSEED_TELEMETRY_HOST: the buyer tags its telemetry as run by the gateway.
+  const env: NodeJS.ProcessEnv = { ...process.env, ANTSEED_SUPERVISED: '1', [TELEMETRY_HOST_ENV]: 'gateway' }
   delete env[PASSPHRASE_ENV]
   if (passphrase) env[PASSPHRASE_STDIN_ENV] = '1'
   const child = spawn(process.execPath, [...cli, ...args], {
@@ -106,5 +105,67 @@ export class GatewayBuyer {
     const timer = setTimeout(() => { child.kill('SIGKILL') }, BUYER_STOP_TIMEOUT_MS)
     await exited
     clearTimeout(timer)
+  }
+}
+
+const ATTACHED_BUYER_CHECK_MS = 5_000
+const ATTACHED_BUYER_MISSED_CHECKS = 2
+
+/**
+ * Watches a buyer this gateway found already running and did not start, such
+ * as one left behind when an earlier gateway crashed: nothing restarts that
+ * one, so requests would wait on it forever. When it is gone, `takeOver` runs.
+ * Returns a function that stops watching.
+ */
+export function watchAttachedBuyer(options: {
+  isRunning: () => Promise<boolean>
+  takeOver: () => void
+  checkMs?: number
+}): () => void {
+  let missed = 0
+  let stopped = false
+  let timer: NodeJS.Timeout | null = null
+  const check = async (): Promise<void> => {
+    const running = await options.isRunning().catch(() => true)
+    if (stopped) return
+    missed = running ? 0 : missed + 1
+    if (missed >= ATTACHED_BUYER_MISSED_CHECKS) {
+      options.takeOver()
+      return
+    }
+    schedule()
+  }
+  const schedule = (): void => {
+    timer = setTimeout(() => { void check() }, options.checkMs ?? ATTACHED_BUYER_CHECK_MS)
+    timer.unref?.()
+  }
+  schedule()
+  return () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * Uses a buyer that is already running, starting one if it goes away. The
+ * returned callback ends the watch and stops whichever buyer was started, so a
+ * single shutdown callback covers a takeover at any point, including during
+ * shutdown itself.
+ */
+export function superviseAttachedBuyer(options: {
+  isRunning: () => Promise<boolean>
+  start: () => { stop: () => Promise<void> }
+  checkMs?: number
+}): () => Promise<void> {
+  let buyer: { stop: () => Promise<void> } | null = null
+  // The watcher checks for a stop after each probe, so it never takes over once stopped.
+  const stopWatching = watchAttachedBuyer({
+    isRunning: options.isRunning,
+    takeOver: () => { buyer = options.start() },
+    ...(options.checkMs !== undefined ? { checkMs: options.checkMs } : {}),
+  })
+  return async () => {
+    stopWatching()
+    await buyer?.stop()
   }
 }

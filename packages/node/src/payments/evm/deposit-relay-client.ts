@@ -26,6 +26,8 @@ export interface SweepProfitEstimate {
   fee: bigint;
   /** fee - estGasCostUsdc; negative when relaying costs more than it pays. */
   profitUsdc: bigint;
+  /** Highest max fee per gas at which the sweep still earns `minProfitUsdc` (the estimate's option). */
+  maxFeePerGasWei: bigint;
 }
 
 export interface SweepEventConfirmation {
@@ -60,9 +62,11 @@ export class DepositRelayClient extends BaseEvmClient {
 
   // ─── Relayer Operations ────────────────────────────────────────────
 
-  async sweep(signer: AbstractSigner, params: SweepParams): Promise<string> {
-    return this._execWrite(
+  /** `opts.maxFeePerGasWei` caps what speeding up a stalled sweep may pay (see `estimateSweepProfit`). */
+  async sweep(signer: AbstractSigner, params: SweepParams, opts?: { maxFeePerGasWei?: bigint }): Promise<string> {
+    return this._execWriteWithin(
       signer,
+      opts?.maxFeePerGasWei ?? null,
       DEPOSIT_RELAY_ABI,
       'sweepDeposit',
       params.from,
@@ -83,7 +87,7 @@ export class DepositRelayClient extends BaseEvmClient {
   async estimateSweepProfit(
     signer: AbstractSigner,
     params: SweepParams,
-    opts?: { ethPriceUsd?: bigint },
+    opts?: { ethPriceUsd?: bigint; minProfitUsdc?: bigint },
   ): Promise<SweepProfitEstimate> {
     const connected = this._ensureConnected(signer);
     const contract = new Contract(this._contractAddress, DEPOSIT_RELAY_ABI, connected);
@@ -106,7 +110,10 @@ export class DepositRelayClient extends BaseEvmClient {
     // wei * usd/eth → USDC base units (6 decimals): / 1e18 * 1e6 = / 1e12
     const estGasCostUsdc = (gasEstimate * gasPriceWei * ethPriceUsd) / 10n ** 12n;
 
-    return { gasEstimate, estGasCostUsdc, fee, profitUsdc: fee - estGasCostUsdc };
+    const budgetUsdc = fee - (opts?.minProfitUsdc ?? 0n);
+    const maxFeePerGasWei = budgetUsdc > 0n && gasEstimate > 0n ? (budgetUsdc * 10n ** 12n) / (gasEstimate * ethPriceUsd) : 0n;
+
+    return { gasEstimate, estGasCostUsdc, fee, profitUsdc: fee - estGasCostUsdc, maxFeePerGasWei };
   }
 
   // ─── View Functions ─────────────────────────────────────────────────

@@ -7,12 +7,13 @@ import type { PoolsView, PoolView, PoolEpochPoint, EpochVolume, SellerProfile } 
 import { toJson } from './json.js';
 import { explorerSellers, type ExplorerSellers } from './explorer.js';
 import { mergePools, sortPools } from './pool-merge.js';
-import { IndexerError, type IndexedPoolEpoch, type IndexedPools } from './indexer.js';
+import { IndexerError, type IndexedPoolEpoch, type IndexedPools, type IndexedVerifications } from './indexer.js';
 import { stakeEligibility } from './stake-eligibility.js';
 import { displayData, type DisplayData } from './display-snapshot.js';
 import { liveWalletPositions } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
 import { IndexerSyncingError } from '../read-state.js';
+import { attachVerification, claimVerificationRatesRead, verificationPolicyAddress, loadVerifications, verificationRates, VERIFICATION_POLICY_IFACE } from './pool-verification.js';
 
 const VOLUME_EPOCHS = 9;
 /** Epochs of per-pool history returned by the single-pool endpoint for charts. */
@@ -62,6 +63,21 @@ class Batch {
   async run(ctx: AntsContext): Promise<void> {
     this.results = await multicallRead(ctx.requirePools().provider, this.requests);
   }
+}
+
+/** Adds the hourly verification-policy rate reads to `batch` when they are due; call the result after it runs. */
+function addVerificationRateReads(ctx: AntsContext, batch: Batch): () => void {
+  const store = claimVerificationRatesRead(ctx);
+  if (!store) return () => {};
+  const address = verificationPolicyAddress(ctx);
+  const bonus = batch.add(address, VERIFICATION_POLICY_IFACE, 'bonusBps', []);
+  const penalty = batch.add(address, VERIFICATION_POLICY_IFACE, 'penaltyBps', []);
+  return () => store(bonus(), penalty());
+}
+
+/** Seller verification on each view, from the Antscan read started with the view and the cached policy rates. */
+async function addVerification(ctx: AntsContext, views: PoolView[], verifications: Promise<IndexedVerifications | null>): Promise<void> {
+  attachVerification(views, await verifications, verificationRates(ctx));
 }
 
 const big = (read: () => unknown[] | null, index = 0): bigint => {
@@ -270,6 +286,7 @@ export async function poolsView(ctx: AntsContext): Promise<PoolsView> {
     if (error instanceof IndexerError) { indexerError = error.message; return null; }
     throw error;
   }) : null;
+  const verifications = loadVerifications(ctx);
   const context = await poolContext(ctx, indexed ?? undefined);
   const epochs = context.epochs;
   const base = {
@@ -285,6 +302,7 @@ export async function poolsView(ctx: AntsContext): Promise<PoolsView> {
       await verifyStakeability(ctx, views);
       for (const view of views) setVolumeStatus(view, indexed.currentEpoch, context.stack.currentEpoch);
       await enrichYields(ctx, context, views, indexed);
+      await addVerification(ctx, views, verifications);
       const totalPower = context.totalPowerWeight;
       const yourTotalPower = [...context.own.values()].reduce((sum, entry) => sum + entry.power, 0n);
       return toJson({
@@ -303,10 +321,10 @@ export async function poolsView(ctx: AntsContext): Promise<PoolsView> {
       });
     } catch (error) {
       if (!(error instanceof IndexerError)) throw error;
-      return chainOnlyPools(ctx, context, base, error.message);
+      return chainOnlyPools(ctx, context, base, error.message, verifications);
     }
   }
-  return chainOnlyPools(ctx, context, base, indexerError);
+  return chainOnlyPools(ctx, context, base, indexerError, verifications);
 }
 
 async function chainOnlyPools(
@@ -314,10 +332,12 @@ async function chainOnlyPools(
   context: PoolContext,
   base: Pick<PoolsView, 'currentEpoch' | 'firstRewardedEpoch' | 'stakerBudget' | 'explorer'>,
   sourceError: string | null,
+  verifications: Promise<IndexedVerifications | null>,
 ): Promise<PoolsView> {
   const agents: Array<[number, string | null]> = [...context.own.keys()].map((agentId) => [agentId, null]);
   const views = sortPools(await describePools(ctx, agents, context));
   await enrichYields(ctx, context, views);
+  await addVerification(ctx, views, verifications);
   const totalActiveStake = context.totalActiveStake;
   const yourTotalPower = views.reduce((sum, pool) => sum + BigInt(pool.yourPower), 0n);
   return toJson({
@@ -343,6 +363,7 @@ export async function singlePool(ctx: AntsContext, agentId: number): Promise<Poo
     if (error instanceof IndexerError) return null;
     throw error;
   }) : null;
+  const verifications = loadVerifications(ctx);
   const context = await poolContext(ctx, indexed ?? undefined);
   if (indexer && indexed) {
     try {
@@ -355,6 +376,7 @@ export async function singlePool(ctx: AntsContext, agentId: number): Promise<Poo
         await verifyStakeability(ctx, [view]);
         setVolumeStatus(view, indexed.currentEpoch, context.stack.currentEpoch);
         await enrichYields(ctx, context, [view], indexed);
+        await addVerification(ctx, [view], verifications);
         const detail = indexer.displaySnapshot ? await indexer.pool(agentId, HISTORY_EPOCHS).catch(() => null) : null;
         if (detail) {
           view.stakers = detail.stakers;
@@ -373,7 +395,10 @@ export async function singlePool(ctx: AntsContext, agentId: number): Promise<Poo
     }
   }
   const [view] = await describePools(ctx, [[agentId, null]], context);
-  if (view) await enrichYields(ctx, context, [view]);
+  if (view) {
+    await enrichYields(ctx, context, [view]);
+    await addVerification(ctx, [view], verifications);
+  }
   return toJson({ ...view!, currentEpoch: context.stack.currentEpoch, walletSyncing: context.walletSyncing });
 }
 
@@ -433,7 +458,9 @@ async function enrichYields(ctx: AntsContext, context: PoolContext, views: PoolV
     emission: historical.get(view.agentId)?.settled ? () => [true, BigInt(historical.get(view.agentId)!.reward)] : batch.add(ctx.chain.sellerPoolsRewardsAddress, REWARDS_IFACE, 'poolEpochEmissions', [Math.max(0, epoch), view.agentId]),
     points: batch.add(ctx.chain.usageAccountingAddress, ACCOUNTING_IFACE, 'agentEpochUsage', [Math.max(0, epoch), view.agentId]),
   }));
+  const storeRates = addVerificationRateReads(ctx, batch);
   await batch.run(ctx);
+  storeRates();
   candidates.forEach((view, i) => {
     const read = reads[i]!;
     const emission = read.emission(), principal = read.principal()?.[0];
@@ -489,7 +516,9 @@ async function indexedYields(ctx: AntsContext, context: PoolContext, views: Pool
   const batch = new Batch();
   const minLock = batch.add(ctx.chain.sellerPoolsAddress, POOLS_IFACE, 'minStakeEpochs', []);
   const maxLock = batch.add(ctx.chain.sellerPoolsAddress, POOLS_IFACE, 'MAX_STAKE_EPOCHS', []);
+  const storeRates = addVerificationRateReads(ctx, batch);
   await batch.run(ctx);
+  storeRates();
   for (const view of views) {
     view.displaySource = context.display.source;
     const now = current.get(view.agentId);

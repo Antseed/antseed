@@ -1,3 +1,5 @@
+import { inlineMediaBytes } from './data-url.js';
+
 /** Largest `moov` box buffered while inspecting a streamed MP4. */
 const MAX_MOOV_BYTES = 16 * 1024 * 1024;
 
@@ -135,17 +137,8 @@ function readMvhdDuration(moov: Uint8Array): number | undefined {
  * MP4: a malformed box, a fragmented MP4 or no video track.
  */
 export function inlineVideoSeconds(source: unknown): number | null {
-  if (typeof source !== 'string') return null;
-  const match = /^data:video\/[a-z0-9.+-]+(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
-  if (!match) return null;
-  let binary: string;
-  try {
-    binary = atob(source.slice(match[0].length));
-  } catch {
-    return null;
-  }
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const bytes = inlineMediaBytes(source, 'video');
+  if (!bytes) return null;
   const moov = only(childBoxes(bytes, { type: '', body: 0, end: bytes.length }), 'moov', 'ftyp');
   const inMoov = moov && childBoxes(bytes, moov);
   // A fragmented MP4 (`mvex`) keeps its samples outside `moov`, so its length can't be read here.

@@ -36,6 +36,7 @@ describe('normalizeRequestUsageDelta', () => {
       outputImages: 0n,
       videoGenerations: 0n,
       videoSeconds: 0n,
+      inputCharacters: 0n,
     });
   });
 
@@ -59,6 +60,7 @@ describe('normalizeRequestUsageDelta', () => {
       outputImages: 0n,
       videoGenerations: 0n,
       videoSeconds: 0n,
+      inputCharacters: 0n,
     });
   });
 });
@@ -98,6 +100,7 @@ describe('NeedAuth and post-response metadata accounting', () => {
       cumulativeOutputImages: 1n,
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 0n,
       services: [{
         serviceId: getServiceMetadataId(service),
         cumulativeAmount: 25_000n,
@@ -108,6 +111,7 @@ describe('NeedAuth and post-response metadata accounting', () => {
         cumulativeOutputImages: 1n,
         cumulativeVideoGenerations: 1n,
         cumulativeVideoSeconds: 8n,
+        cumulativeInputCharacters: 0n,
       }],
     });
   });
@@ -146,7 +150,39 @@ describe('NeedAuth and post-response metadata accounting', () => {
     expect(meta.services?.[0]).toMatchObject({
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 0n,
     });
+  });
+});
+
+describe('speech character accounting', () => {
+  const speechDelta = (inputCharacters: bigint) => ({
+    amount: inputCharacters * 15n,
+    inputTokens: 0n,
+    cachedInputTokens: 0n,
+    outputTokens: 0n,
+    requests: 1n,
+    outputImages: 0n,
+    inputCharacters,
+  });
+
+  it('advances the delivered speech characters at the top level and for the service', () => {
+    const first = advanceUsageMetadata(ZERO_METADATA, 'tts-model', speechDelta(19n));
+    const second = advanceUsageMetadata(first, 'tts-model', speechDelta(5n));
+    expect(second.cumulativeInputCharacters).toBe(24n);
+    expect(second.cumulativeOutputTokens).toBe(0n);
+    expect(second.services?.[0]).toMatchObject({ cumulativeInputCharacters: 24n, cumulativeRequestCount: 2n });
+  });
+
+  it('adds no characters for a speech request whose audio never arrived', () => {
+    // Speech billing measures 0 characters when no audio came back.
+    const failed = advanceUsageMetadata(ZERO_METADATA, 'tts-model', { ...speechDelta(0n), amount: 0n });
+    expect(failed.cumulativeInputCharacters).toBe(0n);
+    expect(failed.services?.[0]?.cumulativeInputCharacters).toBe(0n);
+  });
+
+  it('drops the characters of a response another path already counted', () => {
+    expect(normalizeRequestUsageDelta(speechDelta(19n), { deliveredResponse: true, alreadyCounted: true }).inputCharacters).toBe(0n);
   });
 });
 
@@ -160,6 +196,7 @@ describe('advanceUsageMetadata service cap', () => {
     outputImages: 1n,
     videoGenerations: 0n,
     videoSeconds: 0n,
+    inputCharacters: 0n,
   };
 
   function useServices(count: number, start = ZERO_METADATA) {
@@ -220,6 +257,7 @@ describe('advanceUsageMetadata service cap', () => {
       cumulativeOutputImages: 1n,
       cumulativeVideoGenerations: 0n,
       cumulativeVideoSeconds: 0n,
+      cumulativeInputCharacters: 0n,
     }));
     const bounded = boundServiceMetadata({ ...ZERO_METADATA, services });
     expect(bounded.services).toHaveLength(MAX_METADATA_SERVICES);

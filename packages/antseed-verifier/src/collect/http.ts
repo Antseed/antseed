@@ -24,7 +24,8 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 /** Replace {nonce}, fetch with a timeout and size guard, then parse JSON. */
 async function fetchAttestJson(urlTemplate: string, nonce: Uint8Array): Promise<unknown> {
   const url = urlTemplate.replace(/\{nonce\}/g, Buffer.from(nonce).toString('hex'))
-  const resp = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+  // No redirects, so the evidence comes from the configured URL's origin, which the buyer checks.
+  const resp = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
   if (!resp.ok) {
     throw new Error(`http attestation endpoint returned HTTP ${resp.status}`)
   }

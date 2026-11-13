@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, isVeniceEditModel, veniceEditCapabilities, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure } from './index.js';
+import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, isVeniceEditModel, veniceEditCapabilities, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure, unannouncedVideoOption, withAnnouncedVideoOptions } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -60,6 +60,36 @@ it('derives each model\'s queue fields from Venice constraints and the announced
   expect(veniceInputParameters(veniceModel('wan', { model_type: 'text-to-video', resolutions: ['720p'], aspect_ratios: ['16:9'], audio_configurable: false }), []))
     .toEqual(['aspect_ratio', 'duration', 'prompt', 'resolution']);
   expect(veniceInputParameters(undefined)).toBeNull();
+});
+
+it('announces audio_url for models that take an audio input, following the announced inputs', () => {
+  const lipSync = veniceModel('seedance-2-5-reference-to-video-basic', {
+    model_type: 'image-to-video', resolutions: ['1080p', '720p'], aspect_ratios: ['16:9'], audio_configurable: true, audio_input: true,
+  });
+  // Inputs not announced: Venice's audio_input decides.
+  expect(veniceInputParameters(lipSync)).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
+  // Announced inputs are the complete list: audio only when listed.
+  expect(veniceInputParameters(lipSync, ['first_frame', 'reference_image', 'audio']))
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'reference_audio_urls', 'reference_image_urls', 'resolution']);
+  // Reference audio only next to reference images or videos; a reference video input adds reference_video_urls.
+  expect(veniceInputParameters(lipSync, ['reference_video', 'audio']))
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'prompt', 'reference_audio_urls', 'reference_video_urls', 'resolution']);
+  expect(veniceInputParameters(lipSync, ['first_frame', 'audio'])).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
+  expect(veniceInputParameters(lipSync, ['first_frame'])).toEqual(['aspect_ratio', 'audio', 'duration', 'image_url', 'prompt', 'resolution']);
+  const silent = veniceModel('kling', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_input: false });
+  expect(veniceInputParameters(silent)).toEqual(['duration', 'image_url', 'prompt', 'resolution']);
+});
+
+it('relays the audio_url of a lip-synced video create to Venice unchanged', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-9' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  const body = { model: 'wan-2.5', prompt: 'she says hello', duration: '5s', image_url: 'https://example.com/face.png', audio_url: 'https://example.com/hello.mp3' };
+  const response = await provider.handleRequest(request('/api/v1/video/queue', body));
+  expect(response.statusCode).toBe(200);
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+  expect(JSON.parse(Buffer.from(init.body as Uint8Array).toString())).toEqual(body);
 });
 
 it('announces queue fields from the Venice model list and keeps configured ones', async () => {
@@ -134,7 +164,7 @@ it('starts without queue fields when the Venice model list is unavailable or lac
   expect(missing.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
 });
 
-it('relays queue bodies without the AntSeed service field, with seller auth and without AntSeed headers', async () => {
+it('relays queue bodies without the Antseed service field, with seller auth and without Antseed headers', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
   vi.stubGlobal('fetch', fetchMock);
   const fields = { model: 'wan-2.5', prompt: 'cat', image_url: 'data:image/png;base64,aW1hZ2U=' };
@@ -148,6 +178,92 @@ it('relays queue bodies without the AntSeed service field, with seller auth and 
   expect(init.headers).toMatchObject({ authorization: 'Bearer seller-secret' });
   expect(Object.keys(init.headers).some(key => key.startsWith('x-antseed-'))).toBe(false);
   expect(JSON.parse(Buffer.from(init.body).toString())).toEqual(fields);
+});
+
+describe('announced aspect ratios and audio', () => {
+  // Venice prices Seedance by aspect ratio and Veo by audio, at the same resolution and duration.
+  const SEEDANCE = veniceModel('wan-2.5', { model_type: 'text-to-video', aspect_ratios: ['21:9', '16:9', '1:1'], resolutions: ['480p'], durations: ['4s'], audio_configurable: true });
+  const announced = (video: object) => ({
+    ...config,
+    ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video } }),
+  });
+  const ready = async (video: object) => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) =>
+      String(url).endsWith('/api/v1/models?type=video') ? Response.json({ data: [SEEDANCE] }) : Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(announced(video)) as Provider;
+    await provider.init!();
+    return { provider, fetchMock };
+  };
+  const create = (body: object) => request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'cat', duration: '4s', ...body });
+  const sent = (fetchMock: ReturnType<typeof vi.fn>) => JSON.parse(Buffer.from(fetchMock.mock.calls.at(-1)![1].body).toString());
+
+  it('names the option a create asks for that the seller did not announce', () => {
+    const video = { aspectRatios: ['16:9', '9:16'], audio: true };
+    expect(unannouncedVideoOption(video, { aspect_ratio: '16:9', audio: true })).toBeNull();
+    expect(unannouncedVideoOption(video, {})).toBeNull();
+    expect(unannouncedVideoOption(video, { aspect_ratio: '21:9' })).toBe('aspect_ratio must be one of: 16:9, 9:16');
+    expect(unannouncedVideoOption(video, { aspect_ratio: 16 })).toBe('aspect_ratio must be one of: 16:9, 9:16');
+    // A service that makes audio may be asked for silence: its price can match `audio`.
+    expect(unannouncedVideoOption(video, { audio: false })).toBeNull();
+    expect(unannouncedVideoOption({ audio: false }, { audio: true })).toContain('silent');
+    expect(unannouncedVideoOption(undefined, { aspect_ratio: '21:9', audio: false })).toBeNull();
+  });
+
+  it('fills an omitted option with the announced one', () => {
+    expect(withAnnouncedVideoOptions({ aspectRatios: ['16:9', '9:16'] }, { prompt: 'cat' }, true)).toEqual({ prompt: 'cat', aspect_ratio: '16:9' });
+    expect(withAnnouncedVideoOptions({ aspectRatios: ['16:9'] }, { aspect_ratio: '16:9' }, true)).toBeNull();
+    expect(withAnnouncedVideoOptions({ audio: false }, { prompt: 'cat' }, true)).toEqual({ prompt: 'cat', audio: false });
+    // Venice rejects `audio` for a model whose audio can't be turned off.
+    expect(withAnnouncedVideoOptions({ audio: false }, { prompt: 'cat' }, false)).toBeNull();
+    expect(withAnnouncedVideoOptions({ audio: true }, { prompt: 'cat' }, true)).toBeNull();
+    expect(withAnnouncedVideoOptions(undefined, { prompt: 'cat' }, true)).toBeNull();
+  });
+
+  it('refuses an unannounced aspect ratio or audio setting before payment and before calling Venice', async () => {
+    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9'], audio: false });
+    const calls = fetchMock.mock.calls.length;
+    expect(provider.checkRequest!(create({ aspect_ratio: '21:9' })))
+      .toEqual({ statusCode: 422, code: 'unsupported_video_option', message: 'aspect_ratio must be one of: 16:9' });
+    expect(provider.checkRequest!(create({ audio: true }))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+    expect(provider.checkRequest!(create({ aspect_ratio: '16:9', audio: false }))).toBeNull();
+    const response = await provider.handleRequest(create({ aspect_ratio: '1:1' }));
+    expect(response.statusCode).toBe(422);
+    expect(JSON.parse(Buffer.from(response.body).toString()).error).toMatchObject({ code: 'unsupported_video_option' });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('sends Venice the announced aspect ratio and silence when the create omits them', async () => {
+    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9', '9:16'], audio: false });
+    expect((await provider.handleRequest(create({}))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '16:9', audio: false });
+    expect((await provider.handleRequest(create({ aspect_ratio: '9:16', audio: false }))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '9:16', audio: false });
+  });
+
+  it('refuses an omitted audio on a silent service while Venice\'s model details are unknown', async () => {
+    expect(unannouncedVideoOption({ audio: false }, {})).toBe('This service generates silent video: send audio: false');
+    expect(unannouncedVideoOption({ audio: false }, {}, true)).toBeNull();
+    expect(unannouncedVideoOption({ audio: false }, {}, false)).toBeNull();
+    for (const models of [vi.fn().mockRejectedValue(new Error('offline')), vi.fn().mockResolvedValue(Response.json({ data: [] }))]) {
+      vi.stubGlobal('fetch', models);
+      const provider = plugin.createProvider(announced({ audio: false })) as Provider;
+      await provider.init!();
+      expect(provider.checkRequest!(create({}))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+      const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+      vi.stubGlobal('fetch', fetchMock);
+      expect((await provider.handleRequest(create({}))).statusCode).toBe(422);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await provider.handleRequest(create({ audio: false }))).statusCode).toBe(200);
+      expect(sent(fetchMock)).toMatchObject({ audio: false });
+    }
+  });
+
+  it('relays a create unchanged when the seller announced neither option', async () => {
+    const { provider, fetchMock } = await ready({ resolutions: ['480p'] });
+    expect((await provider.handleRequest(create({ aspect_ratio: '21:9', audio: false }))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '21:9', audio: false });
+  });
 });
 
 it('rejects unsupported endpoints, services, and non-streamed retrieves before calling Venice', async () => {
@@ -272,6 +388,10 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('HTTP 401') });
     mockVenice(account({ ...funded, accessPermitted: false }));
     expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
+    expect((await checkAccount()).outOfCredit).toBeUndefined();
+    // Venice blocks access to a key whose balance is empty: that is credit, not the key.
+    mockVenice(account({ accessPermitted: false, balances: { USD: 0, DIEM: 0 } }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', outOfCredit: true, reason: 'Venice balance is empty' });
   });
 
   it('checks each model against Venice\'s public model list, without the key', async () => {
@@ -308,6 +428,7 @@ describe('video-to-video models', () => {
   const WAN = veniceModel('wan-2-7-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: ['1080p', '720p'], durations: ['Auto'], audio_configurable: false, video_input: true });
   const GROK = veniceModel('grok-imagine-video-to-video-private', { model_type: 'video', aspect_ratios: [], resolutions: ['480p', '720p'], durations: ['5s', '10s', '15s'], video_input: true });
   const TEXT = veniceModel('wan-2.5-preview-text-to-video', { model_type: 'text-to-video', aspect_ratios: ['16:9'], resolutions: ['720p'], durations: ['5s'] });
+  const LIPSYNC = veniceModel('lipsync-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: [], durations: ['Auto'], audio_configurable: false, video_input: true, audio_input: true });
   // Venice's validation answers to an empty `reference_image_urls` (captured 2026-10-23).
   const referenceAnswer = (model: string) => Response.json({ error: 'Invalid request parameters', details: {
     _errors: [], duration: { _errors: ['duration must not exceed 300 seconds for upscale models'] },
@@ -322,7 +443,7 @@ describe('video-to-video models', () => {
   });
   const ready = async (model: { id: string }, capabilities?: object) => {
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT] });
+      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT, LIPSYNC] });
       if (String(url).endsWith('/api/v1/video/queue')) {
         const body = JSON.parse(String(init?.body));
         return body.duration === '999s' ? referenceAnswer(body.model) : Response.json({ model: body.model, queue_id: 'queue-1' });
@@ -372,6 +493,15 @@ describe('video-to-video models', () => {
       .toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] });
   });
 
+  it('announces audio_url for an edit model Venice says takes audio, unless inputs are configured', async () => {
+    const lipsync = (await ready(LIPSYNC)).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(lipsync?.video?.inputs).toEqual(['video', 'reference_image', 'audio']);
+    expect(lipsync?.supportedParameters).toContain('audio_url');
+    const configured = (await ready(LIPSYNC, { video: { inputs: ['video'] } })).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(configured?.video?.inputs).toEqual(['video', 'reference_image']);
+    expect(configured?.supportedParameters).not.toContain('audio_url');
+  });
+
   it('forwards a create as sent', async () => {
     const { provider, fetchMock } = await ready(RECAST);
     const body = { video_url: sourceMp4(10_400), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
@@ -399,6 +529,14 @@ describe('video-to-video models', () => {
     expect((await grokCreate({ video_url: sourceMp4(5_400), duration: '5s' })).statusCode).toBe(200);
   });
 
+  it('refuses the same edits before payment', async () => {
+    const { provider } = await ready(WAN);
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '3s' })))
+      .toEqual({ statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' });
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '12s' }))).toBeNull();
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', duration: '5s' }))).toBeNull();
+  });
+
   it('turns Venice\'s HTML 413 into JSON', async () => {
     const provider = plugin.createProvider(editConfig(RECAST.id)) as Provider;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html><title>413 Request Entity Too Large</title></html>', { status: 413, headers: { 'content-type': 'text/html' } })));
@@ -415,4 +553,25 @@ describe('video-to-video models', () => {
     expect(terminalRetrieveFailure(500, Buffer.from(JSON.stringify({ message: 'oops' })))).toBeNull();
     expect(terminalRetrieveFailure(400, Buffer.from('<html>'))).toBeNull();
   });
+});
+
+it('refuses reference videos before payment unless the service prices them', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const create = (body: object) => request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'dance', duration: '5s', reference_image_urls: ['https://x/i.png'], ...body });
+  const unpriced = plugin.createProvider(config) as Provider;
+  expect(unpriced.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] })))
+    .toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos at these options' });
+  expect((await unpriced.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(400);
+  expect(unpriced.checkRequest!(create({ reference_audio_urls: ['https://x/a.mp3'] }))).toBeNull();
+  expect(fetchMock).not.toHaveBeenCalled();
+  const priced = plugin.createProvider({
+    ...config,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ 'wan-2.5': { 'venice-video': { version: 1, components: [
+      { unit: 'video_generations', priceUsd: 0.1 },
+      { unit: 'video_generations', priceUsd: 0.8, match: { reference_video: 'true' } },
+    ] } } }),
+  }) as Provider;
+  expect(priced.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] }))).toBeNull();
+  expect((await priced.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(200);
 });
