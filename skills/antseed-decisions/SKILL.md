@@ -25,7 +25,7 @@ Ask several questions in one call; they are evaluated in parallel against the sa
 
 - Antseed Desktop or `antseed buyer start` must be running on CLI 0.1.161 or later.
 - The buyer must have enough deposited USDC for an eligible seller serving the model.
-- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm testbench` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop sets it to its gateway, with the key in `$ANTSEED_API_KEY`; `pnpm testbench` sets it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
@@ -49,11 +49,11 @@ Always fetch the current decision catalog before sending:
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=decisions"
 ```
 
-The endpoint is answered locally and returns network-wide decision models. Each entry has `type: "decision"` and `supported_protocols` containing `typesafe-systemone`. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided and exactly one decision model is listed, use it; otherwise ask the user. Use `GET /v1/models/<id>` for the model's ranked offers, pricing, and `context_length`.
+The endpoint is answered locally and returns network-wide decision models. Each entry has `type: "decision"` and `supported_protocols` containing `typesafe-systemone`. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. If no model was provided and exactly one decision model is listed, use it; otherwise ask the user. The matched entry in that list carries the model's offers (`peers`), pricing, and `context_length`; the gateway serves only the list, not `/v1/models/<id>`.
 
 Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. A bare model id lets the buyer proxy apply its Price + Trust preferences and fail over when another eligible serving peer is needed.
 
@@ -68,7 +68,7 @@ trap 'rm -f "$response_file"' EXIT
 
 curl --fail-with-body "$proxy_url/v1/systemone" \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   --data-binary "$(jq -n \
     --arg model "$model" \
     --arg state "$state" \
@@ -123,7 +123,7 @@ The official TypeSafe Python and JavaScript clients work unchanged against the b
 
 ```bash
 export TYPESAFE_BASE_URL="${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}"
-export TYPESAFE_API_KEY=antseed-desktop
+export TYPESAFE_API_KEY="${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Safety and Output Rules

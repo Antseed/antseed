@@ -563,30 +563,51 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
 
     const results = [];
     let restartInfo = null;
-    const restartAt = sc.restart ? Math.floor(sc.requests * sc.restart.atFraction) : -1;
+    const restartAt = sc.restart?.atFraction != null ? Math.floor(sc.requests * sc.restart.atFraction) : -1;
     let restarting = null;
     const t0 = Date.now();
+    // Stops the peer, runs `whileDown` (with the peer gone), starts it again and waits until it serves.
+    const restartPeer = (extra = {}, whileDown = () => {}) => {
+      restarting = (async () => {
+        const p = sc.restart.who === 'buyer' ? buyer : seller;
+        const ts = Date.now();
+        if (extra.settleMs) await sleep(extra.settleMs);
+        const stopInfo = await p.stop();
+        const downInfo = whileDown();
+        p.start();
+        if (sc.restart.who === 'buyer') {
+          await waitFor(async () => (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/status`)).ok, 'buyer restart', 60000, 200).catch(() => {});
+        } else {
+          // Wait until the seller's signaling port accepts connections again.
+          const net = await import('node:net');
+          await waitFor(() => new Promise((r) => { const c = net.connect(PORTS.sellerSig, '127.0.0.1'); c.on('connect', () => { c.destroy(); r(true); }); c.on('error', () => r(false)); }), 'seller restart', 60000, 250).catch(() => {});
+          await sleep(2000);
+        }
+        restartInfo = { who: sc.restart.who, stoppedAt: ts - t0, downMs: Date.now() - ts, ...extra, ...downInfo, ...stopInfo };
+      })();
+      LOAD_STATE.restarting = restarting.finally(() => { LOAD_STATE.restarting = null; });
+    };
+    // restart.on 'top-up': the seller's RPC keeps its first topUp() back and the
+    // seller restarts while it waits, so a verified top-up never reaches the chain.
+    const sellerRpcProxy = rpcProxies.find(([who]) => who === 'seller')?.[1];
+    let loadDone = false;
+    if (sc.restart?.on === 'top-up') {
+      if (sc.restart.who !== 'seller' || !sellerRpcProxy) throw new Error('restart.on top-up needs a seller restart over the Base-like RPC (--rpc base)');
+      void sellerRpcProxy.holdTopUp().then(() => {
+        if (restarting || loadDone) return;
+        restartPeer({ trigger: 'top-up-held', settleMs: sc.restart.settleMs ?? 0 }, () => ({ heldTopUpDropped: sellerRpcProxy.dropHeldTopUp() }));
+      });
+    }
     await runLoad(sc, results, (done) => {
-      if (done === restartAt && !restarting) {
-        restarting = (async () => {
-          const p = sc.restart.who === 'buyer' ? buyer : seller;
-          const ts = Date.now();
-          const stopInfo = await p.stop();
-          p.start();
-          if (sc.restart.who === 'buyer') {
-            await waitFor(async () => (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/status`)).ok, 'buyer restart', 60000, 200).catch(() => {});
-          } else {
-            // Wait until the seller's signaling port accepts connections again.
-            const net = await import('node:net');
-            await waitFor(() => new Promise((r) => { const c = net.connect(PORTS.sellerSig, '127.0.0.1'); c.on('connect', () => { c.destroy(); r(true); }); c.on('error', () => r(false)); }), 'seller restart', 60000, 250).catch(() => {});
-            await sleep(2000);
-          }
-          restartInfo = { who: sc.restart.who, stoppedAt: ts - t0, downMs: Date.now() - ts, ...stopInfo };
-        })();
-        LOAD_STATE.restarting = restarting.finally(() => { LOAD_STATE.restarting = null; });
-      }
+      if (done === restartAt && !restarting) restartPeer();
     });
+    loadDone = true;
     if (restarting) await restarting;
+    if (sc.restart?.on === 'top-up') {
+      // Disarm a hold that never caught a topUp(): that run proved nothing.
+      sellerRpcProxy.dropHeldTopUp();
+      if (!restartInfo) result.violations.push({ kind: 'HARNESS-no-top-up-held-for-the-restart' });
+    }
     if (sc.stale1050) {
       result.issue1050 = await stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHome, rpc, result });
       // Pay again: the buyer must open a fresh channel and settle it like any other.

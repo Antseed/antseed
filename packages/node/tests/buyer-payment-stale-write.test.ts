@@ -201,9 +201,15 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     return channelId;
   }
 
+  let paidRequests = 0;
+
+  /** The seller's cost frame for a paid request the buyer sent it: a new request each call, unless `extra` names one. */
   function needAuth(channelId: string, cost: bigint, extra: Partial<NeedAuthPayload> = {}): NeedAuthPayload {
+    const requestId = extra.requestId ?? `paid-request-${paidRequests += 1}`;
+    manager.recordDeliveredResponse(SELLER, requestId, { costUsdc: cost });
     return {
       channelId,
+      requestId,
       requiredCumulativeAmount: (manager.getCumulativeAmount(SELLER) + cost).toString(),
       currentAcceptedCumulative: '0',
       deposit: reserve.toString(),
@@ -292,6 +298,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     const sentToOldChannel = race.sentAfterRetire.filter((p) => p.channelId === race.oldChannelId).length;
     let nextSignature: string;
     try {
+      manager.recordDeliveredResponse(SELLER, PROBE.requestId, { costUsdc: PROBE.sellerClaimedCost });
       const { payload } = await manager.signPerRequestAuth(SELLER, PROBE);
       const on = payload.channelId === race.newChannelId ? 'new' : payload.channelId === race.oldChannelId ? 'old' : 'other';
       nextSignature = `${on} channel at ${payload.cumulativeAmount}`;
@@ -822,7 +829,8 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const higher = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
       await saving.arrived;
       // The catch-up reaches the seller lock while the NeedAuth still holds it,
-      // so it signs only after the higher one is saved, from that cumulative.
+      // so it runs only after the higher one is saved. That one already signed
+      // past the seller's target, so the catch-up signs nothing on top.
       const extend = manager.extendCurrentSpendingAuth.bind(manager);
       vi.spyOn(manager, 'extendCurrentSpendingAuth').mockImplementationOnce((...args) => {
         const run = extend(...args);
@@ -835,7 +843,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
         higher,
       ]);
 
-      expect(afterCatchUp(channelId, outcome, sent)).toEqual({ ...caughtUp, committed: '48000', inMemory: 48_000n, sent: ['38000', '48000'] });
+      expect(afterCatchUp(channelId, outcome, sent)).toEqual(caughtUp);
     });
 
     /** Replace the seller's channel, then handle a 402 the seller sent about the old one. */

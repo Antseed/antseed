@@ -446,6 +446,9 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
      * seller's first model, `sellerId` pins it, `imageModel` serves the image share. `restart: { who: 'buyer' |
      * 'seller', sellerId, atFraction, crash }` restarts a peer once that share is done; with `crash` the seller is
      * killed (SIGKILL, tb.crashSeller) instead of stopped, so it neither settles nor closes before it comes back.
+     * `restart: { who: 'seller', on: 'top-up', settleMs }` instead has the seller's Base-like RPC link hold its first
+     * topUp() transaction and restarts the seller `settleMs` after it is held; the held transaction is dropped unsent,
+     * and a load during which no topUp() was held fails a check.
      * `omitMaxTokensRatio` sends that share of chats without `max_tokens`. `failpointCrash: { who, specIds }` makes the
      * load wait out every fail point crash of `who` (a node or a list; with `specIds` only crashes of those armings):
      * `restarts` then lists them as restart windows and `restart` is the first. `gate` (a GATES entry) is evaluated
@@ -459,26 +462,53 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       const pin = (name) => (name && sellerId ? `${tb.seller(sellerId).peerId}@${name}` : name);
       const chosen = model ?? (sellerId ? tb.seller(sellerId) : tb.sellers[0]).models[0];
       let settled = null;
+      const onTopUp = restart?.on === 'top-up';
+      if (restart?.on !== undefined && !(onTopUp && restart.who === 'seller')) throw new Error(`restart.on supports only 'top-up' with who: 'seller', got ${restart.on}`);
+      const restartSellerId = restart?.sellerId ?? sellerId ?? tb.sellers[0].id;
+      let loadDone = false;
+      let topUpHeld = null;
+      if (onTopUp) {
+        await control.holdTopUp(restartSellerId);
+        await event('top-up-hold', { sellerId: restartSellerId });
+        topUpHeld = (async () => {
+          while (!loadDone) {
+            if ((await control.topUpHold(restartSellerId)).heldAt) return;
+            await sleep(100);
+          }
+          throw new Error('load finished');
+        })();
+      }
       const restartSpec = restart ? {
-        atFraction: restart.atFraction,
+        ...(onTopUp ? { when: topUpHeld } : { atFraction: restart.atFraction }),
         run: async () => {
           // A seller restart leaves the buyer's channel open (it resumes it), so only a buyer restart drops one.
           if (restart.who === 'buyer') settled = settleAfterDrop();
           if (restart.who === 'buyer') { await tb.stopBuyer(); await tb.startBuyer(); }
           else if (restart.who === 'seller') {
-            const id = restart.sellerId ?? sellerId ?? tb.sellers[0].id;
+            if (onTopUp) await sleep(restart.settleMs ?? 0);
             // `crashed` is the supervisor's word that it killed a running seller: false means there was none to kill.
-            const crashed = restart.crash ? (await tb.crashSeller(id)).crashed === true : undefined;
-            if (!restart.crash) await tb.stopSeller(id);
-            await tb.startSeller(id);
-            return { who: restart.who, ...(restart.crash ? { crash: true, crashed } : {}) };
+            const crashed = restart.crash ? (await tb.crashSeller(restartSellerId)).crashed === true : undefined;
+            if (!restart.crash) await tb.stopSeller(restartSellerId);
+            // Only now, with the seller gone: it must never learn the transaction failed.
+            const dropped = onTopUp ? (await control.dropHeldTopUp(restartSellerId)).dropped : undefined;
+            await tb.startSeller(restartSellerId);
+            return { who: restart.who, ...(restart.crash ? { crash: true, crashed } : {}), ...(onTopUp ? { trigger: 'top-up-held', heldTopUpDropped: dropped } : {}) };
           } else throw new Error(`restart.who must be buyer or seller, got ${restart.who}`);
           return { who: restart.who };
         },
       } : null;
       await event('load-start', { model: chosen, sellerId: sellerId ?? null, ...shape, restart: restart ?? null, ...(failpointCrash ? { failpointCrash } : {}) });
       const watch = failpointCrash ? await failpointWatch(failpointCrash.who, failpointCrash.specIds) : null;
-      const run = await runLoad({ proxyUrl: manifest.proxyUrl, model: pin(chosen), imageModel: pin(imageModel), load: { ...shape, restart: restartSpec, ...(watch ? { hold: watch.hold } : {}) }, random: loadRandom });
+      let run;
+      try {
+        run = await runLoad({ proxyUrl: manifest.proxyUrl, model: pin(chosen), imageModel: pin(imageModel), load: { ...shape, restart: restartSpec, ...(watch ? { hold: watch.hold } : {}) }, random: loadRandom });
+      } finally {
+        loadDone = true;
+        topUpHeld?.catch(() => {});
+        // Disarm a hold that caught nothing (or a topUp() held after the load, which no restart will drop).
+        if (onTopUp) await control.dropHeldTopUp(restartSellerId);
+      }
+      if (onTopUp) tb.check('the seller restarted while its topUp() transaction was held', run.restart?.heldTopUpDropped === true, run.restart ?? { restart: null });
       if (settled) run.restart = { ...run.restart, settleOnDisconnectMs: await settled };
       if (watch) {
         run.restarts = (await watch.stop()).map((crash) => restartFromCrash(crash, run.startedAt));

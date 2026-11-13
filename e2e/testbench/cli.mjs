@@ -12,7 +12,7 @@ import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
-import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
+import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg, startTestbenchGateway } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
 import { failpointPlanText, scenarioFile, scenarioFiles, SCENARIOS_DIR } from './lib/scenarios.mjs';
 import { cleanupStale, settleSlot } from './lib/stale.mjs';
@@ -611,8 +611,11 @@ async function desktop(options, ctx) {
   const response = await fetch(`${manifest.proxyUrl}/_antseed/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
   if (!response?.ok || response.startedAt !== manifest.buyerStartedAt) throw new Error('Testbench buyer is not healthy; refusing to start a desktop (it would start its own buyer)');
   const instance = await chooseDesktopInstance(manifest.desktopInstance ?? manifest.name);
-  const env = attachOnlyEnv({ manifest });
-  say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, testbench wallet)`);
+  // The desktop chats through a gateway, and an attach-only one may not start
+  // its own: run one on the testbench buyer and hand the desktop its URL and a key.
+  const gateway = await startTestbenchGateway({ repo, manifest, reportDir: ctx.paths.logs });
+  const env = attachOnlyEnv({ manifest, extra: { ANTSEED_DESKTOP_GATEWAY_URL: gateway.url, ANTSEED_DESKTOP_GATEWAY_KEY: gateway.key } });
+  say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} through gateway ${gateway.url} (attach-only, testbench wallet)`);
   // Its own process group, recorded, so `down` can stop the whole tree even if this launcher dies first.
   const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit', detached: true });
   const record = await recordAttachedDesktop(ctx.paths.dir, { pid: child.pid, home: manifest.home, instance });
@@ -625,6 +628,7 @@ async function desktop(options, ctx) {
   stopHeartbeat();
   // The launcher can exit before the rest of its tree does.
   const { problems } = await stopAttachedDesktop(record);
+  await gateway.stop();
   for (const problem of problems) say(`Warning: ${problem}`);
   if (!problems.length) await forgetAttachedDesktop(ctx.paths.dir, record);
   process.exitCode = code;

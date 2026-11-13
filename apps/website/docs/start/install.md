@@ -36,7 +36,7 @@ npm install -g @antseed/cli
 antseed gateway start
 ```
 
-This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself.
+This starts a buyer on port 8377 and the gateway on `http://localhost:8379`, with its API at `http://localhost:8379/v1` and the console at `http://localhost:8379/console`. Pass `--no-buyer` if you already run a buyer yourself. To run it in the background instead, starting at login and restarting if it stops, use `antseed gateway service install` (a launchd agent on macOS, a systemd user service on Linux, no root).
 
 The console has no owner yet. Get a one-time setup link, open it, and register a passkey or connect a wallet to become the owner:
 
@@ -60,13 +60,13 @@ Next: [Quickstart](/docs/quickstart).
 
 ## Desktop app
 
-The desktop app (AI VPN) bundles the buyer, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
+Antseed Desktop bundles a local gateway, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
 
 - **macOS**: `.dmg` for Apple Silicon and Intel, signed and notarized.
 - **Windows**: `.exe` installer for x64, code-signed.
 - **Linux**: `.AppImage` and `.deb`.
 
-No account is needed. Free models work right away; for paid models, add credits by card or USDC from **Profile → Add Credits**.
+No account is needed. Free models work right away; for paid models, add funds by card or USDC from **Add funds** on the app's Home.
 
 Next: [Desktop app](/docs/desktop).
 

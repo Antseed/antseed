@@ -58,6 +58,11 @@ export class PaymentMux {
     this._connection = connection;
   }
 
+  /** Whether this mux sends over `connection`. */
+  sendsOver(connection: BuyerConnection): boolean {
+    return this._connection === connection;
+  }
+
   // --- Handler registration ---
   onSpendingAuth(handler: PaymentMessageHandler<SpendingAuthPayload>): void {
     this._onSpendingAuth = handler;
