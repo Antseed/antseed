@@ -1,7 +1,7 @@
 import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS } from './env.mjs';
 
 /** Payment wiring for the testbench chain (fork: production addresses; local: base-local addresses), always on the local Anvil RPC. */
-export function paymentsConfig(chain, rpcUrl, { chainTimestamp, settlementIdleMs = 600_000 } = {}) {
+export function paymentsConfig(chain, rpcUrl, { chainTimestamp, settlementIdleMs = 600_000, closeIdleMs } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const skew = chainTimestamp ? Math.max(0, chainTimestamp - now) : 0;
   return {
@@ -22,6 +22,8 @@ export function paymentsConfig(chain, rpcUrl, { chainTimestamp, settlementIdleMs
     // The fork clock runs ahead of wall time after the stake-activation warp; auth deadlines must cover it.
     defaultAuthDurationSecs: skew + 90_000,
     settlementIdleMs,
+    // Left out, the seller keeps its default (12 hours).
+    ...(closeIdleMs !== undefined ? { closeIdleMs } : {}),
   };
 }
 

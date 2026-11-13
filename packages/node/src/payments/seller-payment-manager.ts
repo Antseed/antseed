@@ -44,7 +44,15 @@ export interface SellerPaymentConfig {
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
   serveWhileClosePending?: boolean;
+  /** Idle time before a channel's latest signed amount is settled (channel stays open). Default: 10 min. */
+  settlementIdleMs?: number;
+  /** Idle time before a channel is closed. Default: 12 hours. */
+  closeIdleMs?: number;
 }
+
+/** Default idle timeouts, shared by the stored-channel check here and the session tracker's timers. */
+export const DEFAULT_SETTLEMENT_IDLE_MS = 600_000;
+export const DEFAULT_CLOSE_IDLE_MS = 43_200_000;
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
@@ -251,6 +259,10 @@ export class SellerPaymentManager {
   private readonly _blockedChannels = new Set<string>();
   /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
   private readonly _idleCloses = new Map<string, Promise<void>>();
+  /** Channels with an idle settle() in flight. */
+  private readonly _idleSettles = new Set<string>();
+  /** channelId -> when the stored-channel check last asked for an idle settle; a failing settle is retried once per settle timeout. */
+  private readonly _idleSettleAttemptAt = new Map<string, number>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -467,6 +479,7 @@ export class SellerPaymentManager {
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
+    this._idleSettleAttemptAt.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
@@ -2110,7 +2123,8 @@ export class SellerPaymentManager {
       if (!auth || auth.metadata || !channel.latestSpendingAuthSig) continue;
       const metadata = await this._storedAuthMetadata(channel);
       auth.metadata = metadata;
-      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata, updatedAt: Date.now() });
+      // Not buyer activity: `updatedAt` stays, so the channel's idle time is unchanged.
+      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata });
     }
   }
 
@@ -2149,7 +2163,14 @@ export class SellerPaymentManager {
       if (settleOnly) return;
       debugLog(`[SellerPayment] Zero-cumulative channel ${channelId.slice(0, 18)}... — deferring to timeout checker`);
     } else if (settleOnly) {
-      await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
+      // The session tracker's timer and the stored-channel check can both ask.
+      if (this._idleSettles.has(channelId)) return;
+      this._idleSettles.add(channelId);
+      try {
+        await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
+      } finally {
+        this._idleSettles.delete(channelId);
+      }
       return;
     } else {
       const retries = this._closeRetryCount.get(channelId) ?? 0;
@@ -2222,6 +2243,7 @@ export class SellerPaymentManager {
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
+    this._idleSettleAttemptAt.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
@@ -2305,7 +2327,9 @@ export class SellerPaymentManager {
 
   /**
    * Check for stale sessions and attempt to close them.
-   * - Channels with a buyer SpendingAuth go through `settleSession()`.
+   * - Channels with a buyer SpendingAuth go through `settleSession()`: at once
+   *   when the buyer disconnected, otherwise after the idle settle and idle
+   *   close timeouts.
    * - Zombie channels (buyer gone, no auth, deadline elapsed) can be closed
    *   on-chain with `finalAmount == channel.settled`, which intentionally
    *   skips SpendingAuth verification and lets the seller release the lock,
@@ -2349,6 +2373,10 @@ export class SellerPaymentManager {
           await this.settleSession(channel.peerId);
           continue;
         }
+        if (accepted > 0n) {
+          await this._settleOrCloseIdleChannel(channel.sessionId, onChainState.channel.settled, onChainState.status === 'active');
+          continue;
+        }
         // No auths, buyer gone, deadline elapsed: close with the current
         // on-chain settled amount. The contract skips signature verification
         // when finalAmount == settled, so this safely cleans up zombie
@@ -2373,6 +2401,45 @@ export class SellerPaymentManager {
     }
 
     await this._retryTimedOutCloses();
+  }
+
+  /**
+   * Idle settle and idle close for a paid channel, judged from the stored
+   * channel: `updatedAt` moves with each accepted auth and recorded spend and
+   * survives restarts. The session tracker's timers cover only buyers that
+   * sent a request to this process, so a channel reloaded after a restart
+   * whose buyer never returns would otherwise stay open, and unsettled, for
+   * good.
+   */
+  private async _settleOrCloseIdleChannel(channelId: string, onChainSettled: bigint, activeOnChain: boolean): Promise<void> {
+    // Read the channel now, not from the caller's list: earlier channels in the same pass wait for
+    // transactions, and a buyer that came back meanwhile is no longer idle.
+    const channel = this._channelStore.getChannel(channelId);
+    if (!channel || channel.status !== CHANNEL_STATUS.ACTIVE) return;
+    // settleSession acts on the peer's active channel; make sure that is the one judged here.
+    if (this._channelStore.getActiveChannelByPeer(channel.peerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
+    if (this.hasInFlightRequests(channel.peerId) || this._idleCloses.has(channelId)) return;
+    const idleMs = Date.now() - channel.updatedAt;
+    const idleText = `${channelId.slice(0, 18)}... idle for ${Math.floor(idleMs / 1000)}s`;
+    const { amount } = this._getSettleParams(channelId);
+    if (idleMs >= (this._config.closeIdleMs ?? DEFAULT_CLOSE_IDLE_MS)) {
+      debugLog(`[SellerPayment] Channel ${idleText}, past the close timeout — closing`);
+      if (amount <= onChainSettled && activeOnChain) {
+        // Nothing left to collect: closing at the settled amount needs no signature and releases the reserve.
+        await this._closeWithoutAuth(channelId, channel.peerId, onChainSettled);
+      } else {
+        await this.settleSession(channel.peerId, { cleanupOnFailure: true });
+      }
+      return;
+    }
+    const settleIdleMs = this._config.settlementIdleMs ?? DEFAULT_SETTLEMENT_IDLE_MS;
+    if (idleMs < settleIdleMs) return;
+    if (amount <= onChainSettled || amount <= (this._lastSettledCumulative.get(channelId) ?? 0n)) return;
+    const lastAttemptAt = this._idleSettleAttemptAt.get(channelId);
+    if (lastAttemptAt !== undefined && Date.now() - lastAttemptAt < settleIdleMs) return;
+    this._idleSettleAttemptAt.set(channelId, Date.now());
+    debugLog(`[SellerPayment] Channel ${idleText}, past the settle timeout — settling`);
+    await this.settleSession(channel.peerId, { settleOnly: true });
   }
 
   /**
@@ -2531,20 +2598,21 @@ export class SellerPaymentManager {
   }
 
   /**
-   * Close a zombie channel (buyer gone, no signed auth) using the current
-   * on-chain settled cumulative as finalAmount. This intentionally settles no
-   * additional spend, but still marks the channel closed and releases the
-   * remaining reserved deposit back to the buyer.
+   * Close a channel with nothing left to collect (no signed auth, or the
+   * signed amount is already settled) using the current on-chain settled
+   * cumulative as finalAmount. This intentionally settles no additional
+   * spend, but still marks the channel closed and releases the remaining
+   * reserved deposit back to the buyer.
    */
   private async _closeWithoutAuth(channelId: string, peerId: string, onChainSettled: bigint): Promise<void> {
     const retries = this._closeRetryCount.get(channelId) ?? 0;
     if (retries >= SellerPaymentManager.MAX_CLOSE_RETRIES) {
-      debugWarn(`[SellerPayment] Zombie close failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to local eviction`);
-      this._evictStaleChannel(channelId, peerId, 'no auths, past deadline, close retries exhausted', CHANNEL_STATUS.TIMEOUT);
+      debugWarn(`[SellerPayment] Close at the settled amount failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to local eviction`);
+      this._evictStaleChannel(channelId, peerId, 'nothing to collect, close retries exhausted', CHANNEL_STATUS.TIMEOUT);
       return;
     }
 
-    debugLog(`[SellerPayment] Closing zombie channel ${channelId.slice(0, 18)}... finalAmount=${onChainSettled} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+    debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... at the settled amount, finalAmount=${onChainSettled} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
     const closeResult = await this._submitClose(
       channelId,
       onChainSettled,
@@ -2552,15 +2620,15 @@ export class SellerPaymentManager {
     );
     if (closeResult.closed) {
       this._closeRetryCount.delete(channelId);
-      this._evictStaleChannel(channelId, peerId, 'zombie closed on-chain', CHANNEL_STATUS.SETTLED);
+      this._evictStaleChannel(channelId, peerId, 'closed on-chain at the settled amount', CHANNEL_STATUS.SETTLED, onChainSettled.toString());
     } else if (this._isRetryableTxSubmissionFailure(closeResult.error)) {
       debugWarn(
-        `[SellerPayment] Zombie close hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
+        `[SellerPayment] Close at the settled amount hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
         `— keeping channel for retry: ${this._formatError(closeResult.error)}`,
       );
     } else {
       this._closeRetryCount.set(channelId, retries + 1);
-      debugWarn(`[SellerPayment] Zombie close failed (attempt ${retries + 1}): ${this._formatError(closeResult.error)}`);
+      debugWarn(`[SellerPayment] Close at the settled amount failed (attempt ${retries + 1}): ${this._formatError(closeResult.error)}`);
     }
   }
 

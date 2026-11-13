@@ -24,7 +24,10 @@ Free requests are not paid, but your node records them on-chain so buyers earn u
 |---|---|
 | Buyer disconnects | The channel is closed right away and the full amount owed is settled. |
 | Channel idle | After `ANTSEED_SETTLEMENT_IDLE_MS` without activity (default 10 minutes), the node settles what is owed, skipping amounts below `payments.minSettleDelta` (default $0.002) so gas doesn't exceed the payment. |
+| Channel idle for longer | After `ANTSEED_CLOSE_IDLE_MS` without activity (default 12 hours), the node closes the channel: it settles what is still owed and the buyer's unspent reservation is released. |
 | Budget running low | The node tops up the channel, settling the current total in the same transaction. |
+
+Idle time is counted from the channel's last payment activity and is kept across restarts, so a channel whose buyer never returns after a restart is still settled and closed on schedule.
 
 If a buyer has already asked the contract to close a channel, your node stops serving it, because work served after the buyer's grace period may never be collectible. `payments.serveWhileClosePending` overrides this; leave it off unless you understand the risk.
 

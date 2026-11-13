@@ -9,6 +9,7 @@ import type { ReceiptGenerator } from './receipt-generator.js';
 import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
 import { computeCostUsdc } from '../payments/pricing.js';
+import { DEFAULT_CLOSE_IDLE_MS, DEFAULT_SETTLEMENT_IDLE_MS } from '../payments/seller-payment-manager.js';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -276,7 +277,7 @@ export class SellerSessionTracker {
     const existingSettle = this._settlementTimers.get(buyerPeerId);
     if (existingSettle) clearTimeout(existingSettle);
 
-    const settleIdleMs = this._config.settlementIdleMs ?? 600_000;
+    const settleIdleMs = this._config.settlementIdleMs ?? DEFAULT_SETTLEMENT_IDLE_MS;
     const settleTimer = setTimeout(() => {
       void this.finalizeSession(buyerPeerId, 'idle-settle');
     }, settleIdleMs);
@@ -287,7 +288,7 @@ export class SellerSessionTracker {
     const existingClose = this._closeTimers.get(buyerPeerId);
     if (existingClose) clearTimeout(existingClose);
 
-    const closeIdleMs = this._config.closeIdleMs ?? 43_200_000; // 12 hours
+    const closeIdleMs = this._config.closeIdleMs ?? DEFAULT_CLOSE_IDLE_MS;
     const closeTimer = setTimeout(() => {
       void this.finalizeSession(buyerPeerId, 'idle-timeout');
     }, closeIdleMs);

@@ -623,6 +623,7 @@ Use `base-sepolia` for testing with MockUSDC.
 - `ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS=<ms>` — runtime override for buyer peer-discovery metadata fetch timeout
 - `ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES=true` — suppress buyer per-service metadata v2 attribution while keeping aggregate usage totals
 - `ANTSEED_SETTLEMENT_IDLE_MS=600000` — idle time before settling a session (default: 10 minutes)
+- `ANTSEED_CLOSE_IDLE_MS=43200000` — idle time before closing a channel (default: 12 hours)
 - `ANTSEED_DEFAULT_DEPOSIT_USDC=1` — default lock amount per session
 - `ANTSEED_IDENTITY_HEX=<hex>` — inject identity via env (supports 0x prefix)
 
