@@ -499,7 +499,8 @@ const GATEWAY_FUNDS_ERROR_IDS = new Set([
   'spend_limit_reached',
 ]);
 
-const FUNDS_TEXT = /\binsufficient[ _-]?(?:funds|balance|credits?|quota|deposits)\b|\bpayment[ _-]required\b|\bbalance is too low\b/i;
+// "out of Antseed credits": the buyer's and the gateway's own wording, which can arrive without the 402.
+const FUNDS_TEXT = /\binsufficient[ _-]?(?:funds|balance|credits?|quota|deposits)\b|\bpayment[ _-]required\b|\bbalance is too low\b|\bout of Antseed credits\b/i;
 
 export const GATEWAY_FUNDS_MESSAGE = 'Your balance is too low for this request. Add funds and try again.';
 

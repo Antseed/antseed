@@ -56,6 +56,7 @@ import {
   type InstallUpdateResult,
   type UpdateStatus,
 } from './app-context.js';
+import { MAC_UPDATE_CHANNEL } from './bundle-rename.js';
 import {
   initConnectedApps,
   reconnectAllApps,
@@ -486,6 +487,13 @@ app.whenReady().then(async () => {
   // banner, and the (hundreds of MB) download starts when the user clicks it.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+  if (process.platform === 'darwin') {
+    // latest-mac.yml serves installs from before the bundle rename a bridge
+    // build (bundle-rename.ts); this build and later ones read their own file.
+    autoUpdater.channel = MAC_UPDATE_CHANNEL;
+    // Setting a channel allows downgrades; keep them off.
+    autoUpdater.allowDowngrade = false;
+  }
 
   const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
   const DOWNLOAD_STALL_TIMEOUT_MS = 2 * 60 * 1000;
