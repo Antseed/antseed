@@ -6,6 +6,7 @@
 #                                                         Secure Enclave keys to this app (needed to attest hardened)
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
 #   NOTARY_KEY=AuthKey.p8 NOTARY_KEY_ID=… NOTARY_ISSUER=…  or notarize with an App Store Connect API key (CI)
+#   REQUIRE_PAY_PAGE=1                                     fail without the payments page build (CI, releases)
 #   DMG=1                                                  also package build/Antseed-Colony-<version>.dmg,
 #                                                          signed and notarized like the app
 #
@@ -49,6 +50,17 @@ if ((${#BUNDLES[@]})); then cp -R "${BUNDLES[@]}" "$APP/Contents/Resources/"; fi
 cp -R "build/$TENSORFOLD/bin" "build/$TENSORFOLD/lib" "$ENGINE/"
 # From the desktop app: the panel's ant (one per status), the menu bar mark and the app icon.
 cp -R Resources/mascot Resources/menubar.png Resources/AppIcon.icns "$APP/Contents/Resources/"
+# The Antseed payments page (apps/payments web build): the app serves it on 127.0.0.1 so the owner's
+# wallet can link to this Mac and claim, in the browser.
+PAY_WEB=../payments/dist/web
+if [ -f "$PAY_WEB/index.html" ]; then
+  cp -R "$PAY_WEB" "$APP/Contents/Resources/pay"
+elif [ -n "${REQUIRE_PAY_PAGE:-}" ]; then
+  echo "error: build the payments page first: pnpm --filter @antseed/payments run build:web" >&2
+  exit 1
+else
+  echo "warning: no payments page (pnpm --filter @antseed/payments run build:web): Link wallet and Claim won't open" >&2
+fi
 cp -R "build/$TENSORFOLD/LICENSE" "build/$TENSORFOLD/NOTICE" "build/$TENSORFOLD/THIRD_PARTY_NOTICES.md" "build/$TENSORFOLD/LICENSES" "$APP/Contents/Resources/tensorfold-licenses/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

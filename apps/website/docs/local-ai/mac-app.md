@@ -58,17 +58,18 @@ open -a "Antseed Colony" --args --pool wss://pool.example.com:8790 --name studio
 
 ## Link your wallet
 
-The app's key lives on your Mac; your earnings go to a wallet you choose.
+The app's key lives on your Mac; your earnings go to a wallet you choose. Everything happens from the app: the only step outside it is your wallet approving a transaction, on the Antseed payments page the app opens in your browser.
 
-1. Once the app has joined, enter your wallet address under **Link the wallet your earnings go to**, choose **Link**, then **Copy code**. The code (`antseed-link:…`) is signed by your Mac's key.
-2. Open **Rewards** in the Antseed desktop app, or the ANTS dashboard with `antseed ants` (see [ANTS staking](/docs/provide/staking)), with the same wallet, and choose **Link a Mac**.
-3. Paste the code. The dashboard checks it, submits it to the pool contract and remembers the pool.
+1. Once the app has joined a pool, choose **Link wallet** under **Rewards** in the panel. Your browser opens the payments page, served by the app on your Mac.
+2. Connect your wallet (a browser extension such as MetaMask, or a mobile wallet through WalletConnect) and choose **Link this wallet**. The app signs the link for that wallet with the Mac's key, and you confirm one transaction that records it in the pool contract.
 
-Linking also moves what the Mac already earned to that wallet. The app keeps the code, with **Copy code**, until the contract records the wallet, and then shows **Pays to** with that address. **Change wallet** signs a new link.
+Linking also moves what the Mac already earned to that wallet. The panel then shows the wallet under **Payout wallet**; **Change** links another one.
 
 ## Claim
 
-The **Mac earnings** card on **Rewards** shows the USDC and ANTS each linked pool owes your wallet. **Claim to wallet** first pulls the pool's unclaimed ANTS for finished epochs, then pays both to your wallet. The pool's operator can pause new settlements, but never these claims.
+The **Rewards** card in the panel shows what the pool owes your wallet: USDC, and ANTS for finished epochs. Choose **Claim**, connect the same wallet on the payments page, and confirm the transactions: USDC first, then ANTS. When the pool hasn't pulled its ANTS for some finished epochs yet, the claim pulls them first, as the panel notes. The pool's operator can pause new settlements, but never these claims.
+
+The Antseed desktop app's **Rewards** and the ANTS dashboard (`antseed ants`) also show and claim a linked Mac's earnings.
 
 ## What the app does with requests
 

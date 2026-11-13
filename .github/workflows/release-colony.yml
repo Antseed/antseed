@@ -88,9 +88,24 @@ jobs:
             echo "PROVISIONING_PROFILE=$secrets_dir/worker.provisionprofile" >> "$GITHUB_ENV"
           fi
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Build the payments page the app bundles
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @antseed/payments run build:web
+
       - name: Build, sign and notarize
         working-directory: apps/mac-worker
         env:
+          REQUIRE_PAY_PAGE: '1'
           NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           BUILD_NUMBER: ${{ github.run_number }}

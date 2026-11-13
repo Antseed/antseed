@@ -228,15 +228,14 @@ struct MenuPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             EarningsCard(worker: worker)
+            // A payout link names the pool contract, so rewards show once the app has joined one.
+            if worker.poolSeller != nil {
+                RewardsCard(worker: worker, payouts: worker.payouts, snapshot: snapshot)
+            }
             Card {
                 ModelRow(worker: worker, snapshot: snapshot)
                 Divider().overlay(Theme.border)
                 PoolRow(worker: worker, snapshot: snapshot)
-                // A payout link names the pool contract, so it is signed once the app has joined one.
-                if worker.poolSeller != nil {
-                    Divider().overlay(Theme.border)
-                    PayoutRow(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
-                }
             }
             ProtectionNotice(protection: worker.protection)
             footer
@@ -422,52 +421,57 @@ struct PoolRow: View {
     }
 }
 
-/// The payout wallet: the one the pool pays, a link waiting to be pasted, or a form to link one.
-struct PayoutRow: View {
+/// What the pool owes this Mac's owner, the wallet it pays, and the two steps that need that wallet
+/// (link, claim), which open the Antseed payments page in the browser.
+struct RewardsCard: View {
+    @ObservedObject var worker: WorkerController
     @ObservedObject var payouts: WorkerPayoutController
-    let pool: String?
     var snapshot = false
-    @State private var wallet = ""
-    @State private var changing = false
 
     var body: some View {
-        if let link = payouts.pendingLink, !changing {
-            SettingRow(icon: "wallet.pass", title: "Payouts", value: "Linking \(short(link.payout))",
-                       actionTitle: "Change", action: { changing = true }) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(payouts.linkCopied
-                         ? "Code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
-                         : "Paste this Mac's link code in Rewards → Link a Mac, in the Antseed app or `antseed ants`.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
-                    PillButton(title: payouts.linkCopied ? "Copy again" : "Copy link code") { if !snapshot { payouts.copyLinkCode() } }
-                }
-            }
-        } else if let payout = payouts.payout, !changing {
-            SettingRow(icon: "wallet.pass", title: "Payouts", value: "Pays to \(short(payout))",
-                       actionTitle: "Change", action: { changing = true }) {
-                Text("Claim in Rewards, in the Antseed app or `antseed ants`.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-            }
-        } else {
-            SettingRow(icon: "wallet.pass", title: "Payouts", value: "No wallet linked",
-                       actionTitle: changing ? "Cancel" : nil, action: { changing = false }) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        InputField(placeholder: "0x… your wallet", text: $wallet, snapshot: snapshot, onSubmit: link)
-                        PillButton(title: "Link", action: link)
+        let rewards = payouts.rewards
+        let linked = payouts.payout != nil
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(linked ? "Claimable" : "Earned, waiting for a wallet").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        Text(rewards.map { "\($0.usdcLabel) · \($0.antsLabel)" } ?? "Reading…")
+                            .font(.system(size: 14, weight: .semibold)).monospacedDigit().foregroundStyle(Theme.text)
                     }
-                    if let error = payouts.linkError {
-                        Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger)
+                    Spacer(minLength: 8)
+                    if linked {
+                        PillButton(title: "Claim", primary: !(rewards?.isEmpty ?? true)) { open("colony-claim") }
                     }
                 }
+                if let unpulled = rewards?.unpulledEpochs.count, unpulled > 0 {
+                    Text("Plus ANTS from \(unpulled) finished epoch\(unpulled == 1 ? "" : "s"), pulled into the pool when you claim.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+                }
+                Divider().overlay(Theme.border)
+                HStack(spacing: 10) {
+                    Image(systemName: "wallet.pass").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textMuted).frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Payout wallet").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        Text(payouts.payout.map(short) ?? "Not linked").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text)
+                    }
+                    Spacer(minLength: 8)
+                    if linked {
+                        TextLink(title: "Change") { open("colony-link") }
+                    } else {
+                        PillButton(title: "Link wallet") { open("colony-link") }
+                    }
+                }
+                if let error = worker.payPageError ?? payouts.rewardsError {
+                    Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(14)
         }
     }
 
-    private func link() {
-        guard !snapshot else { return }
-        // The form stays open, with the error, until a new link is signed.
-        Task { if await payouts.link(to: wallet, pool: pool) { changing = false } }
+    private func open(_ action: String) {
+        if !snapshot { worker.openPayPage(action) }
     }
 }
 

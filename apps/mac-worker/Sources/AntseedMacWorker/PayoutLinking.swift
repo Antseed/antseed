@@ -1,9 +1,9 @@
 import AppKit
 import Foundation
 
-/// The owner's payout wallet: what the pool contract records for this Mac, and
-/// the signed link the owner submits from that wallet in the ANTS dashboard
-/// (Rewards → Link a Mac), where rewards are also claimed.
+/// The owner's payout wallet: what the pool contract records for this Mac, the
+/// signed link that wallet submits (from the rewards page this app opens, or
+/// the ANTS dashboard's Rewards → Link a Mac), and what the pool owes it.
 @MainActor
 final class WorkerPayoutController: ObservableObject {
     /// The owner's wallet this Mac's earnings are paid to, as the pool contract records it.
@@ -12,8 +12,10 @@ final class WorkerPayoutController: ObservableObject {
     /// records it or it expires, so its code can be copied again after a restart.
     @Published private(set) var pendingLink: PayoutAuthorization?
     @Published private(set) var linkError: String?
-    /// The payout authorization was just copied for the owner to paste.
-    @Published private(set) var linkCopied = false
+    /// What the pool owes the payout wallet (this Mac's key until one is linked); nil until read.
+    @Published private(set) var rewards: ColonyRewards?
+    /// Why the last rewards read failed, if it did.
+    @Published private(set) var rewardsError: String?
 
     private static let pendingLinkFile = "payout-link.json"
     private let config: WorkerConfig
@@ -44,17 +46,32 @@ final class WorkerPayoutController: ObservableObject {
     /// Read the payout wallet from the pool contract, and drop a pending link
     /// once the contract records it or its deadline passes.
     func refresh(pool: String?) {
+        Task { await refreshNow(pool: pool) }
+    }
+
+    /// `refresh`, finished before it returns: the rewards page reads the result right after.
+    func refreshNow(pool: String?) async {
         guard !config.rpcURLs.isEmpty, let pool else { return }
-        Task {
-            do {
-                payout = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
-            } catch {
-                return
-            }
-            if let link = pendingLink,
-               link.payout.lowercased() == payout?.lowercased() || link.deadline <= UInt64(Date().timeIntervalSince1970) {
-                setPendingLink(nil)
-            }
+        do {
+            payout = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
+        } catch {
+            return
+        }
+        if let link = pendingLink,
+           link.payout.lowercased() == payout?.lowercased() || link.deadline <= UInt64(Date().timeIntervalSince1970) {
+            setPendingLink(nil)
+        }
+        await refreshRewards(pool: pool)
+    }
+
+    /// Read what the pool owes the payout wallet (this Mac's key until one is linked).
+    func refreshRewards(pool: String?) async {
+        guard !config.rpcURLs.isEmpty, let pool else { return }
+        do {
+            rewards = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).colonyRewards(pool: pool, account: payout ?? address)
+            rewardsError = nil
+        } catch {
+            rewardsError = "Could not read rewards: \(error.localizedDescription)"
         }
     }
 
@@ -74,14 +91,13 @@ final class WorkerPayoutController: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(link.code, forType: .string)
-        linkCopied = true
     }
 
     /// Sign the instruction for the pool contract to pay this Mac's earnings to
     /// `wallet`, and copy it. Returns whether a new link was signed; on failure
     /// `linkError` says why.
     @discardableResult
-    func link(to wallet: String, pool: String?) async -> Bool {
+    func link(to wallet: String, pool: String?, copy: Bool = true) async -> Bool {
         let wallet = wallet.trimmingCharacters(in: .whitespacesAndNewlines)
         guard wallet.count == 42, wallet.hasPrefix("0x"), (try? Data(hexString: wallet)) != nil else {
             linkError = "Enter a wallet address (0x…)"
@@ -101,8 +117,12 @@ final class WorkerPayoutController: ObservableObject {
             let signature = try keys.ethereum.sign(digest: personalMessageDigest(digest))
             let link = PayoutAuthorization(chainId: chainId, pool: pool, worker: address, payout: wallet, deadline: deadline, signature: signature.prefixedHex)
             setPendingLink(link)
-            copyLinkCode()
-            log("payout authorization for \(wallet) copied; paste it in the ANTS dashboard (Rewards → Link a Mac)")
+            if copy {
+                copyLinkCode()
+                log("payout authorization for \(wallet) copied; paste it in the ANTS dashboard (Rewards → Link a Mac)")
+            } else {
+                log("payout authorization for \(wallet) signed for the rewards page")
+            }
             if config.linkPayoutTo != nil { log("link code \(link.code)") }
             return true
         } catch {

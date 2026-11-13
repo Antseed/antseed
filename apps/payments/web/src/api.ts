@@ -305,3 +305,38 @@ export async function saveFreeTierDelegation(delegation: { staker: string; expir
     body: JSON.stringify(delegation),
   });
 }
+
+/** Antseed Colony (the Mac app): its pool, its worker key, the wallet its earnings go to, and what that wallet can claim. */
+export interface ColonyState {
+  pool: string | null;
+  worker: string;
+  payout: string | null;
+  /** What the payout wallet can claim, as the Mac app read it: USDC (6 decimals) and ANTS (18), base units. */
+  claim: {
+    usdc: string;
+    ants: string;
+    /** Finished epochs with ANTS owed to the payout wallet. */
+    antsEpochs: number[];
+    /** Finished epochs the pool earned ANTS for but hasn't pulled from emissions yet (claimEpochEmissions). */
+    unpulledEpochs: number[];
+  } | null;
+}
+
+/** A worker's signed setPayout authorization (AntseedColonyPool.setPayout). */
+export interface ColonyPayoutAuthorization {
+  chainId: number;
+  pool: string;
+  worker: string;
+  payout: string;
+  deadline: number;
+  signature: string;
+}
+
+export async function getColony(): Promise<ColonyState> {
+  return fetchJson('/api/colony');
+}
+
+/** Asks the Mac app to sign a link of its earnings to `payout` (the connected wallet). */
+export async function signColonyLink(payout: string): Promise<ColonyPayoutAuthorization> {
+  return fetchJson('/api/colony/link', { method: 'POST', body: JSON.stringify({ payout }) });
+}

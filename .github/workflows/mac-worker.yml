@@ -3,10 +3,10 @@ name: Mac app
 on:
   push:
     branches: [main]
-    paths: ['apps/mac-worker/**', '.github/workflows/mac-worker.yml']
+    paths: ['apps/mac-worker/**', 'apps/payments/web/**', '.github/workflows/mac-worker.yml']
   pull_request:
     branches: [main]
-    paths: ['apps/mac-worker/**', '.github/workflows/mac-worker.yml']
+    paths: ['apps/mac-worker/**', 'apps/payments/web/**', '.github/workflows/mac-worker.yml']
 
 jobs:
   swift-test:
@@ -25,10 +25,25 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Build the payments page the app bundles
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @antseed/payments run build:web
+
       - name: Build Antseed Colony (ad hoc signed)
         working-directory: apps/mac-worker
         env:
           BUILD_NUMBER: ${{ github.run_number }}
+          REQUIRE_PAY_PAGE: '1'
         run: |
           scripts/build-app.sh
           ditto -c -k --keepParent "build/Antseed Colony.app" build/Antseed-Colony-unsigned.zip

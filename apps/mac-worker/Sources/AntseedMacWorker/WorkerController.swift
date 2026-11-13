@@ -250,6 +250,79 @@ final class WorkerController: ObservableObject {
         }
     }
 
+    // MARK: rewards page
+
+    /// The Antseed payments page, served by this app, for the steps that need the owner's wallet.
+    private lazy var payServer = PayServer { [weak self] request in
+        guard let self else { return .error(503, "Antseed Colony is quitting") }
+        return await self.payAPI(request)
+    }
+    /// Why the rewards page could not open, if it couldn't.
+    @Published private(set) var payPageError: String?
+
+    /// Open the payments page in the owner's browser: `colony-link` (link a wallet) or `colony-claim`.
+    func openPayPage(_ action: String) {
+        Task {
+            do {
+                NSWorkspace.shared.open(try await payServer.url(for: action))
+                payPageError = nil
+            } catch {
+                payPageError = error.localizedDescription
+            }
+        }
+    }
+
+    /// The page's API: the chain to connect the wallet on, this Mac's pool and payout state, signing a link
+    /// for the connected wallet, and the page's "done" (which refreshes the panel).
+    private func payAPI(_ request: PayServer.Request) async -> PayServer.Response {
+        switch (request.method, request.path) {
+        case ("GET", "/api/config"):
+            return .json(200, await payConfig())
+        case ("GET", "/api/colony"):
+            await payouts.refreshNow(pool: poolSeller)
+            return .json(200, colonyState())
+        case ("POST", "/api/colony/link"):
+            guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let wallet = body["payout"] as? String else { return .error(400, "Missing payout") }
+            guard await payouts.link(to: wallet, pool: poolSeller, copy: false), let link = payouts.pendingLink,
+                  let json = try? JSONEncoder().encode(link), let object = try? JSONSerialization.jsonObject(with: json) else {
+                return .error(400, payouts.linkError ?? "Could not sign the link")
+            }
+            return .json(200, object)
+        case ("POST", "/api/pay/completed"):
+            payouts.refresh(pool: poolSeller)
+            return .json(200, ["ok": true])
+        default:
+            return .error(404, "Not found")
+        }
+    }
+
+    /// The payments page's network settings (its PaymentConfig): only the chain and RPC matter for these steps.
+    private func payConfig() async -> [String: Any] {
+        var chainId = trustedChainId
+        if chainId == nil { chainId = try? await Chain(rpcURLs: config.rpcURLs, timeout: 5).chainId() }
+        let id = chainId ?? 8453
+        let names: [UInt64: String] = [8453: "base-mainnet", 84532: "base-sepolia", 31337: "base-local"]
+        let none = NSNull()
+        return [
+            "chainId": names[id] ?? "chain-\(id)", "evmChainId": id, "rpcUrl": config.rpcURLs.first?.absoluteString ?? "",
+            "depositsContractAddress": "", "channelsContractAddress": trustedChannels ?? "", "usdcContractAddress": "",
+            "emissionsContractAddress": none, "legacyEmissionsContractAddress": none, "usageAccountingAddress": none,
+            "usageRewardsAddress": none, "recognizedUsageEffectiveEpoch": none, "antsTokenAddress": none,
+            "networkStatsUrl": none, "evmAddress": none,
+        ]
+    }
+
+    private func colonyState() -> [String: Any] {
+        let claim: Any = payouts.rewards.map {
+            [
+                "usdc": ColonyRewards.integerString($0.usdc), "ants": ColonyRewards.integerString($0.ants),
+                "antsEpochs": $0.antsEpochs, "unpulledEpochs": $0.unpulledEpochs,
+            ] as [String: Any]
+        } ?? NSNull()
+        return ["pool": poolSeller ?? NSNull(), "worker": address, "payout": payouts.payout ?? NSNull(), "claim": claim]
+    }
+
     // MARK: pool connection
 
     /// Join the pool the owner entered (saved for later launches), leaving the current one.
@@ -734,9 +807,12 @@ final class WorkerController: ObservableObject {
 
     private func startPolling() {
         Task {
+            var tick = 0
             while true {
                 requestStats()
-                if payouts.pendingLink != nil { payouts.refresh(pool: poolSeller) }
+                // A pending link waits on the owner's transaction; otherwise rewards change only as the pool settles.
+                if payouts.pendingLink != nil || tick % 6 == 0 { payouts.refresh(pool: poolSeller) }
+                tick += 1
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
         }

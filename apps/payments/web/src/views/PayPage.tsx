@@ -5,14 +5,15 @@ import { PayCheckoutDeposit } from '../components/PayCheckoutDeposit';
 import { PayCheckoutWithdraw } from '../components/PayCheckoutWithdraw';
 import { PayChannelClose } from '../components/PayChannelClose';
 import { PayShareFreeTier } from '../components/PayShareFreeTier';
+import { PayColonyClaim, PayColonyLink, formatAnts, useColony } from '../components/PayColony';
 import { openRewardsDashboard } from '../api';
 import { Button } from '@antseed/ui';
 import { notifyPaymentCompleted } from '../api';
-import { truncateAddress } from '../utils/format';
+import { formatUsd, truncateAddress } from '../utils/format';
 import { getExplorerTxUrl } from '../utils/txLink';
 import './PayPage.scss';
 
-export type PayPageAction = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel' | 'share-free-tier';
+export type PayPageAction = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel' | 'share-free-tier' | 'colony-link' | 'colony-claim';
 
 /**
  * 'app' — user's real browser launched chromeless (`--app=`): extension
@@ -63,6 +64,16 @@ const COPY: Record<PayPageAction, { eyebrow: string; title: string; subtitle: st
     title: 'Share your stake',
     subtitle: 'Let this account use your ANTS stake for larger free allowances on the sellers you stake on.',
   },
+  'colony-link': {
+    eyebrow: 'Antseed Colony',
+    title: 'Link your wallet',
+    subtitle: 'Send this Mac’s earnings from its pool to your wallet.',
+  },
+  'colony-claim': {
+    eyebrow: 'Antseed Colony',
+    title: 'Claim Mac earnings',
+    subtitle: 'Claim the USDC and ANTS this Mac earned to its payout wallet.',
+  },
 };
 
 function LockIcon() {
@@ -93,6 +104,8 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
   const [amount, setAmount] = useState(() =>
     amountParam && Number(amountParam) > 0 ? amountParam : action === 'deposit' ? '10' : '');
   const { requireAuthorization, operatorSet } = useAuthorizedWallet();
+  const colonyAction = action === 'colony-link' || action === 'colony-claim';
+  const { colony, error: colonyError, reload: reloadColony } = useColony(colonyAction);
 
   // Withdraw defaults to the full available balance once it loads.
   useEffect(() => {
@@ -199,6 +212,24 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                   <dd>{buyerEvmAddress ? <code>{truncateAddress(buyerEvmAddress)}</code> : '—'}</dd>
                 </div>
               )}
+              {colonyAction && (
+                <div className="pay-checkout-fact">
+                  <dt>Mac</dt>
+                  <dd>{colony ? <code>{truncateAddress(colony.worker)}</code> : '—'}</dd>
+                </div>
+              )}
+              {colonyAction && (
+                <div className="pay-checkout-fact">
+                  <dt>Pays to</dt>
+                  <dd>{colony?.payout ? <code>{truncateAddress(colony.payout)}</code> : 'No wallet yet'}</dd>
+                </div>
+              )}
+              {action === 'colony-claim' && colony?.claim && (
+                <div className="pay-checkout-fact">
+                  <dt>Claimable</dt>
+                  <dd>${formatUsd(Number(colony.claim.usdc) / 1e6)} USDC · {formatAnts(BigInt(colony.claim.ants))} ANTS</dd>
+                </div>
+              )}
               {action === 'claim' && (
                 <div className="pay-checkout-fact">
                   <dt>Account</dt>
@@ -243,12 +274,15 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                       : action === 'claim' ? 'Rewards claimed'
                         : action === 'close-channel' ? 'Channel updated'
                           : action === 'share-free-tier' ? 'Free tier shared'
-                          : 'Wallet authorized'}
+                          : action === 'colony-link' ? 'Wallet linked'
+                            : action === 'colony-claim' ? 'Earnings claimed'
+                              : 'Wallet authorized'}
                 </h2>
                 <p>
                   {action === 'share-free-tier'
                     ? 'Your buyer starts sending it to sellers within a minute.'
-                    : 'Your credits are updating in the app.'}
+                    : colonyAction ? 'Antseed Colony is updating.'
+                      : 'Your credits are updating in the app.'}
                   {popup ? ' This window closes automatically.' : ' You can close this window.'}
                 </p>
                 {explorerUrl && (
@@ -302,6 +336,19 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                     <PayShareFreeTier config={config} onShared={() => setDone(true)} />
                   </>
                 )}
+                {colonyAction && colonyError && <div className="pc-pay-error" role="alert">{colonyError}</div>}
+                {action === 'colony-link' && (
+                  <>
+                    <p className="pay-checkout-subtitle">{copy.subtitle}</p>
+                    <PayColonyLink config={config} colony={colony} onDone={handleDeposited} />
+                  </>
+                )}
+                {action === 'colony-claim' && (
+                  <>
+                    <p className="pay-checkout-subtitle">{copy.subtitle}</p>
+                    <PayColonyClaim config={config} colony={colony} onDone={handleDeposited} reload={reloadColony} />
+                  </>
+                )}
                 {action === 'authorize' && (
                   <>
                     <p className="pay-checkout-subtitle">{copy.subtitle}</p>
@@ -323,6 +370,12 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
               <li>A signature only — no gas, and no funds or positions move.</li>
               <li>It names this buyer account, so no one else can use it.</li>
               <li>Expires after 90 days. Sign again to renew.</li>
+            </>
+          ) : colonyAction ? (
+            <>
+              <li>Non-custodial — the pool contract pays your wallet directly; no one else holds your earnings.</li>
+              <li>The link is signed by this Mac's own key, for the wallet you connect only.</li>
+              <li>Runs on Base — low fees, settles in seconds.</li>
             </>
           ) : (
             <>
@@ -348,7 +401,7 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
       </main>
 
       <footer className="pay-checkout-footer">
-        Opened by Antseed Desktop · antseed.com
+        Opened by {colonyAction ? 'Antseed Colony' : 'Antseed Desktop'} · antseed.com
       </footer>
     </div>
   );

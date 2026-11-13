@@ -122,7 +122,7 @@ struct Chain {
         return word.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
     }
 
-    private static func addressWord(_ address: String) throws -> Data {
+    static func addressWord(_ address: String) throws -> Data {
         Data(repeating: 0, count: 12) + (try Data(hexString: address))
     }
 
