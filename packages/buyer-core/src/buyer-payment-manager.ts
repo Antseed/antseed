@@ -752,9 +752,9 @@ export class BuyerPaymentManager {
     if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // A SpendingAuth committed while this one was signed already signed past the target.
     if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
-    // Reopening takes everything signed so far as verified. The seller's 402
-    // asked for all it had served, so the requests recorded before now are
-    // paid: counting one on top later would pay for it twice.
+    // Reopening counted the requests recorded before now toward verified
+    // cost. The seller's 402 asked for all it had served, so they are paid:
+    // counting one on top later would pay for it twice.
     if (reopened.verifiedCost !== (this._verifiedCost.get(sellerPeerId) ?? 0n)) this._requestLedgers.delete(sellerPeerId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
@@ -943,31 +943,36 @@ export class BuyerPaymentManager {
     context: 'extendCurrentSpendingAuth' | 'handleNeedAuth',
     verifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n,
   ): { maxSignable: bigint; verifiedCost: bigint } {
-    // Overdraft-window unblock: when the buyer has already signed up to
-    // `verified + maxPerRequest` and the seller returned 402 because `spent`
-    // caught up, advance `verifiedCost` to the current signed cumulative so
-    // the window reopens. The buyer has already committed to pay
-    // `currentCumulative` via the signed SpendingAuth, so the seller can
-    // already claim that much on-chain — advancing verified to match doesn't
-    // expose new funds, it just reclaims overdraft headroom.
+    // A catch-up 402 on a used-up overdraft window (the buyer has signed up to
+    // `verified + maxPerRequest`) reopens it only for what the buyer has
+    // recorded as received and not yet paid for: each open ledger record with
+    // a cost, at the buyer's own cost within the tolerance, the most a
+    // NeedAuth for it could count. Verified cost advances by that, and never
+    // past `currentCumulative`, which the seller can already claim on-chain.
+    // With nothing owed the window stays used up and nothing more is signed.
     //
-    // SECURITY: the trust anchor here is `currentCumulative`, NOT any
-    // seller-supplied target. A malicious seller could overstate required
-    // spend in a 402 / NeedAuth path in an attempt to drain the reserve. We
-    // defend by only advancing verifiedCost to the amount the buyer has
-    // already signed. Seller-provided values remain destination hints bounded
-    // by `verifiedCost + maxPerRequestUsdc` and are never used to mint new
-    // trust directly.
+    // SECURITY: the trust anchor here is the buyer's own ledger, bounded by
+    // `currentCumulative`, NOT any seller-supplied target. The seller's
+    // target is only a destination bounded by the reopened window, and is
+    // never counted as verified cost.
     if (maxSignable > currentCumulative) return { maxSignable, verifiedCost };
 
     if (currentCumulative <= verifiedCost) return { maxSignable, verifiedCost };
 
-    const reopened = this._maxSignableForVerified(sellerPeerId, currentCumulative);
+    let owed = 0n;
+    for (const [requestId, record] of this._requestLedgers.get(sellerPeerId) ?? []) {
+      if (record.costCounted || record.costUsdc <= 0n) continue;
+      owed += BigInt(Math.ceil(Number(record.costUsdc) * this._costToleranceFor(this.getRequestBilling(requestId))));
+    }
+    if (owed === 0n) return { maxSignable, verifiedCost };
+
+    const nextVerifiedCost = verifiedCost + owed < currentCumulative ? verifiedCost + owed : currentCumulative;
+    const reopened = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     debugLog(
-      `[BuyerPayment] ${context}: will advance verifiedCost ${verifiedCost} → ${currentCumulative} ` +
-      `to unblock overdraft window for ${sellerPeerId.slice(0, 12)}...`,
+      `[BuyerPayment] ${context}: will advance verifiedCost ${verifiedCost} → ${nextVerifiedCost} ` +
+      `for received responses to reopen the overdraft window for ${sellerPeerId.slice(0, 12)}...`,
     );
-    return { maxSignable: reopened, verifiedCost: currentCumulative };
+    return { maxSignable: reopened, verifiedCost: nextVerifiedCost };
   }
 
   private _needsCeilingAdvance(requestedAmount: bigint, maxSignable: bigint, ceiling: bigint): boolean {
@@ -2163,7 +2168,7 @@ export class BuyerPaymentManager {
     // A NeedAuth never reopens a used-up overdraft window: the seller could
     // repeat the frame and have the buyer sign one more window each time,
     // with no work to show for it. Only the buyer's own 402 retry reopens it
-    // (extendCurrentSpendingAuth).
+    // (extendCurrentSpendingAuth), and only for responses the buyer received.
     if (maxSignable <= currentCumulative && !needsTopUp) {
       countUnsigned();
       debugWarn(

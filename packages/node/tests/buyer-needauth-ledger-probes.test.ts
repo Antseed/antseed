@@ -207,7 +207,7 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
     expect(signed(), 'paid on a channel that was not live when the response arrived').toBe(0n);
   });
 
-  it('adversarial seller, every kind of attempt and frame: never signed past 1.4x what the buyer recorded plus one window per (1 + buyer 402 retries) (300 random sessions)', async () => {
+  it('adversarial seller, every kind of attempt and frame: never verified past 1.4x what the buyer recorded, nor signed past one window above that, however many buyer 402 retries (300 random sessions)', async () => {
     /** mulberry32, so a failing sequence can be replayed by its seed. */
     const prng = (seed: number): (() => number) => {
       let state = seed >>> 0;
@@ -231,7 +231,6 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
       /** Everything the buyer recorded on this channel: prices of responses it received and caps of attempts it cut off. */
       let recorded = 0n;
       let records = 0;
-      let windows = 1n;
       let counter = 0;
       let madeUp = 0;
       const amount = (): bigint => BigInt(Math.floor(random() * 2_000_000));
@@ -312,7 +311,6 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
           log.push(`close-sign ${named}`);
           await signAtClose(named, ended.get(named)!);
         } else if (action === 'extend') {
-          windows += 1n;
           const target = signed() + amount();
           log.push(`402 extend target=${target}`);
           await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, target);
@@ -322,8 +320,8 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
           log.push(`covered ${named}`);
         }
         const verifiable = (recorded * 14n + 9n) / 10n + BigInt(records);
-        expect(verified(), `seed ${seed}: verified ${verified()} past what the buyer recorded (${recorded}) and ${windows - 1n} reopened windows\n${log.join('\n')}`)
-          .toBeLessThanOrEqual(verifiable + (windows - 1n) * WINDOW);
+        expect(verified(), `seed ${seed}: verified ${verified()} past what the buyer recorded (${recorded})\n${log.join('\n')}`)
+          .toBeLessThanOrEqual(verifiable);
         expect(signed(), `seed ${seed}: signed past verified + window\n${log.join('\n')}`).toBeLessThanOrEqual(verified() + WINDOW);
       }
     }
@@ -451,11 +449,13 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
     deliver('a', 100_000n);
     await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 550_000n);
     expect(signed()).toBe(550_000n);
+    // The retry reopened the window for A alone, at the buyer's price for it within the tolerance.
+    expect(verified()).toBe(140_000n);
     await sellerSends(claim('a', 100_000n, 650_000n));
     console.log(`[probe] response delivered during a reopening 402 retry: after its cost frame signed=${signed()} of 650000, verified=${verified()}`);
-    // The seller's catch-up prompt for the next request gets it paid, inside the window.
+    // The seller's catch-up prompt for the next request is signed up to the window above A.
     await sellerSends({ requiredCumulativeAmount: '650000' });
-    expect(signed()).toBe(650_000n);
+    expect(signed()).toBe(140_000n + WINDOW);
   });
 
   it('the buyer\'s signing before a close does not sign what a 402 retry already signed on top of what the seller served', async () => {

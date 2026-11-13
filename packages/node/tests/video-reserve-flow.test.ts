@@ -1428,7 +1428,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(signedByBuyerItself, 'the error answer was paid at close').toBe(CHAT_DELIVERED.toString());
   }, 30_000);
 
-  it('a seller billing a cut-off stream past what the request allows is paid through 402 retries, one window each', async () => {
+  it('a seller billing a cut-off stream past what the request allows is paid inside the overdraft window, and the next chat on a new channel', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const h = setup({ maxPerRequestUsdc: 200_000n, streamChat: streamedChat(7_000, gate, ['chat-2']) });
@@ -1442,16 +1442,32 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     release();
     await h.settle();
     expect(spentOnSession(h)).toBe(CHAT_DELIVERED + 700_000n);
+    // The mock streams 7,000 output tokens for a request that allows 1,000. The buyer counts chat-2
+    // at the most the request allows within the 1.4x tolerance ($0.14) and signs the rest of the claim
+    // only inside the $0.20 overdraft window: $0.10 + $0.14 + $0.20.
+    const firstChannel = h.sessionChannelId();
+    const signedOnFirst = 440_000n;
+    expect(h.buyer.getVerifiedCost(h.peer.peerId)).toBe(CHAT_DELIVERED + 140_000n);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(signedOnFirst);
 
     const startedAt = Date.now();
     const next = await h.send(h.chatRequest('chat-3'));
     const elapsed = Date.now() - startedAt;
     await h.settle();
     console.log(`[probe] $0.20 window, aborted $0.70 stream: next chat status=${next.statusCode} ${Buffer.from(next.body).toString().slice(0, 120)} after ${elapsed}ms; signed=${h.buyer.getCumulativeAmount(h.peer.peerId)} spent=${spentOnSession(h)}`);
-    // The mock streams 7,000 output tokens for a request that allows 1,000:
-    // the excess is not verifiable, so it waits for the buyer's 402 retries.
+    // The seller holds chat-3 for its catch-up wait, then answers 402 for the rest of chat-2. The buyer
+    // received nothing it has not paid for, so its retry signs nothing more: it retires the channel and
+    // pays chat-3 on a new one.
+    const highestSigned = (channelId: string): bigint => h.sentAuths
+      .filter((auth) => auth.channelId === channelId)
+      .reduce((highest, auth) => (BigInt(auth.cumulativeAmount) > highest ? BigInt(auth.cumulativeAmount) : highest), 0n);
+    expect(highestSigned(firstChannel), 'signed more on the first channel after the 402').toBe(signedOnFirst);
+    expect(h.buyerChannel(firstChannel)?.status).toBe('ghost');
+    expect(h.sessionChannelId()).not.toBe(firstChannel);
+    expect(h.reserve).toHaveBeenCalledTimes(2);
     expect(next.statusCode).toBe(200);
     expect(elapsed).toBeGreaterThanOrEqual(4_500);
+    expect(highestSigned(h.sessionChannelId())).toBe(CHAT_DELIVERED);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(spentOnSession(h));
   }, 60_000);
 
