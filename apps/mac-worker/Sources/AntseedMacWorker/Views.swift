@@ -1,29 +1,213 @@
+import AppKit
 import SwiftUI
+
+// The menubar panel, in the Antseed desktop app's look: warm paper and an olive
+// accent in light mode, deep navy and lime in dark, rounded cards, calm notices,
+// and the desktop's ant showing how the Mac is doing. Everything is drawn in
+// SwiftUI (no AppKit controls except text fields), so rendered snapshots match.
 
 private func short(_ address: String) -> String {
     address.count > 12 ? "\(address.prefix(6))…\(address.suffix(4))" : address
 }
 
-/// Drawn in SwiftUI (not an AppKit switch) so it also shows in rendered snapshots.
+/// Earnings in USDC (6 decimals): cents once there are some, four decimals below a cent.
+func usdShort(_ units: UInt64) -> String {
+    if units == 0 { return "$0.00" }
+    let value = Double(units) / 1_000_000
+    return value < 0.01 ? String(format: "$%.4f", value) : String(format: "$%.2f", value)
+}
+
+// MARK: theme
+
+/// The desktop app's tokens (apps/desktop global.scss), light and dark.
+enum Theme {
+    static let background = dynamic(light: 0xFBFAF6, dark: 0x0A0F22)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x121A36)
+    static let surface = dynamic(light: 0xF1EFE8, dark: 0x1A2140)
+    static let text = dynamic(light: 0x16181D, dark: 0xEEF0F7)
+    static let textSecondary = dynamic(light: 0x4B5058, dark: 0xB7BDD3)
+    static let textMuted = dynamic(light: 0x62676F, dark: 0x9AA1BA)
+    static let accent = dynamic(light: 0x5C8A12, dark: 0xC6F06A)
+    /// Text on the accent: white on olive, ink on lime.
+    static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x0A0F22)
+    static let amber = dynamic(light: 0xB47A14, dark: 0xE0A93B)
+    static let danger = dynamic(light: 0xDC3545, dark: 0xF07178)
+    static let border = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDark ? NSColor(white: 1, alpha: 0.11) : NSColor(red: 22 / 255, green: 24 / 255, blue: 29 / 255, alpha: 0.1)
+    })
+
+    private static func dynamic(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in rgb(appearance.isDark ? dark : light) })
+    }
+
+    private static func rgb(_ hex: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+}
+
+private extension NSAppearance {
+    var isDark: Bool { bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+}
+
+// MARK: building blocks
+
+/// The desktop's ant, in the mood that matches the worker's status.
+struct Mascot: View {
+    let status: WorkerStatus
+    var size: CGFloat = 52
+
+    var body: some View {
+        if let image = Self.image(Self.mood(status)) {
+            Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size * 1.2)
+        } else {
+            Image(systemName: "ant.fill").font(.system(size: size * 0.5)).foregroundStyle(Theme.accent)
+                .frame(width: size, height: size * 1.2)
+        }
+    }
+
+    static func mood(_ status: WorkerStatus) -> String {
+        switch status {
+        case .serving: "happy"
+        case .failed: "oops"
+        case .starting, .loadingModel, .connecting: "think"
+        case .paused, .needsPool, .choosingModel: "idle"
+        }
+    }
+
+    /// Bundled in Contents/Resources/mascot by scripts/build-app.sh; from the source tree in development.
+    private static func image(_ mood: String) -> NSImage? {
+        let bundled = Bundle.main.resourceURL?.appendingPathComponent("mascot/\(mood).png")
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/mascot/\(mood).png")
+        return [bundled, source].compactMap { $0 }.lazy.compactMap { NSImage(contentsOf: $0) }.first
+    }
+}
+
+/// The desktop's toggle: accent when on.
 struct ShareSwitch: View {
     @Binding var isOn: Bool
 
     var body: some View {
         Capsule()
-            .fill(isOn ? Color.green : Color.gray.opacity(0.4))
-            .frame(width: 34, height: 20)
+            .fill(isOn ? Theme.accent : Theme.border)
+            .frame(width: 36, height: 21)
             .overlay(alignment: isOn ? .trailing : .leading) {
-                Circle().fill(.white).frame(width: 16, height: 16).padding(2).shadow(radius: 1)
+                Circle().fill(isOn ? Theme.onAccent : Color.white).frame(width: 17, height: 17).padding(2)
+                    .shadow(color: .black.opacity(0.15), radius: 1, y: 0.5)
             }
             .animation(.easeOut(duration: 0.15), value: isOn)
+            .contentShape(Capsule())
             .onTapGesture { isOn.toggle() }
             .accessibilityLabel("Share this Mac")
+            .accessibilityValue(isOn ? "On" : "Off")
             .accessibilityAddTraits(.isButton)
     }
 }
 
+/// A pill button: the accent for the main action, an outline otherwise.
+struct PillButton: View {
+    let title: String
+    var primary = true
+    let action: () -> Void
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(primary ? Theme.onAccent : Theme.text)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(primary ? Theme.accent : Color.clear))
+            .overlay(Capsule().stroke(primary ? Color.clear : Theme.border))
+            .contentShape(Capsule())
+            .onTapGesture(perform: action)
+            .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// A text link in the accent colour.
+struct TextLink: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Text(title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.accent)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
+            .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// A rounded card on the panel's background.
+struct Card<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Theme.card))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border))
+    }
+}
+
+/// One row of a settings card: a label, its value, and an optional action on the right.
+struct SettingRow<Detail: View>: View {
+    let icon: String
+    let title: String
+    let value: String
+    var actionTitle: String?
+    var action: () -> Void = {}
+    @ViewBuilder var detail: Detail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textMuted).frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text(value).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if let actionTitle { TextLink(title: actionTitle, action: action) }
+            }
+            detail
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+}
+
+extension SettingRow where Detail == EmptyView {
+    init(icon: String, title: String, value: String, actionTitle: String? = nil, action: @escaping () -> Void = {}) {
+        self.init(icon: icon, title: title, value: value, actionTitle: actionTitle, action: action) { EmptyView() }
+    }
+}
+
+/// A text field drawn in the panel's style; snapshots get a drawn stand-in (ImageRenderer can't draw AppKit fields).
+struct InputField: View {
+    let placeholder: String
+    @Binding var text: String
+    var snapshot = false
+    var onSubmit: () -> Void = {}
+
+    var body: some View {
+        Group {
+            if snapshot {
+                Text(text.isEmpty ? placeholder : text).foregroundStyle(text.isEmpty ? Theme.textMuted : Theme.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                TextField(placeholder, text: $text).textFieldStyle(.plain).onSubmit(onSubmit)
+            }
+        }
+        .font(.system(size: 12, design: .monospaced))
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+    }
+}
+
+// MARK: the panel
+
 /// The whole app: a menubar panel. Earnings history and claims live in the
-/// ANTS dashboard; this only shows whether the Mac is working and links there.
+/// ANTS dashboard; this shows whether the Mac is working and what it earns.
 struct MenuPanel: View {
     @ObservedObject var worker: WorkerController
     /// ImageRenderer cannot draw AppKit controls; snapshots get drawn stand-ins.
@@ -33,43 +217,24 @@ struct MenuPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Circle().fill(worker.status.color).frame(width: 8, height: 8)
-                Text(worker.status.label).font(.system(size: 13, weight: .medium))
-                Spacer()
-                ShareSwitch(isOn: $worker.sharing)
-            }
-            HStack {
-                Text("Earned today (est.)").foregroundStyle(.secondary)
-                Spacer()
-                Text(usd(worker.stats.earnedToday)).monospacedDigit()
-            }
-            .font(.system(size: 12))
-            ModelView(worker: worker, snapshot: snapshot)
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: worker.protection.hardened ? "lock.fill" : "lock.open")
-                    .foregroundStyle(worker.protection.hardened ? Color.green : Color.orange)
-                Text(worker.protection.summary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            .font(.system(size: 11))
-            Divider()
-            PoolView(worker: worker, snapshot: snapshot)
-            // A payout link names the pool contract, so it is signed once the app has joined one.
-            if worker.poolSeller != nil {
-                Divider()
-                PayoutLinkView(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
-            }
-            HStack {
-                Spacer()
-                if snapshot {
-                    Text("Quit").font(.system(size: 12)).foregroundStyle(Color.accentColor)
-                } else {
-                    Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.link).font(.system(size: 12))
+            header
+            EarningsCard(worker: worker)
+            Card {
+                ModelRow(worker: worker, snapshot: snapshot)
+                Divider().overlay(Theme.border)
+                PoolRow(worker: worker, snapshot: snapshot)
+                // A payout link names the pool contract, so it is signed once the app has joined one.
+                if worker.poolSeller != nil {
+                    Divider().overlay(Theme.border)
+                    PayoutRow(payouts: worker.payouts, pool: worker.poolSeller, snapshot: snapshot)
                 }
             }
+            ProtectionNotice(protection: worker.protection)
+            footer
         }
         .padding(14)
-        .frame(width: 280)
+        .frame(width: 320)
+        .background(Theme.background)
         .fixedSize(horizontal: false, vertical: true)
         .background(GeometryReader { geometry in
             Color.clear.preference(key: PanelHeightKey.self, value: geometry.size.height)
@@ -77,7 +242,227 @@ struct MenuPanel: View {
         .onPreferenceChange(PanelHeightKey.self) { height = $0 }
         .background(FitWindowToContent(height: height))
     }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Mascot(status: worker.status, size: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Antseed Colony").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                HStack(spacing: 6) {
+                    Circle().fill(statusColor).frame(width: 7, height: 7)
+                    Text(worker.status.label).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            ShareSwitch(isOn: $worker.sharing)
+        }
+    }
+
+    private var statusColor: Color {
+        switch worker.status {
+        case .serving: Theme.accent
+        case .failed: Theme.danger
+        case .paused, .needsPool, .choosingModel: Theme.amber
+        default: Theme.textMuted
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Spacer()
+            TextLink(title: "Help") { if !snapshot { NSWorkspace.shared.open(URL(string: "https://antseed.com/docs/local-ai/mac")!) } }
+            TextLink(title: "Quit") { if !snapshot { NSApp.terminate(nil) } }
+                .padding(.leading, 10)
+        }
+    }
 }
+
+/// Today's estimate, large, with the week and the requests served under it.
+struct EarningsCard: View {
+    @ObservedObject var worker: WorkerController
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Earned today").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(usdShort(worker.stats.earnedToday))
+                    .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(Theme.text)
+                HStack(spacing: 14) {
+                    stat("7 days", usdShort(worker.stats.earnedLast7Days))
+                    stat("All time", usdShort(worker.stats.earnedTotal))
+                    stat("Requests", "\(worker.stats.requestsTotal)")
+                }
+                .padding(.top, 4)
+            }
+            .padding(14)
+        }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+            Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(Theme.textSecondary)
+        }
+    }
+}
+
+/// What protects prompts on this Mac, as one calm line: a coloured dot, the summary and a link.
+struct ProtectionNotice: View {
+    let protection: Protection.Report
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(protection.hardened ? Theme.accent : Theme.amber).frame(width: 7, height: 7)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 3 }
+            Text(protection.summary).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 4)
+    }
+}
+
+// MARK: rows
+
+/// The model this Mac runs, and the pool's models to pick from.
+struct ModelRow: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    @State private var picking = false
+
+    var body: some View {
+        let choice = worker.choice
+        let canChange = worker.poolModels.contains { $0 != choice }
+        let showList = !worker.poolModels.isEmpty && (choice == nil || picking)
+        SettingRow(icon: "cpu", title: "Model",
+                   value: choice.map { "\($0.displayName) · \($0.service)" } ?? (worker.poolModels.isEmpty ? "Chosen from the pool you join" : "Choose one below"),
+                   actionTitle: picking ? "Cancel" : (choice != nil && canChange ? "Change" : nil),
+                   action: { picking.toggle() }) {
+            if showList {
+                VStack(spacing: 6) {
+                    ForEach(worker.poolModels, id: \.self) { offer in option(offer) }
+                }
+            }
+        }
+    }
+
+    private func option(_ offer: ModelChoice) -> some View {
+        let size = worker.modelSizes[offer.model]
+        let fits = size.map { ModelSize.fits($0) } ?? true
+        let current = offer == worker.choice
+        return HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(offer.displayName).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1)
+                Text(fits ? offer.service : "\(offer.service) · needs more memory")
+                    .font(.system(size: 10.5)).foregroundStyle(fits ? Theme.textMuted : Theme.amber)
+            }
+            Spacer(minLength: 6)
+            if let size { Text(ModelSize.label(size)).font(.system(size: 11)).monospacedDigit().foregroundStyle(Theme.textMuted) }
+            Image(systemName: current ? "checkmark.circle.fill" : "arrow.down.circle")
+                .foregroundStyle(current ? Theme.accent : Theme.textMuted)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(current ? Theme.accent.opacity(0.1) : Theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(current ? Theme.accent.opacity(0.5) : Color.clear))
+        .opacity(fits ? 1 : 0.55)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard fits, !snapshot else { return }
+            picking = false
+            worker.choose(offer)
+        }
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// The pool this Mac joins, and a form to enter or change it.
+struct PoolRow: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    @State private var address = ""
+    @State private var editing = false
+    @State private var error: String?
+
+    var body: some View {
+        let pool = worker.poolURL
+        let showForm = pool == nil || editing
+        SettingRow(icon: "point.3.connected.trianglepath.dotted", title: "Pool",
+                   value: pool.map { $0.host ?? $0.absoluteString } ?? "Not joined",
+                   actionTitle: pool == nil ? nil : (editing ? "Cancel" : "Change"),
+                   action: {
+                       if editing { editing = false; error = nil } else { address = pool?.absoluteString ?? ""; editing = true }
+                   }) {
+            if showForm {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        InputField(placeholder: "wss://pool address from its operator", text: $address, snapshot: snapshot, onSubmit: join)
+                        PillButton(title: "Join", action: join)
+                    }
+                    if let error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger) }
+                }
+            }
+        }
+    }
+
+    private func join() {
+        guard !snapshot else { return }
+        error = worker.join(pool: address)
+        if error == nil { editing = false }
+    }
+}
+
+/// The payout wallet: the one the pool pays, a link waiting to be pasted, or a form to link one.
+struct PayoutRow: View {
+    @ObservedObject var payouts: WorkerPayoutController
+    let pool: String?
+    var snapshot = false
+    @State private var wallet = ""
+    @State private var changing = false
+
+    var body: some View {
+        if let link = payouts.pendingLink, !changing {
+            SettingRow(icon: "wallet.pass", title: "Payouts", value: "Linking \(short(link.payout))",
+                       actionTitle: "Change", action: { changing = true }) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(payouts.linkCopied
+                         ? "Code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
+                         : "Paste this Mac's link code in Rewards → Link a Mac, in the Antseed app or `antseed ants`.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+                    PillButton(title: payouts.linkCopied ? "Copy again" : "Copy link code") { if !snapshot { payouts.copyLinkCode() } }
+                }
+            }
+        } else if let payout = payouts.payout, !changing {
+            SettingRow(icon: "wallet.pass", title: "Payouts", value: "Pays to \(short(payout))",
+                       actionTitle: "Change", action: { changing = true }) {
+                Text("Claim in Rewards, in the Antseed app or `antseed ants`.")
+                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            }
+        } else {
+            SettingRow(icon: "wallet.pass", title: "Payouts", value: "No wallet linked",
+                       actionTitle: changing ? "Cancel" : nil, action: { changing = false }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        InputField(placeholder: "0x… wallet for your earnings", text: $wallet, snapshot: snapshot, onSubmit: link)
+                        PillButton(title: "Link", action: link)
+                    }
+                    if let error = payouts.linkError {
+                        Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger)
+                    }
+                }
+            }
+        }
+    }
+
+    private func link() {
+        guard !snapshot else { return }
+        // The form stays open, with the error, until a new link is signed.
+        Task { if await payouts.link(to: wallet, pool: pool) { changing = false } }
+    }
+}
+
+// MARK: window sizing
 
 private struct PanelHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
@@ -103,188 +488,5 @@ private struct FitWindowToContent: NSViewRepresentable {
             frame.size.height = target
             window.setFrame(frame, display: true, animate: false)
         }
-    }
-}
-
-/// The model this Mac runs, and the pool's models to pick from.
-struct ModelView: View {
-    @ObservedObject var worker: WorkerController
-    var snapshot = false
-    @State private var picking = false
-
-    var body: some View {
-        if let choice = worker.choice, !picking {
-            HStack {
-                Text("Model").foregroundStyle(.secondary)
-                Spacer()
-                Text(choice.displayName).lineLimit(1).truncationMode(.middle)
-            }
-            .font(.system(size: 12))
-            if worker.poolModels.contains(where: { $0 != choice }) {
-                link("Change model") { picking = true }
-            }
-        } else if !worker.poolModels.isEmpty {
-            Text("Choose the model this Mac runs").font(.system(size: 12)).foregroundStyle(.secondary)
-            ForEach(worker.poolModels, id: \.self) { offer in
-                row(offer)
-            }
-            if picking { link("Cancel") { picking = false } }
-        } else {
-            HStack {
-                Text("Model").foregroundStyle(.secondary)
-                Spacer()
-                Text("Chosen from the pool you join").foregroundStyle(.tertiary)
-            }
-            .font(.system(size: 12))
-        }
-    }
-
-    private func row(_ offer: ModelChoice) -> some View {
-        let size = worker.modelSizes[offer.model]
-        let fits = size.map { ModelSize.fits($0) } ?? true
-        let current = offer == worker.choice
-        return HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(offer.service).font(.system(size: 12, weight: .medium))
-                Text(offer.displayName).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                if let size { Text(ModelSize.label(size)).font(.system(size: 11)).monospacedDigit() }
-                if !fits { Text("needs more memory").font(.system(size: 10)).foregroundStyle(.orange) }
-                if current { Text("running").font(.system(size: 10)).foregroundStyle(.green) }
-            }
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(current ? 0.6 : 0.25)))
-        .opacity(fits ? 1 : 0.5)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard fits, !snapshot else { return }
-            picking = false
-            worker.choose(offer)
-        }
-        .accessibilityAddTraits(.isButton)
-    }
-
-    private func link(_ title: String, action: @escaping () -> Void) -> some View {
-        Text(title).font(.system(size: 11)).foregroundStyle(Color.accentColor)
-            .onTapGesture { if !snapshot { action() } }
-            .accessibilityAddTraits(.isButton)
-    }
-}
-
-/// The pool this Mac joins, and a form to enter or change it.
-struct PoolView: View {
-    @ObservedObject var worker: WorkerController
-    var snapshot = false
-    @State private var address = ""
-    @State private var editing = false
-    @State private var error: String?
-
-    var body: some View {
-        if let pool = worker.poolURL, !editing {
-            HStack {
-                Text("Pool").foregroundStyle(.secondary)
-                Spacer()
-                Text(pool.host ?? pool.absoluteString).lineLimit(1).truncationMode(.middle)
-            }
-            .font(.system(size: 12))
-            if snapshot {
-                Text("Change pool").font(.system(size: 11)).foregroundStyle(Color.accentColor)
-            } else {
-                Button("Change pool") { address = pool.absoluteString; editing = true }.buttonStyle(.link).font(.system(size: 11))
-            }
-        } else {
-            Text("Pool address, from its operator").font(.system(size: 12)).foregroundStyle(.secondary)
-            HStack {
-                if snapshot {
-                    Text("wss://…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary)
-                        .padding(.horizontal, 6).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.4)))
-                    Text("Join").font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
-                } else {
-                    TextField("wss://…", text: $address).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
-                        .onSubmit(join)
-                    Button("Join", action: join).controlSize(.small)
-                }
-            }
-            if let error {
-                Text(error).font(.system(size: 11)).foregroundStyle(.red)
-            }
-            if editing && !snapshot {
-                Button("Cancel") { editing = false; error = nil }.buttonStyle(.link).font(.system(size: 11))
-            }
-        }
-    }
-
-    private func join() {
-        error = worker.join(pool: address)
-        if error == nil { editing = false }
-    }
-}
-
-/// The payout wallet: the one the pool pays, a link waiting to be submitted, or a form to link one.
-struct PayoutLinkView: View {
-    @ObservedObject var payouts: WorkerPayoutController
-    let pool: String?
-    var snapshot = false
-    @State private var wallet = ""
-    /// The owner chose to link another wallet.
-    @State private var changingPayout = false
-
-    var body: some View {
-        if let link = payouts.pendingLink, !changingPayout {
-            Text("Linking \(short(link.payout))").font(.system(size: 12)).foregroundStyle(.secondary)
-            Text(payouts.linkCopied
-                 ? "Link code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
-                 : "Not linked yet: paste the link code in Rewards in the Antseed app or `antseed ants`.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            payoutActions(primary: "Copy code") { payouts.copyLinkCode() }
-        } else if let payout = payouts.payout, !changingPayout {
-            Text("Pays to \(short(payout))").font(.system(size: 12)).foregroundStyle(.secondary)
-            Text("Earnings and claims: Rewards in the Antseed app or `antseed ants`.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            payoutActions(primary: nil) {}
-        } else {
-            Text("Link the wallet your earnings go to").font(.system(size: 12)).foregroundStyle(.secondary)
-            HStack {
-                if snapshot {
-                    Text("0x…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary)
-                        .padding(.horizontal, 6).frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.4)))
-                    Text("Link").font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
-                } else {
-                    TextField("0x…", text: $wallet).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
-                    Button("Link") {
-                        // The editor stays open, with the error, until a new link is signed.
-                        Task { if await payouts.link(to: wallet, pool: pool) { changingPayout = false } }
-                    }.controlSize(.small)
-                }
-            }
-            if let error = payouts.linkError {
-                Text(error).font(.system(size: 11)).foregroundStyle(.red)
-            }
-            if changingPayout && !snapshot {
-                Button("Cancel") { changingPayout = false }.buttonStyle(.link).font(.system(size: 11))
-            }
-        }
-    }
-
-    /// Text links under the payout line: an optional primary action, then Change.
-    @ViewBuilder
-    private func payoutActions(primary: String?, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 12) {
-            if snapshot {
-                if let primary { Text(primary).foregroundStyle(Color.accentColor) }
-                Text("Change wallet").foregroundStyle(Color.accentColor)
-            } else {
-                if let primary { Button(primary, action: action).buttonStyle(.link) }
-                Button("Change wallet") { changingPayout = true }.buttonStyle(.link)
-            }
-        }
-        .font(.system(size: 11))
     }
 }

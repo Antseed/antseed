@@ -43,7 +43,7 @@ enum Snapshots {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         Task { @MainActor in
             while true {
-                write(MenuPanel(worker: worker, snapshot: true).background(Color(nsColor: .windowBackgroundColor)), to: directory.appendingPathComponent("menu.png"))
+                write(MenuPanel(worker: worker, snapshot: true), to: directory.appendingPathComponent("menu.png"))
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -52,7 +52,10 @@ enum Snapshots {
     private static func write(_ view: some View, to url: URL) {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .dark))
         renderer.scale = 2
-        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+        // The panel's colours follow the appearance they are drawn in: render in dark, like the menubar.
+        var rendered: NSImage?
+        (NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()).performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
+        guard let image = rendered, let tiff = image.tiffRepresentation,
               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: url, options: .atomic)
     }

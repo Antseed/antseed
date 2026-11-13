@@ -43,15 +43,6 @@ enum WorkerStatus: Equatable {
         if rejected.contains(service) { return .failed("The pool doesn't accept \(service) with this model") }
         return sharing ? .serving : .paused
     }
-
-    var color: Color {
-        switch self {
-        case .serving: .green
-        case .paused: .orange
-        case .failed: .red
-        default: .secondary
-        }
-    }
 }
 
 /// Runs the worker: keeps a connection to the pool, serves its encrypted
@@ -752,6 +743,3 @@ final class WorkerController: ObservableObject {
     }
 }
 
-func usd(_ units: UInt64) -> String {
-    String(format: "$%.6f", Double(units) / 1_000_000)
-}

@@ -11,4 +11,17 @@ final class WorkerStatusTests: XCTestCase {
         // Offering nothing on purpose stays paused.
         XCTAssertEqual(WorkerStatus.joined(sharing: false, service: "qwen", rejected: []), .paused)
     }
+
+    func testPanelShowsCentsOnceThereAreSomeAndFourDecimalsBelow() {
+        XCTAssertEqual(usdShort(0), "$0.00")
+        XCTAssertEqual(usdShort(9_527), "$0.0095")
+        XCTAssertEqual(usdShort(1_234_567), "$1.23")
+    }
+
+    func testTheAntsMoodFollowsTheStatus() {
+        XCTAssertEqual(Mascot.mood(.serving), "happy")
+        XCTAssertEqual(Mascot.mood(.loadingModel(0.5)), "think")
+        XCTAssertEqual(Mascot.mood(.choosingModel), "idle")
+        XCTAssertEqual(Mascot.mood(.failed("x")), "oops")
+    }
 }
