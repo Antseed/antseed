@@ -321,6 +321,26 @@ describe('LocalRouter', () => {
     expect(selected?.peerId).toBe(peerB.peerId);
   });
 
+  it('rotates each model on its own when the same sellers tie', () => {
+    const router = new LocalRouter({
+      maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } },
+    });
+    const low = makePeer({ peerId: '1'.repeat(40) as PeerInfo['peerId'] });
+    const high = makePeer({ peerId: 'f'.repeat(40) as PeerInfo['peerId'] });
+    const modelA: string[] = [];
+    const modelB: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(router.selectPeer(makeRequest('model-a'), [high, low])?.peerId ?? '');
+      modelB.push(router.selectPeer(makeRequest('model-b'), [high, low])?.peerId ?? '');
+    }
+    expect(new Set(modelA).size).toBe(2);
+    expect(new Set(modelB).size).toBe(2);
+    for (let i = 1; i < modelA.length; i += 1) {
+      expect(modelA[i]).not.toBe(modelA[i - 1]);
+      expect(modelB[i]).not.toBe(modelB[i - 1]);
+    }
+  });
+
   it('falls back to provider defaults when request service is absent', () => {
     const router = new LocalRouter({
       maxPricing: {

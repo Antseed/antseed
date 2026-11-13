@@ -6,6 +6,7 @@ import {
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   normalizedModelReputationScore,
+  rotateEqualReputationHead,
   verificationServiceKey,
 } from '../src/reputation/model-reputation.js';
 
@@ -74,5 +75,74 @@ describe('model reputation', () => {
     ];
     expect(offers.sort(compareEffectiveModelReputation).map((offer) => offer.peerId))
       .toEqual(['venice', 'apex', 'flash']);
+  });
+
+  it('rotates a reputation tie and leaves a higher score in front', () => {
+    const alpha = { peerId: 'a', effectiveReputationScore: 80 };
+    const beta = { peerId: 'b', effectiveReputationScore: 80 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const first = rotateEqualReputationHead([...tied]).map((offer) => offer.peerId);
+    const second = rotateEqualReputationHead([...tied]).map((offer) => offer.peerId);
+    expect(new Set([first[0], second[0]])).toEqual(new Set(['a', 'b']));
+    expect(first[1]).not.toBe(first[0]);
+
+    const ahead = { peerId: 'a', effectiveReputationScore: 90 };
+    const ordered = [beta, ahead].sort(compareEffectiveModelReputation);
+    const picks = Array.from({ length: 4 }, () => rotateEqualReputationHead([...ordered])[0]?.peerId);
+    expect(picks).toEqual(['a', 'a', 'a', 'a']);
+  });
+
+  it('returns an empty reputation list unchanged', () => {
+    expect(rotateEqualReputationHead([])).toEqual([]);
+  });
+
+  it('peeks the next seller without spending that turn', () => {
+    const alpha = { peerId: 'p', effectiveReputationScore: 80 };
+    const beta = { peerId: 'q', effectiveReputationScore: 80 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const preview = rotateEqualReputationHead([...tied], { advance: false, key: 'preview-model' })[0]?.peerId;
+    const live = rotateEqualReputationHead([...tied], { key: 'preview-model' })[0]?.peerId;
+    const nextLive = rotateEqualReputationHead([...tied], { key: 'preview-model' })[0]?.peerId;
+    expect(preview).toBe(live);
+    expect(nextLive).not.toBe(live);
+    expect(new Set([live, nextLive])).toEqual(new Set(['p', 'q']));
+  });
+
+  it('rotates two models that share sellers on their own', () => {
+    const alpha = { peerId: 'a', effectiveReputationScore: 50 };
+    const beta = { peerId: 'b', effectiveReputationScore: 50 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const modelA: string[] = [];
+    const modelB: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(rotateEqualReputationHead([...tied], { key: 'model-a' })[0]?.peerId ?? '');
+      modelB.push(rotateEqualReputationHead([...tied], { key: 'model-b' })[0]?.peerId ?? '');
+    }
+    expect(new Set(modelA)).toEqual(new Set(['a', 'b']));
+    expect(new Set(modelB)).toEqual(new Set(['a', 'b']));
+    for (let i = 1; i < modelA.length; i += 1) {
+      expect(modelA[i]).not.toBe(modelA[i - 1]);
+      expect(modelB[i]).not.toBe(modelB[i - 1]);
+    }
+  });
+
+  it('rotates two seller pools of one model on their own', () => {
+    const pool = (left: string, right: string) => [left, right]
+      .map((peerId) => ({ peerId, effectiveReputationScore: 80 }))
+      .sort(compareEffectiveModelReputation);
+    const first = pool('a', 'b');
+    const second = pool('c', 'd');
+    const firstPicks: string[] = [];
+    const secondPicks: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      firstPicks.push(rotateEqualReputationHead([...first], { key: 'model-a' })[0]?.peerId ?? '');
+      secondPicks.push(rotateEqualReputationHead([...second], { key: 'model-a' })[0]?.peerId ?? '');
+    }
+    expect(new Set(firstPicks)).toEqual(new Set(['a', 'b']));
+    expect(new Set(secondPicks)).toEqual(new Set(['c', 'd']));
+    for (let i = 1; i < firstPicks.length; i += 1) {
+      expect(firstPicks[i]).not.toBe(firstPicks[i - 1]);
+      expect(secondPicks[i]).not.toBe(secondPicks[i - 1]);
+    }
   });
 });

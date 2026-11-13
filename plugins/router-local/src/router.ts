@@ -131,6 +131,7 @@ export class LocalRouter implements Router {
       maxPeerStalenessMs: this._maxPeerStalenessMs,
       maxFailures: this._maxFailures,
       weights: this._weights,
+      ...(requestedService ? { rotationKey: requestedService } : {}),
     });
 
     return scored[0]?.peer ?? null;

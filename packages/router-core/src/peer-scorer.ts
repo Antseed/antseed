@@ -54,6 +54,8 @@ interface ScoringContext {
   maxPeerStalenessMs: number
   maxFailures: number
   weights?: Partial<ScoringWeights>
+  /** Keeps one model's rotation from moving another's when they share sellers. */
+  rotationKey?: string
 }
 
 function normalizedInverted(value: number, min: number, range: number): number {
@@ -180,15 +182,80 @@ export function scoreCandidates(
     })
   }
 
+  const latencies = latencyByPeer(candidates)
+
   // Sort by score descending, tie-break by latency then peerId
   scored.sort((a, b) => {
     if (Math.abs(a.score - b.score) < 1e-9) {
-      const aMetrics = candidates.find((c) => c.peer.peerId === a.peer.peerId)
-      const bMetrics = candidates.find((c) => c.peer.peerId === b.peer.peerId)
-      return tieBreak(a.peer, aMetrics?.metrics.latencyEma, b.peer, bMetrics?.metrics.latencyEma)
+      return tieBreak(a.peer, latencies.get(a.peer.peerId), b.peer, latencies.get(b.peer.peerId))
     }
     return b.score - a.score
   })
 
+  return rotateEqualScoreHead(scored, latencies, context.rotationKey)
+}
+
+function latencyByPeer(candidates: CandidateInput[]): Map<string, number | undefined> {
+  const latencies = new Map<string, number | undefined>()
+  for (const candidate of candidates) {
+    const peerId = candidate.peer.peerId
+    if (!latencies.has(peerId)) latencies.set(peerId, candidate.metrics.latencyEma)
+  }
+  return latencies
+}
+
+function storedLatency(latencies: Map<string, number | undefined>, peerId: string): number {
+  return latencies.get(peerId) ?? Number.POSITIVE_INFINITY
+}
+
+// One counter per tied seller set. A single counter phase-locks when two
+// pools are scored one after the other.
+const MAX_SCORE_POOLS = 4096
+const equalScoreRotation = new Map<string, number>()
+
+function rememberScoreRotation(key: string, step: number): void {
+  if (equalScoreRotation.has(key)) equalScoreRotation.delete(key)
+  equalScoreRotation.set(key, step)
+  while (equalScoreRotation.size > MAX_SCORE_POOLS) {
+    const oldest = equalScoreRotation.keys().next().value
+    if (oldest === undefined) break
+    equalScoreRotation.delete(oldest)
+  }
+}
+
+function rotateEqualScoreHead(
+  scored: ScoredCandidate[],
+  latencies: Map<string, number | undefined>,
+  rotationKey?: string,
+): ScoredCandidate[] {
+  if (scored.length < 2) return scored
+  const best = scored[0]
+  if (!best) return scored
+  const bestLatency = storedLatency(latencies, best.peer.peerId)
+  let group = 1
+  while (group < scored.length) {
+    const next = scored[group]
+    if (!next || Math.abs(next.score - best.score) >= 1e-9) break
+    if (storedLatency(latencies, next.peer.peerId) !== bestLatency) break
+    group += 1
+  }
+  if (group < 2) return scored
+  const ids: string[] = []
+  for (let index = 0; index < group; index += 1) {
+    const peerId = scored[index]?.peer.peerId
+    if (peerId) ids.push(peerId)
+  }
+  ids.sort()
+  const sellers = ids.join('\n')
+  const pool = rotationKey && rotationKey.length > 0 ? `key:${rotationKey}\n${sellers}` : `peers:${sellers}`
+  const step = ((equalScoreRotation.get(pool) ?? 0) + 1) >>> 0
+  rememberScoreRotation(pool, step)
+  const offset = step % group
+  if (offset === 0) return scored
+  const head = scored.slice(0, group)
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group]
+    if (next) scored[index] = next
+  }
   return scored
 }

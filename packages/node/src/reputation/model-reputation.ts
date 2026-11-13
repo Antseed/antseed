@@ -125,3 +125,69 @@ export function compareEffectiveModelReputation(
   return (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
     || a.peerId.localeCompare(b.peerId);
 }
+
+const MAX_REPUTATION_POOLS = 4096;
+const reputationHeadRotation = new Map<string, number>();
+
+function reputationSortKey(score: number | null | undefined): number {
+  return finiteScore(score) ?? -1;
+}
+
+function rememberReputationRotation(key: string, step: number): void {
+  if (reputationHeadRotation.has(key)) reputationHeadRotation.delete(key);
+  reputationHeadRotation.set(key, step);
+  while (reputationHeadRotation.size > MAX_REPUTATION_POOLS) {
+    const oldest = reputationHeadRotation.keys().next().value;
+    if (oldest === undefined) break;
+    reputationHeadRotation.delete(oldest);
+  }
+}
+
+function reputationPoolKey<T extends { peerId: string }>(
+  ordered: T[],
+  group: number,
+  key: string | undefined,
+): string {
+  const ids: string[] = [];
+  for (let index = 0; index < group; index += 1) {
+    const peerId = ordered[index]?.peerId;
+    if (peerId) ids.push(peerId);
+  }
+  ids.sort();
+  const sellers = ids.join('\n');
+  if (key && key.length > 0) return sellers.length > 0 ? `key:${key}\n${sellers}` : `key:${key}`;
+  return sellers.length > 0 ? `peers:${sellers}` : 'default';
+}
+
+/**
+ * Rotate the leading run of equal reputation. Peer id order underneath stays put.
+ * `advance: false` peeks the next seller, which a route preview uses so it does
+ * not spend the turn a live request should take. A model key is combined with
+ * the tied seller ids, so one model does not share a counter across different
+ * seller pools, and two models that share sellers do not move each other.
+ */
+export function rotateEqualReputationHead<
+  T extends { peerId: string; effectiveReputationScore?: number | null },
+>(
+  ordered: T[],
+  options?: { advance?: boolean; key?: string },
+): T[] {
+  if (ordered.length < 2) return ordered;
+  const firstKey = reputationSortKey(ordered[0]?.effectiveReputationScore);
+  let group = 1;
+  while (group < ordered.length && reputationSortKey(ordered[group]?.effectiveReputationScore) === firstKey) {
+    group += 1;
+  }
+  if (group < 2) return ordered;
+  const pool = reputationPoolKey(ordered, group, options?.key);
+  const step = ((reputationHeadRotation.get(pool) ?? 0) + 1) >>> 0;
+  if (options?.advance !== false) rememberReputationRotation(pool, step);
+  const offset = step % group;
+  if (offset === 0) return ordered;
+  const head = ordered.slice(0, group);
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group];
+    if (next) ordered[index] = next;
+  }
+  return ordered;
+}
