@@ -14,22 +14,24 @@ const SAMPLING_REMOVED_SINCE: Record<string, readonly [major: number, minor: num
   opus: [4, 7],
   sonnet: [5, 0],
   haiku: [5, 0],
-  fable: [0, 0],
-  mythos: [0, 0],
 };
 
 // `claude-<family>-<major>[-<minor>]`, with any vendor prefix and any release
 // date or `latest` after it. A date is not read as a version: it has more than
-// two digits, and neither is a size suffix such as `-32k`. `claude-3-5-sonnet-...` puts the version first and is older than
-// every threshold, so it does not match.
-const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku|fable|mythos)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?![\da-z])/;
+// two digits, and neither is a size suffix such as `-32k`. `claude-3-5-sonnet-...`
+// puts the version first and is older than every threshold, so it does not match.
+const CLAUDE_MODEL_RE = /claude[-._](opus|sonnet|haiku)[-._](\d{1,2})(?:[-._](\d{1,2}))?(?![\da-z])/;
+// Every Fable and Mythos model accepts only the defaults, `claude-mythos-preview` included.
+const CLAUDE_FABLE_OR_MYTHOS_RE = /claude[-._](fable|mythos)(?![a-z])/;
 
 /**
  * The sampling fields Anthropic rejects for this model. Empty for a model that
- * accepts them and for an id that is not a versioned Claude model.
+ * accepts them and for an id that names no Claude model.
  */
 export function anthropicRejectedSamplingFields(model: string | undefined): readonly string[] {
-  const match = CLAUDE_MODEL_RE.exec(String(model ?? '').trim().toLowerCase());
+  const id = String(model ?? '').trim().toLowerCase();
+  if (CLAUDE_FABLE_OR_MYTHOS_RE.test(id)) return SAMPLING_FIELDS;
+  const match = CLAUDE_MODEL_RE.exec(id);
   if (!match) return [];
   const since = SAMPLING_REMOVED_SINCE[match[1]!]!;
   const major = Number(match[2]);

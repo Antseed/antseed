@@ -20,6 +20,9 @@ describe('anthropicRejectedSamplingFields', () => {
     'Claude-Fable-5-2',
     'claude-fable-5',
     'claude-mythos-5-2',
+    'claude-mythos-preview',
+    'us.anthropic.claude-fable-5-2',
+    'global.anthropic.claude-opus-4-7',
   ])('names the sampling fields for %s', (model) => {
     expect(anthropicRejectedSamplingFields(model)).toEqual(SAMPLING);
   });
@@ -36,7 +39,11 @@ describe('anthropicRejectedSamplingFields', () => {
     'claude-3-5-sonnet-20241022',
     'claude-3-7-sonnet-latest',
     'claude-3-haiku-20240307',
-    'claude-mythos-preview',
+    'anthropic.claude-haiku-4-5-20251001-v1:0',
+    'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    'anthropic.claude-opus-4-6-v1',
+    'claude-opus-4-5@20251101',
+    'claude-mythosaurus-1',
     'gpt-5.6',
     'opus-4-7',
     'claude-opus-4-32k',
