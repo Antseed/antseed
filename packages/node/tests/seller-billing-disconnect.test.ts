@@ -754,7 +754,7 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.close().mock.calls[0]![2]).toBe(COST);
   });
 
-  it('gives a waiting close up, instead of closing, when an answer is still running at the end of the wait', async () => {
+  it('holds a waiting close while an answer outlasts its wait and closes once that answer is recorded', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
     await h.serve('paid');
@@ -780,9 +780,38 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.manager.getCumulativeSpend(CHANNEL_A), 'the answer is recorded on its channel').toBe(2n * COST);
     expect(h.store.getChannel(CHANNEL_A)?.tokensDelivered).toBe((2n * COST).toString());
 
-    await h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    expect(h.close(), 'a later close goes ahead').toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(h.close(), 'the held close goes ahead once the answer is recorded').toHaveBeenCalledOnce());
     expect(h.close().mock.calls[0]![2]).toBe(2n * COST);
+    await vi.waitFor(() => expect(h.store.getChannel(CHANNEL_A)?.status).toBe(CHANNEL_STATUS.SETTLED));
+    expect(h.manager.getChannelByPeer(h.buyerPeerId)).toBeNull();
+  });
+
+  it('drops a held close when its channel ends another way before the answer is recorded', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('paid');
+    await h.sign(CHANNEL_A, COST);
+
+    h.upstream.hold();
+    const running = h.send('running');
+    await h.upstream.started(2);
+    vi.useFakeTimers(CLOCK);
+    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
+    await vi.advanceTimersByTimeAsync(CLOSE_WAIT_MS + 1_000);
+    await closing;
+    vi.useRealTimers();
+    await h.manager.handleCloseRequested(CHANNEL_A);
+    expect(h.close()).toHaveBeenCalledOnce();
+    expect(await h.openChannel(CHANNEL_B)).toBe('reserved');
+
+    h.upstream.release();
+    await running;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(h.close(), 'no second close once the channel ended').toHaveBeenCalledOnce();
+    expect(h.manager['_deferredIdleCloses'].size, 'no close left held').toBe(0);
+    expect(h.manager.getChannelByPeer(h.buyerPeerId)?.sessionId, 'the replacement stays open').toBe(CHANNEL_B);
+    expect(h.manager.hasSession(h.buyerPeerId)).toBe(true);
   });
 
   it('answers channel_closing to a request that waited for a close which is still waiting for an answer', async () => {

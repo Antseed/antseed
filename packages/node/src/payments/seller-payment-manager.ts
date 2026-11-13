@@ -48,7 +48,10 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
-/** How long a channel close waits for requests already being served before it gives up. */
+/**
+ * How long a channel close waits for requests already being served. Past it,
+ * the close goes ahead once the request still running is recorded.
+ */
 const IDLE_CLOSE_DRAIN_MS = 15 * 60_000;
 const IDLE_CLOSE_POLL_MS = 250;
 
@@ -251,6 +254,8 @@ export class SellerPaymentManager {
   private readonly _blockedChannels = new Set<string>();
   /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
   private readonly _idleCloses = new Map<string, Promise<void>>();
+  /** Channels whose waiting close outlasted its wait; closed once the request still running is recorded. */
+  private readonly _deferredIdleCloses = new Set<string>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -468,6 +473,7 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
+    this._deferredIdleCloses.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
@@ -2240,6 +2246,7 @@ export class SellerPaymentManager {
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
+    this._deferredIdleCloses.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
   }
 
@@ -2253,8 +2260,20 @@ export class SellerPaymentManager {
   /** Mark a billable request as fully accounted for (spend recorded, NeedAuth sent). */
   endBillableRequest(buyerPeerId: string): void {
     const next = (this._inFlightRequests.get(buyerPeerId) ?? 0) - 1;
-    if (next > 0) this._inFlightRequests.set(buyerPeerId, next);
-    else this._inFlightRequests.delete(buyerPeerId);
+    if (next > 0) {
+      this._inFlightRequests.set(buyerPeerId, next);
+      return;
+    }
+    this._inFlightRequests.delete(buyerPeerId);
+    if (this._deferredIdleCloses.size === 0) return;
+    // A close that outlasted its wait for this request goes ahead now.
+    void Promise.resolve().then(() => {
+      const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+      if (!session || !this._deferredIdleCloses.delete(session.sessionId)) return;
+      return this.closeSessionWhenIdle(buyerPeerId);
+    }).catch((err) => {
+      debugWarn(`[SellerPayment] Failed to close channel for buyer ${buyerPeerId.slice(0, 12)}...: ${this._formatError(err)}`);
+    });
   }
 
   /** Whether this buyer has requests still being served and billed. */
@@ -2622,18 +2641,19 @@ export class SellerPaymentManager {
     const channelId = session.sessionId;
     const pending = this._idleCloses.get(channelId);
     if (pending) return pending;
+    this._deferredIdleCloses.delete(channelId);
     const close = (async () => {
       const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
       while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
         await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
       }
       if (this.hasInFlightRequests(buyerPeerId)) {
-        // Still serving after the whole wait: give up rather than close under
-        // the answer. The channel closes on a later request for it, on the
-        // buyer's replacement or in the timeout check, once it is recorded.
+        // Still serving after the whole wait: do not close under the answer.
+        // The close goes ahead once the request still running is recorded.
+        this._deferredIdleCloses.add(channelId);
         debugWarn(
           `[SellerPayment] Channel ${channelId.slice(0, 18)}... is still serving a request after ` +
-          `${IDLE_CLOSE_DRAIN_MS / 60_000} minutes — not closing it now`,
+          `${IDLE_CLOSE_DRAIN_MS / 60_000} minutes — closing it once that request is recorded`,
         );
         return;
       }
