@@ -354,6 +354,9 @@ export class SellerPaymentManager {
           metadataHash: '',
           metadata: channel.latestMetadata ?? '',
         });
+      } else {
+        // Only an amount the buyer signed a SpendingAuth for counts as accepted.
+        this._acceptedCumulative.set(channel.sessionId, 0n);
       }
     }
 
@@ -371,6 +374,8 @@ export class SellerPaymentManager {
           metadataHash: '',
           metadata: channel.latestMetadata ?? '',
         });
+      } else {
+        this._acceptedCumulative.set(channel.sessionId, 0n);
       }
     }
   }
@@ -774,7 +779,7 @@ export class SellerPaymentManager {
           sellerEvmAddr,
           buyerEvmAddr,
           nonce: 0,
-          authMax: payload.cumulativeAmount,
+          authMax: '0',
           previousConsumption: reserveMaxAmount.toString(), // repurposed: stores reserveMax
           deadline: reserveDeadline,
           previousSessionId: '',
@@ -3010,9 +3015,8 @@ export class SellerPaymentManager {
 
     const stored = this._channelStore.getChannel(channelId);
     if (stored) {
-      stored.authMax = (
-        buyerAuth.cumulativeAmount > BigInt(stored.authMax || '0') ? buyerAuth.cumulativeAmount : BigInt(stored.authMax)
-      ).toString();
+      const storedSigned = stored.latestSpendingAuthSig ? BigInt(stored.authMax || '0') : 0n;
+      stored.authMax = (buyerAuth.cumulativeAmount > storedSigned ? buyerAuth.cumulativeAmount : storedSigned).toString();
       stored.latestBuyerSig = buyerAuth.spendingAuthSig;
       stored.latestSpendingAuthSig = buyerAuth.spendingAuthSig;
       stored.latestMetadata = buyerAuth.metadata;
