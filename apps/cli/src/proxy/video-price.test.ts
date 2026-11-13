@@ -36,3 +36,13 @@ test('an offer without a price per second, or with billing that is not a video p
   assert.equal(videoOfferPrice({ peerId: 'bbbb', provider: 'example', serviceId: 'example-video' }), null)
   assert.equal(videoOfferPrice(offer('openai-images', [{ unit: 'output_images', priceUsd: 0.04 }])), null)
 })
+
+test('a video offer is priced at each resolution it announces, so a surcharge on one does not hide the base rate', () => {
+  const components = [
+    { unit: 'video_seconds', priceUsd: 0.1 },
+    { unit: 'video_seconds', priceUsd: 0.2, match: { resolution: '720p' } },
+  ]
+  assert.deepEqual(videoOfferPrice(offer('fal-video', components, { resolutions: ['480p', '720p'] })), { perSecondUsd: 0.1, perVideoUsd: 0 })
+  // Without announced resolutions, the ones billing names are priced: here only 720p, $0.10 + $0.20.
+  assert.deepEqual(videoOfferPrice(offer('fal-video', components)), { perSecondUsd: 0.3, perVideoUsd: 0 })
+})

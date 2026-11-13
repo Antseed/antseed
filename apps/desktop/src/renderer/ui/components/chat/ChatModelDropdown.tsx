@@ -106,6 +106,24 @@ export function rowPriceChips(model: ChatModel): Array<{ label: string; price: s
   ];
 }
 
+/** A row's name with its price chips, or, in a narrow menu, with a second line of details. */
+function ModelRowContent({ model, oneLine }: { model: ChatModel; oneLine: boolean }) {
+  if (!oneLine) {
+    return (
+      <span className={styles.pickerNameGroup}>
+        <span className={styles.pickerName}>{model.label}</span>
+        <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
+      </span>
+    );
+  }
+  return (
+    <>
+      <span className={styles.pickerName}>{model.label}</span>
+      {renderRowPriceChips(model)}
+    </>
+  );
+}
+
 function renderRowPriceChips(model: ChatModel) {
   const chips = rowPriceChips(model);
   if (chips.length === 0) return null;
@@ -370,17 +388,7 @@ export function ChatModelDropdown({
         }}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        {oneLine ? (
-          <>
-            <span className={styles.pickerName}>{model.label}</span>
-            {renderRowPriceChips(model)}
-          </>
-        ) : (
-          <span className={styles.pickerNameGroup}>
-            <span className={styles.pickerName}>{model.label}</span>
-            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
-          </span>
-        )}
+        <ModelRowContent model={model} oneLine={oneLine} />
         <span className={styles.pickerTags}>
           {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
           {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
@@ -400,17 +408,7 @@ export function ChatModelDropdown({
         className={`${styles.pickerRow} ${styles.pickerPromptRow}${oneLine ? '' : ` ${styles.pickerRowTall}`}`}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        {oneLine ? (
-          <>
-            <span className={styles.pickerName}>{model.label}</span>
-            {renderRowPriceChips(model)}
-          </>
-        ) : (
-          <span className={styles.pickerNameGroup}>
-            <span className={styles.pickerName}>{model.label}</span>
-            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
-          </span>
-        )}
+        <ModelRowContent model={model} oneLine={oneLine} />
         <span className={styles.pickerTags}>
           {onUsePrompt && (
             <button

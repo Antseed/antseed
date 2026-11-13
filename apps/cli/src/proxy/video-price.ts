@@ -4,8 +4,8 @@
 // resolution it prices. `/v1/models` lists the cheapest on the offer, so a
 // host shows it without interpreting billing rules itself.
 
-import { evaluateUnitBilling, type UnitBillingContext, type UnitBillingModelV1 } from '@antseed/node'
-import { nativeVideoAttributes, type NativeVideoPricedOptions } from '@antseed/api-adapter'
+import { evaluateUnitBilling, isNativeVideoProtocol, type UnitBillingContext, type UnitBillingModelV1, type VideoOptions } from '@antseed/node'
+import { nativeVideoAttributes } from '@antseed/api-adapter'
 
 export type VideoOfferPrice = { perSecondUsd: number; perVideoUsd: number }
 
@@ -23,21 +23,27 @@ function record(value: unknown): Record<string, unknown> {
 
 /**
  * The offer's cheapest price for a plain create: per second of video, plus any
- * fixed charge per video. Each resolution its billing names is priced by
- * `evaluateUnitBilling` with the attributes `nativeVideoAttributes` builds from
- * the service, protocol and announced video options. A combination billing
+ * fixed charge per video. Each resolution the offer announces
+ * (`capabilities.video.resolutions`), or else each its billing names, is priced
+ * by `evaluateUnitBilling` with the attributes `nativeVideoAttributes` builds
+ * from the service, protocol and announced video options, so a base rate with a
+ * surcharge on one resolution reads as the base rate. A combination billing
  * would refuse is skipped; null when the offer has no price per second.
  */
 export function videoOfferPrice(offer: VideoOffer): VideoOfferPrice | null {
-  const options = record(record(offer.capabilities).video) as NativeVideoPricedOptions
+  const options = record(record(offer.capabilities).video) as VideoOptions
+  const announced = Array.isArray(options.resolutions)
+    ? options.resolutions.filter((resolution): resolution is string => typeof resolution === 'string' && resolution.trim() !== '')
+    : []
   let best: VideoOfferPrice | null = null
   for (const [protocol, billing] of Object.entries(record(offer.unitBillingModels))) {
-    if (protocol !== 'venice-video' && protocol !== 'fal-video') continue
+    if (!isNativeVideoProtocol(protocol)) continue
     const model = record(billing) as unknown as UnitBillingModelV1
     const components = Array.isArray(model.components) ? model.components : []
     const has = (unit: string) => components.some((component) => component?.unit === unit)
     if (!has('video_seconds')) continue
-    const resolutions = [...new Set(components.flatMap((component) => {
+    // What a buyer can ask for: the announced set when there is one, else what billing names.
+    const resolutions = announced.length > 0 ? [...new Set(announced)] : [...new Set(components.flatMap((component) => {
       const resolution = record(component?.match).resolution
       return typeof resolution === 'string' ? [resolution] : []
     }))]
