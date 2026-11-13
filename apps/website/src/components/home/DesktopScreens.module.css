@@ -1,0 +1,117 @@
+/* ============================================================
+   ANTSEED DESKTOP — real app screens in a window frame
+   ============================================================ */
+.wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.window {
+  width: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #F7F4EE;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 30px 60px -30px rgba(16, 40, 28, 0.35);
+}
+
+.bar {
+  position: relative;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: #EFEBE3;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.dots {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #D3CEC4;
+}
+
+.title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  color: #8A857B;
+  white-space: nowrap;
+}
+
+.screens {
+  position: relative;
+  aspect-ratio: 1600 / 1000;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0;
+  transition: opacity 600ms ease;
+}
+
+.active {
+  opacity: 1;
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--as-body, #5B6560);
+  cursor: pointer;
+}
+
+.tabActive {
+  background: #FFFFFF;
+  color: var(--as-heading);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screen {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .window {
+    border-radius: 10px;
+  }
+
+  .bar {
+    height: 24px;
+  }
+
+  .tab {
+    padding: 5px 11px;
+    font-size: 12px;
+  }
+}
