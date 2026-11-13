@@ -64,9 +64,12 @@ export const APPROVED_DSTACK_OS: readonly ApprovedDstackOs[] = DSTACK_0_6_1_RTMR
   rtmr0,
 }))
 
-/** Approved production dstack OS image hashes for the local lite OS check. */
+/** Approved production dstack OS image hashes from https://cloud.phala.com/reference-values/os-images. */
 export const APPROVED_OS_IMAGES: readonly ApprovedOsImage[] = [
   { name: 'dstack 0.6.1', hash: 'ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6' },
+  { name: 'dstack 0.6.2', hash: '290b1ed309255651175a52a704fbf41f400e30690dc62d4839a6101930f3f959' },
+  { name: 'dstack 0.6.3', hash: '38a6f97b60e47eb9d68c13246bbd872e83fb9b39d178b4e0d3091285cd07b572' },
+  { name: 'dstack 0.6.4', hash: 'feff3645893ad910d4f0e06d8f553cf80a7c9fede2ce0698fa63116283260366' },
 ]
 
 const MEASUREMENT_FIELDS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2'] as const

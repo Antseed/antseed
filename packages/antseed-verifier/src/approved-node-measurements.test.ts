@@ -24,11 +24,13 @@ describe('APPROVED_DSTACK_OS', () => {
 })
 
 describe('APPROVED_OS_IMAGES', () => {
-  it('lists the dstack 0.6.1 production OS image hash', () => {
-    expect(APPROVED_OS_IMAGES).toContainEqual({
-      name: 'dstack 0.6.1',
-      hash: 'ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6',
-    })
+  it.each([
+    ['0.6.1', 'ec43cb8c5e04b6bb6c53b33b16076a01d83d01f7f4b703f2f78a0d947d6247e6'],
+    ['0.6.2', '290b1ed309255651175a52a704fbf41f400e30690dc62d4839a6101930f3f959'],
+    ['0.6.3', '38a6f97b60e47eb9d68c13246bbd872e83fb9b39d178b4e0d3091285cd07b572'],
+    ['0.6.4', 'feff3645893ad910d4f0e06d8f553cf80a7c9fede2ce0698fa63116283260366'],
+  ])('lists the dstack %s production OS image hash', (version, hash) => {
+    expect(APPROVED_OS_IMAGES).toContainEqual({ name: `dstack ${version}`, hash })
     for (const image of APPROVED_OS_IMAGES) expect(image.hash).toMatch(/^[0-9a-f]{64}$/)
   })
 })
