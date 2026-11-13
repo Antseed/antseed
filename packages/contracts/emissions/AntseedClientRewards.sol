@@ -30,6 +30,13 @@ import {AntseedRewardPayout} from "../rewards/AntseedRewardPayout.sol";
  *         points here, inside the settlement. Points are the accounting's, so
  *         wash exclusion and verification shaping are already applied.
  *
+ *         Per-buyer cap: the buyer signs the client id, so a buyer can name an
+ *         agent of their own and earn the client share on their own spend.
+ *         Each buyer's spend counts toward clients, across every client id,
+ *         only up to `buyerEpochCap` USDC per epoch; the points for spend past
+ *         it are credited to no client. Clients earn by reaching many buyers,
+ *         not by one large buyer's volume.
+ *
  *         Finality: every credit lands in the epoch that settled it, so an epoch
  *         is final and claimable as soon as it ends.
  */
@@ -46,6 +53,10 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant MAX_REWARD_SHARE_BPS = 500;
+    /// @notice Bounds and start value of `buyerEpochCap`, in USDC base units (6 decimals).
+    uint256 public constant MIN_BUYER_EPOCH_CAP = 1e6;
+    uint256 public constant MAX_BUYER_EPOCH_CAP = 1_000e6;
+    uint256 public constant DEFAULT_BUYER_EPOCH_CAP = 50e6;
 
     IAntseedEmissionsGate public immutable emissionsGate;
     IAntseedUsageAccounting public immutable usageAccounting;
@@ -57,7 +68,13 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Contract allowed to credit usage (AntseedChannelsMiddleware).
     address public recorder;
 
+    /// @notice USDC a buyer's spend can count toward clients per epoch, across all clients.
+    uint256 public buyerEpochCap = DEFAULT_BUYER_EPOCH_CAP;
+
     mapping(uint256 epoch => mapping(uint256 clientAgentId => uint256 points)) public clientEpochPoints;
+
+    /// @notice USDC of a buyer's spend already counted toward clients in an epoch.
+    mapping(uint256 epoch => mapping(address buyer => uint256 usdc)) public buyerEpochCreditedUsdc;
 
     mapping(uint256 clientAgentId => mapping(uint256 epoch => bool)) public clientEpochClaimed;
 
@@ -86,6 +103,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     );
     event SellerPoolsSet(address indexed sellerPools);
     event RecorderUpdated(address indexed recorder);
+    event BuyerEpochCapUpdated(uint256 buyerEpochCap);
 
     error InvalidAddress();
     error NotRecorder();
@@ -93,6 +111,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     error EpochNotClaimable();
     error AlreadyClaimed();
     error NothingToClaim();
+    error InvalidBuyerEpochCap();
 
     constructor(address _emissionsGate, address _usageAccounting, address _identityRegistry, address _recorder)
         Ownable(msg.sender)
@@ -115,14 +134,25 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     // ─── Recording ───────────────────────────────────────────────────
 
     /// @notice Credit a settlement's weighted points to the client that produced
-    ///         it. Not pausable: pausing stops payouts, not bookkeeping. A client
-    ///         id with no registered agent earns nothing.
-    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 points) external {
+    ///         it, for the part of its `usdc` still under the buyer's epoch cap.
+    ///         Not pausable: pausing stops payouts, not bookkeeping. A client id
+    ///         with no registered agent earns nothing and uses none of the cap.
+    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 usdc, uint256 points) external {
         if (msg.sender != recorder) revert NotRecorder();
+        if (usdc == 0 || points == 0) return;
         if (_agentOwner(clientAgentId) == address(0)) return;
         uint256 epoch = Math.max(emissionsGate.currentEpoch(), firstCreditEpoch);
-        clientEpochPoints[epoch][clientAgentId] += points;
-        emit ClientUsageCredited(epoch, clientAgentId, buyer, points);
+
+        uint256 counted = buyerEpochCreditedUsdc[epoch][buyer];
+        uint256 cap = buyerEpochCap;
+        if (counted >= cap) return;
+        uint256 countedNow = Math.min(usdc, cap - counted);
+        buyerEpochCreditedUsdc[epoch][buyer] = counted + countedNow;
+
+        uint256 credited = countedNow == usdc ? points : Math.mulDiv(points, countedNow, usdc);
+        if (credited == 0) return;
+        clientEpochPoints[epoch][clientAgentId] += credited;
+        emit ClientUsageCredited(epoch, clientAgentId, buyer, credited);
     }
 
     // ─── Rewards ─────────────────────────────────────────────────────
@@ -230,6 +260,16 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     function setRecorder(address _recorder) external onlyOwner {
         recorder = _recorder;
         emit RecorderUpdated(_recorder);
+    }
+
+    /// @notice Change the per-buyer cap. It applies from the next credit, and
+    ///         spend already counted this epoch stays counted.
+    function setBuyerEpochCap(uint256 _buyerEpochCap) external onlyOwner {
+        if (_buyerEpochCap < MIN_BUYER_EPOCH_CAP || _buyerEpochCap > MAX_BUYER_EPOCH_CAP) {
+            revert InvalidBuyerEpochCap();
+        }
+        buyerEpochCap = _buyerEpochCap;
+        emit BuyerEpochCapUpdated(_buyerEpochCap);
     }
 
     function setSellerPools(address _sellerPools) external onlyOwner {

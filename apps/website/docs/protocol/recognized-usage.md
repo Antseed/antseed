@@ -115,6 +115,10 @@ reserve:
 - **Clients** (`AntseedClientRewards`): usage credited to the ERC-8004 agent
   of the client software that produced it, claimed by that agent's owner. An
   epoch is claimable once it ends. The unearned part of the bucket is never minted.
+  The buyer signs the client id, so each buyer's spend counts toward clients
+  only up to 50 USDC per epoch, across every client id it names (the owner can
+  set this cap from 1 to 1,000 USDC). Spend past it is credited to no client, so
+  a client earns by reaching many buyers rather than from one large buyer.
 
 Each controller pays nothing until it is registered as an emissions-gate
 minter. Both buckets come out of the 10% verification bucket: once they are

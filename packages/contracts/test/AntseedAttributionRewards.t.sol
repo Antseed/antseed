@@ -322,6 +322,15 @@ contract AntseedReferralProgramIntegrationTest is Test {
         assertEq(clientRewards.clientEpochPoints(20, desktop), 10e6);
     }
 
+    function test_aBuyersSpendPastThePerBuyerCapCreditsNoClient() public {
+        vm.prank(address(0xD1));
+        uint256 desktop = identity.register();
+        _settleWith(buyer, _metadata(none, desktop), 80e6);
+        assertEq(clientRewards.clientEpochPoints(20, desktop), 50e6);
+        _settleWith(newcomer, _metadata(none, desktop), 10e6);
+        assertEq(clientRewards.clientEpochPoints(20, desktop), 60e6);
+    }
+
     function test_clientsAreClaimableAsSoonAsTheEpochEnds() public {
         vm.prank(address(0xD1));
         uint256 desktop = identity.register();

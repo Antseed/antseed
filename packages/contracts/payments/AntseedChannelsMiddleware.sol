@@ -10,7 +10,7 @@ interface IAntseedMiddlewareReferrals {
 }
 
 interface IAntseedMiddlewareClientRewards {
-    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 points) external;
+    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 usdc, uint256 points) external;
 }
 
 /**
@@ -183,7 +183,7 @@ contract AntseedChannelsMiddleware is IAntseedRegistry {
         if (current <= before) return;
 
         uint256 points = current - before;
-        try clientRewards.creditClientUsage(client, buyer, points) {}
+        try clientRewards.creditClientUsage(client, buyer, pointsDelta, points) {}
         catch {
             emit ClientCreditFailed(buyer, client, points);
         }

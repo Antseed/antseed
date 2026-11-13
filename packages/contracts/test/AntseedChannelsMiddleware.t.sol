@@ -48,6 +48,7 @@ contract MiddlewareBinderMock {
 contract MiddlewareClientRewardsMock {
     address public lastBuyer;
     uint256 public lastClient;
+    uint256 public lastUsdc;
     uint256 public lastPoints;
     uint256 public calls;
     bool public shouldRevert;
@@ -56,10 +57,11 @@ contract MiddlewareClientRewardsMock {
         shouldRevert = value;
     }
 
-    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 points) external {
+    function creditClientUsage(uint256 clientAgentId, address buyer, uint256 usdc, uint256 points) external {
         require(!shouldRevert, "nope");
         lastClient = clientAgentId;
         lastBuyer = buyer;
+        lastUsdc = usdc;
         lastPoints = points;
         calls++;
     }
@@ -357,6 +359,7 @@ contract AntseedChannelsMiddlewareTest is Test {
         assertEq(clientUsage.lastClient(), 42);
         assertEq(clientUsage.lastBuyer(), buyer);
         assertEq(clientUsage.lastPoints(), 30); // the accounting's weighted points, not the raw delta
+        assertEq(clientUsage.lastUsdc(), 10); // the raw delta, for the per-buyer cap
 
         // Only this settlement's growth, even with points already on the buyer.
         _settle(bytes32("chan-2"), _v3(100, 40, 2, true), 5);

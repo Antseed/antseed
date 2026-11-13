@@ -55,11 +55,15 @@ abstract contract ClientRewardsFixture is Test {
         cli = identity.register();
     }
 
-    /// Credit `points` to a client in `epoch`, as the middleware does on a settlement.
+    /// Credit `points` from a $1 settlement to a client in `epoch`, as the middleware does.
     function _credit(uint256 epoch, uint256 client, uint256 points) internal {
+        _creditSpend(epoch, client, buyer, 1e6, points);
+    }
+
+    function _creditSpend(uint256 epoch, uint256 client, address from, uint256 usdc, uint256 points) internal {
         gate.setCurrentEpoch(epoch);
         vm.prank(recorder);
-        rewards.creditClientUsage(client, buyer, points);
+        rewards.creditClientUsage(client, from, usdc, points);
     }
 }
 
@@ -89,7 +93,7 @@ contract AntseedClientAttributionTest is ClientRewardsFixture {
         vm.expectEmit(true, true, true, true);
         emit AntseedClientRewards.ClientUsageCredited(20, desktop, buyer, 10);
         vm.prank(recorder);
-        rewards.creditClientUsage(desktop, buyer, 10);
+        rewards.creditClientUsage(desktop, buyer, 1e6, 10);
     }
 
     function test_unregisteredClientsEarnNothing() public {
@@ -99,11 +103,68 @@ contract AntseedClientAttributionTest is ClientRewardsFixture {
 
     function test_onlyRecorderCanCredit() public {
         vm.expectRevert(AntseedClientRewards.NotRecorder.selector);
-        rewards.creditClientUsage(desktop, buyer, 1);
+        rewards.creditClientUsage(desktop, buyer, 1, 1);
         rewards.setRecorder(address(0));
         vm.prank(recorder);
         vm.expectRevert(AntseedClientRewards.NotRecorder.selector);
-        rewards.creditClientUsage(desktop, buyer, 1);
+        rewards.creditClientUsage(desktop, buyer, 1, 1);
+    }
+
+    function test_aBuyersSpendCountsTowardClientsOnlyUpToTheEpochCap() public {
+        _creditSpend(20, desktop, buyer, 30e6, 300);
+        assertEq(rewards.buyerEpochCreditedUsdc(20, buyer), 30e6);
+
+        // $40 more: only $20 of it fits under the $50 cap, so 20/40 of its points count.
+        vm.expectEmit(true, true, true, true);
+        emit AntseedClientRewards.ClientUsageCredited(20, desktop, buyer, 200);
+        vm.prank(recorder);
+        rewards.creditClientUsage(desktop, buyer, 40e6, 400);
+        assertEq(rewards.clientEpochPoints(20, desktop), 500);
+        assertEq(rewards.buyerEpochCreditedUsdc(20, buyer), 50e6);
+
+        _creditSpend(20, desktop, buyer, 10e6, 100); // over the cap: nothing more
+        assertEq(rewards.clientEpochPoints(20, desktop), 500);
+
+        // Another buyer, or the same buyer next epoch, starts fresh.
+        _creditSpend(20, desktop, address(0xB0B2), 10e6, 100);
+        _creditSpend(21, desktop, buyer, 10e6, 100);
+        assertEq(rewards.clientEpochPoints(20, desktop), 600);
+        assertEq(rewards.clientEpochPoints(21, desktop), 100);
+    }
+
+    function test_theCapIsSharedAcrossEveryClientIdTheBuyerNames() public {
+        _creditSpend(20, desktop, buyer, 30e6, 300);
+        _creditSpend(20, cli, buyer, 30e6, 300); // a second id gets only the $20 left
+        assertEq(rewards.clientEpochPoints(20, desktop), 300);
+        assertEq(rewards.clientEpochPoints(20, cli), 200);
+        _creditSpend(20, cli, buyer, 30e6, 300);
+        assertEq(rewards.clientEpochPoints(20, cli), 200);
+    }
+
+    function test_anUnregisteredClientUsesNoneOfTheCap() public {
+        _creditSpend(20, 999, buyer, 50e6, 500);
+        assertEq(rewards.buyerEpochCreditedUsdc(20, buyer), 0);
+        _creditSpend(20, desktop, buyer, 50e6, 500);
+        assertEq(rewards.clientEpochPoints(20, desktop), 500);
+    }
+
+    function test_ownerSetsTheCapWithinItsBounds() public {
+        vm.expectEmit(true, true, true, true);
+        emit AntseedClientRewards.BuyerEpochCapUpdated(10e6);
+        rewards.setBuyerEpochCap(10e6);
+        assertEq(rewards.buyerEpochCap(), 10e6);
+        _creditSpend(20, desktop, buyer, 20e6, 200);
+        assertEq(rewards.clientEpochPoints(20, desktop), 100);
+
+        uint256 below = rewards.MIN_BUYER_EPOCH_CAP() - 1;
+        uint256 above = rewards.MAX_BUYER_EPOCH_CAP() + 1;
+        vm.expectRevert(AntseedClientRewards.InvalidBuyerEpochCap.selector);
+        rewards.setBuyerEpochCap(below);
+        vm.expectRevert(AntseedClientRewards.InvalidBuyerEpochCap.selector);
+        rewards.setBuyerEpochCap(above);
+        vm.prank(desktopOwner);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", desktopOwner));
+        rewards.setBuyerEpochCap(10e6);
     }
 
     function test_pauseStopsPayoutsButNotCredits() public {
