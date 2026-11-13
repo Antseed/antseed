@@ -4,9 +4,10 @@
  */
 
 import { canonicalHash } from './canonical-json.js';
+import pkg from '../package.json' with { type: 'json' };
 
 export const FINGERPRINTS_PACKAGE_NAME = '@antseed/fingerprints';
-export const FINGERPRINTS_PACKAGE_VERSION = '0.1.0';
+export const FINGERPRINTS_PACKAGE_VERSION: string = pkg.version;
 
 // ---------------------------------------------------------------------------
 // Verdicts
