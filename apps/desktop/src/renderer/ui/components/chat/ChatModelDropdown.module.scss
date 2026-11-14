@@ -502,25 +502,17 @@
 
   > * {
     justify-content: flex-start;
-    min-width: 6.25rem;
+    min-width: 5rem;
+    padding-inline: 0.5rem;
   }
 }
 
-/* Name with its tags right after it; it takes the room, so the chips sit at the end. */
-.picker-name-line {
+/* A row's tags, right-aligned just before its price chips. */
+.picker-row-tags {
   display: flex;
-  flex: 1 1 auto;
+  flex: none;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
-
-  .picker-name {
-    flex: 0 1 auto;
-  }
-
-  .tag {
-    flex: none;
-  }
+  gap: 4px;
 }
 
 /* The tick's place, kept on every row. */

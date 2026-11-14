@@ -116,13 +116,12 @@ function ModelRowContent({ model, oneLine, tags }: { model: ChatModel; oneLine: 
       </span>
     );
   }
-  // Tags right after the name, so the price chips end every row in the same place.
+  // The name takes the room; the tags sit right-aligned just before the price
+  // chips, which end every row in the same place.
   return (
     <>
-      <span className={styles.pickerNameLine}>
-        <span className={styles.pickerName}>{model.label}</span>
-        {tags}
-      </span>
+      <span className={styles.pickerName}>{model.label}</span>
+      {tags && <span className={styles.pickerRowTags}>{tags}</span>}
       {renderRowPriceChips(model)}
     </>
   );
