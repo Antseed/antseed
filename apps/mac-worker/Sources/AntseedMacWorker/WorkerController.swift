@@ -41,6 +41,17 @@ enum WorkerStatus: Equatable {
         if rejected.contains(service) { return .failed("The pool doesn't accept \(service) with this model") }
         return sharing ? .serving : .paused
     }
+
+    /// The status once the pool's welcome arrives (it lists the models the owner can pick):
+    /// picking one when none is chosen, serving once the chosen one loaded, still saying why it
+    /// failed to load when it did (the picker and Retry are offered beside it), and otherwise
+    /// the load's own progress (`current`).
+    static func welcomed(choice: ModelChoice?, loaded: Bool, loadError: String?, sharing: Bool, rejected: [String], current: WorkerStatus) -> WorkerStatus {
+        guard let choice else { return .choosingModel }
+        if loaded { return joined(sharing: sharing, service: choice.service, rejected: rejected) }
+        if let loadError { return .failed(loadError) }
+        return current
+    }
 }
 
 /// Runs the worker: keeps a connection to the pool, serves its encrypted
@@ -529,14 +540,9 @@ final class WorkerController: ObservableObject {
                 choose(.fallback)
                 return
             }
-            if let choice {
-                // Still loading: the progress stays; the app rejoins with the model once it is ready.
-                if checkpoint != nil { status = .joined(sharing: sharing, service: choice.service, rejected: frame["rejected"] as? [String] ?? []) }
-                // It failed to load: keep saying why, now with the pool's models to switch to beside Retry.
-                else if modelLoadFailed, let modelLoadError { status = .failed(modelLoadError) }
-            } else {
-                status = .choosingModel
-            }
+            // Still loading, the progress stays and the app rejoins with the model once it is ready.
+            status = .welcomed(choice: choice, loaded: checkpoint != nil, loadError: modelLoadFailed ? modelLoadError : nil,
+                               sharing: sharing, rejected: frame["rejected"] as? [String] ?? [], current: status)
             log("joined pool \(poolURL?.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
             payouts.joined(pool: poolSeller)
