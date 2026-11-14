@@ -19,20 +19,33 @@ interface WatchOptions extends Pick<RunOptions,
   rpcUrl?: string
   /** `--no-publish-ipfs` sets this to false. */
   publishIpfs?: boolean
+  /** `--no-tokenizer` sets this to false. */
+  tokenizer?: boolean
   skipVersionCheck?: boolean
 }
 
 export const DEFAULT_WATCH_INTERVAL_MINUTES = 10
 
-export type WatchStep = 'run' | 'submit'
+export type WatchStep = 'run' | 'submit' | 'prove-tokenizer'
+
+/** The steps of every tick: the KBF run and submit, then the tokenizer proofs unless turned off. */
+export function watchSteps(options: Pick<WatchOptions, 'tokenizer'>): WatchStep[] {
+  return options.tokenizer === false ? ['run', 'submit'] : ['run', 'submit', 'prove-tokenizer']
+}
 
 /**
  * One `verifier` subcommand per step, in a child process of this CLI: `run` audits this auditor's
- * assigned models and the reports waiting for its confirmation, and `submit` sends whatever this
- * epoch's runs produced that is not on-chain yet.
+ * assigned models and the reports waiting for its confirmation, `submit` sends whatever this epoch's
+ * runs produced that is not on-chain yet, and `prove-tokenizer` proves services whose signed usage is
+ * not their model's tokenizer (it skips services it checked recently, so most ticks send nothing).
  */
 export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'config' | 'dataDir' | 'verbose'>, options: WatchOptions): string[] {
   const args = ['--data-dir', globals.dataDir, '--config', globals.config, ...(globals.verbose ? ['--verbose'] : []), 'verifier', step]
+  if (step === 'prove-tokenizer') {
+    if (options.keystore) args.push('--keystore', options.keystore)
+    if (options.rpcUrl) args.push('--rpc-url', options.rpcUrl)
+    return args
+  }
   if (options.skipVersionCheck) args.push('--skip-version-check')
   if (step === 'run') {
     // Run's own defaults (rounds, enrollment budget) apply to whatever watch was not given.
@@ -48,7 +61,7 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 }
 
 /**
- * Runs `run` then `submit` every `intervalMs` until `signal` aborts (or once). A failed step is
+ * Runs `steps` in order every `intervalMs` until `signal` aborts (or once). A failed step is
  * logged and the loop goes on: `run` exits non-zero whenever a model had no sellers, and the next
  * tick retries whatever is left. Every tick sees the reports other auditors submitted since the
  * last one, so a DIFF waiting for this auditor's confirmation is audited within one interval.
@@ -57,6 +70,7 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 export async function runWatchLoop(input: {
   intervalMs: number
   once: boolean
+  steps: readonly WatchStep[]
   signal: AbortSignal
   step: (step: WatchStep) => Promise<number>
   sleep: (ms: number, signal: AbortSignal) => Promise<void>
@@ -70,7 +84,7 @@ export async function runWatchLoop(input: {
     ticks += 1
     failed = []
     input.log(chalk.bold(`\n[${now().toISOString()}] verifier watch: tick ${ticks}`))
-    for (const step of ['run', 'submit'] as const) {
+    for (const step of input.steps) {
       if (input.signal.aborted) break
       const code = await input.step(step)
       if (code !== 0 && !input.signal.aborted) {
@@ -114,13 +128,14 @@ export function parseWatchInterval(value: string): number {
 export function registerVerifierWatchCommand(verifier: Command): void {
   const watch = verifier
     .command('watch')
-    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results')
+    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, submit the results, then prove tokenizer mismatches')
     .option('--interval <minutes>', 'minutes between ticks', String(DEFAULT_WATCH_INTERVAL_MINUTES))
     .option('--once', 'run one tick (run, then submit) and exit, e.g. from cron')
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore; the password is read from ANTSEED_KEYSTORE_PASSWORD or asked once at start')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override for submissions')
     .option('--no-publish-ipfs', 'do not publish audit evidence to IPFS (by default it is pinned to Pinata; needs PINATA_JWT)')
+    .option('--no-tokenizer', 'skip the tokenizer proofs (`verifier prove-tokenizer`) on each tick')
     .option('--skip-version-check', 'run even if this CLI is older than the latest release')
   for (const option of RUN_TUNING_OPTIONS) watch.option(option.flags, `run: ${option.description}`)
   watch
@@ -162,6 +177,7 @@ export function registerVerifierWatchCommand(verifier: Command): void {
         const { failed } = await runWatchLoop({
           intervalMs,
           once: options.once === true,
+          steps: watchSteps(options),
           signal: controller.signal,
           log: (line) => console.log(line),
           sleep: abortableSleep,

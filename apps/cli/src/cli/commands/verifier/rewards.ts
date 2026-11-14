@@ -5,7 +5,7 @@ import type { Command } from 'commander'
 import { formatUnits, getAddress } from 'ethers'
 import { VERIFICATION_REWARDS_OFF } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
-import { createVerifierClient } from '../../payment-utils.js'
+import { createTokenizerAuditsClient, createVerifierClient } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { getGlobalOptions } from '../types.js'
 
@@ -41,7 +41,7 @@ export function parseEpochList(value: string): bigint[] {
 export function registerVerifierRewardsCommand(verifierCmd: Command): void {
   verifierCmd
     .command('rewards')
-    .description('Show KBF auditor rewards (paid in proportion to audit credits) and optionally claim them from the verification results contract')
+    .description('Show verifier rewards for KBF audits and tokenizer proofs (paid in proportion to credits) and optionally claim them from the verification results contract')
     .requiredOption('--epochs <list>', 'comma-separated epochs or ranges, e.g. 12,14-16')
     .option('--claim', 'claim the pending rewards for the listed epochs')
     .option('--yes', 'claim without an interactive confirmation prompt')
@@ -61,54 +61,67 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
       })).address
 
       const resultsAddress = await verifierClient.resultsAddress()
-      const kbf = getAddress(verifierClient.contractAddress)
-      const settings = await verifierClient.rewardSettings()
-      const pending = await Promise.all(epochs.map(async (epoch) => {
+      const tokenizer = createTokenizerAuditsClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
+      const audits = [
+        { label: 'KBF', address: getAddress(verifierClient.contractAddress) },
+        ...(tokenizer ? [{ label: 'Tokenizer', address: getAddress(tokenizer.contractAddress) }] : []),
+      ]
+      const rows = await Promise.all(audits.flatMap((audit) => epochs.map(async (epoch) => {
         const [amount, credits] = await Promise.all([
-          verifierClient.pendingAuditorReward(auditor, epoch),
-          verifierClient.auditCredits(auditor, epoch),
+          verifierClient.pendingAuditorReward(auditor, epoch, audit.address),
+          verifierClient.auditCredits(auditor, epoch, audit.address),
         ])
-        return { epoch, amount, credits }
-      }))
-      const table = new Table({ head: ['Epoch', 'Credits', 'Share of credits', 'Pending ANTS'] })
-      for (const entry of pending) {
+        return { audit, epoch, amount, credits }
+      })))
+      const table = new Table({ head: ['Audit', 'Epoch', 'Credits', 'Share of credits', 'Pending ANTS'] })
+      for (const row of rows) {
         table.push([
-          entry.epoch.toString(),
-          `${entry.credits.auditor} / ${entry.credits.total}`,
-          formatShare(entry.credits.auditor, entry.credits.total),
-          formatUnits(entry.amount, ANTS_DECIMALS),
+          row.audit.label,
+          row.epoch.toString(),
+          `${row.credits.auditor} / ${row.credits.total}`,
+          formatShare(row.credits.auditor, row.credits.total),
+          formatUnits(row.amount, ANTS_DECIMALS),
         ])
       }
-      const total = pending.reduce((sum, entry) => sum + entry.amount, 0n)
+      const total = rows.reduce((sum, row) => sum + row.amount, 0n)
       console.log(table.toString())
       console.log(`Auditor: ${auditor}`)
-      console.log(`Audit: KBF audits ${kbf}`)
+      for (const audit of audits) console.log(`Audit: ${audit.label} ${audit.address}`)
       console.log(`Verification results: ${resultsAddress}`)
       console.log(`Total pending: ${formatUnits(total, ANTS_DECIMALS)} ANTS`)
-      console.log(describeRewardSettings(settings))
+      for (const audit of audits) {
+        console.log(describeRewardSettings(await verifierClient.rewardSettings(undefined, audit.address), audit.label))
+      }
       if (!options.claim) return
 
-      const claimable = pending.filter((entry) => entry.amount > 0n).map((entry) => entry.epoch)
+      const claimable = rows.filter((row) => row.amount > 0n)
       if (claimable.length === 0) {
         console.log(chalk.dim('Nothing to claim.'))
         return
       }
       if (!options.yes) await confirmClaim(claimable.length, formatUnits(total, ANTS_DECIMALS))
-      // The results contract claims one epoch per transaction.
-      const transactionHashes = await verifierClient.claimAuditorRewards(signer!.wallet, claimable)
-      console.log(chalk.green(
-        `Claimed KBF auditor rewards for epoch(s) ${claimable.join(', ')} from ${resultsAddress} `
-        + `(audit ${kbf}) (${transactionHashes.join(', ')})`,
-      ))
+      for (const audit of audits) {
+        const auditEpochs = claimable.filter((row) => row.audit === audit).map((row) => row.epoch)
+        if (auditEpochs.length === 0) continue
+        // The results contract claims one epoch per transaction.
+        const transactionHashes = await verifierClient.claimAuditorRewards(signer!.wallet, auditEpochs, audit.address)
+        console.log(chalk.green(
+          `Claimed ${audit.label} rewards for epoch(s) ${auditEpochs.join(', ')} from ${resultsAddress} `
+          + `(audit ${audit.address}) (${transactionHashes.join(', ')})`,
+        ))
+      }
     })
 }
 
-/** One line on KBF's reward settings: whether audits earn credits yet, its share, and the per-auditor cap. */
-export function describeRewardSettings(settings: { rewardsStartEpoch: bigint; shareBps: number; maxAuditorShareBps: number }): string {
+/** One line on an audit's reward settings: whether it earns credits yet, its share, and the per-auditor cap. */
+export function describeRewardSettings(
+  settings: { rewardsStartEpoch: bigint; shareBps: number; maxAuditorShareBps: number },
+  label = 'KBF',
+): string {
   const start = settings.rewardsStartEpoch === VERIFICATION_REWARDS_OFF
-    ? 'KBF rewards are off: audits earn no credits yet'
-    : `audits earn credits from epoch ${settings.rewardsStartEpoch}`
-  return `Rewards: ${start}; KBF share ${settings.shareBps / 100}% of the verification bucket (latest setting), `
+    ? `${label} rewards are off: it earns no credits yet`
+    : `${label} earns credits from epoch ${settings.rewardsStartEpoch}`
+  return `Rewards: ${start}; ${label} share ${settings.shareBps / 100}% of the verification bucket (latest setting), `
     + `at most ${settings.maxAuditorShareBps / 100}% of it per auditor and epoch; anything above goes to the emissions reserve.`
 }
 
@@ -117,13 +130,13 @@ function formatShare(part: bigint, total: bigint): string {
   return `${(Number((part * 10_000n) / total) / 100).toFixed(2)}%`
 }
 
-async function confirmClaim(epochCount: number, total: string): Promise<void> {
+async function confirmClaim(claimCount: number, total: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('refusing non-interactive claim without --yes')
   }
   const prompt = createInterface({ input: process.stdin, output: process.stdout })
   try {
-    const answer = await prompt.question(`Claim ${total} ANTS across ${epochCount} epoch(s)? [y/N] `)
+    const answer = await prompt.question(`Claim ${total} ANTS in ${claimCount} transaction(s)? [y/N] `)
     if (!['y', 'yes'].includes(answer.trim().toLowerCase())) throw new Error('claim cancelled')
   } finally {
     prompt.close()
