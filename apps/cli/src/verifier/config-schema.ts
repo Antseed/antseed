@@ -183,6 +183,12 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatches: positiveIntegerSchema.optional(),
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
+  /**
+   * Most blocks one `eth_getLogs` request of the verifier spans (default 1,000, which every public Base
+   * RPC accepts). A keyed RPC that allows wider ranges needs fewer requests for the first scan of a
+   * data dir; later scans only read new blocks (`verifier/event-cache.ts`).
+   */
+  logQueryChunkBlocks: positiveIntegerSchema.optional(),
   /** How long one seller audit waits for its next answered batch before it gives up (default 10 minutes). */
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
   /** The longest one seller audit may take in total, while the seller keeps answering (default 60 minutes). */
@@ -219,8 +225,9 @@ export const VerifierConfigSchema = strictObject({
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
   /**
-   * KBF layout-filter passes for new banks (default 1; 0 turns it off). Each pass re-asks every new
-   * probe once the way audits do and drops probes whose answer moves. A bank keeps its own setting.
+   * KBF layout-filter passes for new banks (default 2; 0 turns it off). Each pass re-asks the pool of
+   * new probes in single-domain batches of ten and drops probes whose answer moves. A bank keeps its
+   * own setting. Part of the audit rules: see `verifierRuleOverrides`.
    */
   referenceLayoutFilterPasses: z.number().int().min(0, 'must be an integer >= 0').optional(),
   /**

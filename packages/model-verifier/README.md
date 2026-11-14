@@ -5,10 +5,11 @@ with any OpenAI- or Anthropic-compatible endpoint: an Antseed peer through the l
 buyer proxy, another network, or a provider's own API.
 
 It uses Knowledge Boundary Fingerprinting (KBF). A published reference holds numeric
-recall probes that the genuine model answers consistently and cheaper substitutes get
-wrong, plus the genuine model's own error rate on them. An audit sends a fresh random
-subset in a fresh order, with varied prompt wording, and runs a one-sided binomial
-test of the endpoint's mismatches against that honest error rate.
+recall probes that the genuine model answers consistently and at least one cheaper
+substitute answers differently, plus the genuine model's own disagreement rate on them.
+An audit sends a fresh random subset in a fresh order, one domain per request, with varied
+prompt wording, and runs a one-sided binomial test of the endpoint's mismatches against the
+99% upper bound of that rate.
 
 ```bash
 VERIFY_API_KEY=... npx antseed-verify \
@@ -21,7 +22,7 @@ VERIFY_API_KEY=... npx antseed-verify \
 |---|---|---|
 | `SAME` | No evidence of substitution at the reference's statistical power | 0 |
 | `DIFF` | Significantly more mismatches than the genuine model makes | 2 |
-| `UNDETERMINED` | Not every probe could be judged (the same rule as on-chain audits) | 3 |
+| `UNDETERMINED` | Under half the probes judged, or a would-be `DIFF` with under 80% judged (the same rule as on-chain audits) | 3 |
 
 An endpoint that answers none of the requests (wrong key, URL or model id) is an error
 (exit 1) with the reason, not a verdict. Published audits are fetched from ipfs.io, then

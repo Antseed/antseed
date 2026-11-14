@@ -1,35 +1,23 @@
 import { randomInt } from 'node:crypto'
-import type { KbfProbe } from '@antseed/fingerprints'
+import { KBF_PROBES_PER_REQUEST, kbfDomainBatches, type IndexedKbfProbeBatch, type KbfProbe } from '@antseed/fingerprints'
 
-export interface IndexedKbfProbeBatch {
-  probes: KbfProbe[]
-  indexes: number[]
-}
+export type { IndexedKbfProbeBatch }
 
+/** Single-domain batches (`kbfDomainBatches`), each domain shuffled first unless `shuffle` says otherwise. */
 export function createDomainHomogeneousKbfBatches(
   probes: readonly KbfProbe[],
   batchSize: number,
   shuffle: <T>(values: readonly T[]) => T[] = cryptoShuffle,
 ): IndexedKbfProbeBatch[] {
-  if (!Number.isInteger(batchSize) || batchSize <= 0) throw new Error('KBF batch size must be a positive integer')
-  const byDomain = new Map<string, Array<{ probe: KbfProbe; index: number }>>()
-  for (const [index, probe] of probes.entries()) {
-    const entries = byDomain.get(probe.domain) ?? []
-    entries.push({ probe, index })
-    byDomain.set(probe.domain, entries)
-  }
-  const batches: IndexedKbfProbeBatch[] = []
-  for (const entries of byDomain.values()) {
-    const ordered = shuffle(entries)
-    for (let offset = 0; offset < ordered.length; offset += batchSize) {
-      const batch = ordered.slice(offset, offset + batchSize)
-      batches.push({
-        probes: batch.map(({ probe }) => probe),
-        indexes: batch.map(({ index }) => index),
-      })
-    }
-  }
-  return batches
+  return kbfDomainBatches(probes, batchSize, shuffle)
+}
+
+/**
+ * The batches of a question set exactly as sellers get them: set order, one domain per request. The
+ * reference is calibrated on these same batches, so its limit is measured on what is audited.
+ */
+export function kbfAuditBatches(probes: readonly KbfProbe[]): IndexedKbfProbeBatch[] {
+  return kbfDomainBatches(probes, KBF_PROBES_PER_REQUEST)
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {

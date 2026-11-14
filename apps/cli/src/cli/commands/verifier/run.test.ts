@@ -31,9 +31,9 @@ import {
 } from './run.js'
 
 setAuditedModelsForTesting({
-  'model-a': { upstreamModel: 'vendor/model-a' },
-  'model-b': { upstreamModel: 'vendor/model-b' },
-  'model-c': { upstreamModel: 'vendor/model-c' },
+  'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },
+  'model-b': { upstreamModel: 'vendor/model-b', contrastModels: [] },
+  'model-c': { upstreamModel: 'vendor/model-c', contrastModels: [] },
 })
 
 function command(): Command {
@@ -42,12 +42,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
+test('verifier exposes run, assignment, logs, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
+    ['assignment', 'check', 'logs', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 
@@ -73,7 +73,7 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   assert.deepEqual(
     run.options.map((option) => option.long),
     ['--all', '--auditor', '--peer', '--resume-run', '--fresh', '--skip-version-check',
-      '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm'],
+      '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
@@ -360,7 +360,13 @@ test('assigned mode gives the auditor its round-robin share of the models for th
   )
   assert.throws(
     () => resolveAssignedAuditModels(config, auditors[1]!, { epoch: '2026-10-28', startedAt: 0, endsAt: 1, source: 'utc-day' }, auditors),
-    /on-chain epoch is unavailable/,
+    (error: Error) => {
+      // A short RPC outage: watch retries it. Auditing a model by hand would not help, its evidence could not be submitted.
+      assert.match(error.message, /on-chain epoch unavailable/)
+      assert.match(error.message, /`verifier watch` tries again at its next tick/)
+      assert.doesNotMatch(error.message, /verifier run <model>|--all/)
+      return true
+    },
   )
 })
 
@@ -425,7 +431,7 @@ test('a model whose question build fails is retried in the next round, not dropp
   const last = await runVerifierRounds(3, async (round) => { rounds.push(round); return outcomes[round - 1]! }, (line) => lines.push(line))
   assert.deepEqual(rounds, [1, 2, 3])
   assert.equal(last?.left, 0)
-  assert.ok(!lines.some((line) => line.includes('could not be built')), lines.join('\n'))
+  assert.ok(!lines.some((line) => line.includes('Not audited this run')), lines.join('\n'))
 })
 
 test('a build that keeps failing is reported once at the end, and a round without progress stops', async () => {
@@ -438,7 +444,7 @@ test('a build that keeps failing is reported once at the end, and a round withou
   assert.equal(last?.enrollmentFailures?.size, 1)
   const report = lines.join('\n')
   assert.match(report, /made no progress/)
-  assert.match(report, /fresh questions could not be built \(1\)/)
+  assert.match(report, /Not audited this run \(1\)/)
   assert.match(report, /glm-5\.3: no contrast models selected/)
 })
 

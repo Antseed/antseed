@@ -33,6 +33,10 @@ export interface EpochReport {
   byAuditor: Map<string, VerifierVerdict>
   /** Reports each verdict needed at its latest report (the contract raises SAME and UNDETERMINED while a DIFF is live). */
   required: Map<VerifierVerdict, number>
+  /** Block of each verdict's first report in this round: a confirmer's turn counts from there. */
+  firstReportBlock: Map<VerifierVerdict, number>
+  /** Checksummed auditor address to its latest SAME or DIFF this epoch, in any round. UNDETERMINED is no opinion. */
+  opinions: Map<string, VerifierVerdict>
 }
 
 export interface VerdictTally {
@@ -46,6 +50,12 @@ const VERDICT_NAMES: Record<number, VerifierVerdictName> = {
   [VERIFIER_VERDICT.DIFF]: 'DIFF',
   [VERIFIER_VERDICT.UNDETERMINED]: 'UNDETERMINED',
 }
+
+/**
+ * How long one auditor has to answer a waiting report. A report is confirmed by one auditor at a
+ * time: when its time is up, the next auditor in the rotation is asked instead.
+ */
+export const CONFIRMATION_WINDOW_SECONDS = 12 * 60 * 60
 
 /** Reads this epoch's `ServiceAudited` events, from the epoch's first block on. */
 export async function loadEpochAuditEvents(input: {
@@ -61,6 +71,15 @@ export async function loadEpochAuditEvents(input: {
 /** This epoch's reports, as `epochReports` replays them from `loadEpochAuditEvents`. */
 export async function loadEpochReports(input: Parameters<typeof loadEpochAuditEvents>[0]): Promise<Map<string, EpochReport>> {
   return epochReports(await loadEpochAuditEvents(input))
+}
+
+/** This epoch's disputed sellers, as `disputedSellers`; empty when the chain can't be read, since they only annotate the overview. */
+export async function loadDisputedSellers(input: Parameters<typeof loadEpochAuditEvents>[0]): Promise<Set<string>> {
+  try {
+    return disputedSellers(await loadEpochReports(input))
+  } catch {
+    return new Set()
+  }
 }
 
 /** One auditor's latest report on a service and model this epoch, in whatever round it was made. */
@@ -96,9 +115,15 @@ export function reportKey(agentId: bigint, service: string, model: string): stri
  */
 export function epochReports(events: readonly ServiceAuditedEvent[]): Map<string, EpochReport> {
   const latestRound = new Map<string, number>()
+  const opinions = new Map<string, Map<string, VerifierVerdict>>()
   for (const event of events) {
     const service = serviceKey(event.agentId, event.serviceHash)
     latestRound.set(service, Math.max(latestRound.get(service) ?? 0, event.round))
+    if (event.verdict !== VERIFIER_VERDICT.SAME && event.verdict !== VERIFIER_VERDICT.DIFF) continue
+    const key = reportKey(event.agentId, event.serviceHash, event.modelHash)
+    const byAuditor = opinions.get(key) ?? new Map<string, VerifierVerdict>()
+    byAuditor.set(getAddress(event.auditor), event.verdict)
+    opinions.set(key, byAuditor)
   }
   const reports = new Map<string, EpochReport>()
   for (const event of events) {
@@ -113,11 +138,14 @@ export function epochReports(events: readonly ServiceAuditedEvent[]): Map<string
         round: event.round,
         byAuditor: new Map(),
         required: new Map(),
+        firstReportBlock: new Map(),
+        opinions: opinions.get(key) ?? new Map(),
       }
       reports.set(key, report)
     }
     report.byAuditor.set(getAddress(event.auditor), event.verdict)
     report.required.set(event.verdict, event.required)
+    if (!report.firstReportBlock.has(event.verdict)) report.firstReportBlock.set(event.verdict, event.blockNumber)
   }
   return reports
 }
@@ -134,10 +162,67 @@ export function verdictTallies(report: EpochReport): VerdictTally[] {
   return tallies.sort((left, right) => left.verdict.localeCompare(right.verdict))
 }
 
+function waitingTallies(report: EpochReport): VerdictTally[] {
+  return verdictTallies(report).filter((tally) => tally.reports > 0 && tally.reports < tally.required)
+}
+
+/** Whether two auditors gave opposite opinions on this service and model this epoch, in any round. */
+function isDisputed(report: EpochReport): boolean {
+  return new Set(report.opinions.values()).size > 1
+}
+
+/** Key of one seller and model in `disputedSellers`. */
+export function disputeKey(agentId: bigint | string, model: string): string {
+  return `${agentId}:${normalized(model)}`
+}
+
+/** The sellers and models (`disputeKey`, by model hash) two auditors gave opposite opinions on this epoch. */
+export function disputedSellers(reports: ReadonlyMap<string, EpochReport>): Set<string> {
+  const disputed = new Set<string>()
+  for (const report of reports.values()) {
+    if (isDisputed(report)) disputed.add(disputeKey(report.agentId, report.modelHash))
+  }
+  return disputed
+}
+
+/** The block the report's waiting started in: the earliest first report of a verdict that still waits. */
+function waitingSinceBlock(report: EpochReport): number {
+  const waiting = new Set(waitingTallies(report).map((tally) => tally.verdict))
+  const blocks = [...report.firstReportBlock]
+    .filter(([verdict]) => waiting.has(VERDICT_NAMES[verdict]!))
+    .map(([, block]) => block)
+  return Math.min(...blocks)
+}
+
+/** The blocks whose timestamps `pendingConfirmations` needs. */
+export function waitingReportBlocks(reports: ReadonlyMap<string, EpochReport>): number[] {
+  const blocks = new Set<number>()
+  for (const report of reports.values()) {
+    // Disputed reports too: an opinion of a revoked auditor does not count, so one may not be disputed after all.
+    if (waitingTallies(report).length > 0) blocks.add(waitingSinceBlock(report))
+  }
+  return [...blocks]
+}
+
+/** Unix seconds of each block; a block the node cannot return is an error, so no two auditors work out different turns. */
+export async function loadBlockTimestamps(
+  reader: { getBlock(block: number): Promise<{ timestamp: number } | null> },
+  blocks: readonly number[],
+): Promise<Map<number, number>> {
+  const timestamps = await mapConcurrently(blocks, SETTLED_READ_CONCURRENCY, async (block) => {
+    const header = await reader.getBlock(block)
+    if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
+    return [block, header.timestamp] as const
+  })
+  return new Map(timestamps)
+}
+
 /**
  * A report on one seller's service that still waits for more auditors this epoch, and who is to
- * confirm it: the first auditor in the model's rotation (`auditorRotationForModel`) that has not
- * reported on it yet. From halfway through the epoch, any auditor that has not reported on it may.
+ * confirm it. A seller gets at most two opinions per model and epoch: one auditor confirms at a
+ * time, the first in the model's rotation (`auditorRotationForModel`) that has not reported on it,
+ * and each has `CONFIRMATION_WINDOW_SECONDS` before the next one is asked instead. Once two auditors
+ * disagree nobody else is asked: the SAME stands.
  */
 export interface PendingConfirmation {
   model: string
@@ -150,9 +235,11 @@ export interface PendingConfirmation {
   waiting: VerdictTally[]
   /** Auditors that reported on this service and model this epoch. */
   reporters: string[]
-  /** The auditor the rotation gives this confirmation to; null when every approved auditor has reported. */
+  /** Two auditors gave opposite opinions this epoch, so nobody else is asked. */
+  disputed: boolean
+  /** The auditor whose turn it is; null when the report is disputed or every approved auditor has reported. */
   confirmer: string | null
-  /** True when `auditor` is to audit this seller now: it is the confirmer, or the epoch is past halfway and it has not reported. */
+  /** True when `auditor` is to audit this seller now. */
   mine: boolean
 }
 
@@ -164,8 +251,10 @@ export interface PendingConfirmation {
 export function pendingConfirmations(input: {
   reports: ReadonlyMap<string, EpochReport>
   epoch: string | number | bigint
-  epochStartedAt: number
-  epochEndsAt: number
+  /** Unix seconds of the blocks in `waitingReportBlocks(reports)`. Without one, the first confirmer's turn never ends. */
+  blockTimestamps?: ReadonlyMap<number, number>
+  /** Auditors revoked this epoch (`revokedSinceEpochStart`): they can no longer submit, so they are never asked. */
+  revoked?: ReadonlySet<string>
   /** Unix seconds. */
   now: number
   auditor: string
@@ -176,16 +265,21 @@ export function pendingConfirmations(input: {
 }): PendingConfirmation[] {
   const me = getAddress(input.auditor)
   const modelsByHash = new Map((input.models ?? input.auditedModels).map((model) => [normalized(modelHash(model)), model]))
-  const pastHalf = input.now >= input.epochStartedAt + (input.epochEndsAt - input.epochStartedAt) / 2
   const pending: PendingConfirmation[] = []
   const rotations = new Map<string, string[]>()
   for (const report of input.reports.values()) {
     const model = modelsByHash.get(normalized(report.modelHash))
     if (!model) continue
-    const waiting = verdictTallies(report).filter((tally) => tally.reports > 0 && tally.reports < tally.required)
+    const waiting = waitingTallies(report)
     if (waiting.length === 0) continue
     const reporters = [...report.byAuditor.keys()]
-    const reported = new Set(reporters)
+    const reported = new Set([...reporters, ...report.opinions.keys()])
+    // A revoked auditor's opinion does not count toward the two a seller gets: after a revocation the
+    // waiting report gets one more confirmer, instead of every remaining auditor being asked in turn
+    // for a result `submit` would then drop as a third opinion.
+    const counted = [...report.opinions].filter(([auditor]) => !input.revoked?.has(auditor)).map(([, verdict]) => verdict)
+    const disputed = new Set(counted).size > 1
+    const twoOpinions = counted.length >= 2
     // The rotation depends only on the model and the epoch's inputs, so it is computed once per model.
     let rotation = rotations.get(model)
     if (rotation === undefined) {
@@ -194,8 +288,11 @@ export function pendingConfirmations(input: {
       })
       rotations.set(model, rotation)
     }
-    const confirmer = rotation.find((auditor) => !reported.has(auditor)) ?? null
-    const mine = !reported.has(me) && (confirmer === me || (pastHalf && confirmer !== null))
+    const confirmer = disputed || twoOpinions ? null : confirmerOnTurn(
+      rotation.filter((auditor) => !reported.has(auditor) && !input.revoked?.has(auditor)),
+      input.blockTimestamps?.get(waitingSinceBlock(report)),
+      input.now,
+    )
     pending.push({
       model,
       modelHash: report.modelHash,
@@ -204,8 +301,9 @@ export function pendingConfirmations(input: {
       round: report.round,
       waiting,
       reporters,
+      disputed,
       confirmer,
-      mine,
+      mine: confirmer === me,
     })
   }
   return pending.sort((left, right) => (
@@ -213,6 +311,13 @@ export function pendingConfirmations(input: {
     || (left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0)
     || left.serviceHash.localeCompare(right.serviceHash)
   ))
+}
+
+/** Whose turn it is, counted from the first report in chain time; the turns start over after the last candidate. */
+function confirmerOnTurn(candidates: readonly string[], reportedAt: number | undefined, now: number): string | null {
+  if (candidates.length === 0) return null
+  const elapsed = reportedAt === undefined ? 0 : Math.max(0, now - reportedAt)
+  return candidates[Math.floor(elapsed / CONFIRMATION_WINDOW_SECONDS) % candidates.length]!
 }
 
 /** The on-chain reads `dropSettledConfirmations` needs. */

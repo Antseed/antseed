@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { modelHash } from '@antseed/node/payments'
 import { writeTextAtomic } from './atomic-files.js'
 import {
   epochDirectory,
@@ -9,6 +10,7 @@ import {
 import { finalAuditVerdict } from './model-audit.js'
 import { extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
+import { disputeKey } from './pending-confirmations.js'
 import { normalized } from './utils.js'
 
 /**
@@ -197,7 +199,13 @@ export async function buildEpochOverview(
 }
 
 /** Writes `epochs/<epoch>/overview.html`; `runIds` limits it to those runs (default: every run of the epoch). */
-export async function writeEpochOverview(evidenceDir: string, epoch: string, runIds?: string[]): Promise<string | null> {
+export async function writeEpochOverview(
+  evidenceDir: string,
+  epoch: string,
+  runIds?: string[],
+  /** Sellers two auditors disagree on (`disputedSellers`), read from the chain; a page from local files alone has none. */
+  disputed: ReadonlySet<string> = new Set(),
+): Promise<string | null> {
   let manifests = await epochRunManifests(evidenceDir, epoch)
   if (runIds && runIds.length > 0) {
     const wanted = runIds.map(normalized)
@@ -208,7 +216,7 @@ export async function writeEpochOverview(evidenceDir: string, epoch: string, run
   const overview = await buildEpochOverview(evidenceDir, epoch, manifests)
   if (overview.runIds.length === 0) return null
   const path = epochOverviewPath(evidenceDir, epoch)
-  await writeTextAtomic(path, renderEpochOverview(overview))
+  await writeTextAtomic(path, renderEpochOverview(overview, disputed))
   return path
 }
 
@@ -238,7 +246,7 @@ function cellDetail(cell: OverviewCell): string[] {
   return lines
 }
 
-export function renderEpochOverview(overview: EpochOverview): string {
+export function renderEpochOverview(overview: EpochOverview, disputed: ReadonlySet<string> = new Set()): string {
   const all = overview.sellers.flatMap((seller) => [...seller.cells.values()])
   const count = (state: OverviewCellState): number => all.filter((cell) => cell.state === state).length
   const sellersWith = (state: OverviewCellState): number =>
@@ -252,7 +260,8 @@ export function renderEpochOverview(overview: EpochOverview): string {
     const tally = (state: OverviewCellState): number => cells.filter((cell) => cell.state === state).length
     const columns = overview.models.map((model) => {
       const cell = seller.cells.get(model)
-      return cell ? `<td>${renderCell(cell)}</td>` : '<td></td>'
+      const isDisputed = cell !== undefined && seller.agentId !== null && disputed.has(disputeKey(seller.agentId, modelHash(cell.model)))
+      return cell ? `<td>${renderCell(cell, isDisputed)}</td>` : '<td></td>'
     }).join('')
     const name = `${seller.label} ${seller.agentId ?? ''} ${seller.peerId}`.toLowerCase()
     const sub = seller.agentId ? `agent ${seller.agentId}` : `${seller.peerId.slice(0, 12)}…`
@@ -289,6 +298,7 @@ tbody tr{border-bottom:1px solid #2c2c2f}tbody tr:hover{background:#26272b}
 td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 .tg{color:#5cc26d}.tr{color:#e0524a}.ty{color:#e2b33c}
 .cell{position:relative;display:inline-block}
+.disputed{color:#e0a84f;font-weight:700}
 .dot{display:inline-block;width:17px;height:17px;border-radius:50%;vertical-align:middle;cursor:help}
 .same{background:#5cb85c}.diff{background:#e0524a}.undetermined{background:#e2b33c}.skipped{background:#d8d8d8}
 .cell sup{font-size:9px;color:#aaa;position:absolute;left:19px;top:-2px}
@@ -332,15 +342,16 @@ function isVerified(seller: OverviewSeller): boolean {
   return cells.some((cell) => cell.state === 'same') && !cells.some((cell) => cell.state === 'diff')
 }
 
-function renderCell(cell: OverviewCell): string {
+function renderCell(cell: OverviewCell, disputed = false): string {
   const headline = cell.reason?.headline ?? STATE_LABEL[cell.state]
   const lines = [
+    disputed ? '<span class="disputed">Disputed: two auditors disagree, so the SAME stands and nobody else is asked this epoch.</span>' : '',
     cell.reason ? `<span>${escapeHtml(cell.reason.detail)}</span>` : '',
     ...cellDetail(cell).map((line) => `<span>${escapeHtml(line)}</span>`),
   ].join('')
   const meta = `${cell.model} · service ${cell.service} · run ${cell.runId.slice(0, 10)}…`
     + (cell.audits > 1 ? ` · ${cell.audits} audits` : '')
-  const sup = cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''
+  const sup = `${disputed ? '<sup class="disputed">disputed</sup>' : ''}${cell.audits > 1 ? `<sup>${cell.audits}</sup>` : ''}`
   return `<span class="cell" tabindex="0" aria-label="${escapeHtml(`${headline}. ${cell.reason?.detail ?? ''}`)}">`
     + `<span class="dot ${cell.state}"></span>${sup}`
     + `<span class="card-tip" role="tooltip"><b>${escapeHtml(headline)}</b>${lines}<i>${escapeHtml(meta)}</i></span></span>`

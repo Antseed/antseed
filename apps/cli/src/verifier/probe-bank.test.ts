@@ -1,33 +1,46 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import {
+  KBF_CALIBRATION_METHOD,
+  aggregateKbfSelfTestOutcomes,
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  queryProfileHash,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   appendModelReferenceToBank,
-  BANK_EXHAUSTED,
+  bankPath,
+  EPOCH_QUESTION_SET_METHOD,
   epochProbeReferencePath,
-  extensionReferencePath,
+  epochQuestionSetPath,
+  findEpochProbeReference,
+  findEpochQuestionSetByReferenceId,
   inspectModelProbeBankPower,
-  inspectSellerProbeCapacity,
   loadBankEnrollmentReference,
+  loadBankReferenceExchanges,
   loadModelAuditReservation,
   missingBankReferenceExchanges,
+  NO_EPOCH_QUESTION_SET,
+  questionTextKey,
+  recordEpochQuestionPool,
+  recordEpochSetCalibration,
   reserveExtensionReference,
   reserveModelAuditReference,
-  SELLER_PROBE_SELECTION_METHOD,
-  sellerEpochProbeReferencePath,
+  isRetiredEpochQuestionSetReference,
+  retireEpochQuestionSet,
+  selectEpochQuestionSet,
   sellerLedgerPath,
   voidModelAuditReference,
-  type SellerEpochProbeReferenceV1,
+  type EpochQuestionSetV1,
 } from './probe-bank.js'
 
 const referenceCost = {
@@ -48,9 +61,55 @@ function appendReference(banksDir: string, value = reference()) {
   return appendModelReferenceToBank({ banksDir, model: 'model-a', reference: value, cost: referenceCost })
 }
 
+const identityShuffle = <T>(values: readonly T[]) => [...values]
+
+/** One pass in which the reference gives every label. */
+function cleanCalibration(value: KbfReferenceV1): KbfReferenceCalibrationV1 {
+  const outcomes = value.probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1 as const] }))
+  return {
+    version: 1,
+    method: KBF_CALIBRATION_METHOD,
+    passes: 1,
+    ...aggregateKbfSelfTestOutcomes(outcomes),
+    batches: kbfAuditBatches(value.probes).map((batch, batchIndex) => ({
+      pass: 0, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId: 'v1', attempts: 1,
+    })),
+    calibratedAt: '2026-08-06T00:00:00.000Z',
+  }
+}
+
+async function calibrate(banksDir: string, epoch: string, set: EpochQuestionSetV1, config?: VerifierCLIConfig): Promise<EpochQuestionSetV1> {
+  const path = join(banksDir, 'calibration.exchanges.json')
+  await writeFile(path, '{}')
+  return recordEpochSetCalibration({
+    banksDir, model: 'model-a', epoch, config, passes: 1, cost: referenceCost,
+    calibrations: [set.reference, ...set.extensions].map(cleanCalibration),
+    exchanges: {
+      path, sha256: 'sha256:00', exchangeCount: 1, requestCount: 1,
+      upstream: { name: 'referenceEndpoint', type: 'openai', baseUrl: 'https://reference.test/v1', model: 'upstream-a', protocol: 'openai-chat-completions', request: { overrides: {}, omissions: [] }, providerPin: null },
+    },
+  })
+}
+
+/** Makes `epoch`'s question set from every question banked so far, in bank order, and calibrates it. */
+async function makeSet(
+  banksDir: string,
+  epoch: string,
+  options: { config?: VerifierCLIConfig; extensionCount?: number } = {},
+): Promise<EpochQuestionSetV1> {
+  const bank = JSON.parse(await readFile(bankPath(banksDir, 'model-a'), 'utf8')) as { probes: Array<{ probe: { id: string } }> }
+  await recordEpochQuestionPool({ banksDir, model: 'model-a', epoch, probeIds: bank.probes.map((entry) => entry.probe.id) })
+  const selection = await selectEpochQuestionSet({
+    banksDir, model: 'model-a', epoch, runId: 'set-run', extensionCount: options.extensionCount ?? 0,
+    config: options.config, shuffle: identityShuffle,
+  })
+  if (selection.status !== 'ready') throw new Error(`no set: ${selection.reason}`)
+  return calibrate(banksDir, epoch, selection.set, options.config)
+}
+
 setAuditedModelsForTesting({
-  'model-a': { upstreamModel: 'upstream-a' },
-  'different-model': { upstreamModel: 'upstream-b' },
+  'model-a': { upstreamModel: 'upstream-a', contrastModels: [] },
+  'different-model': { upstreamModel: 'upstream-b', contrastModels: [] },
 })
 
 function excludedDomainConfig(model = 'model-a'): VerifierCLIConfig {
@@ -281,7 +340,6 @@ test('a reference that disagrees with itself up to half the time is still usable
 
 test('excluded domains are ignored by bank power and audit reservations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-domains-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
   try {
     const mixed = reference()
     for (const [index, probe] of mixed.probes.entries()) probe.domain = index < 80 ? 'medical' : 'biology'
@@ -301,6 +359,7 @@ test('excluded domains are ignored by bank power and audit reservations', async 
     assert.equal(filtered.eligibleProbeCount, 120)
     assert.equal(filtered.selectedProbeCount, 100)
 
+    await makeSet(directory, 'filtered', { config })
     const reserved = await reserveModelAuditReference({
       banksDir: directory,
       model: 'model-a',
@@ -309,10 +368,10 @@ test('excluded domains are ignored by bank power and audit reservations', async 
       runId: 'filtered-run',
       epoch: 'filtered',
       config,
-      shuffle: identityShuffle,
     })
     assert.equal(reserved.reference.probes.some((probe) => probe.domain === 'medical'), false)
 
+    await makeSet(directory, 'legacy')
     const legacy = await reserveModelAuditReference({
       banksDir: directory,
       model: 'model-a',
@@ -320,7 +379,6 @@ test('excluded domains are ignored by bank power and audit reservations', async 
       service: 'model-a',
       runId: 'legacy-run',
       epoch: 'legacy',
-      shuffle: identityShuffle,
     })
     await assert.rejects(loadModelAuditReservation({
       banksDir: directory,
@@ -425,7 +483,6 @@ test('references with split reference-endpoint settings join legacy banks with t
 
 test('bank selections grow until every contrast model would be flagged DIFF', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-contrast-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
   try {
     const value = reference()
     // contrast-b only misses every fifth probe after the first hundred.
@@ -436,9 +493,10 @@ test('bank selections grow until every contrast model would be flagged DIFF', as
     })
     value.referenceId = computeReferenceId(value)
     await appendReference(directory, value)
+    await makeSet(directory, '4')
     const reserved = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
-      service: 'model-a', runId: 'run-a', epoch: '4', shuffle: identityShuffle,
+      service: 'model-a', runId: 'run-a', epoch: '4',
     })
     assert.ok(reserved.reference.probes.length > 100)
     const detection = reserved.reference.contrastDetection!
@@ -532,6 +590,7 @@ test('a changed alias list never makes a bank incompatible', async () => {
     const appended = await appendReference(directory, renamed)
     assert.equal(appended.totalProbeCount, 200)
     // Audits draw from the bank as before.
+    await makeSet(directory, 'alias', { config: { referenceMaximumProbeCount: 100 } })
     const reserved = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: '22'.repeat(20), service: 'model-a',
       runId: 'alias-run', epoch: 'alias', config: { referenceMaximumProbeCount: 100 },
@@ -542,47 +601,7 @@ test('a changed alias list never makes a bank incompatible', async () => {
   }
 })
 
-test('pre-run capacity counts each seller\'s unseen questions against one audit', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-capacity-'))
-  try {
-    await appendReference(directory)
-    const config = { referenceMaximumProbeCount: 100 }
-    const identityShuffle = <T>(values: readonly T[]) => [...values]
-    const seller = '33'.repeat(20)
-    const fresh = '44'.repeat(20)
-    // The seller got 100 questions in an earlier epoch.
-    await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a',
-      runId: 'earlier', epoch: '27', config, shuffle: identityShuffle,
-    })
-    const capacity = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller, fresh], config,
-    })
-    assert.equal(capacity.selectedProbeCount, 100)
-    assert.deepEqual(capacity.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 100], [200, 100]])
-    // --allow-probe-reuse: the first audit may reuse seen questions, so nothing unseen is needed.
-    const reuse = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [seller], config, allowProbeReuse: true,
-    })
-    assert.deepEqual(reuse.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount]), [[100, 0]])
-    // Already audited this epoch: the run reuses its set, so nothing more is needed.
-    await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: fresh, service: 'model-a',
-      runId: 'now', epoch: '28', config, shuffle: identityShuffle,
-    })
-    const after = await inspectSellerProbeCapacity({
-      banksDir: directory, model: 'model-a', epoch: '28', sellerPeerIds: [fresh], config,
-    })
-    assert.deepEqual(after.sellers.map((entry) => [entry.unseenProbeCount, entry.neededProbeCount, entry.assignedThisEpoch]), [[100, 0, true]])
-    await assert.rejects(inspectSellerProbeCapacity({
-      banksDir: directory, model: 'missing-model', epoch: '28', sellerPeerIds: [fresh], config,
-    }), /no probe bank exists for missing-model/)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('audit reservations reject legacy Antseed enrollment banks', async () => {
+test('question sets reject legacy Antseed enrollment banks', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-legacy-enrollment-'))
   try {
     const legacy = reference()
@@ -598,15 +617,8 @@ test('audit reservations reject legacy Antseed enrollment banks', async () => {
       banksDir: directory,
       model: 'model-a',
     }), /archive it and rebuild with enrollment \d+/)
-    await assert.rejects(reserveModelAuditReference({
-      banksDir: directory,
-      model: 'model-a',
-      sellerPeerId: '11'.repeat(20),
-      service: 'model-a',
-      runId: 'run-a',
-      epoch: '7',
-      config: undefined,
-      shuffle: <T>(values: readonly T[]) => [...values],
+    await assert.rejects(selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '7', runId: 'run-a', extensionCount: 0,
     }), /archive it and rebuild with enrollment \d+/)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -634,9 +646,10 @@ test('bank-selected references pool every self-test run and size power for the a
     }
     pooled.referenceId = computeReferenceId(pooled)
     await appendReference(directory, pooled)
+    await makeSet(directory, '9')
     const reserved = await reserveModelAuditReference({
       banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
-      service: 'model-a', runId: 'run-a', epoch: '9', shuffle: <T>(values: readonly T[]) => [...values],
+      service: 'model-a', runId: 'run-a', epoch: '9',
     })
     const count = reserved.reference.probes.length
     // The bank stored the missing run as 0 (older rule); it is re-scored as unscored on load.
@@ -649,159 +662,193 @@ test('bank-selected references pool every self-test run and size power for the a
   }
 })
 
-test('each seller gets its own probe subset and order, stable within an epoch', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  const sellerA = '11'.repeat(20)
-  const sellerB = '22'.repeat(20)
+/**
+ * `reference(count)` with ids `<prefix>-<n>`; the first `keepText` probes keep the text of
+ * `reference()`'s probes (the same questions under new ids), the rest get new text.
+ */
+function renamedReference(count: number, prefix: string, keepText: number): KbfReferenceV1 {
+  const value = reference(count)
+  const ids = new Map(value.probes.map((probe, index) => [probe.id, `${prefix}-${index + 1}`]))
+  value.probes = value.probes.map((probe, index) => ({
+    ...probe,
+    id: ids.get(probe.id)!,
+    ...(index < keepText ? {} : { name: `${prefix} question ${index + 1}`, template: `The ${prefix} value ${index + 1} is ___.` }),
+  }))
+  value.selfTest.outcomes = value.selfTest.outcomes.map((outcome) => ({ ...outcome, probeId: ids.get(outcome.probeId)! }))
+  value.contrasts = [{ model: 'contrast-a', distinguishingProbeIds: value.probes.map((probe) => probe.id) }]
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+const ids = (value: { probes: Array<{ id: string }> }) => value.probes.map((probe) => probe.id)
+
+test('every seller of a model gets the same question set this epoch, and every close call the same extra sets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-epoch-set-'))
+  const sellers = ['11', '22', '33'].map((prefix) => prefix.repeat(20))
   try {
-    await appendReference(directory)
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    assert.equal(first.reference.probes.length, 100)
-    const stored = JSON.parse(await readFile(
-      sellerEpochProbeReferencePath(directory, 'model-a', '4', sellerA),
-      'utf8',
-    )) as SellerEpochProbeReferenceV1
-    assert.equal(stored.kind, 'antseed-kbf-seller-epoch-probe-reference')
-    assert.equal(stored.selection.method, SELLER_PROBE_SELECTION_METHOD)
-    assert.equal(stored.selection.eligibleProbeCount, 200)
-    assert.equal(stored.reference.referenceId, first.reference.referenceId)
+    await appendReference(directory, reference(300))
+    const set = await makeSet(directory, '4', { extensionCount: 2 })
+    assert.equal(set.method, EPOCH_QUESTION_SET_METHOD)
+    assert.equal(set.reference.probes.length, 100)
+    assert.deepEqual(set.extensions.map((extension) => extension.probes.length), [100, 100])
+    const all = [...ids(set.reference), ...set.extensions.flatMap(ids)]
+    assert.equal(new Set(all).size, 300, 'the audit set and the extra sets share no question')
 
-    // A rerun or another service for the same seller in the same epoch reuses its subset.
-    const rerun = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-      service: 'model-a', runId: 'run-b', epoch: '4',
-    })
-    assert.equal(rerun.reference.referenceId, first.reference.referenceId)
-    assert.deepEqual(
-      rerun.reference.probes.map((probe) => probe.id),
-      first.reference.probes.map((probe) => probe.id),
-    )
-
-    // Another seller audited in the same epoch draws its own subset and order.
-    const other = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerB,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    assert.equal(other.reference.probes.length, 100)
-    assert.notEqual(other.reference.referenceId, first.reference.referenceId)
-    assert.notDeepEqual(
-      other.reference.probes.map((probe) => probe.id),
-      first.reference.probes.map((probe) => probe.id),
-    )
-    assert.notDeepEqual(
-      [...other.reference.probes.map((probe) => probe.id)].sort(),
-      [...first.reference.probes.map((probe) => probe.id)].sort(),
-    )
-    const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', sellerA), 'utf8'))
-    assert.equal(ledger.assignments.length, 2)
-    assert.equal(ledger.assignments[0].selection, SELLER_PROBE_SELECTION_METHOD)
-    assert.deepEqual(ledger.assignments[0].probeIds, first.reference.probes.map((probe) => probe.id))
-
-    const loaded = await loadModelAuditReservation({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerB, auditId: other.auditId,
-    })
-    assert.equal(loaded.reference.referenceId, other.reference.referenceId)
-    assert.deepEqual(
-      loaded.reference.probes.map((probe) => probe.id),
-      other.reference.probes.map((probe) => probe.id),
-    )
+    const firsts = await Promise.all(sellers.map((seller) => reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '4',
+    })))
+    assert.equal(new Set(firsts.map((first) => first.ledgerPath)).size, 3)
+    for (const first of firsts) {
+      assert.equal(first.reference.referenceId, set.reference.referenceId)
+      assert.deepEqual(ids(first.reference), ids(set.reference), 'same questions in the same order')
+    }
+    for (const extensionIndex of [1, 2]) {
+      const extras = await Promise.all(sellers.map((seller) => reserveExtensionReference({
+        banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '4',
+        firstReferenceId: set.reference.referenceId, probeCount: 100, extensionIndex,
+      })))
+      for (const extra of extras) assert.equal(extra.reference.referenceId, set.extensions[extensionIndex - 1]!.referenceId)
+      // A resumed run gets the same reservation back.
+      const again = await reserveExtensionReference({
+        banksDir: directory, model: 'model-a', sellerPeerId: sellers[0]!, service: 'model-a', runId: 'run-b', epoch: '4',
+        firstReferenceId: set.reference.referenceId, probeCount: 100, extensionIndex,
+      })
+      assert.equal(again.auditId, extras[0]!.auditId)
+      const loaded = await loadModelAuditReservation({ banksDir: directory, model: 'model-a', sellerPeerId: sellers[1]!, auditId: extras[1]!.auditId })
+      assert.equal(loaded.reference.referenceId, set.extensions[extensionIndex - 1]!.referenceId)
+    }
+    const loaded = await loadModelAuditReservation({ banksDir: directory, model: 'model-a', sellerPeerId: sellers[2]!, auditId: firsts[2]!.auditId })
+    assert.equal(loaded.reference.referenceId, set.reference.referenceId)
+    const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', sellers[0]!), 'utf8'))
+    assert.equal(ledger.assignments[0].selection, EPOCH_QUESTION_SET_METHOD)
+    // Evidence finds every reference of the set.
+    for (const value of [set.reference, ...set.extensions]) {
+      assert.equal((await findEpochProbeReference(directory, value.referenceId) as KbfReferenceV1 | null)?.referenceId, value.referenceId)
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('sellers never reuse their own probes across epochs, independently of other sellers', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
-  const sellerA = '11'.repeat(20)
-  const sellerB = '22'.repeat(20)
+test('sellers wait for calibration: an uncalibrated or failed set reserves nothing, and a passed one stays put', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-uncalibrated-'))
+  const reserve = () => reserveModelAuditReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: '4',
+  })
   try {
-    await appendReference(directory)
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-      service: 'model-a', runId: 'run-a', epoch: '4', shuffle: identityShuffle,
+    const appended = await appendReference(directory, reference(200))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: appended.addedProbeIds })
+    const selection = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'set-run', extensionCount: 0, shuffle: identityShuffle,
     })
-    const nextEpoch = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-      service: 'model-a', runId: 'run-c', epoch: '5', shuffle: identityShuffle,
-    })
-    assert.equal(
-      nextEpoch.reference.probes.some((probe) => first.reference.probes.some((other) => other.id === probe.id)),
-      false,
-    )
-    const nextStored = JSON.parse(await readFile(
-      sellerEpochProbeReferencePath(directory, 'model-a', '5', sellerA),
-      'utf8',
-    )) as SellerEpochProbeReferenceV1
-    assert.equal(nextStored.selection.excludedPreviouslyAssignedProbeCount, 100)
-    await assert.rejects(
-      reserveModelAuditReference({
-        banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-        service: 'model-a', runId: 'run-d', epoch: '6', shuffle: identityShuffle,
-      }),
-      new RegExp(BANK_EXHAUSTED),
-    )
-    const reusedEpoch = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerA,
-      service: 'model-a', runId: 'run-d', epoch: '6', allowProbeReuse: true,
-      shuffle: identityShuffle,
-    })
-    assert.deepEqual(
-      reusedEpoch.reference.probes.map((probe) => probe.id),
-      first.reference.probes.map((probe) => probe.id),
-    )
-    // Seller A's history does not consume seller B's probes.
-    const otherSeller = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: sellerB,
-      service: 'model-a', runId: 'run-d', epoch: '6', shuffle: identityShuffle,
-    })
-    assert.equal(otherSeller.reference.probes.length, 100)
-    const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', sellerA), 'utf8'))
-    assert.equal(ledger.usedProbeIds, undefined)
-    assert.equal(ledger.assignments.length, 3)
+    assert.equal(selection.status, 'ready')
+    if (selection.status !== 'ready') return
+    await assert.rejects(reserve(), /NO_EPOCH_QUESTION_SET.*has not been calibrated/)
+    assert.equal(selection.set.calibration, undefined)
+    const set = await calibrate(directory, '4', selection.set)
+    assert.equal(set.calibration?.status, 'passed')
+    assert.equal(set.calibration?.passes, 1)
+    assert.notEqual(set.reference.referenceId, selection.set.reference.referenceId)
+    const reserved = await reserve()
+    assert.equal(reserved.reference.referenceId, set.reference.referenceId)
+    assert.equal(reserved.reference.calibration?.total, reserved.reference.probes.length)
+    // Calibrated once: a second record changes nothing, and the published reference is found by its new id.
+    const again = await calibrate(directory, '4', { ...set, reference: selection.set.reference })
+    assert.equal(again.reference.referenceId, set.reference.referenceId)
+    assert.equal((await findEpochProbeReference(directory, set.reference.referenceId) as KbfReferenceV1 | null)?.referenceId, set.reference.referenceId)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('voided seller assignments are reusable and voiding is idempotent', async () => {
+test('a new question set never asks a question asked before, even under a new id', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-asked-before-'))
+  try {
+    await appendReference(directory, reference(200))
+    const earlier = await makeSet(directory, '3')
+    // The next epoch's build wrote 50 of the old questions again, under new ids.
+    const rebuilt = await appendReference(directory, renamedReference(250, 'next', 50))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: rebuilt.addedProbeIds })
+    const selection = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'run-b', extensionCount: 0, shuffle: identityShuffle,
+    })
+    assert.equal(selection.status, 'ready')
+    if (selection.status !== 'ready') return
+    const next = selection.set
+    assert.equal(next.previouslyAskedProbeCount, 50)
+    assert.equal(next.candidateProbeCount, 200)
+    const oldText = new Set(reference(200).probes.map(questionTextKey))
+    assert.equal(next.reference.probes.some((probe) => oldText.has(questionTextKey(probe))), false)
+    assert.equal(ids(next.reference).some((id) => ids(earlier.reference).includes(id)), false, 'no question of an earlier epoch')
+    assert.equal(ids(next.reference).every((id) => id.startsWith('next-')), true, 'only questions built for this epoch')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('without this epoch\'s question set, nothing is reserved', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-no-set-'))
+  const seller = '11'.repeat(20)
+  try {
+    await appendReference(directory, reference(200))
+    await assert.rejects(reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '5',
+    }), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}`))
+    // A set made without extra sets leaves a close call undecided.
+    const set = await makeSet(directory, '5')
+    await assert.rejects(reserveExtensionReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '5',
+      firstReferenceId: set.reference.referenceId, probeCount: 100,
+    }), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}`))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('too few new questions leave the set short and write nothing; a set once made stays as it is', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-short-'))
+  try {
+    const appended = await appendReference(directory, reference(150))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '6', probeIds: appended.addedProbeIds })
+    const select = (extensionCount: number, shuffle = identityShuffle) => selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '6', runId: 'run-a', extensionCount, shuffle,
+    })
+    const short = await select(2)
+    assert.equal(short.status, 'short')
+    await assert.rejects(readFile(epochQuestionSetPath(directory, 'model-a', '6')), /ENOENT/)
+    // Questions banked but not built for this epoch are not candidates.
+    const other = await selectEpochQuestionSet({ banksDir: directory, model: 'model-a', epoch: '7', runId: 'run-a', extensionCount: 0 })
+    assert.equal(other.status, 'short')
+    const made = await select(0)
+    assert.equal(made.status, 'ready')
+    const again = await select(0, <T>(values: readonly T[]) => [...values].reverse())
+    assert.equal(again.status === 'ready' && again.set.reference.referenceId, made.status === 'ready' && made.set.reference.referenceId)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('voided seller reservations get the same set again, and voiding is idempotent', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
   try {
     await appendReference(directory)
+    await makeSet(directory, '4')
     const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
-      service: 'model-a', runId: 'run-a', epoch: '4', shuffle: identityShuffle,
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: '4',
     })
     const voided = await voidModelAuditReference({
-      banksDir: directory,
-      model: 'model-a',
-      sellerPeerId: '11'.repeat(20),
-      auditId: first.auditId,
-      reason: 'stale model advertisement',
-      now: () => Date.parse('2026-08-10T00:00:00.000Z'),
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), auditId: first.auditId,
+      reason: 'stale model advertisement', now: () => Date.parse('2026-08-10T00:00:00.000Z'),
     })
     const repeated = await voidModelAuditReference({
-      banksDir: directory,
-      model: 'model-a',
-      sellerPeerId: '11'.repeat(20),
-      auditId: first.auditId,
-      reason: 'ignored replacement reason',
-      now: () => Date.parse('2026-08-11T00:00:00.000Z'),
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), auditId: first.auditId,
+      reason: 'ignored replacement reason', now: () => Date.parse('2026-08-11T00:00:00.000Z'),
     })
     assert.equal(repeated.voidedAt, voided.voidedAt)
-
     const second = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
-      service: 'model-a', runId: 'run-a', epoch: '4', shuffle: identityShuffle,
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: '4',
     })
-    assert.deepEqual(
-      second.reference.probes.map((probe) => probe.id),
-      first.reference.probes.map((probe) => probe.id),
-    )
+    assert.deepEqual(ids(second.reference), ids(first.reference))
     const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', '11'.repeat(20)), 'utf8'))
     assert.equal(ledger.assignments[0].voidReason, 'stale model advertisement')
     assert.equal(ledger.assignments[0].voidedAt, '2026-08-10T00:00:00.000Z')
@@ -810,46 +857,17 @@ test('voided seller assignments are reusable and voiding is idempotent', async (
   }
 })
 
-test('seller reservations remain loadable without a seller epoch reference file', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
-  try {
-    await appendReference(directory)
-    const reserved = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
-      service: 'model-a', runId: 'legacy-run', epoch: '3', shuffle: identityShuffle,
-    })
-    await rm(sellerEpochProbeReferencePath(directory, 'model-a', '3', '11'.repeat(20)))
-    const loaded = await loadModelAuditReservation({
-      banksDir: directory,
-      model: 'model-a',
-      sellerPeerId: '11'.repeat(20),
-      auditId: reserved.auditId,
-    })
-    assert.equal(loaded.reference.referenceId, reserved.reference.referenceId)
-    assert.deepEqual(
-      loaded.reference.probes.map((probe) => probe.id),
-      reserved.reference.probes.map((probe) => probe.id),
-    )
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test('legacy shared epoch references still load their reservations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  const identityShuffle = <T>(values: readonly T[]) => [...values]
   const seller = '11'.repeat(20)
   try {
     const appended = await appendReference(directory)
+    const set = await makeSet(directory, '3')
     const reserved = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'legacy-run', epoch: '3', shuffle: identityShuffle,
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'legacy-run', epoch: '3',
     })
-    const sellerPath = sellerEpochProbeReferencePath(directory, 'model-a', '3', seller)
-    const stored = JSON.parse(await readFile(sellerPath, 'utf8')) as SellerEpochProbeReferenceV1
     const bank = JSON.parse(await readFile(appended.path, 'utf8')) as { compatibilityHash: string }
-    await rm(sellerPath)
+    await rm(epochQuestionSetPath(directory, 'model-a', '3'))
     await mkdir(dirname(epochProbeReferencePath(directory, 'model-a', '3')), { recursive: true })
     await writeFile(epochProbeReferencePath(directory, 'model-a', '3'), JSON.stringify({
       version: 1,
@@ -857,8 +875,8 @@ test('legacy shared epoch references still load their reservations', async () =>
       model: 'model-a',
       epoch: '3',
       compatibilityHash: bank.compatibilityHash,
-      reference: stored.reference,
-      createdAt: stored.createdAt,
+      reference: set.reference,
+      createdAt: set.createdAt,
       createdByRunId: 'legacy-run',
     }))
     const loaded = await loadModelAuditReservation({
@@ -870,130 +888,224 @@ test('legacy shared epoch references still load their reservations', async () =>
   }
 })
 
-test('different sellers reserve independent references concurrently', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  try {
-    await appendReference(directory)
-    const reservations = await Promise.all(['11', '22', '33', '44'].map((prefix) => reserveModelAuditReference({
-      banksDir: directory,
-      model: 'model-a',
-      sellerPeerId: prefix.repeat(20),
-      service: 'model-a',
-      runId: 'run-a',
-      epoch: '4',
-    })))
-    assert.equal(reservations.length, 4)
-    assert.equal(new Set(reservations.map((reservation) => reservation.ledgerPath)).size, 4)
-    assert.equal(new Set(reservations.map((reservation) => reservation.reference.referenceId)).size, 4)
-    for (const reservation of reservations) assert.equal(reservation.reference.probes.length, 100)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
+/** A submit's retire before an upload of `published` (by default nothing of the bank: the first upload decides alone). */
+const retire = (
+  banksDir: string,
+  epoch: string,
+  published: Parameters<typeof retireEpochQuestionSet>[0]['published'] = { referenceIds: [], exchanges: [] },
+) => retireEpochQuestionSet({
+  banksDir, model: 'model-a', epoch, runId: 'submit-run', published, now: () => Date.parse('2026-08-07T00:00:00.000Z'),
 })
+const epochFiles = async (banksDir: string, epoch: string) => (await readdir(join(banksDir, 'model-a', 'epochs', epoch))).sort()
+const [sellerA, sellerB] = ['11'.repeat(20), '22'.repeat(20)]
 
-test('a close-call extension draws exactly as many never-seen probes as the first set, stable on resume', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension-'))
-  const seller = '11'.repeat(20)
+/**
+ * Epoch 4's set with seller A reserved on it, then a submit's retire. `rebuild` banks a new build
+ * (50 of its 300 questions repeat old text under new ids) and makes and calibrates the next set.
+ */
+async function withRetiredSet(body: (input: {
+  directory: string
+  first: EpochQuestionSetV1
+  reservedA: Awaited<ReturnType<typeof reserveModelAuditReference>>
+  retired: { retired: boolean }
+  reserve: (seller: string) => ReturnType<typeof reserveModelAuditReference>
+  rebuild: () => Promise<EpochQuestionSetV1>
+}) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-retired-'))
+  const reserve = (seller: string) => reserveModelAuditReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: seller, service: 'model-a', runId: 'run-a', epoch: '4',
+  })
+  const rebuild = async () => {
+    const rebuilt = await appendReference(directory, renamedReference(300, 'next', 50))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: rebuilt.addedProbeIds })
+    const selection = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'run-b', extensionCount: 1, shuffle: identityShuffle,
+    })
+    if (selection.status !== 'ready') throw new Error(`no set: ${selection.reason}`)
+    return selection.set.calibration ? selection.set : calibrate(directory, '4', selection.set)
+  }
   try {
     await appendReference(directory, reference(300))
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    const probeCount = first.reference.probes.length
-    const extension = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
-    })
-    const firstIds = new Set(first.reference.probes.map((probe) => probe.id))
-    assert.equal(extension.reference.probes.length, probeCount)
-    assert.ok(extension.reference.probes.every((probe) => !firstIds.has(probe.id)))
-
-    const again = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
-    })
-    assert.equal(again.auditId, extension.auditId)
-    assert.equal(again.reference.referenceId, extension.reference.referenceId)
-    const loaded = await loadModelAuditReservation({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: extension.auditId,
-    })
-    assert.equal(loaded.reference.referenceId, extension.reference.referenceId)
-    assert.equal(loaded.assignment.purpose, 'extension')
-
-    // The extension does not count as this epoch's first audit for capacity planning.
-    const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', seller), 'utf8'))
-    assert.deepEqual(ledger.assignments.map((entry: { purpose?: string }) => entry.purpose ?? 'audit'), [
-      'audit', 'extension',
-    ])
+    const first = await makeSet(directory, '4', { extensionCount: 1 })
+    const reservedA = await reserve(sellerA)
+    const retired = await retire(directory, '4')
+    await body({ directory, first, reservedA, retired, reserve, rebuild })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
-})
+}
 
-test('a second close-call extra set (kbf-extension-v2) draws probes neither earlier set used, in its own file', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension2-'))
-  const seller = '11'.repeat(20)
+test('a published question set is retired: no seller is reserved on it, and retiring again does nothing', () => withRetiredSet(async ({ directory, reserve, retired }) => {
+  await assert.rejects(reserve(sellerB), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}`))
+  assert.deepEqual(retired, { retired: true })
+  assert.deepEqual(await epochFiles(directory, '4'), ['pool.published-1.json', 'set.published-1.json'])
+  const stored = JSON.parse(await readFile(join(directory, 'model-a', 'epochs', '4', 'set.published-1.json'), 'utf8')) as EpochQuestionSetV1
+  assert.deepEqual(stored.retired, {
+    at: '2026-08-07T00:00:00.000Z', runId: 'submit-run',
+    bankExchanges: (await bankExchanges(directory)).map(({ referenceId, sha256 }) => `${referenceId} ${sha256}`),
+  })
+  assert.deepEqual(await retire(directory, '4'), { retired: false })
+  assert.deepEqual(await epochFiles(directory, '4'), ['pool.published-1.json', 'set.published-1.json'])
+}))
+
+test('the set built after a retire shares no question, by id or by text, with the retired set or pool', () => withRetiredSet(async ({ directory, first, reserve, rebuild }) => {
+  const second = await rebuild()
+  assert.equal(second.previouslyAskedProbeCount, 50)
+  const reservedB = await reserve(sellerB)
+  assert.equal(reservedB.reference.referenceId, second.reference.referenceId)
+  const retiredPool = JSON.parse(await readFile(join(directory, 'model-a', 'epochs', '4', 'pool.published-1.json'), 'utf8')) as { probeIds: string[] }
+  const publicIds = new Set([...ids(first.reference), ...first.extensions.flatMap(ids), ...retiredPool.probeIds])
+  const publicText = new Set(reference(300).probes.map(questionTextKey))
+  for (const probe of [...second.reference.probes, ...second.extensions.flatMap((entry) => entry.probes)]) {
+    assert.equal(publicIds.has(probe.id), false, `${probe.id} was published`)
+    assert.equal(publicText.has(questionTextKey(probe)), false, `${probe.id} repeats a published question`)
+  }
+}))
+
+test('an audit made on a retired set still loads the same reference, calibration included', () => withRetiredSet(async ({ directory, first, reservedA }) => {
+  const loaded = await loadModelAuditReservation({ banksDir: directory, model: 'model-a', sellerPeerId: sellerA, auditId: reservedA.auditId })
+  assert.equal(loaded.reference.referenceId, first.reference.referenceId)
+  assert.deepEqual(loaded.reference.calibration, first.reference.calibration)
+  assert.equal(loaded.retired, true)
+  assert.equal((await findEpochProbeReference(directory, first.extensions[0]!.referenceId) as KbfReferenceV1 | null)?.referenceId, first.extensions[0]!.referenceId)
+}))
+
+test('a close call made on a retired set gets no extra questions, of that set or of the next, and nothing is written', () => withRetiredSet(async ({ directory, reservedA, reserve, rebuild }) => {
+  const extend = () => reserveExtensionReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: sellerA, service: 'model-a', runId: 'run-a', epoch: '4',
+    firstReferenceId: reservedA.reference.referenceId, probeCount: 100,
+  })
+  const ledgerBefore = await readFile(sellerLedgerPath(directory, 'model-a', sellerA), 'utf8')
+  const published = new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}: .*was published, so its extra questions are public`)
+  await assert.rejects(extend(), published)
+  const second = await rebuild()
+  await assert.rejects(extend(), published)
+  assert.equal(await readFile(sellerLedgerPath(directory, 'model-a', sellerA), 'utf8'), ledgerBefore)
+  // A close call on the new set gets the new set's extra questions.
+  const reservedB = await reserve(sellerB)
+  const extra = await reserveExtensionReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: sellerB, service: 'model-a', runId: 'run-b', epoch: '4',
+    firstReferenceId: reservedB.reference.referenceId, probeCount: 100,
+  })
+  assert.equal(extra.reference.referenceId, second.extensions[0]!.referenceId)
+}))
+
+test('a retry of an audit made on a retired set is not resumed: it is reserved on the new set and asks none of the old questions', () => withRetiredSet(async ({ directory, first, reservedA, reserve, rebuild }) => {
+  const { filterCompatibleResumeCandidates } = await import('../cli/commands/verifier/run.js')
+  const second = await rebuild()
+  // The seller's earlier, partial audit on the retired set, as a retry finds it.
+  const candidate = {
+    model: 'model-a', peerId: sellerA, service: 'model-a', auditId: reservedA.auditId, reservationAuditId: reservedA.auditId,
+    evidencePath: join(directory, 'evidence.json'), evidenceHash: `0x${'44'.repeat(32)}`,
+    referenceId: reservedA.reference.referenceId, queryProfileHash: queryProfileHash(reservedA.reference.queryProfile),
+    probeIds: ids(reservedA.reference), exchanges: [],
+  }
+  const candidates = new Map([['model-a:a', candidate]])
+  // `--resume-run` says what to do instead.
+  await assert.rejects(
+    filterCompatibleResumeCandidates({ candidates, banksDir: directory, epoch: '4', strict: true }),
+    /was asked on a question set a submit has published since, so it can't be resumed; run without --resume-run/,
+  )
+  // An automatic retry drops it, and its old reservation is voided so the ledger shows it as not active.
+  assert.equal((await filterCompatibleResumeCandidates({ candidates, banksDir: directory, epoch: '4', strict: false })).size, 0)
+  const ledger = JSON.parse(await readFile(sellerLedgerPath(directory, 'model-a', sellerA), 'utf8')) as {
+    assignments: Array<{ auditId: string; voidedAt?: string; voidReason?: string }>
+  }
+  const old = ledger.assignments.find((entry) => entry.auditId === reservedA.auditId)
+  assert.ok(old?.voidedAt)
+  assert.match(old.voidReason!, /question set was published by a submit/)
+  // `--resume-run` after that void still says what to do.
+  await assert.rejects(
+    filterCompatibleResumeCandidates({ candidates, banksDir: directory, epoch: '4', strict: true }),
+    /was asked on a question set a submit has published since, so it can't be resumed; run without --resume-run/,
+  )
+  // Without a resume, the run reserves the seller as for a first audit.
+  const retry = await reserve(sellerA)
+  assert.equal(retry.reference.referenceId, second.reference.referenceId)
+  const oldIds = new Set([...ids(first.reference), ...first.extensions.flatMap(ids)])
+  assert.equal(ids(retry.reference).some((id) => oldIds.has(id)), false)
+}))
+
+test('retiring a pool without a set: its published questions are never selected later', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-retired-pool-'))
   try {
-    await appendReference(directory, reference(400))
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
+    const appended = await appendReference(directory, reference(300))
+    // A build for the epoch whose questions were too few for a set when a submit published the bank.
+    const shortPool = appended.addedProbeIds.slice(0, 50)
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: shortPool })
+    const short = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'run-a', extensionCount: 0, shuffle: identityShuffle,
     })
-    const probeCount = first.reference.probes.length
-    const extension = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
+    assert.equal(short.status, 'short')
+    const retired = await retire(directory, '4')
+    // The next build adds new questions; the pool's earlier questions stay out, by id and by text.
+    const rebuilt = await appendReference(directory, renamedReference(300, 'next', 0))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: rebuilt.addedProbeIds })
+    const selection = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'run-b', extensionCount: 0, shuffle: identityShuffle,
     })
-    const extension2 = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
-    })
-    const seen = new Set([...first.reference.probes, ...extension.reference.probes].map((probe) => probe.id))
-    assert.equal(extension2.reference.probes.length, probeCount)
-    assert.ok(extension2.reference.probes.every((probe) => !seen.has(probe.id)))
-    assert.notEqual(extension2.auditId, extension.auditId)
-    assert.notEqual(extensionReferencePath(directory, 'model-a', '4', seller, 2), extensionReferencePath(directory, 'model-a', '4', seller))
-
-    // Each set resumes to its own reservation.
-    const again1 = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount,
-    })
-    const again2 = await reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 2,
-    })
-    assert.equal(again1.auditId, extension.auditId)
-    assert.equal(again2.auditId, extension2.auditId)
-    const loaded = await loadModelAuditReservation({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: extension2.auditId,
-    })
-    assert.equal(loaded.reference.referenceId, extension2.reference.referenceId)
-    assert.equal(loaded.assignment.extensionIndex, 2)
-    await assert.rejects(reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount, extensionIndex: 3,
-    }), /extension index must be 1 or 2/)
+    assert.equal(selection.status, 'ready')
+    if (selection.status !== 'ready') return
+    const published = new Set(shortPool)
+    const publishedText = new Set(reference(300).probes.filter((probe) => published.has(probe.id)).map(questionTextKey))
+    assert.equal(ids(selection.set.reference).some((id) => published.has(id)), false, 'a published pool question was selected')
+    assert.equal(selection.set.reference.probes.some((probe) => publishedText.has(questionTextKey(probe))), false)
+    assert.deepEqual(retired, { retired: true })
+    assert.deepEqual(await epochFiles(directory, '4'), ['pool.json', 'pool.published-1.json', 'set.json'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('a close-call extension reports BANK_EXHAUSTED instead of reusing seen probes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-extension-'))
-  const seller = '11'.repeat(20)
-  try {
-    await appendReference(directory, reference(150))
-    const first = await reserveModelAuditReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4',
-    })
-    await assert.rejects(reserveExtensionReference({
-      banksDir: directory, model: 'model-a', sellerPeerId: seller,
-      service: 'model-a', runId: 'run-a', epoch: '4', probeCount: first.reference.probes.length,
-    }), new RegExp(`^Error: ${BANK_EXHAUSTED}`))
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
+/** The bank's exchange files as an upload's evidence lists them. */
+const bankExchanges = async (banksDir: string) => (await loadBankReferenceExchanges(banksDir, 'model-a'))
+  .map(({ referenceId, sha256 }) => ({ referenceId, sha256 }))
+
+test('an upload that carries nothing banked since the last retire retires nothing; one that does retires the new set', () => withRetiredSet(async ({ directory, first, rebuild }) => {
+  // Tick 1's upload carried the bank as it was then, and failed after its retire.
+  const tickOne = { referenceIds: [first.reference.referenceId], exchanges: await bankExchanges(directory) }
+  const second = await rebuild()
+  // Tick 2 sends tick 1's stored evidence again: nothing of the new set is in it.
+  assert.deepEqual(await retire(directory, '4', tickOne), { retired: false })
+  assert.deepEqual(await epochFiles(directory, '4'), ['pool.json', 'pool.published-1.json', 'set.json', 'set.published-1.json'])
+  // Evidence prepared now lists the new set's calibration exchanges, or names the new set: retired.
+  assert.deepEqual(await retire(directory, '4', { referenceIds: [first.reference.referenceId], exchanges: await bankExchanges(directory) }), { retired: true })
+  assert.ok((await epochFiles(directory, '4')).includes('set.published-2.json'))
+  const third = await rebuildAgain(directory, 'third')
+  assert.deepEqual(await retire(directory, '4', { referenceIds: [third.reference.referenceId], exchanges: tickOne.exchanges }), { retired: true })
+  assert.notEqual(second.reference.referenceId, third.reference.referenceId)
+}))
+
+test('an earlier retire whose record can\'t be read never stops a retire', () => withRetiredSet(async ({ directory, first, rebuild }) => {
+  const tickOne = { referenceIds: [first.reference.referenceId], exchanges: await bankExchanges(directory) }
+  await rebuild()
+  const recordPath = join(directory, 'model-a', 'epochs', '4', 'set.published-1.json')
+  const record = JSON.parse(await readFile(recordPath, 'utf8')) as { retired: { bankExchanges?: string[] } }
+  delete record.retired.bankExchanges
+  await writeFile(recordPath, JSON.stringify(record))
+  assert.deepEqual(await retire(directory, '4', tickOne), { retired: true })
+}))
+
+/** Another build and set after `rebuild` (new ids and text), calibrated. */
+async function rebuildAgain(directory: string, prefix: string): Promise<EpochQuestionSetV1> {
+  const rebuilt = await appendReference(directory, renamedReference(300, prefix, 0))
+  await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: rebuilt.addedProbeIds })
+  const selection = await selectEpochQuestionSet({
+    banksDir: directory, model: 'model-a', epoch: '4', runId: 'run-c', extensionCount: 1, shuffle: identityShuffle,
+  })
+  if (selection.status !== 'ready') throw new Error(`no set: ${selection.reason}`)
+  return calibrate(directory, '4', selection.set)
+}
+
+test('a reference is known to be in a retired set from the retired file alone, also when that set no longer validates', () => withRetiredSet(async ({ directory, first }) => {
+  const lookup = (referenceId: string) => isRetiredEpochQuestionSetReference({ banksDir: directory, model: 'model-a', epoch: '4', referenceId })
+  assert.equal(await lookup(first.reference.referenceId), true)
+  assert.equal(await lookup(first.extensions[0]!.referenceId), true)
+  assert.equal(await lookup('sha256:not-in-any-set'), false)
+  // A bank rebuild changes its compatibility hash: the retired set no longer validates, but its questions are public.
+  const path = bankPath(directory, 'model-a')
+  const bank = JSON.parse(await readFile(path, 'utf8')) as { compatibilityHash: string }
+  await writeFile(path, JSON.stringify({ ...bank, compatibilityHash: `0x${'ee'.repeat(32)}` }))
+  await assert.rejects(findEpochQuestionSetByReferenceId({ banksDir: directory, model: 'model-a', epoch: '4', referenceId: first.reference.referenceId }))
+  assert.equal(await lookup(first.reference.referenceId), true)
+}))

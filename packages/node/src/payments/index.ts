@@ -14,7 +14,7 @@ export { BalanceManager } from './balance-manager.js';
 export type { UnifiedBalance } from './balance-manager.js';
 
 // Base EVM client
-export { BaseEvmClient } from './evm/base-evm-client.js';
+export { BaseEvmClient, ReceiptWaitTimeoutError } from './evm/base-evm-client.js';
 
 // Deposits client (buyer deposits + seller payouts)
 export { DepositsClient } from './evm/deposits-client.js';

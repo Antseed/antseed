@@ -92,9 +92,9 @@ export interface ModelProbeConsensusEvidenceV1 {
     onChainInclusionProof: false
   }
   /**
-   * Every reference audited in this run, sorted by referenceId. Sellers get
-   * their own probe subsets, so a run usually spans several references drawn
-   * from the same probe bank.
+   * Every reference audited in this run, sorted by referenceId. With the epoch
+   * question set (`epoch-shared-set-v1`) these are the set's audit set and its
+   * extra sets; runs resumed from per-seller draws can span more references.
    */
   references: ModelConsensusReferenceV1[]
   decisionRule: typeof REFERENCE_VOTE_DECISION_RULE
@@ -138,7 +138,7 @@ export interface ModelProbeConsensusEvidenceV1 {
       maximum: number
       inclusive: true
     }
-    /** References (seller probe subsets) that include this probe. */
+    /** References that include this probe. */
     referenceIds: string[]
     referenceConsensus: number
     referenceSelfTest: ReferenceSelfTestRuns

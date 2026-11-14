@@ -12,6 +12,7 @@ import {
   sortServiceResults,
 } from '../src/payments/evm/verifier-client.js';
 import { queryInBlockChunks, resolveScanFromBlock } from '../src/payments/evm/block-range.js';
+import { DepositsClient } from '../src/payments/evm/deposits-client.js';
 
 const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
 const RESULTS_ADDRESS = '0x' + '20'.repeat(20);
@@ -373,5 +374,41 @@ describe('verifier event block ranges', () => {
     ]);
     expect(getBlock).toHaveBeenCalledTimes(2);
     expect(queryFilter.mock.calls[0]?.[1]).toBe(10); // scans from the KBF deployment block
+  });
+});
+
+describe('VerifierClient read cache', () => {
+  const option = (provider: unknown) => (provider as { _getOption(key: string): unknown })._getOption('cacheTimeout');
+
+  it('reads without ethers\' 250 ms cache, so its own just-mined reports are not missed; other clients keep the default', () => {
+    const rpcUrl = 'http://127.0.0.1:1';
+    const verifier = new VerifierClient({ rpcUrl, contractAddress: VERIFICATION_ADDRESS, evmChainId: 31_337 });
+    expect(option(verifier.provider)).toBe(-1);
+    const deposits = new DepositsClient({ rpcUrl, contractAddress: RESULTS_ADDRESS, usdcAddress: RESULTS_ADDRESS, evmChainId: 31_337 });
+    expect(option(deposits.provider)).toBe(250);
+  });
+
+  it('with fallback RPCs, the fallback provider itself reads without the cache too, not only its backends', async () => {
+    const verifier = new VerifierClient({
+      rpcUrl: 'http://127.0.0.1:1', fallbackRpcUrls: ['http://127.0.0.1:2'], contractAddress: VERIFICATION_ADDRESS, evmChainId: 31_337,
+    });
+    const backends = (verifier.provider as unknown as { providerConfigs: Array<{ provider: unknown }> }).providerConfigs;
+    expect(backends.length).toBe(2);
+    for (const backend of backends) expect(option(backend.provider)).toBe(-1);
+    // The fallback provider keeps no option getter: two identical reads within 250 ms must both reach it.
+    const perform = vi.spyOn(verifier.provider as unknown as { _perform(request: unknown): Promise<unknown> }, '_perform')
+      .mockResolvedValue('0x10');
+    await verifier.provider.getBlockNumber();
+    await verifier.provider.getBlockNumber();
+    expect(perform).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('VerifierClient.firstBlockAtOrAfter', () => {
+  it('throws when the node cannot return the head block, instead of answering with the head', async () => {
+    const verifier = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, evmChainId: 31_337 });
+    vi.spyOn(verifier.provider, 'getBlockNumber').mockResolvedValue(1_000);
+    vi.spyOn(verifier.provider, 'getBlock').mockResolvedValue(null);
+    await expect(verifier.firstBlockAtOrAfter(500, 0)).rejects.toThrow(/block 1000 \(the chain head\) is unavailable/);
   });
 });

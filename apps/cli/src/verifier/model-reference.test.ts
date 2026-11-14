@@ -18,11 +18,13 @@ import {
   collectReferenceProbes,
   createReferenceRequestLimiter,
   loadModelReference,
+  REFERENCE_BUILDER_VERSION,
   ReferenceBuildCheckpoint,
   ReferenceEndpointError,
   replayedThinkingDiscovery,
   resolveReferenceRequestOverrides,
   retryDelayMs,
+  referenceConcurrencyWarning,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
@@ -60,7 +62,7 @@ const DISCOVERY_ANSWERS = ['78.37', '79', '299792458', '1538', '206', '12', '100
 
 const buildModelReference: typeof buildModelReferenceWithoutDiscoveryStub = (input) =>
   buildModelReferenceWithoutDiscoveryStub({ ...input, fetchFn: answerThinkingDiscovery(input.fetchFn) })
-setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
 
 test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
   const probes = reference(100).probes.slice(0, 2)
@@ -210,14 +212,14 @@ test('bank top-up reuses enrolled measurements, grows against the failed contras
       model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
       fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
     }), /incompatible/)
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model', contrastModels: [] } })
     try {
       await assert.rejects(buildModelReference({
         model: MODEL, referencesDir: directory, config: config(), initialReference,
         fetchFn: async () => { throw new Error('must not make paid requests') },
       }), /incompatible/)
     } finally {
-      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     }
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -372,7 +374,7 @@ test('missing references fail with the explicit build command', async () => {
 test('reference build discovers thinking suppression like the KBF reference code and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
   const value = config()
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', serviceAliases: ['model.test-alias'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], serviceAliases: ['model.test-alias'] } })
   const requestBodies: Array<Record<string, unknown>> = []
   const discoveryBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
@@ -457,7 +459,7 @@ test('reference build discovers thinking suppression like the KBF reference code
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -1014,6 +1016,196 @@ test('reference build rejects a refused stability batch without aborting the tar
   }
 })
 
+test('reference build skips a stability batch that keeps timing out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-timeout-stability-'))
+  let slowPrompt: string | null = null
+  let slowAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (slowPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      slowPrompt = prompt
+    }
+    if (prompt === slowPrompt && body.temperature === 0) {
+      slowAttempts += 1
+      // Like a model thinking past the limit: nothing arrives until our timer aborts the request.
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), probeRequestTimeoutMs: 200, referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(slowAttempts, 4)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch') && message.includes('timed out after 200ms')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+for (const [name, failure] of [
+  ['a server error', () => response('overloaded', 503)],
+  ['a capacity error inside a 200 body', () => Response.json({ error: { message: 'at capacity', code: 502 } })],
+] as const) {
+  test(`reference build skips a stability batch that keeps failing with ${name}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-stability-'))
+    let failingPrompt: string | null = null
+    let attempts = 0
+    const logs: string[] = []
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string; temperature: number; messages: Array<{ content: string }> }
+      const prompt = body.messages.at(-1)?.content ?? ''
+      if (failingPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+        failingPrompt = prompt
+      }
+      if (prompt === failingPrompt && body.temperature === 0) {
+        attempts += 1
+        return failure()
+      }
+      return response(successfulContent(body.model, prompt))
+    }
+    try {
+      const built = await buildModelReference({
+        model: MODEL,
+        referencesDir: directory,
+        config: { ...config(), referenceRetryBaseDelayMs: 1 },
+        fetchFn,
+        log: (message) => logs.push(message),
+      })
+      assert.equal(built.reference.probes.length, 100)
+      assert.equal(attempts, 4)
+      assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+}
+
+test('reference build leaves a self-test batch unanswered when its retries run out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-self-test-'))
+  let contrastChecked = false
+  let failingProbe: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && failingProbe === null) {
+      failingProbe = prompt.split('\n').find((line) => PROBE_LINE_LABEL.test(line))?.replace(PROBE_LINE_LABEL, '') ?? null
+    }
+    if (body.model === 'upstream-test' && failingProbe !== null && prompt.includes(failingProbe)) {
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config({ referenceLayoutFilterPasses: 0 }), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length > 0, true)
+    assert.equal(logs.some((message) => message.includes('-probe self-test batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a rate limit that outlasts its retries still stops a reference build', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-throttled-'))
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return response(successfulContent('upstream-test', prompt))
+    return new Response(JSON.stringify({ error: 'slow down' }), { status: 429, headers: { 'retry-after': '0' } })
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1, referenceBatchRetryCount: 0 },
+      fetchFn,
+      log: () => undefined,
+    }))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast batch that keeps failing loses only its own questions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-contrast-'))
+  let failingPrompt: string | null = null
+  const otherContrastPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failingPrompt ??= prompt
+      if (prompt === failingPrompt) return response('overloaded', 503)
+      otherContrastPrompts.add(prompt)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(otherContrastPrompts.size > 0, true)
+    assert.equal(logs.some((message) => message.includes('continuing with the next batch')), true)
+    assert.equal(logs.some((message) => message.includes('unavailable')), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast model whose batches all fail is given up after a few', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-dead-contrast-'))
+  const failedPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failedPrompts.add(prompt)
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    }).catch(() => undefined)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build skips a stability batch the model filters as sensitive', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-sensitive-stability-'))
   let refusedPrompt: string | null = null
@@ -1050,6 +1242,51 @@ test('reference build skips a stability batch the model filters as sensitive', a
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('reference build skips a stability batch the provider content filter refuses', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-filtered-stability-'))
+  let refusedPrompt: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (refusedPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      refusedPrompt = prompt
+    }
+    if (prompt === refusedPrompt) {
+      // As OpenRouter relays Alibaba's content filter.
+      return Response.json(
+        { error: { message: 'Provider returned error', code: 400, metadata: { raw: '{"error":{"code":"data_inspection_failed"}}' } } },
+        { status: 400 },
+      )
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a per-model reference limit of 1 is called out, other limits are not', () => {
+  assert.match(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 1 }) ?? '', /one batch at a time/)
+  assert.equal(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 2 }), null)
+  assert.equal(referenceConcurrencyWarning({}), null)
+  assert.equal(referenceConcurrencyWarning(undefined), null)
 })
 
 test('reference build adaptively isolates and caches a refused self-test probe', async () => {
@@ -2130,7 +2367,7 @@ test('a pinned endpoint tag matches the provider name OpenRouter reports', async
 
 test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinned stays unpinned', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-builtin-pin-'))
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
   const openRouter = () => {
     const value = config()
     value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
@@ -2153,10 +2390,10 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     })
 
     // A bank enrolled before the built-in pin keeps being extended unpinned, so its measurements stay comparable.
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     const unpinned = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'old'), config: openRouter(), fetchFn })
     await unpinned.finalize()
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
     bodies.length = 0
     const extended = await buildModelReference({
       model: MODEL, referencesDir: join(directory, 'extended'), config: openRouter(), fetchFn,
@@ -2170,7 +2407,7 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     await buildModelReference({ model: MODEL, referencesDir: join(directory, 'other'), config: config(), fetchFn })
     assert.equal(bodies.every((body) => body.provider === undefined), true)
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -2201,10 +2438,10 @@ test('the KBF layout filter drops probes whose answer moves under audit layout a
     // Survivors are self-tested on separate requests, so their limit is not set by the answers that chose them.
     assert.equal(built.reference.selfTest.hamming, 0)
     const layoutFilter = built.reference.generator.params.layoutFilter as { passes: number; droppedProbeCount: number; checkedProbeCount: number }
-    assert.equal(layoutFilter.passes, 1)
+    assert.equal(layoutFilter.passes, 2)
     assert.ok(layoutFilter.droppedProbeCount > 0)
     assert.ok(layoutFilter.checkedProbeCount >= values.length + layoutFilter.droppedProbeCount)
-    assert.equal(built.reference.generator.params.layoutFilterPasses, 1)
+    assert.equal(built.reference.generator.params.layoutFilterPasses, 2)
 
     // Turned off, nothing is re-asked and the wobbly probes stay.
     const unfiltered = await buildModelReference({
@@ -2216,6 +2453,82 @@ test('the KBF layout filter drops probes whose answer moves under audit layout a
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('the layout filter asks its whole pool in single-domain batches of ten, not each size step\'s leftovers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-layout-pool-'))
+  const filterBatches: number[][] = []
+  let layoutPass = false
+  const phaseLog = (message: string): void => {
+    if (/^generation round \d+: .* selected$/.test(message)) layoutPass = true
+    if (message.startsWith('layout filter:') || message.startsWith('self-testing')) layoutPass = false
+  }
+  const trackingFetch: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ') || body.model !== 'upstream-test') return response(successfulContent(body.model, prompt))
+    const values = testPromptValues(prompt)
+    if (layoutPass) filterBatches.push(values)
+    // The first of the two passes drops some probes, so a size step would have only a few to re-ask.
+    const moved = (value: number) => layoutPass && filterBatches.length <= 12 && value % 11 === 4
+    return response(values.map((value, index) => `(${index + 1}) ${moved(value) ? value + 5_000 : value}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: config({ referenceSelfTestRuns: 1 }), fetchFn: trackingFetch, log: phaseLog,
+    })
+    const layoutFilter = built.reference.generator.params.layoutFilter as { method: string; version: number; batchSize: number; droppedProbeCount: number }
+    assert.equal(layoutFilter.method, 'kbf-layout-filter-audit-batches-v2')
+    assert.equal(layoutFilter.batchSize, 10)
+    assert.ok(layoutFilter.droppedProbeCount > 0)
+    assert.equal(built.reference.generator.version, REFERENCE_BUILDER_VERSION)
+    assert.ok(filterBatches.length > 0)
+    // Every fact in these tests has one domain per fifteen, so a pool fills its batches; only domain tails are short.
+    const asked = filterBatches.flat().length
+    assert.ok(asked / filterBatches.length >= 7, `${asked} probes in ${filterBatches.length} filter requests`)
+    assert.ok(filterBatches.filter((batch) => batch.length <= 2).length / filterBatches.length < 0.2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a relative-domain label is the temperature-0 answer, not a rounded mean', async () => {
+  const stabilityAnswers = new Map([['stability-0', 0.01234], ['stability-1', 0.01236], ['stability-2', 0.01238]])
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return prompt.includes('domain medical') ? 'test medicine | 0.0123' : ''
+    return `(1) ${String(stabilityAnswers.get(String(body.__antseedReferenceCacheDomain)) ?? 0)}`
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 15, query,
+  })
+  assert.equal(collected.probes[0]?.domain, 'medical')
+  assert.equal(collected.probes[0]?.consensus, 0.01234)
+})
+
+test('exact-match answers round halves away from zero, as the KBF reference code does', async () => {
+  const stabilityAnswers = new Map([['stability-0', 100.5], ['stability-1', 100.6], ['stability-2', 100.7]])
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'test compound | 100'
+    return `(1) ${String(stabilityAnswers.get(String(body.__antseedReferenceCacheDomain)) ?? 100)}`
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  assert.equal(collected.probes[0]?.consensus, 101)
+})
+
+test('the reference builder strips think blocks before parsing, as seller audits do', async () => {
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'test compound | 100'
+    return '(1) 100\n<think>\n(1) 7\n</think>'
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  assert.equal(collected.probes[0]?.consensus, 100)
 })
 
 test('reference build fails when a pinned provider is not the one that served', async () => {

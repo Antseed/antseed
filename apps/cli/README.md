@@ -671,12 +671,15 @@ answers come from:
 
 A model without an `upstream` takes its genuine answers from `referenceEndpoint`
 (OpenRouter by default); only list the models you send elsewhere. `antseed
-verifier models` prints each model's source, model id and provider pin.
+verifier models` prints each model's source, model id, provider pin and contrast models.
 
 `verifier.models.<model>` is optional and only accepts audited models. It can set
 `upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
-`pricing` and `referenceRoute`. Contrast models come from the OpenRouter catalog
-unless `referenceEndpoint.contrastModelBank` is set. A model list under
+`pricing` and `referenceRoute`. Each audited model has built-in contrast
+models (OpenRouter ids, never `:free`); `contrastModels` replaces them. Without
+either, or with `referenceEndpoint.contrastModelBank` set, they are picked
+automatically when a bank is built. A bank keeps the contrasts it was built
+with. `antseed verifier models` shows each model's contrasts and their source. A model list under
 `referenceEndpoint.models` (older configs) is rejected. Models can't be turned
 off: an auditor audits every model assigned to it, so `enabled` is rejected too.
 
@@ -711,7 +714,14 @@ model is audited every epoch, split round robin across the auditors approved whe
 the epoch started (read from the KBF contract's `AuditorSet` events). Auditors are
 sorted by address and models by name, and in epoch `e` model `i` goes to auditor
 `(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
-shows every auditor's models. The split is off-chain only. `--auditor` cannot be
+shows every auditor's models; an epoch that has not started yet is a preview with the
+auditors approved so far. The split is off-chain only: halfway through the
+epoch, a model with no audit that counts yet (at least 20% of its sellers got a
+SAME or DIFF) goes to the next auditor in its rotation with such an audit this
+epoch (from three quarters on, to the one after that), who audits it like its
+own; a revoked auditor's models move straight away; `verifier assignment` shows these
+stand-ins and `verifier run` prints `Stand-in: …`. How far the epoch has come is
+read from the chain's latest block. `--auditor` cannot be
 combined with `<model>`, `--all`, or `--resume-run`.
 
 ## Submitting Model Audits
@@ -734,14 +744,18 @@ skipped sellers. One run retries
 what is left in up to `--max-rounds` rounds (default 3), with another
 enrollment budget each round, and stops early when nothing is left or a round
 makes no progress. `--fresh` ignores the earlier runs, including close calls
-waiting for extra questions and an interrupted run's checkpoints, and audits every eligible
-seller again from the start.
+waiting for extra questions and an interrupted run's checkpoints, and audits the
+sellers of every open audit window again from the start. A closed window stays
+closed: its questions may already be public, so the model is audited next epoch.
 
-`verifier run` and `verifier submit` first check that this CLI is up to date:
-they compare its version with the latest `@antseed/cli` on npm (the version
-`antseed update` installs). A CLI older than that stops with an update hint;
-the same or a newer version passes. When the npm registry can't be reached,
-`run` warns and a real `submit` stops; `--skip-version-check` skips it.
+`verifier run` and `verifier submit` first check that this CLI audits the same
+way as the latest `@antseed/cli` on npm (the version `antseed update` installs):
+they compare its verifier compat number (`antseedVerifier.compat` in
+`package.json`), which goes up only when a release changes how audits work. A
+higher compat on npm stops with an update hint; a newer release with the same
+compat only prints that an update is available. A release without the field
+counts as 0. When the npm registry can't be reached, `run` warns and a real
+`submit` stops; `--skip-version-check` skips it.
 
 Each model's submission covers every seller result for that model: `SAME`,
 `DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
@@ -765,10 +779,19 @@ wins, and an UNDETERMINED clears an earlier verdict.
 A DIFF is submitted as found: it is one auditor's report, and the contract
 records it only once a second auditor confirms it (`antseed verifier assignment`
 shows each model's confirmer). Auditors don't recheck their own DIFFs; the
-confirmer's independent audit is the second check. Unless the run uses
-`--no-enroll`, fresh probes are generated before a model's audits when any
-seller about to be audited lacks an unseen audit set (sellers are never given
-probes from their earlier epochs), up to 3 builds per model.
+confirmer's independent audit is the second check.
+
+Every seller of a model gets the same questions: the auditor's question set for
+the model and epoch (`<banksDir>/<model>/epochs/<epoch>/set.json`, method
+`epoch-shared-set-v1`), with two extra sets for close calls. Unless the run uses
+`--no-enroll`, the model's first run of the epoch builds it from new questions
+(up to 4 builds), leaving out any question whose text was asked before; it is
+never used after its epoch. Each model is audited once per epoch in an audit
+window (`<evidenceDir>/epochs/<epoch>/windows/<model>.json`): the first run fixes
+the window's sellers, later runs only retry them and finish their close calls,
+and `verifier submit` sends the model once the window closes (every seller
+finished, or less than 45 minutes left in the epoch). A seller that came online
+later gets no result that epoch; an undecided one is submitted UNDETERMINED.
 
 `verifier run` and `verifier submit` also write
 `<evidenceDir>/epochs/<epoch>/overview.html`: every seller × model from all of
@@ -815,8 +838,8 @@ submitted on-chain.
 Audits use existing reference banks and make reference-building calls only
 when a selected model's bank is missing, fails the self-test, statistical-power
 or contrast-detection checks, or is worn out for the sellers about to be audited.
-This is on by default; `--no-enroll` turns it off, and the run then stops before
-sending anything when a bank isn't ready:
+This is on by default; `--no-enroll` turns it off. A model whose bank isn't ready
+is then not audited, and the run audits the others and exits with an error:
 
 ```bash
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
@@ -826,9 +849,8 @@ The request budget is **per build and round** (2000 unless `--max-enrollment-req
 sets it) and includes retries. A build that runs out continues from its
 checkpoint in the next round or run with another budget, up to a total per build
 of `referenceMaxRequestsPerBuild` (default: 3 times the budget), which counts
-the requests of earlier runs. One model can need several builds in a run: one to make its bank usable, up to
-3 more when sellers have seen too much of it, and up to 3 more for close-call
-extra questions. It is a request limit, not a dollar spending cap.
+the requests of earlier runs. One model can need several builds in a run for its
+epoch question set. It is a request limit, not a dollar spending cap.
 Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An assigned or `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.
@@ -836,12 +858,9 @@ each model with eligible sellers; it can therefore spend up to the per-model lim
 Compatible banks retain their enrolled probes and self-test answers. New stable
 candidates are checked against the existing contrasts, with preference given to
 probes distinguishing failing contrasts. Existing contrast models are not replaced
-with easier ones. A ready bank causes no enrollment calls. The CLI checks the bank
-again after appending new probes and skips any model that is still not ready;
-incompatible enrollment settings fail before new model calls. A ready bank can
-still be worn out for sellers audited in earlier epochs, so the run also checks
-every seller's unseen probes and builds fresh ones when any is short; a seller
-still short afterwards fails with `BANK_EXHAUSTED`, which is retried on every run.
+with easier ones. A model whose question set for the epoch is ready causes no
+enrollment calls; incompatible enrollment settings fail before new model calls. A model without
+this epoch's question set after its builds is not audited in that run.
 
 `--resume-run` repairs never enroll.
 Failed enrollment retains compatible cached requests for a bounded retry. No

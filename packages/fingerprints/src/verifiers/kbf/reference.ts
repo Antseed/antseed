@@ -5,7 +5,7 @@ import {
   type KbfProbe,
   type MatchEntry,
 } from '../../types.js';
-import { kbfPromptVariantsHash } from './prompts.js';
+import { getKbfPromptVariant, kbfPromptVariantsHash } from './prompts.js';
 import { matchesTolerance, scoreKbfAnswer } from './scoring.js';
 import { binomialOneSidedPValue, clopperPearsonUpper } from './stats.js';
 
@@ -15,7 +15,13 @@ import { binomialOneSidedPValue, clopperPearsonUpper } from './stats.js';
  * must be rebuilt.
  */
 export const KBF_REFERENCE_VERSION = 2;
-export const KBF_PARSER_VERSION = 'kbf-numeric-lines-v2';
+export const KBF_PARSER_VERSION = 'kbf-numeric-lines-v3';
+/**
+ * Parser versions a stored reference may name. v3 reads every labelled reply as v2 did, except a
+ * Unicode minus and a bare decimal at the start of a line, and neither is in a stored self-test, so
+ * references enrolled under v2 stay valid to read (published ones keep validating for `antseed-verify`).
+ */
+export const KBF_READABLE_PARSER_VERSIONS = [KBF_PARSER_VERSION, 'kbf-numeric-lines-v2'] as const;
 export const KBF_PROBES_PER_REQUEST = 10;
 export const KBF_MIN_PROBE_COUNT = 10;
 export const KBF_MAX_PROBE_COUNT = 750;
@@ -27,8 +33,11 @@ export const KBF_SUPPORTED_PROBE_COUNTS = Object.freeze(
 );
 export const KBF_ENROLLMENT_TEMPERATURES = [0, 0.7, 0.7] as const;
 export const KBF_EXECUTION_TEMPERATURE = 0;
-/** Independent self-test runs per probe (shuffled batches, random prompt variant). */
+/** Separate self-test runs per probe (shuffled batches, a prompt variant per batch), pooled as trials. The KBF reference code runs one. */
 export const KBF_DEFAULT_SELF_TEST_RUNS = 3;
+/** Calibration passes over a question set's own batches. One pass gives the KBF reference code's margin. */
+export const KBF_CALIBRATION_PASSES = 1;
+export const KBF_CALIBRATION_METHOD = 'kbf-set-calibration-v1';
 
 export interface ReferenceQueryProfileV1 {
   version: 2;
@@ -40,7 +49,7 @@ export interface ReferenceQueryProfileV1 {
   auditTemperature: 0;
   /** Hash over every KBF prompt variant; each request uses one variant from this set. */
   promptVariantsHash: string;
-  parserVersion: typeof KBF_PARSER_VERSION;
+  parserVersion: (typeof KBF_READABLE_PARSER_VERSIONS)[number];
   probesPerRequest: 10;
   maxTokensPerRequest: number;
   requestTimeoutMs: number;
@@ -52,8 +61,9 @@ export interface ReferenceQueryProfileV1 {
   /**
    * Legacy location of reference-endpoint request settings. New references
    * record them in `generator.params.referenceEndpointRequest` instead. They
-   * describe how the reference endpoint was queried and are never applied to
-   * target audits, which send the canonical KBF request body.
+   * describe how the reference endpoint was queried. Only their thinking
+   * suppression can reach a target, as a fallback when the target's own
+   * discovery finds none (`kbfTargetThinkingSuppression`).
    */
   reasoningStrategy?: ReferenceReasoningStrategy;
   /** Legacy: see `reasoningStrategy`. */
@@ -116,10 +126,11 @@ export interface ReferenceEndpointRequestV1 {
 }
 
 /**
- * Thinking suppression an audit applies to the target, as the KBF reference
- * code does for every endpoint: the suppression fields of the reference
- * request plus any assistant prefill. Endpoint quirks (omitted sampling fields,
- * provider pins) are not included. Null when the reference used none.
+ * Fallback thinking suppression for a target whose own discovery found none: the
+ * suppression fields of the reference request plus any assistant prefill. (The KBF
+ * reference code discovers a strategy per endpoint and has no such fallback.)
+ * Endpoint quirks (omitted sampling fields, provider pins) are not included. Null
+ * when the reference used none.
  */
 export interface KbfThinkingSuppression {
   strategy: ReferenceReasoningStrategy | null;
@@ -146,10 +157,11 @@ export function kbfTargetThinkingSuppression(
 
 
 /**
- * Per-probe self-test outcomes, one entry per run. Each run re-asks the probe
- * under audit conditions (shuffled domain batches of ten, a random prompt
- * variant), so the pooled error rate reflects what an honest seller serving
- * the same model would score.
+ * Per-probe self-test outcomes, one entry per run. Each run re-asks the probe at
+ * temperature 0 with a prompt variant, in a shuffled single-domain batch of the
+ * probes self-tested together. The CLI builder self-tests each size step's new
+ * probes on their own, so many of these batches hold one or two probes, not the
+ * up to ten an audit asks together.
  */
 export interface ReferenceProbeSelfTestV1 {
   probeId: string;
@@ -183,11 +195,39 @@ export interface KbfReferenceSelfTestV1 {
   [extension: string]: unknown;
 }
 
+/** One batch of a calibration pass, as sellers get it. */
+export interface KbfCalibrationBatchV1 {
+  pass: number;
+  batchIndex: number;
+  probeIds: string[];
+  promptVariantId: string;
+  /** Requests the batch took, re-asks included. */
+  attempts: number;
+  /** The kept reply stopped at the token limit, so its answers are not scored. */
+  truncated?: true;
+}
+
+/**
+ * The reference re-asked a question set in the batches sellers get, after the set was chosen and
+ * before any seller was asked, as the KBF reference code self-tests the batches it audits. When a
+ * reference has one, these trials are the audit's baseline (`kbfAuditBaseline`). `selfTest` stays
+ * the enrollment measurement, used for sizing and as a sanity check on the calibration.
+ */
+export interface KbfReferenceCalibrationV1 extends KbfReferenceSelfTestV1 {
+  version: 1;
+  method: typeof KBF_CALIBRATION_METHOD;
+  passes: number;
+  /** Every batch asked, so a third party can match them to the published raw exchanges. */
+  batches: KbfCalibrationBatchV1[];
+  calibratedAt: string;
+}
+
 export interface KbfReferenceV1 extends FingerprintReference {
   version: typeof KBF_REFERENCE_VERSION;
   kind: 'kbf';
   queryProfile: ReferenceQueryProfileV1;
   selfTest: KbfReferenceSelfTestV1;
+  calibration?: KbfReferenceCalibrationV1;
   selectedProbeCount: number;
   minimumMismatchDelta: number;
   statisticalPower: number;
@@ -400,13 +440,30 @@ export function subsetReferenceSelfTest(
   reference: Pick<KbfReferenceV1, 'probes' | 'selfTest'>,
   selectedProbeIds: readonly string[],
 ): KbfReferenceSelfTestV1 {
-  const outcomes = new Map(reference.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]));
-  const selected = selectedProbeIds.map((probeId) => {
-    const outcome = outcomes.get(probeId);
+  return selectedOutcomes(reference.selfTest.outcomes, selectedProbeIds);
+}
+
+/**
+ * What an audit of these probes is judged against: the reference's calibration on the set's own
+ * batches when it has one, else its enrollment self-test.
+ */
+export function kbfAuditBaseline(
+  reference: Pick<KbfReferenceV1, 'probes' | 'selfTest' | 'calibration'>,
+  selectedProbeIds: readonly string[],
+): KbfReferenceSelfTestV1 {
+  return selectedOutcomes((reference.calibration ?? reference.selfTest).outcomes, selectedProbeIds);
+}
+
+function selectedOutcomes(
+  outcomes: readonly ReferenceProbeSelfTestV1[],
+  selectedProbeIds: readonly string[],
+): KbfReferenceSelfTestV1 {
+  const byId = new Map(outcomes.map((outcome) => [outcome.probeId, outcome]));
+  return aggregateKbfSelfTestOutcomes(selectedProbeIds.map((probeId) => {
+    const outcome = byId.get(probeId);
     if (!outcome) throw new Error(`reference self-test missing selected probe ${probeId}`);
     return outcome;
-  });
-  return aggregateKbfSelfTestOutcomes(selected);
+  }));
 }
 
 /**
@@ -588,6 +645,7 @@ export function validateKbfReferenceV1(
       }
     }
   }
+  if (reference.calibration !== undefined) validateCalibration(reference);
   const recomputedSelfTest = subsetReferenceSelfTest(reference, reference.probes.map((probe) => probe.id));
   if (
     selfTest.hamming !== recomputedSelfTest.hamming
@@ -690,7 +748,7 @@ function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
     throw new Error('self-test, contrast, and audit temperatures must be 0');
   }
   if (profile.promptVariantsHash !== kbfPromptVariantsHash()) throw new Error('prompt variants hash mismatch');
-  if (profile.parserVersion !== KBF_PARSER_VERSION) throw new Error('parser version mismatch');
+  if (!KBF_READABLE_PARSER_VERSIONS.includes(profile.parserVersion)) throw new Error('parser version mismatch');
   if (profile.probesPerRequest !== 10) throw new Error('query profile must use ten probes per request');
   positiveInteger(profile.maxTokensPerRequest, 'maxTokensPerRequest');
   positiveInteger(profile.requestTimeoutMs, 'requestTimeoutMs');
@@ -699,6 +757,55 @@ function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
     throw new Error('unsupported generation settings');
   }
   validateEndpointRequestFields(profile);
+}
+
+function validateCalibration(reference: KbfReferenceV1): void {
+  const calibration = object(reference.calibration, 'calibration') as unknown as KbfReferenceCalibrationV1;
+  if (calibration.version !== 1 || calibration.method !== KBF_CALIBRATION_METHOD) {
+    throw new Error('unsupported calibration record');
+  }
+  positiveInteger(calibration.passes, 'calibration passes');
+  if (!Number.isFinite(Date.parse(calibration.calibratedAt))) throw new Error('calibratedAt must be an ISO timestamp');
+  const probesById = new Map(reference.probes.map((probe) => [probe.id, probe]));
+  if (!Array.isArray(calibration.outcomes) || calibration.outcomes.length !== reference.probes.length) {
+    throw new Error('calibration outcomes must contain exactly one entry per probe');
+  }
+  const seen = new Set<string>();
+  for (const outcome of calibration.outcomes) {
+    const probe = probesById.get(outcome?.probeId);
+    if (!probe || seen.has(outcome.probeId)) throw new Error(`invalid or duplicate calibration outcome ${outcome?.probeId}`);
+    seen.add(outcome.probeId);
+    if (!Array.isArray(outcome.answers) || !Array.isArray(outcome.matches)
+      || outcome.answers.length !== calibration.passes || outcome.matches.length !== calibration.passes) {
+      throw new Error(`calibration outcome ${outcome.probeId} must have one answer and match per pass`);
+    }
+    for (const [pass, answer] of outcome.answers.entries()) {
+      if (answer !== null && (typeof answer !== 'number' || !Number.isFinite(answer))) throw new Error('invalid calibration answer');
+      if (outcome.matches[pass] !== scoreKbfAnswer(answer, probe)) {
+        throw new Error(`calibration match for ${outcome.probeId} pass ${pass} is inconsistent with its answer`);
+      }
+    }
+  }
+  const recomputed = aggregateKbfSelfTestOutcomes(calibration.outcomes);
+  if (calibration.hamming !== recomputed.hamming || calibration.total !== recomputed.total
+    || calibration.coverage !== recomputed.coverage || calibration.errorRate !== recomputed.errorRate) {
+    throw new Error('aggregate calibration is inconsistent with its per-probe outcomes');
+  }
+  if (!Array.isArray(calibration.batches)) throw new Error('calibration batches must be an array');
+  for (let pass = 0; pass < calibration.passes; pass += 1) {
+    const asked = calibration.batches.filter((batch) => batch.pass === pass);
+    const ids = asked.flatMap((batch) => batch.probeIds);
+    if (ids.length !== reference.probes.length || new Set(ids).size !== ids.length || ids.some((id) => !probesById.has(id))) {
+      throw new Error(`calibration pass ${pass} must ask every probe exactly once`);
+    }
+    for (const batch of asked) {
+      if (batch.probeIds.length > KBF_PROBES_PER_REQUEST
+        || new Set(batch.probeIds.map((id) => probesById.get(id)!.domain)).size !== 1) {
+        throw new Error(`calibration batch ${batch.batchIndex} must hold one domain and at most ${KBF_PROBES_PER_REQUEST} probes`);
+      }
+      getKbfPromptVariant(batch.promptVariantId);
+    }
+  }
 }
 
 function validateEndpointRequestFields(fields: Partial<ReferenceEndpointRequestV1>): void {

@@ -24,8 +24,9 @@ without being caught.
 ## The idea in one paragraph
 
 Every model has a "knowledge boundary": a set of obscure facts it remembers in a
-particular way, including the ones it gets slightly wrong. A different model, a
-smaller sibling, or a heavily quantized copy has a different boundary. The KBF audit asks a
+particular way, including the ones it gets slightly wrong. A different model or a
+smaller sibling has a different boundary; a quantized copy of the same model can differ
+too little to be told apart. The KBF audit asks a
 seller a batch of short questions with exact numeric answers (for example "the
 melting point of tantalum carbide is ___°C") and compares the answers
 with what the genuine model answers. This is called **Knowledge Boundary
@@ -39,17 +40,21 @@ Fingerprinting (KBF)**.
    where cheaper look-alikes give the same answers are dropped, because they cannot
    tell models apart. The reference also measures the genuine model's own
    error rate, since even the real model is not perfectly consistent.
-2. **The seller is asked a fresh random subset.** Each check picks a new random set of
-   about 100 questions from the reference, in a new order and with varied wording, so a
-   seller cannot memorize a fixed test.
-3. **A statistical test gives the verdict.** The seller's wrong answers are compared
-   with the genuine model's own error rate:
+2. **The seller is asked this epoch's question set.** Each auditor builds a new set of at
+   least 100 questions per model and epoch, asks every seller of that model the same set
+   with varied wording, and never uses it again, so a seller cannot memorize a fixed test.
+3. **The set is calibrated.** Before any seller is asked, the genuine model answers the
+   set in the same batches sellers will get. How often it misses its own stored answers
+   here sets the limit for that set. If it leaves too many unanswered, the model is not
+   audited that epoch.
+4. **A statistical test gives the verdict.** The seller's wrong answers are compared
+   with that error rate of the genuine model:
 
 | Verdict | Meaning |
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. A seller that refuses `temperature` is not `UNDETERMINED` for that reason: it is asked again without the field and judged on those answers, and the audit's evidence records the dropped field (`omittedSamplingFields`). A seller that only accepts another `temperature` value is not audited. |
 
 A missing or unreadable answer is left out of the score, not counted as wrong, so a
 flaky seller doesn't look like a substituted model.
@@ -77,6 +82,42 @@ mainnet (see below). So a seller is only marked DIFF when two independent audito
 
 To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
 covers each step, including where the genuine model's answers come from.
+
+## Decentralised and trustless
+
+There is no server that hands out audits, collects results or decides verdicts. The
+auditors are independent, and what they agree on is worked out from public data and
+recorded by the contract. Four things make that hold:
+
+- **Nothing to coordinate.** Which auditor audits which model, and which auditor confirms
+  which model's DIFFs, follows from the approved auditors (the contract's `AuditorSet`
+  events), the epoch number and the model list built into the CLI, sorted and rotated
+  round robin. Anyone can recompute the split, and `antseed verifier assignment` does.
+- **Nobody is trusted alone.** One auditor's SAME verifies a seller, which only helps the
+  seller. A DIFF, which costs the seller its verified status, is only a report until a
+  second approved auditor audits the same seller with its own questions and also finds
+  DIFF. The second auditor is the model's confirmer, the next in the rotation, so the
+  confirmer changes every epoch and no two auditors can pair up for long. Reports count
+  only in the epoch they were made in and only since the service's last change into or
+  out of DIFF, an auditor's repeated report adds nothing, and a revoked auditor's waiting
+  reports stop counting. Every audit's evidence is on IPFS, so anyone can check what an
+  auditor asked and what the seller answered.
+- **Nobody is waited for.** The contract takes any approved auditor's audit of any model,
+  so the assignment can't block anything. A seller gets at most two opinions per model
+  and epoch: if a DIFF's confirmer has not answered after 12 hours, the next auditor in
+  the rotation is asked instead, one at a time, and if two auditors disagree nobody else
+  is asked and the SAME stands. Halfway through the epoch, a model with no audit that
+  counts, meaning at least 20% of its sellers got a SAME or DIFF, goes to the next auditor in its rotation
+  that is active this epoch (from three quarters on, to the one after that). A revoked auditor is skipped at
+  once, for confirmations and stand-ins. The stand-in earns the audit's credit. Every auditor reads the time from the chain, so they all
+  switch at the same moment. See [If an auditor goes missing](/docs/verify/audits#if-an-auditor-goes-missing).
+- **Nothing lasts without being rechecked.** A verdict counts for the epoch it was given in
+  and the next one, so a seller stays verified only while auditors keep finding it so, and
+  a missed epoch is bridged by the previous verdict rather than by anyone's say-so.
+
+What is still trusted: the contract owner approves and revokes auditors and sets the
+report counts (one for SAME and UNDETERMINED, two for DIFF, and the floor for replacing a
+live DIFF). Those settings are public on-chain, and changing them is visible to everyone.
 
 ## Public evidence
 

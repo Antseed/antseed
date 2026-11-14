@@ -12,6 +12,7 @@ import {
   KBF_LOW_COVERAGE_RETRIES,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   KBF_PROBES_PER_REQUEST,
+  kbfDomainBatches,
   KBF_PROMPT_VARIANT_IDS,
   buildKbfPrompt,
   computeBinomialPower,
@@ -19,10 +20,10 @@ import {
   getKbfPromptVariant,
   isKbfSamplingFieldRejection,
   isKbfThinkingSuppressionRejection,
+  kbfAuditBaseline,
   kbfTargetThinkingSuppression,
   hasMissingKbfAnswers,
   parseKbfAnswers,
-  subsetReferenceSelfTest,
   verifyKbf,
   type FingerprintEvaluation,
   type KbfProbe,
@@ -111,7 +112,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   const startedAt = new Date().toISOString()
   const draw = options.randomInt ?? ((max: number) => randomInt(max))
   const model = options.model ?? options.reference.queryProfile.upstreamModel
-  const { probes, power } = selectProbes(options.reference, {
+  const { probes: selected, power } = selectProbes(options.reference, {
     draw,
     minimumPower: options.minimumPower ?? 0.9,
     ...(options.probeCount !== undefined ? { probeCount: options.probeCount } : {}),
@@ -119,7 +120,9 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
 
   const thinkingDiscovery = options.discoverThinking === false ? null : await discoverEndpointThinking(options, model)
   const settings = batchSettings(options.reference, thinkingDiscovery)
-  const batches = chunk(probes, KBF_PROBES_PER_REQUEST)
+  const batches = domainBatches(selected, KBF_PROBES_PER_REQUEST)
+  // Answers come back batch by batch, so everything scored against them follows the batch order.
+  const probes = batches.flat()
   const records: AuditBatchRecord[] = new Array(batches.length)
   let next = 0
   let completed = 0
@@ -191,8 +194,10 @@ function hintFor(reason: string): string {
 
 /**
  * Picks a fresh random probe subset and order for this audit. Without a fixed size it
- * grows in steps of ten until the subset's own reference self-test gives the required
- * statistical power, falling back to every probe.
+ * grows in steps of ten until the subset's own reference baseline gives the required
+ * statistical power, falling back to every probe. A calibrated reference is an epoch question
+ * set whose limit was measured on its own batches, so without a fixed size it is asked whole and
+ * in its stored order, in those batches.
  */
 export function selectProbes(
   reference: KbfReferenceV1,
@@ -200,7 +205,7 @@ export function selectProbes(
 ): { probes: KbfProbe[]; power: number } {
   const shuffled = shuffle(reference.probes, options.draw)
   const powerOf = (probes: readonly KbfProbe[]): number => {
-    const selfTest = subsetReferenceSelfTest(reference, probes.map((probe) => probe.id))
+    const selfTest = kbfAuditBaseline(reference, probes.map((probe) => probe.id))
     return computeBinomialPower({
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
@@ -219,6 +224,7 @@ export function selectProbes(
     const probes = shuffled.slice(0, count)
     return { probes, power: powerOf(probes) }
   }
+  if (reference.calibration) return { probes: [...reference.probes], power: powerOf(reference.probes) }
   for (let count = KBF_PROBES_PER_REQUEST; count <= shuffled.length; count += KBF_PROBES_PER_REQUEST) {
     const probes = shuffled.slice(0, count)
     const power = powerOf(probes)
@@ -452,10 +458,14 @@ function shuffle<T>(items: readonly T[], draw: (max: number) => number): T[] {
   return copy
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const chunks: T[][] = []
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
-  return chunks
+/**
+ * Batches holding one domain each, keeping the given order inside a domain (`kbfDomainBatches`, as
+ * `antseed verifier run` batches). A reference's consensus and self-test error are measured on
+ * single-domain batches, and answers shift when the questions around them do: mixing domains nearly
+ * doubled genuine MiniMax M3's mismatches (about 17% to 27%) and read as a DIFF.
+ */
+function domainBatches(probes: readonly KbfProbe[], size: number): KbfProbe[][] {
+  return kbfDomainBatches(probes, size).map((batch) => batch.probes)
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
