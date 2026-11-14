@@ -594,6 +594,55 @@ contract AntseedTokenizerAuditsTest is Test {
         assertFalse(found, "no top-level usage");
     }
 
+    function test_readsUsageAsTheBuyerDoes() public view {
+        (bool found, uint256 tokens) =
+            audits.promptTokensOf('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}');
+        assertTrue(found);
+        assertEq(tokens, 750, "prompt_cache_hit_tokens is cached input, added like cache_read_input_tokens");
+        (, tokens) = audits.promptTokensOf(
+            '{"usage":{"input_tokens":150,"cache_read_input_tokens":600,"prompt_cache_hit_tokens":600}}'
+        );
+        assertEq(tokens, 750, "cache_read_input_tokens wins when both are given");
+        (, tokens) = audits.promptTokensOf(
+            '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"cache_read_input_tokens":4}}'
+        );
+        assertEq(tokens, 12, "beside input_tokens_details, input_tokens already includes the cached tokens");
+    }
+
+    function test_anHonestSellerServedFromTheCacheCannotBeProven() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        for (uint256 i = 0; i < 3; i++) {
+            // The probed answer is mostly cache hits, reported as prompt_cache_hit_tokens: same delta as the
+            // references.
+            rounds[i].suspect.probed = _receiptAt(
+                SUSPECT_KEY,
+                SERVICE,
+                MESSAGES_PATH,
+                abi.encodePacked(HEAD, SERVICE, MESSAGES_MID, rounds[i].a, rounds[i].b, MESSAGES_TAIL),
+                abi.encodePacked(
+                    '{"usage":{"input_tokens":10,"prompt_cache_hit_tokens":',
+                    bytes(vm.toString(uint256(int256(BASE_TOKENS) + MODEL_DELTA) - 10)),
+                    ',"output_tokens":2}}'
+                )
+            );
+            rounds[i].suspect.base = _receiptAt(
+                SUSPECT_KEY,
+                SERVICE,
+                MESSAGES_PATH,
+                abi.encodePacked(HEAD, SERVICE, MESSAGES_MID, rounds[i].a, MESSAGES_TAIL),
+                abi.encodePacked('{"usage":{"input_tokens":', bytes(vm.toString(BASE_TOKENS)), ',"output_tokens":2}}')
+            );
+            rounds[i].suspect.shapeId = messagesShapeId;
+        }
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
+            )
+        );
+        audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
     function test_readsWholeIntegerTokenCountsOnly() public view {
         (bool found, uint256 tokens) = audits.promptTokensOf('{"usage":{"prompt_tokens": 1000 }}');
         assertTrue(found);

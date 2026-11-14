@@ -182,8 +182,10 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     function serviceHashOf(string calldata serviceName) external pure returns (bytes32);
     /// @notice The EIP-191 digest a seller signs for `receipt` (for off-chain checks).
     function receiptDigest(AntseedResponseAuth.Receipt calldata receipt) external pure returns (bytes32);
-    /// @notice The prompt tokens a signed response body reports (Chat Completions `prompt_tokens`, or
-    ///         `input_tokens` plus Anthropic's cache tokens for Messages and Responses). `found` is false when the body has no single usage field.
+    /// @notice The prompt tokens a signed response body reports, read as the buyer reads usage: Chat Completions
+    ///         `prompt_tokens`; Responses `input_tokens` (with `input_tokens_details`, whose cached tokens it
+    ///         includes); else `input_tokens` plus cache creation and cache reads (`cache_read_input_tokens`, else
+    ///         `prompt_cache_hit_tokens`). `found` is false when the body has no single usage field.
     function promptTokensOf(bytes calldata responseBody) external pure returns (bool found, uint256 tokens);
 
     /// @notice Proves that a suspect service's signed usage does not match its model's tokenizer, against

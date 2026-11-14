@@ -164,10 +164,11 @@ export function isShapeRequest(
 }
 
 /**
- * The prompt tokens a signed response body reports, read exactly as the contract does: inside the one
- * top-level `usage` object, one `"prompt_tokens"`, else one `"input_tokens"` plus at most one of each
- * Anthropic cache key. Nested breakdowns (e.g. Responses' per-item usage) and text are ignored. Null when
- * the body has no single usage field.
+ * The prompt tokens a signed response body reports, read exactly as the contract does and as the buyer reads
+ * usage (`extractUsage`): inside the one top-level `usage` object, one `"prompt_tokens"`; else one
+ * `"input_tokens"`, alone beside `"input_tokens_details"` (whose cached tokens it includes) or plus the cache
+ * creation and cache reads (`cache_read_input_tokens`, else `prompt_cache_hit_tokens`). Nested breakdowns
+ * (e.g. Responses' per-item usage) and text are ignored. Null when the body has no single usage field.
  */
 export function promptTokensOfBody(body: Uint8Array): number | null {
   const counts = new Map<string, number[]>();
@@ -176,6 +177,7 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
   let inString = false;
   let escaped = false;
   let inUsage = false;
+  let detailsCount = 0;
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     if (inString) {
@@ -198,6 +200,12 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
         i = usageObject;
         continue;
       }
+      const details = depth === 2 && inUsage ? objectKeyEnd(body, i, 'input_tokens_details') : 0;
+      if (details !== 0) {
+        detailsCount++;
+        i = details - 1;
+        continue;
+      }
       const key = depth === 2 && inUsage ? usageKeyAt(body, i) : null;
       if (key) {
         const values = counts.get(key.name);
@@ -216,8 +224,12 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
   const input = values('input_tokens');
   const read = values('cache_read_input_tokens');
   const creation = values('cache_creation_input_tokens');
-  if (prompt.length > 1 || input.length !== 1 || read.length > 1 || creation.length > 1) return null;
-  return input[0]! + (read[0] ?? 0) + (creation[0] ?? 0);
+  const hit = values('prompt_cache_hit_tokens');
+  if (prompt.length > 1 || input.length !== 1 || read.length > 1 || creation.length > 1 || hit.length > 1 || detailsCount > 1) {
+    return null;
+  }
+  if (detailsCount === 1) return input[0]!;
+  return input[0]! + (creation[0] ?? 0) + (read[0] ?? hit[0] ?? 0);
 }
 
 const QUOTE = 0x22;
@@ -228,7 +240,7 @@ const COMMA = 0x2c;
 const OPEN_BRACKET = 0x5b;
 const CLOSE_BRACKET = 0x5d;
 const COLON = 0x3a;
-const USAGE_KEYS = ['prompt_tokens', 'input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+const USAGE_KEYS = ['prompt_tokens', 'input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'prompt_cache_hit_tokens'];
 const MAX_TOKEN_DIGITS = 15;
 
 /** If a `"usage"` key whose value is an object starts at `offset`, the offset of that `{`; else 0. */
@@ -239,6 +251,16 @@ function usageObjectAfter(body: Uint8Array, offset: number): number {
   if (body[end] !== COLON) return 0;
   end = skipSpace(body, end + 1);
   return body[end] === OPEN_BRACE ? end : 0;
+}
+
+/** If `"name"` starts at `offset` and its value is an object, the offset after the key; else 0. */
+function objectKeyEnd(body: Uint8Array, offset: number, name: string): number {
+  const end = quotedKeyEnd(body, offset, name);
+  if (end === 0) return 0;
+  let at = skipSpace(body, end);
+  if (body[at] !== COLON) return 0;
+  at = skipSpace(body, at + 1);
+  return body[at] === OPEN_BRACE ? end : 0;
 }
 
 /** The usage key starting at `offset` when it is followed by a colon and a number. */

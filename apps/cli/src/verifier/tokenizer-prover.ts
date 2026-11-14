@@ -2,7 +2,6 @@ import { randomInt, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { AbstractSigner } from 'ethers'
-import type { StoredResponseAuth } from '@antseed/node'
 import {
   isShapeRequest,
   jsonSafeContent,
@@ -18,6 +17,7 @@ import {
 } from '@antseed/node/payments'
 import { mapConcurrently } from './audit-concurrency.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
+import { asError } from './utils.js'
 
 /** What the prover needs from `AntseedTokenizerAudits`. */
 export type TokenizerAuditsReader = Pick<
@@ -196,7 +196,7 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
       generated = await options.generator()
     } catch (error) {
       // Without every round nothing can be proved; the pass ends with inconclusive results.
-      log(`  round ${r + 1}: ${error instanceof Error ? error.message : String(error)}`)
+      log(`  round ${r + 1}: ${asError(error).message}`)
       break
     }
     const a = jsonSafeContent(generated.a).trim()
@@ -332,7 +332,7 @@ async function judge(
   try {
     result.txHash = await options.contract.proveTokenizerMismatch(options.signer.wallet, modelHash, proofRounds)
   } catch (error) {
-    result.reason = `proof transaction failed: ${error instanceof Error ? error.message : String(error)}`
+    result.reason = `proof transaction failed: ${asError(error).message}`
   }
   return result
 }
@@ -402,19 +402,14 @@ async function signedRequest(options: TokenizerProverOptions, member: Member, bo
     await response.arrayBuffer()
     if (response.status !== 200) return `seller answered HTTP ${response.status}`
   } catch (error) {
-    return `request failed: ${error instanceof Error ? error.message : String(error)}`
+    return `request failed: ${asError(error).message}`
   }
   const evidence = await options.reader.waitForVerified({ requestId, sellerPeerId: member.peerId, advertisedService: member.service })
-  const record = evidence.responseAuth
-  if (evidence.status !== 'verified' || !record?.requestPreimage || !record.responsePreimage) {
-    return evidence.failureReason ?? 'no verified ResponseAuth with preimages'
-  }
-  return toSignedReceipt(record)
-}
-
-function toSignedReceipt(record: StoredResponseAuth): SignedReceipt {
-  const { receivedAt: _r, verified: _v, verificationError: _e, requestPreimage, responsePreimage, ...payload } = record
-  return { payload, request: requestPreimage!, response: responsePreimage! }
+  const missing = evidence.failureReason ?? 'no verified ResponseAuth with preimages'
+  if (evidence.status !== 'verified' || !evidence.responseAuth) return missing
+  const { receivedAt: _r, verified: _v, verificationError: _e, requestPreimage, responsePreimage, ...payload } = evidence.responseAuth
+  if (!requestPreimage || !responsePreimage) return missing
+  return { payload, request: requestPreimage, response: responsePreimage }
 }
 
 const PROBE_SCRIPTS = ['Georgian', 'Amharic', 'Tamil', 'Thai', 'Korean', 'Hebrew', 'Arabic', 'Hindi', 'Greek', 'Armenian', 'Japanese', 'Khmer']
@@ -463,7 +458,7 @@ Return only JSON: {"a": "...", "b": "..."}. Variation seed: ${randomInt(1e9)}`
         }
         lastError = `${writer.model}: answer without a and b`
       } catch (error) {
-        lastError = `${writer.model}: ${error instanceof Error ? error.message : String(error)}`
+        lastError = `${writer.model}: ${asError(error).message}`
       }
     }
     throw new Error(`probe generator failed: ${lastError}`)
