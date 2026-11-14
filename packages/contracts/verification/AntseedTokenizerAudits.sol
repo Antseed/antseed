@@ -172,7 +172,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
     /// @notice Removes a usage flag (e.g. after a seller fixed its reporting). It also leaves the agent's
     ///         flagged list, so a later proof lists it once again, and only suspect receipts signed after now
-    ///         can flag the service again.
+    ///         (plus the allowed clock skew) can flag the service again.
     function clearFlag(uint256 agentId, bytes32 serviceHash) external onlyOwner {
         delete _flags[agentId][serviceHash];
         flagClearedAt[agentId][serviceHash] = uint64(block.timestamp);
@@ -373,7 +373,9 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
         if (serviceHashOf(round.suspect.base.advertisedService) != serviceHash) revert DifferentService();
         PairResult memory suspect = _checkPair(round.suspect, round.a, round.b, seller, true);
-        if (uint256(suspect.firstAt) <= uint256(flagClearedAt[suspectAgent][serviceHash]) * 1000) {
+        uint256 clearedAt = flagClearedAt[suspectAgent][serviceHash];
+        // Receipts may run up to the clock skew ahead of the block, so a clear also covers that window.
+        if (clearedAt != 0 && uint256(suspect.firstAt) <= (clearedAt + MAX_CLOCK_SKEW_SECONDS) * 1000) {
             revert StaleEvidence(index);
         }
         uint64 firstAt = suspect.firstAt;

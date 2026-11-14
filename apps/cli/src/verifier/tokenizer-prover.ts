@@ -9,8 +9,8 @@ import {
   MAX_TOKENIZER_PROOF_ROUNDS,
   pairDelta,
   shapeRequestBody,
-  type ResolvedService,
   type SignedReceipt,
+  type TokenizerAuditsClient,
   type TokenizerParameters,
   type TokenizerProbePair,
   type TokenizerRound,
@@ -19,14 +19,11 @@ import {
 import { mapConcurrently } from './audit-concurrency.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 
-/** What the prover needs from `AntseedTokenizerAudits` (a `TokenizerAuditsClient`). */
-export interface TokenizerAuditsReader {
-  activeShapes(): Promise<TokenizerShape[]>
-  parameters(): Promise<TokenizerParameters>
-  resolveServices(entries: ReadonlyArray<{ seller: string; service: string }>): Promise<ResolvedService[]>
-  checkProof(from: string, modelHash: string, rounds: readonly TokenizerRound[]): Promise<string | null>
-  proveTokenizerMismatch(signer: AbstractSigner, modelHash: string, rounds: readonly TokenizerRound[]): Promise<string>
-}
+/** What the prover needs from `AntseedTokenizerAudits`. */
+export type TokenizerAuditsReader = Pick<
+  TokenizerAuditsClient,
+  'activeShapes' | 'parameters' | 'resolveServices' | 'checkProof' | 'proveTokenizerMismatch'
+>
 
 /** A discovered seller and the services it sells, as the buyer proxy's snapshot lists them. */
 export interface TokenizerPeer {
@@ -217,7 +214,7 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
   const results: TokenizerSuspectResult[] = []
   for (const { modelHash, members, suspects } of plan) {
     for (const suspect of suspects) {
-      const result = await judge(options, params, modelHash, members, suspect, rounds)
+      const result = await judge(options, params, roundCount, modelHash, members, suspect, rounds)
       results.push(result)
       const key = stateKey(suspect.peerId, suspect.service)
       if (result.outcome === 'mismatch' && !result.txHash) delete state[key]
@@ -280,6 +277,7 @@ function checkedRecently(last: ProverState[string] | undefined, now: number, rec
 async function judge(
   options: TokenizerProverOptions,
   params: TokenizerParameters,
+  roundCount: number,
   modelHash: string,
   members: Member[],
   suspect: Member,
@@ -320,7 +318,11 @@ async function judge(
     })
   }
   if (matched) return { ...result, outcome: 'match', reason: null }
-  if (proofRounds.length < rounds.length || proofRounds.length < params.minRounds) return result
+  // Every round of the pass, as many as were asked for, must be off: a pass cut short proves nothing.
+  if (proofRounds.length < roundCount) {
+    result.reason ??= `only ${rounds.length} of ${roundCount} rounds ran`
+    return result
+  }
 
   result.outcome = 'mismatch'
   result.reason = null

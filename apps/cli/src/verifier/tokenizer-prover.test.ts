@@ -312,6 +312,24 @@ test('a reference agent whose first service disagrees still counts through the o
   }
 })
 
+test('a pass cut short before the asked-for rounds proves nothing', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  let calls = 0
+  const failsAfterThree = async () => {
+    if (++calls > 3) throw new Error('generator down')
+    return generator()
+  }
+  const { summary, submitted, evidenceDir } = await run(sellers, { rounds: 8, generator: failsAfterThree })
+  try {
+    const swapped = summary.results.find((r) => r.sellerName === 'Swapped')!
+    assert.equal(swapped.outcome, 'inconclusive')
+    assert.match(swapped.reason ?? '', /only 3 of 8 rounds ran/)
+    assert.equal(submitted.length, 0)
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
 test('references agree as a range, and a suspect within tolerance of any of them matches', async () => {
   const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 140, true), seller('Ref 3', 141, true), seller('Close', 143, false)]
   const { summary, submitted, evidenceDir } = await run(sellers)

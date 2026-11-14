@@ -224,9 +224,20 @@ contract AntseedTokenizerAuditsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
         audits.proveTokenizerMismatch(modelHash, archived);
 
-        signedAt = uint64(block.timestamp * 1000 + 1000);
+        _signAfterClear();
         audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         assertEq(audits.liveFlags(suspectAgent), 1);
+    }
+
+    function test_evidenceSignedAheadOfAClearCannotFlagAgain() public {
+        kbf.record(suspectAgent, serviceHash, modelHash, SAME);
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        // A seller clock 4 minutes ahead: accepted as not from the future, yet collected before the clear.
+        signedAt = uint64((block.timestamp + 4 minutes) * 1000);
+        IAntseedTokenizerAudits.Round[] memory archived = _rounds(3, 129, MODEL_DELTA);
+        audits.clearFlag(suspectAgent, serviceHash);
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
+        audits.proveTokenizerMismatch(modelHash, archived);
     }
 
     function test_maxEvidenceAge() public {
@@ -505,7 +516,7 @@ contract AntseedTokenizerAuditsTest is Test {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         audits.clearFlag(suspectAgent, serviceHash);
-        signedAt += 1000;
+        _signAfterClear();
         audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         assertEq(audits.liveFlags(suspectAgent), 1);
         (uint256 sellerPoints,) = audits.points(bytes32(0), buyer, suspect, 100, 100);
@@ -514,9 +525,20 @@ contract AntseedTokenizerAuditsTest is Test {
 
     function test_pointsNeverRevert() public {
         audits.setPenaltyBps(1_000);
-        pools.setReverts(true);
+        kbf.record(suspectAgent, serviceHash, modelHash, SAME);
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         (uint256 sellerPoints, uint256 buyerPoints) = audits.points(bytes32(0), buyer, suspect, 100, 50);
-        assertEq(sellerPoints, 100);
+        assertEq(sellerPoints, 90, "the live flag applies");
+
+        vm.mockCallRevert(address(pools), abi.encodeWithSelector(pools.agentIdForSeller.selector), "pools down");
+        (sellerPoints, buyerPoints) = audits.points(bytes32(0), buyer, suspect, 100, 50);
+        assertEq(sellerPoints, 100, "a failing seller lookup leaves points unchanged");
+        assertEq(buyerPoints, 50);
+        vm.clearMockedCalls();
+
+        vm.mockCallRevert(address(results), abi.encodeWithSelector(results.currentEpoch.selector), "results down");
+        (sellerPoints, buyerPoints) = audits.points(bytes32(0), buyer, suspect, 100, 50);
+        assertEq(sellerPoints, 100, "a failing epoch read leaves points unchanged");
         assertEq(buyerPoints, 50);
     }
 
@@ -643,6 +665,12 @@ contract AntseedTokenizerAuditsTest is Test {
     function _refs(int256 delta) private pure returns (int256[] memory deltas) {
         deltas = new int256[](3);
         (deltas[0], deltas[1], deltas[2]) = (delta, delta, delta);
+    }
+
+    /// @dev Signs the next receipts after a clear and its clock-skew window, as fresh evidence would be.
+    function _signAfterClear() private {
+        vm.warp(block.timestamp + 5 minutes + 1);
+        signedAt = uint64(block.timestamp * 1000);
     }
 
     function _deltas(int256[3] memory values) private pure returns (int256[] memory deltas) {

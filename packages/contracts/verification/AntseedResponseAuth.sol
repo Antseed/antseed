@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
@@ -55,12 +54,6 @@ library AntseedResponseAuth {
     /// @notice The EIP-191 digest the seller signed for `receipt`.
     function digest(Receipt calldata receipt) internal pure returns (bytes32) {
         return MessageHashUtils.toEthSignedMessageHash(abi.encodePacked(DOMAIN, signingPayload(receipt)));
-    }
-
-    /// @notice True when `receipt.seller` signed the receipt. Never reverts on a bad signature.
-    function signedBySeller(Receipt calldata receipt) internal pure returns (bool) {
-        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest(receipt), receipt.signature);
-        return err == ECDSA.RecoverError.NoError && signer == receipt.seller && signer != address(0);
     }
 
     /// @notice The 13-field payload, exactly as the seller encodes it before signing.
