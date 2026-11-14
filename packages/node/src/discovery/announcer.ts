@@ -62,8 +62,8 @@ export interface AnnouncerConfig {
     isAvailable?: () => boolean;
     /** Per-instance pricing. Takes precedence over the shared pricing Map. */
     pricing?: {
-      defaults: { inputUsdPerMillion: number; outputUsdPerMillion: number };
-      services?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>;
+      defaults: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number };
+      services?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number }>;
     };
   }>;
   displayName?: string;
@@ -127,6 +127,9 @@ export class PeerAnnouncer {
   private stopped = false;
   private readonly loadMap: Map<string, number> = new Map();
   private _latestMetadata: PeerMetadata | null = null;
+  /** Monotonic build ids so a slow, older build never overwrites newer metadata. */
+  private _buildSeq = 0;
+  private _appliedBuildSeq = 0;
   /** One signed document per served metadata version. */
   private _signedByVersion = new Map<number, PeerMetadata>();
 
@@ -135,7 +138,7 @@ export class PeerAnnouncer {
   }
 
   async announce(): Promise<void> {
-    this._storeSigned(await this._buildSignedMetadata(true));
+    await this._buildAndStore(true);
 
     const failures = await this._announceTopics();
     if (failures > 0) {
@@ -151,7 +154,15 @@ export class PeerAnnouncer {
    * Useful for high-frequency fields like current provider load.
    */
   async refreshMetadata(): Promise<void> {
-    this._storeSigned(await this._buildSignedMetadata(false));
+    await this._buildAndStore(false);
+  }
+
+  private async _buildAndStore(includeOnChainReputation: boolean): Promise<void> {
+    const seq = ++this._buildSeq;
+    const signed = await this._buildSignedMetadata(includeOnChainReputation);
+    if (seq < this._appliedBuildSeq) return;
+    this._appliedBuildSeq = seq;
+    this._storeSigned(signed);
   }
 
   private _storeSigned(signed: Map<number, PeerMetadata>): void {

@@ -72,6 +72,7 @@ import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
+type ProviderPricing = import('./interfaces/seller-provider.js').ProviderPricing;
 
 /** A seller's services of one routing protocol. */
 function routingServices(providers: readonly Provider[], protocol: RoutingProtocol): Array<{ provider: Provider; service: string }> {
@@ -459,7 +460,13 @@ export class SellerRequestHandler {
       }
 
 
-      const requestPricing = this.resolveProviderPricing(provider, request);
+      // Buyers with an open channel are billed at the rates pinned when that
+      // channel was reserved; everyone else sees the live (possibly reloaded) rates.
+      const pinnedChannel = this._deps.sellerPaymentManager?.getChannelByPeer(buyerPeerId);
+      const pinnedPricing = pinnedChannel
+        ? this._deps.sellerPaymentManager?.getChannelPricing?.(pinnedChannel.sessionId)?.get(provider)
+        : undefined;
+      const requestPricing = this.resolveProviderPricing(provider, request, pinnedPricing);
       let requestBilling: SellerBillingContext | null;
       let unitBillingModel: UnitBillingModelV1 | undefined;
       try {
@@ -1612,15 +1619,16 @@ export class SellerRequestHandler {
   resolveProviderPricing(
     provider: Provider,
     request: SerializedHttpRequest,
+    pricing: ProviderPricing = provider.pricing,
   ): ProviderTokenPricing {
     const requestedService = this._extractRequestedService(request);
     if (requestedService) {
-      const servicePricing = provider.pricing.services?.[requestedService];
+      const servicePricing = pricing.services?.[requestedService];
       if (servicePricing) {
         return servicePricing;
       }
     }
-    return provider.pricing.defaults;
+    return pricing.defaults;
   }
 
   resolveProviderUnitBillingModel(

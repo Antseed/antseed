@@ -53,6 +53,7 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
+import { startSellerPriceReload, type PriceReloadTarget } from './price-reload.js'
 import { redact, redactUrlsIn, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
@@ -656,6 +657,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       await ensurePluginsUpToDate(selectedProviderPackages)
 
       const providers: Provider[] = []
+      const priceReloadTargets: PriceReloadTarget[] = []
       for (const providerName of selectedProviderNames) {
         const providerCfg = effectiveSellerConfig.providers[providerName]!
         const packageName = resolvePluginPackage(providerCfg.plugin)
@@ -688,6 +690,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             }
           }
           providers.push(provider)
+          priceReloadTargets.push({ name: providerName, provider, configFields, basePluginConfig })
           spinner.succeed(chalk.green(`Provider "${providerName}" loaded via ${packageName}`))
         } catch (err) {
           spinner.fail(chalk.red(`Failed to load provider "${providerName}": ${(err as Error).message}`))
@@ -1416,6 +1419,21 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      // Hot-reload token pricing from the config file. Only new payment
+      // channels pick up new prices; open channels keep their pinned rates.
+      const priceReload = startSellerPriceReload({
+        configPath: globalOpts.config,
+        targets: priceReloadTargets,
+        runtimeOverrides,
+        forcePricingOverride,
+        onApplied: async () => {
+          await node.refreshSellerMetadata()
+          scheduleDaemonStateWrite()
+        },
+        log: (message) => console.log(chalk.green(message)),
+        warn: (message) => console.warn(chalk.yellow(message)),
+      })
+
       // The local dashboard, unless turned off. Its link carries a session token, so it is printed only to a
       // terminal; a service's logs say how to get it (`antseed seller dashboard` reads it from the data dir).
       let dashboard: SellerDashboardServer | null = null
@@ -1463,6 +1481,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       })
 
       setupShutdownHandler(async () => {
+        priceReload.stop()
         updateWatch.stop()
         idleWatch.stop()
         healthChecker?.stop()
