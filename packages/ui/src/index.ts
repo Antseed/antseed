@@ -5,7 +5,7 @@ export { Alert } from './primitives/Alert';
 export type { AlertProps } from './primitives/Alert';
 
 export { Badge } from './primitives/Badge';
-export type { BadgeProps, BadgeTone } from './primitives/Badge';
+export type { BadgeProps, BadgeTone, BadgeVariant } from './primitives/Badge';
 
 export { Button } from './primitives/Button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './primitives/Button';
