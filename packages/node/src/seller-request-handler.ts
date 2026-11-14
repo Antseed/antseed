@@ -751,8 +751,18 @@ export class SellerRequestHandler {
             // Ask for the catch-up now instead of only after the wait: after a
             // restart (or a lost NeedAuth) nothing else would prompt the buyer,
             // and every parked request would end in a 402. Once per spend level,
-            // and only for spend the reserve can cover (beyond it the channel is closed below).
-            const signable = reserveMax <= 0n || spent <= reserveMax;
+            // and only for spend the reserve can cover, now or once the top-up
+            // being submitted lands (beyond it the channel is closed below).
+            // The stored ceiling of a channel restored from disk can lag the
+            // chain (a top-up that landed while the seller was down): read it
+            // before judging the spend too high. Any other channel is read
+            // only after its top-up wait below: chain reads are rate-limited,
+            // and a read here would turn that one into a no-op, answering 402
+            // before the auths parked on the top-up are accepted.
+            if (reserveMax > 0n && spent > reserveMax && spm.ceilingMayLagChain(session.sessionId)) {
+              reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
+            }
+            const signable = reserveMax <= 0n || spent <= reserveMax || spm.isTopUpRunning(session.sessionId);
             if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
               this._catchUpPrompted.delete(session.sessionId);
               this._catchUpPrompted.set(session.sessionId, spent);
@@ -885,9 +895,14 @@ export class SellerRequestHandler {
             // for work the seller has not delivered. The preflight reserve
             // check also returns target=spent: it is a hard stop before routing
             // work that cannot fit inside the currently locked reserve.
-            const target = spent;
+            // A restarted seller asks before it closes: work past the ceiling
+            // can only be collected through a top-up the restart may have lost.
+            const restartCatchUp = !isBlocked && reserveMax > 0n && spent > reserveMax
+              ? await spm.askAfterRestart(session.sessionId)
+              : null;
+            const target = restartCatchUp ?? spent;
             const isAlreadyExhausted = reserveMax > 0n && (accepted >= reserveMax || target > reserveMax);
-            const isFullyExhausted = isBlocked || estimatedCostExceedsLockedReserve || isAlreadyExhausted;
+            const isFullyExhausted = restartCatchUp == null && (isBlocked || estimatedCostExceedsLockedReserve || isAlreadyExhausted);
             const requirements = {
               ...baseRequirements,
               requiredCumulativeAmount: target.toString(),
@@ -915,7 +930,7 @@ export class SellerRequestHandler {
               }
             } else {
               const comparator = spent > accepted ? '>' : '==';
-              debugLog(`[SellerHandler] Budget exhausted for ${buyerPeerId.slice(0, 12)}... (spent=${spent} ${comparator} accepted=${accepted}) — returning 402 with requiredCumulativeAmount=${target}, awaiting higher SpendingAuth`);
+              debugLog(`[SellerHandler] Budget exhausted for ${buyerPeerId.slice(0, 12)}... (spent=${spent} ${comparator} accepted=${accepted}) — returning 402 with requiredCumulativeAmount=${target}, ${restartCatchUp == null ? 'awaiting higher SpendingAuth' : 'asking the buyer to send again what a restart lost'}`);
             }
             mux.sendProxyResponse({
               requestId: request.requestId,
