@@ -11,6 +11,8 @@ import styles from './ChatModelDropdown.module.scss';
 /** Width of the detail card beside the menu, and the gap between them. */
 /** The narrowest menu whose rows show their prices on one line; a narrower one gives each row a second line. */
 const ONE_LINE_MIN_MENU_WIDTH = 520;
+const CARD_WIDTH = 280;
+const CARD_GAP = 8;
 
 type ChatModelDropdownProps = {
   models: ChatModel[];
@@ -106,6 +108,12 @@ export function rowPriceChips(model: ChatModel): Array<{ label: string; price: s
   ];
 }
 
+function renderModelPrice(model: ChatModel) {
+  const price = modelPrice(model);
+  if (!price?.tag) return price?.text ?? null;
+  return <span className={`${styles.tag}${price.tag === 'free' ? ` ${styles.tagFree}` : ''}`}>{price.text}</span>;
+}
+
 /** A row's name with its price chips, or, in a narrow menu, with a second line of details. */
 function ModelRowContent({ model, oneLine, tags }: { model: ChatModel; oneLine: boolean; tags?: ReactNode }) {
   if (!oneLine) {
@@ -194,6 +202,11 @@ export function pickerLists(models: ChatModel[], query: string, freeOnly: boolea
   };
 }
 
+/** Whether the detail card fits beside a menu at `menuLeft`..`menuRight` in a window `windowWidth` wide. */
+export function cardFits(menuLeft: number, menuRight: number, windowWidth: number): boolean {
+  return menuRight + CARD_GAP + CARD_WIDTH <= windowWidth - CARD_GAP || menuLeft - CARD_GAP - CARD_WIDTH >= CARD_GAP;
+}
+
 /** Whether a menu `menuWidth` wide shows each row on one line, with its price chips. */
 export function oneLineFits(menuWidth: number): boolean {
   return menuWidth >= ONE_LINE_MIN_MENU_WIDTH;
@@ -280,6 +293,8 @@ function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'te
   ].filter((tag): tag is NonNullable<typeof tag> => tag !== null);
 }
 
+type Hovered = { model: ChatModel; top: number; left: number };
+
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -302,6 +317,7 @@ export function ChatModelDropdown({
   const searchRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
@@ -309,6 +325,7 @@ export function ChatModelDropdown({
   const [tab, setTab] = useState<PickerTab>('text');
   // A narrow menu: each row gets a second line with its details instead of chips.
   const [oneLine, setOneLine] = useState(true);
+  const [hovered, setHovered] = useState<Hovered | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   useEffect(() => {
     if (!copiedId) return undefined;
@@ -331,6 +348,7 @@ export function ChatModelDropdown({
     if (!open) {
       setQuery('');
       setFreeOnly(false);
+      setHovered(null);
       return;
     }
     // Open on the tab of the model in use.
@@ -350,6 +368,7 @@ export function ChatModelDropdown({
       if (!menu) return;
       const rect = menu.getBoundingClientRect();
       setOneLine(oneLineFits(rect.width));
+      setHovered(null);
     };
     measure();
     // A resized window can widen or narrow the menu.
@@ -369,6 +388,28 @@ export function ChatModelDropdown({
     });
     return () => cancelAnimationFrame(frame);
   }, [open, tab]);
+
+  // Keep the detail card on screen once its height is known.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card || !hovered) return;
+    const maxTop = window.innerHeight - card.offsetHeight - CARD_GAP;
+    if (hovered.top > maxTop) card.style.top = `${Math.max(CARD_GAP, maxTop)}px`;
+  }, [hovered]);
+
+  /** Shows the detail card beside the menu, on whichever side has room; none without room. */
+  function showDetails(model: ChatModel, row: HTMLElement) {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const menuRect = menu.getBoundingClientRect();
+    if (!cardFits(menuRect.left, menuRect.right, window.innerWidth)) {
+      setHovered(null);
+      return;
+    }
+    const right = menuRect.right + CARD_GAP;
+    const left = right + CARD_WIDTH <= window.innerWidth - CARD_GAP ? right : menuRect.left - CARD_GAP - CARD_WIDTH;
+    setHovered({ model, top: row.getBoundingClientRect().top, left });
+  }
 
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');
 
@@ -390,8 +431,8 @@ export function ChatModelDropdown({
         role="option"
         aria-selected={active}
         aria-label={`${model.label}. ${modelSummary(model)}`}
-        // The details a card used to show (lab, context, capabilities, sellers), without one.
-        title={modelSummary(model)}
+        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
+        onFocus={(event) => showDetails(model, event.currentTarget)}
         onClick={() => {
           setOpen(false);
           if (!active) onSelect(model.id);
@@ -417,6 +458,7 @@ export function ChatModelDropdown({
       <div
         key={model.id}
         className={`${styles.pickerRow} ${styles.pickerPromptRow}${oneLine ? '' : ` ${styles.pickerRowTall}`}`}
+        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
         <ModelRowContent model={model} oneLine={oneLine} />
@@ -449,6 +491,45 @@ export function ChatModelDropdown({
     );
   }
 
+  function renderDetails({ model, top, left }: Hovered) {
+    const lab = modelLab(model);
+    const byline = model.router
+      ? (model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null)
+      : lab;
+    const price = renderModelPrice(model);
+    const context = contextValue(model);
+    const stats = [
+      context ? { value: context, label: 'context' } : null,
+      model.router?.models ? { value: String(model.router.models), label: `model${model.router.models === 1 ? '' : 's'} it picks from` } : null,
+      !model.router && model.sellers > 0 ? { value: String(model.sellers), label: `seller${model.sellers === 1 ? '' : 's'}` } : null,
+    ].filter((stat): stat is NonNullable<typeof stat> => stat !== null);
+    return (
+      <div ref={cardRef} className={styles.pickerCard} style={{ top, left, width: CARD_WIDTH }} aria-hidden>
+        <div className={styles.pickerCardHead}>
+          <span className={styles.pickerCardMark}><ModelMark model={model} size={24} /></span>
+          <span className={styles.pickerCardTitle}>
+            <span className={styles.pickerCardName}>{model.label}</span>
+            {byline && <span className={styles.pickerCardByline}>{byline}</span>}
+          </span>
+        </div>
+        <div className={styles.itemTags}>
+          {modelTags(model).map((tag) => (
+            <span key={tag.label} title={tag.title} className={`${styles.tag}${tag.tone === 'free' ? ` ${styles.tagFree}` : tag.tone === 'tee' ? ` ${styles.tagTee}` : ''}`}>{tag.label}</span>
+          ))}
+        </div>
+        {model.id !== model.label && <code className={styles.pickerCardId}>{model.id}</code>}
+        {(stats.length > 0 || price) && (
+          <div className={styles.pickerCardStats}>
+            {stats.map((stat) => (
+              <span key={stat.label} className={styles.pickerCardStat}><strong>{stat.value}</strong>{stat.label}</span>
+            ))}
+            {price && <span className={`${styles.pickerCardStat} ${styles.pickerCardPrice}`}><strong>{price}</strong>{model.router ? 'routing fee' : 'price'}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const emptyText = loading ? 'Loading models…'
     : query || freeOnly ? 'No models match.'
       : models.length === 0 ? 'The gateway lists no models yet.' : 'No models here.';
@@ -477,6 +558,8 @@ export function ChatModelDropdown({
           className={`${styles.modelDropdownMenu} ${styles.pickerMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           ref={menuRef}
+          onScroll={() => setHovered(null)}
+          onMouseLeave={() => setHovered(null)}
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
           <div className={styles.pickerHeader} ref={headerRef}>
@@ -513,7 +596,7 @@ export function ChatModelDropdown({
                     aria-selected={tab === key}
                     className={`${styles.pickerTab}${tab === key ? ` ${styles.pickerTabOn}` : ''}`}
                     title={key === 'auto' ? 'Routers pick the model for each message' : undefined}
-                    onClick={() => setTab(key)}
+                    onClick={() => { setTab(key); setHovered(null); }}
                   >
                     {label}
                     {/* While searching, where the matches are. */}
@@ -538,6 +621,7 @@ export function ChatModelDropdown({
           )}
           {!error && shown.length === 0 && <div className={styles.modelDropdownStatus}>{emptyText}</div>}
           {shown.map(PROMPT_TABS.has(tab) ? renderPromptModel : renderModel)}
+          {hovered && renderDetails(hovered)}
         </div>
       )}
     </div>
