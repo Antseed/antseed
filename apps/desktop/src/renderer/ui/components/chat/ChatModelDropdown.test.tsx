@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { ChatModel } from '../../../types/bridge';
-import { centeredScrollTop, holdEnterInSearch, initialPickerTab, skillPrompt, modelInlineDetails, modelLab, modelSummary, pickerLists, pickerTabFor, formatUsdPerUnit, oneLineFits, rowPriceChips } from './ChatModelDropdown';
+import { cardFits, centeredScrollTop, holdEnterInSearch, initialPickerTab, skillPrompt, modelInlineDetails, modelLab, modelSummary, pickerLists, pickerTabFor, formatUsdPerUnit, oneLineFits, rowPriceChips } from './ChatModelDropdown';
 
 test('Enter in the model search does not submit the composer form around it', () => {
   const pressed = (key: string) => {
@@ -69,6 +69,15 @@ test('a row tells screen readers what its detail card shows', () => {
   for (const part of ['Moonshot', 'TEE', 'Vision', 'per M', '256k context', '6 sellers']) assert.ok(summary.includes(part), part);
   const router = model({ id: 'r', label: 'Router', router: { sellerName: 'Example Seller', priceUsdPerRequest: 0, models: 4 } });
   assert.equal(modelSummary(router), 'by Example Seller. Router. Free picks. picks from 4 models');
+});
+
+test('the card shows beside the menu only where it fits, else rows carry the details', () => {
+  // A 400px menu at the left of a wide window: room on its right.
+  assert.equal(cardFits(40, 440, 1280), true);
+  // At the right edge: room on its left.
+  assert.equal(cardFits(840, 1240, 1280), true);
+  // Home's full-width menu in a 920px window: no room either side.
+  assert.equal(cardFits(120, 860, 920), false);
 });
 
 test('rows show their price chips on one line where the menu is wide enough, else a second line of details', () => {
