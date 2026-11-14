@@ -49,11 +49,6 @@ const RESERVE = 10_000_000n;
 /** 1000 input tokens at $1 per million plus 500 output tokens at $3 per million. */
 const COST = 2_500n;
 
-/** How long a close waits for running answers, and how long a new request waits for that close. */
-const CLOSE_WAIT_MS = 15 * 60_000;
-const REQUEST_WAIT_FOR_CLOSE_MS = 15_000;
-const CLOCK: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ['setTimeout', 'clearTimeout', 'Date'] };
-
 const USAGE = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 };
 const encoder = new TextEncoder();
 
@@ -126,7 +121,6 @@ function makeUpstream(kind: AnswerKind) {
 const cleanups: Array<() => void> = [];
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
   while (cleanups.length > 0) cleanups.pop()!();
 });
@@ -728,186 +722,6 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     await h.manager.checkTimeouts();
     expect(h.close()).toHaveBeenCalledOnce();
     expect(h.close().mock.calls[0]![2]).toBe(COST);
-  });
-
-  it('starts no new paid request on a channel that is about to close', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    h.ignoreCatchUps();
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    const late = h.send('late');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    h.upstream.release();
-    await running;
-    await closing;
-    await late;
-
-    expect(h.upstream.calls, 'upstream calls for a request made after the close was scheduled').toBe(2);
-    expect(h.responseTo('late').statusCode).toBe(402);
-    expect(h.close()).toHaveBeenCalledOnce();
-    expect(h.close().mock.calls[0]![2]).toBe(COST);
-  });
-
-  it('holds a waiting close while an answer outlasts its wait and closes once that answer is recorded', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    const signed = h.signCatchUps();
-    vi.useFakeTimers(CLOCK);
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    await vi.advanceTimersByTimeAsync(CLOSE_WAIT_MS + 1_000);
-    await closing;
-    vi.useRealTimers();
-
-    expect(h.close(), 'no close under a running answer').not.toHaveBeenCalled();
-    expect(h.manager.hasClosingChannel(h.buyerPeerId), 'the channel still starts no new paid request').toBe(true);
-    expect(h.manager.getChannelByPeer(h.buyerPeerId)?.sessionId).toBe(CHANNEL_A);
-
-    h.upstream.release();
-    await running;
-    await signed();
-    expect(h.manager.getCumulativeSpend(CHANNEL_A), 'the answer is recorded on its channel').toBe(2n * COST);
-    expect(h.store.getChannel(CHANNEL_A)?.tokensDelivered).toBe((2n * COST).toString());
-
-    await vi.waitFor(() => expect(h.close(), 'the held close goes ahead once the answer is recorded').toHaveBeenCalledOnce());
-    expect(h.close().mock.calls[0]![2]).toBe(2n * COST);
-    await vi.waitFor(() => expect(h.store.getChannel(CHANNEL_A)?.status).toBe(CHANNEL_STATUS.SETTLED));
-    expect(h.manager.getChannelByPeer(h.buyerPeerId)).toBeNull();
-    expect(h.manager.hasClosingChannel(h.buyerPeerId), 'nothing left closing once the close went ahead').toBe(false);
-  });
-
-  it('answers channel_closing to a new paid request while a close is held for a running answer', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    const signed = h.signCatchUps();
-    vi.useFakeTimers(CLOCK);
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    await vi.advanceTimersByTimeAsync(CLOSE_WAIT_MS + 1_000);
-    await closing;
-    vi.useRealTimers();
-
-    const late = h.send('late');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(h.upstream.calls, 'upstream calls for a request made while the close is held').toBe(2);
-    const refused = h.responseTo('late');
-    expect(refused.statusCode).toBe(503);
-    expect(refused.headers['retry-after']).toBe('2');
-    expect(paymentBody(refused).error).toBe('channel_closing');
-
-    h.upstream.release();
-    await running;
-    await late;
-    await signed();
-    await vi.waitFor(() => expect(h.close(), 'the held close goes ahead once the answer is recorded').toHaveBeenCalledOnce());
-    expect(h.close().mock.calls[0]![2]).toBe(2n * COST);
-    expect(h.upstream.calls).toBe(2);
-  });
-
-  it('holds no close for a channel that ended while the close waited', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    vi.useFakeTimers(CLOCK);
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    await h.manager.handleCloseRequested(CHANNEL_A);
-    await vi.advanceTimersByTimeAsync(CLOSE_WAIT_MS + 1_000);
-    await closing;
-    vi.useRealTimers();
-
-    h.upstream.release();
-    await running;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(h.manager['_deferredIdleCloses'].size, 'no close held for a channel that ended').toBe(0);
-    expect(h.close()).toHaveBeenCalledOnce();
-  });
-
-  it('drops a held close when its channel ends another way before the answer is recorded', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    vi.useFakeTimers(CLOCK);
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    await vi.advanceTimersByTimeAsync(CLOSE_WAIT_MS + 1_000);
-    await closing;
-    vi.useRealTimers();
-    await h.manager.handleCloseRequested(CHANNEL_A);
-    expect(h.close()).toHaveBeenCalledOnce();
-    expect(await h.openChannel(CHANNEL_B)).toBe('reserved');
-
-    h.upstream.release();
-    await running;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(h.close(), 'no second close once the channel ended').toHaveBeenCalledOnce();
-    expect(h.manager['_deferredIdleCloses'].size, 'no close left held').toBe(0);
-    expect(h.manager.getChannelByPeer(h.buyerPeerId)?.sessionId, 'the replacement stays open').toBe(CHANNEL_B);
-    expect(h.manager.hasSession(h.buyerPeerId)).toBe(true);
-  });
-
-  it('answers channel_closing to a request that waited for a close which is still waiting for an answer', async () => {
-    const h = await setup(kind);
-    await h.openChannel(CHANNEL_A);
-    await h.serve('paid');
-    await h.sign(CHANNEL_A, COST);
-
-    h.upstream.hold();
-    const running = h.send('running');
-    await h.upstream.started(2);
-    const signed = h.signCatchUps();
-    vi.useFakeTimers(CLOCK);
-    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
-    const late = h.send('late');
-    await vi.advanceTimersByTimeAsync(REQUEST_WAIT_FOR_CLOSE_MS + 1_000);
-    await late;
-
-    const refused = h.responseTo('late');
-    expect(refused.statusCode).toBe(503);
-    expect(refused.headers['retry-after']).toBe('2');
-    expect(paymentBody(refused).error).toBe('channel_closing');
-    expect(h.upstream.calls, 'upstream calls for the request that was refused').toBe(2);
-    expect(h.close(), 'no close under the running answer').not.toHaveBeenCalled();
-
-    h.upstream.release();
-    await running;
-    await signed();
-    await vi.advanceTimersByTimeAsync(1_000);
-    await closing;
-    vi.useRealTimers();
-
-    expect(h.store.getChannel(CHANNEL_A)?.tokensDelivered, 'the running answer is recorded on its channel').toBe((2n * COST).toString());
-    expect(h.close()).toHaveBeenCalledOnce();
-    expect(h.close().mock.calls[0]![2], 'closed at what the buyer signed for both answers').toBe(2n * COST);
-    const retry = await h.serve('retry');
-    expect(retry.statusCode, 'the retry is asked for a new channel').toBe(402);
-    expect(h.upstream.calls).toBe(2);
   });
 
   it('holds a close request that names the channel in another hex case until the running answer is recorded', async () => {

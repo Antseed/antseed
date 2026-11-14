@@ -48,10 +48,7 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
-/**
- * How long a channel close waits for requests already being served. Past it,
- * the close goes ahead once the request still running is recorded.
- */
+/** How long a channel close waits for requests already being served before it goes ahead. */
 const IDLE_CLOSE_DRAIN_MS = 15 * 60_000;
 const IDLE_CLOSE_POLL_MS = 250;
 
@@ -254,11 +251,6 @@ export class SellerPaymentManager {
   private readonly _blockedChannels = new Set<string>();
   /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
   private readonly _idleCloses = new Map<string, Promise<void>>();
-  /**
-   * Channels whose waiting close outlasted its wait; closed once the request
-   * still running is recorded. They start no new paid request meanwhile.
-   */
-  private readonly _deferredIdleCloses = new Set<string>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -476,7 +468,6 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
-    this._deferredIdleCloses.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
@@ -2249,7 +2240,6 @@ export class SellerPaymentManager {
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
-    this._deferredIdleCloses.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
   }
 
@@ -2263,20 +2253,8 @@ export class SellerPaymentManager {
   /** Mark a billable request as fully accounted for (spend recorded, NeedAuth sent). */
   endBillableRequest(buyerPeerId: string): void {
     const next = (this._inFlightRequests.get(buyerPeerId) ?? 0) - 1;
-    if (next > 0) {
-      this._inFlightRequests.set(buyerPeerId, next);
-      return;
-    }
-    this._inFlightRequests.delete(buyerPeerId);
-    if (this._deferredIdleCloses.size === 0) return;
-    // A close that outlasted its wait for this request goes ahead now.
-    void Promise.resolve().then(() => {
-      const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-      if (!session || !this._deferredIdleCloses.delete(session.sessionId)) return;
-      return this.closeSessionWhenIdle(buyerPeerId);
-    }).catch((err) => {
-      debugWarn(`[SellerPayment] Failed to close channel for buyer ${buyerPeerId.slice(0, 12)}...: ${this._formatError(err)}`);
-    });
+    if (next > 0) this._inFlightRequests.set(buyerPeerId, next);
+    else this._inFlightRequests.delete(buyerPeerId);
   }
 
   /** Whether this buyer has requests still being served and billed. */
@@ -2285,30 +2263,23 @@ export class SellerPaymentManager {
   }
 
   /**
-   * Whether a close is in flight, waiting to go ahead, or held until a running
-   * request is recorded on this buyer's active channel. Request admission
-   * refuses new billable work while this is true: the close would remove the
-   * session mid-request and its spend would never be recorded.
+   * Whether a close transaction is in flight for this buyer's active channel.
+   * Request admission refuses new billable work while this is true: the close
+   * would remove the session mid-request and its spend would never be recorded.
    */
   hasClosingChannel(buyerPeerId: string): boolean {
-    if (this._closingChannels.size === 0 && this._idleCloses.size === 0 && this._deferredIdleCloses.size === 0) return false;
+    if (this._closingChannels.size === 0) return false;
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-    if (!session) return false;
-    const channelId = session.sessionId;
-    return this._closingChannels.has(channelId) || this._idleCloses.has(channelId) || this._deferredIdleCloses.has(channelId);
+    return session != null && this._closingChannels.has(session.sessionId);
   }
 
   /**
    * Wait (up to `timeoutMs`) for the close in flight on the buyer's active
-   * channel. Returns whether it finished in time. A close held until a running
-   * request is recorded has nothing to wait for: it returns at once, with the
-   * channel still open.
+   * channel. Returns whether it finished in time.
    */
   async waitForClosingChannel(buyerPeerId: string, timeoutMs: number): Promise<boolean> {
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-    const closing: Promise<unknown> | undefined = session
-      ? this._idleCloses.get(session.sessionId) ?? this._closingChannels.get(session.sessionId)
-      : undefined;
+    const closing = session ? this._closingChannels.get(session.sessionId) : undefined;
     if (!closing) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
@@ -2648,23 +2619,10 @@ export class SellerPaymentManager {
     const channelId = session.sessionId;
     const pending = this._idleCloses.get(channelId);
     if (pending) return pending;
-    this._deferredIdleCloses.delete(channelId);
     const close = (async () => {
       const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
       while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
         await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
-      }
-      if (this.hasInFlightRequests(buyerPeerId)) {
-        // The channel ended another way while the close waited.
-        if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
-        // Still serving after the whole wait: do not close under the answer.
-        // The close goes ahead once the request still running is recorded.
-        this._deferredIdleCloses.add(channelId);
-        debugWarn(
-          `[SellerPayment] Channel ${channelId.slice(0, 18)}... is still serving a request after ` +
-          `${IDLE_CLOSE_DRAIN_MS / 60_000} minutes — closing it once that request is recorded`,
-        );
-        return;
       }
       // The buyer's auths for the work just finished are still on the wire or
       // queued behind the lock: close at them, not at what was accepted before.
