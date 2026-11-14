@@ -23,6 +23,7 @@ import {
   openPaymentsPopup,
   payPageProvider,
   readCardProviders,
+  readGoodDollarConfig,
   startPaymentsPortal,
 } from '../payments/portal.js';
 import { openCheckoutPopup } from '../payments/checkout-window.js';
@@ -31,6 +32,7 @@ import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import { getTelemetryService } from '../telemetry/runtime.js';
 import { currentBalanceScope, localFundingBlock } from '../gateway/service.js';
+import { makeDepositsDomain, signSetOperator } from '@antseed/node';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
@@ -156,6 +158,52 @@ export function registerPaymentsIpc(): void {
       console.log('[payments] no system browser available — using Electron popup');
       openPaymentsPopup(url);
       return { ok: true, url };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // GoodDollar checkout: signs SetOperator for GoodDollar's operator wallet
+  // with the buyer's current on-chain nonce and hands both to their hosted
+  // page, which submits setOperator() and runs the G$ deposit from there.
+  ipcMain.handle('payments:open-gooddollar', async () => {
+    try {
+      const blocked = await localFundingBlock();
+      if (blocked) return { ok: false, error: blocked };
+      await ensureSecureIdentity();
+      const identity = getSecureIdentity();
+      if (!identity) return { ok: false, error: 'Identity not available' };
+      const { url, operator } = await readGoodDollarConfig();
+      const cc = await loadCachedCryptoConfig();
+      if (!cc) return { ok: false, error: 'Chain configuration unavailable' };
+      const client = await getDepositsClient(cc);
+      const nonce = await client.getOperatorNonce(identity.wallet.address);
+      const domain = makeDepositsDomain(cc.chainId, cc.depositsAddress);
+      const signature = await signSetOperator(identity.wallet, domain, { operator, nonce });
+
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return { ok: false, error: 'GoodDollar URL is invalid' };
+      }
+      const isLoopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback)) {
+        return { ok: false, error: 'GoodDollar URL must be https' };
+      }
+      parsed.searchParams.set('buyerAddress', identity.wallet.address);
+      parsed.searchParams.set('operatorSignature', signature);
+      const target = parsed.toString();
+
+      try {
+        await shell.openExternal(target);
+        return { ok: true, url: target };
+      } catch (err) {
+        console.warn('[payments] system browser launch failed:', err instanceof Error ? err.message : String(err));
+      }
+      console.log('[payments] no system browser available — using Electron popup');
+      openPaymentsPopup(target);
+      return { ok: true, url: target };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

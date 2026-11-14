@@ -333,6 +333,7 @@ export type DesktopBridge = {
   freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize'; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
+  paymentsOpenGoodDollar?: () => Promise<{ ok: boolean; url?: string; error?: string }>;
   /** Fired when a browser pay page reports a completed payment action. */
   onPaymentsCompleted?: (handler: () => void) => () => void;
   depositsWatchStart?: () => Promise<{ ok: boolean; data?: { address: string; walletUsdcBaseUnits: string; usdcAddress: string; chainId: number }; error?: string }>;
