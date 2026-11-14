@@ -39,6 +39,12 @@ const MAX_RECENT_TIP_WEI = 100_000_000n;
  * txs it counted were dropped (or never left one RPC backend), and the pending count is right.
  */
 const NONCE_CURSOR_TRUST_MS = 60_000;
+/**
+ * Overall deadline for one on-chain write inside the nonce lock (nonce read, estimate, fees,
+ * broadcast). Past it the write fails and the lock is released, so a hung RPC call cannot
+ * block every later write of the signer (issue #1681).
+ */
+const ONCHAIN_WRITE_DEADLINE_MS = 120_000;
 
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
@@ -106,6 +112,8 @@ export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
   private readonly _nonceScope: string;
+  /** Overall deadline for a write inside the nonce lock; shortened only in tests. */
+  protected _writeDeadlineMs = ONCHAIN_WRITE_DEADLINE_MS;
 
   constructor(rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number) {
     this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId);
@@ -396,16 +404,36 @@ export abstract class BaseEvmClient {
     });
   }
 
-  /** Run `fn` holding the signer's nonce lock, shared by every client in the process. */
+  /**
+   * Run `fn` holding the signer's nonce lock, shared by every client in the process. `fn` runs
+   * under an overall deadline: a write that stalls past it fails, the lock is released so later
+   * writes are not blocked until restart, and the stall is logged at warn level (a stalled write
+   * lane is an operator-visible fault, not a debug detail).
+   */
   private async _withNonceLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = nonceLocks.get(key) ?? Promise.resolve();
     let release: () => void;
     const lock = new Promise<void>(r => { release = r; });
     nonceLocks.set(key, lock);
     await prev;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await fn();
+      const body = fn();
+      // A late rejection of the losing side of the race must not surface as unhandled.
+      body.catch(() => {});
+      return await Promise.race([
+        body,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            console.warn(
+              `[base-evm-client] On-chain write stalled past the ${this._writeDeadlineMs} ms deadline; failing it and releasing the nonce lock`,
+            );
+            reject(new Error(`On-chain write exceeded the ${this._writeDeadlineMs} ms deadline`));
+          }, this._writeDeadlineMs);
+        }),
+      ]);
     } finally {
+      clearTimeout(timer);
       release!();
     }
   }

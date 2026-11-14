@@ -105,3 +105,33 @@ describe('BaseEvmClient fee fields', () => {
     expect(await client.feeFields()).toEqual({});
   });
 });
+
+
+describe('BaseEvmClient write deadline', () => {
+  const address = '0x0000000000000000000000000000000000000001';
+
+  class DeadlineClient extends BaseEvmClient {
+    constructor(deadlineMs: number) {
+      super('http://127.0.0.1:1', address, undefined, 8453);
+      this._writeDeadlineMs = deadlineMs;
+      // The nonce read answers; the send callback is what hangs.
+      this.withProvider({ getTransactionCount: async () => 0 } as unknown as AbstractProvider);
+    }
+    sendWithNonce(send: (nonce: number) => Promise<unknown>) {
+      return this._sendWithNonce(address, send);
+    }
+  }
+
+  it('times out a write that hangs inside the lock, so later writes are not blocked forever', async () => {
+    const client = new DeadlineClient(25);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(client.sendWithNonce(() => new Promise(() => {}))).rejects.toThrow(/deadline/i);
+      // The timeout released the lock: the next write runs instead of waiting forever.
+      await expect(client.sendWithNonce(async () => 'sent')).resolves.toBe('sent');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
