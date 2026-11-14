@@ -15,6 +15,12 @@ antseed config seller add-provider openai-responses --plugin openai-responses
 antseed config seller add-service openai-responses gpt-5 \
   --input 10 --output 10 \
   --categories chat,coding
+
+# Fast is an ordinary service alias whose id ends in -fast.
+antseed config seller add-service openai-responses gpt-5.6-sol-fast \
+  --upstream gpt-5.6-sol \
+  --input 10 --output 40 \
+  --categories chat,coding,fast
 antseed seller start
 ```
 
@@ -38,3 +44,7 @@ The provider reads Codex credentials from the auth file, derives `chatgpt-accoun
 If the access token is expired or close to expiry, the provider refreshes it automatically against `https://auth.openai.com/oauth/token` using the stored refresh token, then writes the updated credentials back to the auth file. It also forces a refresh and retries once if the upstream returns `401`.
 
 Transient upstream failures (`429`, `500`, `502`, `503`, `504`) are retried with exponential backoff.
+
+When an announced service id ends in `-fast` and maps to an upstream model via
+`--upstream`, the provider forces `service_tier: "priority"` after applying the
+existing alias rewrite.

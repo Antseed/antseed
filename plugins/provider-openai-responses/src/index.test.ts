@@ -237,7 +237,7 @@ describe('provider-openai-responses plugin', () => {
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
-  it('rewrites announced service names via alias map', async () => {
+  it('rewrites -fast service aliases and forces priority tier', async () => {
     const authFile = writeAuthFile({
       tokens: {
         access_token: makeJwt({}),
@@ -254,8 +254,8 @@ describe('provider-openai-responses plugin', () => {
 
     const provider = plugin.createProvider({
       OPENAI_RESPONSES_AUTH_FILE: authFile,
-      ANTSEED_ALLOWED_SERVICES: 'codex',
-      ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"codex":"gpt-5-codex"}',
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.6-sol-fast',
+      ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"gpt-5.6-sol-fast":"gpt-5.6-sol"}',
     });
 
     await provider.handleRequest({
@@ -266,15 +266,17 @@ describe('provider-openai-responses plugin', () => {
         'content-type': 'application/json',
       },
       body: new TextEncoder().encode(JSON.stringify({
-        model: 'codex',
+        model: 'gpt-5.6-sol-fast',
         input: 'hello',
+        service_tier: 'default',
         stream: false,
       })),
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(new TextDecoder().decode((init.body as Uint8Array) ?? new Uint8Array(0))) as { model: string };
-    expect(body.model).toBe('gpt-5-codex');
+    const body = JSON.parse(new TextDecoder().decode((init.body as Uint8Array) ?? new Uint8Array(0))) as Record<string, unknown>;
+    expect(body.model).toBe('gpt-5.6-sol');
+    expect(body.service_tier).toBe('priority');
     expect(body.store).toBe(false);
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
