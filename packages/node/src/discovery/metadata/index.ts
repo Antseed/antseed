@@ -10,6 +10,7 @@
  */
 import type { PeerMetadata } from "../peer-metadata.js";
 import { LEGACY_METADATA_VERSION, METADATA_VERSION } from "../peer-metadata.js";
+import type { MetadataEncodeOptions } from "./define-version.js";
 import { hexToBytes } from "../../utils/hex.js";
 import type { MetadataVersionCodec } from "./define-version.js";
 import type { MetadataVocabularyNameKind } from "./vocabulary.js";
@@ -22,7 +23,7 @@ import { metadataV15 } from "./versions/v15.js";
 import { metadataV16 } from "./versions/v16.js";
 import { metadataV17 } from "./versions/v17.js";
 
-export type { MetadataVersionCodec } from "./define-version.js";
+export type { MetadataEncodeOptions, MetadataVersionCodec } from "./define-version.js";
 export type { MetadataVocabulary, MetadataVocabularyNameKind } from "./vocabulary.js";
 
 const CODECS = new Map<number, MetadataVersionCodec>(
@@ -71,8 +72,8 @@ export function negotiateMetadataVersion(requested: number | undefined): number 
 }
 
 /** Signed bytes for `metadata`, laid out by its own `version`. */
-export function encodeMetadataForSigning(metadata: PeerMetadata): Uint8Array {
-  return getMetadataCodec(metadata.version).encodeBody(metadata);
+export function encodeMetadataForSigning(metadata: PeerMetadata, options?: MetadataEncodeOptions): Uint8Array {
+  return getMetadataCodec(metadata.version).encodeBody(metadata, options);
 }
 
 export function encodeMetadata(metadata: PeerMetadata): Uint8Array {

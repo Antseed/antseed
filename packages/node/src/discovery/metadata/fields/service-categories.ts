@@ -1,5 +1,5 @@
 import type { ProviderField } from "../field.js";
-import { serviceMap } from "../wire.js";
+import { compareCodeUnits, serviceMap } from "../wire.js";
 
 /** [count:1|2] then [serviceLen:1][service:N][categoryCount:1][categoryLen:1][category:N]... */
 export const serviceCategoriesField: ProviderField = {
@@ -13,7 +13,7 @@ export const serviceCategoriesField: ProviderField = {
         )).sort(),
       ] as const)
       .filter(([, categories]) => categories.length > 0)
-      .sort(([a], [b]) => a.localeCompare(b));
+      .sort(([a], [b]) => (ctx.serviceOrder === "code-unit" ? compareCodeUnits(a, b) : a.localeCompare(b)));
     writer.serviceEntryCount(entries.length, ctx.wideServiceCounts);
     for (const [service, categories] of entries) {
       writer.utf8Wrapping(service);

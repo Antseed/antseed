@@ -1,0 +1,137 @@
+{
+  "peerId": "0bac2854add2fd12f9a9adccaff5499757cd8259",
+  "version": 12,
+  "region": "test-region-1",
+  "timestamp": 1700000000000,
+  "displayName": "synthetic-test-seller",
+  "publicAddress": "203.0.113.10:16882",
+  "verifications": {
+    "domains": [
+      {
+        "domain": "example.com",
+        "methods": [
+          "dns-txt"
+        ]
+      }
+    ]
+  },
+  "capabilities": [
+    "tcp-enc.v1",
+    "signed-sdp.v1"
+  ],
+  "onChainChannelCount": 12,
+  "onChainGhostCount": 3,
+  "providers": [
+    {
+      "provider": "example-provider",
+      "services": [
+        "test-1.1-alpha",
+        "test-1-beta",
+        "test-2.5-gamma",
+        "test-2-6-delta",
+        "T1",
+        "t1"
+      ],
+      "maxConcurrency": 8,
+      "currentLoad": 2,
+      "defaultPricing": {
+        "inputUsdPerMillion": 1,
+        "outputUsdPerMillion": 2,
+        "cachedInputUsdPerMillion": 0.5
+      },
+      "servicePricing": {
+        "test-1.1-alpha": {
+          "inputUsdPerMillion": 1.1,
+          "outputUsdPerMillion": 2.2,
+          "cachedInputUsdPerMillion": 0.1
+        },
+        "test-1-beta": {
+          "inputUsdPerMillion": 1.2,
+          "outputUsdPerMillion": 2.4,
+          "cachedInputUsdPerMillion": 0.2
+        },
+        "test-2.5-gamma": {
+          "inputUsdPerMillion": 2.5,
+          "outputUsdPerMillion": 5,
+          "cachedInputUsdPerMillion": 0.25
+        },
+        "test-2-6-delta": {
+          "inputUsdPerMillion": 2.6,
+          "outputUsdPerMillion": 5.2,
+          "cachedInputUsdPerMillion": 0.26
+        },
+        "T1": {
+          "inputUsdPerMillion": 3,
+          "outputUsdPerMillion": 6,
+          "cachedInputUsdPerMillion": 0.3
+        },
+        "t1": {
+          "inputUsdPerMillion": 3.1,
+          "outputUsdPerMillion": 6.2,
+          "cachedInputUsdPerMillion": 0.31
+        }
+      },
+      "serviceCategories": {
+        "test-1.1-alpha": [
+          "chat"
+        ],
+        "test-1-beta": [
+          "chat"
+        ],
+        "test-2.5-gamma": [
+          "coding"
+        ],
+        "test-2-6-delta": [
+          "coding"
+        ]
+      },
+      "serviceApiProtocols": {
+        "test-1.1-alpha": [
+          "openai-chat-completions",
+          "openai-images"
+        ],
+        "test-1-beta": [
+          "openai-chat-completions"
+        ],
+        "test-2.5-gamma": [
+          "openai-chat-completions",
+          "openai-images"
+        ],
+        "test-2-6-delta": [
+          "openai-chat-completions"
+        ],
+        "T1": [
+          "openai-chat-completions"
+        ],
+        "t1": [
+          "openai-chat-completions"
+        ]
+      },
+      "serviceUnitBillingModels": {
+        "test-1.1-alpha": {
+          "openai-images": {
+            "version": 1,
+            "components": [
+              {
+                "unit": "output_images",
+                "priceUsd": 0.04
+              }
+            ]
+          }
+        },
+        "test-2.5-gamma": {
+          "openai-images": {
+            "version": 1,
+            "components": [
+              {
+                "unit": "output_images",
+                "priceUsd": 0.02
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "signature": "85a8edb4d0537320f0c5778130d584711e41750a2d51619a661e48bc7fdc1b1d4bd48c6b1fd3d93eff1d6b2dc7d76e1c5f7ca13232ce2d3bd0874c035f791a7f1c"
+}

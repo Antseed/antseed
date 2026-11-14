@@ -5,6 +5,15 @@ export interface MetadataFieldContext {
   version: number;
   /** v12+ writes per-service entry counts as u16 instead of u8. */
   wideServiceCounts: boolean;
+  /**
+   * Ordering for signed service maps. Signing and verification default to
+   * "legacy-locale" — the historical host-locale `localeCompare` order — so
+   * existing signed bytes are unchanged. The compatibility-aware verifier
+   * additionally reconstructs with "code-unit" order to accept documents
+   * whose signature was produced on a host whose collation differs
+   * (issue #1678).
+   */
+  serviceOrder?: "legacy-locale" | "code-unit";
 }
 
 /**
