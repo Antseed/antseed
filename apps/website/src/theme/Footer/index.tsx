@@ -28,6 +28,7 @@ const COLUMNS: {title: string; links: {label: string; to?: string; href?: string
       {label: 'Blog', to: '/blog'},
       {label: 'Brand', to: '/brand'},
       {label: 'Terms of Service', to: '/terms-of-service'},
+      {label: 'Privacy Policy', to: '/privacy-policy'},
     ],
   },
 ];
