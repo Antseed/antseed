@@ -72,9 +72,10 @@ export function formatPriceRange(range: { min: number; max: number } | null): st
   return `${low}–${formatPricePerMillion(range.max)}`
 }
 
-export function formatLatency(ms: number | null | undefined): string {
+/** A latency in ms or s; `secondsDigits` fixes the decimals shown in seconds (default: 1 below 10 s, else 0). */
+export function formatLatency(ms: number | null | undefined, secondsDigits?: number): string {
   if (ms === null || ms === undefined) return '—'
-  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} s` : `${Math.round(ms)} ms`
+  return ms >= 1000 ? `${(ms / 1000).toFixed(secondsDigits ?? (ms >= 10_000 ? 0 : 1))} s` : `${Math.round(ms)} ms`
 }
 
 /** Output speed, e.g. "55 tok/s". */

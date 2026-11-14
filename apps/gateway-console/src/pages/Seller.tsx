@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { BarChart, DataTable, type DataTableColumn } from '@antseed/ui'
 import type { SellerUsage, SellerWorker } from '../api/types'
 import { Badge, EmptyState, ErrorAlert, Figure, LoadingRows, PageLink, Panel, Segmented, StatTile } from '../components/ui'
-import { formatDuration, formatNumber, formatRelative, formatUsd, shortId } from '../lib/format'
+import { formatDuration, formatLatency, formatNumber, formatRelative, formatUsd, shortId } from '../lib/format'
 import { useSellerEvents, useSellerUsage, useSellerWorkers } from '../lib/queries'
 import { formatEth, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from '../lib/seller'
 import { SellerPage } from '../components/SellerPage'
@@ -158,7 +158,7 @@ const WORKER_COLUMNS: DataTableColumn<SellerWorker>[] = [
   },
   {
     key: 'firstByte', header: 'First byte', align: 'right', optional: true,
-    render: (row) => (row.firstByteMsMedian === null ? '—' : row.firstByteMsMedian < 1000 ? `${Math.round(row.firstByteMsMedian)} ms` : `${(row.firstByteMsMedian / 1000).toFixed(1)} s`),
+    render: (row) => formatLatency(row.firstByteMsMedian, 1),
     sortValue: (row) => row.firstByteMsMedian ?? Infinity,
   },
   { key: 'speed', header: 'Speed', align: 'right', render: (row) => (row.tokensPerSecond === null ? '—' : `${formatNumber(Math.round(row.tokensPerSecond))} tok/s`), sortValue: (row) => row.tokensPerSecond ?? 0 },

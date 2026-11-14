@@ -363,7 +363,8 @@ export class BuyerRequestHandler {
       const session = sealed;
       const rawChunks: Uint8Array[] = [];
       let rawBytes = 0;
-      let decryptStream = false;
+      // The worker session a sealed SSE stream is opened with; null for any other stream.
+      let streamSession: SealedWorkerRequest | null = null;
       const timeoutMs = this._config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
       const maxStreamBufferBytes = Math.max(1, this._config.maxStreamBufferBytes ?? 16 * 1024 * 1024);
       const maxStreamDurationMs = Math.max(1, this._config.maxStreamDurationMs ?? DEFAULT_MAX_STREAM_DURATION_MS);
@@ -512,9 +513,9 @@ export class BuyerRequestHandler {
             streamBufferedBytes = 0;
             streamStartResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
             forwardStreamToCallbacks = response.statusCode < 400;
-            decryptStream = session !== null && (response.headers['content-type'] ?? '').includes('text/event-stream');
+            streamSession = (response.headers['content-type'] ?? '').includes('text/event-stream') ? session : null;
             // A worker's successful answer streams only as sealed SSE; anything else would skip decryption and verification.
-            if (session && response.statusCode < 400 && !decryptStream) {
+            if (session && response.statusCode < 400 && !streamSession) {
               mux.cancelProxyRequest(req.requestId);
               fail(peerFault(`Worker stream for ${req.requestId} is not sealed SSE`, 'peer-protocol-violation'));
               return;
@@ -573,7 +574,7 @@ export class BuyerRequestHandler {
             return;
           }
 
-          if (decryptStream) {
+          if (streamSession) {
             // The wire bytes are kept for the response receipt: bound them too, since events
             // the opener ignores add wire bytes without any plaintext.
             rawBytes += chunk.data.length;
@@ -584,7 +585,7 @@ export class BuyerRequestHandler {
             }
             rawChunks.push(chunk.data);
             try {
-              chunk = { ...chunk, data: session!.pushStream(chunk.data) };
+              chunk = { ...chunk, data: streamSession.pushStream(chunk.data) };
             } catch {
               mux.cancelProxyRequest(req.requestId);
               fail(peerFault(`Worker stream for ${req.requestId} failed verification`, 'peer-protocol-violation'));
@@ -622,9 +623,9 @@ export class BuyerRequestHandler {
           }
 
           // A sealed stream counts only if the worker's end marker verified and the billed usage is the worker's.
-          if (decryptStream && streamStartResponse.statusCode < 400 && (!session!.verified || !session!.usageConsistent)) {
+          if (streamSession && streamStartResponse.statusCode < 400 && (!streamSession.verified || !streamSession.usageConsistent)) {
             fail(peerFault(
-              `Worker stream for ${req.requestId} ${session!.verified ? 'billed usage that differs from its worker\'s' : 'ended without its end marker'}`,
+              `Worker stream for ${req.requestId} ${streamSession.verified ? 'billed usage that differs from its worker\'s' : 'ended without its end marker'}`,
               'peer-protocol-violation',
             ));
             return;
@@ -633,7 +634,7 @@ export class BuyerRequestHandler {
           finish({
             ...streamStartResponse,
             body: concatChunks(streamChunks),
-          }, decryptStream ? { ...streamStartResponse, body: concatChunks(rawChunks) } : undefined);
+          }, streamSession ? { ...streamStartResponse, body: concatChunks(rawChunks) } : undefined);
         },
       );
     });
