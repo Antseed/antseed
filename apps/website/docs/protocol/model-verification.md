@@ -191,8 +191,7 @@ seller):
 
 Buyers read each seller service's recorded result from `AntseedVerificationResults`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
-skips it under the default minimum trust score, and the desktop app explains the cut
-in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
+skips it under the default minimum trust score. Only a recorded DIFF counts: a DIFF from one auditor
 that is still waiting for the second changes nothing, and the service keeps its earlier
 result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
 penalty lifts on its own when the DIFF expires or a later result replaces it (one auditor's

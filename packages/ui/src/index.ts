@@ -5,7 +5,7 @@ export { Alert } from './primitives/Alert';
 export type { AlertProps } from './primitives/Alert';
 
 export { Badge } from './primitives/Badge';
-export type { BadgeProps, BadgeTone } from './primitives/Badge';
+export type { BadgeProps, BadgeTone, BadgeVariant } from './primitives/Badge';
 
 export { Button } from './primitives/Button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './primitives/Button';
@@ -25,7 +25,7 @@ export type { ChartPoint, StackSeries } from './primitives/Charts';
 export { ConfirmDialog } from './primitives/ConfirmDialog';
 export type { ConfirmDialogProps } from './primitives/ConfirmDialog';
 
-export { CopyButton, copyText } from './primitives/CopyButton';
+export { CopyButton, copyText, useCopyFeedback } from './primitives/CopyButton';
 export type { CopyButtonProps } from './primitives/CopyButton';
 
 export { DataTable, Pager, usePager } from './primitives/DataTable';

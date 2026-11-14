@@ -238,6 +238,53 @@ describe('ChannelStore', () => {
     ]);
   });
 
+  it('counts a peer\'s one-off channels that ended unpaid after its last fully paid video', () => {
+    const FLOOR = 10_000;
+    const id = (n: number) => '0x' + n.toString(16).padStart(64, '0');
+    const video = (n: number, endedAt: number, settledAmount: string | null, extra: Partial<StoredChannel> = {}) => makeChannel({
+      sessionId: id(n), role: CHANNEL_ROLE.SELLER, channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: `video-${n}`,
+      status: CHANNEL_STATUS.SETTLED, reservedAt: endedAt, settledAt: endedAt, settledAmount, ...extra,
+    });
+    const unpaid = (since = 0) => store.getUnpaidOneOffChannels('peer-abc123', CHANNEL_ROLE.SELLER, since, FLOOR);
+
+    store.upsertChannel(video(1, 100, '0'));
+    store.upsertChannel(video(2, 200, '800000', { tokensDelivered: '800000' }));
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+
+    store.upsertChannel(video(3, 300, '0'));
+    store.upsertChannel(video(4, 400, '9999'));
+    store.upsertChannel(video(5, 500, null, { status: CHANNEL_STATUS.TIMEOUT, settledAt: null }));
+    // Delivered but not paid for: it counts, and proves nothing about the buyer.
+    store.upsertChannel(video(6, 600, '0', { tokensDelivered: '800000' }));
+    // None of these counts: a channel that paid for itself, one still open, and other parties' or kinds'.
+    store.upsertChannel(video(7, 700, '650000'));
+    store.upsertChannel(video(8, 700, null, { status: CHANNEL_STATUS.ACTIVE, settledAt: null }));
+    store.upsertChannel(video(9, 700, '0', { peerId: 'other-peer' }));
+    store.upsertChannel(video(10, 700, '0', { role: CHANNEL_ROLE.BUYER }));
+    store.upsertChannel(video(11, 700, '0', { channelKind: CHANNEL_KIND.PAID }));
+    // Paid videos of other parties or kinds start nothing again for this peer.
+    store.upsertChannel(video(12, 750, '800000', { tokensDelivered: '800000', peerId: 'other-peer' }));
+    store.upsertChannel(video(13, 750, '800000', { tokensDelivered: '800000', role: CHANNEL_ROLE.BUYER }));
+    store.upsertChannel(video(14, 750, '800000', { tokensDelivered: '800000', channelKind: CHANNEL_KIND.PAID }));
+    // A delivered video only partly paid earned enough not to count, but starts nothing again.
+    store.upsertChannel(video(16, 760, '650000', { tokensDelivered: '800000' }));
+
+    expect(unpaid()).toEqual({ count: 4, lastEndedAt: 600 });
+    expect(unpaid(400)).toEqual({ count: 2, lastEndedAt: 600 });
+    expect(unpaid(600)).toEqual({ count: 0, lastEndedAt: 0 });
+    expect(store.getUnpaidOneOffChannels('no-such-peer', CHANNEL_ROLE.SELLER, 0, FLOOR)).toEqual({ count: 0, lastEndedAt: 0 });
+
+    // A later retry of a timed-out close touches the row but does not move when the channel ended.
+    store.updateChannelStatus(id(5), CHANNEL_STATUS.TIMEOUT);
+    expect(unpaid(500)).toEqual({ count: 1, lastEndedAt: 600 });
+
+    // A later delivered video paid in full starts the count again, and retries do not bring old channels back.
+    store.upsertChannel(video(15, 800, '800000', { tokensDelivered: '800000' }));
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+    store.updateChannelStatus(id(5), CHANNEL_STATUS.TIMEOUT);
+    expect(unpaid()).toEqual({ count: 0, lastEndedAt: 0 });
+  });
+
   it('keeps one-off channels out of the session lookup and finds them by request', () => {
     const paid = makeChannel({ sessionId: '0x' + '30'.repeat(32), channelKind: CHANNEL_KIND.PAID, createdAt: Date.now() - 1000 });
     const videoA = makeChannel({ sessionId: '0x' + '40'.repeat(32), channelKind: CHANNEL_KIND.ONE_OFF, oneOffRequestId: 'video-a', createdAt: Date.now() });
@@ -265,6 +312,28 @@ describe('ChannelStore', () => {
 
     const active = store.getActiveChannelByPeer('peer-abc123', CHANNEL_ROLE.BUYER);
     expect(active).toBeNull();
+  });
+
+  it('reads one buyer\'s channels in a status through an index instead of scanning every channel', () => {
+    const buyer = makeChannel({ sessionId: 'paid', createdAt: 1 });
+    for (const channel of [
+      buyer,
+      makeChannel({ sessionId: 'video', channelKind: CHANNEL_KIND.ONE_OFF, createdAt: 2 }),
+      makeChannel({ sessionId: 'settled', status: CHANNEL_STATUS.SETTLED, createdAt: 3 }),
+      makeChannel({ sessionId: 'free', channelKind: CHANNEL_KIND.FREE }),
+      makeChannel({ sessionId: 'seller', role: CHANNEL_ROLE.SELLER }),
+      makeChannel({ sessionId: 'other-buyer', buyerEvmAddr: '0x' + 'dd'.repeat(20) }),
+    ]) store.upsertChannel(channel);
+
+    expect(store.getBuyerPaymentChannelsByStatus(buyer.buyerEvmAddr, CHANNEL_STATUS.ACTIVE).map((channel) => channel.sessionId))
+      .toEqual(['video', 'paid']);
+    expect(store.getBuyerPaymentChannelsByStatus(buyer.buyerEvmAddr, CHANNEL_STATUS.SETTLED).map((channel) => channel.sessionId))
+      .toEqual(['settled']);
+
+    const plan = ((store as any)._db.prepare(
+      'EXPLAIN QUERY PLAN SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND status = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+    ).all('buyer', buyer.buyerEvmAddr, 'active', 'paid', 'one_off') as Array<{ detail: string }>).map((row) => row.detail).join('; ');
+    expect(plan).toContain('idx_channels_role_buyer_status');
   });
 
   it('lists funded buyer channels across kinds and statuses without changing session lookups', () => {

@@ -170,7 +170,7 @@ export async function readDefaultWallet(dataDir: string): Promise<{ address: str
   } catch {
     const locked = await storedDefaultIdentityAddress(dataDir)
     if (locked) return { address: locked, note: `encrypted; set ${PASSPHRASE_ENV} to use it` }
-    return { address: null, note: 'encrypted by the AI VPN' }
+    return { address: null, note: 'encrypted by Antseed Desktop' }
   }
 }
 

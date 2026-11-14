@@ -12,7 +12,9 @@ seller's Intel TDX quote:
 - is genuine (Intel DCAP, acceptable TCB, debug off);
 - is bound to the buyer's nonce, the seller's peer ID and the buyer's own encrypted connection;
 - shows a released dstack production OS (MRTD and RTMR0-2) listed in
-  [`approved-node-measurements.ts`](../../packages/antseed-verifier/src/approved-node-measurements.ts);
+  [`approved-node-measurements.ts`](../../packages/antseed-verifier/src/approved-node-measurements.ts),
+  or a local lite check of the seller's GetQuote `vm_config` and full event log against those
+  measurements returns an approved OS image hash. No hosted verifier is required;
 - measured (RTMR3, replayed from the dstack event log) an app compose that runs an approved image
   (see [Approved images](#approved-images)) and follows the rules in
   [`dstack-app-compose.ts`](../../packages/antseed-verifier/src/dstack-app-compose.ts).
@@ -35,7 +37,8 @@ quote. It passes only when the token ([`confidential-space.ts`](../../packages/a
   ([`seller-config-rules.ts`](../../packages/antseed-verifier/src/seller-config-rules.ts)).
 
 Here buyers rely on Google's attestation service and Google's Confidential Space OS, where on
-dstack they check the Intel quote and the OS measurements themselves.
+dstack they check the Intel quote and the OS themselves: the measurement table, or a local lite
+check. Neither path calls a hosted service.
 
 ## The image
 
@@ -114,7 +117,9 @@ take effect from the verifier release that includes them.
    The CLI always writes an empty `init_script` into the app compose, which buyers on verifier
    0.1.5 or later accept; earlier ones reject any `init_script`.
 
-Any change to the compose file (image, config, prices) changes the compose hash; buyers
+Existing seller images keep passing on the measurement table. The lite OS path needs an updated
+seller image whose prover sends the GetQuote VM configuration and raw event log alongside the
+quote. Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
 
 `compose.mjs` names the inline config after its content (`seller-config-<sha256 of the content>`),
@@ -266,6 +271,13 @@ cargo build --release --manifest-path dstack/Cargo.toml -p dstack-mr-cli   # in 
 dstack-mr measure -c <vCPUs> -m <memory>G --qemu-version 8.2.2 --hotplug-off false metadata.json
 ```
 
-The QEMU version and hotplug setting are the hosts' (Phala Cloud's run QEMU 8.2.2 with hotplug
-on), and change MRTD and RTMR0, so recompute when the provider changes them. Check one shape
-against a real CVM's quote before approving the release.
+The built-in table was computed for QEMU 8.2.2 with hotplug on; other host configurations are
+handled by the lite path. QEMU version and hotplug change MRTD and RTMR0, so recompute table
+entries when those settings change. Check one shape against a real CVM's quote before approving
+the release.
+
+For the local lite path, also add the vetted 64-hex lowercase `os_image_hash` to `APPROVED_OS_IMAGES`
+in the same file, or locally with `ANTSEED_VERIFIER_NODE_BUILDS` using
+`{"osImages":[{"name":"release","hash":"<64 lowercase hex>"}]}`. That hash identifies the dstack
+OS image, not the seller container image. The lite check returns the hash; approval of it is the
+buyer's separate policy decision.

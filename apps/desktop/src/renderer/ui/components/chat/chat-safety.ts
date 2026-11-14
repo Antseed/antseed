@@ -22,21 +22,9 @@ const COSMOS_ADDRESS_PATTERN = /\b[a-z]{2,16}1[0-9a-z]{38,58}\b/gi;
 // still trigger the safety gate; recall matters more than precision here.
 const SOLANA_ADDRESS_PATTERN = /\b(?=[1-9A-HJ-NP-Za-km-z]{32,44}\b)(?=[1-9A-HJ-NP-Za-km-z]*\d)[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 
-const PAYMENT_INTENT_PATTERN = /\b(?:send|transfer|deposit|top\s*up|fund|funds|pay|payment|required|billing|balance|insufficient|add\s+credits?|add\s+funds?|connect\s+(?:your\s+)?wallet|approve\s+(?:the\s+)?(?:transaction|token|spend|allowance)|claim\s+(?:refund|airdrop|reward)|verify\s+(?:your\s+)?wallet|wallet\s+verification)\b/i;
-
 function stripZeroWidthChars(text: string): string {
   return text.replace(ZERO_WIDTH_CHARS, '');
 }
-
-function normalizeForDetection(text: string): string {
-  return text
-    .normalize('NFKC')
-    .replace(ZERO_WIDTH_CHARS, '')
-    .replace(/[._\-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 
 function pushRegexMatches(
   candidates: MatchCandidate[],
@@ -101,17 +89,4 @@ export function segmentSensitiveChatText(text: string): ChatTextSegment[] {
 
 export function findSensitiveChatArtifacts(text: string): SensitiveChatArtifact[] {
   return collectSensitiveArtifacts(stripZeroWidthChars(text)).map((match) => match.artifact);
-}
-
-export function hasSensitiveChatArtifact(text: string): boolean {
-  return collectSensitiveArtifacts(stripZeroWidthChars(text)).length > 0;
-}
-
-export function isLikelyUnsafePaymentInstruction(text: string): boolean {
-  if (!hasSensitiveChatArtifact(text)) return false;
-  return PAYMENT_INTENT_PATTERN.test(normalizeForDetection(text));
-}
-
-export function formatArtifactLabel(artifact: SensitiveChatArtifact): string {
-  return `${artifact.chainHint} address hidden`;
 }
