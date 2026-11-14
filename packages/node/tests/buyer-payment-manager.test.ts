@@ -955,6 +955,24 @@ describe('BuyerPaymentManager', () => {
       expect(mux.sentSpendingAuths).toHaveLength(0);
     });
 
+    it('credits a headroom-covered answer once even when sending its authorization fails', async () => {
+      const { needAuth, sellerPeerId, answered } = await setup('seller-pool-covered-send-fails');
+      await manager.handleNeedAuth(sellerPeerId, { channelId: manager.getActiveSession(sellerPeerId)!.sessionId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000' }, mux);
+      const signed = manager.latestSpendingAuth(sellerPeerId)!;
+      answered();
+      // The transport is gone when the credited authorization goes out.
+      const send = mux.sendSpendingAuth;
+      mux.sendSpendingAuth = () => { throw new Error('connection closed'); };
+      await expect(needAuth()).rejects.toThrow(/connection closed/);
+      mux.sendSpendingAuth = send;
+      // The authorization was committed: the seller's same NeedAuth again credits nothing more.
+      mux.sentSpendingAuths.length = 0;
+      await needAuth();
+      const latest = manager.latestSpendingAuth(sellerPeerId)!;
+      expect(BigInt(latest.cumulativeAmount)).toBe(BigInt(signed.cumulativeAmount) + 1n);
+      expect(decodeWorkerTail(latest.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
+    });
+
     it('signs nothing after the response for a worker answer that authenticated no usage, whatever the buyer estimated', async () => {
       const { sellerPeerId, answered } = await setup('seller-pool-zero-usage');
       const before = manager.getCumulativeAmount(sellerPeerId);

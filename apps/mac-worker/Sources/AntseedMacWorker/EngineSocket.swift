@@ -181,8 +181,10 @@ struct EngineSocket: Sendable {
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
             var address = sockaddr_un()
             let bytes = Array(path.utf8)
+            // Failures close through close(), which forgets the descriptor: deinit, which runs when
+            // the initializer throws, must not close a number the system may have reused meanwhile.
             guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-                Darwin.close(fd)
+                close()
                 throw SocketError.failed("The engine's socket path is too long")
             }
             address.sun_family = sa_family_t(AF_UNIX)
@@ -192,7 +194,7 @@ struct EngineSocket: Sendable {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
             }
             guard connected == 0 else {
-                Darwin.close(fd)
+                close()
                 throw SocketError.failed("Could not connect to the engine")
             }
         }

@@ -78,10 +78,11 @@ final class WorkerController: ObservableObject {
     @Published private(set) var poolURL: URL?
     /// The service this Mac sells and its checkpoint; nil until the owner picks one.
     @Published private(set) var choice: ModelChoice?
-    /// The chosen model failed to load (download or engine start): the owner may try it again.
-    @Published private(set) var modelLoadFailed = false
-    /// Why the chosen model failed to load, shown again once the pool's welcome arrives.
-    private var modelLoadError: String?
+    /// Why the chosen model failed to load (download or engine start), shown again once the pool's
+    /// welcome arrives; nil while it loads or once it loaded.
+    @Published private(set) var modelLoadError: String?
+    /// The chosen model failed to load: the owner may try it again, or pick another.
+    var modelLoadFailed: Bool { modelLoadError != nil }
     /// The models the pool pins that this app can run, for the owner to pick from.
     @Published private(set) var poolModels: [ModelChoice] = []
     /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
@@ -246,7 +247,7 @@ final class WorkerController: ObservableObject {
         let local = LocalModel(modelId: choice.model, engine: config.engineURL, directory: config.dataDirectory)
         model = local
         checkpoint = nil
-        modelLoadFailed = false
+        modelLoadError = nil
         status = .loadingModel(0)
         log("loading \(choice.model) with TensorFold…")
         do {
@@ -263,9 +264,9 @@ final class WorkerController: ObservableObject {
             return true
         } catch {
             if model === local, !Task.isCancelled {
-                modelLoadFailed = true
-                modelLoadError = "Model failed to load: \(error.localizedDescription)"
-                status = .failed(modelLoadError!)
+                let message = "Model failed to load: \(error.localizedDescription)"
+                modelLoadError = message
+                status = .failed(message)
             }
             return false
         }
@@ -541,7 +542,7 @@ final class WorkerController: ObservableObject {
                 return
             }
             // Still loading, the progress stays and the app rejoins with the model once it is ready.
-            status = .welcomed(choice: choice, loaded: checkpoint != nil, loadError: modelLoadFailed ? modelLoadError : nil,
+            status = .welcomed(choice: choice, loaded: checkpoint != nil, loadError: modelLoadError,
                                sharing: sharing, rejected: frame["rejected"] as? [String] ?? [], current: status)
             log("joined pool \(poolURL?.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()

@@ -2533,15 +2533,19 @@ export class BuyerPaymentManager {
       // to the pool: it stays owed until a top-up or a later advance pays it.
       const canAdvance = currentCumulative < this._settleableCeiling(sellerPeerId);
       const credit = this._creditWorkers(sellerPeerId, metadata, 0n, counted, canAdvance ? currentCumulative : undefined);
+      let signed: SpendingAuthPayload | null = null;
       if (credit.metadata !== metadata) {
         const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, currentCumulative + 1n, credit.metadata);
         if (typeof spendingAuth === 'string') return;
         this._metadata.set(sellerPeerId, credit.metadata);
-        paymentMux.sendSpendingAuth(spendingAuth);
+        signed = spendingAuth;
       }
+      // Counted and credited as soon as the authorization is committed, before it is sent: a send
+      // that fails leaves nothing to credit again when the seller asks once more.
       ledger!.set(payload.requestId!, { ...record, costUsdc: 0n, costCounted: true });
       this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
       this._commitWorkerCredit(sellerPeerId, credit.due, counted);
+      if (signed) paymentMux.sendSpendingAuth(signed);
     };
     if (coveredByHeadroom) {
       await countUnsigned();
