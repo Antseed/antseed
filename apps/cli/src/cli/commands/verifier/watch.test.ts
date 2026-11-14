@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Command } from 'commander'
-import { NEXT_EPOCH_GRACE_SECONDS, nextWatchTickDelayMs, parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, unlockWatchKeystore, watchStepArgs, type WatchStep } from './watch.js'
+import { NEXT_EPOCH_GRACE_SECONDS, nextWatchTickDelayMs, parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, unlockWatchKeystore, watchKeystoreToUnlock, watchStepArgs, watchSteps, type WatchStep } from './watch.js'
 
 const GLOBALS = { config: '/cfg/config.json', dataDir: '/data', verbose: false }
 
@@ -173,9 +173,77 @@ test('watch registers its options', () => {
   registerVerifierWatchCommand(verifier)
   const watch = verifier.commands.find((command) => command.name() === 'watch')!
   assert.deepEqual(watch.options.map((option) => option.long), [
-    '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--skip-version-check',
+    '--interval', '--once', '--no-submit', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--skip-version-check',
     // run's tuning options, without watch-side defaults, so run's own defaults apply
     '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm',
   ])
   assert.equal(watch.options.find((option) => option.long === '--max-rounds')!.defaultValue, undefined)
+})
+
+test('watch --no-submit runs only run, on every tick, and no tick mentions a submit', async () => {
+  const controller = new AbortController()
+  const steps: string[] = []
+  const logs: string[] = []
+  let sleeps = 0
+  const { ticks } = await runWatchLoop({
+    intervalMs: 600_000,
+    once: false,
+    steps: watchSteps({ submit: false }),
+    signal: controller.signal,
+    log: (line) => logs.push(line),
+    step: async (step) => { steps.push(step); return 0 },
+    sleep: async () => { sleeps += 1; if (sleeps === 3) controller.abort() },
+  })
+  assert.equal(ticks, 3)
+  assert.deepEqual(steps, ['run', 'run', 'run'])
+  assert.ok(!logs.some((line) => /submit/.test(line)), 'no tick line mentions a submit')
+  assert.deepEqual(watchSteps({ submit: true }), ['run', 'submit'])
+  assert.deepEqual(watchSteps({}), ['run', 'submit'], 'without the flag watch submits as before')
+})
+
+test('watch --once --no-submit runs one run and exits with its result', async () => {
+  const steps: string[] = []
+  const { ticks, failed } = await runWatchLoop({
+    intervalMs: 60_000,
+    once: true,
+    steps: watchSteps({ submit: false }),
+    signal: new AbortController().signal,
+    log: () => {},
+    step: async (step) => { steps.push(step); return 1 },
+    sleep: async () => { throw new Error('no sleep with --once') },
+  })
+  assert.equal(ticks, 1)
+  assert.deepEqual(steps, ['run'])
+  assert.deepEqual(failed, ['run'])
+})
+
+test('watch --no-submit unlocks no keystore and asks no password, also with verifier.keystore in the config', async () => {
+  const signer = '0x1000000000000000000000000000000000000001'
+  const recorded = async () => signer
+  const unrecorded = async () => null
+  const config = { keystore: '~/ks', auditor: signer }
+  // Without the flag: the keystore submit signs with, as before.
+  assert.equal(await watchKeystoreToUnlock({}, config, recorded), '~/ks')
+  assert.equal(await watchKeystoreToUnlock({ submit: true, keystore: '~/flag-ks' }, config, recorded), '~/flag-ks')
+  assert.equal(await watchKeystoreToUnlock({ submit: true }, undefined, recorded), undefined)
+  // With it: nothing to unlock, whatever the config holds.
+  assert.equal(await watchKeystoreToUnlock({ submit: false }, config, recorded), undefined)
+  assert.equal(await watchKeystoreToUnlock({ submit: false }, { keystore: '~/ks' }, recorded), undefined, 'run reads the address the keystore records')
+  assert.equal(await watchKeystoreToUnlock({ submit: false, auditor: signer }, { keystore: '~/ks' }, unrecorded), undefined)
+  assert.equal(await watchKeystoreToUnlock({ submit: false, keystore: '~/ks', auditor: signer }, undefined, unrecorded), undefined, '--keystore is not used')
+  assert.equal(await watchKeystoreToUnlock({ submit: false }, undefined, unrecorded), undefined)
+  // A config keystore that does not record its address would have to be unlocked to learn it.
+  await assert.rejects(
+    watchKeystoreToUnlock({ submit: false }, { keystore: '~/ks' }, unrecorded),
+    /verifier\.keystore ~\/ks does not record its address.*--no-submit signs nothing.*--auditor <address>/,
+  )
+})
+
+test('watch --no-submit refuses --keystore without --auditor instead of unlocking it', async () => {
+  for (const config of [undefined, { auditor: '0x1000000000000000000000000000000000000001' }]) {
+    await assert.rejects(
+      watchKeystoreToUnlock({ submit: false, keystore: '~/ks' }, config, async () => { throw new Error('read nothing') }),
+      /--no-submit signs nothing, so --keystore is not unlocked to learn the auditor; pass --auditor <address> instead/,
+    )
+  }
 })

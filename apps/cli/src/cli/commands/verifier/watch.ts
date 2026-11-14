@@ -6,7 +6,7 @@ import { loadConfig } from '../../../config/loader.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { promptHidden } from '../../prompt-hidden.js'
 import { getAddress } from 'ethers'
-import { loadKeystoreSigner } from './auditor-identity.js'
+import { keystoreAddress, loadKeystoreSigner } from './auditor-identity.js'
 import { RUN_TUNING_OPTIONS, auditEpochReader, chainClock, runTuningArgs, validateRunTuningOptions, type RunOptions } from './run.js'
 import { resolveAuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import { getGlobalOptions, type GlobalOptions } from '../types.js'
@@ -16,6 +16,8 @@ interface WatchOptions extends Pick<RunOptions,
   'enroll' | 'maxEnrollmentRequests' | 'ignorePreRunChecks' | 'maxRounds' | 'confirm'> {
   interval: string
   once?: boolean
+  /** `--no-submit` sets this to false: every tick runs only `run`, and nothing is signed. */
+  submit?: boolean
   auditor?: string
   keystore?: string
   rpcUrl?: string
@@ -27,6 +29,11 @@ interface WatchOptions extends Pick<RunOptions,
 export const DEFAULT_WATCH_INTERVAL_MINUTES = 10
 
 export type WatchStep = 'run' | 'submit'
+
+/** The steps of every tick: `run`, then `submit`, or only `run` with `--no-submit`. */
+export function watchSteps(options: Pick<WatchOptions, 'submit'>): readonly WatchStep[] {
+  return options.submit === false ? ['run'] : ['run', 'submit']
+}
 
 /**
  * One `verifier` subcommand per step, in a child process of this CLI: `run` audits this auditor's
@@ -50,7 +57,7 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 }
 
 /**
- * Runs `run` then `submit` every `intervalMs` until `signal` aborts (or once). A failed step is
+ * Runs `steps` (default `run` then `submit`) every `intervalMs` until `signal` aborts (or once). A failed step is
  * logged and the loop goes on: `run` exits non-zero whenever a model had no sellers, and the next
  * tick retries whatever is left. Every tick sees the reports other auditors submitted since the
  * last one, so a DIFF waiting for this auditor's confirmation is audited within one interval.
@@ -59,6 +66,8 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 export async function runWatchLoop(input: {
   intervalMs: number
   once: boolean
+  /** Each tick's steps, in order (`watchSteps`); default `run` then `submit`. */
+  steps?: readonly WatchStep[]
   signal: AbortSignal
   step: (step: WatchStep) => Promise<number>
   sleep: (ms: number, signal: AbortSignal) => Promise<void>
@@ -74,7 +83,7 @@ export async function runWatchLoop(input: {
     ticks += 1
     failed = []
     input.log(chalk.bold(`\n[${now().toISOString()}] verifier watch: tick ${ticks}`))
-    for (const step of ['run', 'submit'] as const) {
+    for (const step of input.steps ?? ['run', 'submit']) {
       if (input.signal.aborted) break
       const code = await input.step(step)
       if (code !== 0 && !input.signal.aborted) {
@@ -122,6 +131,29 @@ export function resolveWatchAuditor(
 }
 
 /**
+ * The keystore `watch` unlocks at start (`unlockWatchKeystore`), or none. Without `--no-submit` it is
+ * the one `submit` signs with: `--keystore`, then `verifier.keystore`. With it nothing is signed, so
+ * nothing is unlocked and no password is asked. `run` then finds the auditor without one: `--auditor`,
+ * `verifier.auditor`, or the address `verifier.keystore` records (`resolveAuditorAddress`). Refused
+ * when the auditor could only be learned by unlocking a keystore: `--keystore` without `--auditor`
+ * (watch would pass its address to `run`), or a `verifier.keystore` that does not record its address.
+ */
+export async function watchKeystoreToUnlock(
+  options: Pick<WatchOptions, 'submit' | 'auditor' | 'keystore'>,
+  config: { keystore?: string; auditor?: string } | undefined,
+  recordedAddress: (keystore: string) => Promise<string | null> = keystoreAddress,
+): Promise<string | undefined> {
+  if (options.submit !== false) return options.keystore ?? config?.keystore
+  if (options.keystore && !options.auditor) {
+    throw new Error('--no-submit signs nothing, so --keystore is not unlocked to learn the auditor; pass --auditor <address> instead')
+  }
+  if (!options.auditor && !config?.auditor && config?.keystore && !(await recordedAddress(config.keystore))) {
+    throw new Error(`verifier.keystore ${config.keystore} does not record its address, and --no-submit signs nothing, so it is not unlocked to learn it; pass --auditor <address> or set verifier.auditor`)
+  }
+  return undefined
+}
+
+/**
  * Unlocks the keystore `submit` will sign with once, when `watch` starts, so a wrong password (or a
  * keystore that signs as another auditor than `--auditor` or `verifier.auditor`) stops `watch` at
  * once instead of at the first submit, after a whole run. Returns the signer's address.
@@ -154,9 +186,10 @@ export function parseWatchInterval(value: string): number {
 export function registerVerifierWatchCommand(verifier: Command): void {
   const watch = verifier
     .command('watch')
-    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results')
+    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results (unless --no-submit)')
     .option('--interval <minutes>', 'minutes between ticks', String(DEFAULT_WATCH_INTERVAL_MINUTES))
     .option('--once', 'run one tick (run, then submit) and exit, e.g. from cron')
+    .option('--no-submit', 'only audit: every tick runs run and nothing is signed or submitted, so no keystore password is needed; send the results with `antseed verifier submit` before the epoch ends')
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore; the password is read from ANTSEED_KEYSTORE_PASSWORD or asked once at start')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override for submissions')
@@ -170,8 +203,11 @@ export function registerVerifierWatchCommand(verifier: Command): void {
       const globals = getGlobalOptions(command)
       const config = await loadConfig(globals.config)
       const env = { ...process.env }
+      const submits = options.submit !== false
+      // With --no-submit no tick signs, so no tick's run gets a password to unlock anything with.
+      if (!submits) delete env['ANTSEED_KEYSTORE_PASSWORD']
       // Every tick signs in a child process, which has no terminal to ask on, so ask once here.
-      const keystore = options.keystore ?? config.verifier?.keystore
+      const keystore = await watchKeystoreToUnlock(options, config.verifier)
       if (keystore && !env['ANTSEED_KEYSTORE_PASSWORD']) {
         env['ANTSEED_KEYSTORE_PASSWORD'] = await promptHidden(
           `Keystore password for ${keystore}: `,
@@ -202,9 +238,16 @@ export function registerVerifierWatchCommand(verifier: Command): void {
         console.log(chalk.cyan(
           options.once ? 'verifier watch: one tick' : `verifier watch: a tick every ${Math.round(intervalMs / 60_000)} minute(s); stop with Ctrl-C`,
         ))
+        if (!submits) {
+          console.log(chalk.cyan('--no-submit: watch only audits; nothing is signed or submitted, and no keystore is unlocked.'))
+          console.log(chalk.cyan(
+            `The results wait in ${evidenceDir}: send them with \`antseed verifier submit\` in the same epoch, since results not submitted before the epoch ends are not recorded.`,
+          ))
+        }
         const { failed } = await runWatchLoop({
           intervalMs,
           once: options.once === true,
+          steps: watchSteps(options),
           signal: controller.signal,
           log: (line) => console.log(line),
           sleep: abortableSleep,
