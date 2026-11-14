@@ -1,30 +1,10 @@
-import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
+import type {Config, PluginConfig} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
-
-const statsProxyPlugin: PluginModule = () => ({
-  name: 'stats-proxy',
-  configureWebpack() {
-    // Docusaurus merges `config.devServer` during `docusaurus start`, but the
-    // exported webpack config type does not include that field.
-    return {
-      devServer: {
-        proxy: [
-          {
-            context: ['/stats-api'],
-            target: 'http://localhost:3001',
-            pathRewrite: {'^/stats-api': ''},
-            changeOrigin: true,
-          },
-        ],
-      },
-    } as unknown as ReturnType<NonNullable<Plugin['configureWebpack']>>;
-  },
-});
 
 /** Google Tag Manager container for antseed.com. */
 const GTM_CONTAINER_ID = process.env.GTM_CONTAINER_ID ?? 'GTM-NHCLBQQK';
@@ -145,7 +125,6 @@ const config: Config = {
         ],
       },
     ],
-    statsProxyPlugin,
     integrationsPagesPlugin,
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
