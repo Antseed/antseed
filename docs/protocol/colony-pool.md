@@ -471,7 +471,9 @@ workers serve requests it never pays for.
   payment, and new ones while slots are left. It reserves them as it chooses,
   so concurrent requests can't credit more than eight. When the pool assigned
   none it can credit, the request fails before anything is sent, and the next
-  one asks the pool for a fresh assignment.
+  one asks the pool for a fresh assignment. Once a channel credits eight
+  workers and nothing on it is outstanding, the buyer closes it (its workers
+  are settled with it) and takes the newly assigned workers on a new channel.
 
 - **Kept across restarts.** A worker saves each channel's account (the
   TypeScript worker next to its key as `<key-file>.payments.json`, the Mac
@@ -763,7 +765,12 @@ clean. Credited and held USDC always add up to `net`.
 
 Emissions are claimed into the contract by anyone with
 `claimEpochEmissions(epochs)`, only for finished epochs (weights are final
-once an epoch ends). Each worker claims its share of an epoch's ANTS (after
+once an epoch ends). A pull transfers nothing out: the operator fee's ANTS are
+credited to `operatorFeeRecipient` (`antsFeeOwed`, taken with `claimAntsFee`),
+so pulls work while ANTS transfers are still closed. ANTS claims need the pool
+to be able to send ANTS (`antsTransferable()`: the token enabled transfers, or
+whitelisted the pool); until then they revert with `AntsNotTransferableYet`
+and every amount stays recorded. Each worker claims its share of an epoch's ANTS (after
 the operator fee) in proportion to its weight; ANTS for an epoch with no
 weight go to the remainder. Workers claim USDC with `claimUsdc()` and ANTS
 with `claimAnts(epochs)`; pausing never blocks these claims.

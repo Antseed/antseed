@@ -786,7 +786,8 @@ contract AntseedColonyPoolTest is Test {
         uint256 pot1 = pool.epochAnts(e1);
         assertGt(pot0, 0);
         assertGt(pot1, 0);
-        assertEq(ants.balanceOf(address(pool)) - antsBefore, pot0 + pot1);
+        // The pool also keeps the operator fee's ANTS, credited for claimAntsFee.
+        assertEq(ants.balanceOf(address(pool)) - antsBefore, pot0 + pot1 + pool.antsFeeOwed(operator));
 
         // Calling again pulls nothing new and doesn't revert.
         pool.claimEpochEmissions(_epochs2(e0, e1));
@@ -889,8 +890,43 @@ contract AntseedColonyPoolTest is Test {
         uint256 opBefore = ants.balanceOf(operator);
         pool.claimEpochEmissions(ids);
         uint256 fee = (gross * pool.operatorFeeBps()) / 10_000;
-        assertEq(ants.balanceOf(operator) - opBefore, fee);
+        // Credited, not sent: a pull never needs ANTS to be transferable.
+        assertEq(ants.balanceOf(operator), opBefore);
+        assertEq(pool.antsFeeOwed(operator), fee);
         assertEq(pool.epochAnts(e0), gross - fee);
+        vm.prank(operator);
+        pool.claimAntsFee();
+        assertEq(ants.balanceOf(operator) - opBefore, fee);
+        assertEq(pool.antsFeeOwed(operator), 0);
+    }
+
+    /// While ANTS transfers are closed and the token owner never whitelisted the
+    /// pool, emissions still pull and stay recorded; claims say why they wait,
+    /// and pay in full once transfers open.
+    function test_emissions_waitForTransfersWithoutAWhitelist() public {
+        ants.setTransferWhitelist(address(pool), false);
+        assertFalse(pool.antsTransferable());
+        uint256 e0 = emissions.currentEpoch();
+        bytes32 ch = _reserve(bytes32(uint256(53)), 100e6);
+        _settle(ch, 100e6, _e1(workerA, 100e6));
+        vm.warp(block.timestamp + EPOCH_DURATION);
+        pool.claimEpochEmissions(_epochs1(e0));
+        uint256 owed = pool.pendingAnts(workerA, _epochs1(e0));
+        assertGt(owed, 0);
+        vm.prank(workerA);
+        vm.expectRevert(AntseedColonyPool.AntsNotTransferableYet.selector);
+        pool.claimAnts(_epochs1(e0));
+        vm.prank(operator);
+        vm.expectRevert(AntseedColonyPool.AntsNotTransferableYet.selector);
+        pool.claimAntsFee();
+
+        ants.enableTransfers();
+        assertTrue(pool.antsTransferable());
+        vm.prank(workerA);
+        pool.claimAnts(_epochs1(e0));
+        assertEq(ants.balanceOf(workerA), owed);
+        vm.prank(operator);
+        pool.claimAntsFee();
     }
 
     function test_emissions_invalidInputs() public {

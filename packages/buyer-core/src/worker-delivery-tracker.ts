@@ -141,6 +141,14 @@ export class WorkerDeliveryTracker {
     return workers;
   }
 
+  /** Whether a paid request to `sellerPeerId`'s workers is still awaiting its answer. */
+  hasPending(sellerPeerId: string): boolean {
+    for (const delivery of this._deliveries.values()) {
+      if (delivery.sellerPeerId === sellerPeerId && !delivery.free && delivery.state === 'pending') return true;
+    }
+    return false;
+  }
+
   /** A request was encrypted for these pool workers; it is pending until recordDelivery. */
   recordAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerSellers.add(sellerPeerId);

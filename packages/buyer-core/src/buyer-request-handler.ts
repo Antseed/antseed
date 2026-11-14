@@ -675,7 +675,21 @@ export class BuyerRequestHandler {
         }
       };
       try {
-        let { answer, session } = await attempt();
+        let first: Awaited<ReturnType<typeof attempt>>;
+        try {
+          first = await attempt();
+        } catch (error) {
+          // The channel credits as many workers as one can, and the pool now assigns others: settle
+          // and close it (its workers are paid with it), then take them on a new channel.
+          if ((error as { code?: unknown })?.code !== 'worker_slots_full' || !negotiator) throw error;
+          const bpm = negotiator.bpm;
+          const channelId = bpm?.getActiveSession(peer.peerId)?.sessionId;
+          if (!channelId || !bpm?.workerSlotsFull(peer.peerId)) throw error;
+          debugLog(`[BuyerRequest] channel ${channelId.slice(0, 18)}... credits the most workers it can; closing it for a new one`);
+          await negotiator.requestChannelClose(peer.peerId, conn, { channelId });
+          first = await attempt();
+        }
+        let { answer, session } = first;
         if (session && isWorkerUnavailable(answer)) {
           // None of the assigned workers could take it (the pool already tried each).
           workerE2E!.forget(peer.peerId, workerService!);

@@ -15,6 +15,8 @@ const COLONY_POOL_ABI = parseAbi([
   'function claimAnts(uint256[] epochs)',
   'function claimAntsFor(address worker, uint256[] epochs)',
   'function claimEpochEmissions(uint256[] epochs)',
+  // Claims wait until ANTS transfers open; the wallet shows this by name.
+  'error AntsNotTransferableYet()',
 ]);
 
 /** AntseedColonyPool.MAX_EPOCHS_PER_CLAIM. */

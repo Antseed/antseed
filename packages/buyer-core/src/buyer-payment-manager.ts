@@ -727,6 +727,19 @@ export class BuyerPaymentManager {
   }
 
   /**
+   * Whether the live channel already credits as many workers as one channel
+   * can, with no request on it still outstanding: then no other worker can be
+   * paid on it, and only a new channel can take one (the old one is closed
+   * first, so the workers it credits are settled with it).
+   */
+  workerSlotsFull(sellerPeerId: string): boolean {
+    if (!this.getActiveSession(sellerPeerId)) return false;
+    // A request still running, or a verified answer not yet credited, is paid on this channel first.
+    if (this._workerDeliveries.hasPending(sellerPeerId) || this._workerCreditDue.get(sellerPeerId)?.size) return false;
+    return (this._metadata.get(sellerPeerId)?.workers?.length ?? 0) >= MAX_WORKERS_PER_CHANNEL;
+  }
+
+  /**
    * A request was encrypted for these pool workers. Its signed amount is
    * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
    * only a recipient can decrypt it, and each answers under its own key.

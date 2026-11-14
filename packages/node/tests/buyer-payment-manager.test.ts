@@ -826,6 +826,31 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(latest.metadata)).toBeNull();
   });
 
+  it('reports a channel whose worker slots are all taken, once nothing on it is outstanding', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool-slots');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const usage = { inputTokens: 100n, cachedInputTokens: 0n, outputTokens: 10n };
+    const workers = Array.from({ length: 8 }, (_, i) => `0x${(i + 1).toString(16).padStart(40, '0')}`);
+    for (const [i, worker] of workers.entries()) {
+      const requestId = `req-slot-${i}`;
+      manager.recordWorkerAttribution(sellerPeerId, requestId, worker);
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 100n });
+      manager.recordWorkerDelivery(requestId, usage);
+      await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n,
+        reportedInputTokens: 100n, reportedOutputTokens: 10n, service: 'qwen', requestId,
+      });
+    }
+    expect(decodeWorkerTail(manager.latestSpendingAuth(sellerPeerId)!.metadata)).toHaveLength(8);
+    // A ninth worker can't be credited here.
+    expect(manager.creditableWorkers(sellerPeerId, ['0x00000000000000000000000000000000000000ff'])).toEqual([]);
+    expect(manager.workerSlotsFull(sellerPeerId)).toBe(true);
+    // While a request to one of its workers runs, it is paid on this channel first.
+    manager.recordWorkerAttribution(sellerPeerId, 'req-running', workers[0]!);
+    expect(manager.workerSlotsFull(sellerPeerId)).toBe(false);
+  });
+
   it('keeps every uncounted worker answer when more arrive than the request ledger holds', async () => {
     const sellerPeerId = fakePeerId('seller-colony-pool-ledger-cap');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

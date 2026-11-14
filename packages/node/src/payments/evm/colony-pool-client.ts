@@ -22,6 +22,8 @@ export const COLONY_POOL_ABI = [
   'function payoutOf(address worker) external view returns (address)',
   'function payoutNonce(address worker) external view returns (uint256)',
   'function workerCredit(bytes32 channelId, address worker) external view returns (uint128 settled, uint128 credited)',
+  'function antsTransferable() external view returns (bool)',
+  'error AntsNotTransferableYet()',
 ] as const;
 
 /** A worker's signed instruction to pay its earnings to `payout` (see AntseedColonyPool.setPayout). */
@@ -99,6 +101,11 @@ export class ColonyPoolClient extends BaseEvmClient {
       if (await this._provider.getCode(this._contractAddress) === '0x') return null;
       throw err;
     }
+  }
+
+  /** Whether the pool can send ANTS yet: false while the token's transfers are closed and the pool isn't whitelisted. */
+  async antsTransferable(): Promise<boolean> {
+    return this.read().getFunction('antsTransferable')() as Promise<boolean>;
   }
 
   async payoutOf(worker: string): Promise<string> {

@@ -300,6 +300,14 @@ async function main() {
     const at = entry.indexOf('=');
     return [entry.slice(0, at), entry.slice(at + 1)];
   }));
+  // A pool that pins SERVICE routes it only to workers reporting that model. The local workers run
+  // Ollama's OLLAMA_MODEL, whose repo@revision the demo can't know: DEMO_LOCAL_MODEL states it, and
+  // must match the pin; without it, a pin on SERVICE leaves only external workers (DEMO_LOCAL_WORKERS=0).
+  const localModel = process.env.DEMO_LOCAL_MODEL;
+  if (pins.has(SERVICE) && LOCAL_WORKERS > 0 && localModel !== pins.get(SERVICE)) {
+    throw new Error(`DEMO_MODELS pins ${SERVICE} to ${pins.get(SERVICE)}, which the local workers can only serve with `
+      + `DEMO_LOCAL_MODEL=${pins.get(SERVICE)} (the model Ollama runs as ${OLLAMA_MODEL}); or set DEMO_LOCAL_WORKERS=0 to use only Antseed Colony`);
+  }
   const catalog = [...new Set([SERVICE, ...pins.keys()])];
   const colonyPool = new ColonyPool({
     // Workers are told the price, to check buyers' payments cover their answers at it.
@@ -358,6 +366,7 @@ async function main() {
       poolUrl: `ws://127.0.0.1:${POOL_PORT}`,
       baseUrl: `http://127.0.0.1:${tap.address().port}`,
       services: { [SERVICE]: OLLAMA_MODEL },
+      ...(pins.has(SERVICE) ? { models: { [SERVICE]: localModel } } : {}),
       privateKey: wallet.privateKey,
       encryptionKey: generateWorkerEncryptionKey(),
       agent: `antseed-mac/${name}`,

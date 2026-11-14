@@ -15,6 +15,9 @@ import {
 } from './worker-crypto.js';
 import { usageCounts } from './worker-payment.js';
 
+/** Error code of a request no assigned worker could be encrypted for: the channel's worker slots are taken. */
+export const WORKER_SLOTS_FULL = 'worker_slots_full';
+
 const MAX_CACHED_ASSIGNMENTS = 1024;
 /** Pools re-attest workers every 5 minutes; an older attestation means the pool stopped checking. */
 const ATTESTATION_MAX_AGE_S = 900;
@@ -112,7 +115,10 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     if (workers.length === 0) {
       // Assigned again next time: the pool may then rank a worker this channel can credit.
       this.forget(peer.peerId, service);
-      throw new Error('This channel already credits the most workers one channel can, and the pool assigned none of them; retry once it settles');
+      throw Object.assign(
+        new Error('This channel already credits the most workers one channel can, and the pool assigned none of them; retry once it settles'),
+        { code: WORKER_SLOTS_FULL },
+      );
     }
     const payment = options.payment;
     const sealed = await sealRequest({

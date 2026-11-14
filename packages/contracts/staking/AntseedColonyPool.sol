@@ -37,6 +37,12 @@ interface IAntseedChannelState {
         returns (address, address, uint128, uint128, bytes32, uint256, uint256, uint256, uint8);
 }
 
+/// @dev ANTSToken's transfer gate: before `transfersEnabled`, only whitelisted senders may transfer.
+interface IAntsTransferGate {
+    function transfersEnabled() external view returns (bool);
+    function transferWhitelist(address account) external view returns (bool);
+}
+
 interface IAntseedLockingEmissions {
     function sellerRewardsPool() external view returns (address);
 }
@@ -136,6 +142,11 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///         to; nobody can claim it while it is held.
     mapping(uint256 => uint256) public epochHeldWeight;
 
+    /// @notice The operator fee's ANTS, kept here rather than sent when emissions
+    ///         are pulled, so a pull never needs ANTS to be transferable; the
+    ///         recipient takes them with `claimAntsFee`.
+    mapping(address => uint256) public antsFeeOwed;
+
     // ─── Worker payout addresses ────────────────────────────────────
     /// @notice Where a worker's credits go (zero = the worker itself).
     mapping(address => address) public payoutOf;
@@ -170,6 +181,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     event UsdcClaimed(address indexed account, uint256 amount);
     event EpochEmissionsClaimed(uint256 indexed epoch, uint256 antsAmount);
     event AntsClaimed(address indexed account, uint256[] epochs, uint256 amount);
+    event AntsFeeClaimed(address indexed recipient, uint256 amount);
     event AntsClaimedFor(address indexed worker, address indexed payout, uint256[] epochs, uint256 amount);
     event OrphanUsdcSwept(address indexed recipient, uint256 amount);
     event UnattributedHeld(bytes32 indexed channelId, uint256 gross, uint256 net);
@@ -189,6 +201,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     error EmissionsLocked();
     error NoPayout();
     error ChannelStillActive();
+    error AntsNotTransferableYet();
 
     /// @param _registry AntSeed address book.
     /// @param initialOperator First operator; also the initial operator-fee
@@ -303,9 +316,37 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         }
     }
 
+    /// @notice Whether this pool can send ANTS now: once the token enables
+    ///         transfers (or whitelists the pool). Until then, ANTS claims revert
+    ///         with `AntsNotTransferableYet` and what is owed stays recorded.
+    function antsTransferable() public view returns (bool) {
+        address token = registry.antsToken();
+        try IAntsTransferGate(token).transfersEnabled() returns (bool enabled) {
+            if (enabled) return true;
+        } catch {
+            return true; // a token with no transfer gate
+        }
+        try IAntsTransferGate(token).transferWhitelist(address(this)) returns (bool whitelisted) {
+            return whitelisted;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @notice Claim the operator fee's ANTS credited to the caller by emissions pulls.
+    function claimAntsFee() external nonReentrant {
+        uint256 amount = antsFeeOwed[msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        if (!antsTransferable()) revert AntsNotTransferableYet();
+        antsFeeOwed[msg.sender] = 0;
+        IERC20(registry.antsToken()).safeTransfer(msg.sender, amount);
+        emit AntsFeeClaimed(msg.sender, amount);
+    }
+
     /// @notice Claim the caller's ANTS share of funded `epochs`.
     /// @dev Intentionally not pausable: the owner cannot freeze credited funds.
     function claimAnts(uint256[] calldata epochs) external nonReentrant {
+        if (!antsTransferable()) revert AntsNotTransferableYet();
         uint256 total = _markAntsClaimed(msg.sender, epochs);
         IERC20(registry.antsToken()).safeTransfer(msg.sender, total);
         emit AntsClaimed(msg.sender, epochs, total);
@@ -319,6 +360,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     function claimAntsFor(address worker, uint256[] calldata epochs) external nonReentrant {
         address payout = payoutOf[worker];
         if (payout == address(0) || payout == worker) revert NoPayout();
+        if (!antsTransferable()) revert AntsNotTransferableYet();
         uint256 total = _markAntsClaimed(worker, epochs);
         IERC20(registry.antsToken()).safeTransfer(payout, total);
         emit AntsClaimedFor(worker, payout, epochs, total);
@@ -767,7 +809,15 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///      unclaimed upstream until the pool may claim it unlocked.
     function _claimUnlockedSellerEmissions(uint256[] memory epochs) internal returns (uint256 antsAmount) {
         (address lockPool, uint256 lockedBefore) = _lockedSellerRewards();
-        antsAmount = _claimSellerEmissions(epochs);
+        // As `_claimSellerEmissions`, but the operator fee is credited, not sent:
+        // a pull must work while ANTS transfers are still closed.
+        IERC20 antsToken = IERC20(registry.antsToken());
+        uint256 beforeBal = antsToken.balanceOf(address(this));
+        IAntseedEmissions(registry.emissions()).claimSellerEmissions(epochs);
+        uint256 gross = antsToken.balanceOf(address(this)) - beforeBal;
+        uint256 fee = _operatorFeeAmount(gross);
+        if (fee > 0) antsFeeOwed[operatorFeeRecipient] += fee;
+        antsAmount = gross - fee;
         if (lockPool != address(0) && IAntseedLockedSellerRewards(lockPool).lockedRewards(address(this)) > lockedBefore) {
             revert EmissionsLocked();
         }

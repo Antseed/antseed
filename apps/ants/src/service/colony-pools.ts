@@ -67,7 +67,13 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   // Macs linked here keep their ANTS from before the link (older epochs than it moved): this
   // wallet claims those with claimAntsFor, but only while each Mac's payout is still this wallet.
   const linked = ctx.colonyPoolWorkers(address).filter((worker) => worker !== ctx.address.toLowerCase());
-  const payouts = await Promise.all(linked.map((worker) => pool.payoutOf(worker)));
+  // One batched read for every linked Mac's payout; a failed read fails the pool, never reads as unlinked.
+  const payoutReads = await multicallRead(ctx.provider(), linked.map((worker) => ({ target: address, iface: EPOCH_READS, method: 'payoutOf', args: [worker] })));
+  const payouts = payoutReads.map((result) => {
+    const payout = result?.[0];
+    if (typeof payout !== 'string') throw new Error(`Colony pool ${address}: payoutOf unavailable.`);
+    return payout;
+  });
   const workers = linked.filter((_, index) => payouts[index]!.toLowerCase() === ctx.address.toLowerCase());
   const [usdcOwed, own, ...workerEarnings] = await Promise.all([
     pool.usdcBalance(ctx.address),
@@ -147,7 +153,12 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
     }
     antsEpochs = await withNewlyFunded(ctx, address, ctx.address, antsEpochs, view.unfundedEpochs);
   }
-  if (request.ants) {
+  // Until ANTS transfers open, the pool keeps what it owes: say so rather than send claims that revert.
+  const antsOpen = !request.ants || await pool.antsTransferable().catch(() => true);
+  if (request.ants && !antsOpen && (antsEpochs.length > 0 || (view?.workerAnts?.length ?? 0) > 0)) {
+    await report('ANTS stay owed in the colony pool until ANTS transfers open; claim them then');
+  }
+  if (request.ants && antsOpen) {
     for (const epochs of batches(antsEpochs, MAX_EPOCHS_PER_CLAIM)) {
       const hash = await pool.claimAnts(signer, epochs);
       hashes.push(hash);
@@ -165,7 +176,9 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
       }
     }
   }
-  if (hashes.length === 0) throw new Error('Nothing to claim from this colony pool');
+  if (hashes.length === 0) {
+    throw new Error(antsOpen ? 'Nothing to claim from this colony pool' : 'Nothing to claim yet: this pool\'s ANTS stay owed until ANTS transfers open');
+  }
   return { hashes };
 }
 
