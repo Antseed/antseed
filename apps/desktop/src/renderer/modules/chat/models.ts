@@ -214,6 +214,29 @@ export function formatPriceRange(offer: OfferPrices): string {
   return cachedOnly ? `${range} · cache reads ${formatUsdPerMillion(offer.cachedInputUsdPerMillion)}` : range;
 }
 
+/**
+ * How much cheaper a price is than the retail reference, in whole percent, as
+ * the old AI VPN showed it: input and output added together, over the sides
+ * both price, against the same sides at retail. Null unless that total is
+ * cheaper. A free model already says Free, and a router's pick isn't priced
+ * per token.
+ */
+export function retailSavingsPct(
+  model: Pick<ChatModel, 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'referencePrice' | 'free' | 'router'>,
+): number | null {
+  if (model.router || model.free || isFreeOffer(model)) return null;
+  const pairs = [
+    [model.inputUsdPerMillion, model.referencePrice?.inputUsdPerMillion ?? null],
+    [model.outputUsdPerMillion, model.referencePrice?.outputUsdPerMillion ?? null],
+  ].filter((pair): pair is [number, number] => pair[0] !== null && pair[1] !== null);
+  if (pairs.length === 0) return null;
+  const price = pairs.reduce((total, [paid]) => total + paid, 0);
+  const retail = pairs.reduce((total, [, reference]) => total + reference, 0);
+  if (!(retail > 0) || retail <= price) return null;
+  const pct = Math.round((1 - price / retail) * 100);
+  return pct >= 1 ? pct : null;
+}
+
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
 /** A seller's price per image ("$0.04 per image", "Free"), or null when the listing has none for it. */
 export function sellerImagePriceLabel(prices: Record<string, number>, peerId: string): string | null {
