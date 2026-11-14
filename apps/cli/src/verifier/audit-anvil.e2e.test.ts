@@ -6,16 +6,19 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { Wallet, getAddress } from 'ethers'
+import { Interface, Wallet, getAddress } from 'ethers'
 import { VERIFIER_VERDICT, VerifierClient, modelHash } from '@antseed/node/payments'
 import {
   FIXTURE_CONFIG,
+  freshReferenceFixture,
   referenceFixture,
+  writeCalibratedEpochSet,
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
+import { NO_EPOCH_QUESTION_SET, epochQuestionSetPath, questionTextKey, reserveModelAuditReference } from './probe-bank.js'
 import {
   CONFIRMATION_WINDOW_SECONDS, loadBlockTimestamps, loadEpochReports, pendingConfirmations, waitingReportBlocks,
 } from './pending-confirmations.js'
@@ -442,6 +445,193 @@ test('an audit window submits its sellers together once it closes; a late seller
     const confirmedByB = submit(b)
     assert.equal(confirmedByB.status, 0, confirmedByB.output)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a confirmation\'s upload retires the question set it publishes; the next confirmation of the model gets new questions', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-retire-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const anvil = startAnvil(port, { timestamp: GENESIS + AUDIT_EPOCH * EPOCH_DURATION - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, gateAddress, poolsAddress, identityRegistryAddress)
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+    const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    const auditorB = new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`)
+    for (const auditor of [auditorA, auditorB]) {
+      castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    }
+    for (const [index, owner] of [...SELLER_OWNERS, randomWallet().address].entries()) {
+      castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(index + 1), owner])
+      castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
+    }
+    const model = 'claude-opus-5.5'
+    // Sellers 2 and 3 both get a DIFF from A, and B is the model's confirmer.
+    const sellers = [randomWallet(), randomWallet(), randomWallet()]
+    const diff = (agent: 1 | 2 | 3, reference = referenceFixture(model)): FixtureAudit => ({
+      agentId: String(agent), seller: sellers[agent - 1]!, model, service: model, verdict: 'DIFF', reference,
+    })
+    const crypto = {
+      chainId: 'base-local', rpcUrl, verificationContractAddress: verificationAddress, verificationDeployBlock: 0, identityRegistryAddress,
+    }
+    const setUpDataDir = async (name: string, key: string) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${key}\n`, { mode: 0o600 })
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto },
+        verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
+      }))
+      const auditor = new Wallet(`0x${key}`)
+      const writeRun = (runId: string, audits: FixtureAudit[]) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      )
+      return { dataDir, configPath, banksDir, evidenceDir, writeRun }
+    }
+    const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
+    const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
+    const pinataLogPath = join(directory, 'pinata-uploads.jsonl')
+    const pinataPreloadPath = join(directory, 'mock-pinata.mjs')
+    await writeMockPinataPreload(pinataPreloadPath, pinataLogPath)
+    const submit = (dirs: typeof a, runId: string, extra: string[]) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--skip-version-check', ...extra,
+    ], { importPath: pinataPreloadPath, env: { PINATA_JWT: 'test-pinata-jwt' } })
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const setPath = epochQuestionSetPath(b.banksDir, model, EPOCH)
+    const retiredPath = (index: number) => join(dirname(setPath), `set.published-${index}.json`)
+    const exists = (path: string) => readFile(path).then(() => true, () => false)
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+
+    await a.writeRun('a-reports', [diff(1), diff(2), diff(3)])
+    const reported = submit(a, 'a-reports', ['--no-publish-ipfs', '--yes'])
+    assert.equal(reported.status, 0, reported.output)
+    assert.match(reported.output, /claude-opus-5.5: 0 recorded, 3 waiting for another auditor/)
+
+    // B confirms seller 2 on its epoch set, outside any audit window (confirmations are never windowed).
+    const first = await writeCalibratedEpochSet({ banksDir: b.banksDir, model, epoch: EPOCH, reference: referenceFixture(model, 300) })
+    await b.writeRun('b-confirm-2', [diff(2, first.reference)])
+    const dryRun = submit(b, 'b-confirm-2', ['--dry-run'])
+    assert.equal(dryRun.status, 0, dryRun.output)
+    assert.equal(await exists(setPath), true, 'a dry run retires nothing')
+    assert.equal(await exists(retiredPath(1)), false)
+    const uploadCount = async () => (await readFile(pinataLogPath, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length
+
+    // A `verifier run` of B's data dir is going on (a live process holds its run lock): nothing of the model is published.
+    const runLockPath = join(b.evidenceDir, '.run.lock')
+    await writeFile(runLockPath, JSON.stringify({ pid: process.pid, token: 'test-run', createdAt: new Date().toISOString() }))
+    const duringRun = submit(b, 'b-confirm-2', ['--yes'])
+    assert.equal(duringRun.status, 0, duringRun.output)
+    assert.match(duringRun.output, /a `verifier run` is in progress, so nothing of claude-opus-5\.5 is published now/)
+    assert.match(duringRun.output, /held while a run is in progress: 1/)
+    assert.equal(await uploadCount(), 0, 'nothing uploaded')
+    assert.equal(await exists(setPath), true, 'nothing retired')
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'no transaction')
+    await rm(runLockPath)
+
+    // The upload fails after the retire: the set is retired anyway, since it may have reached Pinata.
+    await writeFile(`${pinataLogPath}.fail`, '')
+    const failedUpload = submit(b, 'b-confirm-2', ['--yes'])
+    assert.equal(failedUpload.status, 1, failedUpload.output)
+    assert.equal(await exists(setPath), false)
+    assert.equal(await exists(retiredPath(1)), true)
+    await rm(`${pinataLogPath}.fail`)
+    // The next run builds a new set (for other work on the model); the next submit sends the stored
+    // evidence again, which has nothing of the new set in it: the new set stays in use.
+    const rebuilt = await writeCalibratedEpochSet({ banksDir: b.banksDir, model, epoch: EPOCH, reference: freshReferenceFixture(model, 'rebuilt', 300) })
+    const confirmed2 = submit(b, 'b-confirm-2', ['--yes'])
+    assert.equal(confirmed2.status, 0, confirmed2.output)
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+    assert.equal(await uploadCount(), 1)
+    assert.equal(JSON.parse(await readFile(setPath, 'utf8')).reference.referenceId, rebuilt.reference.referenceId, 'the new set is not retired')
+    assert.equal(await exists(retiredPath(2)), false)
+    assert.doesNotMatch(confirmed2.output, /questions are published with it/)
+    // The first set is the one the upload published: no seller is reserved on it any more.
+    const retired = JSON.parse(await readFile(retiredPath(1), 'utf8')) as { reference: { referenceId: string }; retired?: { runId: string } }
+    assert.equal(retired.reference.referenceId, first.reference.referenceId)
+    assert.equal(retired.retired?.runId, 'b-confirm-2')
+    assert.match(failedUpload.output, /its epoch 5 questions are published with it/)
+
+    // Seller 3 is confirmed on the new set and gets none of the published questions.
+    const second = rebuilt
+    const reserved = await reserveModelAuditReference({
+      banksDir: b.banksDir, model, sellerPeerId: sellers[2]!.address.slice(2).toLowerCase(), service: model, runId: 'b-run-3', epoch: EPOCH,
+      config: FIXTURE_CONFIG,
+    })
+    assert.equal(reserved.reference.referenceId, second.reference.referenceId)
+    const published = [first.reference, ...first.extensions].flatMap((reference) => reference.probes)
+    const publishedIds = new Set(published.map((probe) => probe.id))
+    const publishedText = new Set(published.map(questionTextKey))
+    assert.equal(reserved.reference.probes.some((probe) => publishedIds.has(probe.id) || publishedText.has(questionTextKey(probe))), false)
+    await b.writeRun('b-confirm-3', [diff(3, second.reference)])
+    const confirmed3 = submit(b, 'b-confirm-3', ['--yes'])
+    assert.equal(confirmed3.status, 0, confirmed3.output)
+    assert.deepEqual(await client.agentStatus(3n), { verifiedCount: 0, diffCount: 1 })
+    assert.equal(await exists(retiredPath(2)), true, 'the upload of the new set retires it')
+    await assert.rejects(reserveModelAuditReference({
+      banksDir: b.banksDir, model, sellerPeerId: sellers[0]!.address.slice(2).toLowerCase(), service: model, runId: 'b-run-4', epoch: EPOCH,
+      config: FIXTURE_CONFIG,
+    }), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}`))
+    assert.equal(await uploadCount(), 2)
+
+    // B confirms seller 1 on a third set. The chain moves to the next epoch after the submit checked the run's
+    // epoch and before the upload (a preload sends the epoch change on the submit's next epoch read, in publish):
+    // nothing is uploaded or retired, and the model counts as failed.
+    const third = await writeCalibratedEpochSet({ banksDir: b.banksDir, model, epoch: EPOCH, reference: freshReferenceFixture(model, 'third', 300) })
+    await b.writeRun('b-confirm-1', [diff(1, third.reference)])
+    const movePreloadPath = join(directory, 'move-epoch.mjs')
+    await writeFile(movePreloadPath, `
+import ${JSON.stringify(pathToFileURL(pinataPreloadPath).href)}
+const { VerifierClient } = await import(${JSON.stringify(import.meta.resolve('@antseed/node/payments'))})
+const original = VerifierClient.prototype.currentEpochWindow
+let calls = 0
+VerifierClient.prototype.currentEpochWindow = async function (...args) {
+  calls += 1
+  if (calls === 2) {
+    const response = await fetch(${JSON.stringify(rpcUrl)}, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendTransaction', params: [{
+        from: ${JSON.stringify(new Wallet(`0x${DEPLOYER_PRIVATE_KEY}`).address)}, to: ${JSON.stringify(gateAddress)},
+        data: ${JSON.stringify(new Interface(['function setCurrentEpoch(uint256)']).encodeFunctionData('setCurrentEpoch', [AUDIT_EPOCH + 1]))},
+      }] }),
+    })
+    const reply = await response.json()
+    if (reply.error) throw new Error('could not move the epoch: ' + reply.error.message)
+  }
+  return original.apply(this, args)
+}
+`)
+    const lateUpload = runCli(b.dataDir, b.configPath, rpcUrl, ['submit', '--run-id', 'b-confirm-1', '--skip-version-check', '--yes'],
+      { importPath: movePreloadPath, env: { PINATA_JWT: 'test-pinata-jwt' } })
+    assert.equal(lateUpload.status, 1, lateUpload.output)
+    assert.match(lateUpload.output, /the chain is in epoch 6 now, so nothing of claude-opus-5\.5 from epoch 5 is published/)
+    assert.equal(await uploadCount(), 2, 'nothing uploaded')
+    assert.equal(JSON.parse(await readFile(setPath, 'utf8')).reference.referenceId, third.reference.referenceId, 'nothing retired')
+    assert.equal(await exists(retiredPath(3)), false)
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 }, 'no transaction')
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })
@@ -1020,7 +1210,7 @@ async function rpc(rpcUrl: string, method: string, params: unknown[] = []): Prom
 
 async function writeMockPinataPreload(path: string, logPath: string): Promise<void> {
   await writeFile(path, `
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 
 const originalFetch = globalThis.fetch
 const logPath = ${JSON.stringify(logPath)}
@@ -1029,6 +1219,8 @@ globalThis.fetch = async (input, init) => {
   if (String(input) !== 'https://uploads.pinata.cloud/v3/files') {
     return originalFetch(input, init)
   }
+  // A test makes Pinata fail by creating <log>.fail.
+  if (existsSync(logPath + '.fail')) return new Response('unavailable', { status: 503 })
   const form = init.body
   const metadata = JSON.parse(String(form.get('keyvalues')))
   appendFileSync(logPath, JSON.stringify({

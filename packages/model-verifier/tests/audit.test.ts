@@ -187,6 +187,36 @@ describe('auditEndpoint', () => {
     expect(result.evaluation.verdict).toBe('SAME')
   })
 
+  it('batches a calibrated set as pinned: domains in first-seen order, set order inside, ten per request', async () => {
+    // The same 30 questions and batches are pinned in fingerprints and in the CLI's kbf-batching tests.
+    const domains = ['math', 'law', 'math', 'bio']
+    const pinned = [
+      [0, 2, 4, 6, 8, 10, 12, 14, 16, 18],
+      [20, 22, 24, 26, 28],
+      [1, 5, 9, 13, 17, 21, 25, 29],
+      [3, 7, 11, 15, 19, 23, 27],
+    ]
+    const base = testReference(30)
+    const probes = base.probes.map((probe, index) => ({ ...probe, domain: domains[index % 4]! }))
+    const reference: KbfReferenceV1 = {
+      ...base,
+      probes,
+      calibration: {
+        version: 1,
+        method: KBF_CALIBRATION_METHOD,
+        passes: 1,
+        ...aggregateKbfSelfTestOutcomes(probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1 as const] }))),
+        batches: pinned.map((batch, batchIndex) => ({
+          pass: 0, batchIndex, probeIds: batch.map((index) => `p-${index}`), promptVariantId: KBF_DEFAULT_PROMPT_VARIANT_ID, attempts: 1,
+        })),
+        calibratedAt: '2026-11-05T00:00:00.000Z',
+      },
+    }
+    reference.referenceId = computeReferenceId(reference)
+    const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference, discoverThinking: false })
+    expect(result.batches.map((batch) => batch.probeIds)).toEqual(pinned.map((batch) => batch.map((index) => `p-${index}`)))
+  })
+
   it('varies the prompt wording between batches', async () => {
     const endpoint = new FakeEndpoint()
     const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 200 })

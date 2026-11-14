@@ -522,3 +522,107 @@ test('a seller that delisted during its confirmation holds nothing, and its UNDE
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('a close call whose extra questions were published is finished for good, whatever the peer list says', () => {
+  const { cell } = retryCell()
+  const closeCall: EpochCell = { ...cell, action: 'extend', state: 'pending_extension', result: null }
+  for (const offersModel of [() => true, null]) {
+    const decided = decideRetryGiveUps({
+      cells: [closeCall], nowSeconds: LAST_ATTEMPT + 1, offersModel, windowClosed: () => false, extraQuestionsPublished: () => true,
+    })
+    assert.equal(decided.added.length, 1)
+    assert.equal(decided.added[0]!.extraQuestionsPublished, true)
+    assert.match(decided.added[0]!.reason, /extra questions were published before they could be asked/)
+  }
+  const [entry] = decideRetryGiveUps({
+    cells: [closeCall], nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false, extraQuestionsPublished: () => true,
+  }).added
+  // Never restored, also while the seller lists the model and no window has closed; and it counts as done.
+  const cells = new Map([[epochCellKey('m', GONE), closeCall]])
+  applyRetryGiveUps(cells, [entry!])
+  assert.equal(cells.get(epochCellKey('m', GONE))!.action, 'done')
+  assert.deepEqual(decideRetryGiveUps({
+    cells: cells.values(), nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false,
+  }), { entries: [entry], added: [], restored: [] })
+  assert.equal(countPlan(cells.values()).extend, 0)
+  // A close call on a set still in use is left alone.
+  assert.equal(decideRetryGiveUps({
+    cells: [closeCall], nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false, extraQuestionsPublished: () => false,
+  }).added.length, 0)
+})
+
+test('a confirmation\'s close call whose extra questions were published is an undecided attempt: held, audited again, submitted after the last', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-published-confirmation-'))
+  try {
+    const { runs, cell } = retryCell()
+    const pending = result(GONE, 'SAME', { confirmsDiff: true, extensionPending: { reason: 'seller busy', since: '2026-10-28T12:00:00.000Z' } })
+    const closeCall: EpochCell = { ...cell, action: 'extend', state: 'pending_extension', result: null, pending }
+    const decided = decideRetryGiveUps({
+      cells: [closeCall], nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false, extraQuestionsPublished: () => true,
+    })
+    assert.equal(decided.added[0]?.confirmsDiff, true)
+    const at = (attempts: number) => {
+      const cells = new Map([[epochCellKey('m', GONE), { ...closeCall, attempts }]])
+      applyRetryGiveUps(cells, [{ ...decided.added[0]!, attempts }])
+      return cells
+    }
+    // Attempt 1 of 3: held (not submitted) and audited again, never given up as finished.
+    const held = at(1).get(epochCellKey('m', GONE))!
+    assert.equal(held.state, 'undetermined')
+    assert.equal(held.action, 'retry')
+    assert.equal(held.givenUp, undefined)
+    assert.equal(heldForConfirmationRecheck(held), true)
+    assert.equal(held.result?.outcomeReason?.summary, 'close call left undecided: its extra questions were published before they could be asked')
+    const heldManifest = await writeEpochSubmissionManifest(directory, { epoch: EPOCH, manifests: [runs[0]!.manifest], cells: at(1) })
+    const heldSummary = JSON.parse(await readFile(heldManifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.deepEqual(heldSummary.results, [])
+    assert.match(heldSummary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
+    // Its record is kept, so the next run plans it the same way.
+    assert.deepEqual(decideRetryGiveUps({
+      cells: at(1).values(), nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false, extraQuestionsPublished: () => true,
+    }).entries.map((entry) => entry.confirmsDiff), [true])
+    // After the last attempt the existing rule applies: its UNDETERMINED is submitted.
+    const last = at(CONFIRMATION_ATTEMPTS)
+    assert.equal(last.get(epochCellKey('m', GONE))!.action, 'done')
+    const lastManifest = await writeEpochSubmissionManifest(directory, { epoch: EPOCH, manifests: [runs[0]!.manifest], cells: last })
+    const lastSummary = JSON.parse(await readFile(lastManifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.deepEqual(lastSummary.results.map((entry) => [entry.confirmsDiff, entry.outcomeReason?.summary]), [[true, held.result?.outcomeReason?.summary]])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a published close call whose run\'s end is unknown is finished like the others', () => {
+  const { cell } = retryCell()
+  const closeCall: EpochCell = { ...cell, action: 'extend', state: 'pending_extension', result: null, lastAttemptAt: null }
+  const [entry] = decideRetryGiveUps({
+    cells: [closeCall], nowSeconds: LAST_ATTEMPT + 1, offersModel: () => true, windowClosed: () => false, extraQuestionsPublished: () => true,
+  }).added
+  assert.equal(entry?.lastAttemptAt, null)
+  const cells = new Map([[epochCellKey('m', GONE), closeCall]])
+  applyRetryGiveUps(cells, [entry!])
+  assert.equal(cells.get(epochCellKey('m', GONE))!.action, 'done')
+})
+
+test('a confirmation\'s close call carried on through later runs counts one attempt; every other result counts as before', () => {
+  const grey = {
+    decisionRule: 'kbf-extension-v1' as const,
+    responseAuthVerified: true,
+    stats: { selfHamming: 30, selfTotal: 300, targetHamming: 22, targetTotal: 100, selfCoverage: 1, targetCoverage: 1, p0Cp99: 0.155, pValueBinomial: 0.05 },
+  }
+  const waiting = { extensionPending: { reason: 'seller busy', since: 'x' } }
+  // Runs an hour apart, past SELLER_RETRY_SPACING_SECONDS, so spaced seller attempts count too.
+  const runs = (results: (index: number) => ModelVerificationTargetResult[]) => [0, 1, 2].map((index) => run(
+    `r${index}`, new Date(Date.parse('2026-10-28T12:00:00.000Z') + index * (SELLER_RETRY_SPACING_SECONDS + 3_600) * 1_000).toISOString(),
+    [{ model: 'm', results: results(index) }],
+  ))
+  const attempts = (results: (index: number) => ModelVerificationTargetResult[]) => mergeEpochRuns(EPOCH, runs(results)).get(epochCellKey('m', 'c'))!.attempts
+  // The same confirmation close call, carried on twice: one attempt.
+  assert.equal(attempts(() => [result('c', 'SAME', { ...grey, ...waiting, confirmsDiff: true, auditId: 'first' })]), 1)
+  // Its fresh audits have new audit IDs: each counts.
+  assert.equal(attempts((index) => [result('c', 'SAME', { ...grey, ...waiting, confirmsDiff: true, auditId: `audit-${index}` })]), 3)
+  // An ordinary confirmation re-check (a decided UNDETERMINED), even under the same ID: each counts, as before.
+  assert.equal(attempts(() => [result('c', 'UNDETERMINED', { confirmsDiff: true, outcomeReason: sellerDown, auditId: 'same' })]), 3)
+  // A close call that confirms nothing, carried on: counted as before (spaced seller attempts).
+  assert.equal(attempts(() => [result('c', 'SAME', { ...grey, ...waiting, auditId: 'first' })]), 3)
+})

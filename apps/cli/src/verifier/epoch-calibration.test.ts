@@ -216,7 +216,7 @@ test('a calibrated set takes its limit from the calibration trials, not from the
   assert.equal(reserved.reference.referenceId, calibrated.reference.referenceId)
   const extra = await reserveExtensionReference({
     banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: EPOCH,
-    probeCount: reserved.reference.probes.length,
+    firstReferenceId: reserved.reference.referenceId, probeCount: reserved.reference.probes.length,
   })
   assert.equal(extra.reference.calibration?.total, reserved.reference.probes.length)
 }))

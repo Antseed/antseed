@@ -38,10 +38,25 @@ export interface FileLock {
   releaseSync(): void
 }
 
-export async function acquirePidFileLock(path: string): Promise<FileLock> {
+/** A lock another live process holds. Its message says what holds it (`heldMessage`), or that a verifier run does. */
+export class LockHeldError extends Error {
+  constructor(readonly path: string, heldMessage: string | null) {
+    super(`${heldMessage ?? 'verifier run already active'} (lock ${path})`)
+    this.name = 'LockHeldError'
+  }
+}
+
+/**
+ * Takes the lock at `path` without waiting; a dead owner's lock is taken over. `heldMessage` is what
+ * another process trying the lock is told while this one holds it.
+ */
+export async function acquirePidFileLock(path: string, options: { heldMessage?: string } = {}): Promise<FileLock> {
   await mkdir(dirname(path), { recursive: true })
   const token = randomUUID()
-  const contents = JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() })
+  const contents = JSON.stringify({
+    pid: process.pid, token, createdAt: new Date().toISOString(),
+    ...(options.heldMessage ? { heldMessage: options.heldMessage } : {}),
+  })
   const temporary = `${path}.tmp-${process.pid}-${token}`
   await writeExclusive(temporary, contents)
   try {
@@ -69,7 +84,7 @@ export async function acquirePidFileLock(path: string): Promise<FileLock> {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         const stale = await readStaleLock(path)
-        if (stale === null) throw new Error(`verifier run already active (lock ${path})`)
+        if (stale === null) throw new LockHeldError(path, await readHeldMessage(path))
         await removeStaleLock(path, stale)
       }
     }
@@ -114,6 +129,15 @@ async function readStaleLock(path: string): Promise<string | null> {
     return null
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ESRCH' ? text : null
+  }
+}
+
+async function readHeldMessage(path: string): Promise<string | null> {
+  try {
+    const message = (JSON.parse(await readFile(path, 'utf8')) as { heldMessage?: unknown }).heldMessage
+    return typeof message === 'string' && message.length > 0 ? message : null
+  } catch {
+    return null
   }
 }
 

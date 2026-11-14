@@ -15,6 +15,7 @@ import {
   loadEpochQuestionSet,
   recordEpochQuestionPool,
   recordEpochSetCalibration,
+  retiredEpochQuestionSetCount,
   selectEpochQuestionSet,
   type EpochQuestionSetV1,
 } from './probe-bank.js'
@@ -245,6 +246,9 @@ export async function ensureEpochQuestionSet(input: {
   let selection = await operations.inspect({ banksDir: input.banksDir, model: input.model, config: input.config })
     .then((status) => status.totalProbeCount === 0 ? null : select())
   if (selection?.status === 'ready') return ready(selection.set)
+  if (await retiredEpochQuestionSetCount(input) > 0) {
+    input.log?.(`a submit published the epoch ${input.epoch} question set, so its sellers are not asked it again; building a new one`)
+  }
   for (let round = 1; round <= EPOCH_SET_BUILD_ROUNDS; round += 1) {
     input.log?.(
       `building new questions for the epoch ${input.epoch} question set (build ${round}/${EPOCH_SET_BUILD_ROUNDS}`

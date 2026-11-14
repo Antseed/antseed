@@ -28,6 +28,7 @@ export * from './stats.js';
 export * from './verdict.js';
 export * from './reference.js';
 export * from './thinking-discovery.js';
+export * from './batching.js';
 
 export const KBF_KIND = 'kbf';
 

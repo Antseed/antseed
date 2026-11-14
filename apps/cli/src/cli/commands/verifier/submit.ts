@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { acquirePidFileLock, type FileLock } from '../../../verifier/atomic-files.js'
+import { acquirePidFileLock, LockHeldError, type FileLock } from '../../../verifier/atomic-files.js'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
@@ -29,6 +29,7 @@ import {
 } from '../../../verifier/model-audit.js'
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
+import { retireEpochQuestionSet } from '../../../verifier/probe-bank.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
@@ -373,6 +374,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       if (publishIpfs) {
         console.warn(chalk.yellow('IPFS publication is public: complete audit evidence and signed exchanges will be pinned.'))
       }
+      // Models not published because a `verifier run` of this data dir is going on (`publish`).
+      let heldForRun = 0
+      const readEpoch = async (): Promise<bigint> => (await verifierClient.currentEpochWindow()).epoch
       if (options.publishOnly) {
         let published = 0
         let failed = 0
@@ -380,17 +384,22 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           try {
             await writeModelAuditEvidence(audit)
             const publication = reusablePublication(previous, audit.evidenceHash)
-              ?? await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
+              ?? await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
             ledger.models[audit.key] = ledgerEntry(audit, publication.uri, publication)
             await writeModelAuditLedger(ledgerPath, ledger)
             published += 1
             console.log(chalk.green(`${audit.key}: ${publication.uri} (evidence ${audit.evidenceHash})`))
           } catch (error) {
+            if (error instanceof RunInProgressError) {
+              heldForRun += 1
+              console.warn(chalk.yellow(`${audit.key}: ${error.message}`))
+              continue
+            }
             failed += 1
             console.warn(chalk.yellow(`${audit.key}: publication failed (continuing): ${asError(error).message}`))
           }
         }
-        console.log(`Published: ${published}; failed: ${failed}; nothing was sent on-chain.`)
+        console.log(`Published: ${published}; failed: ${failed}${heldForRun > 0 ? `; held while a run is in progress: ${heldForRun}` : ''}; nothing was sent on-chain.`)
         console.log(chalk.dim(`Ledger: ${ledgerPath}`))
         if (failed > 0) process.exitCode = 1
         return
@@ -433,7 +442,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         let publication = reusablePublication(previous, audit.evidenceHash)
         try {
           await writeModelAuditEvidence(audit)
-          if (publishIpfs && !publication) publication = await publish(evidenceDir, manifest.runId, audit, pinataJwt!)
+          if (publishIpfs && !publication) publication = await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
           const evidenceUri = publication?.uri ?? previous?.evidenceUri ?? ''
           const entry = ledgerEntry(audit, evidenceUri, publication)
           ledger.models[audit.key] = entry
@@ -485,6 +494,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           submitted += 1
           console.log(chalk.green(`${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`))
         } catch (error) {
+          if (error instanceof RunInProgressError) {
+            // Held, not failed: nothing was published or sent, and the ledger is as it was.
+            heldForRun += 1
+            unsent.push(`${audit.key}: held while a verifier run is in progress`)
+            console.warn(chalk.yellow(`${audit.key}: ${error.message}`))
+            continue
+          }
           const message = asError(error).message
           const unmined = error instanceof ReceiptWaitTimeoutError ? error : null
           ledger.models[audit.key] = {
@@ -511,7 +527,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(chalk.bold('Model audit submission summary'))
       console.log(`  Auditor: ${address}`)
       console.log(`  Epoch: ${window.epoch}`)
-      console.log(`  Submitted: ${submitted}; recovered: ${recovered}; already submitted: ${pending.length - toSubmit.length}; failed: ${failed}${held > 0 ? `; held for a new check: ${held}` : ''}`)
+      console.log(`  Submitted: ${submitted}; recovered: ${recovered}; already submitted: ${pending.length - toSubmit.length}; failed: ${failed}`
+        + `${held > 0 ? `; held for a new check: ${held}` : ''}${heldForRun > 0 ? `; held while a run is in progress: ${heldForRun}` : ''}`)
       console.log(`  Seller results left out as already on-chain: ${alreadyOnChain.reduce((total, entry) => total + entry.count, 0)}`)
       console.log(`  Credits this epoch: ${after.auditor} of ${after.total} total`)
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
@@ -573,7 +590,7 @@ export async function acquireSubmitLock(evidenceDir: string): Promise<FileLock |
   try {
     return await acquirePidFileLock(join(evidenceDir, '.submit.lock'))
   } catch (error) {
-    if (/already active/.test(asError(error).message)) return null
+    if (error instanceof LockHeldError) return null
     throw error
   }
 }
@@ -763,32 +780,83 @@ async function findSubmission(
 
 async function publish(
   evidenceDir: string,
-  runId: string,
+  banksDir: string,
+  manifest: Pick<VerifierRunManifestV1, 'runId' | 'epoch'>,
   audit: PreparedModelAudit,
   pinataJwt: string,
+  /** The chain's current epoch, read again right before the retire. */
+  readEpoch: () => Promise<bigint>,
 ): Promise<AuditPublicationV1> {
-  const packaged = await prepareAuditPublication({
-    evidenceDir,
-    runId,
-    model: audit.key,
-    evidenceHash: audit.evidenceHash,
-    evidencePath: audit.evidencePath,
-    evidenceBytes: canonicalEvidenceBytes(audit.evidence),
-    referencePaths: audit.references.map((reference) => reference.path),
-    auditEvidencePaths: audit.auditEvidencePaths,
-    referenceEvidencePaths: audit.referenceEvidence.map((entry) => entry.path),
-    upstreams: modelAuditUpstreams(audit),
-  })
-  const published = await publishVerificationToPinata(packaged, pinataJwt)
-  return {
-    provider: 'pinata',
-    evidenceHash: published.evidenceHash,
-    cid: published.cid,
-    uri: published.uri,
-    pinSize: published.pinSize,
-    totalBytes: packaged.totalBytes,
-    fileCount: published.fileCount,
-    publishedAt: published.publishedAt,
+  // No upload while a `verifier run` of this data dir is going on: its audits may still be asking this
+  // epoch's questions and its builds adding to them. The run lock is held from the retire until the
+  // upload has returned, so no run starts in between either.
+  let runLock: FileLock
+  try {
+    runLock = await acquirePidFileLock(join(evidenceDir, '.run.lock'), {
+      heldMessage: 'a `verifier submit` is publishing audit evidence; run again when it has finished',
+    })
+  } catch (error) {
+    if (error instanceof LockHeldError) throw new RunInProgressError(audit.model)
+    throw error
+  }
+  try {
+    // Once the chain is in the next epoch this audit's transaction can't land, and the upload could carry
+    // that epoch's new questions, which the retire below (of this epoch's set) would not take out of use.
+    let chainEpoch: bigint
+    try {
+      chainEpoch = await readEpoch()
+    } catch (error) {
+      throw new Error(`could not read the chain's epoch right before the upload (${asError(error).message}), so nothing of ${audit.model} is published`)
+    }
+    if (chainEpoch !== BigInt(manifest.epoch)) {
+      throw new Error(`the chain is in epoch ${chainEpoch} now, so nothing of ${audit.model} from epoch ${manifest.epoch} is published: its audit could no longer be recorded`)
+    }
+    const packaged = await prepareAuditPublication({
+      evidenceDir,
+      runId: manifest.runId,
+      model: audit.key,
+      evidenceHash: audit.evidenceHash,
+      evidencePath: audit.evidencePath,
+      evidenceBytes: canonicalEvidenceBytes(audit.evidence),
+      referencePaths: audit.references.map((reference) => reference.path),
+      auditEvidencePaths: audit.auditEvidencePaths,
+      referenceEvidencePaths: audit.referenceEvidence.map((entry) => entry.path),
+      upstreams: modelAuditUpstreams(audit),
+    })
+    // The upload makes its references and the bank exchange files it lists public: the questions and
+    // answers of this epoch's set and pool when they are in it, so those are retired first. An upload
+    // that then fails costs a rebuild, never a public set still in use.
+    const { retired } = await retireEpochQuestionSet({
+      banksDir, model: audit.model, epoch: manifest.epoch, runId: manifest.runId,
+      published: {
+        referenceIds: audit.evidence.references.map((reference) => reference.referenceId),
+        exchanges: (audit.evidence.referenceEvidence ?? []).map(({ referenceId, sha256 }) => ({ referenceId, sha256 })),
+      },
+    })
+    if (retired) {
+      console.log(chalk.dim(`${audit.key}: its epoch ${manifest.epoch} questions are published with it; a later audit of ${audit.model} this epoch gets new ones`))
+    }
+    const published = await publishVerificationToPinata(packaged, pinataJwt)
+    return {
+      provider: 'pinata',
+      evidenceHash: published.evidenceHash,
+      cid: published.cid,
+      uri: published.uri,
+      pinSize: published.pinSize,
+      totalBytes: packaged.totalBytes,
+      fileCount: published.fileCount,
+      publishedAt: published.publishedAt,
+    }
+  } finally {
+    await runLock.release()
+  }
+}
+
+/** Why `publish` sent nothing: a `verifier run` holds the data dir's run lock. */
+class RunInProgressError extends Error {
+  constructor(model: string) {
+    super(`a \`verifier run\` is in progress, so nothing of ${model} is published now; submit again when it has finished`)
+    this.name = 'RunInProgressError'
   }
 }
 

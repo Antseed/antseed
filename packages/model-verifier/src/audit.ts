@@ -12,6 +12,7 @@ import {
   KBF_LOW_COVERAGE_RETRIES,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   KBF_PROBES_PER_REQUEST,
+  kbfDomainBatches,
   KBF_PROMPT_VARIANT_IDS,
   buildKbfPrompt,
   computeBinomialPower,
@@ -458,25 +459,13 @@ function shuffle<T>(items: readonly T[], draw: (max: number) => number): T[] {
 }
 
 /**
- * Batches holding one domain each, keeping the given order inside a domain. A reference's
- * consensus and self-test error are measured on single-domain batches, as in the KBF reference
- * code and `antseed verifier run`, and answers shift when the questions around them do: mixing
- * domains nearly doubled genuine MiniMax M3's mismatches (about 17% to 27%) and read as a DIFF.
+ * Batches holding one domain each, keeping the given order inside a domain (`kbfDomainBatches`, as
+ * `antseed verifier run` batches). A reference's consensus and self-test error are measured on
+ * single-domain batches, and answers shift when the questions around them do: mixing domains nearly
+ * doubled genuine MiniMax M3's mismatches (about 17% to 27%) and read as a DIFF.
  */
 function domainBatches(probes: readonly KbfProbe[], size: number): KbfProbe[][] {
-  const byDomain = new Map<string, KbfProbe[]>()
-  for (const probe of probes) {
-    const group = byDomain.get(probe.domain)
-    if (group) group.push(probe)
-    else byDomain.set(probe.domain, [probe])
-  }
-  return [...byDomain.values()].flatMap((group) => chunk(group, size))
-}
-
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const chunks: T[][] = []
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
-  return chunks
+  return kbfDomainBatches(probes, size).map((batch) => batch.probes)
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

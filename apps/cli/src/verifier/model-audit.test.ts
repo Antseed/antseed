@@ -23,12 +23,16 @@ import {
 import {
   FIXTURE_CONFIG,
   peerIdOf,
+  freshReferenceFixture,
   referenceFixture,
+  writeCalibratedEpochSet,
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
 import { pooledCloseCallVerdict } from './close-call.js'
+import { EPOCH_QUESTION_SET_METHOD, retireEpochQuestionSet } from './probe-bank.js'
+import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const auditor = randomWallet()
@@ -563,4 +567,90 @@ test('a close call is checked against the close-call rule', () => {
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
   // p = 0.5 is a clear SAME: it must not have been extended.
   assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
+})
+
+test('evidence prepared again after its question set is retired is byte-identical, questionSelection included', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-retired-set-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const set = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: referenceFixture('model-a', 300) })
+    const manifest = await writeSignedAuditRun({
+      evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor,
+      audits: [{ ...audit('1', sellers[0]!, 'model-a'), reference: set.reference }],
+    })
+    const prepare = async () => {
+      const prepared = await prepareModelAudits({
+        evidenceDir, banksDir, manifest, auditor: auditor.address, config: FIXTURE_CONFIG,
+        resolveAgentOwner: async () => sellers[2]!.address,
+      })
+      return prepared.audits[0]!
+    }
+    const before = await prepare()
+    assert.deepEqual(before.evidence.questionSelection, {
+      method: EPOCH_QUESTION_SET_METHOD,
+      referenceId: set.reference.referenceId,
+      extensionReferenceIds: [set.extensions[0]!.referenceId],
+      calibration: set.calibration,
+    })
+    const retired = await retireEpochQuestionSet({
+      banksDir, model: 'model-a', epoch: '7', runId: 'submit-run',
+      published: {
+        referenceIds: before.evidence.references.map((reference) => reference.referenceId),
+        exchanges: (before.evidence.referenceEvidence ?? []).map(({ referenceId, sha256 }) => ({ referenceId, sha256 })),
+      },
+    })
+    const after = await prepare()
+    assert.deepEqual(after.evidence, before.evidence)
+    assert.equal(after.evidenceHash, before.evidenceHash)
+    assert.deepEqual(retired, { retired: true })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a close call asked on a set a submit has since published is submitted UNDETERMINED; one on the current set still waits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-published-close-call-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const first = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: referenceFixture('model-a', 300) })
+    const manifestOf = (runId: string, audits: FixtureAudit[]) => writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: '7', auditor, audits })
+    const prepare = async (manifest: Awaited<ReturnType<typeof manifestOf>>) => prepareModelAudits({
+      evidenceDir, banksDir, manifest, auditor: auditor.address, config: FIXTURE_CONFIG, resolveAgentOwner: async () => sellers[2]!.address,
+    })
+    const waiting = /^close call waiting for its extra questions/
+    const onFirst = await manifestOf('run-1', [{ ...audit('1', sellers[0]!, 'model-a'), reference: first.reference, closeCall: { firstWrong: 9 } }])
+    const before = await prepare(onFirst)
+    assert.deepEqual(before.audits, [])
+    assert.match(before.excluded[0]!.reason, waiting, 'a grey-zone first look')
+    // A submit publishes the first set; the next build makes a second one.
+    await retireEpochQuestionSet({ banksDir, model: 'model-a', epoch: '7', runId: 'submit', published: { referenceIds: [], exchanges: [] } })
+    const second = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: freshReferenceFixture('model-a', 'second', 300) })
+    const after = await prepare(onFirst)
+    const [entry] = after.audits
+    assert.deepEqual(entry?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.UNDETERMINED]])
+    assert.match(entry!.evidence.results[0]!.outcomeReason!.summary, /its extra questions were published before they could be asked/)
+    const onSecond = await manifestOf('run-2', [{ ...audit('2', sellers[1]!, 'model-a'), reference: second.reference, closeCall: { firstWrong: 9 } }])
+    const current = await prepare(onSecond)
+    assert.deepEqual(current.audits, [])
+    assert.match(current.excluded[0]!.reason, waiting)
+    // A confirmation's close call on the published set is not submitted: the seller is audited again.
+    const confirmation = await manifestOf('run-3', [{
+      ...audit('3', sellers[1]!, 'model-a'), reference: first.reference, closeCall: { firstWrong: 9 }, confirmsDiff: true,
+    }])
+    const held = await prepare(confirmation)
+    assert.deepEqual(held.audits, [])
+    assert.match(held.excluded[0]!.reason, /^a confirmation whose extra questions were published before they could be asked: the seller is audited again/)
+    assert.deepEqual(held.heldBack, ['model-a 3: confirmation audited again on new questions'])
+    // Its last attempt, as the merged epoch hands it on once the attempts are used up, is submitted UNDETERMINED.
+    const summaryPath = confirmation.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as { results: Array<Record<string, unknown>> }
+    summary.results[0] = { ...summary.results[0], outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
+    await writeFile(summaryPath, JSON.stringify(summary))
+    const lastAttempt = await prepare(confirmation)
+    assert.deepEqual(lastAttempt.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[3n, VERIFIER_VERDICT.UNDETERMINED]])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

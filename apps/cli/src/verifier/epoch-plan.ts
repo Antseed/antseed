@@ -21,6 +21,7 @@ import { normalized } from './utils.js'
 
 export { failureBlame, type FailureBlame } from './failure-blame.js'
 import { failureBlame, type FailureBlame, type ReasonLike } from './failure-blame.js'
+import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
 
 /** Auditor failures that the same configuration repeats on every attempt, so they are not retried. */
 const PERMANENT_AUDITOR_TEXT = [
@@ -61,6 +62,13 @@ export interface EpochCell {
   action: EpochCellAction
   /** Set when the cell's retry or extra questions were given up (`RetryGiveUpV1`); its action is then `done`. */
   givenUp?: RetryGiveUpV1
+  /** A `pending_extension` cell's close call, waiting for its extra questions. */
+  pending?: ModelVerificationTargetResult
+  /**
+   * Set on a confirmation's close call whose extra questions were published (`RetryGiveUpV1` with
+   * `confirmsDiff`): the cell is then an undecided confirmation attempt, audited again like a failed one.
+   */
+  extraQuestionsPublished?: RetryGiveUpV1
 }
 
 export interface EpochState {
@@ -139,10 +147,19 @@ export interface RetryGiveUpV1 {
   displayName: string | null
   /** The cell's run and last attempt: a newer audit of the seller ends the give-up. */
   runId: string
-  lastAttemptAt: number
+  /** Null only on a close call whose extra questions were published and whose run's end is unknown. */
+  lastAttemptAt: number | null
   attempts: number
   givenUpAt: string
   reason: string
+  /**
+   * A close call whose first audit was made on a question set a submit has since published: its extra
+   * questions can never be asked. Never restored. Without `confirmsDiff` it is finished undecided and
+   * submitted as UNDETERMINED; with it, it counts as an undecided confirmation attempt (`applyRetryGiveUps`).
+   */
+  extraQuestionsPublished?: true
+  /** The close call answered a DIFF waiting for this auditor's confirmation. */
+  confirmsDiff?: true
 }
 
 interface RetryGiveUpsFileV1 {
@@ -166,38 +183,76 @@ export async function writeRetryGiveUps(evidenceDir: string, epoch: string, entr
   await writeJsonAtomic(retryGiveUpsPath(evidenceDir, epoch), file)
 }
 
-/** Marks the cells whose latest attempt was given up as done. */
+/**
+ * Marks the cells whose latest attempt was given up as done. A confirmation's close call whose extra
+ * questions were published is not done: it becomes an undecided confirmation attempt, so it is held and
+ * the seller audited again from the start, up to `CONFIRMATION_ATTEMPTS` (`heldForConfirmationRecheck`).
+ */
 export function applyRetryGiveUps(cells: Map<string, EpochCell>, entries: readonly RetryGiveUpV1[]): void {
   for (const entry of entries) {
     const key = epochCellKey(entry.model, entry.peerId)
     const cell = cells.get(key)
     if (!cell || cell.action === 'done' || cell.action === 'audit') continue
     if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) continue
+    if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
+      // Its first look's own status stays (submit checks it against the evidence); the reason marks it undecided.
+      const result: ModelVerificationTargetResult = { ...cell.pending, outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
+      const attempt: Omit<EpochCell, 'action'> = {
+        ...cell, state: 'undetermined', result, blame: failureBlame(result.outcomeReason), permanent: false,
+        reason: EXTRA_QUESTIONS_PUBLISHED.summary, extraQuestionsPublished: entry,
+      }
+      cells.set(key, { ...attempt, action: epochCellAction(attempt) })
+      continue
+    }
     cells.set(key, { ...cell, action: 'done', givenUp: entry })
   }
 }
 
 /**
- * What a run with a fresh buyer peer list changes. A retry is given up once it could have run (the
- * spacing after its last attempt has passed, so a brief disappearance costs nothing) and the seller
- * doesn't offer the model. A give-up ends when the seller lists the model again, unless the
- * model's window has closed: `windowClosed` cells keep theirs, since nothing audits them any more.
+ * What a run changes. With a fresh buyer peer list (`offersModel`), a retry is given up once it could
+ * have run (the spacing after its last attempt has passed, so a brief disappearance costs nothing) and
+ * the seller doesn't offer the model. Such a give-up ends when the seller lists the model again, unless
+ * the model's window has closed: `windowClosed` cells keep theirs, since nothing audits them any more.
+ * A close call whose extra questions were published (`extraQuestionsPublished`) is given up for good,
+ * whatever the peer list says, like a close call in a closed window. Without a fresh peer list
+ * (`offersModel` null) nothing else is given up or restored.
  */
 export function decideRetryGiveUps(input: {
   cells: Iterable<EpochCell>
   nowSeconds: number
-  offersModel: (cell: EpochCell) => boolean
+  offersModel: ((cell: EpochCell) => boolean) | null
   windowClosed: (cell: EpochCell) => boolean
+  extraQuestionsPublished?: (cell: EpochCell) => boolean
 }): { entries: RetryGiveUpV1[]; added: RetryGiveUpV1[]; restored: RetryGiveUpV1[] } {
   const entries: RetryGiveUpV1[] = []
   const added: RetryGiveUpV1[] = []
   const restored: RetryGiveUpV1[] = []
   for (const cell of input.cells) {
+    // A confirmation attempt made from a published close call keeps its record (it is never restored).
+    if (cell.extraQuestionsPublished) entries.push(cell.extraQuestionsPublished)
     if (cell.givenUp) {
-      if (input.offersModel(cell) && !input.windowClosed(cell)) restored.push(cell.givenUp)
+      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && !input.windowClosed(cell)) restored.push(cell.givenUp)
       else entries.push(cell.givenUp)
       continue
     }
+    if (cell.action === 'extend' && input.extraQuestionsPublished?.(cell)) {
+      const entry: RetryGiveUpV1 = {
+        model: cell.model,
+        peerId: cell.peerId,
+        displayName: cell.pending?.displayName ?? null,
+        runId: cell.runId,
+        lastAttemptAt: cell.lastAttemptAt,
+        attempts: cell.attempts,
+        givenUpAt: new Date(input.nowSeconds * 1_000).toISOString(),
+        reason: 'its extra questions were published before they could be asked',
+        extraQuestionsPublished: true,
+        ...(cell.pending?.confirmsDiff ? { confirmsDiff: true as const } : {}),
+      }
+      entries.push(entry)
+      added.push(entry)
+      continue
+    }
+    if (!input.offersModel) continue
     if (cell.action !== 'retry' && cell.action !== 'extend') continue
     if (cell.lastAttemptAt === null) continue
     if (input.nowSeconds < cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS) continue
@@ -287,6 +342,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     failure: { entry: ModelVerificationFailure; runId: string } | null
     skip: { entry: ModelVerificationSkip; runId: string } | null
     last: 'result' | 'pending' | 'failure' | 'skip'
+    /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
+    countedAuditIds: Set<string>
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -296,7 +353,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip',
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(),
       }
       acc.set(key, entry)
     }
@@ -317,10 +374,17 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
+        // A confirmation's close call carried on to a later run is written into that run's summary again,
+        // with the same audit ID: it is the same audit still waiting for its extra questions, not another
+        // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
+        const carriedOn = result.confirmsDiff === true && finalAuditVerdict(result) === null && entry.countedAuditIds.has(result.auditId)
         if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
+        } else if (carriedOn) {
+          entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
         } else countSellerAttempt(entry, result.confirmsDiff !== true)
+        entry.countedAuditIds.add(result.auditId)
         if (finalAuditVerdict(result) === null) {
           entry.pending = { result, runId: manifest.runId }
           entry.last = 'pending'
@@ -367,7 +431,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       cell = {
         ...base, runId: entry.pending.runId, state: 'pending_extension', blame: null,
         reason: entry.pending.result.extensionPending?.reason ?? null,
-        result: null,
+        result: null, pending: entry.pending.result,
       }
     } else if (entry.result) {
       const verdict = finalAuditVerdict(entry.result)!

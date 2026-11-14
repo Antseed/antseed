@@ -82,7 +82,10 @@ import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAudi
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   epochSetCalibrationProblem,
+  isRetiredEpochQuestionSetReference,
   loadEpochQuestionSet,
+  RETIRED_SET_VOID_REASON,
+  retiredEpochQuestionSetCount,
   missingBankReferenceExchanges,
   loadModelAuditReservation,
   reserveExtensionReference,
@@ -141,7 +144,7 @@ import {
   waitingReportBlocks,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
-import { loadPendingExtensions, pendingExtensionKey } from '../../../verifier/pending-extensions.js'
+import { loadPendingExtensions, pendingExtensionKey, type PendingExtension } from '../../../verifier/pending-extensions.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
 import {
@@ -902,9 +905,15 @@ export async function runVerifierRound(
         // must not hold its window, and one that came back must be seen before its window closes.
         // A buyer that can't be read decides nothing, and fails the run further down.
         const peerList = await loadBuyerProxySnapshot(globalOptions.dataDir).catch(() => null)
+        // Close calls this epoch's earlier runs left waiting for their extra questions (read once). Those asked
+        // on a set a submit has published since are never extended (`decideRetryGiveUps`).
+        const epochPendingExtensions = options.fresh
+          ? new Map<string, PendingExtension>()
+          : await loadPendingExtensions(evidenceDir, epoch, models)
+        const publishedCloseCalls = await publishedCloseCallsOf(epochPendingExtensions, { banksDir, epoch })
         if (peerList) {
           await updateRetryGiveUps({
-            evidenceDir, epoch, peers: peerList.peers,
+            evidenceDir, epoch, peers: peerList.peers, publishedCloseCalls,
             servicesFor: (cell, peer) => {
               const confirmation = confirmationFor(cell.model, peer)
               return [
@@ -1005,8 +1014,8 @@ export async function runVerifierRound(
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
         // here without repeating the first check. --fresh audits those sellers from the start instead.
         const pendingExtensions = !options.fresh && (config.verifier?.closeCallExtensions ?? 2) > 0
-          ? await loadPendingExtensions(evidenceDir, epoch, models)
-          : new Map()
+          ? new Map([...epochPendingExtensions].filter(([key]) => !publishedCloseCalls.has(key)))
+          : new Map<string, PendingExtension>()
         if (selectedPeerId) {
           for (const [key, entry] of pendingExtensions) {
             if (entry.result.peerId.trim().replace(/^0x/i, '').toLowerCase() !== selectedPeerId) pendingExtensions.delete(key)
@@ -1257,15 +1266,12 @@ export async function runVerifierRound(
           throw new Error(`peer ${selectedPeerId} does not currently advertise any selected verifier model`)
         }
         // Problems on the auditor's side stop the run here, before any request is paid for.
-        const preRunProblems = await collectPreRunProblems({
+        const preRunProblems = await collectRunWideProblems({
           config,
           dataDir: globalOptions.dataDir,
-          banksDir,
-          epoch,
           epochSource: epochWindow.source,
           reserveUsdc: proxy.settings?.maxReserveAmountUsdc ?? null,
-          models: preparedModels.map(({ model, targets }) => ({ model, sellerPeerIds: targets.map((target) => target.peer.peerId) })),
-          checkQuestionSets: false,
+          sellerPeerIds: preparedModels.flatMap(({ targets }) => targets.map((target) => target.peer.peerId)),
         })
         if (preRunProblems.length > 0) {
           if (!options.ignorePreRunChecks) throw preRunError(preRunProblems)
@@ -1425,6 +1431,11 @@ export async function runVerifierRound(
               return { result: target.pendingExtension.result, failure: null, skipped: null }
             }
             return sellerLimiter.run(target.peer.peerId, async () => {
+              // The wait for the seller's slot can outlast another model's whole audit of it: ask again.
+              if (await stopIfAuditorRemoved()) {
+                await updateStatus((value) => { value.queuedAudits -= 1 })
+                return { result: null, failure: null, skipped: null }
+              }
               const startedAt = new Date().toISOString()
               await updateStatus((value) => {
                 value.queuedAudits -= 1
@@ -1438,14 +1449,17 @@ export async function runVerifierRound(
                 let reference
                 let auditId: string
                 let resume: ModelVerificationResumeInput | undefined
-                if (target.resumeCandidate) {
-                  const loaded = await loadModelAuditReservation({
-                    banksDir,
-                    model,
-                    sellerPeerId: target.peer.peerId,
-                    auditId: target.resumeCandidate.reservationAuditId,
-                    config: config.verifier,
-                  })
+                const loaded = target.resumeCandidate ? await loadModelAuditReservation({
+                  banksDir,
+                  model,
+                  sellerPeerId: target.peer.peerId,
+                  auditId: target.resumeCandidate.reservationAuditId,
+                  config: config.verifier,
+                }) : null
+                // A submit may have published its set since the plan: then a new audit on the current set,
+                // without the answers already given, so no question of a public set is asked.
+                if (target.resumeCandidate && loaded?.retired) await voidRetiredReservation(banksDir, target.resumeCandidate)
+                if (target.resumeCandidate && loaded && !loaded.retired) {
                   validateResumeCandidate(target.resumeCandidate, loaded.reference, target.service, epoch)
                   reservationAuditId = target.resumeCandidate.reservationAuditId
                   reference = loaded.reference
@@ -1575,6 +1589,9 @@ export async function runVerifierRound(
             reference: KbfReferenceV1
             reservationAuditId: string
           }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
+            // Extra questions pay the seller like a first audit. A removed auditor asks none, and the
+            // close call stays pending with its reservation, as after an interrupted extension.
+            if (await stopIfAuditorRemoved()) throw new Error('this auditor was removed as an approved auditor')
             const target = targetByPeer.get(input.first.peerId.toLowerCase())
             if (!target) throw new Error(`seller ${input.first.peerId} is no longer a target`)
             referenceSources.set(input.reference.referenceId, input.reference)
@@ -1608,11 +1625,18 @@ export async function runVerifierRound(
           if (closeCallExtensions > 0) {
             const extended = await runExtensionRounds({
               results,
-              reserve: (first) => reserveExtensionReference({
-                banksDir, model, sellerPeerId: first.peerId, service: first.service,
-                runId, epoch, probeCount: first.probeCount, extensionIndex: extensionSets(first).length + 1,
-                config: config.verifier,
-              }),
+              reserve: async (first) => {
+                // A removed auditor reserves no extra set either; the close call stays pending.
+                if (await stopIfAuditorRemoved()) throw new Error('this auditor was removed as an approved auditor')
+                // Only extra sets of the set its first audit was asked pool with it.
+                const firstEvidence = await verifyProxyAuditEvidenceFile(first.evidencePath, first.evidenceHash)
+                return reserveExtensionReference({
+                  banksDir, model, sellerPeerId: first.peerId, service: first.service,
+                  runId, epoch, firstReferenceId: firstEvidence.reference.referenceId, probeCount: first.probeCount,
+                  extensionIndex: extensionSets(first).length + 1,
+                  config: config.verifier,
+                })
+              },
               verify: (first, reference, reservationAuditId) => verifyFollowUp({ first, reference, reservationAuditId }),
               concurrency: async (tasks) => {
                 await mapConcurrently(tasks, maxConcurrentPeersPerModel, (task) => task())
@@ -1839,15 +1863,8 @@ export async function runVerifierRound(
             if (!beforeChecks) return null
             lane = beforeChecks
             statusPlan = lane
-            const problems = await collectPreRunProblems({
-              config,
-              dataDir: globalOptions.dataDir,
-              banksDir,
-              epoch,
-              epochSource: epochWindow.source,
-              reserveUsdc: lane.proxy.settings?.maxReserveAmountUsdc ?? null,
-              models: [{ model, sellerPeerIds: lane.targets.map((target) => target.peer.peerId) }],
-              checkAuditor: false,
+            const problems = lane.targets.length === 0 ? [] : await collectQuestionSetProblems({
+              config, banksDir, epoch, model,
             })
             if (problems.length > 0) {
               const ignored = options.ignorePreRunChecks === true
@@ -2059,13 +2076,19 @@ export async function updateRetryGiveUps(input: {
   epoch: string
   peers: readonly PeerInfo[]
   servicesFor: (cell: EpochCell, peer: PeerInfo) => string[]
+  /** Close calls whose extra questions a submit has published (`loadPublishedCloseCalls`), by `pendingExtensionKey`. */
+  publishedCloseCalls?: ReadonlyMap<string, PendingExtension>
   nowMs?: number
 }): Promise<void> {
   const { evidenceDir, epoch } = input
   const nowMs = input.nowMs ?? Date.now()
-  if (nowMs - Math.max(...input.peers.map((peer) => peer.lastSeen)) > PEER_LIST_MAX_AGE_MS) {
-    console.warn(chalk.yellow('The buyer\'s peer list is out of date, so no retry is given up this run.'))
-    return
+  const peersFresh = nowMs - Math.max(...input.peers.map((peer) => peer.lastSeen)) <= PEER_LIST_MAX_AGE_MS
+  if (!peersFresh) {
+    if ((input.publishedCloseCalls?.size ?? 0) === 0) {
+      console.warn(chalk.yellow('The buyer\'s peer list is out of date, so no retry is given up this run.'))
+      return
+    }
+    console.warn(chalk.yellow('The buyer\'s peer list is out of date, so no seller that stopped listing a model is given up this run.'))
   }
   const state = await loadEpochState(evidenceDir, epoch)
   const closedModels = new Set((await listAuditWindows(evidenceDir, epoch))
@@ -2076,17 +2099,25 @@ export async function updateRetryGiveUps(input: {
     cells: state.cells.values(),
     nowSeconds: nowMs / 1_000,
     windowClosed: (cell) => closedModels.has(normalized(cell.model)),
-    offersModel: (cell) => {
+    offersModel: peersFresh ? (cell) => {
       const peer = peers.get(cell.peerId.trim().replace(/^0x/i, '').toLowerCase())
       return peer !== undefined && input.servicesFor(cell, peer).some((service) => findAdvertisedService(peer, service) !== null)
-    },
+    } : null,
+    extraQuestionsPublished: (cell) => input.publishedCloseCalls?.has(pendingExtensionKey(cell.model, cell.peerId)) === true,
   })
   if (added.length + restored.length === 0) return
   await writeRetryGiveUps(evidenceDir, epoch, entries)
   const seller = (entry: RetryGiveUpV1): string => `${entry.displayName ?? 'seller'} (${entry.peerId.slice(0, 12)}…)`
   const at = new Date(nowMs).toISOString()
   for (const entry of added) {
-    console.log(chalk.yellow(`${entry.model}: gave up on ${seller(entry)}: ${entry.reason}. It keeps its result (attempt ${entry.attempts}).`))
+    console.log(chalk.yellow(!entry.extraQuestionsPublished
+      ? `${entry.model}: gave up on ${seller(entry)}: ${entry.reason}. It keeps its result (attempt ${entry.attempts}).`
+      : entry.confirmsDiff
+        ? `${entry.model}: the confirmation close call of ${seller(entry)} can't be decided: ${entry.reason}. `
+          + (entry.attempts < CONFIRMATION_ATTEMPTS
+            ? `The seller is audited again on new questions (attempt ${entry.attempts} of ${CONFIRMATION_ATTEMPTS} used).`
+            : `Its ${CONFIRMATION_ATTEMPTS} attempts are used up, so it is submitted as UNDETERMINED.`)
+        : `${entry.model}: the close call of ${seller(entry)} is finished undecided: ${entry.reason}. It is submitted as UNDETERMINED.`))
     await appendVerifierEvent(evidenceDir, epoch, { type: 'retry-given-up', epoch, ...entry, at })
   }
   for (const entry of restored) {
@@ -2096,31 +2127,45 @@ export async function updateRetryGiveUps(input: {
 }
 
 /**
- * What would make this run fail on the auditor's side: no on-chain epoch (the chain can't be
- * reached), a deposit too small for the new payment channels, or a model without this epoch's
- * question set. Empty when the run can start. A run checks the chain and deposit once, before any
- * build (`checkQuestionSets: false`), and each model's question set in its lane, when it's built
- * (`checkAuditor: false`).
+ * The pending close calls whose first audit was made on a question set a submit has since retired:
+ * their extra questions would be public, so they are never extended (`decideRetryGiveUps`). Decided from
+ * the retired files alone, so a retired set that no longer validates still counts. Keyed as `pending`.
  */
-async function collectPreRunProblems(input: {
+export async function publishedCloseCallsOf(
+  pending: ReadonlyMap<string, PendingExtension>,
+  input: { banksDir: string; epoch: string },
+): Promise<Map<string, PendingExtension>> {
+  const published = new Map<string, PendingExtension>()
+  for (const [key, entry] of pending) {
+    const retired = await isRetiredEpochQuestionSetReference({
+      banksDir: input.banksDir, model: entry.model, epoch: input.epoch, referenceId: entry.firstReferenceId,
+    }).catch(() => false)
+    if (retired) published.set(key, entry)
+  }
+  return published
+}
+
+/**
+ * What would make this run fail on the auditor's side, checked once before any build: no on-chain
+ * epoch (the chain can't be reached), or a deposit too small for the new payment channels to
+ * `sellerPeerIds`. Empty when the run can start. Each model's question set is checked in its lane,
+ * when it's built (`collectQuestionSetProblems`).
+ */
+async function collectRunWideProblems(input: {
   config: AntseedConfig
   dataDir: string
-  banksDir: string
-  epoch: string
   epochSource: AuditEpochWindow['source']
   reserveUsdc: bigint | null
-  models: ReadonlyArray<{ model: string; sellerPeerIds: readonly string[] }>
-  checkAuditor?: boolean
-  checkQuestionSets?: boolean
+  sellerPeerIds: readonly string[]
 }): Promise<string[]> {
   const problems: string[] = []
-  if (input.checkAuditor !== false && input.epochSource !== 'onchain') {
+  if (input.epochSource !== 'onchain') {
     problems.push('the chain can\'t be reached (on-chain epoch unavailable), so this run\'s evidence could not be submitted. '
       + 'Check payments.crypto.rpcUrl or ANTSEED_BASE_RPC_URL')
   }
 
-  const sellers = [...new Set(input.models.flatMap((entry) => entry.sellerPeerIds.map((id) => id.toLowerCase())))]
-  if (input.checkAuditor !== false && sellers.length > 0 && input.config.payments?.crypto) {
+  const sellers = [...new Set(input.sellerPeerIds.map((id) => id.toLowerCase()))]
+  if (sellers.length > 0 && input.config.payments?.crypto) {
     try {
       const { address } = await loadCryptoContext(input.dataDir)
       const store = openChannelStore(input.dataDir)
@@ -2144,33 +2189,44 @@ async function collectPreRunProblems(input: {
       problems.push(`deposit: could not read the buyer deposit (${asError(error).message}); check the chain connection`)
     }
   }
-
-  for (const { model, sellerPeerIds } of input.models) {
-    if (input.checkQuestionSets === false || sellerPeerIds.length === 0) continue
-    try {
-      const set = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.epoch, config: input.config.verifier })
-      if (!set) {
-        problems.push(`${model}: no question set for epoch ${input.epoch} yet; run without --no-enroll to build it`)
-        continue
-      }
-      const calibrationProblem = epochSetCalibrationProblem(set)
-      if (calibrationProblem) {
-        problems.push(`${model}: the question set for epoch ${input.epoch} ${calibrationProblem}`
-          + `${set.calibration ? '; the model is not audited this epoch' : '; run without --no-enroll to calibrate it'}`)
-        continue
-      }
-      const missing = await missingBankReferenceExchanges(input.banksDir, model)
-      if (missing.length > 0) {
-        problems.push(`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
-          + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
-          + 'restore the bank\'s reference-evidence folder')
-      }
-    } catch (error) {
-      problems.push(`${model}: the probe bank can't be used (${asError(error).message}); `
-        + `rebuild it with antseed verifier reference build ${model}`)
-    }
-  }
   return problems
+}
+
+/**
+ * Why `model`'s sellers can't be asked this epoch's question set, checked in its lane once its build
+ * is done: no set (with `--no-enroll`, or a submit published it), an uncalibrated or failed set, or a
+ * bank whose reference evidence is missing. Empty when its audits can start.
+ */
+async function collectQuestionSetProblems(input: {
+  config: AntseedConfig
+  banksDir: string
+  epoch: string
+  model: string
+}): Promise<string[]> {
+  const { model } = input
+  try {
+    const set = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.epoch, config: input.config.verifier })
+    if (!set) {
+      return [await retiredEpochQuestionSetCount({ banksDir: input.banksDir, model, epoch: input.epoch }) > 0
+        ? `${model}: a submit published the question set for epoch ${input.epoch}; run without --no-enroll to build a new one`
+        : `${model}: no question set for epoch ${input.epoch} yet; run without --no-enroll to build it`]
+    }
+    const calibrationProblem = epochSetCalibrationProblem(set)
+    if (calibrationProblem) {
+      return [`${model}: the question set for epoch ${input.epoch} ${calibrationProblem}`
+        + `${set.calibration ? '; the model is not audited this epoch' : '; run without --no-enroll to calibrate it'}`]
+    }
+    const missing = await missingBankReferenceExchanges(input.banksDir, model)
+    if (missing.length > 0) {
+      return [`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
+        + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
+        + 'restore the bank\'s reference-evidence folder']
+    }
+    return []
+  } catch (error) {
+    return [`${model}: the probe bank can't be used (${asError(error).message}); `
+      + `rebuild it with antseed verifier reference build ${model}`]
+  }
 }
 
 function epochTimestamp(value: number): string {
@@ -2385,6 +2441,7 @@ export async function filterCompatibleResumeCandidates(input: {
 }): Promise<Map<string, ResumeCandidate>> {
   const compatible = new Map<string, ResumeCandidate>()
   for (const [key, candidate] of input.candidates) {
+    let retired: boolean
     try {
       const loaded = await loadModelAuditReservation({
         banksDir: input.banksDir,
@@ -2393,18 +2450,40 @@ export async function filterCompatibleResumeCandidates(input: {
         auditId: candidate.reservationAuditId,
         config: input.config,
       })
-      validateResumeCandidate(candidate, loaded.reference, candidate.service, input.epoch)
-      compatible.set(key, candidate)
+      retired = loaded.retired
+      if (!retired) validateResumeCandidate(candidate, loaded.reference, candidate.service, input.epoch)
     } catch (error) {
       if (input.strict) {
+        // An earlier run voided it because its set was published: the same hint as for a retired set.
+        if (asError(error).message.includes(RETIRED_SET_VOID_REASON)) throw new Error(retiredResumeMessage(candidate.auditId))
         throw new Error(
           `resume audit ${candidate.auditId} is incompatible with the active probe bank: ${asError(error).message}`,
         )
       }
       return new Map()
     }
+    if (retired) {
+      // A submit published its questions: the seller is audited again on the current set, from the start.
+      if (input.strict) throw new Error(retiredResumeMessage(candidate.auditId))
+      await voidRetiredReservation(input.banksDir, candidate)
+      continue
+    }
+    compatible.set(key, candidate)
   }
   return compatible
+}
+
+function retiredResumeMessage(auditId: string): string {
+  return `resume audit ${auditId} was asked on a question set a submit has published since, so it can't be `
+    + 'resumed; run without --resume-run and the seller is audited again on new questions'
+}
+
+/** Voids a retry's reservation on a published question set, so the ledger doesn't show it as active. */
+async function voidRetiredReservation(banksDir: string, candidate: Pick<ResumeCandidate, 'model' | 'peerId' | 'reservationAuditId'>): Promise<void> {
+  await voidModelAuditReference({
+    banksDir, model: candidate.model, sellerPeerId: candidate.peerId, auditId: candidate.reservationAuditId,
+    reason: RETIRED_SET_VOID_REASON,
+  })
 }
 
 export function validateResumeCandidate(

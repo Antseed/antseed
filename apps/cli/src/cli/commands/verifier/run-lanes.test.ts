@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import nodeModule from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import test from 'node:test'
 import { Command } from 'commander'
+import { computeKbfVerdict, createReferenceQueryProfile, queryProfileHash } from '@antseed/fingerprints'
 import type { PeerInfo } from '@antseed/node'
 import type { AuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import type { RunOptions, VerifierRoundOutcome } from './run.js'
@@ -28,9 +29,11 @@ const FAKE_EXPORTS: Readonly<Record<string, readonly string[]>> = {
   'verifier/model-run.js': ['classifyVerificationTargetServices', 'loadBuyerProxySnapshot', 'verifyModelTarget'],
   'verifier/probe-bank.js': [
     'epochSetCalibrationProblem', 'loadEpochQuestionSet', 'missingBankReferenceExchanges',
-    'reserveModelAuditReference', 'voidModelAuditReference',
+    'reserveExtensionReference', 'reserveModelAuditReference', 'voidModelAuditReference', 'isRetiredEpochQuestionSetReference',
+    'loadModelAuditReservation',
   ],
   'verifier/response-auth-reader.js': ['openResponseAuthReader'],
+  'verifier/proxy-evidence.js': ['verifyProxyAuditEvidenceFile'],
 }
 const sourceRoot = new URL('../../../', import.meta.url).href
 const fakeHolder = globalThis as unknown as { laneFakes: Fakes }
@@ -53,8 +56,11 @@ registerHooks({
 const { setAuditedModelsForTesting } = await import('../../../verifier/audited-models.js')
 const { runVerifierRound, updateRetryGiveUps } = await import('./run.js')
 const { readVerifierStatus } = await import('../../../verifier/audit-artifacts.js')
+const { emptyAuditCostSummary } = await import('../../../verifier/proxy-evidence.js')
 const { auditWindowSellersLeft, readAuditWindow } = await import('../../../verifier/audit-window.js')
-const { SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps } = await import('../../../verifier/epoch-plan.js')
+const {
+  CONFIRMATION_ATTEMPTS, CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps,
+} = await import('../../../verifier/epoch-plan.js')
 
 setAuditedModelsForTesting({
   'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },
@@ -98,12 +104,27 @@ interface Scenario {
   snapshots: Array<ReturnType<typeof snapshot>>
   build: (model: string) => Promise<void>
   audit: (model: string, peerId: string, context: { proxy: unknown }) => Promise<void>
+  /** What a seller's first audit returns; a SKIPPED result when unset. */
+  firstResult?: (model: string, peerId: string) => Record<string, unknown>
+  /** Audit IDs whose question reservation was voided. */
+  voided: string[]
+  /** Extra-set reservations written, as `<model> <seller>`. */
+  extensionReservations: string[]
+  /** The first audit's reference each extra-set reservation was asked for. */
+  extensionFirstReferenceIds: string[]
+  /** References of question sets a submit has retired. */
+  retiredReferenceIds: Set<string>
+  /** What `loadModelAuditReservation` returns on its n-th call (from 0); not found when unset. */
+  reservation?: (call: number) => { reference: unknown; retired: boolean }
+  reservationReads: number
   questionSets: Set<string>
   maxConcurrentModels?: number
   /** Models whose summary can't be written. */
   brokenModels: Set<string>
   /** The confirmations waiting for this auditor, as model and seller agent id. Needs `confirm: true`. */
   confirmations: Array<{ model: string; agentId: string }>
+  /** The waiting reports are a DIFF, so the run marks its results `confirmsDiff`. */
+  confirmationsWaitOnDiff?: boolean
   /** Run the auditor's assigned models (no `--all`); the auditor is approved before the epoch starts. */
   assigned: boolean
   /** A KBF audits contract is configured even without confirmations. */
@@ -132,6 +153,11 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     clientAvailable: false,
     approved: async () => true,
     approvalReads: 0,
+    voided: [],
+    extensionReservations: [],
+    extensionFirstReferenceIds: [],
+    retiredReferenceIds: new Set(),
+    reservationReads: 0,
     async run(options = {}) {
       const command = new Command().option('--data-dir <path>').option('--config <path>')
       command.setOptionValue('dataDir', dir)
@@ -142,6 +168,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     },
   }
   let snapshotReads = 0
+  let reservationsMade = 0
   const realNow = Date.now
   fakeHolder.laneFakes = {
     createVerifierClient: () => {
@@ -165,7 +192,8 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     confirmationTargetsByModel: () => {
       const targets = new Map<string, Map<string, unknown>>()
       for (const { model, agentId } of scenario.confirmations) {
-        targets.set(model, new Map([[agentId, { agentId: BigInt(agentId), service: model, waiting: [], ownReportedAt: null }]]))
+        const waiting = scenario.confirmationsWaitOnDiff ? [{ verdict: 'DIFF', reports: 1, required: 2 }] : []
+        targets.set(model, new Map([[agentId, { agentId: BigInt(agentId), service: model, waiting, ownReportedAt: null }]]))
       }
       return targets
     },
@@ -207,11 +235,13 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
       return entry
     },
     verifyModelTarget: async (input: {
-      target: { peerId: string }; service: string; context: { proxy: unknown }
+      target: { peerId: string }; service: string; context: { proxy: unknown }; extension?: boolean; resume?: unknown; auditId: string
     }) => {
-      scenario.log.push(`audit ${input.service} ${input.target.peerId.slice(0, 2)}`)
+      const label = `${input.service} ${input.target.peerId.slice(0, 2)}${input.extension ? ' extension' : ''}${input.resume ? ' resume' : ''}`
+      scenario.log.push(`audit ${label}`)
       await scenario.audit(input.service, input.target.peerId, input.context)
-      scenario.log.push(`audited ${input.service} ${input.target.peerId.slice(0, 2)}`)
+      scenario.log.push(`audited ${label}`)
+      if (!input.extension && scenario.firstResult) return { ...scenario.firstResult(input.service, input.target.peerId), auditId: input.auditId }
       return {
         status: 'SKIPPED', peerId: input.target.peerId, displayName: null, agentId: null, service: input.service,
         code: 'policy_rejected', reason: 'refused', outcomeReason: OUTCOME_REASON, source: 'runtime',
@@ -221,11 +251,34 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     epochSetCalibrationProblem: () => null,
     loadEpochQuestionSet: (input: { model: string }) => (scenario.questionSets.has(input.model) ? {} : null),
     missingBankReferenceExchanges: () => [],
+    reserveExtensionReference: (input: { model: string; sellerPeerId: string; extensionIndex: number; firstReferenceId: string }) => {
+      scenario.extensionReservations.push(`${input.model} ${input.sellerPeerId.slice(0, 2)}`)
+      scenario.extensionFirstReferenceIds.push(input.firstReferenceId)
+      return {
+        auditId: `extension-${input.model}-${input.sellerPeerId}-${input.extensionIndex}`,
+        reference: { referenceId: `extension-reference-${input.model}`, probes: [] },
+      }
+    },
+    // Every reservation gets its own audit ID, as the real one (it includes the time it was made).
     reserveModelAuditReference: (input: { model: string; sellerPeerId: string }) => ({
-      auditId: `audit-${input.model}-${input.sellerPeerId}`, reference: { referenceId: `reference-${input.model}` },
+      auditId: `audit-${input.model}-${input.sellerPeerId}-${++reservationsMade}`, reference: { referenceId: `reference-${input.model}` },
     }),
-    voidModelAuditReference: () => undefined,
+    voidModelAuditReference: (input: { auditId: string }) => { scenario.voided.push(input.auditId) },
     openResponseAuthReader: () => ({ close: () => undefined }),
+    // A first audit's evidence names the reference it was asked, here one per evidence file.
+    verifyProxyAuditEvidenceFile: (path: string) => {
+      if (!basename(path).startsWith('first-audit-')) throw new Error(`no evidence at ${path}`)
+      return {
+        reference: { referenceId: `first-reference:${basename(path)}`, queryProfileHash: FIXTURE_QUERY_PROFILE_HASH, probes: [{ id: 'p1' }] },
+        exchanges: [],
+      }
+    },
+    loadModelAuditReservation: (input: { auditId: string }) => {
+      const call = scenario.reservationReads++
+      if (!scenario.reservation) throw new Error(`active audit reservation ${input.auditId} not found`)
+      return scenario.reservation(call)
+    },
+    isRetiredEpochQuestionSetReference: async (input: { referenceId: string }) => scenario.retiredReferenceIds.has(input.referenceId),
   } as unknown as Fakes
   try {
     await body(scenario)
@@ -803,6 +856,209 @@ test('assigned mode: a removal during the run stops the next seller audit, and l
   const audited = scenario.log.filter((line) => line.startsWith('audit '))
   assert.equal(audited.length, 1, scenario.log.join('\n'))
   assert.ok(scenario.approvalReads >= 2, `approval read ${scenario.approvalReads} times`)
+}))
+
+const FIXTURE_QUERY_PROFILE = createReferenceQueryProfile({ upstreamModel: 'vendor/model-a' })
+const FIXTURE_QUERY_PROFILE_HASH = queryProfileHash(FIXTURE_QUERY_PROFILE)
+
+/** A first audit of 100 questions with 22 wrong at 10% self-error: a close call (0.005 <= p < 0.20). */
+function closeCallResult(model: string, peerId: string): Record<string, unknown> {
+  const verdict = computeKbfVerdict({
+    selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8,
+    targetMatchVector: Array.from({ length: 100 }, (_, index) => index < 22 ? 0 : 1),
+  })
+  return {
+    peerId, displayName: null, agentId: '7', service: model, status: verdict.verdict,
+    auditId: `audit-${model}-${peerId}`, parsedProbeCount: 100, probeCount: 100,
+    correctProbeCount: 78, incorrectProbeCount: 22, correctRate: 0.78, requestCount: 10,
+    cost: emptyAuditCostSummary(),
+    evidencePath: join(tmpdir(), `first-audit-${model}-${peerId.slice(0, 8)}.json`), evidenceHash: `0x${'ab'.repeat(32)}`,
+    stats: { ...verdict.stats, selfCoverage: 1 }, responseAuthVerified: true, outcomeReason: null,
+  }
+}
+
+/** An assigned run whose one first audit is a close call, with the auditor removed during that audit. */
+async function removeDuringCloseCall(scenario: Scenario): Promise<void> {
+  scenario.assigned = true
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a'])])]
+  let approved = true
+  scenario.approved = async () => approved
+  const realNow = Date.now
+  scenario.firstResult = closeCallResult
+  scenario.audit = async () => {
+    // The owner removes the auditor during the first audit; the gate reads it again after its minute.
+    approved = false
+    Date.now = () => realNow() + 120_000
+  }
+  await scenario.run()
+}
+
+test('assigned mode: a removal during a close call\'s first audit starts no extension, and the close call stays pending', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await removeDuringCloseCall(scenario)
+  assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa'], scenario.log.join('\n'))
+  assert.ok(scenario.approvalReads >= 2, `approval read ${scenario.approvalReads} times`)
+  const files = await readdir(scenario.evidenceDir, { recursive: true })
+  const summaryFile = files.find((file) => file.includes('model-a') && file.endsWith('summary.json'))
+  assert.ok(summaryFile, files.join('\n'))
+  const summary = JSON.parse(await readFile(join(scenario.evidenceDir, summaryFile), 'utf8')) as {
+    results: Array<{ peerId: string; extensionPending?: { reason: string }; extension?: unknown }>
+  }
+  assert.equal(summary.results.length, 1)
+  assert.ok(summary.results[0]!.extensionPending, JSON.stringify(summary.results[0]))
+  assert.equal(summary.results[0]!.extension, undefined)
+  assert.deepEqual(scenario.voided, [])
+}))
+
+test('assigned mode: a removal during a close call\'s first audit writes no extra-set reservation', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await removeDuringCloseCall(scenario)
+  assert.deepEqual(scenario.extensionReservations, [])
+}))
+
+test('assigned mode: a removal while a seller task waits for the seller\'s slot starts no audit of it', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  // One seller offers both models, so model-b's task waits for model-a's audit of that seller.
+  scenario.assigned = true
+  let approved = true
+  scenario.approved = async () => approved
+  const realNow = Date.now
+  const auditingA = deferred()
+  scenario.build = async (model) => { if (model === 'model-b') await auditingA.promise }
+  scenario.audit = async (model) => {
+    if (model !== 'model-a') return
+    auditingA.resolve()
+    // Wait until model-b's lane has started: its seller task has then passed the check before the slot.
+    const laneStarted = async () => (await events(scenario).catch(() => []))
+      .some((event) => event.type === 'model-started' && event.model === 'model-b')
+    while (!(await laneStarted())) await new Promise((resolve) => setTimeout(resolve, 5))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    approved = false
+    Date.now = () => realNow() + 120_000
+  }
+  await scenario.run()
+  assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa'], scenario.log.join('\n'))
+  const final = await status(scenario)
+  assert.equal(final.failures, 0)
+  assert.equal(final.queuedAudits, 0)
+}))
+
+test('a close call\'s extra set is reserved for the reference its first audit was asked', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a'])])]
+  scenario.firstResult = closeCallResult
+  await scenario.run()
+  assert.deepEqual(scenario.extensionFirstReferenceIds, ['first-reference:first-audit-model-a-aaaaaaaa.json'])
+}))
+
+test('a close call asked on a set a submit has since published is finished: no build, no audit, and given up for good', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  // A targeted run opens no audit window, like a confirmation: its close call's extra set can't run.
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]
+  scenario.firstResult = closeCallResult
+  await scenario.run({ peer })
+  assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa', 'audit model-a aa extension'])
+  // A submit then publishes the set its first audit was asked.
+  scenario.retiredReferenceIds.add('first-reference:first-audit-model-a-aaaaaaaa.json')
+  scenario.log.length = 0
+  scenario.extensionReservations.length = 0
+  await scenario.run({ peer })
+  assert.deepEqual(scenario.log.filter((line) => /^(build|audit) /.test(line)), [], scenario.log.join('\n'))
+  assert.deepEqual(scenario.extensionReservations, [])
+  const giveUps = await readRetryGiveUps(scenario.evidenceDir, EPOCH)
+  assert.deepEqual(giveUps.map((entry) => [entry.model, entry.extraQuestionsPublished]), [['model-a', true]])
+}))
+
+test('a confirmation close call asked on a set a submit has since published is audited again from the start, up to its attempt limit', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.firstResult = closeCallResult
+  const run = () => scenario.run({ peer, confirm: true })
+  const audits = () => scenario.log.filter((line) => line.startsWith('audit '))
+  // Run 1: the confirmation is a close call, and its extra set can't run.
+  await run()
+  assert.deepEqual(audits(), ['audit model-a aa', 'audit model-a aa extension'])
+  // A submit then publishes the set its first audit was asked. In this test every attempt ends as such a
+  // close call again, so it shows what bounds the re-audits.
+  scenario.retiredReferenceIds.add('first-reference:first-audit-model-a-aaaaaaaa.json')
+  scenario.reservation = () => ({ reference: {}, retired: true })
+  const realNow = Date.now
+  for (const attempt of [2, 3, 4]) {
+    scenario.log.length = 0
+    scenario.extensionReservations.length = 0
+    Date.now = () => realNow() + attempt * (CONFIRMATION_RECHECK_SPACING_SECONDS + 60) * 1_000
+    await run()
+    if (attempt <= CONFIRMATION_ATTEMPTS) {
+      // A new first audit on the current set: not resumed, no extra set of the published one.
+      assert.deepEqual(audits(), ['audit model-a aa', 'audit model-a aa extension'], `attempt ${attempt}: ${scenario.log.join('\n')}`)
+    } else {
+      assert.deepEqual(audits(), [], `after ${CONFIRMATION_ATTEMPTS} attempts nothing more is audited: ${scenario.log.join('\n')}`)
+    }
+  }
+  const cell = (await loadEpochState(scenario.evidenceDir, EPOCH)).cells.get(epochCellKey('model-a', peer))!
+  assert.equal(cell.attempts, CONFIRMATION_ATTEMPTS)
+  assert.equal(cell.action, 'done')
+  assert.equal(cell.state, 'undetermined')
+  assert.match(cell.result?.outcomeReason?.summary ?? '', /extra questions were published before they could be asked/)
+  assert.equal(cell.givenUp, undefined, 'never given up as a finished close call')
+}))
+
+test('a confirmation close call carried pending through later runs is one attempt: once its set is published it still gets fresh audits up to the limit', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.firstResult = closeCallResult
+  const realNow = Date.now
+  let minutes = 0
+  const run = async () => {
+    scenario.log.length = 0
+    minutes += 11
+    Date.now = () => realNow() + minutes * 60_000
+    const printed: string[] = []
+    const quiet = console.log
+    console.log = (...args: unknown[]) => { printed.push(args.join(' ')) }
+    try {
+      await scenario.run({ peer, confirm: true })
+    } finally {
+      console.log = quiet
+    }
+    return { audits: scenario.log.filter((line) => line.startsWith('audit ')), printed }
+  }
+  assert.deepEqual((await run()).audits, ['audit model-a aa', 'audit model-a aa extension'])
+  // Two more runs carry the close call on, and its extra set fails again each time.
+  for (let carry = 0; carry < 2; carry += 1) assert.deepEqual((await run()).audits, ['audit model-a aa extension'])
+  let cell = (await loadEpochState(scenario.evidenceDir, EPOCH)).cells.get(epochCellKey('model-a', peer))!
+  assert.equal(cell.attempts, 1, 'one audit so far, written into three summaries')
+  // A submit then publishes its set: the seller still gets fresh audits, attempts 2 and 3.
+  scenario.retiredReferenceIds.add('first-reference:first-audit-model-a-aaaaaaaa.json')
+  const afterRetire = await run()
+  assert.ok(afterRetire.printed.some((line) => /audited again on new questions \(attempt 1 of 3 used\)/.test(line)), afterRetire.printed.join('\n'))
+  assert.deepEqual(afterRetire.audits, ['audit model-a aa', 'audit model-a aa extension'])
+  assert.deepEqual((await run()).audits, ['audit model-a aa', 'audit model-a aa extension'])
+  assert.deepEqual((await run()).audits, [])
+  cell = (await loadEpochState(scenario.evidenceDir, EPOCH)).cells.get(epochCellKey('model-a', peer))!
+  assert.equal(cell.attempts, CONFIRMATION_ATTEMPTS)
+  assert.equal(cell.action, 'done')
+}))
+
+test('a retry whose set a submit published after the plan is not resumed: a new audit on the current set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]
+  // Run 1: the seller's connection breaks; its UNDETERMINED is retried later this epoch.
+  scenario.firstResult = (model, peerId) => ({
+    ...closeCallResult(model, peerId), status: 'UNDETERMINED', responseAuthVerified: false,
+    outcomeReason: { code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport', affectedBatchCount: 1, totalBatchCount: 10, nextAction: 'retry later' },
+  })
+  await scenario.run()
+  scenario.log.length = 0
+  // Run 2, once the retry is due: its plan resumes the partial audit; by the seller's turn the set is published.
+  const realNow = Date.now
+  Date.now = () => realNow() + (SELLER_RETRY_SPACING_SECONDS + 60) * 1_000
+  const reference = { referenceId: 'first-reference:first-audit-model-a-aaaaaaaa.json', queryProfile: FIXTURE_QUERY_PROFILE, probes: [{ id: 'p1' }] }
+  scenario.reservation = (call) => ({ reference, retired: call > 0 })
+  await scenario.run()
+  assert.equal(scenario.reservationReads, 2, 'read by the plan and again at the seller\'s turn')
+  assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa'], scenario.log.join('\n'))
+  assert.deepEqual(scenario.voided, [`audit-model-a-${peer}-1`])
 }))
 
 test('assigned mode: an approval that cannot be read never stops a run', LANE_TIMEOUT, () => withScenario(async (scenario) => {

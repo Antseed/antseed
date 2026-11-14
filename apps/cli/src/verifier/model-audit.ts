@@ -25,14 +25,16 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { failureBlame } from './failure-blame.js'
-import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
+import { EXTRA_QUESTIONS_PUBLISHED, isExtraQuestionsPublished, type VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { windowIncludesSeller, type AuditWindowV1 } from './audit-window.js'
 import {
   EPOCH_QUESTION_SET_METHOD,
   findEpochProbeReference,
+  findEpochQuestionSetByReferenceId,
+  isRetiredEpochQuestionSetReference,
   loadBankReferenceExchanges,
-  loadEpochQuestionSet,
+  type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
 import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
@@ -123,9 +125,10 @@ export interface ModelAuditEvidenceV1 {
     path: string | null
   }>
   /**
-   * How the questions were chosen: `epoch-shared-set-v1` when every reference is this auditor's
-   * question set for the model and epoch (every seller got the same audit set, every close call the
-   * same extra sets). Absent on evidence from per-seller draws.
+   * How the questions were chosen: `epoch-shared-set-v1` when every reference is one of this auditor's
+   * question sets for the model and epoch (every seller got the same audit set, every close call the
+   * same extra sets). Absent on evidence from per-seller draws, and when one model audit holds results
+   * from two sets (one a submit retired, `retireEpochQuestionSet`, and the one built after it).
    */
   questionSelection?: {
     method: typeof EPOCH_QUESTION_SET_METHOD
@@ -236,6 +239,16 @@ export function modelAuditLedgerPath(
   contract: string,
 ): string {
   return join(modelAuditsDirectory(evidenceDir, runId), `ledger-${String(chainId)}-${contract.toLowerCase()}.json`)
+}
+
+/** Whether `referenceId` is in a question set a submit retired, from the retired files alone. Unreadable counts as not. */
+async function questionSetRetired(
+  input: { banksDir: string; manifest: { epoch: string } },
+  model: string,
+  referenceId: string,
+): Promise<boolean> {
+  return isRetiredEpochQuestionSetReference({ banksDir: input.banksDir, model, epoch: input.manifest.epoch, referenceId })
+    .catch(() => false)
 }
 
 /**
@@ -372,7 +385,21 @@ export async function prepareModelAudits(input: {
         continue
       }
       // A closed window asks no more extra questions: its open close calls are audited but undecided.
-      const finalVerdict = finalAuditVerdict(result) ?? (window?.state === 'closed' ? 'UNDETERMINED' : null)
+      let finalVerdict = finalAuditVerdict(result) ?? (window?.state === 'closed' ? 'UNDETERMINED' : null)
+      // So is a close call whose first audit was made on a set a submit has published since: its extra
+      // questions are public and are never asked (`decideRetryGiveUps`). A confirmation's is an undecided
+      // attempt instead: the seller is audited again on new questions, and only the merged epoch's last
+      // attempt (marked with the reason, `applyRetryGiveUps`) is submitted.
+      if (finalVerdict === null && await questionSetRetired(input, model, evidence.reference.referenceId)) {
+        if (result.confirmsDiff && !isExtraQuestionsPublished(result.outcomeReason)) {
+          exclude('a confirmation whose extra questions were published before they could be asked: the seller is audited '
+            + 'again on new questions, up to its attempt limit, before anything is submitted')
+          heldBack.push(`${model} ${result.agentId ?? result.peerId}: confirmation audited again on new questions`)
+          continue
+        }
+        finalVerdict = 'UNDETERMINED'
+        result = { ...result, outcomeReason: result.outcomeReason ?? EXTRA_QUESTIONS_PUBLISHED }
+      }
       if (finalVerdict === null) {
         if (result.extensionPending) heldBack.push(`${model} ${result.agentId ?? result.peerId}: close call waiting for its extra questions`)
         exclude(result.extensionPending
@@ -448,6 +475,19 @@ export async function prepareModelAudits(input: {
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
     ))
     const partCount = Math.ceil(accepted.length / maxResults)
+    // Read once per model, not once per part: neither depends on the part.
+    const bankExchanges = await loadBankReferenceExchanges(input.banksDir, model)
+    const questionSets = new Map<string, Promise<EpochQuestionSetV1 | null>>()
+    const questionSetOf = (referenceId: string): Promise<EpochQuestionSetV1 | null> => {
+      let found = questionSets.get(referenceId)
+      if (!found) {
+        found = findEpochQuestionSetByReferenceId({
+          banksDir: input.banksDir, model, epoch: input.manifest.epoch, referenceId, config: input.config,
+        }).catch(() => null)
+        questionSets.set(referenceId, found)
+      }
+      return found
+    }
     for (let part = 1; part <= partCount; part += 1) {
       const slice = accepted.slice((part - 1) * maxResults, part * maxResults)
       const key = partCount === 1 ? model : `${model}#${part}`
@@ -483,8 +523,8 @@ export async function prepareModelAudits(input: {
         })
       }
       referenceEntries.sort((left, right) => left.referenceId.localeCompare(right.referenceId))
-      const questionSet = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.manifest.epoch, config: input.config })
-        .catch(() => null)
+      // The set the references are from, also once a submit has retired it, so evidence prepared again is the same.
+      const questionSet = referenceEntries.length === 0 ? null : await questionSetOf(referenceEntries[0]!.referenceId)
       const setReferenceIds = new Set(questionSet ? [questionSet.reference, ...questionSet.extensions].map((entry) => entry.referenceId) : [])
       const questionSelection: ModelAuditEvidenceV1['questionSelection'] | null = questionSet
         && referenceEntries.every((entry) => setReferenceIds.has(entry.referenceId))
@@ -497,7 +537,7 @@ export async function prepareModelAudits(input: {
         : null
       const referenceEvidence: PreparedModelAudit['referenceEvidence'] = []
       const referenceEvidenceEntries: ModelAuditReferenceEvidenceV1[] = []
-      for (const stored of await loadBankReferenceExchanges(input.banksDir, model)) {
+      for (const stored of bankExchanges) {
         const path = join(evidenceDirectory, 'reference-evidence', basename(stored.path))
         referenceEvidence.push({ sourcePath: stored.absolutePath, path })
         referenceEvidenceEntries.push({
