@@ -993,6 +993,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           paymentConfig,
           ...(config.payments.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           minBudgetPerRequest: config.payments.minBudgetPerRequest ?? '10000',
+          ...(config.payments.suggestedReserveAmount ? { suggestedReserveAmount: config.payments.suggestedReserveAmount } : {}),
           minSettleDelta,
           ...(config.payments.serveWhileClosePending !== undefined
             ? { serveWhileClosePending: config.payments.serveWhileClosePending }

@@ -190,6 +190,32 @@ describe('SellerPaymentManager PaymentRequired', () => {
     const req = customManager.getPaymentRequirements('req-1');
     expect(req.minBudgetPerRequest).toBe('50000');
   });
+
+  it('suggestedReserveAmount lowers the first reserve, kept between the request minimum and the first-sign cap', () => {
+    const suggested = (suggestedReserveAmount: unknown, minBudgetPerRequest = '10000') => new SellerPaymentManager(sellerIdentity, {
+      rpcUrl: 'http://127.0.0.1:8545',
+      channelsContractAddress: CONTRACT_ADDR,
+      chainId: CHAIN_ID,
+      dataDir: tempDir,
+      minBudgetPerRequest,
+      suggestedReserveAmount: suggestedReserveAmount as string,
+    }, store).getPaymentRequirements('req-1').suggestedAmount;
+
+    // A seller of one-cent calls asks a new buyer for twenty cents.
+    expect(suggested('200000')).toBe('200000');
+    // Never less than one request's minimum budget.
+    expect(suggested('5000')).toBe('10000');
+    // A request minimum above the cap does not lift the suggestion over it.
+    expect(suggested('500000', '2000000')).toBe('1000000');
+    // Never more than the default first-sign cap, and an unreadable value keeps the default.
+    expect(suggested('5000000')).toBe('1000000');
+    expect(suggested('0')).toBe('1000000');
+    expect(suggested('twenty cents')).toBe('1000000');
+    // An unquoted number in the JSON config works; any other type keeps the default.
+    expect(suggested(200000)).toBe('200000');
+    expect(suggested(0.5)).toBe('1000000');
+    expect(suggested({ usdc: 0.2 })).toBe('1000000');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

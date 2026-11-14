@@ -436,6 +436,7 @@ Relative paths resolve from the config file's directory. See [Provider plugin AP
 | `payments.crypto.chainId` | `base-mainnet` | `base-mainnet`, `base-sepolia` or `base-local` |
 | `payments.crypto.rpcUrl` | public Base RPC | Your Base JSON-RPC endpoint. See [Base RPC](/docs/buyer-config#base-rpc-url). |
 | `payments.minBudgetPerRequest` | `"10000"` ($0.01) | Minimum USDC per request, in base units |
+| `payments.suggestedReserveAmount` | `"1000000"` ($1.00) | First reserve suggested to a buyer with no channel, in base units. Kept between `payments.minBudgetPerRequest` and $1.00, the contract's default first-sign cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers; each new channel still costs the seller gas to open and close. |
 | `payments.minSettleDelta` | `"2000"` ($0.002) | Smallest unsettled amount, in base units, for which the idle settle loop sends a transaction. Closing a channel always settles the full amount. `seller start --min-settle-delta 0.002` overrides it in USDC. |
 | `payments.serveWhileClosePending` | `false` | Keep serving channels whose buyer already requested a close on-chain. Work served this way can become uncollectible. |
 | `payments.sellerContract.address` | none | An on-chain seller contract that fronts this peer. Buyers check that your peer address is an operator of the contract. |

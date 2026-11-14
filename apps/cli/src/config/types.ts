@@ -415,6 +415,12 @@ export interface PaymentsCLIConfig {
   /** Minimum USDC per request in base units (seller). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
   /**
+   * First reserve the seller suggests to a buyer with no channel, in base
+   * units. Default: "1000000" ($1.00), the contract's default first-sign cap. A seller
+   * of small per-request services may suggest less.
+   */
+  suggestedReserveAmount?: string;
+  /**
    * Minimum unsettled delta (base units) required before the seller's idle
    * settle loop submits a tx. Skips dust settles whose gas cost exceeds the
    * amount. Only applied in idle settle — close() still settles the full
