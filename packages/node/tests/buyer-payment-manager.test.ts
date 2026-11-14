@@ -2593,7 +2593,7 @@ describe('BuyerPaymentManager', () => {
     expect(BigInt(spendEvents[0]!.amountUsdc)).toBe(manager.getCumulativeAmount(sellerPeerId) - before);
   });
 
-  it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window', async () => {
+  it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window only for a response the buyer received', async () => {
     const sellerPeerId = fakePeerId('seller-extend-stalled');
     const stalledConfig = makeConfig(tempDir, {
       maxPerRequestUsdc: 10_000n,
@@ -2625,16 +2625,24 @@ describe('BuyerPaymentManager', () => {
 
     mux.sentSpendingAuths.length = 0;
 
+    // Nothing received: the window stays used up and nothing more is signed.
+    expect(await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux)).toBe(channelId);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(10_000n);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+
+    // A response the buyer received and priced at 4_000, whose cost frame never arrived.
+    manager.recordDeliveredResponse(sellerPeerId, 'received-request', { costUsdc: 4_000n });
     const returnedChannelId = await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux);
 
-    // verifiedCost advances to currentCumulative (10_000), unblocking the overdraft window so
-    // maxSignable becomes verified (10_000) + maxPerRequest (10_000) = 20_000, still under the
-    // 100_000 reserve ceiling. The new SpendingAuth is signed at 20_000.
+    // verifiedCost advances by that response at the 1.4x tolerance (5_600), unblocking the
+    // overdraft window so maxSignable becomes verified (5_600) + maxPerRequest (10_000) =
+    // 15_600, still under the 100_000 reserve ceiling. The new SpendingAuth is signed at 15_600.
     expect(returnedChannelId).toBe(channelId);
-    expect(manager.getVerifiedCost(sellerPeerId)).toBe(10_000n);
-    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_600n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(15_600n);
     expect(mux.sentSpendingAuths).toHaveLength(1);
-    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('20000');
+    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('15600');
   });
 
   it('extendCurrentSpendingAuth catches up to an explicit target in a single step within overdraft window', async () => {
@@ -2729,8 +2737,8 @@ describe('BuyerPaymentManager', () => {
     // The malicious 1_000_000 target is ignored beyond that bound.
     expect(BigInt(extended.cumulativeAmount)).toBe(15_000n);
     // And crucially: verifiedCost must NOT have been contaminated by the
-    // seller-supplied target — it only advances to the already-signed amount
-    // to reopen the overdraft window.
+    // seller-supplied target — it only advances for responses the buyer
+    // received, to reopen a used-up overdraft window.
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
   });
 

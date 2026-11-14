@@ -326,7 +326,7 @@ describe('review probes: buyer NeedAuth accounting', () => {
   // Property: an adversarial seller
   // ───────────────────────────────────────────────────────────────────────
 
-  it('adversarial seller: never signed past 1.4x what was delivered plus one window per (1 + buyer 402 retries + restarts) (400 random sessions)', async () => {
+  it('adversarial seller: never signed past 1.4x what was delivered plus one window per (1 + restarts) (400 random sessions)', async () => {
     for (let seed = 1; seed <= 400; seed += 1) {
       shutdown();
       // Every other session runs on a small reserve, so claims reach the ceiling and top-ups are signed.
@@ -338,6 +338,8 @@ describe('review probes: buyer NeedAuth accounting', () => {
       const inFlight: string[] = [];
       const costs = new Map<string, bigint>();
       let deliveredTotal = 0n;
+      /** Responses delivered, each counted at most once and rounded up by at most one base unit. */
+      let deliveries = 0n;
       let windows = 1n;
       let counter = 0;
       let last: { id: string; cost: bigint } | null = null;
@@ -356,6 +358,7 @@ describe('review probes: buyer NeedAuth accounting', () => {
           const cost = BigInt(1_000 + Math.floor(random() * 100_000));
           costs.set(id, cost);
           deliveredTotal += cost;
+          deliveries += 1n;
           deliver(id, cost);
           last = { id, cost };
           log.push(`deliver ${id} ${cost}`);
@@ -365,6 +368,7 @@ describe('review probes: buyer NeedAuth accounting', () => {
           const cost = costs.get(id)!;
           send(id);
           deliveredTotal += cost;
+          deliveries += 1n;
           deliver(id, cost);
           last = { id, cost };
           log.push(`redeliver ${id} ${cost}`);
@@ -393,7 +397,6 @@ describe('review probes: buyer NeedAuth accounting', () => {
           await buyerSigns(last.id, last.cost);
           last = null;
         } else if (action === 'extend') {
-          windows += 1n;
           const target = signed() + amount();
           log.push(`402 extend target=${target}`);
           await buyerExtends(target);
@@ -408,7 +411,7 @@ describe('review probes: buyer NeedAuth accounting', () => {
           windows += 1n;
           log.push('restart');
         }
-        const bound = (deliveredTotal * 14n + 9n) / 10n + BigInt(costs.size) + windows * WINDOW;
+        const bound = (deliveredTotal * 14n + 9n) / 10n + deliveries + windows * WINDOW;
         expect(signed(), `seed ${seed}: signed ${signed()} > bound ${bound} (delivered ${deliveredTotal}, windows ${windows})\n${log.join('\n')}`)
           .toBeLessThanOrEqual(bound);
         expect(signed(), `seed ${seed}: signed past verified + window\n${log.join('\n')}`).toBeLessThanOrEqual(verified() + WINDOW);
@@ -512,7 +515,7 @@ describe('review probes: buyer NeedAuth accounting', () => {
     expect(verified()).toBe(0n);
   });
 
-  it('a cost above the window that the buyer never received a response for needs one 402 per window', async () => {
+  it('a cost above the window that the buyer never received a response for is signed only inside the window, however many 402s follow', async () => {
     // The buyer aborts a stream; the seller finishes it and bills 1.6 USDC (a large-context request).
     send('aborted');
     fail('aborted');
@@ -521,15 +524,12 @@ describe('review probes: buyer NeedAuth accounting', () => {
     // Answered as a prompt: signed inside the window, nothing counted as verified.
     expect(signed()).toBe(WINDOW);
     expect(verified()).toBe(0n);
-    // The rest: the seller parks 5 s and answers 402, per window.
     await sellerSends(prompt(spent));
     expect(signed()).toBe(WINDOW);
-    let rounds = 0;
-    while (signed() < spent) {
-      rounds += 1;
-      await buyerExtends(spent);
-    }
-    expect(rounds, '402 round trips (5 s parked each) to pay 1.6 USDC with a 0.5 USDC window').toBe(3);
+    // The seller parks 5 s and answers 402: with nothing received, the retry does not reopen the window.
+    for (let round = 0; round < 3; round += 1) await buyerExtends(spent);
+    expect(signed(), 'a 402 retry reopened the window with nothing received').toBe(WINDOW);
+    expect(verified()).toBe(0n);
   });
 
   it('state stays bounded: no timers and no chargeable records after failed and timed-out requests', async () => {
