@@ -193,6 +193,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
     /// @inheritdoc IAntseedTokenizerAudits
     function proveTokenizerMismatch(bytes32 modelHash, Round[] calldata rounds) external override {
+        // A revoked audit records nothing, flags included (they never reach the results layer's own check).
+        if (!results.isAudit(address(this))) revert NotApprovedAudit();
         uint256 count = rounds.length;
         if (modelHash == bytes32(0) || count < minRounds || count > MAX_ROUNDS) revert InvalidRounds();
 

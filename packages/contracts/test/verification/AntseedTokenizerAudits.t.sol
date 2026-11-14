@@ -277,6 +277,25 @@ contract AntseedTokenizerAuditsTest is Test {
         audits.proveTokenizerMismatch(modelHash, rounds);
     }
 
+    function test_aRevokedAuditProvesNothing() public {
+        kbf.record(suspectAgent, serviceHash, modelHash, SAME);
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        results.setAudit(address(audits), false);
+
+        // Refreshing a live flag earns no credit, so it never reached the results layer's own check.
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        vm.expectRevert(IAntseedTokenizerAudits.NotApprovedAudit.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds);
+
+        // Nor does a new flag with credits turned off.
+        audits.clearFlag(suspectAgent, serviceHash);
+        audits.setCreditsPerProof(0);
+        signedAt += 1000;
+        rounds = _rounds(3, 129, MODEL_DELTA);
+        vm.expectRevert(IAntseedTokenizerAudits.NotApprovedAudit.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
     function test_aUsageFlaggedServiceIsNoReference() public {
         // Flag reference 0's service: it misreports against the stranger and references 1 and 2.
         uint256 stranger = _register(vm.addr(OTHER_KEY));

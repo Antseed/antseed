@@ -2,6 +2,7 @@ import { Contract, getAddress, type AbstractSigner } from 'ethers';
 import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/protocol/request-codec';
 import { BaseEvmClient } from './base-evm-client.js';
+import { hexToBytes } from '../../utils/hex.js';
 import { serviceHash } from './verifier-client.js';
 
 export interface TokenizerAuditsClientConfig {
@@ -66,6 +67,7 @@ export const TOKENIZER_AUDITS_ABI = [
   'error FutureEvidence(uint256 round)',
   'error UnknownAgent()',
   'error SelfAudit()',
+  'error NotApprovedAudit()',
   'error MalformedRequest()',
   'error MalformedResponse()',
   // From the results layer the proof records into.
@@ -198,7 +200,9 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
       }
       const key = depth === 2 && inUsage ? usageKeyAt(body, i) : null;
       if (key) {
-        counts.set(key.name, [...(counts.get(key.name) ?? []), key.value]);
+        const values = counts.get(key.name);
+        if (values) values.push(key.value);
+        else counts.set(key.name, [key.value]);
         i = key.end - 1;
       } else {
         inString = true;
@@ -418,10 +422,7 @@ function withHexPrefix(value: string): string {
 }
 
 function hexBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  return out;
+  return hexToBytes(hex.startsWith('0x') ? hex.slice(2) : hex);
 }
 
 function equal(a: Uint8Array, b: Uint8Array): boolean {

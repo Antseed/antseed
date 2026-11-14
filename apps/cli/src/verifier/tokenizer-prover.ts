@@ -337,7 +337,8 @@ async function judge(
 
 /**
  * The largest set of references, one service per agent, whose deltas all lie within `tolerance` of each other
- * (the contract checks their whole range), sorted by delta.
+ * (the contract checks their whole range), sorted by delta. Every measured service is a candidate, so an
+ * agent whose services disagree still counts through the one that agrees with the others.
  */
 function agreeingReferences(
   round: ProbeRound,
@@ -345,23 +346,18 @@ function agreeingReferences(
   references: Member[],
   tolerance: number,
 ): Array<{ delta: number; pair: TokenizerProbePair }> {
-  const byAgent = new Map<bigint, { delta: number; pair: TokenizerProbePair }>()
-  for (const member of references) {
-    if (byAgent.has(member.agentId)) continue
+  const measured = references.flatMap((member) => {
     const delta = measuredDelta(round, modelHash, member)
-    if (delta !== null) byAgent.set(member.agentId, { delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair })
-  }
-  const measured = [...byAgent.values()].sort((x, y) => x.delta - y.delta)
-  let bestStart = 0
-  let bestLength = 0
+    return delta === null ? [] : [{ agentId: member.agentId, delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair }]
+  }).sort((x, y) => x.delta - y.delta)
+  let best: Array<{ delta: number; pair: TokenizerProbePair }> = []
   for (let start = 0, end = 0; start < measured.length; start++) {
     while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) end++
-    if (end - start > bestLength) {
-      bestStart = start
-      bestLength = end - start
-    }
+    const byAgent = new Map<bigint, { delta: number; pair: TokenizerProbePair }>()
+    for (const { agentId, delta, pair } of measured.slice(start, end)) if (!byAgent.has(agentId)) byAgent.set(agentId, { delta, pair })
+    if (byAgent.size > best.length) best = [...byAgent.values()]
   }
-  return measured.slice(bestStart, bestStart + bestLength)
+  return best
 }
 
 /** A member's signed delta in a round, read once per round; null without a signed pair or usage. */

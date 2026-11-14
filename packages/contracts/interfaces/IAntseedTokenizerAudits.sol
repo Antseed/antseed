@@ -129,6 +129,8 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     error FutureEvidence(uint256 round);
     error UnknownAgent();
     error SelfAudit();
+    /// @notice The results layer does not (or no longer) approve this contract as an audit.
+    error NotApprovedAudit();
 
     function results() external view returns (IAntseedVerificationResults);
     function sellerPools() external view returns (IAntseedSellerPools);

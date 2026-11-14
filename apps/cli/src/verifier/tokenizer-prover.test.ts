@@ -25,6 +25,8 @@ interface FakeSeller {
   protocols: string[]
   /** Its services and which have a live SAME; one `example-model` with `liveSame` by default. */
   services?: Array<{ name: string; liveSame: boolean }>
+  /** Per-service override of `bTokens`. */
+  bTokensByService?: Record<string, number>
 }
 
 function seller(name: string, bTokens: number, liveSame: boolean, status?: number, protocols = ['openai-chat-completions']): FakeSeller {
@@ -60,7 +62,8 @@ function fakeNetwork(sellers: FakeSeller[]) {
     const requestId = headers['x-antseed-request-id']!
     const body = new TextEncoder().encode(String(init.body))
     const parsed = JSON.parse(String(init.body)) as { model: string; messages: Array<{ content: string }> }
-    const promptTokens = 20 + (parsed.messages[0]!.content.includes(' B-') ? s.bTokens : 0)
+    const bTokens = s.bTokensByService?.[parsed.model] ?? s.bTokens
+    const promptTokens = 20 + (parsed.messages[0]!.content.includes(' B-') ? bTokens : 0)
     const request = { requestId, method: 'POST', path, headers: { 'content-type': 'application/json' }, body }
     const usage = path === MESSAGES.path
       ? { input_tokens: promptTokens - 5, cache_read_input_tokens: 5, output_tokens: 2 }
@@ -284,6 +287,26 @@ test('refuses more rounds than a proof takes before sending anything', async () 
     assert.equal(network.requests(), 0)
     const eight = await runTokenizerProver({ ...options, rounds: 8 })
     assert.equal(eight.results.find((r) => r.sellerName === 'Swapped')!.deltas.length, 8)
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('a reference agent whose first service disagrees still counts through the one that agrees', async () => {
+  // Without Ref 1's second service there are only two agreeing references.
+  const sellers = [
+    { ...seller('Ref 1', 139, true), services: [{ name: 'example-model-a', liveSame: true }, { name: 'example-model', liveSame: true }] },
+    seller('Ref 2', 139, true),
+    seller('Ref 3', 139, true),
+    seller('Swapped', 129, false),
+  ]
+  const off = { ...sellers[0]!, bTokensByService: { 'example-model-a': 100 } }
+  const { summary, submitted, evidenceDir } = await run([off, ...sellers.slice(1)], { services: ['example-model'] })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
+    const refs = submitted[0]!.rounds[0]!.references.map((r) => r.base.payload.advertisedService)
+    assert.equal(refs.length, 3)
+    assert.ok(!refs.includes('example-model-a'), 'the disagreeing service is left out')
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

@@ -1,20 +1,25 @@
 import assert from 'node:assert/strict'
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { createServer as createHttpServer, type Server } from 'node:http'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { Contract, JsonRpcProvider, Wallet, keccak256, toUtf8Bytes } from 'ethers'
 import { VerificationStorage, createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
+import {
+  availablePort,
+  castSend,
+  deployContract,
+  repoRoot,
+  startAnvil,
+  stopProcess,
+  waitForRpcReady,
+} from './anvil.test-support.js'
 
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
-// Anvil's default accounts 0 (deployer) and 1 (prover); public test keys.
-const DEPLOYER_PRIVATE_KEY = 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+// Anvil's default account 1 (prover); a public test key.
 const PROVER_PRIVATE_KEY = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 const EPOCH = 5
 const SERVICE = 'example-model'
@@ -27,9 +32,6 @@ const SHAPES = [
 const MODEL_DELTA = 139
 const GENERATOR_MODEL = 'probe-writer'
 
-const compiledTestDirectory = dirname(fileURLToPath(import.meta.url))
-const repoRoot = resolve(compiledTestDirectory, '../../../..')
-const contractsDirectory = join(repoRoot, 'packages', 'contracts')
 const cliEntry = join(repoRoot, 'apps', 'cli', 'dist', 'cli', 'index.js')
 
 const RESULTS_ABI = [
@@ -238,72 +240,9 @@ function requireCommand(command: string): void {
   if (result.status !== 0) throw new Error(`${command} is required for this test`)
 }
 
-function deployContract(rpcUrl: string, contract: string, constructorArgs: string[] = []): string {
-  const output = runCommand('forge', [
-    'create', contract,
-    '--rpc-url', rpcUrl,
-    '--private-key', `0x${DEPLOYER_PRIVATE_KEY}`,
-    '--broadcast',
-    ...(constructorArgs.length > 0 ? ['--constructor-args', ...constructorArgs] : []),
-  ], contractsDirectory)
-  const match = output.match(/Deployed to:\s*(0x[a-fA-F0-9]{40})/)
-  if (!match) throw new Error(`could not parse deployed address for ${contract}:\n${output}`)
-  return match[1]!
-}
 
-function castSend(rpcUrl: string, contract: string, signature: string, args: string[]): void {
-  runCommand('cast', ['send', '--rpc-url', rpcUrl, '--private-key', `0x${DEPLOYER_PRIVATE_KEY}`, contract, signature, ...args], repoRoot)
-}
 
-function runCommand(command: string, args: string[], cwd: string): string {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' } })
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
-  if (result.status !== 0) throw new Error(`command failed: ${command} ${args.join(' ')}\n${output || '(no output)'}`)
-  return output
-}
 
-async function availablePort(): Promise<number> {
-  const server = createServer()
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('could not allocate an Anvil port')
-  const port = address.port
-  server.close()
-  await once(server, 'close')
-  return port
-}
 
-function startAnvil(port: number): ChildProcessWithoutNullStreams {
-  return spawn('anvil', ['--host', '127.0.0.1', '--port', String(port), '--silent'], {
-    cwd: repoRoot,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-  })
-}
 
-async function waitForRpcReady(rpcUrl: string, anvil: ChildProcessWithoutNullStreams, timeoutMs = 20_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (anvil.exitCode !== null) throw new Error(`Anvil exited before RPC startup with code ${anvil.exitCode}`)
-    try {
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
-      })
-      if (response.ok) return
-    } catch {
-      // Retry until the deadline.
-    }
-    await sleep(100)
-  }
-  throw new Error(`Anvil RPC did not start within ${timeoutMs}ms`)
-}
 
-async function stopProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null) return
-  child.kill('SIGTERM')
-  await Promise.race([once(child, 'exit'), sleep(5_000)])
-  if (child.exitCode === null) child.kill('SIGKILL')
-}
