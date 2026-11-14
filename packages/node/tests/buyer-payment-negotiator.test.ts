@@ -47,7 +47,6 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     canReplayReserveAuth: vi.fn().mockReturnValue(false),
     hasPendingReserveAuth: vi.fn().mockReturnValue(false),
     hasPaymentInFlight: vi.fn().mockReturnValue(false),
-    reconcileReserveAmount: vi.fn().mockResolvedValue(undefined),
     setChannelDepositReader: vi.fn(),
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
@@ -67,6 +66,13 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
+  // Like the manager: the reserve ceiling is the highest deposit a reconciled read has shown.
+  let reserveCeiling: bigint | undefined;
+  bpm.reconcileReserveAmount = vi.fn(async (_peerId: string, onChainAmount: bigint) => {
+    if (reserveCeiling === undefined || onChainAmount > reserveCeiling) reserveCeiling = onChainAmount;
+    return reserveCeiling;
+  });
+  bpm.getReserveCeiling = vi.fn(() => reserveCeiling ?? bpm.maxReserveAmountUsdc);
   // Like the manager: the higher of the in-memory and the stored cumulative.
   bpm.getHighestSignedAmount = vi.fn((channel: StoredChannel) => {
     const inMemory = bpm.getCumulativeAmount(channel.peerId);
@@ -1409,12 +1415,18 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('does not transmit close when the pre-close authorization is not durable', async () => {
       vi.spyOn(negotiator, 'sendPostResponseAuthTo')
-        .mockRejectedValue(new Error('IndexedDB persistence failed'));
+        .mockRejectedValueOnce(new Error('IndexedDB persistence failed'));
 
       await expect(negotiator.requestChannelClose(SELLER_PEER_ID, conn))
         .rejects.toThrow('IndexedDB persistence failed');
       expect((bpm as Record<string, unknown>).buildCloseChannelRequest).not.toHaveBeenCalled();
       expect(conn.send).not.toHaveBeenCalled();
+
+      // The failure before anything was sent left the seller free to be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+      expect((await again).status).toBe('rejected');
     });
 
     it('sends the request and retires the session once the seller confirms', async () => {
@@ -1516,6 +1528,33 @@ describe('BuyerPaymentNegotiator', () => {
       await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
       negotiator.onPeerDisconnect(SELLER_PEER_ID);
       await expect(promise).rejects.toThrow(/disconnected/);
+
+      // The failed close no longer holds the seller: it can be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn);
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalledTimes(2));
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+      expect((await again).status).toBe('rejected');
+    });
+
+    it('sends one close request when parallel callers ask for it at once', async () => {
+      const closes = Promise.allSettled([1, 2, 3].map(() => negotiator.requestChannelClose(SELLER_PEER_ID, conn, { timeoutMs: 300 })));
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalled());
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+
+      const outcomes = (await closes).map((outcome) => outcome.status === 'fulfilled'
+        ? outcome.value.status
+        : (outcome.reason as Error).message);
+      const sentForThem = (conn.send as ReturnType<typeof vi.fn>).mock.calls.length;
+      // Once that close is answered, the seller can be asked again.
+      const again = negotiator.requestChannelClose(SELLER_PEER_ID, conn, { timeoutMs: 300 });
+      await vi.waitFor(() => expect(conn.send).toHaveBeenCalledTimes(sentForThem + 1));
+      replyWithResult({ version: 1, channelId: CHANNEL_ID, status: 'rejected', code: 'busy' });
+
+      expect({ sentForThem, outcomes, again: (await again).status }).toEqual({
+        sentForThem: 1,
+        outcomes: ['rejected', expect.stringMatching(/already in flight/), expect.stringMatching(/already in flight/)],
+        again: 'rejected',
+      });
     });
 
     it('refuses to start a second close while one is in flight', async () => {
