@@ -24,6 +24,7 @@ const FREE_TIER_EXHAUSTED_MESSAGES = {
 } as const;
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
+import { ConnectionState } from './types/connection.js';
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -957,6 +958,13 @@ export class SellerRequestHandler {
             return;
           }
 
+          // The connection ended or the session was dropped while this request
+          // waited: don't start work that cannot reach the buyer or be billed.
+          const connectionEnded = conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+          if (spmAuthorized && (connectionEnded || !spm.hasSession(buyerPeerId))) {
+            sendSessionExpired('the admission checks');
+            return;
+          }
         }
       }
 
@@ -998,8 +1006,12 @@ export class SellerRequestHandler {
       let unitCostUsdc = 0n;
       // Hold the channel open for the whole billable span — provider call,
       // spend recording, and NeedAuth — so a buyer-requested close can't land
-      // between serving the request and claiming its cost.
-      const isBillable = !isServedFree && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
+      // between serving the request and claiming its cost. The channel is fixed
+      // here: a buyer that disconnects before the answer ends still owes for it.
+      const billedChannelId = !isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)
+        ? spm.getChannelByPeer(buyerPeerId)?.sessionId ?? null
+        : null;
+      const isBillable = billedChannelId !== null;
       if (isBillable && spm!.hasClosingChannel(buyerPeerId)) {
         // A close takes seconds on-chain (a disconnect, an exhausted channel).
         // Let it finish, then ask for a new channel: the buyer opens one and
@@ -1226,7 +1238,7 @@ export class SellerRequestHandler {
 
         // Record spend and send NeedAuth with cost data after every request.
         // The buyer validates the cost independently and responds with SpendingAuth.
-        if (!isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)) {
+        if (spm && isBillable) {
           const usage = responseUsage;
           const tokenCostUsdc = computeCostUsdc(
             usage.freshInputTokens,
@@ -1235,7 +1247,9 @@ export class SellerRequestHandler {
             usage.cachedInputTokens,
           );
           const costUsdc = tokenCostUsdc + unitCostUsdc;
-          const session = spm.getChannelByPeer(buyerPeerId);
+          // Only the channel that admitted this request, never one that replaced it.
+          const current = spm.getChannelByPeer(buyerPeerId);
+          const session = current?.sessionId === billedChannelId ? current : null;
           if (session && spm.connectionsClosed) {
             // The node is stopping and its connections are closed: this
             // response never reached the buyer, so it is not billed.

@@ -2135,6 +2135,16 @@ export class AntseedNode extends EventEmitter {
     }
   }
 
+  private _settleIdleSession(spm: SellerPaymentManager, info: { buyerPeerId: string; reason: string }): void {
+    if (info.reason === "idle-settle") {
+      debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
+      void spm.settleSession(info.buyerPeerId, { settleOnly: true });
+    } else if (info.reason === "idle-timeout") {
+      debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
+      void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true, onlyIfIdle: true });
+    }
+  }
+
   private async _startSeller(bootstrapNodes: Array<{ host: string; port: number }>): Promise<void> {
     const identity = this._identity!;
     const dhtPort = this._config.dhtPort ?? 6881;
@@ -2188,15 +2198,7 @@ export class AntseedNode extends EventEmitter {
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
       const spm = this._sellerPaymentManager;
-      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => {
-        if (info.reason === "idle-settle") {
-          debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
-          void spm.settleSession(info.buyerPeerId, { settleOnly: true });
-        } else if (info.reason === "idle-timeout") {
-          debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
-          void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
-        }
-      };
+      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => this._settleIdleSession(spm, info);
       this.on("session:finalized", this._settleOnIdle);
     }
 
