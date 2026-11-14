@@ -45,8 +45,9 @@ import { augmentChatToolPath } from './tool-env.js';
 import { normalizeServiceId } from './normalize.js';
 import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
-import { generateChatImage } from './image-generation.js';
-import type { PiChatEngine } from './engine-types.js';
+import { generateChatImage, type GenerateChatImageResult } from './image-generation.js';
+import type { PreparedChatAttachment } from './attachments/prepare.js';
+import type { PiChatEngine as BasePiChatEngine } from './engine-types.js';
 import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
@@ -64,7 +65,15 @@ import { finiteNumber } from '../gateway/response-fields.js';
 
 augmentChatToolPath();
 
-export type { PiChatEngine } from './engine-types.js';
+export type PiChatEngine = Omit<BasePiChatEngine, 'sendMessageStream'> & {
+  sendMessageStream(
+    conversationId: string,
+    userMessage: string,
+    options?: { attachments?: PreparedChatAttachment[] },
+  ): ReturnType<BasePiChatEngine['sendMessageStream']>;
+  listImageModels(): Promise<ChatModel[]>;
+  generateImage(request: { conversationId: string; prompt: string; model: string }): Promise<GenerateChatImageResult>;
+};
 
 type OfferPricing = ResolvedChatModel['offers'][number];
 
@@ -455,7 +464,7 @@ export function registerPiChatHandlers({
     }
   });
 
-  ipcMain.handle('chat:generate-image', async (_event, payload: unknown) => {
+  const generateImageRequest = async (payload: unknown): Promise<GenerateChatImageResult> => {
     const request = payload && typeof payload === 'object'
       ? payload as { conversationId?: unknown; prompt?: unknown; model?: unknown; moderation?: unknown; sourceImageAttachmentId?: unknown; requirePrivate?: unknown; allowPrivateHistory?: unknown }
       : {};
@@ -507,7 +516,9 @@ export function registerPiChatHandlers({
         activeImageRunsByConversation.delete(conversationId);
       }
     }
-  });
+  };
+
+  ipcMain.handle('chat:generate-image', async (_event, payload: unknown) => generateImageRequest(payload));
 
   ipcMain.handle('chat:ai-send-stream', sendStreamHandler(runStreamingPrompt));
 
@@ -542,6 +553,14 @@ export function registerPiChatHandlers({
   });
 
   return {
+    generateImage: (request) => generateImageRequest(request),
+    listImageModels: async () => {
+      await whenPrivacySettled();
+      const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
+      lastEntries = entries;
+      return toTrustedChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' })
+        .filter((model) => model.type === 'image');
+    },
     invalidateModelCatalog: () => {
       clearGatewayModelCache();
       lastEntries = [];
@@ -550,7 +569,7 @@ export function registerPiChatHandlers({
     hasConversation: async (conversationId) => (await store.get(conversationId)) !== null,
     setConversationModel: (conversationId, model) => store.setModel(conversationId, model),
     getConversationModel: async (conversationId) => (await store.get(conversationId))?.service || null,
-    sendMessageStream: async (conversationId, userMessage) => runStreamingPrompt(conversationId, userMessage),
+    sendMessageStream: async (conversationId, userMessage, options) => runStreamingPrompt(conversationId, userMessage, undefined, options?.attachments),
     abort: abortConversations,
     resolveToolApproval,
     listModels: async () => {
