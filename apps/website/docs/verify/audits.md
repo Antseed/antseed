@@ -35,9 +35,9 @@ The rest of this page explains what these commands do.
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
 | `DIFF` | The seller misses clearly more often: probably a different model |
-| `UNDETERMINED` | Too few usable answers to decide, or the seller refuses the request settings the genuine answers were measured with |
+| `UNDETERMINED` | Too few usable answers to decide |
 
-   A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question.
+   A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question. A seller that refuses `temperature` is asked again without it and judged on those answers; the evidence records the dropped field (`omittedSamplingFields`). A seller that only accepts another `temperature` value is skipped.
 
 4. **Submit.** `verifier submit` publishes the evidence and puts the results on-chain. A `DIFF` is submitted as found: it is one auditor's report, and it counts only once another auditor confirms it with its own audit (see [Confirmations](#confirmations-from-other-auditors)). Auditors don't recheck their own `DIFF`s.
 

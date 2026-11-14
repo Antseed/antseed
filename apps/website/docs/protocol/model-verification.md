@@ -54,7 +54,7 @@ Fingerprinting (KBF)**.
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. Also when a seller refuses `temperature` and the genuine answers were measured with it, since its answers could not be compared. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. A seller that refuses `temperature` is not `UNDETERMINED` for that reason: it is asked again without the field and judged on those answers, and the audit's evidence records the dropped field (`omittedSamplingFields`). A seller that only accepts another `temperature` value is not audited. |
 
 A missing or unreadable answer is left out of the score, not counted as wrong, so a
 flaky seller doesn't look like a substituted model.
