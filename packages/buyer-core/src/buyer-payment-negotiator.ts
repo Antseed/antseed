@@ -92,6 +92,21 @@ const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
 /** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
 const MAX_STALE_SESSION_CHECKS = 5;
 /**
+ * How many times a session recovery restarts because the active channel was
+ * replaced while its on-chain state was being read.
+ */
+const MAX_SESSION_RECOVERY_ATTEMPTS = 3;
+
+/**
+ * Result of recovering one channel.
+ *
+ * `stale` means the channel was replaced while its on-chain state was read,
+ * so the result describes a channel that is no longer live and must not be
+ * applied to the replacement.
+ */
+type RecoveryOutcome = 'recovered' | 'not-recovered' | 'stale';
+
+/**
  * The message of the buyer's 402 `insufficient_deposits` answer. Clients
  * match its first sentence, so keep it. A gateway rewrites the rest to name
  * the workspace and its funding path.
@@ -754,7 +769,7 @@ export class BuyerPaymentNegotiator {
     if (result.status === 'closed') {
       const finalAmount = result.finalAmount != null ? safeBigInt(result.finalAmount) : null;
       if (stillLive) {
-        this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined);
+        this._bpm.retireSession(peerId, CHANNEL_STATUS.SETTLED, finalAmount ?? undefined, result.channelId);
         this._forgetSellerSession(peerId);
       } else {
         // A row that already ended with an amount (the chain's, for example) keeps it.
@@ -1011,7 +1026,7 @@ export class BuyerPaymentNegotiator {
       );
       // 'ghost' rather than 'settled' — buyer hasn't observed the on-chain
       // settle land. Matches the other buyer-side give-up-locally callsites.
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session?.sessionId);
       this._forgetSellerSession(peer.peerId);
     } else if (hasActiveSession) {
       let recovered: boolean;
@@ -1048,7 +1063,7 @@ export class BuyerPaymentNegotiator {
 
       const stale = this._bpm.getActiveSession(peer.peerId);
       if (stale && await this._canRetireStaleSessionWithoutOnChainProof() && this._isLiveChannel(peer.peerId, stale.sessionId)) {
-        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, stale.sessionId);
       }
 
       if (this._bpm.getActiveSession(peer.peerId)) {
@@ -1745,7 +1760,15 @@ export class BuyerPaymentNegotiator {
     });
   }
 
-  /** Recover `session`, the seller's live channel when this is called. */
+  /**
+   * Recover the buyer's active session with a seller, so the request can be
+   * retried on the same channel.
+   *
+   * The active channel can be replaced while its on-chain state is being read.
+   * The read then describes a channel that is no longer live, and applying it
+   * to the replacement would reconcile the replacement's reserve with the old
+   * channel's deposit. When that happens the replacement is recovered instead.
+   */
   private async _recoverExistingSession(
     peer: BuyerPeerView,
     conn: BuyerConnection,
@@ -1756,18 +1779,63 @@ export class BuyerPaymentNegotiator {
     requestId?: string,
     inFlightRequests = 1,
   ): Promise<boolean> {
-    if (!session) {
-      return false;
+    for (let attempt = 0; attempt < MAX_SESSION_RECOVERY_ATTEMPTS; attempt++) {
+      if (attempt > 0) session = this._bpm.getActiveSession(peer.peerId);
+      if (!session) {
+        return false;
+      }
+      const outcome = await this._recoverSession(
+        peer,
+        conn,
+        session,
+        minBudgetPerRequest,
+        targetCumulative,
+        requireFreshAck,
+        requestId,
+        inFlightRequests,
+      );
+      if (outcome !== 'stale') {
+        return outcome === 'recovered';
+      }
+      debugLog(
+        `[BuyerNegotiator] Channel for ${peer.peerId.slice(0, 12)}... was replaced while its state was read; ` +
+        `recovering the replacement`,
+      );
     }
+    return false;
+  }
 
+  /**
+   * Recover one specific channel. Returns `stale` when the channel was
+   * replaced while its on-chain state was being read, so the caller can
+   * recover the replacement instead of applying a result that describes a
+   * channel that is no longer live.
+   */
+  private async _recoverSession(
+    peer: BuyerPeerView,
+    conn: BuyerConnection,
+    session: StoredChannel,
+    minBudgetPerRequest: bigint | null,
+    targetCumulative: bigint | null,
+    requireFreshAck: boolean,
+    requestId?: string,
+    inFlightRequests = 1,
+  ): Promise<RecoveryOutcome> {
     if (!this._channelsClient) {
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-      return false;
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
+      return 'not-recovered';
     }
 
     const onChain = await this._getOnChainSessionState(session.sessionId);
     if (onChain === null) {
-      return false;
+      return 'not-recovered';
+    }
+
+    // The channel can be replaced while the chain read is in flight. The
+    // result describes `session`, not the channel that is active now, so it
+    // must not be applied to the replacement.
+    if (!this._isActiveSession(peer.peerId, session.sessionId)) {
+      return 'stale';
     }
     this._assertLiveChannel(peer.peerId, session.sessionId);
 
@@ -1781,8 +1849,8 @@ export class BuyerPaymentNegotiator {
         // A parallel request may have replaced the channel during the read.
         this._assertLiveChannel(peer.peerId, session.sessionId);
         if (cannotCover) {
-          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-          return false;
+          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
+          return 'not-recovered';
         }
         const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
         await this._bpm.resendReserveAuth(peer.peerId, pmux);
@@ -1790,15 +1858,15 @@ export class BuyerPaymentNegotiator {
           minBudgetPerRequest: minBudgetPerRequest ?? undefined,
         });
         this._lockedPeers.add(peer.peerId);
-        return true;
+        return 'recovered';
       }
 
-      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
-      return false;
+      this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
+      return 'not-recovered';
     }
 
-    if (this._retireIfNotOpenOnChain(peer.peerId, onChain)) {
-      return false;
+    if (this._retireIfNotOpenOnChain(peer.peerId, onChain, session.sessionId)) {
+      return 'not-recovered';
     }
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
@@ -1838,7 +1906,7 @@ export class BuyerPaymentNegotiator {
         // The seller has since reported accepting this target: the 402 was
         // waiting behind other work while the channel moved on. Retry, even
         // with more signed than the deposit (a top-up on its way).
-        return true;
+        return 'recovered';
       }
       const resendable = deposit <= 0n || signedCumulative <= deposit;
       const resent = this._resentForTarget.get(peer.peerId);
@@ -1846,7 +1914,7 @@ export class BuyerPaymentNegotiator {
         // Parallel requests parked on the same spend get the same target at
         // once: the resend for it is already on its way, so retry instead of
         // reading their 402s as the seller refusing it.
-        return true;
+        return 'recovered';
       }
       if (!resendable || resent?.target === targetCumulative) {
         // The resend did not reach the seller either (or could not be
@@ -1872,7 +1940,7 @@ export class BuyerPaymentNegotiator {
             `${err instanceof Error ? err.message : err}`,
           );
         }
-        return false;
+        return 'not-recovered';
       }
       this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now() });
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
@@ -1915,9 +1983,9 @@ export class BuyerPaymentNegotiator {
           `[BuyerNegotiator] extendCurrentSpendingAuth made no progress for ${peer.peerId.slice(0, 12)}... ` +
           `(cumulative=${cumulativeAfter}); retiring session`,
         );
-        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST, undefined, session.sessionId);
         this._forgetSellerSession(peer.peerId);
-        return false;
+        return 'not-recovered';
       }
     } else if (!recoveredBeforeTopUp) {
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
@@ -1926,7 +1994,17 @@ export class BuyerPaymentNegotiator {
       minBudgetPerRequest: minBudgetPerRequest ?? undefined,
     });
     this._lockedPeers.add(peer.peerId);
-    return true;
+    return 'recovered';
+  }
+
+  /**
+   * Whether the given channel is still the active one for the peer. A
+   * replacement channel owns the peer's reserve and authorization state, so a
+   * result read for the previous channel must not be applied to it.
+   */
+  private _isActiveSession(peerId: string, sessionId: string): boolean {
+    const active = this._bpm.getActiveSession(peerId);
+    return active != null && active.sessionId.toLowerCase() === sessionId.toLowerCase();
   }
 
   /**
@@ -1969,16 +2047,32 @@ export class BuyerPaymentNegotiator {
   /**
    * Retire the seller's stored session when the chain shows its channel is no
    * longer open, recording how it ended. Returns whether it was retired.
+   *
+   * `expectedSessionId` is the channel the on-chain state was read for. The
+   * retirement only happens when that channel is still the active one for the
+   * peer: a newer channel that opened while the chain read was in flight holds
+   * its own reserve and must not be retired with this channel's outcome.
    */
-  private _retireIfNotOpenOnChain(peerId: string, onChain: OnChainChannelState): boolean {
+  private _retireIfNotOpenOnChain(
+    peerId: string,
+    onChain: OnChainChannelState,
+    expectedSessionId?: string,
+  ): boolean {
     if (onChain.status === CHANNEL_STATUS.ACTIVE) {
       return false;
     }
+    if (expectedSessionId !== undefined && expectedSessionId !== null) {
+      const active = this._bpm.getActiveSession(peerId);
+      if (!active || active.sessionId.toLowerCase() !== expectedSessionId.toLowerCase()) {
+        // The channel this state was read for is no longer the active one.
+        return false;
+      }
+    }
     const closure = closedOnChain(onChain);
     if (closure) {
-      this._bpm.retireSession(peerId, closure.status, closure.settledAmount);
+      this._bpm.retireSession(peerId, closure.status, closure.settledAmount, expectedSessionId);
     } else {
-      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST);
+      this._bpm.retireSession(peerId, CHANNEL_STATUS.GHOST, undefined, expectedSessionId);
     }
     return true;
   }
@@ -1995,7 +2089,7 @@ export class BuyerPaymentNegotiator {
       const session = this._bpm.getActiveSession(peerId);
       if (!session) break;
       const onChain = await this._getOnChainSessionState(session.sessionId);
-      if (onChain === null || !this._isLiveChannel(peerId, session.sessionId) || !this._retireIfNotOpenOnChain(peerId, onChain)) break;
+      if (onChain === null || !this._isLiveChannel(peerId, session.sessionId) || !this._retireIfNotOpenOnChain(peerId, onChain, session.sessionId)) break;
       retired = true;
     }
     return retired;
