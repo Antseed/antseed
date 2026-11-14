@@ -4,7 +4,7 @@ import { formatUnits, parseAbi, type Address, type Hex } from 'viem';
 import type { PaymentConfig } from '../types';
 import { getColony, signColonyLink, type ColonyState } from '../api';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
-import { formatUsd, truncateAddress } from '../utils/format';
+import { formatColonyAnts, formatUsd, truncateAddress } from '../utils/format';
 import { ConnectWalletAction } from './ConnectWalletAction';
 
 /** AntseedColonyPool: linking a worker's earnings to a wallet, and claiming them. */
@@ -23,11 +23,6 @@ function batches<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
-}
-
-export function formatAnts(wei: bigint): string {
-  const value = Number(formatUnits(wei, 18));
-  return value === 0 ? '0' : value < 0.01 ? '<0.01' : value.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
 /** What Antseed Colony says about its pool and payout wallet; reloads on demand. */
@@ -208,6 +203,9 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
       onDone(last);
     } catch (err) {
       setError(getErrorMessage(err, 'Claim failed.'));
+      // Some transactions may have gone through (the USDC, say): what is left to claim
+      // is read again, so a retry never repeats one that already did.
+      if (last) await reload().catch(() => null);
     } finally {
       setRunning(false);
       setStep(null);
@@ -219,7 +217,7 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
     if (wrongChain) return `Switch to ${targetChainName}`;
     if (running) return step ?? 'Confirm in your wallet…';
     if (nothing) return 'Nothing to claim yet';
-    const antsLabel = ants > 0n ? ` + ${formatAnts(ants)} ANTS` : '';
+    const antsLabel = ants > 0n ? ` + ${formatColonyAnts(ants)} ANTS` : '';
     return `Claim $${formatUsd(Number(formatUnits(usdc, 6)))} USDC${antsLabel}`;
   };
 

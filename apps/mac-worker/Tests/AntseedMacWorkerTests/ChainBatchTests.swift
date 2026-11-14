@@ -25,6 +25,13 @@ private final class StubBatchRPC: URLProtocol {
                     return ["jsonrpc": "2.0", "id": id, "result": Self.calldata(call)]
                 }
             }
+        } else if let call = json as? [String: Any], host == "epochs.test" {
+            // An emissions contract claiming an absurd epoch count; every other read answers an address.
+            let currentEpoch = Chain.selector("currentEpoch()").prefixedHex
+            let result = Self.calldata(call).hasPrefix(currentEpoch)
+                ? "0x" + String(repeating: "f", count: 64)
+                : "0x" + String(repeating: "0", count: 24) + String(repeating: "1", count: 40)
+            answer = ["jsonrpc": "2.0", "id": call["id"] ?? 1, "result": result]
         } else if let call = json as? [String: Any] {
             Self.bodies["\(host) single", default: 0] += 1
             answer = ["jsonrpc": "2.0", "id": call["id"] ?? 1, "result": Self.calldata(call)]
@@ -84,6 +91,15 @@ final class ChainBatchTests: XCTestCase {
         let answers = try await chain(["unbatched.test"]).batchEthCall(reads(10))
         XCTAssertEqual(answers, reads(10).map(\.data))
         XCTAssertEqual(StubBatchRPC.bodies, ["unbatched.test batch": 1, "unbatched.test single": 10])
+    }
+
+    func testRefusesAnEpochCountNoRealScheduleReachesBeforeAllocatingForIt() async throws {
+        do {
+            _ = try await chain(["epochs.test"]).colonyRewards(pool: pool, account: pool)
+            XCTFail("an absurd epoch count must be refused")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("more than any real schedule"), error.localizedDescription)
+        }
     }
 
     func testOneFailedReadFailsTheWholeCallRatherThanReadingAsZero() async throws {

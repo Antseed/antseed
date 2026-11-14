@@ -5,11 +5,11 @@ import { PayCheckoutDeposit } from '../components/PayCheckoutDeposit';
 import { PayCheckoutWithdraw } from '../components/PayCheckoutWithdraw';
 import { PayChannelClose } from '../components/PayChannelClose';
 import { PayShareFreeTier } from '../components/PayShareFreeTier';
-import { PayColonyClaim, PayColonyLink, formatAnts, useColony } from '../components/PayColony';
+import { PayColonyClaim, PayColonyLink, useColony } from '../components/PayColony';
 import { openRewardsDashboard } from '../api';
 import { Button } from '@antseed/ui';
 import { notifyPaymentCompleted } from '../api';
-import { formatUsd, truncateAddress } from '../utils/format';
+import { formatColonyAnts, formatUsd, truncateAddress } from '../utils/format';
 import { getExplorerTxUrl } from '../utils/txLink';
 import './PayPage.scss';
 
@@ -227,7 +227,7 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
               {action === 'colony-claim' && colony?.claim && (
                 <div className="pay-checkout-fact">
                   <dt>Claimable</dt>
-                  <dd>${formatUsd(Number(colony.claim.usdc) / 1e6)} USDC · {formatAnts(BigInt(colony.claim.ants))} ANTS</dd>
+                  <dd>${formatUsd(Number(colony.claim.usdc) / 1e6)} USDC · {formatColonyAnts(BigInt(colony.claim.ants))} ANTS</dd>
                 </div>
               )}
               {action === 'claim' && (

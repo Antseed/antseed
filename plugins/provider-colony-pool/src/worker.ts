@@ -503,7 +503,7 @@ export class PoolWorker {
       owed = { channel, price };
     }
     let answered: UsageLike | null = null;
-    const progress: ServeProgress = { output: false, whole: false };
+    const progress: ServeProgress = { output: false, whole: false, unmetered: false };
     try {
       if (bound) this.claimOnce(bound.hash, bound.expires);
       answered = await this.serveOpened(frame, inspected, bound, signal, send, progress);
@@ -514,7 +514,7 @@ export class PoolWorker {
         // dropped): the buyer can't verify, so never pays for, an answer without
         // its end, yet may hold most of it. Not owed, but counted, so cancelling
         // each answer before it completes gets only a few (MAX_INTERRUPTED_ANSWERS).
-        else if (progress.output && !progress.whole) this.payments.interrupted(owed.channel);
+        else if ((progress.output && !progress.whole) || progress.unmetered) this.payments.interrupted(owed.channel);
         // Nothing reached the pool: nothing to pay for.
         else this.payments.released(owed.channel);
       }
@@ -633,8 +633,16 @@ export class PoolWorker {
       return null;
     }
     progress.whole = true;
+    if (opened.sealer.usage) return opened.sealer.usage;
+    // A successful answer the local model reported no usage for: the buyer pays only
+    // for authenticated usage, so it can't be owed, but it counts against the channel
+    // like a cut-off answer, so a model that never reports usage gives away only a few.
     // An error answer with no usage (the model refused the request) owes nothing.
-    return opened.sealer.usage ?? (status < 400 ? {} : null);
+    if (status < 400) {
+      this.log('the local model reported no usage for an answer; it counts as unmetered, not owed');
+      progress.unmetered = true;
+    }
+    return null;
   }
 
   /** Run the request on the local model and send its answer back sealed, in chunks; returns the model's HTTP status. */
@@ -716,6 +724,8 @@ interface ServeProgress {
   output: boolean;
   /** The pool took the whole answer. */
   whole: boolean;
+  /** The whole answer was sent, successful, but with no usage to price it by. */
+  unmetered: boolean;
 }
 
 /** `value`, or a rejection once `signal` aborts. */

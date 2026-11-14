@@ -397,15 +397,60 @@ contract AntseedColonyPoolTest is Test {
         _assertSolvent();
     }
 
-    function test_heldUnattributedGoesToTheRemainderAtTheNextSettlement() public {
+    /// Prepaid headroom keeps backing worker answers across advancing settlements,
+    /// not just the first one after it.
+    function test_heldHeadroomPaysSuccessiveWorkerAnswers() public {
         bytes32 ch = _reserve(bytes32(uint256(63)), 1000e6);
-        uint256 net1 = _settle(ch, 100e6, new Entry[](0));
-        uint256 net2 = _settle(ch, 200e6, _e1(workerA, 100e6));
-        // A's 100 came from the second delta; what the first held is released.
-        assertEq(pool.usdcBalance(workerA), net2);
-        assertEq(pool.usdcBalance(remainderSink), net1);
-        (, uint256 heldNet) = pool.heldUnattributed(ch);
-        assertEq(heldNet, 0);
+        uint256 net1 = _settle(ch, 500e6, new Entry[](0));
+        // Two answers of 100 each, each signed one unit higher.
+        uint256 net2 = _settle(ch, 500e6 + 1, _e1(workerA, 100e6));
+        uint256 net3 = _settle(ch, 500e6 + 2, _e1(workerA, 200e6));
+        assertEq(pool.workerCumulative(ch, workerA), 200e6, "both answers paid in full");
+        uint256 fromHeld = (net1 * (100e6 - 1)) / 500e6;
+        fromHeld += ((net1 - fromHeld) * (100e6 - 1)) / (400e6 + 1);
+        assertEq(pool.usdcBalance(workerA), net2 + net3 + fromHeld);
+        assertEq(pool.usdcBalance(remainderSink), 0, "the rest stays held while the channel is open");
+        (uint256 heldGross,) = pool.heldUnattributed(ch);
+        assertEq(heldGross, 300e6 + 2);
+        _assertSolvent();
+    }
+
+    /// Held USDC keeps the reward epoch it settled in: its weight is reserved
+    /// there at settlement, so pulling and claiming that epoch's ANTS before
+    /// the attribution arrives never gives its share to anyone else.
+    function test_heldValueKeepsTheEpochItSettledIn() public {
+        uint256 e0 = emissions.currentEpoch();
+        bytes32 ch = _reserve(bytes32(uint256(65)), 1000e6);
+        uint256 net1 = _settle(ch, 500e6, new Entry[](0));
+        assertEq(pool.epochHeldWeight(e0), net1);
+        assertEq(pool.epochTotalWeight(e0), net1);
+
+        vm.warp(block.timestamp + EPOCH_DURATION);
+        uint256 e1 = emissions.currentEpoch();
+        pool.claimEpochEmissions(_epochs1(e0));
+        uint256 pot0 = pool.epochAnts(e0);
+        assertGt(pot0, 0);
+        // Nobody holds e0's weight yet, so nobody can claim its ANTS.
+        assertEq(pool.pendingAnts(remainderSink, _epochs1(e0)), 0);
+
+        // In e1, the buyer attributes 100 of that headroom to A.
+        _settle(ch, 500e6 + 1, _e1(workerA, 100e6));
+        uint256 fromHeld = (net1 * (100e6 - 1)) / 500e6;
+        assertEq(pool.epochWeight(e0, workerA), fromHeld, "A's held credit weighs in e0");
+        assertEq(pool.epochHeldWeight(e0), net1 - fromHeld);
+        vm.prank(workerA);
+        pool.claimAnts(_epochs1(e0));
+        assertEq(ants.balanceOf(workerA), (pot0 * fromHeld) / net1);
+        assertGt(pool.epochWeight(e1, workerA), 0, "the fresh unit weighs in e1");
+
+        // Closing gives the rest, and its share of e0, to the remainder.
+        bytes memory metadata = _meta(500e6 + 2, _e1(workerA, 100e6));
+        bytes memory sig = _signSpend(ch, 500e6 + 2, metadata);
+        vm.prank(operator);
+        pool.close(ch, 500e6 + 2, metadata, sig);
+        assertEq(pool.epochHeldWeight(e0), 0);
+        assertEq(pool.epochWeight(e0, remainderSink), net1 - fromHeld);
+        assertEq(pool.pendingAnts(remainderSink, _epochs1(e0)), (pot0 * (net1 - fromHeld)) / net1);
         _assertSolvent();
     }
 

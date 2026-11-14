@@ -2109,6 +2109,13 @@ export class BuyerPaymentManager {
     const countedCosts = counted.map(([requestId, record]) => [requestId, record.costUsdc] as const);
     const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts, newAmount);
     const newMeta = credit.metadata;
+    // Worker credit from headroom already signed: one base unit higher when the
+    // reserve allows, so the pool can settle this auth even when it already
+    // settled that headroom (AntseedChannels never re-settles, or checks the
+    // signature of a close at, an amount already settled; see countUnsigned).
+    if (newMeta.workers !== usageMeta.workers && newAmount === prevAmount && newAmount < this._getCeiling(sellerPeerId)) {
+      newAmount += 1n;
+    }
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
       `thisReq in=${estimatedInputTokens} out=${estimatedOutputTokens} | ` +

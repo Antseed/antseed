@@ -55,8 +55,13 @@ extension Chain {
     func colonyRewards(pool: String, account: String) async throws -> ColonyRewards {
         let registry = try await address(of: pool, "registry()")
         let emissions = try await address(of: registry, "emissions()")
-        let current = Int(clamping: WorkerPayment.saturating([UInt8](try await ethCall(to: emissions, data: Self.selector("currentEpoch()")))))
-        let epochs = Array(0..<max(0, current))
+        let current = WorkerPayment.saturating([UInt8](try await ethCall(to: emissions, data: Self.selector("currentEpoch()"))))
+        // The emissions contract is the pool's to choose: a count no real schedule reaches is refused
+        // before anything is allocated for it.
+        guard current <= UInt64(Self.maxRewardEpochs) else {
+            throw Failure.rpc("The pool's emissions contract reports \(current) epochs, more than any real schedule")
+        }
+        let epochs = Array(0..<Int(current))
         let account = try Self.addressWord(account)
 
         let usdc = abiDecimal(try await ethCall(to: pool, data: Self.selector("usdcBalance(address)") + account))
@@ -66,12 +71,13 @@ extension Chain {
         let weighted = epochs.filter { abiDecimal(weights[$0] ?? Data()) > 0 }
         // A one-epoch uint256[]: its offset, length and element after the address.
         func oneEpoch(_ epoch: Int) -> Data { Data(abiWord(0x40) + abiWord(1) + abiWord(UInt64(epoch))) }
-        let owed = try await reads(weighted) { epoch in
+        async let owedRead = reads(weighted) { epoch in
             Read(to: pool, data: Self.selector("pendingAnts(address,uint256[])") + account + oneEpoch(epoch))
         }
-        let funded = try await reads(weighted) { epoch in
+        async let fundedRead = reads(weighted) { epoch in
             Read(to: pool, data: Self.selector("epochAnts(uint256)") + Data(abiWord(UInt64(epoch))))
         }
+        let (owed, funded) = try await (owedRead, fundedRead)
         let unfunded = weighted.filter { abiDecimal(funded[$0] ?? Data()) == 0 }
         // Only an epoch the emissions contract would pay the pool for is worth a pull.
         let poolWord = try Self.addressWord(pool)
@@ -87,6 +93,9 @@ extension Chain {
         )
     }
 
+    /// Epochs a rewards read covers at most: weekly epochs would take a century to reach it.
+    static let maxRewardEpochs = 5_000
+
     private func address(of contract: String, _ getter: String) async throws -> String {
         let word = try await ethCall(to: contract, data: Self.selector(getter))
         guard word.count >= 32 else { throw Failure.rpc("Malformed \(getter) answer") }
@@ -94,7 +103,7 @@ extension Chain {
     }
 
     /// One read per epoch, batched (batchEthCall); any failure fails the whole read (a missing value must never show as nothing owed).
-    private func reads(_ epochs: [Int], _ read: (Int) -> Read) async throws -> [Int: Data] {
+    private func reads(_ epochs: [Int], _ read: @Sendable (Int) -> Read) async throws -> [Int: Data] {
         let answers = try await batchEthCall(epochs.map(read))
         return Dictionary(uniqueKeysWithValues: zip(epochs, answers))
     }

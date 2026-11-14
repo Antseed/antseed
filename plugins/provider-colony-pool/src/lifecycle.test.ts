@@ -516,6 +516,23 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
+  it('serves only a few successful answers the local model reported no usage for, since none can be paid', async () => {
+    upstream = await startUpstream((_body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ready' } }] }));
+    });
+    start({ channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    for (const id of ['u1', 'u2']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    await request('u3');
+    await waitFor(() => fakePool.errorFor('u3') !== undefined);
+    expect(fakePool.errorFor('u3')).toMatch(/recently/);
+    expect(upstream.bodies).toHaveLength(2);
+  });
+
   it('owes nothing for error answers without usage, so a buyer\'s corrected request still reaches the model', async () => {
     let refuse = 2;
     upstream = await startUpstream((_body, res) => {

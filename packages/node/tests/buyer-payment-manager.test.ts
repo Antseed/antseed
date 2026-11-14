@@ -773,7 +773,7 @@ describe('BuyerPaymentManager', () => {
     ]);
   });
 
-  it('credits a worker from headroom signed before its answer, re-signing at the same amount', async () => {
+  it('credits a worker from headroom signed before its answer, re-signing one unit higher each time', async () => {
     const sellerPeerId = fakePeerId('seller-colony-pool-headroom');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
     await manager.handleAuthAck(sellerPeerId, { channelId });
@@ -788,7 +788,8 @@ describe('BuyerPaymentManager', () => {
     await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '500', currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
     expect(mux.sentSpendingAuths).toHaveLength(1);
     expect(decodeWorkerTail((mux.sentSpendingAuths[0] as { metadata: string }).metadata)).toBeNull();
-    // Two worker answers the headroom covers: the amount stays, each is credited.
+    // Two worker answers the headroom covers: each is credited in an auth one unit higher, so the
+    // pool can settle it even after it settled the headroom (the contract pays it from what that held).
     for (const requestId of ['req-a', 'req-b']) {
       manager.recordWorkerAttribution(sellerPeerId, requestId, worker);
       manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 100n });
@@ -796,7 +797,7 @@ describe('BuyerPaymentManager', () => {
       await manager.signPerRequestAuth(sellerPeerId, stats(requestId));
     }
     const latest = manager.latestSpendingAuth(sellerPeerId)!;
-    expect(latest.cumulativeAmount).toBe('500');
+    expect(latest.cumulativeAmount).toBe('502');
     expect(decodeWorkerTail(latest.metadata)).toEqual([{ worker, cumulativeAmount: 200n }]);
   });
 

@@ -729,28 +729,32 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
    (never revert: a buyer must not be able to block settlement).
 4. For each worker, `workerDelta` = its new cumulative amount minus the
    amount already paid to it on this channel (0 if lower), clamped so the sum
-   stays ≤ `delta` plus what the channel's last settlement held (below). The
+   stays ≤ `delta` plus what the channel holds unattributed (below). The
    worker's recorded amount (`workerCumulative`) grows by `workerDelta`, not
    to the signed amount, so attribution a settlement could not cover stays
    owed and is paid first from the next one.
 5. Each worker's `workerDelta` is paid from this settlement's `delta` first,
-   at `net / delta` per unit, then from what the last settlement held, at its
-   own net per unit.
-6. What the last settlement held and no worker claimed goes to the owner-set
-   `remainderRecipient`. This settlement's own unattributed part (and its net)
-   is held in its place, one settlement long; rounding with no unattributed
-   part left goes to the remainder at once. `close` releases what the channel
-   holds to the remainder, and once a channel is no longer active (its buyer
-   timed it out and withdrew) anyone can with `releaseHeld(channelId)`.
-   `heldUnattributed(channelId)` reads it, and `totalUsdcHeld` keeps it out of
-   `sweepOrphanUsdc`.
-7. Add each credit to the worker's weight for the current emissions epoch.
+   at `net / delta` per unit, then from what the channel holds, oldest first,
+   each part at the net per unit it settled at.
+6. This settlement's own unattributed part (and its net) is held for later
+   tails while the channel is active; rounding with no unattributed part left
+   goes to the remainder at once. `close` gives what the channel still holds
+   to the owner-set `remainderRecipient`, and once a channel is no longer
+   active (its buyer timed it out and withdrew) anyone can with
+   `releaseHeld(channelId)`. `heldUnattributed(channelId)` reads it, and
+   `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
+7. Add each fresh credit to its account's weight for the current emissions
+   epoch. Held USDC weighs in the epoch it settled in from the start
+   (`epochHeldWeight`, counted in `epochTotalWeight`, claimable by nobody), so
+   that epoch's ANTS stay reserved for it even once pulled; the weight moves
+   to whoever the USDC is later credited to.
 
 The hold is for headroom: a buyer may sign ahead of what it has counted, and
 attribute that headroom to a worker only once the worker's answer verifies.
-If the pool settled the headroom first, the buyer's re-signed auth (one unit
-higher, so `AntseedChannels` settles it and checks its signature) pays the
-worker from what that settlement held, even when it is the channel's last.
+If the pool settled the headroom first, each re-signed auth (one unit higher,
+so `AntseedChannels` settles it and checks its signature) pays its worker from
+what that settlement holds, however many answers the headroom covers, and
+even when it is the channel's last.
 
 Per-channel cursors are keyed by the channels contract address as well as the
 channel ID, so a channels contract swapped in through the registry starts
