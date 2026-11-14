@@ -4,6 +4,7 @@ import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
 import { buildNetworkModels, parseModelTypeFilter } from './network-models.js'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { findAdvertisedServiceOffer } from './routing.js'
+import { parseRetailPrices } from '@antseed/node/retail-prices'
 
 const NOW_MS = 1_700_000_000_000
 
@@ -193,6 +194,38 @@ test('lists speech models with the voices every offer accepts', () => {
   assert.deepEqual(model.voices, ['af_sky'])
   assert.deepEqual(model.peers.map((peer) => peer.capabilities?.speech?.voices), [['af_sky', 'am_adam'], ['af_sky']])
   assert.equal(model.peers[0]!.inputUsdPerMillion, undefined)
+})
+
+test('a text model the retail price list names lists its reference price per million tokens', () => {
+  const referencePrices = parseRetailPrices({
+    data: [
+      // Named as a retail list names it: a vendor prefix, another case.
+      { id: 'qwen/Qwen3-Coder', pricing: { prompt: '0.000005', completion: '0.000015', input_cache_read: '0.0000005' } },
+      { id: 'sdxl-turbo', pricing: { prompt: '0.000001', completion: '0.000002' } },
+    ],
+  })
+  const models = buildNetworkModels([textSeller, imageSeller, mixedSeller], NOW_MS, { referencePrices })
+  const qwen = models.find((model) => model.id === 'qwen3-coder')
+  assert.deepEqual(qwen?.reference_price, { input_usd_per_million: 5, output_usd_per_million: 15, cached_input_usd_per_million: 0.5 })
+  // What sellers charge is untouched: the reference is only something to compare with.
+  assert.deepEqual(qwen?.peers.map((peer) => peer.inputUsdPerMillion), [0.5, 3])
+  // An image model charges per image, so token prices are no reference for it.
+  assert.equal(models.find((model) => model.id === 'sdxl-turbo')?.type, 'image')
+  assert.equal(models.find((model) => model.id === 'sdxl-turbo')?.reference_price, undefined)
+})
+
+test('a model the price list does not name, or a listing without a price list, has no reference price', () => {
+  const referencePrices = parseRetailPrices({ data: [{ id: 'another-model', pricing: { prompt: '0.000001', completion: '0.000002' } }] })
+  for (const options of [{ referencePrices }, { referencePrices: null }, {}]) {
+    const models = buildNetworkModels([textSeller, imageSeller, mixedSeller], NOW_MS, options)
+    assert.ok(models.every((model) => !('reference_price' in model)))
+  }
+})
+
+test('a reference price lists only the sides the price list has', () => {
+  const referencePrices = parseRetailPrices({ data: [{ id: 'qwen3-coder', pricing: { completion: '0.000015' } }] })
+  const qwen = buildNetworkModels([textSeller], NOW_MS, { referencePrices }).find((model) => model.id === 'qwen3-coder')
+  assert.deepEqual(qwen?.reference_price, { output_usd_per_million: 15 })
 })
 
 test('aggregates one entry per model id across peers, case-insensitively', () => {

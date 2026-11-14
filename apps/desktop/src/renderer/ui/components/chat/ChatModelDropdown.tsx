@@ -1,16 +1,16 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, Route01Icon, Search01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
+import { Badge, BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
 import type { ChatModel } from '../../../types/bridge';
-import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
+import { filterChatModels, findChatModel, formatPriceRange, formatUsdPerMillion, isFreeOffer, selectionIsFree } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
 
 /** Width of the detail card beside the menu, and the gap between them. */
-const CARD_WIDTH = 280;
-const CARD_GAP = 8;
+/** The narrowest menu whose rows show their prices on one line; a narrower one gives each row a second line. */
+const ONE_LINE_MIN_MENU_WIDTH = 520;
 
 type ChatModelDropdownProps = {
   models: ChatModel[];
@@ -56,6 +56,10 @@ export function modelPrice(model: ChatModel): { text: string; tag?: 'free' | 'pl
     return price ? { text: `$${price} per pick` } : null;
   }
   if (model.free) return { text: 'Free', tag: 'free' };
+  if (model.videoPrice) {
+    const { perSecondUsd, perVideoUsd } = model.videoPrice;
+    return { text: `from ${formatUsdPerUnit(perSecondUsd)} per second${perVideoUsd > 0 ? ` + ${formatUsdPerUnit(perVideoUsd)} per video` : ''}` };
+  }
   if (model.minImageUsd) return { text: `from $${model.minImageUsd} per image` };
   // Not free to everyone, so a $0 price here is a stakers-only offer (the only sellers it has).
   if (isFreeOffer(model)) return model.stakersOnlyFreeSellerIds?.length ? { text: 'Free for stakers', tag: 'plain' } : null;
@@ -63,10 +67,79 @@ export function modelPrice(model: ChatModel): { text: string; tag?: 'free' | 'pl
   return null;
 }
 
-function renderModelPrice(model: ChatModel) {
-  const price = modelPrice(model);
-  if (!price?.tag) return price?.text ?? null;
-  return <span className={`${styles.tag}${price.tag === 'free' ? ` ${styles.tagFree}` : ''}`}>{price.text}</span>;
+/**
+ * The price chips a row shows beside its name: input and output per million
+ * tokens side by side, or the cheapest price per image. None for free models
+ * (their Free tag says it) or routers; each seller's price is in the seller
+ * overview.
+ */
+/** A price per unit, short: "$0.17", "$0.103", "$0.005", "$1.25". */
+export function formatUsdPerUnit(value: number): string {
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  // A positive price never reads as $0: below a tenth of a cent, two significant digits.
+  if (value > 0 && value < 0.001) return `$${Number(value.toPrecision(2))}`;
+  const text = value.toFixed(3).replace(/0+$/, '');
+  return (text.split('.')[1] ?? '').length < 2 ? `$${value.toFixed(2)}` : `$${text}`;
+}
+
+export function rowPriceChips(model: ChatModel): Array<{ label: string; price: string }> {
+  if (model.router) {
+    const fee = model.router.priceUsdPerRequest;
+    // Only the pick is priced here; the model it picks may charge too.
+    return fee === null ? [] : [{ label: '', price: fee === 0 ? 'Free picks' : `${formatUsdPerUnit(fee)}/pick` }];
+  }
+  if (model.free) return [];
+  if (model.videoPrice) {
+    const { perSecondUsd, perVideoUsd } = model.videoPrice;
+    return [
+      { label: 'from', price: `${formatUsdPerUnit(perSecondUsd)}/s` },
+      ...(perVideoUsd > 0 ? [{ label: '+', price: `${formatUsdPerUnit(perVideoUsd)}/video` }] : []),
+    ];
+  }
+  // Before the token check: image sellers list $0 token prices beside their price per image.
+  if (model.minImageUsd) return [{ label: 'from', price: `$${model.minImageUsd}/image` }];
+  if (isFreeOffer(model)) return [];
+  if (model.inputUsdPerMillion === null && model.outputUsdPerMillion === null) return [];
+  return [
+    { label: 'in', price: `${formatUsdPerMillion(model.inputUsdPerMillion)}/M` },
+    { label: 'out', price: `${formatUsdPerMillion(model.outputUsdPerMillion)}/M` },
+  ];
+}
+
+/** A row's name with its price chips, or, in a narrow menu, with a second line of details. */
+function ModelRowContent({ model, oneLine, tags }: { model: ChatModel; oneLine: boolean; tags?: ReactNode }) {
+  if (!oneLine) {
+    return (
+      <span className={styles.pickerNameGroup}>
+        <span className={styles.pickerName}>{model.label}</span>
+        <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
+      </span>
+    );
+  }
+  // The name takes the room; the tags sit right-aligned just before the price
+  // chips, which end every row in the same place.
+  return (
+    <>
+      <span className={styles.pickerName}>{model.label}</span>
+      {tags && <span className={styles.pickerRowTags}>{tags}</span>}
+      {renderRowPriceChips(model)}
+    </>
+  );
+}
+
+function renderRowPriceChips(model: ChatModel) {
+  const chips = rowPriceChips(model);
+  if (chips.length === 0) return null;
+  return (
+    <span className={styles.pickerPrices}>
+      {chips.map((chip) => (
+        <Badge key={chip.label || chip.price} variant="soft">
+          {chip.label && <span className={styles.pickerPriceLabel}>{chip.label}</span>}
+          {chip.price}
+        </Badge>
+      ))}
+    </span>
+  );
 }
 
 /** The search box sits inside Home's composer form, where Enter would send the draft. */
@@ -121,9 +194,9 @@ export function pickerLists(models: ChatModel[], query: string, freeOnly: boolea
   };
 }
 
-/** Whether the detail card fits beside a menu at `menuLeft`..`menuRight` in a window `windowWidth` wide. */
-export function cardFits(menuLeft: number, menuRight: number, windowWidth: number): boolean {
-  return menuRight + CARD_GAP + CARD_WIDTH <= windowWidth - CARD_GAP || menuLeft - CARD_GAP - CARD_WIDTH >= CARD_GAP;
+/** Whether a menu `menuWidth` wide shows each row on one line, with its price chips. */
+export function oneLineFits(menuWidth: number): boolean {
+  return menuWidth >= ONE_LINE_MIN_MENU_WIDTH;
 }
 
 /** A context window as the picker writes it ("256k"), or null. */
@@ -158,7 +231,7 @@ export function modelInlineDetails(model: ChatModel): string {
   const context = contextValue(model);
   const picks = routerModelCount(model);
   // Free and the TEE tag are on the row already.
-  const onRow = new Set(['Router', 'Free', teeTag(model)?.label]);
+  const onRow = new Set(['Router', 'Free', 'Free for stakers', teeTag(model)?.label]);
   const tags = modelTags(model).filter((tag) => !onRow.has(tag.label)).map((tag) => tag.label);
   return [
     model.router?.sellerName ? `by ${model.router.sellerName}` : modelLab(model),
@@ -207,8 +280,6 @@ function modelTags(model: ChatModel): Array<{ label: string; tone?: 'free' | 'te
   ].filter((tag): tag is NonNullable<typeof tag> => tag !== null);
 }
 
-type Hovered = { model: ChatModel; top: number; left: number };
-
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -231,15 +302,13 @@ export function ChatModelDropdown({
   const searchRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
   const [freeOnly, setFreeOnly] = useState(false);
   const [tab, setTab] = useState<PickerTab>('text');
-  const [hovered, setHovered] = useState<Hovered | null>(null);
-  // No room for the card beside the menu (a narrow window, Home's full-width menu): rows carry the details.
-  const [cardRoom, setCardRoom] = useState(true);
+  // A narrow menu: each row gets a second line with its details instead of chips.
+  const [oneLine, setOneLine] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   useEffect(() => {
     if (!copiedId) return undefined;
@@ -262,7 +331,6 @@ export function ChatModelDropdown({
     if (!open) {
       setQuery('');
       setFreeOnly(false);
-      setHovered(null);
       return;
     }
     // Open on the tab of the model in use.
@@ -281,11 +349,10 @@ export function ChatModelDropdown({
       const menu = menuRef.current;
       if (!menu) return;
       const rect = menu.getBoundingClientRect();
-      setCardRoom(cardFits(rect.left, rect.right, window.innerWidth));
-      setHovered(null);
+      setOneLine(oneLineFits(rect.width));
     };
     measure();
-    // A resized window can gain or lose the room beside the menu.
+    // A resized window can widen or narrow the menu.
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
   }, [open]);
@@ -303,59 +370,41 @@ export function ChatModelDropdown({
     return () => cancelAnimationFrame(frame);
   }, [open, tab]);
 
-  // Keep the detail card on screen once its height is known.
-  useLayoutEffect(() => {
-    const card = cardRef.current;
-    if (!card || !hovered) return;
-    const maxTop = window.innerHeight - card.offsetHeight - CARD_GAP;
-    if (hovered.top > maxTop) card.style.top = `${Math.max(CARD_GAP, maxTop)}px`;
-  }, [hovered]);
-
-  /** Shows the detail card beside the menu, on whichever side has room; none without room. */
-  function showDetails(model: ChatModel, row: HTMLElement) {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const menuRect = menu.getBoundingClientRect();
-    if (!cardFits(menuRect.left, menuRect.right, window.innerWidth)) {
-      setHovered(null);
-      return;
-    }
-    const right = menuRect.right + CARD_GAP;
-    const left = right + CARD_WIDTH <= window.innerWidth - CARD_GAP ? right : menuRect.left - CARD_GAP - CARD_WIDTH;
-    setHovered({ model, top: row.getBoundingClientRect().top, left });
-  }
-
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');
 
   function renderModel(model: ChatModel) {
     const active = model === selected;
     const tee = teeTag(model);
+    const tags = (
+      <>
+        {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
+        {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
+        {model.freeForStakers && !model.free && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
+      </>
+    );
     return (
       <button
         key={model.id}
         type="button"
-        className={`${styles.pickerRow}${cardRoom ? '' : ` ${styles.pickerRowTall}`}${active ? ` ${styles.active}` : ''}`}
+        className={`${styles.pickerRow}${oneLine ? '' : ` ${styles.pickerRowTall}`}${active ? ` ${styles.active}` : ''}`}
         role="option"
         aria-selected={active}
         aria-label={`${model.label}. ${modelSummary(model)}`}
-        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
-        onFocus={(event) => showDetails(model, event.currentTarget)}
+        // The details a card used to show (lab, context, capabilities, sellers), without one.
+        title={modelSummary(model)}
         onClick={() => {
           setOpen(false);
           if (!active) onSelect(model.id);
         }}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        {cardRoom ? <span className={styles.pickerName}>{model.label}</span> : (
-          <span className={styles.pickerNameGroup}>
-            <span className={styles.pickerName}>{model.label}</span>
-            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
-          </span>
-        )}
+        <ModelRowContent model={model} oneLine={oneLine} tags={oneLine ? tags : undefined} />
         <span className={styles.pickerTags}>
-          {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
-          {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
-          {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
+          {!oneLine && tags}
+          {/* The tick's place is kept on every row, so the selected row's chips don't move. */}
+          <span className={styles.pickerCheck}>
+            {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
+          </span>
         </span>
       </button>
     );
@@ -367,16 +416,10 @@ export function ChatModelDropdown({
     return (
       <div
         key={model.id}
-        className={`${styles.pickerRow} ${styles.pickerPromptRow}${cardRoom ? '' : ` ${styles.pickerRowTall}`}`}
-        onMouseEnter={(event) => showDetails(model, event.currentTarget)}
+        className={`${styles.pickerRow} ${styles.pickerPromptRow}${oneLine ? '' : ` ${styles.pickerRowTall}`}`}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        {cardRoom ? <span className={styles.pickerName}>{model.label}</span> : (
-          <span className={styles.pickerNameGroup}>
-            <span className={styles.pickerName}>{model.label}</span>
-            <span className={styles.pickerInlineDetails}>{modelInlineDetails(model)}</span>
-          </span>
-        )}
+        <ModelRowContent model={model} oneLine={oneLine} />
         <span className={styles.pickerTags}>
           {onUsePrompt && (
             <button
@@ -402,45 +445,6 @@ export function ChatModelDropdown({
             {copiedId === model.id ? 'Copied' : 'Copy prompt'}
           </button>
         </span>
-      </div>
-    );
-  }
-
-  function renderDetails({ model, top, left }: Hovered) {
-    const lab = modelLab(model);
-    const byline = model.router
-      ? (model.router.sellerName && model.router.sellerName !== model.label ? `by ${model.router.sellerName}` : null)
-      : lab;
-    const price = renderModelPrice(model);
-    const context = contextValue(model);
-    const stats = [
-      context ? { value: context, label: 'context' } : null,
-      model.router?.models ? { value: String(model.router.models), label: `model${model.router.models === 1 ? '' : 's'} it picks from` } : null,
-      !model.router && model.sellers > 0 ? { value: String(model.sellers), label: `seller${model.sellers === 1 ? '' : 's'}` } : null,
-    ].filter((stat): stat is NonNullable<typeof stat> => stat !== null);
-    return (
-      <div ref={cardRef} className={styles.pickerCard} style={{ top, left, width: CARD_WIDTH }} aria-hidden>
-        <div className={styles.pickerCardHead}>
-          <span className={styles.pickerCardMark}><ModelMark model={model} size={24} /></span>
-          <span className={styles.pickerCardTitle}>
-            <span className={styles.pickerCardName}>{model.label}</span>
-            {byline && <span className={styles.pickerCardByline}>{byline}</span>}
-          </span>
-        </div>
-        <div className={styles.itemTags}>
-          {modelTags(model).map((tag) => (
-            <span key={tag.label} title={tag.title} className={`${styles.tag}${tag.tone === 'free' ? ` ${styles.tagFree}` : tag.tone === 'tee' ? ` ${styles.tagTee}` : ''}`}>{tag.label}</span>
-          ))}
-        </div>
-        {model.id !== model.label && <code className={styles.pickerCardId}>{model.id}</code>}
-        {(stats.length > 0 || price) && (
-          <div className={styles.pickerCardStats}>
-            {stats.map((stat) => (
-              <span key={stat.label} className={styles.pickerCardStat}><strong>{stat.value}</strong>{stat.label}</span>
-            ))}
-            {price && <span className={`${styles.pickerCardStat} ${styles.pickerCardPrice}`}><strong>{price}</strong>{model.router ? 'routing fee' : 'price'}</span>}
-          </div>
-        )}
       </div>
     );
   }
@@ -473,8 +477,6 @@ export function ChatModelDropdown({
           className={`${styles.modelDropdownMenu} ${styles.pickerMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           ref={menuRef}
-          onScroll={() => setHovered(null)}
-          onMouseLeave={() => setHovered(null)}
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
           <div className={styles.pickerHeader} ref={headerRef}>
@@ -511,7 +513,7 @@ export function ChatModelDropdown({
                     aria-selected={tab === key}
                     className={`${styles.pickerTab}${tab === key ? ` ${styles.pickerTabOn}` : ''}`}
                     title={key === 'auto' ? 'Routers pick the model for each message' : undefined}
-                    onClick={() => { setTab(key); setHovered(null); }}
+                    onClick={() => setTab(key)}
                   >
                     {label}
                     {/* While searching, where the matches are. */}
@@ -536,7 +538,6 @@ export function ChatModelDropdown({
           )}
           {!error && shown.length === 0 && <div className={styles.modelDropdownStatus}>{emptyText}</div>}
           {shown.map(PROMPT_TABS.has(tab) ? renderPromptModel : renderModel)}
-          {hovered && renderDetails(hovered)}
         </div>
       )}
     </div>

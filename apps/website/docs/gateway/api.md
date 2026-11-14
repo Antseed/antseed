@@ -252,6 +252,16 @@ curl https://gateway.example.com/v1/key/savings -H "Authorization: Bearer $ANTSE
 
 `/v1/key/savings` compares this key's own requests with retail reference prices: what they would have cost at retail, and what they paid. It counts only models with a retail price, free requests at $0 paid. Its usage comes from the gateway's records per model (requests the gateway pruned from its log keep their spend but no longer their tokens if no spend was metered). `data` is `null` when retail prices can't be read (`ANTSEED_COMPARABLE_PRICES_URL`) or no request matched. Both answer `null` rather than an error when they can't be read.
 
+`GET /v1/models` lists the same retail prices per model. A text model the price list names has a `reference_price`, in USD per million tokens:
+
+```json
+{ "id": "<model>", "reference_price": { "input_usd_per_million": 1.25, "output_usd_per_million": 5, "cached_input_usd_per_million": 0.125 }, "peers": [] }
+```
+
+It is a price to compare with, not one a seller charges: what each seller charges is under `peers[]`. A side the price list doesn't price is left out, and so is the whole field for a model it doesn't name, and for image, video and speech models and routers. The buyer reads the price list in the background when it starts and every 10 minutes after that, so a listing never waits for it: until the first read finishes, or when no price list is set, no model has the field. A read that fails keeps the prices from the last one that worked, and is retried after a minute.
+
+A video model's sellers under `peers[]` each list `videoUsdPerSecond`: the cheapest price per second of video for a plain create (no reference video), as that seller's billing prices it at the resolutions it offers, and `videoUsdPerVideo` when its billing adds a fixed charge per video.
+
 `limits` are the key's own limits (the lower of the admins' and the owner's). Member and workspace budgets can stop a request first; see [Budgets and spend limits](/docs/gateway/budgets).
 
 A key holder can also paste their key on the console's sign-in page for a read-only view of its usage. See [Sign-in](/docs/gateway/sign-in).

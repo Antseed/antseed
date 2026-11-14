@@ -21,6 +21,11 @@ export type ChatModel = {
   minImageUsd: number | null;
   /** An image model's price per image, by seller (lowercase, no 0x): what the seller picker shows. */
   imageUsdBySeller?: Record<string, number>;
+  /**
+   * A video model's cheapest price across its sellers: per second of video at
+   * the cheapest resolution, plus any fixed charge per video. Absent when none lists one.
+   */
+  videoPrice?: { perSecondUsd: number; perVideoUsd: number };
   /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
@@ -39,6 +44,12 @@ export type ChatModel = {
    */
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
+  /**
+   * What a text model costs at retail, USD per million tokens, as the gateway
+   * lists it (`reference_price`). Absent when it lists none: an older gateway,
+   * one without a retail price list, or a model the list doesn't name.
+   */
+  referencePrice?: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null };
   /**
    * No trusted seller serves it, as the connected apps judge it, while other
    * models have one. Pickers list it only while it is the model in use, and

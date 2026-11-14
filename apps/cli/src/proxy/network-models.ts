@@ -24,7 +24,9 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
+import type { RetailPrice, RetailPriceMap } from '@antseed/node/retail-prices'
 import { TEE_VERIFIER_ID, type TeeScope } from '@antseed/node/tee-status'
+import { videoOfferPrice } from './video-price.js'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
@@ -52,6 +54,10 @@ export type NetworkModelPeerOffer = {
   cachedInputUsdPerMillion?: number
   minImageUsdPerImage?: number
   maxImageUsdPerImage?: number
+  /** A video offer's cheapest price per second of video for a plain create, as its billing prices it (`video-price.ts`). */
+  videoUsdPerSecond?: number
+  /** A fixed charge per video on top of `videoUsdPerSecond`, when its billing has one. */
+  videoUsdPerVideo?: number
   /**
    * The seller's free-tier program for this offer: on a free offer its limit,
    * on a priced one the free allowance before the listed price applies.
@@ -73,6 +79,17 @@ export type NetworkModelCapabilityCoverage = {
   tool_use: number
   structured_output: number
   supported_parameters: number
+}
+
+/**
+ * What the model costs at retail, USD per million tokens, from the price list
+ * behind the savings totals. A reference to compare `peers[]` prices with:
+ * nobody on the network charges it.
+ */
+export type NetworkModelReferencePrice = {
+  input_usd_per_million?: number
+  output_usd_per_million?: number
+  cached_input_usd_per_million?: number
 }
 
 export type NetworkModelEntry = {
@@ -99,6 +116,8 @@ export type NetworkModelEntry = {
   /** Speech models: voices every listed offer accepts (each offer lists its own under `capabilities.speech`). */
   voices?: string[]
   capability_coverage: NetworkModelCapabilityCoverage
+  /** Text models the retail price list names; absent for any other model, or with no price list. */
+  reference_price?: NetworkModelReferencePrice
   peers: NetworkModelPeerOffer[]
 }
 
@@ -141,6 +160,16 @@ export type NetworkModelBuildOptions = {
   teeScope?: (peer: PeerInfo) => TeeScope | null
   /** `buildNetworkServiceOffers(peers)`, when the caller already built it. */
   offers?: NetworkServiceOffer[]
+  /** Retail prices by canonical model key; text models found there list them as `reference_price`. */
+  referencePrices?: RetailPriceMap | null
+}
+
+function referencePriceFields(price: RetailPrice): NetworkModelReferencePrice {
+  return {
+    ...(price.input !== null ? { input_usd_per_million: price.input } : {}),
+    ...(price.output !== null ? { output_usd_per_million: price.output } : {}),
+    ...(price.cachedInput !== null ? { cached_input_usd_per_million: price.cachedInput } : {}),
+  }
 }
 
 /** The offer's verifier list and TEE scope: the TEE verifier stays listed only for a seller whose attestation passed. */
@@ -332,6 +361,7 @@ export function buildNetworkModels(
       unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
     })
     const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
+    const video = offer.type === 'video' ? videoOfferPrice(offer) : null
     entry.peers.push({
       ...teeFields(offer, peer, options.teeScope),
       peerId: offer.peerId,
@@ -352,10 +382,18 @@ export function buildNetworkModels(
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(video ? { videoUsdPerSecond: video.perSecondUsd, ...(video.perVideoUsd > 0 ? { videoUsdPerVideo: video.perVideoUsd } : {}) } : {}),
       ...(freeTier ? { freeTier } : {}),
       ...(offer.health ? { health: offer.health } : {}),
       ...(offer.performance ? { performance: offer.performance } : {}),
     })
+  }
+
+  // The list prices tokens, so only text models compare with it. The type is
+  // final here: a merged model is text once any of its offers is.
+  for (const [key, entry] of byModelKey) {
+    const price = entry.type === 'text' ? options.referencePrices?.get(key) : undefined
+    if (price) entry.reference_price = referencePriceFields(price)
   }
 
   const entries = [...byModelKey.values()]
