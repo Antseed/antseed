@@ -124,6 +124,12 @@
   border-color: var(--border-strong);
 }
 
+/* The replacement picker scrolls all of its rows within the available height. */
+.composer [role='listbox'] {
+  overscroll-behavior: contain;
+  -webkit-app-region: no-drag;
+}
+
 .askInput {
   width: 100%;
   min-width: 0;

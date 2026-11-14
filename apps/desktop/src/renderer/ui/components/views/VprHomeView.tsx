@@ -16,6 +16,7 @@ import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
 import { modelsForPrivacy } from '../../hooks/usePrivateMode';
 import { findChatModel, pickerChatModels } from '../../../modules/chat/models';
+import { modelMenuSpace } from '../../hooks/useModelMenuViewport';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -46,6 +47,33 @@ export function VprHomeView({ onSelectView }: Props) {
   const models = pickerChatModels(modelsForPrivacy(snap.chatModels, privateMode), [snap.chatSelectedModelId, snap.chatImageModelId]);
   const homePickerModelId = snap.chatImageModelId ?? snap.chatSelectedModelId;
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelMenuViewport, setModelMenuViewport] = useState({ upwards: false, maxHeight: 320 });
+
+  // Keep the picker inside Home, above the bottom bar, even in a short window.
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    const view = composer?.closest<HTMLElement>('.view');
+    if (!modelMenuOpen || !composer || !view) return;
+    const update = () => {
+      const rect = view.getBoundingClientRect();
+      const space = modelMenuSpace(composer.getBoundingClientRect(), {
+        top: Math.max(0, rect.top),
+        bottom: Math.min(window.innerHeight, rect.bottom),
+      });
+      setModelMenuViewport({ ...space, maxHeight: Math.min(320, space.maxHeight) });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(view);
+    observer.observe(composer);
+    window.addEventListener('resize', update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [modelMenuOpen]);
 
   // Someone who chatted before Home tracked progress has sent their first prompt.
   useEffect(() => {
@@ -97,6 +125,7 @@ export function VprHomeView({ onSelectView }: Props) {
               </h1>
               <p className={styles.subline} data-glide-fade>At the best available prices, with the privacy you want.</p>
               <form
+                ref={composerRef}
                 className={styles.composer}
                 data-composer
                 onSubmit={(event) => { event.preventDefault(); submitDraft(); }}
@@ -129,8 +158,10 @@ export function VprHomeView({ onSelectView }: Props) {
                       actions.selectChatModel(modelId);
                     }}
                     onOpen={() => void actions.refreshChatModels()}
+                    onOpenChange={setModelMenuOpen}
                     onRetry={() => void actions.refreshChatModels(true)}
-                    menuMaxHeight={320}
+                    menuMaxHeight={modelMenuViewport.maxHeight}
+                    menuPlacement={modelMenuViewport.upwards ? 'above' : 'below'}
                     menuAnchor="container"
                     onUsePrompt={(prompt) => {
                       // The chat model runs it: leave image mode, or Send would make an image.
