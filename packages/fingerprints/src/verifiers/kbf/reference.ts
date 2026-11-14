@@ -447,6 +447,24 @@ export function subsetReferenceSelfTest(
  * What an audit of these probes is judged against: the reference's calibration on the set's own
  * batches when it has one, else its enrollment self-test.
  */
+/**
+ * Power of the audit test on a calibrated reference's own calibration, the baseline its audits are
+ * judged against (`kbfAuditBaseline`); null without a calibration.
+ */
+export function kbfCalibrationPower(
+  reference: Pick<KbfReferenceV1, 'probes' | 'calibration' | 'minimumMismatchDelta' | 'statisticalPowerEvidence'>,
+): number | null {
+  if (!reference.calibration) return null;
+  return computeBinomialPower({
+    selfHamming: reference.calibration.hamming,
+    selfTotal: reference.calibration.total,
+    probeCount: reference.probes.length,
+    minimumMismatchDelta: reference.minimumMismatchDelta,
+    alpha: reference.statisticalPowerEvidence.alpha,
+    cpConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
+  }).power;
+}
+
 export function kbfAuditBaseline(
   reference: Pick<KbfReferenceV1, 'probes' | 'selfTest' | 'calibration'>,
   selectedProbeIds: readonly string[],
@@ -573,11 +591,20 @@ export function rescoreKbfReference(reference: KbfReferenceV1): KbfReferenceV1 {
 
 export function validateKbfReferenceV1(
   value: unknown,
-  options: { trustImported?: boolean; minimumStatisticalPower?: number } = {},
+  options: {
+    trustImported?: boolean;
+    minimumStatisticalPower?: number;
+    /** The power a calibration must give; default `minimumStatisticalPower`. */
+    minimumCalibrationPower?: number;
+  } = {},
 ): KbfReferenceV1 {
   const minimumStatisticalPower = options.minimumStatisticalPower ?? 0.9;
   if (!(minimumStatisticalPower > 0 && minimumStatisticalPower <= 1)) {
     throw new Error('minimumStatisticalPower must be in (0, 1]');
+  }
+  const minimumCalibrationPower = options.minimumCalibrationPower ?? minimumStatisticalPower;
+  if (!(minimumCalibrationPower > 0 && minimumCalibrationPower <= 1)) {
+    throw new Error('minimumCalibrationPower must be in (0, 1]');
   }
   const reference = object(value, 'reference') as unknown as KbfReferenceV1;
   if (reference.version !== KBF_REFERENCE_VERSION || reference.kind !== 'kbf') {
@@ -701,6 +728,14 @@ export function validateKbfReferenceV1(
   if (Math.abs(recomputedPower.power - reference.statisticalPower) > 1e-12
     || recomputedPower.power < minimumStatisticalPower) {
     throw new Error('statisticalPower is inconsistent with the selected self-test baseline');
+  }
+  // An audit is judged against the calibration when there is one, so the power has to hold on its trials too.
+  const calibrationPower = kbfCalibrationPower(reference);
+  if (calibrationPower !== null && calibrationPower < minimumCalibrationPower) {
+    throw new Error(
+      `power on the calibration is ${calibrationPower.toFixed(3)}, under the ${minimumCalibrationPower} required `
+      + `(${reference.calibration!.hamming} of ${reference.calibration!.total} calibration answers missed)`,
+    );
   }
   if (reference.contrastDetection !== undefined) {
     if (!Array.isArray(reference.contrastDetection)) throw new Error('contrastDetection must be an array');

@@ -8,6 +8,7 @@ import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
   epochQuestionSetPath,
+  epochSetAwaitsGrowth,
   epochSetCalibrationProblem,
   loadBankEnrollmentReference,
   loadBankProbeIndex,
@@ -17,6 +18,7 @@ import {
   retiredEpochQuestionSetCount,
   selectEpochQuestionSet,
   type EpochQuestionSetV1,
+  type EpochSetGrowthV1,
 } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
 
@@ -119,7 +121,9 @@ export async function enrollFreshProbes(input: {
  * get `KBF_CALIBRATION_PASSES` passes against the pinned reference, and their limit comes from these
  * trials. A set that has a calibration is returned as it is; one without gets it here, and an
  * interrupted calibration continues from its checkpoint, so nothing is paid for twice. Throws when
- * the reference fails the sanity gates: the model is not audited this epoch.
+ * the reference fails the sanity gates: the model is not audited this epoch. Returns a set without a
+ * calibration when its audit set fell under the power on its trials and waits to grow
+ * (`epochSetAwaitsGrowth`); such a set is not calibrated again until it has grown.
  */
 export async function calibrateEpochQuestionSet(input: {
   model: string
@@ -139,16 +143,18 @@ export async function calibrateEpochQuestionSet(input: {
   record: typeof recordEpochSetCalibration
 } = { catalog: loadConfiguredVerifierModelCatalog, ask: calibrateReferenceSets, record: recordEpochSetCalibration }): Promise<EpochQuestionSetV1> {
   const stopped = (set: EpochQuestionSetV1): EpochQuestionSetV1 => {
-    const problem = set.calibration?.status === 'failed' ? epochSetCalibrationProblem(set) : null
+    const problem = set.calibration ? epochSetCalibrationProblem(set, input.config) : null
     if (problem) throw new Error(`the ${input.model} question set for epoch ${input.epoch} ${problem}; not audited this epoch`)
     return set
   }
   if (input.set.calibration) return stopped(input.set)
+  if (epochSetAwaitsGrowth(input.set)) return input.set
   const setPath = epochQuestionSetPath(input.banksDir, input.model, input.epoch)
   const lock = await acquirePidFileLock(`${setPath}.calibration.lock`)
   try {
     const set = await loadEpochQuestionSet(input) ?? input.set
     if (set.calibration) return stopped(set)
+    if (epochSetAwaitsGrowth(set)) return set
     const references = [set.reference, ...set.extensions]
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
@@ -178,6 +184,14 @@ export async function calibrateEpochQuestionSet(input: {
       ...(input.now ? { now: input.now } : {}),
     })
     await asked.finalize()
+    const growth = epochSetAwaitsGrowth(recorded)
+    if (growth) {
+      input.log?.(
+        `calibration: the audit set ${describeGrowth(growth)}, `
+        + `$${(Number(asked.cost.totalUsdMicros) / 1_000_000).toFixed(6)}`,
+      )
+      return recorded
+    }
     const { hamming, total, errorRate, enrollmentErrorLimit } = recorded.calibration!
     input.log?.(
       `calibration: ${hamming}/${total} missed (${(errorRate * 100).toFixed(1)}%), enrollment limit ${(enrollmentErrorLimit * 100).toFixed(1)}%, `
@@ -199,12 +213,21 @@ export async function calibrateEpochQuestionSet(input: {
 export const EPOCH_SET_BUILD_ROUNDS = 4
 
 /**
+ * Calibrations per model and run, at most: the set's first, and two more after it grew because its audit
+ * set fell under the power on its own calibration. Each growth is sized from the rate it measured, so one
+ * is usually enough; a set still waiting to grow continues in the next run.
+ */
+export const EPOCH_SET_CALIBRATIONS_PER_RUN = 3
+
+/**
  * This epoch's question set for a model (`epochs/<epoch>/set.json`), built on the spot when there is
  * none yet: fresh questions are built and added to the epoch's bank (up to `EPOCH_SET_BUILD_ROUNDS`
  * builds per run, recorded so an interrupted run's builds still count) until they make an audit set and
  * `extensionCount` extra sets, then calibrated. Only questions built for this epoch can be in it.
- * Throws when the builds don't get there or calibration stops the model; it is then not audited in
- * this run.
+ * When the audit set falls under the power on its calibration, the set grows (with more builds if its
+ * candidates don't reach) and is calibrated again, up to `EPOCH_SET_CALIBRATIONS_PER_RUN` calibrations.
+ * Throws when the builds or calibrations don't get there, or calibration stops the model; it is then
+ * not audited in this run.
  */
 export async function ensureEpochQuestionSet(input: {
   model: string
@@ -244,13 +267,29 @@ export async function ensureEpochQuestionSet(input: {
     })
   }
   let selection = await select()
-  if (selection.status === 'ready') return ready(selection.set)
-  if (await retiredEpochQuestionSetCount(input) > 0) {
+  if (selection.status !== 'ready' && await retiredEpochQuestionSetCount(input) > 0) {
     input.log?.(`a submit published the epoch ${input.epoch} question set, so its sellers are not asked it again; building a new one`)
   }
-  for (let round = 1; round <= EPOCH_SET_BUILD_ROUNDS; round += 1) {
+  let builds = 0
+  let calibrations = 0
+  for (;;) {
+    if (selection.status === 'ready') {
+      if (!selection.set.calibration) calibrations += 1
+      const set = await ready(selection.set)
+      const growth = epochSetAwaitsGrowth(set)
+      if (!growth) return set
+      if (calibrations >= EPOCH_SET_CALIBRATIONS_PER_RUN) {
+        throw new Error(`no question set for epoch ${input.epoch}: after ${calibrations} calibration(s) in this run, its audit set `
+          + `${describeGrowth(growth)}; the next run goes on`)
+      }
+      input.log?.(`growing the epoch ${input.epoch} question set: its audit set ${describeGrowth(growth)}`)
+      selection = await select()
+      continue
+    }
+    if (builds >= EPOCH_SET_BUILD_ROUNDS) break
+    builds += 1
     input.log?.(
-      `building new questions for the epoch ${input.epoch} question set (build ${round}/${EPOCH_SET_BUILD_ROUNDS}`
+      `building new questions for the epoch ${input.epoch} question set (build ${builds}/${EPOCH_SET_BUILD_ROUNDS}`
       + `; ${selection.reason})`,
     )
     const enrolled = await operations.enrollFresh({
@@ -261,10 +300,14 @@ export async function ensureEpochQuestionSet(input: {
     })
     await operations.record({ banksDir: input.banksDir, model: input.model, epoch: input.epoch, probeIds: enrolled.addedProbeIds })
     selection = await select()
-    if (selection.status === 'ready') return ready(selection.set)
-    if (enrolled.addedProbeCount === 0) break
+    if (selection.status !== 'ready' && enrolled.addedProbeCount === 0) break
   }
   throw new Error(`no question set for epoch ${input.epoch}: ${selection.reason}`)
+}
+
+function describeGrowth(growth: EpochSetGrowthV1): string {
+  return `of ${growth.probeCount} questions reached power ${growth.power.toFixed(3)} on its calibration, under the `
+    + `${growth.minimumPower.toFixed(3)} needed; it grows to at least ${growth.requiredProbeCount} questions`
 }
 
 function describeSet(set: EpochQuestionSetV1): string {

@@ -509,8 +509,11 @@ export async function prepareModelAudits(input: {
         let exportedPath: string | null = null
         const located = await findEpochProbeReference(input.banksDir, referenceId)
         if (located) {
+          // The power on a set's calibration is checked before a seller is asked it; audits made on a set
+          // calibrated before that check are still published as they were judged.
           const reference = validateKbfReferenceV1(located, {
             minimumStatisticalPower: extensionReferenceIds.has(referenceId) ? Number.EPSILON : sizing.minimumStatisticalPower,
+            minimumCalibrationPower: Number.EPSILON,
           })
           references.push({ path: referencePath, reference })
           exportedPath = portableRelative(evidenceDirectory, referencePath)

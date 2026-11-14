@@ -12,6 +12,7 @@ import {
   computeBinomialPower,
   computeContrastDetection,
   computeReferenceId,
+  kbfCalibrationPower,
   referenceCompatibilityProfileHash,
   rescoreKbfReference,
   rescoreKbfSelfTestOutcome,
@@ -140,6 +141,12 @@ export interface EpochQuestionSetV1 {
   extensions: KbfReferenceV1[]
   /** Absent until the set is calibrated; no seller is asked before it says `passed`. */
   calibration?: EpochSetCalibrationV1
+  /**
+   * Earlier calibrations of this epoch's set, oldest first, whose audit set fell under the required power
+   * on its own trials. Each made the set grow; the last one, while its audit set is still `reference`,
+   * means the set waits to grow (`epochSetAwaitsGrowth`). No seller was asked any of them.
+   */
+  growth?: EpochSetGrowthV1[]
   createdAt: string
   createdByRunId: string
   /** Set on a set a submit published (`set.published-<n>.json`): no seller is asked it again. */
@@ -155,6 +162,31 @@ export interface EpochQuestionSetRetirementV1 {
    * was banked by then, so it was in this pool or set or an earlier one. Absent on records from before.
    */
   bankExchanges?: string[]
+}
+
+/**
+ * A calibration after which the audit set's power on its own trials was under the required minimum (the
+ * reference missed more than at enrollment). The set grows to `requiredProbeCount` and is calibrated
+ * again in its new batches.
+ */
+export interface EpochSetGrowthV1 {
+  /** The audit set that was calibrated; the calibration's raw exchanges are in the bank under this id. */
+  referenceId: string
+  probeCount: number
+  /** The audit set's power on its calibration, and the minimum it fell under. */
+  power: number
+  minimumPower: number
+  /** The miss rate the new size comes from: the audit set's or all sets', whichever is higher. */
+  errorRate: number
+  /** Share of the audit set's questions the calibration scored. */
+  coverage: number
+  /** Smallest audit set that reaches the minimum on a calibration with that rate and coverage. */
+  requiredProbeCount: number
+  /** The trials, one per set in set order, which no reference carries. */
+  calibrations: KbfReferenceCalibrationV1[]
+  requestCount: number
+  costUsdMicros: string
+  completedAt: string
 }
 
 /** Below this share of answers on any set, a calibration stops the model's audit for the epoch. */
@@ -511,22 +543,89 @@ async function requireEpochQuestionSet(input: {
   if (!set) {
     throw new Error(`${NO_EPOCH_QUESTION_SET}: no ${input.model} question set for epoch ${input.epoch} has been built`)
   }
-  if (set.calibration?.status !== 'passed') {
-    throw new Error(`${NO_EPOCH_QUESTION_SET}: the ${input.model} question set for epoch ${input.epoch} ${epochSetCalibrationProblem(set)}`)
+  const problem = epochSetCalibrationProblem(set, input.config)
+  if (problem) {
+    throw new Error(`${NO_EPOCH_QUESTION_SET}: the ${input.model} question set for epoch ${input.epoch} ${problem}`)
   }
   return set
 }
 
-/** Why sellers can't be asked this set yet, for messages; null when they can. */
-export function epochSetCalibrationProblem(set: EpochQuestionSetV1): string | null {
-  if (set.calibration?.status === 'passed') return null
-  return set.calibration ? `failed calibration: ${set.calibration.failureReason}` : 'has not been calibrated'
+/**
+ * Why sellers can't be asked this set yet, for messages; null when they can: it passed its calibration
+ * and its audit set reaches the required power on those trials, which a set calibrated before that was
+ * checked may not.
+ */
+export function epochSetCalibrationProblem(set: EpochQuestionSetV1, config?: VerifierCLIConfig): string | null {
+  if (set.calibration?.status === 'passed') {
+    const minimum = resolveReferenceSizingPolicy(config).minimumStatisticalPower
+    const power = kbfCalibrationPower(set.reference) ?? 0
+    return power >= minimum ? null : `${underPowered(power, minimum, set.reference.calibration!)}; it was calibrated before that was checked`
+  }
+  if (set.calibration) return `failed calibration: ${set.calibration.failureReason}`
+  const growth = epochSetAwaitsGrowth(set)
+  return growth
+    ? `has not been calibrated since it ${underPowered(growth.power, growth.minimumPower, growth.calibrations[0]!)}; `
+      + `it grows to ${growth.requiredProbeCount} questions or more before a seller is asked it`
+    : 'has not been calibrated'
+}
+
+/** The growth this set waits for: its audit set was calibrated and fell under the power. Null otherwise. */
+export function epochSetAwaitsGrowth(set: EpochQuestionSetV1): EpochSetGrowthV1 | null {
+  const last = set.calibration ? undefined : set.growth?.at(-1)
+  return last && last.referenceId === set.reference.referenceId ? last : null
+}
+
+function underPowered(power: number, minimum: number, calibration: Pick<KbfReferenceCalibrationV1, 'hamming' | 'total'>): string {
+  return `reached power ${power.toFixed(3)} on its calibration (the reference missed ${calibration.hamming} of `
+    + `${calibration.total} answers), under the ${minimum.toFixed(3)} needed`
 }
 
 /**
- * The sanity gate of a calibration; null when it passed. Only coverage stops a model. A calibration rate
+ * Power of an audit set of `count` questions on a calibration that scores `coverage` of them in
+ * `KBF_CALIBRATION_PASSES` passes and misses `errorRate` of those trials.
+ */
+function projectedCalibrationPower(
+  count: number,
+  errorRate: number,
+  coverage: number,
+  assumptions: { minimumMismatchDelta: number; alpha: number; cpConfidence: number },
+): number {
+  const trials = Math.round(count * coverage * KBF_CALIBRATION_PASSES)
+  if (trials === 0) return 0
+  return computeBinomialPower({ selfHamming: Math.round(errorRate * trials), selfTotal: trials, probeCount: count, ...assumptions }).power
+}
+
+/**
+ * The smallest audit set size larger than `probeCount`, among the configured sizes, that reaches the
+ * required power on a calibration missing `errorRate` of its trials with `coverage`; null when none does,
+ * or when the rate is above what a reference may miss at enrollment (no size makes such a reference sound).
+ */
+export function calibratedEpochSetSize(input: {
+  probeCount: number
+  errorRate: number
+  coverage: number
+  reference: Pick<KbfReferenceV1, 'minimumMismatchDelta' | 'statisticalPowerEvidence'>
+  config?: VerifierCLIConfig
+}): number | null {
+  if (input.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE) return null
+  const sizing = resolveReferenceSizingPolicy(input.config)
+  const assumptions = {
+    minimumMismatchDelta: input.reference.minimumMismatchDelta,
+    alpha: input.reference.statisticalPowerEvidence.alpha,
+    cpConfidence: input.reference.statisticalPowerEvidence.clopperPearsonConfidence,
+  }
+  for (let count = sizing.minimumProbeCount; count <= sizing.maximumProbeCount; count += sizing.probeStep) {
+    if (count <= input.probeCount) continue
+    if (projectedCalibrationPower(count, input.errorRate, input.coverage, assumptions) >= sizing.minimumStatisticalPower) return count
+  }
+  return null
+}
+
+/**
+ * The sanity gate of a calibration; null when it passed. Coverage stops a model here. A calibration rate
  * above the enrollment limit doesn't: the limit comes from these trials, so a drifted reference can't turn
  * into false DIFFs, and the KBF reference code has no such stop. `verifier run` warns about it instead.
+ * The rate does count for the power on these trials, which `recordEpochSetCalibration` checks next.
  */
 function calibrationFailure(
   calibrations: readonly KbfReferenceCalibrationV1[],
@@ -548,6 +647,11 @@ function percent(value: number): string {
  * bank (which every audit submission publishes). When it passes, each reference gets its trials and
  * so its limit (and a new id); when it fails the gates, the references stay as they were, the failure
  * is recorded, and sellers of the model aren't asked this set. Either way it is not asked again.
+ *
+ * The audit set must also reach the required power on its own calibration, the baseline its audits
+ * are judged against. When it doesn't, but a larger set would at the rate measured, the calibration is
+ * kept in `growth` and the set waits to grow (`selectEpochQuestionSet`) and be calibrated again; when no
+ * allowed size would, the calibration fails.
  */
 export async function recordEpochSetCalibration(input: {
   banksDir: string
@@ -566,7 +670,7 @@ export async function recordEpochSetCalibration(input: {
   try {
     const set = await loadEpochQuestionSet(input)
     if (!set) throw new Error(`no ${input.model} question set for epoch ${input.epoch} to calibrate`)
-    if (set.calibration) return set
+    if (set.calibration || epochSetAwaitsGrowth(set)) return set
     const references = [set.reference, ...set.extensions]
     if (references.length !== input.calibrations.length) {
       throw new Error(`${references.length} sets but ${input.calibrations.length} calibrations`)
@@ -587,7 +691,52 @@ export async function recordEpochSetCalibration(input: {
       costUsdMicros: input.cost.totalUsdMicros,
       completedAt: new Date(input.now?.() ?? Date.now()).toISOString(),
     }
-    const failureReason = calibrationFailure(input.calibrations, summary)
+    const bankFile = epochBankPath(input.banksDir, input.model, input.epoch)
+    let failureReason = calibrationFailure(input.calibrations, summary)
+    if (!failureReason) {
+      const minimumPower = resolveReferenceSizingPolicy(input.config).minimumStatisticalPower
+      const audit = input.calibrations[0]!
+      const power = kbfCalibrationPower({ ...set.reference, calibration: audit })!
+      if (power < minimumPower) {
+        const probeCount = set.reference.probes.length
+        const errorRate = Math.max(audit.errorRate, trials.errorRate)
+        const requiredProbeCount = calibratedEpochSetSize({
+          probeCount, errorRate, coverage: audit.coverage, reference: set.reference, config: input.config,
+        })
+        if (requiredProbeCount === null) {
+          failureReason = `its audit set of ${probeCount} questions ${underPowered(power, minimumPower, audit)}, and `
+            + (errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
+              ? `a ${percent(errorRate)} miss rate is more than a reference may miss, so no larger set helps`
+              : `no set of up to ${resolveReferenceSizingPolicy(input.config).maximumProbeCount} questions reaches it at a ${percent(errorRate)} miss rate`)
+        } else {
+          const growth: EpochSetGrowthV1 = {
+            referenceId: set.reference.referenceId,
+            probeCount,
+            power,
+            minimumPower,
+            errorRate,
+            coverage: audit.coverage,
+            requiredProbeCount,
+            calibrations: [...input.calibrations],
+            requestCount: summary.requestCount,
+            costUsdMicros: summary.costUsdMicros,
+            completedAt: summary.completedAt,
+          }
+          const waiting: EpochQuestionSetV1 = { ...set, growth: [...(set.growth ?? []), growth] }
+          // Published like any calibration: it is this epoch's questions and the reference's answers.
+          await addBankReferenceExchanges(bankFile, input.model, set.reference.referenceId, input.exchanges)
+          await writeJsonAtomic(path, waiting)
+          return waiting
+        }
+      }
+    }
+    // Extra sets are judged pooled with the audit set, so only a calibration no audit could be DIFF on stops one.
+    const unusable = references.findIndex((reference, index) => index > 0
+      && kbfCalibrationPower({ ...reference, calibration: input.calibrations[index]! }) === 0)
+    if (!failureReason && unusable > 0) {
+      failureReason = `the reference missed ${input.calibrations[unusable]!.hamming} of ${input.calibrations[unusable]!.total} `
+        + `answers of extra set ${unusable}, so no audit could find a difference on it`
+    }
     const calibrated = failureReason ? references : references.map((reference, index) => {
       const calibration = input.calibrations[index]!
       if (calibration.outcomes.some((outcome, position) => outcome.probeId !== reference.probes[position]?.id)) {
@@ -605,7 +754,7 @@ export async function recordEpochSetCalibration(input: {
         ? { ...summary, status: 'failed', failureReason, failedCalibrations: [...input.calibrations] }
         : { ...summary, status: 'passed' },
     }
-    await addBankReferenceExchanges(epochBankPath(input.banksDir, input.model, input.epoch), input.model, calibrated[0]!.referenceId, input.exchanges)
+    await addBankReferenceExchanges(bankFile, input.model, calibrated[0]!.referenceId, input.exchanges)
     await writeJsonAtomic(path, result)
     return result
   } finally {
@@ -718,11 +867,14 @@ function validateBankProbeReference(input: {
   const { bank, label } = input
   const sizing = resolveReferenceSizingPolicy(input.config)
   const requirePower = input.requirePower !== false
-  // References drawn before unscoreable answers were left out are re-scored like the bank.
+  // References drawn before unscoreable answers were left out are re-scored like the bank. The power on
+  // a set's calibration is checked before a seller is asked it (`epochSetCalibrationProblem`), not
+  // here: a set calibrated before that check stays readable for its audits' resume and submit.
   const reference = validateKbfReferenceV1(rescoreKbfReference(validateKbfReferenceV1(input.reference, {
     minimumStatisticalPower: Number.EPSILON,
   })), {
     minimumStatisticalPower: requirePower ? sizing.minimumStatisticalPower : Number.EPSILON,
+    minimumCalibrationPower: Number.EPSILON,
   })
   if (requirePower && !isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
     throw new Error(`${label} is incompatible with configured sizing`)
@@ -988,6 +1140,12 @@ function selectPoweredReference(
   available: readonly BankProbeV1[],
   config: VerifierCLIConfig | undefined,
   now: number,
+  options: {
+    /** Smallest size to consider, above the configured minimum. */
+    minimumProbeCount?: number
+    /** A calibration measured on these questions before: the size must reach the power at its rate too. */
+    calibration?: { errorRate: number; coverage: number }
+  } = {},
 ): KbfReferenceV1 | null {
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
@@ -996,6 +1154,7 @@ function selectPoweredReference(
   for (let count = sizing.minimumProbeCount;
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
+    if (count < (options.minimumProbeCount ?? 0)) continue
     const selected = eligible.slice(0, count)
     const selfTest = aggregateKbfSelfTestOutcomes(selected.map((entry) => entry.selfTest))
     const power = computeBinomialPower({
@@ -1010,16 +1169,14 @@ function selectPoweredReference(
       || power.power < sizing.minimumStatisticalPower) continue
     // An epoch set's limit comes from its calibration, fewer trials than the enrollment self-test and so
     // a wider limit: it has to reach the power on those trials too.
-    const calibrationTrials = count * KBF_CALIBRATION_PASSES
-    const calibrated = computeBinomialPower({
-      selfHamming: Math.round(selfTest.errorRate * calibrationTrials),
-      selfTotal: calibrationTrials,
-      probeCount: count,
+    const assumptions = {
       minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
-    })
-    if (calibrated.power < sizing.minimumStatisticalPower) continue
+    }
+    if (projectedCalibrationPower(count, selfTest.errorRate, 1, assumptions) < sizing.minimumStatisticalPower) continue
+    if (options.calibration && projectedCalibrationPower(count, options.calibration.errorRate, options.calibration.coverage, assumptions)
+      < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const contrasts = bank.contrastModels.map((model) => ({
       model,
@@ -1323,6 +1480,10 @@ export type EpochQuestionSetSelection =
  * testable contrast detected), and each of the `extensionCount` extra sets takes the next questions,
  * as many as the audit set. `short` when the candidates don't reach that, or no question was built
  * for the epoch yet; nothing is written then.
+ *
+ * A set that waits to grow (`epochSetAwaitsGrowth`) is made again the same way, but its audit set
+ * keeps its questions first and reaches the power at the rate its calibration measured as well; the
+ * extra sets are drawn anew from the other candidates, as large as the grown audit set.
  */
 export async function selectEpochQuestionSet(input: {
   banksDir: string
@@ -1338,7 +1499,8 @@ export async function selectEpochQuestionSet(input: {
   const lock = await acquirePidFileLock(`${path}.lock`)
   try {
     const existing = await loadEpochQuestionSet(input)
-    if (existing) return { status: 'ready', set: existing }
+    const growth = existing && epochSetAwaitsGrowth(existing)
+    if (existing && !growth) return { status: 'ready', set: existing }
     const bank = await readBankFile(epochBankPath(input.banksDir, input.model, input.epoch))
     if (!bank) return { status: 'short', reason: `no questions were built for epoch ${input.epoch} yet`, candidateProbeCount: 0 }
     checkRequiredBank(bank, input.model)
@@ -1349,11 +1511,25 @@ export async function selectEpochQuestionSet(input: {
     const candidates = bank.probes.filter((entry) => poolIds.has(entry.probe.id) && !excludedDomains.has(entry.probe.domain)
       && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
     const now = input.now?.() ?? Date.now()
-    const shuffled = (input.shuffle ?? cryptoShuffle)(candidates)
+    const kept = growth ? existing!.reference.probes.map((probe) => candidates.find((entry) => entry.probe.id === probe.id)) : []
+    if (kept.some((entry) => entry === undefined)) {
+      throw new Error(`the ${input.model} audit set for epoch ${input.epoch} has questions that are no longer candidates, so it can't grow`)
+    }
+    const keptIds = new Set(kept.map((entry) => entry!.probe.id))
+    const shuffled = [
+      ...kept as BankProbeV1[],
+      ...(input.shuffle ?? cryptoShuffle)(candidates.filter((entry) => !keptIds.has(entry.probe.id))),
+    ]
     // Contrasts are testable when one of these candidates tells them apart, not one of the old questions.
-    const reference = selectPoweredReference({ ...bank, probes: candidates }, shuffled, input.config, now)
+    const reference = selectPoweredReference({ ...bank, probes: candidates }, shuffled, input.config, now, growth ? {
+      minimumProbeCount: growth.requiredProbeCount,
+      calibration: { errorRate: growth.errorRate, coverage: growth.coverage },
+    } : {})
+    const wanted = growth
+      ? `to grow the audit set from ${growth.probeCount} to at least ${growth.requiredProbeCount} questions`
+      : 'for a powered audit set'
     if (!reference) {
-      return { status: 'short', reason: `${candidates.length} new questions are not enough for a powered audit set`, candidateProbeCount: candidates.length }
+      return { status: 'short', reason: `${candidates.length} new questions are not enough ${wanted}`, candidateProbeCount: candidates.length }
     }
     const inSet = new Set(reference.probes.map((probe) => probe.id))
     const rest = shuffled.filter((entry) => !inSet.has(entry.probe.id))
@@ -1379,6 +1555,7 @@ export async function selectEpochQuestionSet(input: {
       candidateProbeCount: candidates.length,
       reference,
       extensions,
+      ...(existing?.growth ? { growth: existing.growth } : {}),
       createdAt: new Date(now).toISOString(),
       createdByRunId: input.runId,
     }

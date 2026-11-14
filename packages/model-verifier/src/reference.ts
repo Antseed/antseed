@@ -12,10 +12,16 @@ export interface LoadReferenceOptions {
 /**
  * Loads a KBF reference from a file path, an https URL, or an ipfs:// URI and validates
  * it, including its content-addressed referenceId, before it is used to judge anything.
+ * A calibrated reference must give its audits some power on the calibration they are judged
+ * against: one on which no answer could ever be DIFF is refused. The full minimum is not required
+ * on the calibration here, because epoch sets published before it was checked fall short of it.
  */
 export async function loadReference(source: string, options: LoadReferenceOptions = {}): Promise<KbfReferenceV1> {
   const raw = await readSource(source, options)
-  return validateKbfReferenceV1(JSON.parse(raw) as unknown, { trustImported: options.trustImported === true })
+  return validateKbfReferenceV1(JSON.parse(raw) as unknown, {
+    trustImported: options.trustImported === true,
+    minimumCalibrationPower: Number.EPSILON,
+  })
 }
 
 async function readSource(source: string, options: LoadReferenceOptions): Promise<string> {

@@ -10,6 +10,7 @@ import {
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  kbfCalibrationPower,
   renderKbfProbeLine,
   verifyKbf,
   type KbfProbe,
@@ -239,15 +240,180 @@ test('coverage under 80% on a set stops the model for the epoch, and nothing is 
   assert.equal(sent.length, asked)
 }))
 
-test('a calibration rate above the enrollment limit warns, sets the limit and does not stop the model', async () => withSet(async ({ directory, set }) => {
-  const { fetchFn } = endpoint((values) => labelled(values.map((value) => (value % 3 === 0 ? value + 5 : value))))
+test('a calibration rate above the enrollment limit warns, sets the limit and does not stop the model while the power holds', async () => withSet(async ({ directory, set }) => {
+  // 5 of each 100 answers missed against a clean enrollment: above its limit, and power 0.836 on the audit
+  // set's 100 trials, which an auditor that requires 0.8 accepts.
+  const { fetchFn } = endpoint((values) => labelled(values.map((value) => ((value - 1_000) % 20 === 0 ? value + 5 : value))))
   const log: string[] = []
-  const calibrated = await calibrate(directory, set, fetchFn, 1_000, (line) => log.push(line))
+  const calibrated = await calibrateEpochQuestionSet({
+    model: 'model-a', banksDir: directory, config: { ...config, referenceMinimumStatisticalPower: 0.8 }, maxRequests: 1_000,
+    epoch: EPOCH, set, fetchFn, log: (line) => log.push(line),
+  }, operations)
   assert.equal(calibrated.calibration?.status, 'passed')
   assert.ok(calibrated.calibration!.errorRate > calibrated.calibration!.enrollmentErrorLimit)
   assert.ok(calibrated.reference.calibration, 'the limit comes from the calibration')
   assert.ok(log.some((line) => /warning: .*may have changed since enrollment/.test(line)))
-}))
+}, 0))
+
+/** `ensureEpochQuestionSet` on the test bank, asking `fetchFn`; `enrollFresh` builds nothing unless given. */
+function ensureSet(directory: string, fetchFn: typeof fetch, options: {
+  log?: (line: string) => void
+  enrollFresh?: NonNullable<Parameters<typeof ensureEpochQuestionSet>[1]>['enrollFresh']
+} = {}) {
+  return ensureEpochQuestionSet({
+    model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), config, maxRequests: 1_000,
+    epoch: EPOCH, runId: 'run-grow', extensionCount: 2, ...(options.log ? { log: options.log } : {}),
+  }, {
+    select: selectEpochQuestionSet,
+    enrollFresh: options.enrollFresh ?? (async () => { throw new Error('must not build') }),
+    record: recordEpochQuestionPool,
+    calibrate: (input) => calibrateEpochQuestionSet({ ...input, fetchFn }, operations),
+  })
+}
+
+const reserveSeller = (directory: string) => reserveModelAuditReference({
+  banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: EPOCH,
+})
+
+test('a set whose calibration misses more than enrollment grows, is calibrated again in its new batches, and reaches the power on it', async () => withSet(async ({ directory, set }) => {
+  assert.equal(set.reference.probes.length, 100)
+  // The reference misses 5 of the first 100 questions (the audit set) on every ask, where enrollment missed none.
+  const missed = new Set(set.reference.probes.filter((_probe, index) => index % 20 === 0).map((probe) => probe.consensus))
+  const { sent, fetchFn } = endpoint((values) => labelled(values.map((value) => (missed.has(value) ? value + 5 : value))))
+  const log: string[] = []
+  const grown = await ensureSet(directory, fetchFn, { log: (line) => log.push(line) })
+
+  assert.equal(grown.calibration?.status, 'passed')
+  const size = grown.reference.probes.length
+  assert.equal(size, 140, 'one step, sized from the 5% the first calibration measured')
+  assert.ok(kbfCalibrationPower(grown.reference)! >= 0.9)
+  assert.equal(grown.reference.calibration!.hamming, 5)
+  // The audit set keeps its questions first; the extra sets grow with it; no question is in two sets.
+  assert.deepEqual(grown.reference.probes.slice(0, 100).map((probe) => probe.id), set.reference.probes.map((probe) => probe.id))
+  assert.deepEqual(grown.extensions.map((extension) => extension.probes.length), [size, size])
+  const ids = [grown.reference, ...grown.extensions].flatMap((reference) => reference.probes.map((probe) => probe.id))
+  assert.equal(new Set(ids).size, ids.length)
+  // Calibrated again in the batches sellers of the grown sets get, every set of them.
+  for (const reference of [grown.reference, ...grown.extensions]) {
+    assert.deepEqual(reference.calibration!.batches.map((batch) => batch.probeIds),
+      kbfAuditBatches(reference.probes).map((batch) => batch.probes.map((probe) => probe.id)))
+  }
+  const batchesOf = (references: readonly KbfReferenceV1[]) => references.reduce((sum, reference) => sum + kbfAuditBatches(reference.probes).length, 0)
+  assert.equal(sent.length, batchesOf([set.reference, ...set.extensions]) + batchesOf([grown.reference, ...grown.extensions]))
+  // The first calibration is kept, and its raw exchanges are published with the bank like any calibration.
+  assert.equal(grown.growth?.length, 1)
+  assert.deepEqual({ ...grown.growth![0]!, calibrations: grown.growth![0]!.calibrations.length }, {
+    referenceId: set.reference.referenceId, probeCount: 100, power: kbfCalibrationPower({ ...set.reference, calibration: grown.growth![0]!.calibrations[0]! }),
+    minimumPower: 0.9, errorRate: 0.05, coverage: 1, requiredProbeCount: 140, calibrations: 3,
+    requestCount: batchesOf([set.reference, ...set.extensions]), costUsdMicros: grown.growth![0]!.costUsdMicros,
+    completedAt: grown.growth![0]!.completedAt,
+  })
+  assert.ok(grown.growth![0]!.power < 0.9)
+  const exchanges = await loadBankReferenceExchanges(directory, 'model-a', EPOCH)
+  assert.deepEqual(exchanges.map((entry) => entry.referenceId).sort(), [set.reference.referenceId, grown.reference.referenceId].sort())
+  assert.ok(log.some((line) => /growing the epoch 12 question set: its audit set of 100 questions reached power 0\.836 .* at least 140 questions/.test(line)))
+  assert.equal((await reserveSeller(directory)).reference.referenceId, grown.reference.referenceId)
+}, 0))
+
+test('a calibration that misses every question fails with the reason, and no seller is reserved', async () => withSet(async ({ directory, set }) => {
+  const { sent, fetchFn } = endpoint((values) => labelled(values.map((value) => value + 5)))
+  await assert.rejects(ensureSet(directory, fetchFn),
+    /failed calibration: its audit set of 100 questions reached power 0\.000 on its calibration \(the reference missed 100 of 100 answers\), under the 0\.900 needed, and a 100\.0% miss rate is more than a reference may miss, so no larger set helps; not audited this epoch/)
+  const stored = await loadEpochQuestionSet({ banksDir: directory, model: 'model-a', epoch: EPOCH })
+  assert.equal(stored?.calibration?.status, 'failed')
+  assert.equal(stored?.reference.referenceId, set.reference.referenceId)
+  await assert.rejects(reserveSeller(directory), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*failed calibration: its audit set`))
+  const asked = sent.length
+  await assert.rejects(ensureSet(directory, fetchFn), /failed calibration/)
+  assert.equal(sent.length, asked, 'it is not asked again this epoch')
+}, 0))
+
+test('a set that has to grow past its candidates, with builds that add none, is not asked of any seller', async () => withSet(async ({ directory, set }) => {
+  // 40% missed on every set: it needs 240 questions and two extra sets of as many, more than the 690 built.
+  const { sent, fetchFn } = endpoint((values) => labelled(values.map((value) => ((value - 1_000) % 100 < 40 ? value + 5 : value))))
+  let builds = 0
+  await assert.rejects(ensureSet(directory, fetchFn, {
+    enrollFresh: async () => { builds += 1; return { addedProbeCount: 0, addedProbeIds: [], costUsdMicros: '0' } },
+  }), /no question set for epoch 12: 690 new questions: 240 for the audit set leave 450 for 2 extra set\(s\) of 240/)
+  assert.equal(builds, 1)
+  const stored = await loadEpochQuestionSet({ banksDir: directory, model: 'model-a', epoch: EPOCH })
+  assert.equal(stored?.calibration, undefined)
+  assert.equal(stored?.reference.referenceId, set.reference.referenceId)
+  assert.equal(stored?.growth?.at(-1)?.requiredProbeCount, 240)
+  await assert.rejects(reserveSeller(directory),
+    new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*has not been calibrated since it reached power .* it grows to 240 questions or more`))
+  // The set is not calibrated again while it waits to grow.
+  const asked = sent.length
+  await assert.rejects(ensureSet(directory, fetchFn, {
+    enrollFresh: async () => ({ addedProbeCount: 0, addedProbeIds: [], costUsdMicros: '0' }),
+  }), /not enough|leave 450/)
+  assert.equal(sent.length, asked)
+}, 0))
+
+test('a set whose calibration matches enrollment is left as it was: same size, one calibration', async () => withSet(async ({ directory, set }) => {
+  const { sent, fetchFn } = endpoint()
+  const calibrated = await ensureSet(directory, fetchFn)
+  assert.equal(calibrated.calibration?.status, 'passed')
+  assert.deepEqual(calibrated.reference.probes.map((probe) => probe.id), set.reference.probes.map((probe) => probe.id))
+  assert.deepEqual(calibrated.extensions.map((extension) => extension.probes.map((probe) => probe.id)),
+    set.extensions.map((extension) => extension.probes.map((probe) => probe.id)))
+  assert.equal(calibrated.growth, undefined)
+  const total = [set.reference, ...set.extensions].reduce((sum, reference) => sum + kbfAuditBatches(reference.probes).length, 0)
+  assert.equal(sent.length, total)
+}, 0))
+
+test('an interrupted growth resumes without a seller being asked an uncalibrated or under-powered set', async () => withSet(async ({ directory, set }) => {
+  const missed = new Set(set.reference.probes.filter((_probe, index) => index % 20 === 0).map((probe) => probe.consensus))
+  const answer = (values: number[]) => labelled(values.map((value) => (missed.has(value) ? value + 5 : value)))
+  const asked = new Map<string, number>()
+  const counted = (values: number[], request: Sent) => {
+    const key = JSON.stringify(request.body.messages)
+    asked.set(key, (asked.get(key) ?? 0) + 1)
+    return answer(values)
+  }
+  // 1. The first calibration finds the audit set under the power: the set waits to grow, nobody is reserved on it.
+  const first = await calibrate(directory, set, endpoint(answer).fetchFn)
+  assert.equal(first.calibration, undefined)
+  assert.equal(first.growth?.length, 1)
+  await assert.rejects(reserveSeller(directory), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*has not been calibrated since it reached power 0\\.836`))
+  // 2. The run stops after the new selection, before its calibration: the grown set is there, still uncalibrated.
+  const selected = await selectEpochQuestionSet({ banksDir: directory, model: 'model-a', epoch: EPOCH, runId: 'run-c', extensionCount: 2 })
+  assert.equal(selected.status, 'ready')
+  const grownSet = (selected as { set: EpochQuestionSetV1 }).set
+  assert.equal(grownSet.reference.probes.length, 140)
+  await assert.rejects(reserveSeller(directory), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*has not been calibrated$`))
+  // 3. The next run is cut off half-way through the grown set's calibration.
+  let answered = 0
+  await assert.rejects(calibrate(directory, grownSet, endpoint((values, request) => {
+    if (answered >= 10) return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
+    answered += 1
+    return counted(values, request)
+  }).fetchFn), /reference endpoint 401/)
+  await assert.rejects(reserveSeller(directory), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*has not been calibrated$`))
+  // 4. A run after that keeps the grown set, finishes its calibration from the checkpoint, and only then reserves.
+  const done = await ensureSet(directory, endpoint(counted).fetchFn)
+  assert.equal(done.calibration?.status, 'passed')
+  assert.deepEqual(done.reference.probes.map((probe) => probe.id), grownSet.reference.probes.map((probe) => probe.id))
+  assert.ok(kbfCalibrationPower(done.reference)! >= 0.9)
+  assert.deepEqual([...new Set(asked.values())], [1], 'no batch was paid for twice')
+  assert.equal((await reserveSeller(directory)).reference.referenceId, done.reference.referenceId)
+}, 0))
+
+test('a set calibrated before the power was checked on its calibration is not asked of any new seller', async () => withSet(async ({ directory, set }) => {
+  // Calibrated with the old rule (power 0.836 on its trials, under 0.9) by an auditor that accepted 0.8.
+  const { fetchFn } = endpoint((values) => labelled(values.map((value) => ((value - 1_000) % 20 === 0 ? value + 5 : value))))
+  const calibrated = await calibrateEpochQuestionSet({
+    model: 'model-a', banksDir: directory, config: { ...config, referenceMinimumStatisticalPower: 0.8 }, maxRequests: 1_000,
+    epoch: EPOCH, set, fetchFn,
+  }, operations)
+  assert.equal(calibrated.calibration?.status, 'passed')
+  // Under the 0.9 required now, it still loads (its audits can be resumed and submitted), but no seller is reserved on it.
+  assert.ok(await loadEpochQuestionSet({ banksDir: directory, model: 'model-a', epoch: EPOCH, config }))
+  await assert.rejects(reserveModelAuditReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: EPOCH, config,
+  }), new RegExp(`^Error: ${NO_EPOCH_QUESTION_SET}.*reached power 0\\.836 on its calibration .*under the 0\\.900 needed; it was calibrated before that was checked`))
+  await assert.rejects(ensureSet(directory, fetchFn), /reached power 0\.836 .*not audited this epoch/)
+}, 0))
 
 test('an interrupted calibration resumes from its checkpoint without asking anything twice', async () => withSet(async ({ directory, set }) => {
   const asked = new Map<string, number>()

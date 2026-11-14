@@ -2212,7 +2212,7 @@ async function collectQuestionSetProblems(input: {
         ? `${model}: a submit published the question set for epoch ${input.epoch}; run without --no-enroll to build a new one`
         : `${model}: no question set for epoch ${input.epoch} yet; run without --no-enroll to build it`]
     }
-    const calibrationProblem = epochSetCalibrationProblem(set)
+    const calibrationProblem = epochSetCalibrationProblem(set, input.config.verifier)
     if (calibrationProblem) {
       return [`${model}: the question set for epoch ${input.epoch} ${calibrationProblem}`
         + `${set.calibration ? '; the model is not audited this epoch' : '; run without --no-enroll to calibrate it'}`]

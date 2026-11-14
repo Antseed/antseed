@@ -11,6 +11,7 @@ import {
   computeReferenceId,
   createReferenceQueryProfile,
   kbfAuditBaseline,
+  kbfCalibrationPower,
   kbfPromptVariantsHash,
   queryProfileHash,
   referenceCompatibilityProfileHash,
@@ -514,12 +515,12 @@ describe('parser versions a reference may name', () => {
 
 describe('calibration', () => {
   it('accepts a consistent record', () => {
-    expect(() => validateKbfReferenceV1(calibrated(4))).not.toThrow();
+    expect(() => validateKbfReferenceV1(calibrated(1))).not.toThrow();
   });
 
   it('binds the calibration into the reference id', () => {
     expect(calibrated(4).referenceId).not.toBe(calibrated(5).referenceId);
-    const tampered = calibrated(4);
+    const tampered = calibrated(1);
     tampered.calibration!.calibratedAt = '2026-11-06T00:00:00.000Z';
     expect(() => validateKbfReferenceV1(tampered)).toThrow(/referenceId mismatch/);
   });
@@ -544,6 +545,37 @@ describe('calibration', () => {
     ['an unknown prompt variant', (c) => { c.batches[0]!.promptVariantId = 'v99'; }, /variant/i],
   ])('rejects %s', (_name, change, message) => {
     expect(() => validateKbfReferenceV1(calibrated(1, change))).toThrow(message);
+  });
+
+  it('rejects a reference whose enrollment self-test is powered but whose calibration misses every question', () => {
+    const value = calibrated(100);
+    expect(value.statisticalPower).toBeGreaterThanOrEqual(0.9);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/power on the calibration is 0\.000, under the 0\.9 required/);
+    // Not even the tiny minimum extension sets are validated with lets it through: no audit on it could be DIFF.
+    expect(() => validateKbfReferenceV1(value, { minimumStatisticalPower: Number.EPSILON })).toThrow(/power on the calibration/);
+    expect(kbfCalibrationPower(value)).toBe(0);
+  });
+
+  it('enforces the minimum power on the calibration, which misses more than enrollment did', () => {
+    // 4 misses of 100 calibration answers: power 0.814 against 0.963 on the clean enrollment.
+    const value = calibrated(4);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/power on the calibration is 0\.814, under the 0\.9 required/);
+    expect(kbfCalibrationPower(value)).toBeCloseTo(0.8144, 4);
+    expect(() => validateKbfReferenceV1(value, { minimumStatisticalPower: 0.8 })).not.toThrow();
+    expect(() => validateKbfReferenceV1(value, { minimumCalibrationPower: 0.8 })).not.toThrow();
+    expect(() => validateKbfReferenceV1(value, { minimumCalibrationPower: 0 })).toThrow(/minimumCalibrationPower/);
+  });
+
+  it('passes a calibration as good as its enrollment, as before', () => {
+    const value = calibrated(0);
+    expect(kbfCalibrationPower(value)).toBeCloseTo(0.9631, 4);
+    expect(kbfCalibrationPower(reference())).toBeNull();
+    expect(validateKbfReferenceV1(value)).toBe(value);
+  });
+
+  it('still passes an extension reference validated with the tiny minimum', () => {
+    // Extra sets of a close call are judged pooled with the first set, so callers validate them with Number.EPSILON.
+    expect(() => validateKbfReferenceV1(calibrated(12), { minimumStatisticalPower: Number.EPSILON })).not.toThrow();
   });
 
   it('rejects a batch that mixes domains', () => {
