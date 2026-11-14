@@ -27,6 +27,7 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
     bytes32 private modelHash = keccak256(bytes(TokenizerProofFixture.SERVICE));
 
     function setUp() public {
+        vm.warp(1_800_000_100); // just after the fixture's receipts were signed
         identityRegistry = new MockERC8004Registry();
         MockVerificationEmissionsGate gate = new MockVerificationEmissionsGate();
         pools = new MockVerificationSellerPools();

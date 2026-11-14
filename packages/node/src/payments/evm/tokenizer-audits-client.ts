@@ -1,7 +1,8 @@
-import { Contract, getAddress, keccak256, toUtf8Bytes, type AbstractSigner } from 'ethers';
+import { Contract, getAddress, type AbstractSigner } from 'ethers';
 import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/protocol/request-codec';
 import { BaseEvmClient } from './base-evm-client.js';
+import { serviceHash } from './verifier-client.js';
 
 export interface TokenizerAuditsClientConfig {
   rpcUrl: string;
@@ -27,6 +28,8 @@ export const TOKENIZER_AUDITS_ABI = [
   'function minReferences() external view returns (uint8)',
   'function tolerance() external view returns (uint32)',
   'function maxRoundSpreadSeconds() external view returns (uint32)',
+  'function maxEvidenceAgeSeconds() external view returns (uint32)',
+  'function flagClearedAt(uint256 agentId,bytes32 serviceHash) external view returns (uint64)',
   'function validityEpochs() external view returns (uint8)',
   'function creditsPerProof() external view returns (uint32)',
   'function penaltyBps() external view returns (uint256)',
@@ -42,7 +45,7 @@ export const TOKENIZER_AUDITS_ABI = [
   'function setServiceModels(bytes32[] serviceHashes,bytes32 modelHash) external',
   'function setParameters(uint8 rounds,uint8 references,uint32 tolerance,uint32 maxRoundSpreadSeconds) external',
   'function setPenaltyBps(uint256 penaltyBps) external',
-  'event TokenizerMismatchProven(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed prover,address seller,bytes32 modelHash,bool usageMisreported,uint256 epoch,int256[] suspectDeltas,int256[] referenceDeltas,bytes32 evidenceHash)',
+  'event TokenizerMismatchProven(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed prover,address seller,bytes32 modelHash,bool usageMisreported,uint256 epoch,int256[] suspectDeltas,int256[] referenceMinDeltas,int256[] referenceMaxDeltas,bytes32 evidenceHash)',
   'event UsageMisreported(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint256 validUntilEpoch)',
   'event ProofCredited(uint256 indexed epoch,address indexed prover,uint256 credits)',
   'error InvalidShape()',
@@ -57,8 +60,10 @@ export const TOKENIZER_AUDITS_ABI = [
   'error UnknownService()',
   'error NotAReference(uint256 round,uint256 referenceIndex)',
   'error ReferencesDisagree(uint256 round)',
-  'error WithinTolerance(uint256 round,int256 suspectDelta,int256 referenceDelta)',
+  'error WithinTolerance(uint256 round,int256 suspectDelta,int256 referenceMinDelta,int256 referenceMaxDelta)',
   'error RoundTooSpread(uint256 round)',
+  'error StaleEvidence(uint256 round)',
+  'error FutureEvidence(uint256 round)',
   'error UnknownAgent()',
   'error SelfAudit()',
   'error MalformedRequest()',
@@ -124,10 +129,8 @@ export interface ResolvedService {
   liveSame: boolean;
 }
 
-/** keccak256 of the service name trimmed and lowercased, as the results layer keys services. */
-export function tokenizerServiceHash(service: string): string {
-  return keccak256(toUtf8Bytes(service.trim().toLowerCase()));
-}
+/** Uses the same service-name normalization as the results layer. */
+export const tokenizerServiceHash: (service: string) => string = serviceHash;
 
 /**
  * Makes `text` safe to sit inside a JSON string as-is, as the contract requires: straight quotes become

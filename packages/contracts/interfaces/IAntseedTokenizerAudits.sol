@@ -23,7 +23,7 @@ import { IERC8004Registry } from "./IERC8004Registry.sol";
 ///         speaks natively, and nobody can put B where one seller's model never reads it.
 ///
 ///         The suspect must be off the references' delta by more than `tolerance` in every round (at least
-///         `minRounds` rounds). Then:
+///         `minRounds` rounds), every receipt signed within `maxEvidenceAgeSeconds` before the proof. Then:
 ///         - if the suspect's service has a live SAME itself (it answers like the model), the contract flags
 ///           it `UsageMisreported`: the usage it signs, and is paid on, is not the model's. This contract is
 ///           also a points modifier that cuts seller points for flagged services;
@@ -81,11 +81,13 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     /// @param modelHash Model the service name counts as; zero removes the mapping.
     event ServiceModelSet(bytes32 indexed serviceHash, bytes32 indexed modelHash);
     event ParametersSet(uint8 minRounds, uint8 minReferences, uint32 tolerance, uint32 maxRoundSpreadSeconds);
+    event MaxEvidenceAgeSet(uint32 maxEvidenceAgeSeconds);
     event ValidityEpochsSet(uint8 validityEpochs);
     event CreditsPerProofSet(uint32 credits);
     event PenaltyBpsSet(uint256 penaltyBps);
     /// @param suspectDeltas The suspect's signed delta in each round.
-    /// @param referenceDeltas The references' (agreeing) delta in each round.
+    /// @param referenceMinDeltas The smallest reference delta in each round.
+    /// @param referenceMaxDeltas The largest reference delta in each round (within `tolerance` of the smallest).
     event TokenizerMismatchProven(
         uint256 indexed agentId,
         bytes32 indexed serviceHash,
@@ -95,7 +97,8 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
         bool usageMisreported,
         uint256 epoch,
         int256[] suspectDeltas,
-        int256[] referenceDeltas,
+        int256[] referenceMinDeltas,
+        int256[] referenceMaxDeltas,
         bytes32 evidenceHash
     );
     event UsageMisreported(uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, uint256 validUntilEpoch);
@@ -116,8 +119,12 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     error UnknownService();
     error NotAReference(uint256 round, uint256 referenceIndex);
     error ReferencesDisagree(uint256 round);
-    error WithinTolerance(uint256 round, int256 suspectDelta, int256 referenceDelta);
+    error WithinTolerance(uint256 round, int256 suspectDelta, int256 referenceMinDelta, int256 referenceMaxDelta);
     error RoundTooSpread(uint256 round);
+    /// @notice A receipt older than `maxEvidenceAgeSeconds`, or a suspect receipt from before `clearFlag`.
+    error StaleEvidence(uint256 round);
+    /// @notice A receipt signed later than the block's time (beyond a small clock skew).
+    error FutureEvidence(uint256 round);
     error UnknownAgent();
     error SelfAudit();
 
@@ -135,10 +142,16 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     function minRounds() external view returns (uint8);
     /// @notice Distinct live-SAME references every round needs.
     function minReferences() external view returns (uint8);
-    /// @notice Largest |suspect delta - reference delta| still counted as the model.
+    /// @notice Widest the references' deltas may spread and still agree, and how far outside their range a
+    ///         suspect's delta may be and still count as the model.
     function tolerance() external view returns (uint32);
     /// @notice All receipts of a round must be signed within this many seconds of each other.
     function maxRoundSpreadSeconds() external view returns (uint32);
+    /// @notice Oldest, in seconds, a proof's receipts may be when it is submitted.
+    function maxEvidenceAgeSeconds() external view returns (uint32);
+    /// @notice When the owner last cleared the service's flag (0 if never); older suspect receipts can't
+    ///         flag it again.
+    function flagClearedAt(uint256 agentId, bytes32 serviceHash) external view returns (uint64);
     /// @notice Epochs a DIFF or flag recorded here counts for, including the one it was given in.
     function validityEpochs() external view returns (uint8);
     /// @notice Credits a proof earns when it creates a new DIFF or flag for a staked agent; 0 turns rewards off.

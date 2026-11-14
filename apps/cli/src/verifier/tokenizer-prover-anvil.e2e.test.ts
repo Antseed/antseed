@@ -160,7 +160,8 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
     const auditsContract = new Contract(audits, AUDITS_ABI, provider)
     const prover = new Wallet(`0x${PROVER_PRIVATE_KEY}`)
     const verdict = async (agentId: number) => Number(await resultsContract.getFunction('liveVerdict')(agentId, serviceHash))
-    const args = ['prove-tokenizer', '--generator', GENERATOR_MODEL, '--recheck-hours', '0']
+    // Default recheck window throughout: a dry run must not hold back the live pass after it.
+    const args = ['prove-tokenizer', '--generator', GENERATOR_MODEL]
 
     // ── a dry run proves nothing ─────────────────────────────────────
     const dryRun = await runCli(dataDir, configPath, [...args, '--dry-run'])
@@ -182,7 +183,7 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
     assert.equal(await resultsContract.getFunction('auditorEpochCredits')(audits, EPOCH, prover.address), 2n)
 
     // ── a later pass skips what it checked recently ──────────────────
-    const later = await runCli(dataDir, configPath, ['prove-tokenizer', '--generator', GENERATOR_MODEL])
+    const later = await runCli(dataDir, configPath, args)
     assert.equal(later.status, 0, later.output)
     assert.match(later.output, /6 skipped/)
     storage.close()

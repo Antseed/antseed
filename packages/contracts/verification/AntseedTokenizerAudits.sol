@@ -17,11 +17,13 @@ import { AntseedResponseAuth } from "./AntseedResponseAuth.sol";
 ///         receipts, both are HTTP 200, both requests are exactly the pair's shape (its path, and its body with
 ///         the seller's advertised service and content A (base) or A + B (probed)), and reads the prompt tokens
 ///         from the signed responses. Pairs in a round may use different shapes: the delta is B's length in the
-///         model's tokenizer whichever API carried it. References must be distinct sellers and agents, other than the suspect, whose
-///         service has a live SAME for `modelHash`; they must agree within `tolerance`, and the suspect must be
-///         off their delta by more than `tolerance`. All receipts of a round must be signed within
-///         `maxRoundSpreadSeconds` of each other. Suspect receipts are single-use; reference receipts may back
-///         several proofs (the same round can be checked against many suspects).
+///         model's tokenizer whichever API carried it. References must be distinct sellers and agents, other
+///         than the suspect, whose service has a live SAME for `modelHash`; their deltas must all lie within
+///         `tolerance` of each other, and the suspect's must be more than `tolerance` outside their range. All
+///         receipts of a round must be signed within `maxRoundSpreadSeconds` of each other, none more than
+///         `maxEvidenceAgeSeconds` before the proof or in its future, and the suspect's after any `clearFlag` of
+///         the service. Suspect receipts are single-use; reference receipts may back several proofs (the same
+///         round can be checked against many suspects).
 contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     uint8 public constant MAX_ROUNDS = 8;
     uint8 public constant MAX_REFERENCES = 8;
@@ -31,6 +33,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     uint256 public constant MAX_CONTENT_BYTES = 4096;
     uint256 private constant BPS = 10_000;
     uint256 private constant MAX_TOKEN_DIGITS = 15;
+    /// @dev How far a seller's clock may run ahead of the block's.
+    uint256 private constant MAX_CLOCK_SKEW_SECONDS = 300;
 
     bytes private constant USAGE = '"usage"';
     bytes private constant PROMPT_TOKENS = '"prompt_tokens"';
@@ -53,6 +57,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     /// @inheritdoc IAntseedTokenizerAudits
     uint32 public override maxRoundSpreadSeconds = 3600;
     /// @inheritdoc IAntseedTokenizerAudits
+    uint32 public override maxEvidenceAgeSeconds = 1 days;
+    /// @inheritdoc IAntseedTokenizerAudits
     uint8 public override validityEpochs = 2;
     /// @inheritdoc IAntseedTokenizerAudits
     uint32 public override creditsPerProof = 1;
@@ -64,11 +70,14 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     mapping(bytes32 receiptKey => bool) private _usedReceipts;
     mapping(uint256 agentId => mapping(bytes32 serviceHash => Flag)) private _flags;
     mapping(uint256 agentId => bytes32[] serviceHashes) private _flaggedServices;
+    /// @inheritdoc IAntseedTokenizerAudits
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint64 timestamp)) public override flagClearedAt;
 
-    /// @dev What one round showed: the suspect's and references' deltas and the receipts it covered.
+    /// @dev What one round showed: the suspect's delta, the references' range and the receipts it covered.
     struct RoundResult {
         int256 suspectDelta;
-        int256 referenceDelta;
+        int256 referenceMin;
+        int256 referenceMax;
         bytes32 digests;
     }
 
@@ -135,6 +144,13 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         emit ParametersSet(rounds, references, tolerance_, maxRoundSpreadSeconds_);
     }
 
+    /// @notice Oldest a proof's receipts may be when it is submitted.
+    function setMaxEvidenceAge(uint32 seconds_) external onlyOwner {
+        if (seconds_ == 0) revert InvalidValue();
+        maxEvidenceAgeSeconds = seconds_;
+        emit MaxEvidenceAgeSet(seconds_);
+    }
+
     function setValidityEpochs(uint8 epochs) external onlyOwner {
         if (epochs == 0 || epochs > MAX_VALIDITY_EPOCHS) revert InvalidValue();
         validityEpochs = epochs;
@@ -154,10 +170,12 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         emit PenaltyBpsSet(penaltyBps_);
     }
 
-    /// @notice Removes a usage flag (e.g. after a seller fixed its reporting).
-    ///         It also leaves the agent's flagged list, so a later proof lists it once again.
+    /// @notice Removes a usage flag (e.g. after a seller fixed its reporting). It also leaves the agent's
+    ///         flagged list, so a later proof lists it once again, and only suspect receipts signed after now
+    ///         can flag the service again.
     function clearFlag(uint256 agentId, bytes32 serviceHash) external onlyOwner {
         delete _flags[agentId][serviceHash];
+        flagClearedAt[agentId][serviceHash] = uint64(block.timestamp);
         bytes32[] storage services = _flaggedServices[agentId];
         for (uint256 i = 0; i < services.length; i++) {
             if (services[i] == serviceHash) {
@@ -189,12 +207,14 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (_modelOf(agentId, serviceHash, live) != modelHash) revert UnknownService();
 
         int256[] memory suspectDeltas = new int256[](count);
-        int256[] memory referenceDeltas = new int256[](count);
+        int256[] memory referenceMins = new int256[](count);
+        int256[] memory referenceMaxes = new int256[](count);
         bytes32 evidenceHash = bytes32(0);
         for (uint256 i = 0; i < count; i++) {
             RoundResult memory round = _checkRound(i, rounds[i], seller, serviceHash, agentId, modelHash);
             suspectDeltas[i] = round.suspectDelta;
-            referenceDeltas[i] = round.referenceDelta;
+            referenceMins[i] = round.referenceMin;
+            referenceMaxes[i] = round.referenceMax;
             evidenceHash = keccak256(abi.encode(evidenceHash, round.digests));
         }
 
@@ -212,7 +232,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             isNew = live != IAntseedVerificationResults.Verdict.DIFF;
         }
         emit TokenizerMismatchProven(
-            agentId, serviceHash, msg.sender, seller, modelHash, misreported, epoch, suspectDeltas, referenceDeltas, evidenceHash
+            agentId, serviceHash, msg.sender, seller, modelHash, misreported, epoch, suspectDeltas, referenceMins, referenceMaxes,
+            evidenceHash
         );
         if (!misreported) {
             results.record(agentId, serviceHash, modelHash, IAntseedVerificationResults.Verdict.DIFF, validUntil);
@@ -348,6 +369,9 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
         if (serviceHashOf(round.suspect.base.advertisedService) != serviceHash) revert DifferentService();
         PairResult memory suspect = _checkPair(round.suspect, round.a, round.b, seller, true);
+        if (uint256(suspect.firstAt) <= uint256(flagClearedAt[suspectAgent][serviceHash]) * 1000) {
+            revert StaleEvidence(index);
+        }
         uint64 firstAt = suspect.firstAt;
         uint64 lastAt = suspect.lastAt;
         result.suspectDelta = suspect.delta;
@@ -358,15 +382,24 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             ProbePair calldata pair = round.references[k];
             agents[k] = _referenceAgent(index, k, pair, seller, suspectAgent, modelHash, agents);
             PairResult memory ref = _checkPair(pair, round.a, round.b, pair.base.seller, false);
-            if (k == 0) result.referenceDelta = ref.delta;
-            else if (_absDiff(ref.delta, result.referenceDelta) > tolerance) revert ReferencesDisagree(index);
+            if (k == 0 || ref.delta < result.referenceMin) result.referenceMin = ref.delta;
+            if (k == 0 || ref.delta > result.referenceMax) result.referenceMax = ref.delta;
             if (ref.firstAt < firstAt) firstAt = ref.firstAt;
             if (ref.lastAt > lastAt) lastAt = ref.lastAt;
             result.digests = keccak256(abi.encode(result.digests, ref.digests));
         }
+        // The references agree when their whole range fits in `tolerance`, whatever their order.
+        if (uint256(result.referenceMax - result.referenceMin) > tolerance) revert ReferencesDisagree(index);
         if (uint256(lastAt - firstAt) > uint256(maxRoundSpreadSeconds) * 1000) revert RoundTooSpread(index);
-        if (_absDiff(result.suspectDelta, result.referenceDelta) <= tolerance) {
-            revert WithinTolerance(index, result.suspectDelta, result.referenceDelta);
+        uint256 nowMs = block.timestamp * 1000;
+        if (uint256(firstAt) + uint256(maxEvidenceAgeSeconds) * 1000 < nowMs) revert StaleEvidence(index);
+        if (uint256(lastAt) > nowMs + MAX_CLOCK_SKEW_SECONDS * 1000) revert FutureEvidence(index);
+        // A mismatch is a suspect delta more than `tolerance` outside the references' range.
+        if (
+            result.suspectDelta + int256(uint256(tolerance)) >= result.referenceMin
+                && result.suspectDelta <= result.referenceMax + int256(uint256(tolerance))
+        ) {
+            revert WithinTolerance(index, result.suspectDelta, result.referenceMin, result.referenceMax);
         }
     }
 
@@ -627,10 +660,6 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (sellerPools_.code.length == 0) revert InvalidAddress();
         sellerPools = IAntseedSellerPools(sellerPools_);
         emit SellerPoolsSet(sellerPools_);
-    }
-
-    function _absDiff(int256 x, int256 y) private pure returns (uint256) {
-        return x >= y ? uint256(x - y) : uint256(y - x);
     }
 
     function _isJsonStringSafe(bytes calldata text) private pure returns (bool) {

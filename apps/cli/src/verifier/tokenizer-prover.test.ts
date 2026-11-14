@@ -21,20 +21,27 @@ interface FakeSeller {
   bTokens: number
   liveSame: boolean
   status?: number
-  /** The API protocols the seller speaks for its service. */
+  /** The API protocols the seller speaks for its services. */
   protocols: string[]
+  /** Its services and which have a live SAME; one `example-model` with `liveSame` by default. */
+  services?: Array<{ name: string; liveSame: boolean }>
 }
 
 function seller(name: string, bTokens: number, liveSame: boolean, status?: number, protocols = ['openai-chat-completions']): FakeSeller {
   return { name, wallet: new Wallet(Wallet.createRandom().privateKey), bTokens, liveSame, protocols, ...(status ? { status } : {}) }
 }
 
-function peer(s: FakeSeller, service = 'example-model'): TokenizerPeer {
+function servicesOf(s: FakeSeller): Array<{ name: string; liveSame: boolean }> {
+  return s.services ?? [{ name: 'example-model', liveSame: s.liveSame }]
+}
+
+function peer(s: FakeSeller): TokenizerPeer {
+  const names = servicesOf(s).map((service) => service.name)
   return {
     peerId: s.wallet.address.slice(2).toLowerCase(),
     displayName: s.name,
-    providerPricing: { upstream: { services: { [service]: {} } } },
-    providerServiceApiProtocols: { upstream: { services: { [service]: s.protocols } } },
+    providerPricing: { upstream: { services: Object.fromEntries(names.map((name) => [name, {}])) } },
+    providerServiceApiProtocols: { upstream: { services: Object.fromEntries(names.map((name) => [name, s.protocols])) } },
   }
 }
 
@@ -81,7 +88,8 @@ function fakeContract(sellers: FakeSeller[]) {
     parameters: async () => ({ minRounds: 3, minReferences: 3, tolerance: 2, maxRoundSpreadSeconds: 3600 }),
     resolveServices: async (entries) => entries.map((e) => {
       const index = sellers.findIndex((s) => s.wallet.address.slice(2).toLowerCase() === e.seller.replace(/^0x/, '').toLowerCase())
-      return { agentId: BigInt(index + 1), modelHash: MODEL, liveSame: sellers[index]!.liveSame }
+      const service = servicesOf(sellers[index]!).find((x) => x.name === e.service)!
+      return { agentId: BigInt(index + 1), modelHash: MODEL, liveSame: service.liveSame }
     }),
     checkProof: async (_from, _model, rounds) => rounds.length >= 3 && rounds.every((r) => r.references.length >= 3) ? null : 'InvalidRounds()',
     proveTokenizerMismatch: async (_signer, modelHash, rounds) => {
@@ -125,7 +133,7 @@ test('proves a swapped seller against agreeing live-SAME references and leaves h
     const byName = (name: string) => summary.results.find((r) => r.sellerName === name)!
     assert.equal(byName('Swapped').outcome, 'mismatch')
     assert.deepEqual(byName('Swapped').deltas, [129, 129, 129])
-    assert.deepEqual(byName('Swapped').referenceDeltas, [139, 139, 139])
+    assert.deepEqual(byName('Swapped').referenceRanges, [{ min: 139, max: 139 }, { min: 139, max: 139 }, { min: 139, max: 139 }])
     assert.equal(byName('Swapped').liveSame, false)
     assert.equal(byName('Honest').outcome, 'match')
     for (const ref of refs) assert.equal(byName(ref.name).outcome, 'match', 'a reference is judged against the other references')
@@ -222,6 +230,57 @@ test('retries an inconclusive suspect sooner than a conclusive one', async () =>
     clock += INCONCLUSIVE_RECHECK_MS + 1
     const later = await run(sellers, options)
     assert.deepEqual(later.summary.results.map((r) => r.sellerName), ['Down'])
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('a dry run or an unsent proof never holds back the next live pass', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Ref 4', 139, true), seller('Swapped', 129, false)]
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'tokenizer-prover-'))
+  try {
+    const statePath = join(evidenceDir, 'state.json')
+    const options = { evidenceDir, statePath, recheckAfterMs: 24 * 3_600_000 }
+    const dry = await run(sellers, { ...options, signer: null })
+    assert.equal(dry.summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
+    const live = await run(sellers, options)
+    assert.deepEqual(live.summary.results.map((r) => r.sellerName), ['Swapped'], 'the matches were checked; the mismatch was not proved yet')
+    assert.equal(live.submitted.length, 1)
+    const after = await run(sellers, options)
+    assert.equal(after.summary.suspects, 0, 'once proved, it waits for the recheck window')
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('judges every service of a seller and takes one live-SAME service per reference agent', async () => {
+  const sellers = [
+    // Ref 1's first service has no live SAME; its second makes it the third reference.
+    { ...seller('Ref 1', 139, true), services: [{ name: 'example-model-old', liveSame: false }, { name: 'example-model', liveSame: true }] },
+    { ...seller('Ref 2', 139, true), services: [{ name: 'example-model', liveSame: true }, { name: 'example-model-fast', liveSame: true }] },
+    seller('Ref 3', 139, true),
+    { ...seller('Swapped', 129, false), services: [{ name: 'example-model', liveSame: false }, { name: 'example-model-turbo', liveSame: false }] },
+  ]
+  const { summary, submitted, evidenceDir } = await run(sellers, { services: ['example-model-turbo'] })
+  try {
+    assert.deepEqual(summary.results.map((r) => `${r.sellerName} ${r.service} ${r.outcome}`), ['Swapped example-model-turbo mismatch'])
+    const round = submitted[0]!.rounds[0]!
+    const referenceSellers = round.references.map((r) => r.base.payload.sellerPeerId.toLowerCase())
+    assert.equal(new Set(referenceSellers).size, 3, 'one service per reference agent')
+    assert.ok(round.references.some((r) => r.base.payload.advertisedService === 'example-model' && r.base.payload.sellerPeerId.toLowerCase().includes(sellers[0]!.wallet.address.slice(2).toLowerCase())))
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('references agree as a range, and a suspect within tolerance of any of them matches', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 140, true), seller('Ref 3', 141, true), seller('Close', 143, false)]
+  const { summary, submitted, evidenceDir } = await run(sellers)
+  try {
+    const close = summary.results.find((r) => r.sellerName === 'Close')!
+    assert.equal(close.outcome, 'match')
+    assert.deepEqual(close.referenceRanges[0], { min: 139, max: 141 })
+    assert.equal(submitted.length, 0)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

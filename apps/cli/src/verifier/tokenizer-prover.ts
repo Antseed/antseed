@@ -15,6 +15,7 @@ import {
   type TokenizerRound,
   type TokenizerShape,
 } from '@antseed/node/payments'
+import { mapConcurrently } from './audit-concurrency.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 
 /** What the prover needs from `AntseedTokenizerAudits` (a `TokenizerAuditsClient`). */
@@ -65,8 +66,8 @@ export interface TokenizerSuspectResult {
   reason: string | null
   /** The suspect's signed delta per round (null when missing). */
   deltas: Array<number | null>
-  /** The references' agreed delta per round (null when they didn't agree). */
-  referenceDeltas: Array<number | null>
+  /** The agreeing references' smallest and largest delta per round (null when too few agreed). */
+  referenceRanges: Array<{ min: number; max: number } | null>
   /** null when the simulated proof succeeds; the contract error otherwise. Only for mismatches. */
   proofCheck: string | null
   txHash: string | null
@@ -91,7 +92,8 @@ export interface TokenizerProverOptions {
   concurrency?: number
   /**
    * Skips suspects checked within this many ms (state in `statePath`); inconclusive ones are retried after
-   * at most `INCONCLUSIVE_RECHECK_MS`.
+   * at most `INCONCLUSIVE_RECHECK_MS`. A mismatch counts as checked only once its proof is sent, so a dry run
+   * or a failed proof never holds back the next live pass.
    */
   recheckAfterMs?: number
   statePath?: string
@@ -200,14 +202,10 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
     const b = ' ' + jsonSafeContent(generated.b).trim()
     const jobs = plan.flatMap((p) => p.members.map((m) => ({ modelHash: p.modelHash, member: m })))
     const pairs = new Map<string, TokenizerProbePair | string>()
-    let next = 0
-    await Promise.all(Array.from({ length: Math.min(options.concurrency ?? DEFAULT_CONCURRENCY, jobs.length) }, async () => {
-      while (next < jobs.length) {
-        const { modelHash, member } = jobs[next++]!
-        pairs.set(memberKey(modelHash, member), await probePair(options, member, a, b))
-      }
-    }))
-    rounds.push({ a, b, pairs })
+    await mapConcurrently(jobs, options.concurrency ?? DEFAULT_CONCURRENCY, async ({ modelHash, member }) => {
+      pairs.set(memberKey(modelHash, member), await probePair(options, member, a, b))
+    })
+    rounds.push({ a, b, pairs, deltas: new Map() })
     log(`  round ${r + 1}: ${[...pairs.values()].filter((p) => typeof p !== 'string').length}/${jobs.length} signed pairs`)
   }
 
@@ -217,7 +215,9 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
     for (const suspect of suspects) {
       const result = await judge(options, params, modelHash, members, suspect, rounds)
       results.push(result)
-      state[stateKey(suspect.peerId, suspect.service)] = { checkedAt: now(), outcome: result.outcome }
+      const key = stateKey(suspect.peerId, suspect.service)
+      if (result.outcome === 'mismatch' && !result.txHash) delete state[key]
+      else state[key] = { checkedAt: now(), outcome: result.outcome }
       log(describeResult(result))
     }
   }
@@ -238,7 +238,10 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
   return { runId, models: plan.length, suspects: results.length, skipped, results, evidencePath }
 }
 
-/** Every resolvable seller of each model (one service per agent), keyed by model hash. */
+/**
+ * Every resolvable seller service of each model, keyed by model hash. An agent may sell a model under several
+ * services: each is a suspect of its own, and `agreeingReferences` takes one per agent.
+ */
 async function sellersByModel(options: TokenizerProverOptions, shapes: readonly TokenizerShape[]): Promise<Map<string, Member[]>> {
   const offered = options.peers.flatMap((peer) => chatServices(peer).flatMap(({ service, protocols }) => {
     const shape = shapeForProtocols(shapes, protocols)
@@ -250,7 +253,6 @@ async function sellersByModel(options: TokenizerProverOptions, shapes: readonly 
     const r = resolved[index]!
     if (r.agentId === 0n || ZERO_HASH.test(r.modelHash)) return
     const members = byModel.get(r.modelHash) ?? []
-    if (members.some((m) => m.agentId === r.agentId)) return
     members.push({
       peerId: normalizePeerId(o.peer.peerId),
       sellerName: o.peer.displayName ?? null,
@@ -281,26 +283,30 @@ async function judge(
 ): Promise<TokenizerSuspectResult> {
   const result: TokenizerSuspectResult = {
     peerId: suspect.peerId, sellerName: suspect.sellerName, service: suspect.service, modelHash, liveSame: suspect.liveSame,
-    outcome: 'inconclusive', reason: null, deltas: [], referenceDeltas: [], proofCheck: null, txHash: null,
+    outcome: 'inconclusive', reason: null, deltas: [], referenceRanges: [], proofCheck: null, txHash: null,
   }
   const proofRounds: TokenizerRound[] = []
   let matched = false
   for (const round of rounds) {
     const own = round.pairs.get(memberKey(modelHash, suspect))
-    const delta = own && typeof own !== 'string' ? pairDelta(own) : null
+    const delta = measuredDelta(round, modelHash, suspect)
     result.deltas.push(delta)
-    const references = agreeingReferences(round.pairs, modelHash, members.filter((m) => m.liveSame && m.agentId !== suspect.agentId), params.tolerance)
-    const referenceDelta = references.length >= params.minReferences ? references[0]!.delta : null
-    result.referenceDeltas.push(referenceDelta)
+    const candidates = members.filter((m) => m.liveSame && m.agentId !== suspect.agentId)
+    const references = agreeingReferences(round, modelHash, candidates, params.tolerance)
+    const range = references.length >= params.minReferences
+      ? { min: references[0]!.delta, max: references[references.length - 1]!.delta }
+      : null
+    result.referenceRanges.push(range)
     if (delta === null) {
       result.reason ??= typeof own === 'string' ? own : 'no signed usage'
       continue
     }
-    if (referenceDelta === null) {
+    if (range === null) {
       result.reason ??= 'too few references agreed'
       continue
     }
-    if (Math.abs(delta - referenceDelta) <= params.tolerance) {
+    // As the contract judges it: a mismatch is more than `tolerance` outside the references' range.
+    if (delta >= range.min - params.tolerance && delta <= range.max + params.tolerance) {
       matched = true
       continue
     }
@@ -326,26 +332,38 @@ async function judge(
 }
 
 /**
- * The largest set of references within `tolerance` of one of them, that one first: the contract takes the
- * first reference's delta and requires every other within `tolerance` of it.
+ * The largest set of references, one service per agent, whose deltas all lie within `tolerance` of each other
+ * (the contract checks their whole range), sorted by delta.
  */
 function agreeingReferences(
-  pairs: Map<string, TokenizerProbePair | string>,
+  round: ProbeRound,
   modelHash: string,
   references: Member[],
   tolerance: number,
 ): Array<{ delta: number; pair: TokenizerProbePair }> {
-  const measured = references.flatMap((m) => {
-    const pair = pairs.get(memberKey(modelHash, m))
-    const delta = pair && typeof pair !== 'string' ? pairDelta(pair) : null
-    return delta === null ? [] : [{ delta, pair: pair as TokenizerProbePair }]
-  })
-  let best: Array<{ delta: number; pair: TokenizerProbePair }> = []
-  for (const anchor of measured) {
-    const agreeing = measured.filter((m) => m !== anchor && Math.abs(m.delta - anchor.delta) <= tolerance)
-    if (agreeing.length + 1 > best.length) best = [anchor, ...agreeing]
+  const byAgent = new Map<bigint, { delta: number; pair: TokenizerProbePair }>()
+  for (const member of references) {
+    if (byAgent.has(member.agentId)) continue
+    const delta = measuredDelta(round, modelHash, member)
+    if (delta !== null) byAgent.set(member.agentId, { delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair })
+  }
+  const measured = [...byAgent.values()].sort((x, y) => x.delta - y.delta)
+  let best: typeof measured = []
+  for (let start = 0, end = 0; start < measured.length; start++) {
+    while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) end++
+    if (end - start > best.length) best = measured.slice(start, end)
   }
   return best
+}
+
+/** A member's signed delta in a round, read once per round; null without a signed pair or usage. */
+function measuredDelta(round: ProbeRound, modelHash: string, member: Member): number | null {
+  const key = memberKey(modelHash, member)
+  if (!round.deltas.has(key)) {
+    const pair = round.pairs.get(key)
+    round.deltas.set(key, pair && typeof pair !== 'string' ? pairDelta(pair) : null)
+  }
+  return round.deltas.get(key) ?? null
 }
 
 /** One base/probed pair for a seller, sending its shape's requests byte for byte; an error string on failure. */
@@ -449,7 +467,7 @@ Return only JSON: {"a": "...", "b": "..."}. Variation seed: ${randomInt(1e9)}`
 function describeResult(result: TokenizerSuspectResult): string {
   const who = `${result.sellerName ?? result.peerId.slice(0, 10)} ${result.service}`
   const deltas = result.deltas.map((d) => d ?? '?').join('/')
-  const refs = result.referenceDeltas.map((d) => d ?? '?').join('/')
+  const refs = result.referenceRanges.map((r) => (r === null ? '?' : r.min === r.max ? r.min : `${r.min}-${r.max}`)).join('/')
   switch (result.outcome) {
     case 'match':
       return `  match        ${who}: ${deltas} (references ${refs})`
@@ -471,11 +489,12 @@ function proofStatus(result: TokenizerSuspectResult): string {
 
 type ProverState = Record<string, { checkedAt: number; outcome: TokenizerOutcome }>
 
-/** One round's prompt and, per member (`memberKey`), its signed pair or why there is none. */
+/** One round's prompt and, per member (`memberKey`), its signed pair or why there is none, and its delta. */
 interface ProbeRound {
   a: string
   b: string
   pairs: Map<string, TokenizerProbePair | string>
+  deltas: Map<string, number | null>
 }
 
 function memberKey(modelHash: string, member: Member): string {

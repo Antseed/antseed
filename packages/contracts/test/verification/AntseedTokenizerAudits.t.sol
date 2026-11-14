@@ -132,7 +132,8 @@ contract AntseedTokenizerAuditsTest is Test {
         _mapSuspect();
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, MODEL_DELTA + 2, MODEL_DELTA);
         vm.expectRevert(
-            abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA + 2, MODEL_DELTA)
+            abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA + 2, MODEL_DELTA, MODEL_DELTA
+            )
         );
         audits.proveTokenizerMismatch(modelHash, rounds);
     }
@@ -144,7 +145,8 @@ contract AntseedTokenizerAuditsTest is Test {
         rounds[1] = _round(MODEL_DELTA, _refs(MODEL_DELTA));
         rounds[2] = _round(129, _refs(MODEL_DELTA));
         vm.expectRevert(
-            abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 1, MODEL_DELTA, MODEL_DELTA)
+            abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 1, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
+            )
         );
         audits.proveTokenizerMismatch(modelHash, rounds);
     }
@@ -157,6 +159,85 @@ contract AntseedTokenizerAuditsTest is Test {
         rounds[0] = _round(129, split);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.ReferencesDisagree.selector, 0));
         audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
+    function test_referencesAgreeOnlyWhenTheirWholeRangeFits() public {
+        _mapSuspect();
+        // Each is within tolerance (2) of the first, but the range is 4: no order makes them agree.
+        int256[3][3] memory orders = [
+            [MODEL_DELTA, MODEL_DELTA + 2, MODEL_DELTA - 2],
+            [MODEL_DELTA + 2, MODEL_DELTA - 2, MODEL_DELTA],
+            [MODEL_DELTA - 2, MODEL_DELTA, MODEL_DELTA + 2]
+        ];
+        for (uint256 o = 0; o < orders.length; o++) {
+            IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+            rounds[0] = _round(129, _deltas(orders[o]));
+            vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.ReferencesDisagree.selector, 0));
+            audits.proveTokenizerMismatch(modelHash, rounds);
+        }
+    }
+
+    function test_suspectWithinToleranceOfAnyReferenceIsNoMismatch() public {
+        _mapSuspect();
+        // References MODEL_DELTA - 1 .. MODEL_DELTA + 1; a suspect at MODEL_DELTA + 3 is within tolerance of the
+        // largest, in every order.
+        int256[3][2] memory orders =
+            [[MODEL_DELTA - 1, MODEL_DELTA, MODEL_DELTA + 1], [MODEL_DELTA + 1, MODEL_DELTA - 1, MODEL_DELTA]];
+        for (uint256 o = 0; o < orders.length; o++) {
+            IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, MODEL_DELTA + 3, MODEL_DELTA);
+            rounds[0] = _round(MODEL_DELTA + 3, _deltas(orders[o]));
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA + 3, MODEL_DELTA - 1, MODEL_DELTA + 1
+                )
+            );
+            audits.proveTokenizerMismatch(modelHash, rounds);
+        }
+    }
+
+    function test_evidenceMustBeFromTheLastDay() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
+        audits.proveTokenizerMismatch(modelHash, rounds);
+
+        vm.warp(block.timestamp - 2);
+        audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
+    function test_evidenceCannotBeFromTheFuture() public {
+        _mapSuspect();
+        signedAt += 10 minutes * 1000;
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.FutureEvidence.selector, 0));
+        audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
+    function test_evidenceFromBeforeAClearCannotFlagAgain() public {
+        kbf.record(suspectAgent, serviceHash, modelHash, SAME);
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        IAntseedTokenizerAudits.Round[] memory archived = _rounds(3, 129, MODEL_DELTA);
+        vm.warp(block.timestamp + 1 hours);
+        audits.clearFlag(suspectAgent, serviceHash);
+        assertEq(audits.flagClearedAt(suspectAgent, serviceHash), block.timestamp);
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
+        audits.proveTokenizerMismatch(modelHash, archived);
+
+        signedAt = uint64(block.timestamp * 1000 + 1000);
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        assertEq(audits.liveFlags(suspectAgent), 1);
+    }
+
+    function test_maxEvidenceAge() public {
+        assertEq(audits.maxEvidenceAgeSeconds(), 1 days);
+        vm.expectRevert(IAntseedTokenizerAudits.InvalidValue.selector);
+        audits.setMaxEvidenceAge(0);
+        audits.setMaxEvidenceAge(2 hours);
+        assertEq(audits.maxEvidenceAgeSeconds(), 2 hours);
+        vm.prank(prover);
+        vm.expectRevert();
+        audits.setMaxEvidenceAge(1 days);
     }
 
     function test_needsEnoughRoundsAndReferences() public {
@@ -380,6 +461,7 @@ contract AntseedTokenizerAuditsTest is Test {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         audits.clearFlag(suspectAgent, serviceHash);
+        signedAt += 1000;
         audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
         assertEq(audits.liveFlags(suspectAgent), 1);
         (uint256 sellerPoints,) = audits.points(bytes32(0), buyer, suspect, 100, 100);
@@ -505,6 +587,11 @@ contract AntseedTokenizerAuditsTest is Test {
     function _refs(int256 delta) private pure returns (int256[] memory deltas) {
         deltas = new int256[](3);
         (deltas[0], deltas[1], deltas[2]) = (delta, delta, delta);
+    }
+
+    function _deltas(int256[3] memory values) private pure returns (int256[] memory deltas) {
+        deltas = new int256[](3);
+        (deltas[0], deltas[1], deltas[2]) = (values[0], values[1], values[2]);
     }
 
     function _rounds(uint256 count, int256 suspectDelta, int256 referenceDelta)

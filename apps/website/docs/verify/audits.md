@@ -217,13 +217,13 @@ Every tick runs `verifier run` (your models, plus the confirmations you're respo
 
 A second check runs next to KBF, with nothing to set up: `verifier watch` does it on every tick, and `antseed verifier prove-tokenizer` runs it once. It needs no approval, no reference API key and no IPFS: anyone can submit a tokenizer proof.
 
-It checks the usage sellers sign, which is what they are paid on. Each round, a model on the network writes a short message A and a follow-up B. Your buyer sends A, then A followed by B, to every seller of a model, each in an API it speaks (Chat Completions, Anthropic Messages or Responses). The difference in input tokens each seller signs is B's length in the tokenizer that actually ran. Sellers with a `SAME` from KBF are the reference: when at least three of them sign the same difference, and a seller is off by more than 2 tokens in every one of three rounds, the CLI sends a proof made of the sellers' own signed receipts, and the contract checks every signature itself.
+It checks the usage sellers sign, which is what they are paid on. Each round, a model on the network writes a short message A and a follow-up B. Your buyer sends A, then A followed by B, to every seller of a model, each in an API it speaks (Chat Completions, Anthropic Messages or Responses). The difference in input tokens each seller signs is B's length in the tokenizer that actually ran. Sellers with a `SAME` from KBF are the reference: when at least three of them sign the same difference (all within 2 tokens of each other), and a seller is more than 2 tokens outside their range in every one of three rounds, the CLI sends a proof made of the sellers' own signed receipts, and the contract checks every signature itself. A proof must be sent within a day of its receipts; the CLI sends it right after the pass.
 
 - A seller without a `SAME` gets a `DIFF`, like a KBF `DIFF`.
 - A seller with a `SAME` (it answers like the model, but its usage isn't the model's) gets a **usage flag**, which can cut its points.
 - A proof that creates a new `DIFF` or flag for a staked seller earns you a credit; `verifier rewards` shows and claims them with your KBF rewards (see [Rewards](#rewards)).
 
-What it costs: two short requests per seller per round, three rounds, about once a day per seller (a seller it couldn't check is retried after 6 hours), plus the gas of each proof on Base. `prove-tokenizer --dry-run` checks everything and sends nothing. Each pass writes its evidence to `<data-dir>/verifier/evidence/tokenizer/`.
+What it costs: two short requests per seller per round, three rounds, about once a day per seller (a seller it couldn't check is retried after 6 hours), plus the gas of each proof on Base. `prove-tokenizer --dry-run` checks everything and sends nothing, and the next real pass still proves what it found. Each pass writes its evidence to `<data-dir>/verifier/evidence/tokenizer/`.
 
 ## Running again in the same epoch
 
