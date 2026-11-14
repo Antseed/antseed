@@ -23,6 +23,7 @@ forge create staking/AntseedColonyPool.sol:AntseedColonyPool \
 Then, as the contract's owner:
 
 - `registerAgent(agentURI)` mints the pool its own ERC-8004 agent, and `registerSeller(agentId)` binds it. ANTS staked for that agent makes the pool eligible for channels and emissions.
+- While ANTS transfers are still closed, the token lets only addresses its owner whitelists send ANTS, and that includes your pool. Emissions still reach the pool and every worker's share, and your fee's share, is recorded there. Claims of them wait until transfers open (or the pool is whitelisted) and fail with `AntsNotTransferableYet` until then; `antsTransferable()` tells you which. USDC is never affected.
 - `setOperatorFee(feeBps, recipient)` sets your fee (10% by default, 20% at most), taken after the 2% protocol fee.
 - `setRemainderRecipient(recipient)` names who receives the part of a settlement no worker is attributed (requests no worker answered, and rounding).
 

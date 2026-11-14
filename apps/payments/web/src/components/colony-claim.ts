@@ -8,5 +8,12 @@ import type { ColonyState } from '../api';
  */
 export function colonyAntsToClaim(fresh: ColonyState | null): { antsEpochs: number[]; workerAntsEpochs: number[] } {
   if (!fresh) throw new Error('Could not read what is left to claim after pulling the pool’s ANTS. Choose Claim again.');
+  // Until ANTS transfers open the pool can't send ANTS: they stay owed there, and only USDC is claimed.
+  if (fresh.claim?.antsTransferable === false) return { antsEpochs: [], workerAntsEpochs: [] };
   return { antsEpochs: fresh.claim?.antsEpochs ?? [], workerAntsEpochs: fresh.claim?.workerAntsEpochs ?? [] };
+}
+
+/** Whether a claim from this state can send ANTS now. */
+export function colonyAntsTransferable(state: ColonyState | null): boolean {
+  return state?.claim?.antsTransferable !== false;
 }

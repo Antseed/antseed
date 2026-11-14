@@ -321,6 +321,8 @@ export interface ColonyState {
     unpulledEpochs: number[];
     /** Epochs whose ANTS stayed with the Mac's key when it linked (older than the link moves); claimAntsFor sends them to the payout. Counted in `ants`. */
     workerAntsEpochs?: number[];
+    /** Whether the pool can send ANTS yet; false while ANTS transfers are closed (the ANTS stay owed in the pool). */
+    antsTransferable?: boolean;
   } | null;
 }
 

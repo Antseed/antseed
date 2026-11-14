@@ -17,6 +17,9 @@ struct ColonyRewards: Equatable, Sendable {
     /// Epochs whose ANTS are still the worker key's own after it linked a payout wallet (older than
     /// setPayout moves): counted in `ants`, and paid to the payout wallet with claimAntsFor.
     var workerAntsEpochs: [Int] = []
+    /// Whether the pool can send ANTS yet (`antsTransferable()`): until ANTS transfers open, what it
+    /// owes stays recorded there and only USDC can be claimed.
+    var antsTransferable = true
 
     /// The payout wallet's rewards plus what the linked worker key still holds itself.
     func adding(worker: ColonyRewards) -> ColonyRewards {
@@ -56,6 +59,8 @@ extension Chain {
     struct RewardsContext: Sendable {
         let emissions: String
         let epochs: [Int]
+        /// The pool's `antsTransferable()`; true when the pool predates it.
+        var antsTransferable = true
     }
 
     func rewardsContext(pool: String) async throws -> RewardsContext {
@@ -67,7 +72,9 @@ extension Chain {
         guard current <= UInt64(Self.maxRewardEpochs) else {
             throw Failure.rpc("The pool's emissions contract reports \(current) epochs, more than any real schedule")
         }
-        return RewardsContext(emissions: emissions, epochs: Array(0..<Int(current)))
+        // A pool without the view (or a read that fails) is taken as able to send: its claims say otherwise.
+        let transferable = (try? await ethCall(to: pool, data: Self.selector("antsTransferable()"))).map { abiDecimal($0.prefix(32)) != 0 } ?? true
+        return RewardsContext(emissions: emissions, epochs: Array(0..<Int(current)), antsTransferable: transferable)
     }
 
     /// What `pool` owes `account`, over every finished epoch (pool ANTS never expire).
@@ -103,7 +110,8 @@ extension Chain {
             usdc: usdc,
             ants: antsEpochs.reduce(Decimal(0)) { $0 + abiDecimal(owed[$1] ?? Data()) },
             antsEpochs: antsEpochs,
-            unpulledEpochs: unfunded.filter { abiDecimal((pullable[$0] ?? Data()).prefix(32)) > 0 }
+            unpulledEpochs: unfunded.filter { abiDecimal((pullable[$0] ?? Data()).prefix(32)) > 0 },
+            antsTransferable: resolved.antsTransferable
         )
     }
 

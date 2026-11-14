@@ -75,7 +75,7 @@ Linking also moves what the Mac already earned to that wallet. The panel then sh
 
 ## Claim
 
-The **Rewards** card in the panel shows what the pool owes your wallet: USDC, and ANTS for finished epochs. Choose **Claim**, connect the same wallet on the payments page, and confirm the transactions: USDC first, then ANTS. When the pool hasn't pulled its ANTS for some finished epochs yet, the claim pulls them first, as the panel notes. The pool's operator can pause new settlements, but never these claims.
+The **Rewards** card in the panel shows what the pool owes your wallet: USDC, and ANTS for finished epochs. Choose **Claim**, connect the same wallet on the payments page, and confirm the transactions: USDC first, then ANTS. When the pool hasn't pulled its ANTS for some finished epochs yet, the claim pulls them first, as the panel notes. The pool's operator can pause new settlements, but never these claims. While ANTS transfers are still closed, the card says so and **Claim** takes only the USDC: the pool keeps the ANTS it owes you until transfers open.
 
 The Antseed desktop app's **Rewards** and the ANTS dashboard (`antseed ants`) also show and claim a linked Mac's earnings.
 

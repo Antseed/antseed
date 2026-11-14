@@ -6,7 +6,7 @@ import { getColony, signColonyLink, type ColonyState } from '../api';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
 import { formatColonyAnts, formatUsd, truncateAddress } from '../utils/format';
 import { ConnectWalletAction } from './ConnectWalletAction';
-import { colonyAntsToClaim } from './colony-claim';
+import { colonyAntsToClaim, colonyAntsTransferable } from './colony-claim';
 
 /** AntseedColonyPool: linking a worker's earnings to a wallet, and claiming them. */
 const COLONY_POOL_ABI = parseAbi([
@@ -172,8 +172,10 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
   const wrongWallet = Boolean(payout && payout.toLowerCase() !== address.toLowerCase());
   const usdc = BigInt(colony?.claim?.usdc ?? '0');
   const ants = BigInt(colony?.claim?.ants ?? '0');
-  const unpulled = colony?.claim?.unpulledEpochs ?? [];
-  const nothing = usdc === 0n && ants === 0n && unpulled.length === 0;
+  // Until ANTS transfers open, only the USDC can be claimed: the pool keeps the ANTS it owes.
+  const antsOpen = colonyAntsTransferable(colony);
+  const unpulled = antsOpen ? colony?.claim?.unpulledEpochs ?? [] : [];
+  const nothing = usdc === 0n && (!antsOpen || ants === 0n) && unpulled.length === 0;
 
   const claim = async () => {
     if (!colony?.pool) return;
@@ -219,8 +221,8 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
     if (isSwitchingChain) return `Switching to ${targetChainName}…`;
     if (wrongChain) return `Switch to ${targetChainName}`;
     if (running) return step ?? 'Confirm in your wallet…';
-    if (nothing) return 'Nothing to claim yet';
-    const antsLabel = ants > 0n ? ` + ${formatColonyAnts(ants)} ANTS` : '';
+    if (nothing) return !antsOpen && ants > 0n ? 'ANTS claimable once ANTS transfers open' : 'Nothing to claim yet';
+    const antsLabel = antsOpen && ants > 0n ? ` + ${formatColonyAnts(ants)} ANTS` : '';
     return `Claim $${formatUsd(Number(formatUnits(usdc, 6)))} USDC${antsLabel}`;
   };
 

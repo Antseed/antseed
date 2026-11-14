@@ -505,7 +505,10 @@ struct RewardsCard: View {
                         PillButton(title: "Claim", primary: !(rewards?.isEmpty ?? true)) { open("colony-claim") }
                     }
                 }
-                if let unpulled = rewards?.unpulledEpochs.count, unpulled > 0 {
+                if let rewards, !rewards.antsTransferable, rewards.ants > 0 || !rewards.unpulledEpochs.isEmpty {
+                    Text("ANTS stay owed in the pool until ANTS transfers open; Claim takes the USDC now.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+                } else if let unpulled = rewards?.unpulledEpochs.count, unpulled > 0 {
                     Text("Plus ANTS from \(unpulled) finished epoch\(unpulled == 1 ? "" : "s"), pulled into the pool when you claim.")
                         .font(.system(size: 11)).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
                 }
