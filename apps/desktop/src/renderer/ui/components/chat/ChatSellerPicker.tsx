@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, ShuffleIcon } from '@hugeicons/core-free-icons';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge';
-import { findChatModel, offerPriceLabel, retailDiscount, sellerImagePriceLabel } from '../../../modules/chat/models';
+import { findChatModel, offerPriceLabel, retailSavingsPct, sellerImagePriceLabel } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
@@ -100,7 +100,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
     if (label === 'Free') return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
     if (label === 'Free for stakers') return <span className={styles.tag}>{label}</span>;
     const saving = imagePrices ? null : sellerSaving(offer, referencePrice);
-    return saving ? <>{label}<span className={styles.itemSaving} title="Below the reference (retail) price: input / output">{saving}</span></> : label;
+    return saving ? <>{label}<span className={styles.itemSaving} title="Cheaper than the retail reference price, input and output together">{saving}</span></> : label;
   };
 
   const load = useCallback((force = false) => {
@@ -275,16 +275,15 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
 }
 
 /**
- * A seller's saving against the model's reference price: "−89%", or
- * "−95% / −89%" when input and output differ. Null unless both are cheaper.
+ * A seller's saving against the model's retail reference price, as the old AI
+ * VPN showed it: "save 38%", on input and output together. Null unless cheaper.
  */
 export function sellerSaving(
   offer: Pick<ChatRouteCandidate, 'inputUsdPerMillion' | 'outputUsdPerMillion'>,
   referencePrice: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } | undefined,
 ): string | null {
-  const discount = retailDiscount({ inputUsdPerMillion: offer.inputUsdPerMillion, outputUsdPerMillion: offer.outputUsdPerMillion, referencePrice, free: false });
-  if (!discount) return null;
-  return discount.input === discount.output ? `−${discount.input}%` : `−${discount.input}% / −${discount.output}%`;
+  const pct = retailSavingsPct({ inputUsdPerMillion: offer.inputUsdPerMillion, outputUsdPerMillion: offer.outputUsdPerMillion, referencePrice, free: false });
+  return pct === null ? null : `save ${pct}%`;
 }
 
 /** A seller row's dot, name and price, shared by the sellers that can serve and those the policy leaves out. */

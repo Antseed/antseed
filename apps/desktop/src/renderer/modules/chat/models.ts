@@ -215,22 +215,26 @@ export function formatPriceRange(offer: OfferPrices): string {
 }
 
 /**
- * How far below retail the model's input and output prices are, in whole
- * percent rounded down. Null unless both sides have a retail price and are
- * cheaper than it: one side above retail has no single answer, and a free
- * model already says Free.
+ * How much cheaper a price is than the retail reference, in whole percent, as
+ * the old AI VPN showed it: input and output added together, over the sides
+ * both price, against the same sides at retail. Null unless that total is
+ * cheaper. A free model already says Free, and a router's pick isn't priced
+ * per token.
  */
-export function retailDiscount(
+export function retailSavingsPct(
   model: Pick<ChatModel, 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'referencePrice' | 'free' | 'router'>,
-): { input: number; output: number } | null {
+): number | null {
   if (model.router || model.free || isFreeOffer(model)) return null;
-  // The epsilon keeps $0.80 against $1.00 at 20%, where float division lands just under it.
-  const below = (price: number | null, retail: number | null | undefined): number => (
-    price === null || !retail || !(retail > 0) ? 0 : Math.floor((1 - price / retail) * 100 + 1e-9)
-  );
-  const input = below(model.inputUsdPerMillion, model.referencePrice?.inputUsdPerMillion);
-  const output = below(model.outputUsdPerMillion, model.referencePrice?.outputUsdPerMillion);
-  return input >= 1 && output >= 1 ? { input, output } : null;
+  const pairs = [
+    [model.inputUsdPerMillion, model.referencePrice?.inputUsdPerMillion ?? null],
+    [model.outputUsdPerMillion, model.referencePrice?.outputUsdPerMillion ?? null],
+  ].filter((pair): pair is [number, number] => pair[0] !== null && pair[1] !== null);
+  if (pairs.length === 0) return null;
+  const price = pairs.reduce((total, [paid]) => total + paid, 0);
+  const retail = pairs.reduce((total, [, reference]) => total + reference, 0);
+  if (!(retail > 0) || retail <= price) return null;
+  const pct = Math.round((1 - price / retail) * 100);
+  return pct >= 1 ? pct : null;
 }
 
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
