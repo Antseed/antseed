@@ -517,6 +517,34 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.latestMetadata).toBe(metadata);
   });
 
+  it('keeps a re-signed SpendingAuth at the same amount when its metadata changed, and settles with it', async () => {
+    const channelId = makeChannelId(28);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true }), mux);
+    const domain = makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR);
+    const signAt = async (metadata: string) => {
+      const metadataHash = keccak256(metadata);
+      const spendingAuthSig = await signSpendingAuth(buyerIdentity.wallet, domain, { channelId, cumulativeAmount: 200_000n, metadataHash });
+      return { channelId, cumulativeAmount: '200000', metadataHash, metadata, spendingAuthSig };
+    };
+    const headroom = await signAt(encodeMetadataV4(100n, 50n, 1n));
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, headroom, mux)).toBe('accepted');
+    // The buyer attributes the same signed amount (e.g. to a Colony worker): new metadata, same cumulative.
+    const attributed = await signAt(encodeMetadataV4(200n, 80n, 2n));
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, attributed, mux)).toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(200_000n);
+    expect(store.getChannel(channelId)!.latestMetadata).toBe(attributed.metadata);
+    expect(store.getChannel(channelId)!.latestSpendingAuthSig).toBe(attributed.spendingAuthSig);
+
+    // A plain retransmission of the retained auth changes nothing.
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, attributed, mux)).toBe('accepted');
+
+    vi.mocked(manager.channelsClient.close).mockClear();
+    await manager.settleSession(buyerIdentity.peerId);
+    expect(manager.channelsClient.close).toHaveBeenCalledWith(
+      expect.anything(), channelId, 200_000n, attributed.metadata, attributed.spendingAuthSig,
+    );
+  });
+
   it('fills in the v4 zero metadata a buyer signed without sending its bytes', async () => {
     const channelId = makeChannelId(27);
     const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });

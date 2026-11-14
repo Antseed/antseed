@@ -3,7 +3,7 @@ import { FileIdentityStore } from '@antseed/node'
 import { ConsoleError } from '../console-error.js'
 import type {
   SellerAlertSettings, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerNetworkMeta, SellerPromote, SellerReputation,
-  SellerRestartView, SellerRpcDiagnostics, SellerServicePricing, SellerSettings, SellerStatus, SellerUsage, TelegramChat,
+  SellerRestartView, SellerRpcDiagnostics, SellerServicePricing, SellerSettings, SellerStatus, SellerUsage, SellerWorkers, TelegramChat,
 } from '../gateway/console-api/types.js'
 import { rpcUsage } from '../proxy/rpc-sources.js'
 import { SellerAlerts } from '../seller-alerts/alerts.js'
@@ -17,6 +17,7 @@ import { readSellerPromote, readSellerVerifications, updateSellerVerifications, 
 import { hasSeller, readDaemonState, readSellerEventViews, readSellerStatus, SellerUsageReader } from './reader.js'
 import { readSellerAlertSettings, readSellerSettings, resetSellerConfigOverrides, runningSellerSendsTelegram, updateSellerAlerts, updateSellerSettings } from './settings.js'
 import { readSellerStanding, standingTtlMs, type StandingRead } from './standing.js'
+import { readSellerWorkers } from './workers.js'
 
 export interface SellerMonitorOptions {
   /** The seller's data directory; null when no seller runs here (the gateway resolves it per call). */
@@ -99,6 +100,13 @@ export class SellerMonitor {
 
   usage(days = 14): Promise<SellerUsage> {
     return this._usage.usage(this.seller().dataDir, days)
+  }
+
+  /** The colony pool's workers, when the seller runs one; open connections stop at a stale seller's last heartbeat. */
+  async workers(): Promise<SellerWorkers> {
+    const dataDir = this.seller().dataDir
+    const updatedAt = (await readDaemonState(dataDir))?.updatedAt
+    return readSellerWorkers(dataDir, Date.now(), typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : null)
   }
 
   logs(query: SellerLogQuery = {}): SellerLogPage {

@@ -372,6 +372,7 @@ const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
   '@antseed/provider-fal-image': 'FAL_IMAGE',
   '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
   '@antseed/provider-irp-router': 'IRP_ROUTER',
+  '@antseed/provider-colony-pool': 'COLONY_POOL',
 }
 
 /**

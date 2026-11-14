@@ -15,7 +15,7 @@ export {
   type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
-export type { Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
+export type { Provider, ProviderRequestCharge, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
 export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER, ANTSEED_REQUIRE_TEE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
@@ -236,6 +236,7 @@ export {
   type NetworkServiceCatalogPeer,
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
+export { runMigrations, addColumnIfMissing, type Migration } from './storage/migrate.js';
 export { MeteringStorage } from './metering/storage.js';
 export { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 export type { FreeTierConsumption } from './metering/storage.js';
@@ -478,7 +479,7 @@ export {
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
-export { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER } from './interfaces/plugin.js'
+export { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER, ANTSEED_PROVIDER_CONTROL_PATH } from './interfaces/plugin.js'
 
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';

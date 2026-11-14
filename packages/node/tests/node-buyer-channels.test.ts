@@ -313,4 +313,14 @@ describe('the buyer channel reconcile pass a node runs on its own', () => {
 
     expect(passes()).toBe(0);
   });
+
+  it('applies the node\'s colony pool trust policy to every buyer identity', async () => {
+    await startPayingBuyer({ requireAppleVerifiedWorkers: true });
+    await node!.addBuyerIdentity('alt', buyerIdentity());
+    type Internals = { _buyerHandler: { _deps: { workerE2E: { options: object } } }; _buyerIdentities: Map<string, { _handler: { _deps: { workerE2E: { options: object } } } }> };
+    const internals = node as unknown as Internals;
+    const policy = { requireAppleVerifiedWorkers: true };
+    expect(internals._buyerHandler._deps.workerE2E.options).toEqual(policy);
+    expect(internals._buyerIdentities.get('alt')!._handler._deps.workerE2E.options).toEqual(policy);
+  });
 });

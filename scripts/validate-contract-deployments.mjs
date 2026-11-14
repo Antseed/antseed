@@ -11,7 +11,7 @@
 
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { generatedChainConfigFile, renderContractChainConfig } from './generate-contract-chain-config.mjs';
+import { generatedChainConfigFile, generatedSwiftChannelsFile, renderContractChainConfig, renderSwiftChannels } from './generate-contract-chain-config.mjs';
 import { buildReleaseOwners } from './deployments/index.mjs';
 
 const deploymentsRoot = process.env.CONTRACT_DEPLOYMENTS_ROOT
@@ -183,6 +183,9 @@ if (isMain) {
     const generated = await readFile(generatedChainConfigFile, 'utf8');
     if (generated !== await renderContractChainConfig()) {
       throw new Error(`${generatedChainConfigFile} is stale; run node scripts/generate-contract-chain-config.mjs`);
+    }
+    if (await readFile(generatedSwiftChannelsFile, 'utf8') !== await renderSwiftChannels()) {
+      throw new Error(`${generatedSwiftChannelsFile} is stale; run node scripts/generate-contract-chain-config.mjs`);
     }
   }
 

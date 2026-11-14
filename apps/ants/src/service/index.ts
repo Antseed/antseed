@@ -19,3 +19,4 @@ export type { StepReporter } from './steps.js';
 export { validateSellerProofArtifact, sellerProofId } from '@antseed/node/payments';
 export type { SellerProofArtifact } from '@antseed/node/payments';
 export * from '../api-types.js';
+export { colonyPools, claimColonyPool, linkWorkerPayout, forgetColonyPool } from './colony-pools.js';

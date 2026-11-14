@@ -294,6 +294,11 @@ const config: Config = {
               value:
                 '<a class="usecase" href="/privacy"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5l6 2.5v4.5c0 3.6-2.6 6.3-6 7.5-3.4-1.2-6-3.9-6-7.5V5l6-2.5z"/><path d="M7.5 10l1.8 1.8L12.8 8"/></svg></span><span class="usecase__body"><span class="usecase__title">For privacy</span><span class="usecase__desc">No sign-up, runs on your machine</span></span></a>',
             },
+            {
+              type: 'html',
+              value:
+                '<a class="usecase" href="/local-ai"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="13" height="9" rx="1.5"/><path d="M2 16h16"/><path d="M8.5 8.5h3M10 7v3"/></svg></span><span class="usecase__body"><span class="usecase__title">For local AI</span><span class="usecase__desc">Earn from a model on your Mac</span></span></a>',
+            },
           ],
         },
         {to: '/providers', label: 'Providers', position: 'left'},

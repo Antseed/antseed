@@ -5,6 +5,7 @@ import { peerServices } from '../gateway/console-api/handlers/network-mapping.js
 import type { SellerMarket, SellerMarketOffer, SellerMarketService, SellerNetworkMeta, SellerReputation, SellerServicePricing, SellerTrust, SellerUnitPrice } from '../gateway/console-api/types.js'
 import type { PeerRow } from './network.js'
 import { unitPriceOfRow } from './unit-price.js'
+import { median } from './statistics.js'
 
 const MAX_OFFERS = 25
 const MAX_NOT_OFFERED = 10
@@ -19,12 +20,6 @@ export function blended(input: number | null, output: number | null): number | n
   return input === null || output === null ? null : (3 * input + output) / 4
 }
 
-function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2
-}
 
 const present = (values: Array<number | null>) => values.filter((value): value is number => value !== null)
 

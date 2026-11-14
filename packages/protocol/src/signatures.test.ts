@@ -167,7 +167,7 @@ describe('SpendingAuth metadata versions', () => {
     const decoded = decodeSpendingAuthMetadata(encoded);
     expect(decoded.version).toBe(5n);
     const byId = (a: { serviceId: string }, b: { serviceId: string }) => (a.serviceId < b.serviceId ? -1 : 1);
-    expect(decoded).toEqual({ version: 5n, ...v5, services: [...v5.services].sort(byId) });
+    expect(decoded).toEqual({ version: 5n, ...v5, services: [...v5.services].sort(byId), workers: [] });
     expect(encodeMetadata(decoded)).toBe(encoded);
     // Words 1-3 (tokens, requests) are what AntseedStats reads, in every version.
     const words = (hex: string) => hex.slice(2).match(/.{64}/g)!;

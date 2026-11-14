@@ -49,6 +49,12 @@ export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
     package: '@antseed/provider-local-llm',
   },
   {
+    name: 'colony-pool',
+    type: 'provider',
+    description: 'Serve buyers from a pool of worker machines (Macs running local models) that connect to this seller',
+    package: '@antseed/provider-colony-pool',
+  },
+  {
     name: 'typesafe',
     type: 'provider',
     description: 'TypeSafe System One decision-model provider (API key)',

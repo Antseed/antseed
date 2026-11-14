@@ -883,7 +883,18 @@ export class SellerPaymentManager {
             && !await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
             return 'rejected';
           }
-          debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          // Same amount, new metadata: the buyer re-signed its headroom to
+          // attribute it (e.g. a Colony worker tail). Keep the newer signature
+          // so settlement carries it; the pool pays attribution a settlement
+          // could not cover at the next one, so nothing is lost if this amount
+          // was already settled.
+          const retained = this._latestAuth.get(channelId);
+          if (retained && retained.metadataHash.toLowerCase() !== payload.metadataHash.toLowerCase()) {
+            this._retainAuth(channelId, cumulativeAmount, payload);
+            debugLog(`[SellerPayment] SpendingAuth re-signed at cumulative=${cumulativeAmount} with new metadata — retained`);
+          } else {
+            debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          }
           this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
           return 'accepted';
         }
@@ -928,24 +939,8 @@ export class SellerPaymentManager {
 
         // Update tracking
         this._acceptedCumulative.set(channelId, cumulativeAmount);
-        this._latestAuth.set(channelId, {
-          spendingAuthSig: payload.spendingAuthSig,
-          cumulativeAmount,
-          metadataHash: payload.metadataHash,
-          metadata: payload.metadata,
-        });
+        this._retainAuth(channelId, cumulativeAmount, payload);
         this._notifyAcceptedUpdate(channelId, cumulativeAmount);
-
-        // Persist latest auth + sigs to ChannelStore
-        const session = this._channelStore.getChannel(channelId);
-        if (session) {
-          session.authMax = payload.cumulativeAmount;
-          session.latestBuyerSig = payload.spendingAuthSig;
-          session.latestSpendingAuthSig = payload.spendingAuthSig;
-          session.latestMetadata = payload.metadata;
-          session.updatedAt = Date.now();
-          this._channelStore.upsertChannel(session);
-        }
 
         debugLog(`[SellerPayment] Budget updated: channel=${channelId.slice(0, 18)}... cumulative=${cumulativeAmount}`);
 
@@ -961,6 +956,25 @@ export class SellerPaymentManager {
     } catch (err) {
       debugWarn(`[SellerPayment] Failed to process SpendingAuth: ${err instanceof Error ? err.message : err}`);
       return 'rejected';
+    }
+  }
+
+  /** Keep `payload` as the channel's latest SpendingAuth, in memory and in the channel store. */
+  private _retainAuth(channelId: string, cumulativeAmount: bigint, payload: SpendingAuthPayload): void {
+    this._latestAuth.set(channelId, {
+      spendingAuthSig: payload.spendingAuthSig,
+      cumulativeAmount,
+      metadataHash: payload.metadataHash,
+      metadata: payload.metadata,
+    });
+    const session = this._channelStore.getChannel(channelId);
+    if (session) {
+      session.authMax = payload.cumulativeAmount;
+      session.latestBuyerSig = payload.spendingAuthSig;
+      session.latestSpendingAuthSig = payload.spendingAuthSig;
+      session.latestMetadata = payload.metadata;
+      session.updatedAt = Date.now();
+      this._channelStore.upsertChannel(session);
     }
   }
 

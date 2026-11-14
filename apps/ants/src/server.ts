@@ -59,6 +59,14 @@ export interface AntsServer {
   close(): Promise<void>;
 }
 
+/** Write `value` as JSON readable only by this user, atomically (temporary file, then rename). */
+async function writePrivateJson(file: string, value: unknown): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+  await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+  await rename(temporary, file);
+}
+
 async function readCryptoOverrides(configPath: string): Promise<Record<string, unknown>> {
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as { payments?: { crypto?: Record<string, unknown> } };
@@ -143,6 +151,32 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
   }
   const statePrefix = options.stateKey ? `${chain.evmChainId}-${options.stateKey.replace(/[^A-Za-z0-9_-]/g, '_')}` : `${chain.evmChainId}`;
 
+  // Colony pools linked through this dashboard (Rewards → Link a Mac), so a restart still shows them.
+  const colonyPoolsPath = path.join(dataDir, 'ants-activity', `${statePrefix}-colony-pools.json`);
+  const configuredPools = new Set((context.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()));
+  try {
+    const saved = JSON.parse(await readFile(colonyPoolsPath, 'utf8')) as unknown;
+    const linked = Array.isArray(saved) ? saved.filter((address): address is string => typeof address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(address)) : [];
+    if (linked.length > 0) context.chain.colonyPoolAddresses = [...(context.chain.colonyPoolAddresses ?? []), ...linked];
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read the linked colony pools. Preserve the file and resolve the error before continuing.', { cause: error }); }
+  context.saveColonyPools = async (addresses) => {
+    await writePrivateJson(colonyPoolsPath, addresses.filter((address) => !configuredPools.has(address)));
+  };
+  // The Macs linked here, per pool: their ANTS from before the link stay theirs, claimed to this wallet with claimAntsFor.
+  const colonyWorkersPath = path.join(dataDir, 'ants-activity', `${statePrefix}-colony-pool-workers.json`);
+  try {
+    const saved = JSON.parse(await readFile(colonyWorkersPath, 'utf8')) as unknown;
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      for (const [pool, workers] of Object.entries(saved as Record<string, unknown>)) {
+        if (!/^0x[0-9a-fA-F]{40}$/.test(pool) || !Array.isArray(workers)) continue;
+        for (const worker of workers) if (typeof worker === 'string' && /^0x[0-9a-fA-F]{40}$/.test(worker)) await context.rememberColonyPoolWorker(pool, worker);
+      }
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read the linked Macs. Preserve the file and resolve the error before continuing.', { cause: error }); }
+  context.saveColonyPoolWorkers = async (workers) => {
+    await writePrivateJson(colonyWorkersPath, workers);
+  };
+
   const views = new ViewCache();
   const historyPath = path.join(dataDir, 'ants-activity', `${statePrefix}-positions.json`);
   try {
@@ -159,10 +193,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     if (!ids.length) return;
     const positions = await context.requirePools().positionsBatch([...new Set(ids)]);
     for (const position of positions) if (position.owner.toLowerCase() === context.address.toLowerCase()) context.localPositionIds.set(position.id, position.owner);
-    await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
-    const temporary = `${historyPath}.${randomBytes(8).toString('hex')}.tmp`;
-    await writeFile(temporary, JSON.stringify([...context.localPositionIds]), { mode: 0o600 });
-    await rename(temporary, historyPath);
+    await writePrivateJson(historyPath, [...context.localPositionIds]);
   };
   // Browser sessions have no wallet at startup; one journal per chain, with jobs tagged by owner.
   const journalPath = path.join(dataDir, 'ants-activity', browserSigning ? `${statePrefix}-browser.json` : `${statePrefix}-${context.address.toLowerCase()}.json`);

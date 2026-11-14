@@ -81,6 +81,12 @@ export interface AntseedVerifierPlugin extends AntseedPluginBase {
 }
 
 export const ANTSEED_ATTEST_PATH = '/_antseed/attest'
+/**
+ * Free, unmetered provider routes (e.g. a colony pool's assignment). The
+ * seller hands requests under this prefix to the provider that serves the
+ * body's `model`, through `Provider.handleControlRequest`.
+ */
+export const ANTSEED_PROVIDER_CONTROL_PATH = '/_antseed/provider'
 
 /**
  * Header the seller node sets on attestation requests it hands to its prover: the hex session

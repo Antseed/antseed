@@ -1,0 +1,824 @@
+# Colony pools
+
+A colony pool is one Antseed seller that serves buyers from many worker
+machines (for example Macs running local models). Workers dial the pool; the
+pool stakes, holds the payment channels and settles. Three mechanisms keep the
+split honest without trusting the pool operator:
+
+1. **End-to-end encryption.** The buyer encrypts each request to the worker's
+   key, and the worker encrypts its response to the buyer. The pool routes
+   ciphertext and cannot read prompts or forge which worker answered.
+2. **Buyer-signed attribution.** The buyer appends each worker's cumulative
+   amount to the metadata it already signs in every SpendingAuth.
+3. **On-chain split.** `AntseedColonyPool` settles through the same
+   `settle`/`close`/`topUp` calls as any seller façade, reads the attribution
+   from the buyer-signed metadata, and credits each worker its share of the
+   USDC payout and of the pool's ANTS emissions. Workers (or the payout
+   wallets they link) claim directly.
+
+What still requires trust: the operator decides routing (it can starve a
+worker, which then leaves), an operator colluding with a buyer is wash
+trading, handled like any other seller, and the worker's machine decrypts the
+prompt. [Hardened Macs](#hardened-macs) keep the machine's owner out of it.
+That protection is weaker than a TEE.
+
+## Keys
+
+Each worker has:
+
+- a **secp256k1 identity** — its address, used to sign and to receive payouts;
+- a **static P-256 encryption key** (P-256 so a Mac can keep it in the
+  Secure Enclave);
+- optionally, a **P-256 attestation key** that signs
+  [attestations](#hardened-macs).
+
+Public keys travel as uncompressed SEC1 points (`04 ‖ x ‖ y`, 65 bytes,
+lowercase hex). The worker binds them to its identity with a **key
+certificate**, an EIP-191 signature by its identity over:
+
+```
+antseed-worker-key/v2
+pool:<pool seller address, lowercase hex>
+key:<encryption public key>
+expires:<unix seconds>
+attestation-key:<attestation public key, or empty>
+```
+
+## Assignment
+
+Pools advertise the peer capability `colony-pool-e2e.v2`, and
+`colony-pool-e2e.v2.<provider>` for the provider that serves through workers,
+named as buyers see it: its provider ID when the seller announces providers by
+ID (`announceProviderIds`). Control routes such as the assignment accept the
+provider's ID or its own name, as requests do.
+Whether a request is encrypted to a worker follows the provider it names
+first: a request naming a colony-pool provider is always encrypted, even when
+the buyer's view of the pool's models is out of date. A request naming an
+ordinary provider stays plaintext only when that provider offers the model,
+since otherwise the seller would serve it through another provider, possibly
+its pool. Without a named provider, the provider the buyer routes it to
+decides, and a model no provider offers is encrypted. The assignment request
+names the pool the request is for, and buyers cache one assignment per
+seller, provider and service. One case only the seller can see remains: if a
+seller stops offering a model on an ordinary provider while the buyer's
+metadata still lists it there, the seller could route that plaintext request
+to its pool (which refuses it with `428`, after the seller has seen it). Before its first request for a pool service, the buyer
+asks the pool for its top-ranked workers:
+
+```
+POST /_antseed/provider/colony-pool/assign
+{ "model": "<service>", "recipients": 2 }
+
+200 { "workers": [
+  { "worker": "0x…", "key": "04…", "expires": <unix>, "certificate": "0x<sig>", "pool": "0x…",
+    "attestationKey": "04…", "attestation": { … } },
+  …
+] }
+```
+
+`recipients` is the node option `colonyPoolRecipients`: 1 to 3, default 1.
+The pool returns up to that many distinct workers, best-ranked first (see
+[Routing and failover](#routing-and-failover)). For each one the buyer checks
+that the certificate recovers to `worker`, that `pool` is the seller it is
+paying, and that it has not expired. When an attestation is present it must
+verify (see [Hardened Macs](#hardened-macs)), but its hardening is never a
+requirement: the worker signs it with a key it chose. A buyer configured with
+`requireAppleVerifiedWorkers` also requires Apple's attestation of the
+worker's Mac. A worker that fails any check is left out of the set, and the
+buyer refuses the assignment only when no worker is left. It keeps the set
+per (seller, provider, service) until the first of its certificates or
+attestations stops being usable, or the pool answers `421` with
+`{"error":{"code":"worker_unavailable"}}`. Then it drops the set; with 2 or 3
+recipients it reassigns and retries once, and with 1 it returns the `421`,
+so a request is never shown to a second Mac.
+Paths under `/_antseed/provider/` are free control routes: the seller hands
+them to the provider serving the body's `model` (`Provider.handleControlRequest`)
+without payment or metering, rate limited per buyer. A pool refuses plaintext
+buyer requests with `428` `{"error":{"code":"e2e_required"}}`; it seals the
+seller's own health probes to a worker itself.
+
+## Request envelope
+
+The buyer encrypts the body once, for every worker in its assignment, and
+replaces the request body with:
+
+```json
+{
+  "model": "<service>",
+  "stream": true,
+  "max_tokens": 1024,
+  "antseed_e2e": {
+    "v": 2,
+    "recipients": [
+      { "worker": "0x…", "epk": "<base64 uncompressed P-256 ephemeral public key>", "wk": "<base64 wrapped content key>" },
+      { "worker": "0x…", "epk": "…", "wk": "…" }
+    ],
+    "ct": "<base64 ChaCha20-Poly1305 ciphertext of the original JSON body>",
+    "buyer": "0x…",
+    "channel": "0x…",
+    "exp": <unix seconds>,
+    "sig": "0x…",
+    "pay": { "cumulativeAmount": "<decimal>", "metadata": "0x…", "signature": "0x…" }
+  }
+}
+```
+
+`model`, `stream` and `max_tokens` stay in the clear for routing, streaming
+and budget checks. Everything else is in `ct`. `recipients` lists 1 to 3
+distinct workers, in the order the pool assigned them.
+
+Key schedule, per request (a fresh content key and a fresh ephemeral key per
+recipient every time). `list` is the recipients' addresses, lowercase, joined
+by commas, in envelope order:
+
+```
+contentKey = 32 random bytes
+ct         = ChaCha20-Poly1305(contentKey, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|req|" ‖ list ‖ "|" ‖ model)
+
+for each recipient i (worker key Wᵢ, fresh ephemeral key eᵢ):
+  sharedᵢ  = ECDH-P256(eᵢ, Wᵢ)   (the x-coordinate, 32 bytes)
+  okmᵢ     = HKDF-SHA256(ikm = sharedᵢ, salt = epkᵢ ‖ Wᵢ, info = "antseed-worker-e2e/v2", length = 64)
+  wrapKeyᵢ = okmᵢ[0:32]
+  respKeyᵢ = okmᵢ[32:64]
+  wkᵢ      = ChaCha20-Poly1305(wrapKeyᵢ, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|wrap|" ‖ list ‖ "|" ‖ model, contentKey)
+```
+
+A worker finds its own entry, unwraps `contentKey` with its own ECDH secret,
+and opens `ct`. It rejects the request unless it is named in `recipients`
+(exactly once), and unless the inner body's `model` equals the outer `model`
+(the AADs already bind it and the recipient list: reordering, dropping or
+adding a recipient makes the request fail to open).
+
+`sig` is the buyer's EIP-191 signature over
+`keccak256("antseed-worker-e2e/v2" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ exp ‖ keccak256(ct))`
+(addresses as 20 bytes in envelope order, `channel` as 32 bytes, `exp` as a
+big-endian uint64; buyers set it 10 minutes ahead). It proves the
+request came from a buyer of this pool, for exactly this set of workers, so an
+operator cannot feed a worker requests of its own and relay the results to a
+buyer under a different key. A worker that checks the chain verifies that
+`channel` belongs to `buyer` and to the pool seller. `pay` is the buyer's
+latest SpendingAuth on `channel`, absent before its first one: workers check
+it pays for their earlier answers there ([Paid before served](#paid-before-served)).
+
+**Privacy with several recipients.** Any of the N recipient Macs could
+decrypt the request if the pool forwards it to them. The pool forwards to one
+at a time, in rank order, and only within the set the buyer signed (see
+[Routing and failover](#routing-and-failover)). With the default of 1, only
+one Mac can ever read a request, and the buyer never re-encrypts it for
+another; 2 or 3 trade that for availability.
+
+## Response envelope
+
+Each recipient answers under its own key. The worker picks a random 16-byte
+`salt` and seals with
+
+```
+responseKey = HKDF-SHA256(ikm = respKeyᵢ, salt = salt, info = "antseed-worker-e2e/v2|resp-key", length = 32)
+```
+
+so a replayed request (same `epkᵢ`, same `respKeyᵢ`) never reuses a key and
+nonce pair for a different answer, and no recipient can produce an answer
+under another recipient's key.
+
+Non-streaming: the worker answers
+
+```json
+{ "antseed_e2e": { "v": 2, "worker": "0x…", "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
+```
+
+where `worker` is the answering worker and `ct` is the upstream body sealed
+with `responseKey`, nonce 0, AAD `"antseed-worker-e2e/v2|resp|0|end"`.
+
+Streaming: each upstream SSE event `data: X` becomes
+
+```
+data: {"antseed_e2e":{"seq":n,"ct":"<base64>"}}
+```
+
+sealed with `responseKey`, nonce = `seq` as a 96-bit big-endian counter starting
+at 0, AAD `"antseed-worker-e2e/v2|resp|<seq>"`. The `seq` 0 event also carries
+`"worker"` and `"salt"`. The last event sets
+`"end":true` and uses AAD `"antseed-worker-e2e/v2|resp|<seq>|end"`, so a
+truncated stream fails to verify.
+
+The buyer opens the answer with the response key of the worker it names, and
+only of a worker the request was encrypted for. A label naming another
+recipient fails to open (only the named worker holds that key), and a label
+naming any other worker is refused.
+
+In both cases the worker also emits the upstream `usage` in the clear (as the
+`usage` field, or as one plain `data: {"choices":[],"usage":{…}}` event before
+the final encrypted event) so the seller can meter. The buyer fails a response
+whose clear usage differs from the usage inside the ciphertext, or that does
+not verify. For a stream that includes one that ends without the
+authenticated end marker or that is not SSE: the client gets a stream error
+instead of a clean end, even though earlier events already reached it.
+
+The buyer attributes a request to the recipient whose sealed answer verified:
+only a recipient can decrypt the request, and only the one that answered can
+seal under its response key.
+
+## Workers
+
+- A worker serves only sealed requests addressed to it.
+- A request without a valid buyer binding (or bound to the zero channel) is
+  treated as the pool's own check: its decrypted body is limited to 8 KiB (and
+  2,048 prompt tokens in the Mac app), `max_tokens` is capped at 16 and checks
+  are rate limited per hour, so a pool cannot buy real work with them.
+- A worker serves each signed buyer request once: it remembers the binding
+  hash until `exp` and refuses a repeat ("Request was already served"), so a
+  pool cannot replay a buyer's request under another dispatch ID. It refuses an
+  expired request, and one whose `exp` is more than 11 minutes ahead.
+- A worker admits a buyer's request on its clear binding before decrypting
+  it: the buyer's signature over the recipients, channel, expiry and
+  ciphertext hash, the on-chain channel check and the replay check. So a
+  request it refuses is never read.
+- The pool checks each service a worker offers by sending "Reply with the
+  single word: ready" and routes it only if the reply's `message.content` is
+  "ready" (ignoring case, surrounding quotes, emphasis, punctuation and a
+  `<think>` block).
+- Workers may report the model each service runs (`models` in `hello` and
+  `services`, `service → repo@revision`; `antseed-pool-worker --models`). With
+  `COLONY_POOL_MODELS=service=repo@revision,…` the pool routes a pinned
+  service only from workers reporting exactly that model.
+- A pin may add the digest of the checkpoint's files,
+  `service=repo@revision#<sha256>`. The pool then routes that service only
+  from workers whose latest valid attestation names that checkpoint with that
+  digest (`models` in the attestation), so a worker that stops attesting it,
+  or attests other files, stops getting the service at its next attestation.
+  The digest is SHA-256 over the lines `shasum -a 256` prints for every file
+  in the snapshot directory, sorted bytewise (`modelFilesDigest`):
+
+  ```sh
+  cd ~/.cache/huggingface/hub/models--ORG--REPO/snapshots/REVISION
+  find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256
+  ```
+
+  The pool also logs each digest a worker attests, so an operator can pin the
+  one a known-good Mac reports.
+- The pool's `welcome` lists its pins as `models` (service →
+  `repo@revision`, with `#<sha256>` when pinned), absent when it pins none.
+  Antseed Colony joins without a model the first time, offers the pins
+  pinned to a full commit to its owner (with each checkpoint's download size
+  from the Hugging Face API, and refusing ones whose weights exceed half the
+  Mac's memory), downloads the one picked and joins again with it; it keeps
+  the choice in `model.json` in its data directory. A pool without pins gets
+  the app's built-in model.
+- Both the report and the attestation are the worker's own, so they catch
+  misconfiguration, a wrong revision and upstream drift, not a modified
+  worker; only a test whose answers depend on the weights catches that. The
+  Mac app serves only a pinned model (`org/repo@<commit>`): it starts the
+  engine on that revision's snapshot directory, not the cache's current
+  revision, hashes the snapshot's files at every launch, and attests the
+  digest.
+- The Mac app serves OpenAI chat completions with tools: `tools`,
+  `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` and `tool`
+  messages reach the engine, and tool-call deltas and the engine's
+  `finish_reason` come back. `stop`, `response_format` (`text`, `json_object`
+  or `json_schema`) and the sampling fields (`seed`, `top_p`, `top_k`,
+  `min_p`, `presence_penalty`, `frequency_penalty`) reach the engine too.
+  Input it can't read (image, audio or file parts, other roles) and options it
+  can't honor (`logit_bias`, `logprobs`, `n` above 1, audio output, guided
+  decoding fields) get a sealed `400` before inference, so the buyer is never
+  billed for an answer to a different request than the one they sent.
+- A worker runs at most the `maxConcurrency` it announces, counting requests
+  still waiting on a channel check, and refuses extras ("Worker is at
+  capacity"). A request cancelled or disconnected while it waits never starts.
+  The pool runs its join checks one at a time, each in a free slot.
+- The pool sends each request to a worker under its own dispatch ID, so two
+  buyers using the same request ID never collide, in delivery or in the
+  worker's earnings. It pings workers every 15
+  seconds (`heartbeatIntervalMs`) and disconnects one that misses two pings in
+  a row; a worker reconnects when it hears nothing from the pool for 45
+  seconds (`poolSilenceMs`).
+- A started response that sends nothing for 60 seconds
+  (`responseIdleTimeoutMs`) is cancelled and the worker frees its slot. A
+  worker may send at most 64 MiB per response, and 1 MiB answering the pool's
+  own checks. The reference worker gives its local model 5 minutes to start
+  answering and 60 seconds per chunk after that.
+- Workers check channels only on the AntseedChannels contract of their own
+  chain config, never one the pool names: `antseed-pool-worker --chain-id`
+  (default base-mainnet) or `--channels-address`; the Mac app uses the
+  deployment for its RPC's chain (Base mainnet and Base Sepolia built in) or
+  `--channels`, generated from the deployment records by
+  `scripts/generate-contract-chain-config.mjs`), and with an RPC but no
+  trusted contract refuses buyers' requests.
+- With an RPC endpoint, a worker serves a bound request in full only on a
+  verified channel: an **Active** channel (status 1 in AntseedChannels
+  `channels(bytes32)`; a settled or timed-out channel keeps its buyer and
+  seller but is refused) that the chain shows belongs to the signing buyer and
+  to the pool seller. Every full request reads the channel again, so one
+  closed since its last request gets no more work. That is one RPC read a
+  request at most: requests that arrive while a read runs share it, refusals
+  are final, and verdicts are kept per pool seller. A channel that belongs to
+  someone else is refused (cached for that buyer), and once a channel is
+  verified for one buyer every other signer naming it is refused without a
+  read. A channel not on-chain
+  yet is looked up every second for up to 5 seconds (a fresh reserve can lag
+  the RPC; requests waiting on it share one lookup, each read with a short
+  deadline), then refused with a retryable error. So a pool cannot buy real
+  work by signing bindings to channels that don't exist. There is no
+  signature-only mode: a worker without a channel verifier or an RPC refuses
+  buyer requests and runs only the pool's checks. `antseed-pool-worker`
+  reads the `--chain-id` chain's public RPC unless `--rpc-url` names another;
+  the Mac app uses Base mainnet's public RPC (generated from chain-config)
+  unless `--rpc` names another.
+
+## Routing and failover
+
+The pool assigns each buyer the best-ranked workers for the model that have a
+free slot (as many as it asks for, up to 3). A worker's score is its operator weight × its reliability (the
+smoothed share of buyer requests it answered) × its decode speed relative to
+the fastest worker for that model, divided by 1 + its load. A worker with no
+record yet gets the others' average reliability and speed, so it is neither
+punished nor favored.
+
+A worker that fails a request it is responsible for (it never answered in
+time, or dropped its connection before answering) is **benched**: no
+assignments or dispatches for 30 seconds, doubling with each failure in a row
+up to 10 minutes, and cleared by its next answered request. A response that
+goes silent midway, or exceeds its byte limit, lowers its reliability without
+benching it. A worker's error counts against it only after it sent
+`accepted` (its model failed or timed out); refusals before that (channel,
+binding, capacity, check limits) never do, so buyers can't lower a Mac's rank
+with bad requests. A complete answer counts by its HTTP status: a `5xx` or
+`429` is the worker's failure and benches it (its headers already reached the
+buyer, so it is not failed over), any other `4xx` is the buyer's request at
+fault and counts for no one. Ranks, including each worker's smoothed decode speed (learned only
+from streamed answers: a buffered answer arrives in one burst after
+generation, so it adds no speed sample), survive reconnects and pool restarts (the ledger keeps them
+in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
+Mac can't reset its record by reconnecting.
+
+The pool sends a buyer's request to the best-ranked of its recipients that can
+take it now. When that worker fails before any byte reached the buyer (it
+never picked the request up, did not answer in time, disconnected, refused it,
+or is benched), the pool sends the same envelope to the next recipient, with
+no round trip to the buyer. It never sends it to a worker outside the set the
+buyer signed, and never to two workers at once; each attempt counts toward its
+own worker's rank. Once every recipient has failed, the pool answers
+`421 worker_unavailable`. With 2 or 3 recipients the buyer then takes new
+workers once, re-encrypting the request for them; with the default of 1 it
+drops the assignment and returns the `421` without retrying that request. A
+failed attempt is never paid for.
+
+Every worker sends `{"t":"accepted","id":…}` once it has admitted a request
+and its channel check passed, before inference, and must do so within
+20 seconds (`acceptTimeoutMs`); it then has 120 seconds to start answering
+(`firstByteTimeoutMs`). So a stuck worker is failed over quickly, while a slow
+non-streamed answer still gets the full 120 seconds. A failure after the
+response started reaches the client as a stream error.
+
+`COLONY_POOL_WORKER_PRIORITY` (`0xaddress=weight,…`, default 1) multiplies a
+worker's score: 2 doubles it, 0 means the pool never routes to it (its models
+are not announced through it). The seller dashboard's **Workers** panel lists
+workers in this order (Rank, from the same score inputs the pool routes by), with each one's share of requests answered over
+24 hours and 7 days, median time to first byte, and how long a benched worker
+has left.
+
+## Payment for pool requests
+
+Buyers pay for a pool request only after the worker's sealed answer verifies,
+and only up to what the worker's sealed usage costs: every billed count
+(input, fresh input, cached input, output) must be within the sealed one, and
+the token cost may not exceed the cost of the sealed usage, with no estimate
+tolerance. A NeedAuth for a request whose answer is tampered with, truncated
+or missing is refused. Per-request authorizations are priced from the sealed
+usage. A buyer never forgets that a request went to a worker: when its cache
+of unpaid worker requests is full, the oldest one's ID is kept and a later
+payment request naming it is refused (past 16,384 such IDs for one seller,
+the buyer sends that seller no more worker requests), and a payment request
+from a different seller naming a worker request is refused.
+
+A buyer pays a colony-pool seller only for requests it sent that seller: a
+delivered-cost NeedAuth that names no request, or one the buyer never sent it,
+is refused, so a pool can't turn a failed worker answer into an ordinary
+claim. Requests to the same seller's ordinary providers are tracked and paid
+as usual. A pool seller's own headroom prompts never reopen the buyer's
+overdraft window; beyond the one prepaid request, it is paid only for answers
+whose worker seal verified. A worker request whose answer verified but whose
+cost was only partly signed (capped at the reserve ceiling) is kept, with its
+worker and sealed usage, until the remainder is signed; past 4,096 such
+requests to one seller the buyer sends that seller no more worker requests
+until its reserve grows.
+
+A request routed to a colony-pool provider is encrypted to its workers or not
+sent at all: a client without worker encryption, such as the web SDK, fails
+it locally before any bytes go to the seller.
+
+A request to a worker sent free (a free service) is never charged: the buyer
+refuses any cost for it, from a NeedAuth or its own per-request signing, even
+on a channel with paid pricing.
+
+### Paid before served
+
+Workers are paid through the buyer's signed attribution, so a worker checks
+that a channel's buyer is paying for its answers before it serves more of
+them. Otherwise a pool operator could open a real channel as a buyer and have
+workers serve requests it never pays for.
+
+- **The payment travels with the request.** A buyer's request envelope carries
+  its latest SpendingAuth on the request's channel as `pay`:
+  `{ cumulativeAmount, metadata, signature }` (the decimal amount, the signed
+  metadata bytes with the [attribution tail](#attribution-in-spendingauth-metadata),
+  the EIP-712 signature). It has its own signature, so it is outside the
+  request binding, and only the buyer can make one.
+- **The pool declares its prices.** The `welcome` frame lists the token
+  prices buyers pay for every service the pool sells (`prices`, USD per
+  million input, output and cached input tokens), including ones the worker
+  doesn't offer yet, so a worker that joined paused can resume. A worker
+  serves buyers no service without a price, or at all-zero prices, under
+  which no answer would ever be owed.
+- **The worker checks the payment** before decrypting the request: the
+  channel's buyer must have signed it for the worker's trusted Channels
+  contract and chain, and its amount must be within the channel's on-chain
+  reserve (the deposit the channel check reads). A payment that fails these
+  checks counts as none, and so does one whose attribution tail adds up to
+  more than it authorizes (the contract pays workers only out of what
+  settles). What it attributes to this worker is the amount paid for its
+  answers on that channel; the highest amount a worker has seen on a channel
+  stands, so an older one the pool replays changes nothing.
+- **At most one answer behind.** The worker prices each answer it delivered
+  on the channel at the declared prices, with the buyer's formula. It serves
+  a request only while the answers not covered by the payment, plus the
+  requests still running there, number fewer than 2. An answer whose price
+  rounds to nothing is owed nothing and never waits in the unpaid queue. A buyer
+  that never pays gets two answers per channel, and every channel is an
+  on-chain reserve. An answer none of which reached the pool is not owed. One
+  cut off after some of it was sent (the buyer cancelled, the model failed,
+  the pool connection dropped) is not owed either, since the buyer can't
+  verify, so never pays for, an answer without its end, but the buyer may hold
+  most of it. So it counts against the channel instead: a worker serves a
+  channel at most 2 such answers in 30 minutes, and serves it again once they
+  are older, so cancelling each answer before it completes gets only a few,
+  and an honest buyer whose answers broke off is never stuck.
+- **No free allowance.** A seller's free allowance on a priced service never
+  covers a colony pool's requests: the buyer never signs a payment for an
+  answer an allowance covered, so its worker would wait for one forever. Each
+  such request is paid as usual.
+- **Headroom pays workers too.** A buyer may sign ahead of what it has
+  counted (a seller prompt, a top-up). A verified worker answer that this
+  signed headroom covers is credited from it: the buyer signs the auth again,
+  one base unit higher (at the same amount only when the reserve is full),
+  with the worker in its tail. What it can credit is the signed amount less
+  every cost counted before, so a tail never adds up to more than the auth
+  signs. If the pool already settled the headroom, the contract pays the
+  worker from what that settlement held for a later tail (see the contract
+  section).
+- **Eight workers per channel.** A channel's attribution names at most eight
+  workers. The buyer encrypts a request only for workers the channel can
+  credit: the ones it credits, the recipients of its requests still awaiting
+  payment, and new ones while slots are left. It reserves them as it chooses,
+  so concurrent requests can't credit more than eight. When the pool assigned
+  none it can credit, the request fails before anything is sent, and the next
+  one asks the pool for a fresh assignment. Once a channel credits eight
+  workers and nothing on it is outstanding, the buyer closes it (its workers
+  are settled with it) and takes the newly assigned workers on a new channel.
+
+- **Kept across restarts.** A worker saves each channel's account (the
+  TypeScript worker next to its key as `<key-file>.payments.json`, the Mac
+  app in its data directory as `payments.json`, both owner-only), so a
+  restart never lets a payment that already paid for answers pay for new
+  ones. A worker forgets a channel once the chain shows it closed (it never
+  serves it again), and past 10,000 channels the least recently used one with
+  no request running (its last answer may still be owed: forgiving it costs no
+  more than a fresh channel's allowance); when such a channel returns, what
+  its payment already attributes counts as paying for answers served before,
+  never for new ones.
+- **Checked against settlement.** A signed attribution is trusted until the
+  channel settles past it. Settlement is the operator's: the pool contract
+  settles only for its operators and credits workers from the auth the pool
+  settles, which may not be the one the buyer showed the worker, so a worker
+  holds the buyer's payment but cannot redeem it itself. With each buyer
+  request the worker reads the pool contract's `workerCredit(channel, worker)`
+  (what the pool settled on the channel, and what it paid this worker there,
+  in one call). It counts the payment's attribution only up to what the pool
+  already paid it plus what the payment adds since that settlement, since
+  the contract pays workers only from what later settlements add. Once the
+  channel settled past a payment the buyer showed the worker yet credited it
+  less, that payment counts only as far as the contract can still pay it
+  (what it credited, plus what each newer payment adds beyond the
+  settlement), and the answers it no longer covers are owed again: the buyer
+  gets no further work there until a later payment, or a later settlement,
+  pays for them. This is no misconduct, and no buyer is refused for it: the
+  pool may have settled an older auth at the same amount, and the contract
+  pays what a settlement could not cover from the next one. Until settlement, a
+  worker's exposure is the answers it served on payments the pool has not
+  settled yet. When the read fails, the worker refuses the request with a
+  retryable error rather than count attribution the pool may never pay. A
+  pool address with no contract (a seller paying workers from its own
+  address) has no credit on-chain to read, so there the signed attribution
+  stands.
+
+## Hardened Macs
+
+Antseed Colony runs models on the bundled TensorFold engine, a separate
+process it reaches over an owner-only Unix socket, with no TCP port, and only
+after checking that the process on the other end is the engine it started. The
+decrypted prompt therefore never crosses a network interface, but it still
+leaves the app: the app's protections below don't cover the engine, so the
+Mac's owner can read its memory. **Every current build attests `debuggerDenied: false`,
+so it is not hardened** and never gets the hardened label. The rest of this section describes what the app enforces and what a build
+that keeps inference inside the app would attest.
+
+With inference in the app, the decrypted prompt exists only in its memory. The
+app keeps the Mac's owner out of it with the protections macOS gives a signed
+app, and reports them in an attestation:
+
+- **Signed app with the hardened runtime.** A Developer ID build with the
+  hardened runtime and without `get-task-allow`: macOS refuses to let other
+  processes, root included, attach a debugger or inject code. The app also
+  calls `ptrace(PT_DENY_ATTACH)` at launch.
+- **SIP on.** System Integrity Protection is what makes macOS enforce those
+  rules. Turning it off needs a reboot into Recovery. A signed app checks SIP
+  at launch and on every attestation, and stops serving when it is off.
+- **Secure Enclave keys bound to the app.** The decryption and attestation keys
+  are created in the Secure Enclave and can't be exported. Their handles are
+  stored in the data-protection keychain under the app's access group, so only
+  apps signed by that team with that identifier can use them. A build without
+  that entitlement keeps the handles in a file and reports
+  `keyAppBound: false`.
+
+Attestations travel in `hello` and answer the pool's challenge nonce:
+
+```json
+{
+  "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": "<hex>",
+  "sip": true, "hardenedRuntime": true, "debuggerDenied": true, "keyAppBound": true,
+  "os": "macOS 26.2", "serial": "<serial number>", "udid": "<hardware UUID>",
+  "models": { "<service>": { "model": "<repo@revision>", "sha256": "<files digest>" } },
+  "issued": <unix>, "nonce": "<challenge nonce>",
+  "signature": "<base64 DER ECDSA-P256-SHA256 by the attestation key>"
+}
+```
+
+The signature covers:
+
+```
+antseed-worker-attestation/v1
+worker:<address>
+key:<encryption key>
+team:<teamId or empty>
+signing-id:<signingId or empty>
+cdhash:<cdhash or empty>
+sip:<1|0>
+hardened-runtime:<1|0>
+debugger-denied:<1|0>
+key-app-bound:<1|0>
+os:<os>
+serial:<serial or empty>
+udid:<udid or empty>
+models:<service>=<repo@revision>#<sha256>,…   (only when it attests models; sorted bytewise by service)
+issued:<unix>
+nonce:<nonce>
+```
+
+An attestation is **valid** when it verifies under the certificate's
+`attestationKey` and is fresh. It is **hardened** when it is also signed by a
+team (`teamId` set) and every flag is 1. The pool re-challenges attested
+workers every 5 minutes with an `attest` frame (`{"t":"attest","nonce":…}`,
+answered by `{"t":"attestation","attestation":…}` within 30 s, dated at most
+300 s from the pool's clock either way). A missed or failed answer disconnects
+the worker only when the pool requires Apple's attestation; otherwise the
+worker keeps serving without its label and is asked again next round, so one
+systematic fault (the pool's clock, a worker release) can't empty the pool.
+The pool logs a warning when workers with a valid attestation fall by half or
+more (from at least two) within one round. It hands buyers the latest
+attestation with each assignment. Buyers check it themselves, accepting one
+up to 15 minutes old.
+Because the attestation key is certified by the worker's identity, the pool
+cannot forge an attestation or move one to another worker.
+
+The attestation key is one the worker certifies itself, so hardening is the
+worker's own report: pools and buyers show it as a label and never require
+it. `COLONY_POOL_ATTESTED_TEAMS` limits which Apple Developer teams earn the
+label, and a pool started with `COLONY_POOL_REQUIRE_ATTESTATION` refuses to
+start. The enforceable check is Apple's attestation through the operator's MDM
+(`COLONY_POOL_MDM_URL` with `COLONY_POOL_REQUIRE_DEVICE_ATTESTATION`; buyers:
+`requireAppleVerifiedWorkers`).
+
+**Limits.** This is a hardened Mac, not a TEE. Memory is not encrypted, so a
+kernel exploit, or a gap in macOS's enforcement, exposes prompts. The
+attestation is self-reported: it proves that the app holding the
+Secure Enclave key reports a signed build with SIP on. Apple does not vouch
+for it, so a modified app that generates its own keys could claim the same.
+[Apple-verified Macs](#apple-verified-macs) add Apple's own word for the
+device and its SIP state.
+
+## Apple-verified Macs
+
+Optionally, a pool operator runs their own MDM server and the Mac owners who
+want the higher level enroll their Macs in it. Antseed runs no MDM. The pool
+then gets an **Apple Managed Device Attestation** for each enrolled Mac: a
+certificate chain signed by the Apple Enterprise Attestation Root CA that
+states the Mac's serial number, OS version and SIP status, and that answers a
+nonce naming the worker and its attestation key.
+
+1. The worker's signed attestation names its Mac (`serial`, `udid`).
+2. The pool asks its MDM to send that Mac a `DeviceInformation` command
+   querying `DevicePropertiesAttestation`, with
+   `DeviceAttestationNonce = sha256("antseed-device-attestation/v1\n" ‖ worker ‖ "\n" ‖ attestationKey ‖ "\n" ‖ challenge)`,
+   where `challenge = hex(sha256("antseed-device-challenge/v1\n" ‖ worker ‖ "\n" ‖ attestationKey ‖ "\n" ‖ udid))`.
+   The challenge is derived, not random: Apple issues a new attestation for a
+   device at most once every 7 days and returns the cached one in between,
+   whatever nonce is sent, so the cached one must still answer it, also after
+   the worker reconnects or the pool restarts. Freshness comes from the
+   leaf's issue time.
+3. It verifies that the chain leads to Apple's root, that the freshness code
+   (OID 1.2.840.113635.100.8.11.1) equals that nonce, that the serial number
+   (…8.9.1) is the one the worker attested, that SIP (…8.13.1) is on, and
+   that the leaf is at most 8 days old. The pool asks again once the
+   attestation is 7 days old, then daily while Apple still returns it, and
+   stops treating the Mac as Apple-verified once it is 8 days old.
+4. Assignments carry `deviceAttestation: { chain, challenge }`. Buyers
+   recompute the nonce from the worker, its certified attestation key and the
+   challenge, and verify the chain themselves (accepting one up to 8 days old,
+   and dropping a cached assignment when it passes that age or a certificate
+   in the chain expires). A buyer with `requireAppleVerifiedWorkers` refuses workers without
+   it.
+
+Because the nonce names the worker and its attestation key, the pool can't
+reuse one Mac's attestation for another worker. It also means a worker whose
+attestation key changes (a reinstall, or keys created again) is not
+Apple-verified until Apple issues its next attestation, up to 7 days later.
+
+So "Apple-verified" means: Apple attested, within the last 8 days, that this
+Mac had SIP on and that this worker and attestation key asked for the
+attestation. Turning SIP off needs a reboot into Recovery; in between Apple's
+attestations, it is the app's own attestation every 5 minutes (self-reported,
+see Hardened Macs) that reports SIP, and the app stops serving when it is off.
+
+Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
+`COLONY_POOL_MDM_WEBHOOK_PORT`, `COLONY_POOL_MDM_WEBHOOK_HOST`,
+`COLONY_POOL_MDM_DEVICES` and `COLONY_POOL_MDM_WEBHOOK_PATH` (required with the MDM: at least 16 random
+characters, since the path is the webhook's only secret; bodies over 64 KiB
+are refused) connect a [NanoMDM](https://github.com/micromdm/nanomdm) server
+(commands are queued with `PUT /v1/enqueue/<udid>`; answers arrive on its
+webhook). The webhook listener is plain HTTP and listens on `127.0.0.1` by
+default. Put an HTTPS reverse proxy or an authenticated private tunnel in
+front of it and point NanoMDM at that, with
+`-webhook-url https://<proxy>/<path>`; never send the path over plain HTTP
+between hosts, since anyone who sees it can post to the webhook. Set the host
+to another address only when the proxy or tunnel needs it, and keep that
+address unreachable from anywhere else.
+`COLONY_POOL_REQUIRE_DEVICE_ATTESTATION` routes only to Apple-verified Macs.
+Other MDMs can implement the `DeviceAttestor` interface.
+
+What the operator needs: an MDM server, an Apple MDM push certificate (it
+needs an Apple Business Manager account or a vendor-signed request), and
+Macs with Apple silicon on macOS 14 or later. Enrolling gives the operator
+MDM powers over the Mac, which owners should weigh.
+
+**Binding Macs to workers.** A worker names the Mac it runs on, and Apple's
+attestation proves that Mac's state, not that the worker runs on it. So the
+operator binds each Mac it enrolls to the worker address that runs on it
+(`COLONY_POOL_MDM_DEVICES`: `UDID=0xworker,…`, required with the MDM; a worker
+may run on several Macs, a Mac belongs to one worker). The pool asks Apple
+about a Mac only for the worker it is bound to: a worker naming a Mac bound to
+no one, or to another worker, is never Apple-verified.
+
+**Limits.** Apple vouches for the Mac and its SIP state, not for which app
+holds the decryption key. The owner of an enrolled Mac, running a modified
+app on it or on a second Mac under the bound worker's key, could still
+present the enrolled Mac's attestation.
+Tying the key to the device needs the worker's attestation key to come from the MDM itself (an ACME
+hardware-bound key, whose certificate Apple also attests), which this
+version does not do yet. Prompts are still in unencrypted memory, as above.
+
+## Attribution in SpendingAuth metadata
+
+The buyer appends a worker block after the ABI-encoded metadata (v5). ABI
+decoders read the head by offset and ignore trailing bytes, so existing
+indexers are unaffected.
+
+```
+metadata = abi.encode(v5 fields…) ‖ entries ‖ uint8 count ‖ bytes32 WORKER_TAIL_MAGIC
+entry    = address worker (20 bytes) ‖ uint128 cumulativeAmount (16 bytes, big-endian)
+WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
+```
+
+- At most 8 entries (`MAX_WORKERS_PER_CHANNEL`). A buyer keeps using the
+  workers it was assigned until a certificate or attestation nears expiry
+  or a request fails over, which also helps prompt caching. It encrypts a
+  request only for workers the channel can credit: ones it already credits or
+  that its outstanding requests may credit, and new ones only while slots are
+  left. When the pool assigned none of those, it clears the assignment and
+  fails before sending ([Paid before served](#paid-before-served)). Existing
+  entries are never dropped, since each must only grow.
+- Entries are sorted by worker address, with no duplicates or zero addresses.
+- `cumulativeAmount` is the USDC (6 decimals) the buyer has paid on this
+  channel for requests that worker served. Each entry only grows, and the sum
+  never exceeds the SpendingAuth's `cumulativeAmount`.
+
+## AntseedColonyPool contract
+
+`AntseedColonyPool is AntseedSellerDelegation`. It keeps the façade ABI
+unchanged, so seller nodes settle through it with no code changes.
+
+On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
+`pause()`):
+
+1. Call the parent, which forwards to `AntseedChannels` (which verifies the
+   buyer's signature over `keccak256(metadata)`), receives the USDC payout and
+   takes the operator fee. The rest is `net`.
+2. `delta` = the channel's new cumulative amount minus the last one this
+   contract recorded.
+3. If `delta` is 0, credit all of `net` to the remainder and leave worker
+   cumulatives untouched: `AntseedChannels` skips the buyer-signature check on
+   no-op `close`/`topUp` calls, so metadata on those paths is not
+   buyer-authenticated and must not move any worker's high-water mark.
+   Otherwise parse the worker block. If it is malformed, attribute nothing
+   (never revert: a buyer must not be able to block settlement).
+4. For each worker, `workerDelta` = its new cumulative amount minus the
+   amount already paid to it on this channel (0 if lower), clamped so the sum
+   stays ≤ `delta` plus what the channel holds unattributed (below). The
+   worker's recorded amount (`workerCumulative`) grows by `workerDelta`, not
+   to the signed amount, so attribution a settlement could not cover stays
+   owed and is paid first from the next one.
+5. Each worker's `workerDelta` is paid from this settlement's `delta` first,
+   at `net / delta` per unit, then from what the channel holds, oldest first,
+   each part at the net per unit it settled at.
+6. This settlement's own unattributed part (and its net) is held for later
+   tails while the channel is active; rounding with no unattributed part left
+   goes to the remainder at once. `close` gives what the channel still holds
+   to the owner-set `remainderRecipient`, and once a channel is no longer
+   active (its buyer timed it out and withdrew) anyone can with
+   `releaseHeld(channelId)` (`releaseHeldFrom(channelsContract, channelId)` for
+   a Channels contract the registry has since replaced). `heldUnattributed(channelId)` reads it, and
+   `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
+7. Add each fresh credit to its account's weight for the current emissions
+   epoch. Held USDC weighs in the epoch it settled in from the start
+   (`epochHeldWeight`, counted in `epochTotalWeight`, claimable by nobody), so
+   that epoch's ANTS stay reserved for it even once pulled; the weight moves
+   to whoever the USDC is later credited to.
+
+The hold is for headroom: a buyer may sign ahead of what it has counted, and
+attribute that headroom to a worker only once the worker's answer verifies.
+If the pool settled the headroom first, each re-signed auth (one unit higher,
+so `AntseedChannels` settles it and checks its signature) pays its worker from
+what that settlement holds, however many answers the headroom covers, and
+even when it is the channel's last.
+
+Per-channel cursors are keyed by the channels contract address as well as the
+channel ID, so a channels contract swapped in through the registry starts
+clean. Credited and held USDC always add up to `net`.
+
+Emissions are claimed into the contract by anyone with
+`claimEpochEmissions(epochs)`, only for finished epochs (weights are final
+once an epoch ends). A pull transfers nothing out: the operator fee's ANTS are
+credited to `operatorFeeRecipient` (`antsFeeOwed`, taken with `claimAntsFee`),
+so pulls work while ANTS transfers are still closed. ANTS claims need the pool
+to be able to send ANTS (`antsTransferable()`: the token enabled transfers, or
+whitelisted the pool); until then they revert with `AntsNotTransferableYet`
+and every amount stays recorded. Each worker claims its share of an epoch's ANTS (after
+the operator fee) in proportion to its weight; ANTS for an epoch with no
+weight go to the remainder. Workers claim USDC with `claimUsdc()` and ANTS
+with `claimAnts(epochs)`; pausing never blocks these claims.
+
+The pool must own its ERC-8004 agent to be staked and to receive emissions.
+The owner mints one for the pool with `registerAgent(agentURI)` (or transfers
+one in) and, on the seller-registry stack, binds it with
+`registerSeller(agentId)`, which the pool calls itself; ANTS stake for that
+agent then makes the pool channel-eligible. On the legacy stack it is staked
+with `staking.stakeFor(pool, agentId, amount)`. Settlements during the
+emissions cutover add weight to the first rewarded epoch, matching the usage
+accounting. On AntseedEmissionsV2, pulling emissions fails (`EmissionsLocked`)
+while the pool's seller reward would be locked, leaving the epoch unclaimed
+until the unlock policy lets the pool claim it. The buyer decides the split it signs; the contract enforces only
+what the buyer signed.
+
+### Payout wallet
+
+A worker's key lives on its machine; its owner's wallet is usually elsewhere.
+`setPayout(worker, payout, deadline, signature)` routes the worker's credits
+to `payout`. Anyone may submit it; it is authorized only by the worker's
+EIP-191 signature over the 32 bytes
+
+```
+keccak256(abi.encode(keccak256("antseed-worker-payout/v1"), chainid, pool, worker, payout, payoutNonce[worker], deadline))
+```
+
+(`payoutDigest(worker, payout, deadline)` returns it). The nonce increments
+on each change, so a link cannot be replayed. Linking also moves what the
+worker already earned: its unclaimed USDC, and its ANTS weight (with what it
+already claimed) for the current epoch and the `MAX_EPOCHS_PER_CLAIM` before
+it. Older ANTS shares stay with the worker key: it can claim them itself, or
+anyone can send them to the worker's payout wallet with
+`claimAntsFor(worker, epochs)` (which reverts while no payout is linked).
+Antseed Colony adds those epochs to its claim, so the owner's Claim pays them too.
+
+Antseed Colony signs this and copies a link code (the Node.js worker prints
+one with `--link-payout <wallet> --pool-contract <address>`),
+`antseed-link:<base64url JSON {chainId, pool, worker, payout, deadline, signature}>`.
+The owner pastes it in the ANTS dashboard (Rewards → Link a Mac), which checks
+the chain and that the connected wallet is `payout`, submits `setPayout`, and
+from then on shows the pool's USDC and ANTS owed to that wallet with a claim
+button (linked pools are saved in `<data dir>/ants-activity/<chain>-colony-pools.json`). The Mac app keeps the signed link until the contract records it or
+its deadline passes, so its code can be copied again after a restart, and
+shows "Pays to" only for the wallet `payoutOf` returns; **Change wallet**
+signs a new link. The seller dashboard shows the pool operator each worker's
+status, speed, requests and earnings from the pool's ledger
+(`<data dir>/colony-pool.db`, or the file `COLONY_POOL_LEDGER_PATH` names,
+which the pool records in `<data dir>/colony-pool.ledger-path` for the
+dashboard). A worker counts as online there only while the seller's heartbeat
+is fresh; after a seller crash, open connections end at its last heartbeat.

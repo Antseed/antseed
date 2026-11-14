@@ -4,7 +4,7 @@ import { getBalance, getConfig } from './api';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { PayPage, type PayPageAction, type PayPagePopup } from './views/PayPage';
 
-const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'close-channel', 'share-free-tier']);
+const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'close-channel', 'share-free-tier', 'colony-link', 'colony-claim']);
 
 /**
  * The portal dashboard is retired — every view lives in the desktop app (or
@@ -75,12 +75,13 @@ export function App() {
   }, [fetchBalance]);
 
   useEffect(() => {
-    void fetchBalance();
+    // Antseed Colony (the Mac app) serves its own two actions and has no buyer balance.
+    if (!payPage.action.startsWith('colony-')) void fetchBalance();
     void getConfig().then(setConfig).catch(() => {});
     return () => {
       if (retryTimer.current) clearTimeout(retryTimer.current);
     };
-  }, [fetchBalance]);
+  }, [fetchBalance, payPage.action]);
 
   const buyerEvmAddress = config?.evmAddress ?? balance?.evmAddress ?? null;
 
