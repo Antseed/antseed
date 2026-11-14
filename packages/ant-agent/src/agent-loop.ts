@@ -62,28 +62,91 @@ function debugLog(...args: unknown[]): void {
   if (DEBUG_ENABLED) console.log(...args);
 }
 
-/** Check if an SSE chunk contains an Anthropic message_start event. */
-function chunkHasMessageStart(data: Uint8Array): boolean {
-  const text = decoder.decode(data);
-  return text.includes('event: message_start') || text.includes('"type":"message_start"') || text.includes('"type": "message_start"');
+/**
+ * Re-frame raw network chunks into complete SSE events.
+ *
+ * Network chunk boundaries don't align with SSE event boundaries, so a chunk
+ * can end in the middle of an event. Suppression and message-envelope checks
+ * must only ever see (and forward) whole events: buffering partial events
+ * across chunks prevents a truncated event from reaching the buyer and a
+ * legitimate event tail from being glued to (or dropped with) the next chunk.
+ */
+function createSseEventBuffer(): { push: (data: Uint8Array) => string[]; flush: () => string[] } {
+  const streamDecoder = new TextDecoder();
+  let buffer = '';
+
+  function drain(final: boolean): string[] {
+    const events: string[] = [];
+    const delimiter = /\r?\n\r?\n/;
+    for (;;) {
+      const match = delimiter.exec(buffer);
+      if (!match) break;
+      const end = match.index + match[0].length;
+      events.push(buffer.slice(0, end));
+      buffer = buffer.slice(end);
+    }
+    if (final && buffer.length > 0) {
+      events.push(buffer);
+      buffer = '';
+    }
+    return events;
+  }
+
+  return {
+    push: (data: Uint8Array): string[] => {
+      buffer += streamDecoder.decode(data, { stream: true });
+      return drain(false);
+    },
+    flush: (): string[] => {
+      buffer += streamDecoder.decode();
+      return drain(true);
+    },
+  };
 }
 
-/** Check if an SSE chunk contains a Responses API response.created event. */
-function chunkHasResponseCreated(data: Uint8Array): boolean {
-  const text = decoder.decode(data);
-  return text.includes('event: response.created');
+/**
+ * Forward one raw network chunk as whole SSE events through an event-level
+ * filter. Empty keep-alive chunks pass through untouched; on the final chunk
+ * any buffered partial event is flushed through the filter first.
+ */
+function forwardChunkAsEvents(
+  chunk: { requestId: string; data: Uint8Array; done: boolean },
+  eventBuffer: { push: (data: Uint8Array) => string[]; flush: () => string[] },
+  forwardEvent: (event: string) => void,
+  forwardRaw: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void,
+): void {
+  const events = [
+    ...(chunk.data.length > 0 ? eventBuffer.push(chunk.data) : []),
+    ...(chunk.done ? eventBuffer.flush() : []),
+  ];
+  if (events.length === 0 && !chunk.done) {
+    // Empty keep-alive chunk — forward as-is
+    forwardRaw(chunk);
+    return;
+  }
+  for (const event of events) forwardEvent(event);
+  if (chunk.done) forwardRaw(chunk);
+}
+
+/** Check if an SSE event is an Anthropic message_start event. */
+function eventHasMessageStart(event: string): boolean {
+  return event.includes('event: message_start') || event.includes('"type":"message_start"') || event.includes('"type": "message_start"');
+}
+
+/** Check if an SSE event is a Responses API response.created event. */
+function eventHasResponseCreated(event: string): boolean {
+  return event.includes('event: response.created');
 }
 
 
 /**
- * Check if an SSE chunk contains an internal (antseed_*) tool call.
- * Used during streaming to decide whether to forward chunks to the buyer.
+ * Check if an SSE event contains an internal (antseed_*) tool call.
+ * Used during streaming to decide whether to forward events to the buyer.
  */
-function chunkHasInternalToolCall(data: Uint8Array, format: RequestFormat): boolean {
-  const text = decoder.decode(data);
+function eventHasInternalToolCall(event: string, format: RequestFormat): boolean {
   if (format === 'openai') {
     // OpenAI: look for "name":"antseed_" in tool_calls deltas
-    for (const line of text.split('\n')) {
+    for (const line of event.split('\n')) {
       if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
       try {
         const chunk = JSON.parse(line.slice(6).trimEnd()) as Record<string, unknown>;
@@ -94,7 +157,7 @@ function chunkHasInternalToolCall(data: Uint8Array, format: RequestFormat): bool
     }
   } else {
     // Anthropic & Responses API: look for antseed_ name in content blocks or output items
-    if (text.includes(`"name":"${TOOL_PREFIX}`) || text.includes(`"name": "${TOOL_PREFIX}`)) return true;
+    if (event.includes(`"name":"${TOOL_PREFIX}`) || event.includes(`"name": "${TOOL_PREFIX}`)) return true;
   }
   return false;
 }
@@ -223,12 +286,30 @@ export async function runAgentLoopStream(
       body: encoder.encode(JSON.stringify({ ...body, stream: true })),
     };
 
-    // Stream the call, forwarding chunks to the buyer.
+    // Stream the call, forwarding whole SSE events to the buyer.
     // For Anthropic format: suppress message_start on non-first iterations and
     // message_stop on non-final iterations to maintain one continuous SSE envelope.
-    // For both formats: suppress antseed_* tool call chunks.
+    // For all formats: suppress antseed_* tool call events.
     let streamResponse: SerializedHttpResponse;
     let suppressingChunks = false;
+    const eventBuffer = createSseEventBuffer();
+    const forwardEvent = (event: string): void => {
+      if (suppressingChunks) return;
+      if (eventHasInternalToolCall(event, format)) {
+        suppressingChunks = true;
+        return;
+      }
+      if (format === 'anthropic' && eventHasMessageStart(event)) {
+        // Suppress message_start if we already sent one (one continuous envelope)
+        if (messageStartSent) return;
+        messageStartSent = true;
+      }
+      if (format === 'openai-responses' && eventHasResponseCreated(event)) {
+        if (messageStartSent) return;
+        messageStartSent = true;
+      }
+      callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(event), done: false });
+    };
     try {
       streamResponse = await inner.handleRequestStream!(augReq, {
         onResponseStart: (res) => {
@@ -238,24 +319,10 @@ export async function runAgentLoopStream(
           }
         },
         onResponseChunk: (chunk) => {
-          if (suppressingChunks) return;
-          if (!chunk.done && chunk.data.length > 0) {
-            // Check if this chunk reveals an internal tool call
-            if (chunkHasInternalToolCall(chunk.data, format)) {
-              suppressingChunks = true;
-              return;
-            }
-            if (format === 'anthropic' && chunkHasMessageStart(chunk.data)) {
-              // Suppress message_start if we already sent one (one continuous envelope)
-              if (messageStartSent) return;
-              messageStartSent = true;
-            }
-            if (format === 'openai-responses' && chunkHasResponseCreated(chunk.data)) {
-              if (messageStartSent) return;
-              messageStartSent = true;
-            }
-          }
-          callbacks.onResponseChunk(chunk);
+          // Once suppression starts, drop everything of this iteration, including the provider's done chunk.
+          forwardChunkAsEvents(chunk, eventBuffer, forwardEvent, (c) => {
+            if (!suppressingChunks) callbacks.onResponseChunk(c);
+          });
         },
       });
     } catch (err) {
@@ -319,6 +386,13 @@ export async function runAgentLoopStream(
     ...req,
     body: encoder.encode(JSON.stringify({ ...body, stream: true })),
   };
+  const finalEventBuffer = createSseEventBuffer();
+  const forwardFinalEvent = (event: string): void => {
+    if (format === 'anthropic' && messageStartSent && eventHasMessageStart(event)) return;
+    // Responses API: suppress response.created if we already sent one
+    if (format === 'openai-responses' && messageStartSent && eventHasResponseCreated(event)) return;
+    callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(event), done: false });
+  };
   return inner.handleRequestStream!(finalReq, {
     onResponseStart: (res) => {
       if (!headersSent) {
@@ -326,13 +400,7 @@ export async function runAgentLoopStream(
       }
     },
     onResponseChunk: (chunk) => {
-      if (!chunk.done && chunk.data.length > 0) {
-        // Anthropic: suppress message_start if we already sent one (continuing the envelope)
-        if (format === 'anthropic' && messageStartSent && chunkHasMessageStart(chunk.data)) return;
-        // Responses API: suppress response.created if we already sent one
-        if (format === 'openai-responses' && messageStartSent && chunkHasResponseCreated(chunk.data)) return;
-      }
-      callbacks.onResponseChunk(chunk);
+      forwardChunkAsEvents(chunk, finalEventBuffer, forwardFinalEvent, (c) => { callbacks.onResponseChunk(c); });
     },
   });
 }
