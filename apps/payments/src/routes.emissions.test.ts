@@ -240,4 +240,25 @@ describe('recognized-usage contract selection', () => {
     expect((await app.inject('/api/emissions/shares')).json()).toEqual(shares);
     await app.close();
   });
+
+  // pendingBuyerReward ignores buyerEpochClaimed on-chain, so a claimed or
+  // staked buyer epoch must be reported as claimed with nothing left to claim.
+  it('reports claimed recognized-usage buyer epochs as claimed with a zero amount', async () => {
+    const { UsageAccountingClient, UsageRewardsClient } = await import('@antseed/node');
+    vi.spyOn(UsageAccountingClient.prototype, 'currentEpoch').mockResolvedValue(27);
+    vi.spyOn(UsageAccountingClient.prototype, 'pendingEmissions').mockResolvedValue({ seller: 0n, buyer: 0n });
+    vi.spyOn(UsageRewardsClient.prototype, 'buyerEpochClaimed').mockImplementation(async (_buyer, epoch) => epoch === 26);
+    const pendingBuyer = vi.spyOn(UsageRewardsClient.prototype, 'pendingBuyerReward').mockResolvedValue(13_000n);
+    const app = Fastify();
+    registerRoutes(app, mockCtx({ chainConfig: { ...chain, usageRewardsAddress: '0x' + '9'.repeat(40), recognizedUsage: { status: 'active', effectiveEpoch: 26 } } as any }));
+    const response = await app.inject('/api/emissions/pending?address=0x' + '8'.repeat(40) + '&epochs=2');
+    expect(response.statusCode).toBe(200);
+    expect(response.json().rows).toMatchObject([
+      { epoch: 26, protocol: 'recognized', buyer: { amount: '0', claimed: true } },
+      { epoch: 27, protocol: 'recognized', buyer: { amount: '13000', claimed: false } },
+    ]);
+    expect(pendingBuyer).toHaveBeenCalledTimes(1);
+    expect(pendingBuyer).toHaveBeenCalledWith('0x' + '8'.repeat(40), 27);
+    await app.close();
+  });
 });
