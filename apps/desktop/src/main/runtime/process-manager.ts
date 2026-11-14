@@ -299,6 +299,8 @@ export function buildCliChildEnv(
   isLocalDevScript: boolean,
 ): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = { ...baseEnv, ...desktopTelemetryChildEnv() };
+  // The buyer signs Desktop's client id (chain.clientAgentIds.desktop) into its usage, not the CLI's.
+  childEnv['ANTSEED_CLIENT_KIND'] = 'desktop';
   if (isLocalDevScript) {
     delete childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'];
   } else {

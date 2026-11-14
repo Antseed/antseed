@@ -1,21 +1,24 @@
 import { Button, Card } from '../components/ui';
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { ClaimRequest, PoolView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import { useContext, useEffect, useState } from 'react';
+import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import { copyText } from '@antseed/ui';
+import { BROWSER_WALLET_INVITE_MESSAGE, inviteAllowance, NO_INVITE_QUOTA_MESSAGE, shortInviteLink } from '../../../src/invite-allowance';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
 import { AddressLink } from '../components/AddressLink';
 import { ActionButton } from '../components/Confirm';
 import { ErrorBox, Skeleton } from '../components/Feedback';
+import { Table, type Column } from '../components/Table';
 import { Field, Select } from '../components/Field';
 import { LockSlider } from '../components/LockSlider';
 import { poolName } from '../components/Pools';
 import { usePageData } from '../data';
 import { host } from '../host';
 import { poolDataOptions } from '../pool-data';
-import { formatAnts, isZero, sumBig, toBigInt } from '../format';
-
-const RewardRefreshContext = createContext({ updating: false, stale: false });
+import { formatAnts, formatInt, isZero, sumBig, toBigInt } from '../format';
+import { BuildersCard } from './BuildersCard';
+import { BucketRow, RewardAmount, RewardRefreshContext, RewardRefreshStatus } from './reward-rows';
 
 export function RewardsPage() {
   const page = usePageData('rewards', api.rewards, 5 * 60_000);
@@ -37,30 +40,168 @@ export function RewardsPage() {
         {host().buyerRewards ? <BuyerRewardsCard data={data} /> : null}
         {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} />
           : host().buyerRewards ? null : <p className="hint">Connect the wallet that holds your staking positions to see its staking rewards.</p>}
+        {data.scope !== 'buyer' ? <ReferralRewardsCard operator={data.buyerUsage.operator} /> : null}
+        {data.scope !== 'buyer' ? <BuildersCard /> : null}
       </RewardRefreshContext.Provider> : null}
     </>
   );
 }
 
-function RewardRefreshStatus() {
-  const { updating, stale } = useContext(RewardRefreshContext);
-  if (!stale) return null;
-  return <span className="reward-refresh-state">{updating ? 'Updating…' : 'Out of date'}</span>;
+/** Whether this session can act for the buyer account: the contract accepts only its operator. */
+function isBuyerOperator(dashboard: ReturnType<typeof useConfig>, operator: string | null | undefined): boolean {
+  return !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
 }
 
-function RewardAmount({ children }: { children: ReactNode }) {
-  const { updating } = useContext(RewardRefreshContext);
-  if (!updating) return <>{children}</>;
-  return <span className="muted" aria-busy="true">{children}</span>;
+/** Why a referral claim is off, most actionable first; null when it can be sent. */
+function referralClaimBlocked(session: { readOnly?: boolean }, authorized: boolean, payable: string): string | null {
+  if (session.readOnly) return 'Connect a wallet with a signer to claim.';
+  if (isZero(payable)) return 'Nothing to claim yet.';
+  return authorized ? null : 'Connect the authorized wallet for this buyer account.';
+}
+
+function ReferralRewardsCard({ operator }: { operator: string | null }) {
+  const dashboard = useConfig();
+  const page = usePageData('referrals', api.referral, 60_000);
+  const view = page.data;
+  if (view && !view.available) return null;
+  const epochs = view?.claimableEpochs.length ?? 0;
+  const blocked = view ? referralClaimBlocked(dashboard, isBuyerOperator(dashboard, operator), view.payable) : null;
+  return (
+    <Card className="hero" aria-label="Referral rewards">
+      <div className="tile-label">Referral rewards</div>
+      <p className="hint">Invite new buyers with single-use invites. You earn from their usage, and they get 12 weeks of bonus ANTS.</p>
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      {view ? <>
+        <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
+        <p className="hero-sub muted">Payable now</p>
+        <div className="buckets">
+          <InviteRow view={view} onCreated={page.refresh} />
+          <BucketRow visible name="Payable now" amount={view.payable}
+            amountDetail={`${formatInt(view.referredCount)} ${view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}`}
+            note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable once they end.'}
+            actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
+              disabled={!!blocked}
+              disabledReason={blocked ?? undefined}
+              summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+        </div>
+        <ReferredBuyersTable />
+      </> : null}
+    </Card>
+  );
+}
+
+/**
+ * Why Create invite is off. `blocked` means this session cannot sign at all.
+ * `exhausted` comes from the explorer allowance, which can lag a new week, so
+ * it is advisory: the row keeps a "Check again" link that asks the server,
+ * which reads the epoch and quota on-chain before signing.
+ */
+export function inviteRowState(session: { readOnly?: boolean; browserWallet?: boolean }, quota: number | null, left: number | null): { blocked: string | null; exhausted: string | null } {
+  const blocked = session.readOnly ? 'Connect a wallet with a signer to create invites.'
+    : session.browserWallet ? BROWSER_WALLET_INVITE_MESSAGE : null;
+  const exhausted = quota === 0 ? NO_INVITE_QUOTA_MESSAGE
+    : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
+  return { blocked, exhausted: blocked ? null : exhausted };
+}
+
+/** A failed create only describes the week it was tried in; a newer allowance clears it. */
+export function inviteErrorFor(error: { message: string; epoch: number | null } | null, invites: InviteAllowanceView | null): string | null {
+  if (!error) return null;
+  return invites && error.epoch !== null && invites.epoch > error.epoch ? null : error.message;
+}
+
+/** Create a single-use invite link (signed off-chain by the dashboard wallet) and show what is left this week. */
+function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => void }) {
+  const dashboard = useConfig();
+  const [created, setCreated] = useState<CreatedInviteView | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [failure, setFailure] = useState<{ message: string; epoch: number | null } | null>(null);
+  const { quota, left } = inviteAllowance(view.invites, created);
+  const { blocked, exhausted } = inviteRowState(dashboard, quota, left);
+  const error = inviteErrorFor(failure, view.invites);
+  const create = async () => {
+    const epoch = view.invites?.epoch ?? null;
+    setCreating(true); setFailure(null);
+    try {
+      setCreated(await api.createInvite());
+      onCreated(); // re-read the allowance so it does not rest on this snapshot
+    } catch (cause) { setFailure({ message: cause instanceof Error ? cause.message : String(cause), epoch }); }
+    finally { setCreating(false); }
+  };
+  // The week may have rolled over on-chain before the allowance shows it; the server decides.
+  const recheck = exhausted
+    ? <> <button className="link-button" disabled={creating} onClick={() => void create()}>{creating ? 'Checking…' : 'Check again'}</button></>
+    : null;
+  // In priority order: an error, the invite just created, the exhausted allowance, why it is blocked.
+  const note = () => {
+    if (error) return <><span role="alert">{error}</span>{recheck}</>;
+    if (created) return <><span className="mono" title={created.link}>{shortInviteLink(created.link)}</span>{recheck}</>;
+    if (exhausted) return <>{exhausted}{recheck}</>;
+    return blocked ?? 'Each invite works once, for a new buyer, within 4 weeks.';
+  };
+  return (
+    <BucketRow visible name="Invites" amount={String(left ?? 0)} amountKind="count"
+      amountDetail={quota !== null ? `of ${quota} left this week` : undefined}
+      note={note()}
+      actions={<>
+        {created ? <Button variant="outline" size="sm" onClick={() => { void copyText(created.link); }}>Copy</Button> : null}
+        <span className="btn-wrap" title={blocked ?? exhausted ?? undefined}>
+          <Button variant="outline" size="sm" disabled={!!blocked || !!exhausted || creating} onClick={() => void create()}>{creating ? 'Creating…' : 'Create invite'}</Button>
+        </span>
+      </>} />
+  );
+}
+
+/** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a claim paid to its authorized wallet (operator). */
+function RefereeBonusRow({ authorized }: { authorized: boolean }) {
+  const dashboard = useConfig();
+  const page = usePageData('referrals:referee', api.referee, 60_000);
+  const view = page.data;
+  if (!view?.available || !view.referrer) return null;
+  const epochs = view.claimableEpochs.length;
+  if (view.weeksLeft === 0 && isZero(view.payable)) return null;
+  const blocked = referralClaimBlocked(dashboard, authorized, view.payable);
+  const weeks = view.weeksLeft === null ? null : `${view.weeksLeft} ${view.weeksLeft === 1 ? 'week' : 'weeks'} left`;
+  return (
+    <BucketRow visible name="Invite bonus" amount={view.payable} amountDetail={weeks ?? undefined}
+      note={<>Invited by <AddressLink value={view.referrer} />. Paid to your authorized wallet.</>}
+      actions={<ActionButton label="Claim" title="Claim invite bonus" path="/api/referrals/referee/claim" body={{}}
+        disabled={!!blocked}
+        disabledReason={blocked ?? undefined}
+        summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+  );
+}
+
+const REFERRED_BUYER_COLUMNS: Array<Column<ReferredBuyerView>> = [
+  { key: 'buyer', label: 'Buyer', render: (row) => <AddressLink value={row.buyer} /> },
+  { key: 'points', label: 'Points', align: 'right', mono: true, title: 'Weighted usage points credited to you for this buyer', render: (row) => formatInt(row.points) },
+  { key: 'pending', label: 'Pending', align: 'right', mono: true, title: 'Points from weeks that are not claimable yet; they earn ANTS once the week becomes claimable', render: (row) => isZero(row.pendingPoints) ? '—' : `${formatInt(row.pendingPoints)} pts` },
+  { key: 'ants', label: 'Earned', align: 'right', mono: true, title: 'ANTS claimed plus payable now (unlike the headline, which is payable now only)', render: (row) => `${formatAnts(row.ants, 4)} ANTS` },
+];
+
+/** Who the wallet referred and what each brought in, from Antscan. */
+function ReferredBuyersTable() {
+  const page = usePageData('referrals:buyers', api.referredBuyers, 60_000);
+  if (page.data && !page.data.available) return null;
+  return (
+    <div className="mt">
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      <Table columns={REFERRED_BUYER_COLUMNS} rows={page.data?.buyers ?? []} rowKey={(row) => row.buyer}
+        loading={page.loading && !page.data} empty="No referred buyers yet." />
+    </div>
+  );
 }
 
 function BuyerRewardsCard({ data }: { data: RewardsView }) {
   const dashboard = useConfig();
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   const [authorizing, setAuthorizing] = useState(false);
-  const amount = sumBig([data.buyerUsage.total, data.legacy.buyer]);
+  // The invite bonus is claimed in this card too (its row below), so the headline includes it.
+  const referee = usePageData('referrals:referee', api.referee, 60_000).data;
+  const inviteBonus = referee?.available && referee.referrer ? referee.payable : '0';
+  const amount = sumBig([data.buyerUsage.total, data.legacy.buyer, inviteBonus]);
   const operator = data.buyerUsage.operator;
-  const authorized = !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
+  const authorized = isBuyerOperator(dashboard, operator);
   const showAuthorization = !operator && dashboard.canAuthorize;
   const showWalletConnection = operator && !authorized && dashboard.browserWallet;
   const stakeUnavailable = isZero(data.buyerUsage.total)
@@ -102,6 +243,7 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
         actions={<ClaimButton bucket="legacy" scope="buyer" amount={data.legacy.buyer} title="Claim legacy buyer rewards"
           disabled={!authorized || !data.legacy.buyerClaimable} reason="Connect the authorized wallet for this buyer account."
           />} />
+      <RefereeBonusRow authorized={authorized} />
     </div>
   </Card>;
 }
@@ -196,23 +338,6 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
       )}
       </Card>}
     </>
-  );
-}
-
-function BucketRow({ visible, name, note, amount, amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountDetail?: string; actions: ReactNode }) {
-  if (!visible) return null;
-  return (
-    <div className="bucket">
-      <div className="bucket-main">
-        <div className="bucket-name">{name}</div>
-        {note ? <div className="bucket-note">{note}</div> : null}
-      </div>
-      <div className={`bucket-amount mono${amountDetail ? ' bucket-amount--detailed' : ''}`}>
-        <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>
-        {amountDetail ? <span className="bucket-amount-detail"><RewardAmount>{amountDetail}</RewardAmount></span> : null}
-      </div>
-      <div className="bucket-actions">{actions}</div>
-    </div>
   );
 }
 

@@ -48,7 +48,7 @@ async function usageEpochsOf(ctx: AntsContext, recognized: number[], currentEpoc
   }
 }
 
-async function buyerOperator(ctx: AntsContext): Promise<string | null> {
+export async function buyerOperator(ctx: AntsContext): Promise<string | null> {
   const deposits = ctx.deposits();
   if (!deposits) return null;
   const operator = await deposits.getOperator(ctx.buyerAddress);

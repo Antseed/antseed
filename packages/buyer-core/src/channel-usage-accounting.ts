@@ -105,6 +105,7 @@ export function advanceUsageMetadata(
     cumulativeVideoSeconds: (prev.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
     cumulativeInputCharacters: (prev.cumulativeInputCharacters ?? 0n) + (delta.inputCharacters ?? 0n),
     services: prev.services ?? [],
+    ...(prev.attribution ? { attribution: prev.attribution } : {}),
   };
   return withServiceMetadata(totals, service, delta);
 }

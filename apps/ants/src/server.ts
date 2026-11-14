@@ -174,8 +174,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     },
     ...(!readOnly || browserSigning ? { journalPath } : {}),
   });
-  // A hosted session (no web bundle) does not tell browsers where the host keeps its files.
-  registerRoutes(app, { ctx: context, jobs, views, readOnly, dataDir: options.serveWeb === false ? null : dataDir, selectedAddress, originBuyer, browserSigning, onAuthorize: options.onAuthorize, rememberTransaction });
+  registerRoutes(app, { ctx: context, jobs, views, readOnly, dataDir, hideDataDir: options.serveWeb === false, selectedAddress, originBuyer, browserSigning, onAuthorize: options.onAuthorize, rememberTransaction });
   if (browserSigning) {
     app.post<{ Body: { address?: string; chainId?: number; refresh?: boolean; disconnect?: boolean } }>('/api/wallet', async (request, reply) => {
       const body = request.body ?? {};

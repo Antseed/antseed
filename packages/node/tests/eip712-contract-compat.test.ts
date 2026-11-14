@@ -6,9 +6,11 @@ import {
   SET_OPERATOR_TYPES,
   FREE_USAGE_OPEN_TYPES,
   FREE_USAGE_AUTH_TYPES,
+  INVITE_TYPES,
   makeChannelsDomain,
   makeDepositsDomain,
   makeFreeUsageDomain,
+  makeReferralsDomain,
   signSpendingAuth,
   computeMetadataHash,
   ZERO_METADATA_HASH,
@@ -76,12 +78,14 @@ const TS_TYPES: Record<string, Record<string, TypedDataField[]>> = {
   SetOperator: SET_OPERATOR_TYPES,
   FreeUsageOpen: FREE_USAGE_OPEN_TYPES,
   FreeUsageAuth: FREE_USAGE_AUTH_TYPES,
+  Invite: INVITE_TYPES,
 };
 
 const TS_DOMAINS = [
   makeChannelsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
   makeDepositsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
   makeFreeUsageDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
+  makeReferralsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
 ];
 
 describe('EIP-712 Contract Compatibility', () => {

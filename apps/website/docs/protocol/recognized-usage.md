@@ -99,6 +99,33 @@ These are not a promise that every bucket is fully paid to users. Reward
 eligibility, pool power, and utilization determine the allocation. Unallocated
 reward budgets follow the [burn and reserve rule](#unallocated-emissions-and-burns).
 
+### Referral and client buckets
+
+Two further reward controllers pay from their own epoch buckets by each
+claimant's share of all recognized buyer usage, so a bucket is only fully used
+when all usage is attributed. As with usage rewards, each address is capped per
+epoch at 5% of the bucket and anything above the cap goes to the emissions
+reserve:
+
+- **Referrals** (`AntseedReferrals`): a referred buyer's share after its invite
+  binds, read directly from `AntseedUsageAccounting`, goes half to its inviter
+  and half to the buyer for 12 epochs, then to the inviter alone. An epoch is
+  claimable once it ends. The unearned part of the bucket is never minted. See
+  the [referrals guide](../provide/referrals.md).
+- **Clients** (`AntseedClientRewards`): usage credited to the ERC-8004 agent
+  of the client software that produced it, claimed by that agent's owner. An
+  epoch is claimable once it ends. The unearned part of the bucket is never minted.
+  The buyer signs the client id, so each buyer's spend counts toward clients
+  only up to 50 USDC per epoch, across every client id it names (the owner can
+  set this cap from 1 to 1,000 USDC). Spend past it is credited to no client, so
+  a client earns by reaching many buyers rather than from one large buyer.
+
+Each controller pays nothing until it is registered as an emissions-gate
+minter. Both buckets come out of the 10% verification bucket: once they are
+registered, it becomes 4% verification, 4% clients and 2% referrals, from the
+next epoch. The other allocations do not change. The design is
+in AIP-6 ([proposal](https://github.com/Antseed/AIPs/pull/12)).
+
 ### Stake and usage targets
 
 The dynamic shares tie reward allocation to two measures: ANTS committed to

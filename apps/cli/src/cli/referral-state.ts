@@ -1,0 +1,181 @@
+import { referralBindingFromExplorer, shortAddress } from '@antseed/ants'
+import {
+  clientIdFromAgentId,
+  pendingInvite,
+  readReferralState,
+  referralStateMtimeMs,
+  referrerOfLookup,
+  syncReferralState,
+  type ReferralInvite,
+  type ReferralLookup,
+  type ReferralLookups,
+  type ReferralScope,
+  type ReferralState,
+  type ReferralsClient,
+} from '@antseed/node'
+import { parseClientAgentId } from '../config/loader.js'
+
+/**
+ * CLI side of the referral flow. The state file and its transitions live in
+ * @antseed/node (shared with Desktop); this resolves the attribution the
+ * buyer daemon appends to the metadata it signs.
+ */
+
+type ClientAgentOptions = {
+  clientAgentId?: number | undefined
+  /** First-party client agent ids from chain config. */
+  clientAgentIds?: { cli?: number; desktop?: number } | undefined
+}
+
+/** `wallet` on the configured referrals deployment, or null when referrals are not deployed. */
+export function referralScope(chain: { evmChainId: number; referralsAddress?: string | undefined }, wallet: string): ReferralScope | null {
+  return chain.referralsAddress ? { wallet, chainId: chain.evmChainId, referralsAddress: chain.referralsAddress } : null
+}
+
+/**
+ * How the buyer's binding is learned (see `syncReferralState`): Antscan is
+ * the RPC-free trigger, and `referrerOf` on the configured contract
+ * (`client`) confirms a binding before the invite is dropped; without
+ * Antscan, or while it reports none, `referrerOf` is read on a backoff
+ * instead. Nothing is looked up without a referrals client.
+ */
+export function referralLookups(options: {
+  explorerApiUrl?: string | undefined
+  client: Pick<ReferralsClient, 'referrerOf'> | null
+  /** Used instead of a fresh Antscan read when an explorer is configured (a caller that already has the answer). */
+  explorer?: ReferralLookup
+}): ReferralLookups {
+  const { explorerApiUrl, client } = options
+  if (!client) return {}
+  return {
+    explorer: explorerApiUrl ? options.explorer ?? ((buyer) => referralBindingFromExplorer(explorerApiUrl, buyer)) : null,
+    chain: referrerOfLookup(client),
+  }
+}
+
+/**
+ * Resolve the attribution the buyer appends to signed settlement metadata:
+ * the redeemed invite until it is bound, and the client.
+ *
+ * The client is an ERC-8004 agent id: ANTSEED_CLIENT_AGENT_ID (third-party
+ * clients), then `buyer.clientAgentId`, then the chain-config id for this
+ * client kind (ANTSEED_CLIENT_KIND, set to "desktop" by Desktop; "cli"
+ * otherwise). Without any of those the metadata carries no client word.
+ */
+export function resolveBuyerAttribution(options: ClientAgentOptions & {
+  referralState: ReferralState | null
+  env?: NodeJS.ProcessEnv
+}): { clientId?: string; invite?: ReferralInvite } {
+  const invite = pendingInvite(options.referralState)
+  const agentId = resolveClientAgentId(options, options.env ?? process.env)
+  return {
+    ...(agentId ? { clientId: clientIdFromAgentId(agentId) } : {}),
+    ...(invite ? { invite } : {}),
+  }
+}
+
+export type BuyerAttribution = ReturnType<typeof resolveBuyerAttribution>
+
+export type ReferralAttributionWatch = {
+  /** Settles once the first explorer/chain sync has been applied (never rejects). */
+  synced: Promise<void>
+  stop(): void
+}
+
+/**
+ * Install the buyer's referral attribution and keep it in step with
+ * referral.json. Resolves once the locally saved invite has been applied
+ * (a plain file read, no explorer or RPC), so the caller can start serving
+ * requests knowing the first signed settlement already carries it. The
+ * explorer/chain sync that drops a bound invite runs afterward in the
+ * background, then every `intervalMs`.
+ *
+ * A redeemed, replaced or removed invite only changes the file, and a signed
+ * invite can bind permanently, so the file's mtime is also checked every
+ * `localIntervalMs` and a change is applied at once, whatever the sync is doing.
+ *
+ * The file's mtime short-circuits the sync only while no invite is carried:
+ * binding happens on-chain without touching the file, and every settlement
+ * that still carries a bound invite costs the seller a reverting bindReferral
+ * call inside AntseedChannelsMiddleware.
+ */
+export async function watchReferralAttribution(options: ClientAgentOptions & {
+  dataDir: string
+  scope: ReferralScope | null
+  lookups: ReferralLookups
+  apply: (attribution: BuyerAttribution) => void
+  log?: ((message: string) => void) | undefined
+  intervalMs?: number | undefined
+  localIntervalMs?: number | undefined
+  env?: NodeJS.ProcessEnv
+  /** Overridable for tests. */
+  syncState?: typeof syncReferralState
+}): Promise<ReferralAttributionWatch> {
+  const { dataDir, scope, lookups, apply, log } = options
+  const syncState = options.syncState ?? syncReferralState
+  const attributionOptions = { clientAgentId: options.clientAgentId, clientAgentIds: options.clientAgentIds, ...(options.env ? { env: options.env } : {}) }
+  let carrying = false
+  // referral.json's mtime as last read, shared by the chain sync and the local poll.
+  let lastMtime = await referralStateMtimeMs(dataDir)
+  // A slow sync must not overwrite the result of a newer read.
+  let generation = 0
+  const install = (referralState: ReferralState | null, current: number): void => {
+    if (current !== generation) return
+    const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
+    if (attribution.invite && !carrying) {
+      log?.(`Referral: carrying the invite from ${referralState?.referrer ? shortAddress(referralState.referrer) : 'your inviter'} until a settlement binds it on-chain.`)
+    } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
+      log?.('Referral: invite is bound on-chain; no longer carried in signed metadata.')
+    }
+    carrying = !!attribution.invite
+    apply(attribution)
+  }
+  const sync = async (force: boolean): Promise<void> => {
+    // Taken before the read, so the state installed is never newer than the
+    // mtime remembered for it: a write that lands during the read leaves a
+    // newer mtime on the file, and the next poll reads again.
+    const mtime = await referralStateMtimeMs(dataDir)
+    if (!force && !carrying && mtime === lastMtime) return
+    const current = ++generation
+    const referralState = scope ? await syncState(dataDir, scope, lookups) : null
+    if (current !== generation) return
+    lastMtime = mtime
+    install(referralState, current)
+  }
+  const applyLocalChange = async (): Promise<void> => {
+    if (!scope) return
+    // Taken before the read: a write during the read is picked up by the next check.
+    const mtime = await referralStateMtimeMs(dataDir)
+    if (mtime === lastMtime) return
+    lastMtime = mtime
+    const current = ++generation
+    const referralState = await readReferralState(dataDir, scope)
+    install(referralState, current)
+  }
+
+  install(scope ? await readReferralState(dataDir, scope).catch(() => null) : null, ++generation)
+  const synced = sync(true).catch(() => {})
+  const timer = setInterval(() => { void sync(false).catch(() => {}) }, options.intervalMs ?? 60_000)
+  timer.unref()
+  const localTimer = setInterval(() => { void applyLocalChange().catch(() => {}) }, options.localIntervalMs ?? 1_000)
+  localTimer.unref()
+  return {
+    synced,
+    stop: () => {
+      clearInterval(timer)
+      clearInterval(localTimer)
+    },
+  }
+}
+
+function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env['ANTSEED_CLIENT_AGENT_ID']
+  if (raw !== undefined && raw.trim() !== '') {
+    const fromEnv = parseClientAgentId(raw)
+    if (fromEnv !== null) return fromEnv
+    console.warn(`Ignoring invalid ANTSEED_CLIENT_AGENT_ID ${JSON.stringify(raw)}: expected a positive integer agent id.`)
+  }
+  if (options.clientAgentId && options.clientAgentId > 0) return options.clientAgentId
+  const fromChain = options.clientAgentIds?.[env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli']
+  return fromChain && fromChain > 0 ? fromChain : undefined
+}
