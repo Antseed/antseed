@@ -206,12 +206,24 @@ antseed verifier watch                  # a tick every 10 minutes; --interval <m
 antseed verifier watch --once           # one tick, e.g. from cron
 ```
 
-Every tick runs `verifier run` (your models, plus the confirmations you're responsible for, in up to 3 rounds like a run of your own; what is still left is retried on the next tick) and then `verifier submit --yes`, which sends only the results that aren't on-chain yet. A `DIFF` another auditor submits is picked up by its confirmer within one tick. Each tick continues the epoch, so sellers already finished aren't asked again, and a new epoch starts its own assignment on the next tick. A failed step is logged and retried on the next tick. With `--once` there is no next tick, so `watch` exits non-zero when its `run` or `submit` failed, and cron or your supervisor sees it.
+Every tick runs `verifier run` (your models, plus the confirmations you're responsible for, in up to 3 rounds like a run of your own; what is still left is retried on the next tick), then `verifier submit --yes`, which sends only the results that aren't on-chain yet, and then `verifier prove-tokenizer` (see [Tokenizer proofs](#tokenizer-proofs); `--no-tokenizer` skips it). A `DIFF` another auditor submits is picked up by its confirmer within one tick. Each tick continues the epoch, so sellers already finished aren't asked again, and a new epoch starts its own assignment on the next tick. A failed step is logged and retried on the next tick. With `--once` there is no next tick, so `watch` exits non-zero when its `run` or `submit` failed, and cron or your supervisor sees it.
 
 - Signing runs without a terminal. With a keystore (`--keystore` or `verifier.keystore`), set `ANTSEED_KEYSTORE_PASSWORD` or type the password once when `watch` starts. `--keystore` also decides which auditor's models and confirmations are run, unless `--auditor` is given.
 - Set `PINATA_JWT` for the evidence, or pass `--no-publish-ipfs`.
 - `watch` takes `run`'s tuning options and passes them to every tick's run: `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks`, `--allow-probe-reuse` and `--no-confirm`. Without them, each tick uses `run`'s defaults (3 rounds, 2,000 requests per build and round). A build that keeps failing continues on the next tick until its total (`verifier.referenceMaxRequestsPerBuild`, default 3 times the per-round limit), so watch the reference spend.
 - Only one `watch` runs per data dir. Run it under systemd, pm2 or tmux to keep it up.
+
+## Tokenizer proofs
+
+A second check runs next to KBF, with nothing to set up: `verifier watch` does it on every tick, and `antseed verifier prove-tokenizer` runs it once. It needs no approval, no reference API key and no IPFS: anyone can submit a tokenizer proof.
+
+It checks the usage sellers sign, which is what they are paid on. Each round, a model on the network writes a short message A and a follow-up B. Your buyer sends A, then A followed by B, to every seller of a model, each in an API it speaks (Chat Completions, Anthropic Messages or Responses). The difference in input tokens each seller signs is B's length in the tokenizer that actually ran. Sellers with a `SAME` from KBF are the reference: when at least three of them sign the same difference, and a seller is off by more than 2 tokens in every one of three rounds, the CLI sends a proof made of the sellers' own signed receipts, and the contract checks every signature itself.
+
+- A seller without a `SAME` gets a `DIFF`, like a KBF `DIFF`.
+- A seller with a `SAME` (it answers like the model, but its usage isn't the model's) gets a **usage flag**, which can cut its points.
+- A proof that creates a new `DIFF` or flag for a staked seller earns you a credit; `verifier rewards` shows and claims them with your KBF rewards (see [Rewards](#rewards)).
+
+What it costs: two short requests per seller per round, three rounds, about once a day per seller (a seller it couldn't check is retried after 6 hours), plus the gas of each proof on Base. `prove-tokenizer --dry-run` checks everything and sends nothing. Each pass writes its evidence to `<data-dir>/verifier/evidence/tokenizer/`.
 
 ## Running again in the same epoch
 
@@ -239,7 +251,7 @@ antseed verifier run; antseed verifier submit --yes
 
 ## Rewards
 
-Auditors share the verification part of ANTS emissions by credits: one credit per model audited per epoch by default, or the amount the KBF owner set for that model. Once an epoch has ended, claim with `antseed verifier rewards --claim`; each epoch is claimed in its own transaction.
+Auditors share the verification part of ANTS emissions by credits: one credit per model audited per epoch by default, or the amount the KBF owner set for that model. Tokenizer proofs earn credits in their own share of the bucket. Once an epoch has ended, claim both with `antseed verifier rewards --claim`; each epoch is claimed in its own transaction.
 
 ## Configuration
 

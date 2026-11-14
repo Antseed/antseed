@@ -4,6 +4,7 @@ import { registerVerifierCheckCommand } from './check.js'
 import { registerVerifierModelsCommand } from './models.js'
 import { registerVerifierOverviewCommand } from './overview.js'
 import { registerVerifierProfileCommand } from './profile.js'
+import { registerVerifierProveTokenizerCommand } from './prove-tokenizer.js'
 import { registerVerifierReferenceCommand } from './reference.js'
 import { registerVerifierRewardsCommand } from './rewards.js'
 import { registerVerifierRunCommand } from './run.js'
@@ -26,4 +27,5 @@ export function registerVerifierCommands(program: Command): void {
   registerVerifierRewardsCommand(verifier)
   registerVerifierProfileCommand(verifier)
   registerVerifierCheckCommand(verifier)
+  registerVerifierProveTokenizerCommand(verifier)
 }

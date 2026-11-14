@@ -24,6 +24,7 @@ import {
   CHANNEL_KIND,
   CHANNEL_ROLE,
   VerifierClient,
+  TokenizerAuditsClient,
   ANTSTokenClient,
   SellerPoolsClient,
   SellerPoolsRewardsClient,
@@ -144,6 +145,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   verificationContractAddress?: string;
   verificationResultsAddress?: string;
   verificationDeployBlock?: number;
+  tokenizerAuditsAddress?: string;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
@@ -234,6 +236,7 @@ export function requireCryptoConfig(
     // address must bring its own block (or scans need an explicit fromBlock).
     verificationDeployBlock: crypto.verificationDeployBlock
       ?? (crypto.verificationContractAddress ? undefined : resolved.verificationDeployBlock),
+    tokenizerAuditsAddress: crypto.tokenizerAuditsAddress || resolved.tokenizerAuditsAddress,
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
     evmChainId: resolved.evmChainId,
     explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
@@ -426,6 +429,26 @@ export function createVerifierClient(config: AntseedConfig, overrides?: CryptoCo
     evmChainId: crypto.evmChainId,
     logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
+  });
+}
+
+/**
+ * Create a TokenizerAuditsClient for `contractAddress`, else the configured or built-in address; null when
+ * the chain has none (tokenizer audits not deployed there).
+ */
+export function createTokenizerAuditsClient(
+  config: AntseedConfig,
+  overrides?: CryptoConfigOverrides,
+  contractAddress?: string,
+): TokenizerAuditsClient | null {
+  const crypto = requireCryptoConfig(config, overrides);
+  const address = contractAddress || crypto.tokenizerAuditsAddress;
+  if (!address) return null;
+  return new TokenizerAuditsClient({
+    rpcUrl: crypto.rpcUrl,
+    ...fallbackClientOpts(crypto),
+    contractAddress: address,
+    evmChainId: crypto.evmChainId,
   });
 }
 
