@@ -246,8 +246,9 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     expect(signed()).toBe(WINDOW);
     expect(verified()).toBe(0n);
 
-    // The seller's 402 asks for what it served. It counts no more than the
-    // seller asks for, and no more than the buyer's own price within the tolerance.
+    // The seller's 402 asks for what it served. The catch-up counts the
+    // received response whole, at the buyer's own price for it, and the buyer
+    // signs the seller's target.
     send('next');
     await catchUp(1_200_000n, 'next');
     manager.endPaidRequest(sellerPeerId, 'next', true);
@@ -486,8 +487,8 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     send('next');
     await catchUp(600_000n, 'next');
     manager.endPaidRequest(sellerPeerId, 'next', true);
-    expect.soft(verified()).toBe(2_000_000n);
-    expect.soft(signed()).toBe(600_000n);
+    expect(verified()).toBe(2_000_000n);
+    expect(signed()).toBe(600_000n);
 
     // The cost frames arrive, then the signing before a close: the second response is paid once, the first not again.
     await claim('small', 600_000n, 600_000n);
@@ -509,8 +510,8 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     send('next');
     await catchUp(1_400_000n, 'next');
     manager.endPaidRequest(sellerPeerId, 'next', true);
-    expect.soft(verified()).toBe(1_000_000n);
-    expect.soft(signed()).toBe(1_400_000n);
+    expect(verified()).toBe(1_000_000n);
+    expect(signed()).toBe(1_400_000n);
 
     // q arrives; its cost frame and the signing before a close pay it once.
     deliver('q', 400_000n);
@@ -537,12 +538,96 @@ describe('BuyerPaymentManager: a catch-up reopens the overdraft window only for 
     send('n2');
     await catchUp(2_500_000n, 'n2');
     manager.endPaidRequest(sellerPeerId, 'n2', true);
-    expect.soft(verified()).toBe(2_600_000n);
-    expect.soft(signed()).toBe(2_500_000n);
+    expect(verified()).toBe(2_600_000n);
+    expect(signed()).toBe(2_500_000n);
 
     await signAtClose('b', 2_000_000n);
     expect(signed(), 'signed past what the two responses cost').toBeLessThanOrEqual(2_600_000n);
     expect(signed()).toBe(2_600_000n);
     expect(verified()).toBe(2_600_000n);
+  });
+
+  it('pays an attempt the buyer cut off through its own cost frame, not through a catch-up', async () => {
+    await openChannel(5_000_000n);
+    // The caller cancelled the attempt: the buyer prices it at its prompt plus the output it allows.
+    send('cut');
+    manager.recordDeliveredResponse(sellerPeerId, 'cut', { costUsdc: 300_000n, cutOff: true });
+    manager.endPaidRequest(sellerPeerId, 'cut');
+    // A seller prompt fills the window.
+    await prompt(WINDOW);
+    expect(signed()).toBe(WINDOW);
+    expect(verified()).toBe(0n);
+
+    // The seller's 402 asks for the window plus the attempt: the catch-up does not count it.
+    send('next');
+    await catchUp(WINDOW + 300_000n, 'next');
+    manager.endPaidRequest(sellerPeerId, 'next', true);
+    expect(signed(), 'a catch-up counted the attempt that was cut off').toBe(WINDOW);
+    expect(verified()).toBe(0n);
+
+    // Its own cost frame counts it and is signed.
+    await claim('cut', 300_000n, WINDOW + 300_000n);
+    expect(signed()).toBe(WINDOW + 300_000n);
+    expect(verified()).toBe(300_000n);
+  });
+
+  it('leaves a received response owed when a catch-up asks for no more than is signed, and pays it in full on its own cost frame', async () => {
+    await openChannel(5_000_000n);
+    // r is delivered and priced; its cost frame has not arrived. A seller prompt fills the window.
+    send('r');
+    deliver('r', 300_000n);
+    await prompt(WINDOW);
+    expect(signed()).toBe(WINDOW);
+    expect(verified()).toBe(0n);
+
+    // 402s asking for less than is signed, then for exactly that: nothing is signed or counted.
+    for (const [round, target] of [[0, 400_000n], [1, WINDOW]] as const) {
+      const requestId = `next-${round}`;
+      send(requestId);
+      await catchUp(target, requestId);
+      manager.endPaidRequest(sellerPeerId, requestId, true);
+      expect(signed(), `round ${round}: signed for a target already covered`).toBe(WINDOW);
+      expect(verified(), `round ${round}: counted a response with nothing signed`).toBe(0n);
+    }
+
+    // r's cost frame counts in full and is signed.
+    await claim('r', 300_000n, WINDOW + 300_000n);
+    expect(signed(), 'the response was not paid on its cost frame').toBe(WINDOW + 300_000n);
+    expect(verified()).toBe(300_000n);
+  });
+
+  it('counts only open responses in a catch-up, not one a cost frame counted already, and the signing before a close adds nothing for either', async () => {
+    await openChannel(5_000_000n);
+    // Three requests in flight: the seller's 402 is signed one window for each.
+    for (const id of ['n1', 'n2', 'n3']) send(id);
+    await catchUp(3n * WINDOW, 'n1', 3);
+    for (const id of ['n1', 'n2', 'n3']) manager.endPaidRequest(sellerPeerId, id, true);
+    expect(signed()).toBe(1_500_000n);
+    expect(verified()).toBe(0n);
+
+    // The first response's cost frame arrives while what is signed is past
+    // verified cost plus one window: its cost counts, and nothing is signed.
+    send('counted');
+    deliver('counted', 400_000n);
+    await claim('counted', 400_000n, 1_900_000n);
+    expect(signed()).toBe(1_500_000n);
+    expect(verified()).toBe(400_000n);
+
+    // The second is delivered and priced; its cost frame does not arrive.
+    send('open');
+    deliver('open', 1_400_000n);
+
+    // The seller's 402 asks for both: only the open one counts.
+    send('next');
+    await catchUp(1_800_000n, 'next');
+    manager.endPaidRequest(sellerPeerId, 'next', true);
+    expect(verified(), 'the catch-up counted a response twice').toBe(1_800_000n);
+    expect(signed()).toBe(1_800_000n);
+
+    // Both are counted: the signing before a close pays neither again.
+    await signAtClose('open', 1_400_000n);
+    await signAtClose('counted', 400_000n);
+    expect(signed()).toBe(1_800_000n);
+    expect(verified()).toBe(1_800_000n);
   });
 });

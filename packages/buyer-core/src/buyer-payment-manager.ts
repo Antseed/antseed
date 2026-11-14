@@ -753,9 +753,9 @@ export class BuyerPaymentManager {
     if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // A SpendingAuth committed while this one was signed already signed past the target.
     if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
-    // Reopening counted these responses toward verified cost, each whole, so
-    // they are paid: counting one again later would pay for it twice. A
-    // response recorded while this was signed was not counted, and stays owed.
+    // Reopening counted these responses toward verified cost, each whole:
+    // counting one again later would count it twice. A response recorded
+    // while this was signed was not counted, and stays owed.
     const ledger = this._requestLedgers.get(sellerPeerId);
     for (const [countedId, record] of reopened.counted) if (ledger?.get(countedId) === record) ledger.delete(countedId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
@@ -957,8 +957,11 @@ export class BuyerPaymentManager {
     // more is signed. The records counted are returned for the caller to
     // settle in the ledger once it signs.
     //
-    // SECURITY: the trust anchor here is the buyer's own ledger. The seller's
-    // target only lowers what counts; it never adds to verified cost.
+    // SECURITY: the trust anchor here is the buyer's own ledger. Everything
+    // added to verified cost comes from the buyer's own priced records; the
+    // seller's target only decides how far down the list the buyer goes. The
+    // last record counted may carry verified cost past that point by part of
+    // its price.
     const counted: Array<[string, DeliveredResponse]> = [];
     if (maxSignable > currentCumulative) return { maxSignable, verifiedCost, counted };
 
@@ -968,7 +971,7 @@ export class BuyerPaymentManager {
     let nextVerifiedCost = verifiedCost;
     for (const [requestId, record] of this._requestLedgers.get(sellerPeerId) ?? []) {
       if (nextVerifiedCost >= cap) break;
-      if (record.cutOff || record.costCounted || record.costUsdc <= 0n) continue;
+      if (record.cutOff || record.costUsdc <= 0n) continue;
       nextVerifiedCost += record.costUsdc;
       counted.push([requestId, record]);
     }
