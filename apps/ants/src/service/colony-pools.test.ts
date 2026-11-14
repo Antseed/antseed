@@ -229,6 +229,22 @@ describe('colony pool rewards', () => {
     expect((await colonyPools(ctx)).pools[0]!).not.toHaveProperty('workerAnts');
   });
 
+  it('pulls and claims in one go the ANTS a linked Mac earned before its link in epochs not yet pulled', async () => {
+    const { ctx, client } = fixture([]);
+    await linkWorkerPayout(ctx, { code: linkCode() }, report);
+    let pulled = false;
+    client.claimEpochEmissions.mockImplementation(async () => { pulled = true; return 'pull-hash'; });
+    // The Mac's only weight is in epoch 2, whose emissions the pool hasn't pulled yet.
+    client.epochWeight.mockImplementation(async (epoch: number, account: string) => (account === worker && epoch === 2 ? 10n : 0n));
+    client.epochAnts.mockImplementation(async (epoch: number) => (epoch === 2 && pulled ? 100n : 0n));
+    client.pendingAnts.mockImplementation(async (account: string, epochs: number[]) => (account === worker && epochs[0] === 2 && pulled ? 9n : 0n));
+    const view = (await colonyPools(ctx)).pools[0]!;
+    expect(view).toMatchObject({ unfundedEpochs: [2], workerAnts: [{ worker, antsOwed: '0', antsEpochs: [] }] });
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['pull-hash', 'ants-for-hash'] });
+    expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [2]);
+    expect(client.claimAntsFor).toHaveBeenCalledWith(wallet, worker, [2]);
+  });
+
   it('rejects a link for another wallet, another chain, or a malformed code', async () => {
     const { ctx, client } = fixture();
     await expect(linkWorkerPayout(ctx, { code: linkCode({ payout: Wallet.createRandom().address }) }, report)).rejects.toThrow(/connect that wallet/);

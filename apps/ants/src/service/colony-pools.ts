@@ -74,11 +74,17 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
     accountAnts(ctx, address, ctx.address, epochs),
     ...workers.map((worker) => accountAnts(ctx, address, worker, epochs)),
   ]);
-  const unfunded = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.unfunded))].sort((a, b) => a - b);
-  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, unfunded);
+  // Funding depends only on the pool and epoch: one read for every account's weighted epochs.
+  const weighted = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.weighted))].sort((a, b) => a - b);
+  const funding = await readEach(ctx, address, 'epochAnts', weighted.map((epoch) => [epoch]));
+  const unfunded = new Set(weighted.filter((_, index) => funding[index] === 0n));
+  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, [...unfunded]);
+  const pullable = new Set(unfundedEpochs);
+  // A linked Mac stays in the claim while it has ANTS to claim now or after a pull of its epochs.
   const workerAnts = workers
-    .map((worker, index) => ({ worker, antsOwed: workerEarnings[index]!.owed.toString(), antsEpochs: workerEarnings[index]!.epochs }))
-    .filter((entry) => entry.antsEpochs.length > 0);
+    .map((worker, index) => ({ worker, earned: workerEarnings[index]! }))
+    .filter(({ earned }) => earned.epochs.length > 0 || earned.weighted.some((epoch) => pullable.has(epoch)))
+    .map(({ worker, earned }) => ({ worker, antsOwed: earned.owed.toString(), antsEpochs: earned.epochs }));
   const antsOwed = workerEarnings.reduce((sum, earned) => sum + earned.owed, own.owed);
   return {
     address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs: own.epochs, unfundedEpochs,
@@ -87,19 +93,16 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   };
 }
 
-/** What `account` has earned in ANTS on a pool over `epochs`: claimable now, and where the pool still has to pull its emissions. */
-async function accountAnts(ctx: AntsContext, pool: string, account: string, epochs: number[]): Promise<{ owed: bigint; epochs: number[]; unfunded: number[] }> {
+/** What `account` has earned in ANTS on a pool over `epochs`: the epochs it has weight in, and what it can claim now. */
+async function accountAnts(ctx: AntsContext, pool: string, account: string, epochs: number[]): Promise<{ owed: bigint; epochs: number[]; weighted: number[] }> {
   // Only an epoch the account has weight in can owe it ANTS, so the rest cost one batched read each.
   const weights = await readEach(ctx, pool, 'epochWeight', epochs.map((epoch) => [epoch, account]));
   const weighted = epochs.filter((_, index) => weights[index]! > 0n);
-  const [owedEach, fundedEach] = await Promise.all([
-    readEach(ctx, pool, 'pendingAnts', weighted.map((epoch) => [account, [epoch]])),
-    readEach(ctx, pool, 'epochAnts', weighted.map((epoch) => [epoch])),
-  ]);
+  const owedEach = await readEach(ctx, pool, 'pendingAnts', weighted.map((epoch) => [account, [epoch]]));
   return {
     owed: owedEach.reduce((sum, owed) => sum + owed, 0n),
     epochs: weighted.filter((_, index) => owedEach[index]! > 0n),
-    unfunded: weighted.filter((_, index) => fundedEach[index] === 0n),
+    weighted,
   };
 }
 

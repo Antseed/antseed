@@ -87,9 +87,16 @@ final class WorkerPayoutController: ObservableObject {
         let linked = payout.flatMap { $0.lowercased() == address.lowercased() ? nil : $0 }
         do {
             let context = try await chain.rewardsContext(pool: pool)
-            var read = try await chain.colonyRewards(pool: pool, account: linked ?? address, context: context)
-            // Linking moves only recent epochs' ANTS: older ones stay with this key, still this owner's to claim.
-            if linked != nil { read = read.adding(worker: try await chain.colonyRewards(pool: pool, account: address, context: context)) }
+            let read: ColonyRewards
+            if let linked {
+                // Linking moves only recent epochs' ANTS: older ones stay with this key, still this owner's to claim.
+                async let walletRewards = chain.colonyRewards(pool: pool, account: linked, context: context)
+                async let workerRewards = chain.colonyRewards(pool: pool, account: address, context: context)
+                let (wallet, worker) = try await (walletRewards, workerRewards)
+                read = wallet.adding(worker: worker)
+            } else {
+                read = try await chain.colonyRewards(pool: pool, account: address, context: context)
+            }
             guard isCurrent(pool) else { return }
             rewards = read
             rewardsError = nil

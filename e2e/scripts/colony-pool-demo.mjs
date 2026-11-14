@@ -194,7 +194,12 @@ async function main() {
     throw new Error(`Something already answers on ${RPC_URL}; stop it (another anvil?) so the demo can start its own chain`);
   }
   const anvil = spawn('anvil', ['--host', BIND, '--port', '8545', '--chain-id', String(CHAIN_ID)], { stdio: ['ignore', 'pipe', 'pipe'] });
-  cleanup.push(() => anvil.kill('SIGTERM'));
+  // Awaited, so the next run finds the RPC port free.
+  cleanup.push(() => anvil.exitCode !== null || anvil.signalCode !== null ? undefined : new Promise((resolve) => {
+    anvil.once('exit', resolve);
+    anvil.kill('SIGTERM');
+    setTimeout(() => { anvil.kill('SIGKILL'); resolve(); }, 3000).unref();
+  }));
   anvil.stdout.on('data', () => {});
   anvil.stderr.on('data', (chunk) => logTo('chain', chunk.toString().trimEnd()));
   // Deploy only while the anvil this demo started is alive: one that failed to start must not leave the demo to another chain.
@@ -552,13 +557,26 @@ async function main() {
   await sleep(Number(process.env.DEMO_HOLD_MS ?? 3000));
 }
 
-main()
-  .catch((err) => {
-    console.error(`\n${C.yellow}demo failed:${C.reset}`, err instanceof Error ? err.stack : err);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
+/** Stop everything the demo started, once: on its end, and on Ctrl+C or a supervisor's SIGTERM. */
+let shuttingDown = null;
+function shutdown(code) {
+  if (process.exitCode === undefined || code !== 0) process.exitCode = code;
+  shuttingDown ??= (async () => {
     for (const fn of cleanup.reverse()) await Promise.resolve().then(fn).catch(() => {});
     for (const s of streams.values()) s.end();
     setTimeout(() => process.exit(process.exitCode ?? 0), 500).unref();
+  })();
+  return shuttingDown;
+}
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    console.error(`\n${C.yellow}${signal}: stopping the demo's chain, nodes and workers…${C.reset}`);
+    void shutdown(130);
+  });
+}
+
+main()
+  .then(() => shutdown(0), (err) => {
+    console.error(`\n${C.yellow}demo failed:${C.reset}`, err instanceof Error ? err.stack : err);
+    return shutdown(1);
   });
