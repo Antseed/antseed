@@ -63,6 +63,8 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
   const negotiator = {
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
+    trackFreeUsageRequestService: vi.fn(),
+    prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
     bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
     handle402,
@@ -293,6 +295,195 @@ describe('BuyerRequestHandler free allowance on a priced service', () => {
     const { handler, negotiator } = makeHandler([response(200, { ok: true })]);
     await handler.sendRequest(chatPeer(), chatRequest());
     expect(negotiator.estimateCostFromResponse).toHaveBeenCalledOnce();
+  });
+});
+
+describe('BuyerRequestHandler route priced at zero', () => {
+  const peer = (providerPricing: BuyerPeerView['providerPricing'], extra: Partial<BuyerPeerView> = {}): BuyerPeerView => ({
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openai'],
+    providerPricing,
+    ...extra,
+  } as BuyerPeerView);
+  const request = (path: string, body: unknown): SerializedHttpRequest => ({
+    requestId: 'zero-route-request',
+    method: 'POST',
+    path,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify(body)),
+  });
+  const sellerWantsPayment = response(402, { error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000' });
+  const ZERO = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+
+  it('refuses a payment demand on it without negotiating, and marks the request as owing nothing', async () => {
+    const { handler, handle402, sendProxyRequest, negotiator } = makeHandler([sellerWantsPayment, response(200, { ok: true })]);
+    const freePeer = peer({ openai: { defaults: ZERO } });
+
+    const answer = await handler.sendRequest(freePeer, request('/v1/chat/completions', { model: 'k3', messages: [] }));
+
+    expect(answer.statusCode).toBe(409);
+    // Shaped like any other peer fault, so a router fails over and the caller reads why.
+    expect(JSON.parse(Buffer.from(answer.body).toString()).error).toMatchObject({
+      type: 'payment_negotiation_failed',
+      antseed_fault: 'peer',
+      peer_status: 409,
+      peer_message: expect.stringContaining('announces as free'),
+    });
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+    expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith(freePeer.peerId, 'zero-route-request');
+    expect(negotiator.bpm.releaseRequestCoverage.mock.invocationCallOrder[0])
+      .toBeLessThan(negotiator.bpm.markRequestCovered.mock.invocationCallOrder[0]!);
+  });
+
+  it('still negotiates when a cached-input price or a per-image price makes the route paid', async () => {
+    const cachedPriced = peer({ openai: { defaults: { ...ZERO, cachedInputUsdPerMillion: 0.75 } } });
+    const perImage = peer({ openai: { defaults: ZERO } }, {
+      providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },
+      providerServiceUnitBillingModels: {
+        openai: { services: { 'image-model': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } } },
+      },
+    });
+    for (const [paidPeer, paidRequest] of [
+      [cachedPriced, request('/v1/chat/completions', { model: 'k3', messages: [] })],
+      [perImage, request('/v1/images/generations', { model: 'image-model', prompt: 'a cube', n: 1 })],
+    ] as const) {
+      const { handler, handle402, negotiator } = makeHandler([sellerWantsPayment, response(200, { ok: true })]);
+      expect((await handler.sendRequest(paidPeer, paidRequest)).statusCode).toBe(200);
+      expect(handle402).toHaveBeenCalledOnce();
+      expect(negotiator.bpm.markRequestCovered).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe('BuyerRequestHandler route with no announced price', () => {
+  const peer = (extra: Partial<BuyerPeerView> = {}): BuyerPeerView => ({
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openai'],
+    ...extra,
+  } as BuyerPeerView);
+  const request = (path: string, body: unknown): SerializedHttpRequest => ({
+    requestId: 'unpriced-request',
+    method: 'POST',
+    path,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify(body)),
+  });
+  const chat = () => request('/v1/chat/completions', { model: 'k3', messages: [] });
+
+  function expectRefusedBeforeSending(
+    answer: SerializedHttpResponse,
+    { handle402, sendProxyRequest, negotiator }: ReturnType<typeof makeHandler>,
+  ) {
+    expect(answer.statusCode).toBe(409);
+    // Shaped like any other peer fault, so a router fails over and the caller reads why.
+    expect(JSON.parse(Buffer.from(answer.body).toString()).error).toMatchObject({
+      type: 'payment_negotiation_failed',
+      antseed_fault: 'peer',
+      peer_status: 409,
+      peer_message: expect.stringContaining('announces no price for this service'),
+    });
+    expect(sendProxyRequest).not.toHaveBeenCalled();
+    expect(handle402).not.toHaveBeenCalled();
+    expect(negotiator.trackRequestBillingContext).not.toHaveBeenCalled();
+    expect(negotiator.bpm.markRequestCovered).not.toHaveBeenCalled();
+    expect(negotiator.bpm.beginPaidRequest).not.toHaveBeenCalled();
+  }
+
+  it('refuses a paid request to a peer that announces no price for it, without sending it', async () => {
+    const handled = makeHandler([response(200, { ok: true })]);
+    expectRefusedBeforeSending(await handled.handler.sendRequest(peer(), chat()), handled);
+  });
+
+  it('answers with reason price_unknown', async () => {
+    // A path no standard adapter reshapes, so the buyer's own body comes back as written.
+    const handled = makeHandler([response(200, { ok: true })]);
+    const answer = await handled.handler.sendRequest(peer(), request('/custom/generate', { model: 'k3' }));
+    expect(answer.statusCode).toBe(409);
+    expect(JSON.parse(Buffer.from(answer.body).toString())).toMatchObject({
+      error: 'payment_negotiation_failed',
+      reason: 'price_unknown',
+    });
+    expect(handled.sendProxyRequest).not.toHaveBeenCalled();
+  });
+
+  it('refuses a peer that announces only one of its default input and output prices, instead of reading the other as free', async () => {
+    for (const partial of [
+      { defaultInputUsdPerMillion: 1 },
+      { defaultOutputUsdPerMillion: 2 },
+      { defaultInputUsdPerMillion: 0 },
+    ]) {
+      const handled = makeHandler([response(200, { ok: true })]);
+      expectRefusedBeforeSending(await handled.handler.sendRequest(peer(partial), chat()), handled);
+    }
+  });
+
+  it('refuses a route whose announced price it cannot read, instead of billing by it or reading it as free', async () => {
+    for (const providerPricing of [
+      { openai: { defaults: { inputUsdPerMillion: 0 } } },
+      { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { k3: { inputUsdPerMillion: 1, outputUsdPerMillion: Number.NaN } } } },
+      { openai: { defaults: { inputUsdPerMillion: -1, outputUsdPerMillion: 2 } } },
+      { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: Number.POSITIVE_INFINITY } } },
+    ]) {
+      const handled = makeHandler([response(200, { ok: true })]);
+      const unreadable = peer({ providerPricing } as Partial<BuyerPeerView>);
+      expectRefusedBeforeSending(await handled.handler.sendRequest(unreadable, chat()), handled);
+    }
+  });
+
+  it('refuses a unit-billed route whose announced token price it cannot read, instead of billing its tokens at another price', async () => {
+    const handled = makeHandler([response(200, { ok: true })]);
+    const perImage = peer({
+      defaultInputUsdPerMillion: 3,
+      defaultOutputUsdPerMillion: 15,
+      providerPricing: {
+        openai: {
+          defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 },
+          services: { 'image-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: -1 } },
+        },
+      },
+      providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },
+      providerServiceUnitBillingModels: {
+        openai: { services: { 'image-model': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } } },
+      },
+    });
+    const answer = await handled.handler.sendRequest(perImage, request('/v1/images/generations', { model: 'image-model', prompt: 'a cube', n: 1 }));
+    expectRefusedBeforeSending(answer, handled);
+  });
+
+  it('still sends a request priced by a readable provider price', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, { ok: true })]);
+    const priced = peer({ providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.5 } } } });
+    expect((await handler.sendRequest(priced, chat())).statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('still sends a request whose route has a unit model but no token price', async () => {
+    const perImage = peer({
+      providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },
+      providerServiceUnitBillingModels: {
+        openai: { services: { 'image-model': { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } } },
+      },
+    });
+    const { handler, sendProxyRequest, negotiator } = makeHandler([response(200, { ok: true })]);
+    const answer = await handler.sendRequest(perImage, request('/v1/images/generations', { model: 'image-model', prompt: 'a cube', n: 1 }));
+    expect(answer.statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+    expect(negotiator.trackRequestBillingContext).toHaveBeenCalledOnce();
+  });
+
+  it('still sends a control-plane request to a peer that announces no price', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, { ok: true })]);
+    const answer = await handler.sendRequest(peer(), chat(), undefined, { controlPlane: true });
+    expect(answer.statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('still sends a request priced by both default prices', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, { ok: true })]);
+    const priced = peer({ defaultInputUsdPerMillion: 1, defaultOutputUsdPerMillion: 2 });
+    expect((await handler.sendRequest(priced, chat())).statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
   });
 });
 

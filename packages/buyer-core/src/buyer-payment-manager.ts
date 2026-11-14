@@ -40,7 +40,7 @@ import {
 } from './pricing.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUnitV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { BillingRequestFacts } from './unit-billing.js';
-import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
+import { evaluateUnitBilling, isFreeUnitBillingModel, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
@@ -117,6 +117,28 @@ export interface BuyerPaymentConfig {
   /** Disable per-service attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   dataDir: string;
+}
+
+/**
+ * Whether the buyer read usage in a response it received and its own prices
+ * put that at zero. A response that shows no usage is not priced at all: the
+ * buyer cannot tell what it cost, which is a different case.
+ */
+function pricedAtZero(record: DeliveredResponse): boolean {
+  const usage = record.usage;
+  if (record.cutOff || record.costUsdc !== 0n || !usage) return false;
+  return usage.inputTokens > 0n || usage.cachedInputTokens > 0n || usage.outputTokens > 0n
+    || Object.values(usage.unitUsage?.units ?? {}).some((count) => (count ?? 0) > 0);
+}
+
+/**
+ * Whether the price the buyer verifies a request by is zero: every token price
+ * and any unit model. A positive price that rounds a small response to 0 is not.
+ */
+function verifiedAtZero(pricing: ServicePricing | null | undefined, unitModel: UnitBillingModelV1 | undefined): boolean {
+  return pricing != null && pricing.inputUsdPerMillion === 0 && pricing.outputUsdPerMillion === 0
+    && (pricing.cachedInputUsdPerMillion ?? 0) === 0
+    && (!unitModel || isFreeUnitBillingModel(unitModel));
 }
 
 /** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
@@ -328,10 +350,19 @@ export class BuyerPaymentManager {
    */
   private readonly _requestBillingEntries = new Map<string, StoredBuyerRequestBillingEntry>();
   /**
-   * Requests a seller served from a priced service's free allowance, with when
-   * they were marked. Nothing is owed for them, so a NeedAuth naming one is refused.
+   * Requests nothing is owed for, with when they were marked: the buyer sent
+   * them on a route priced at zero, or the seller served them from a priced
+   * service's free allowance. A NeedAuth naming one is refused.
    */
   private readonly _coveredRequests = new Map<string, number>();
+  /**
+   * Sellers that claimed, on the active channel, a cost for a response the
+   * buyer owes nothing for. Such a seller gets no overdraft window: the buyer
+   * signs only up to verified cost, so the refused claim is never signed
+   * through a later prompt, a 402 retry or a close. Dropped with the seller's
+   * verified cost.
+   */
+  private readonly _refusedClaims = new Set<string>();
   /**
    * sellerPeerId -> requestId -> what the seller can still be paid for on the
    * active channel: a response the buyer received and priced, or an attempt it
@@ -342,8 +373,8 @@ export class BuyerPaymentManager {
   private readonly _requestLedgers = new Map<string, Map<string, DeliveredResponse>>();
   private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
-  /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
-  private readonly _sessionPricing = new Map<string, { defaults: ServicePricing; services: Record<string, ServicePricing> }>();
+  /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata) */
+  private readonly _sessionPricing = new Map<string, { defaults?: ServicePricing; services: Record<string, ServicePricing> }>();
 
   /** Cumulative response token totals per seller, tracked independently of signing metadata. */
   private readonly _responseTokenTotals = new Map<string, { input: number; output: number; requests: number }>();
@@ -457,6 +488,7 @@ export class BuyerPaymentManager {
     // the cumulative and causing non-monotonic SpendingAuth rejections on the seller.
     this._verifiedCost.set(peerId, persistedCumulative);
     this._requestLedgers.delete(peerId);
+    this._refusedClaims.delete(peerId);
     // Stores predating browser recovery (including the current sqlite node
     // store) omit these optional fields. Preserve their historical default
     // ceiling instead of interpreting missing recovery state as a confirmed
@@ -571,6 +603,7 @@ export class BuyerPaymentManager {
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
     this._requestLedgers.delete(sellerPeerId);
+    this._refusedClaims.delete(sellerPeerId);
     this._sessionPricing.delete(sellerPeerId);
     this._currentReserveCeiling.delete(sellerPeerId);
     this._initialReserveAmount.delete(sellerPeerId);
@@ -700,6 +733,14 @@ export class BuyerPaymentManager {
     }
 
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    if (this._refusedClaims.has(sellerPeerId)) {
+      // A 402 retry reopens the overdraft window, and this seller has none.
+      debugWarn(
+        `[BuyerPayment] Not extending the session with ${sellerPeerId.slice(0, 12)}...: ` +
+        `the buyer refused a charge it claimed on this channel`,
+      );
+      return { sessionId: session.sessionId, topUp: false };
+    }
     let maxSignable = this._maxSignable(sellerPeerId);
     const reopened = this._reopenOverdraftWindowIfCollapsed(
       sellerPeerId,
@@ -1173,10 +1214,9 @@ export class BuyerPaymentManager {
    * Sign and send an initial EIP-712 SpendingAuth to a seller.
    * The initial cumulativeAmount is set to the seller's minBudgetPerRequest.
    *
-   * @param pricing Token pricing from the seller's 402 / peer metadata.
+   * @param pricing Token pricing from peer metadata.
    * @param pricingMap Full pricing map (defaults + per-service) from peer metadata. If provided,
-   *   merges with existing session pricing. The `pricing` arg is used as the service-specific
-   *   override for the service that triggered the 402.
+   *   it replaces the session pricing, with `pricing` merged over its defaults.
    */
   async authorizeSpending(
     sellerPeerId: string,
@@ -1184,7 +1224,7 @@ export class BuyerPaymentManager {
     minBudgetPerRequest: bigint,
     reserveAmountOrPricing?: bigint | ServicePricing,
     pricingArg?: ServicePricing,
-    pricingMap?: { defaults: ServicePricing; services: Record<string, ServicePricing> },
+    pricingMap?: { defaults?: ServicePricing; services: Record<string, ServicePricing> },
     metadataArg?: PeerMetadata,
   ): Promise<string> {
     const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
@@ -1207,8 +1247,6 @@ export class BuyerPaymentManager {
     this._confirmedPeers.delete(sellerPeerId);
 
     // Store full pricing map (defaults + all per-service overrides).
-    // Merge 402-negotiated pricing on top of peer-metadata defaults so
-    // the seller's live rate takes precedence over cached peer metadata.
     if (pricingMap) {
       const mergedDefaults = pricing
         ? { ...pricingMap.defaults, ...pricing }
@@ -1234,6 +1272,7 @@ export class BuyerPaymentManager {
     this._metadata.set(sellerPeerId, initialMetadata);
     this._verifiedCost.set(sellerPeerId, 0n);
     this._requestLedgers.delete(sellerPeerId);
+    this._refusedClaims.delete(sellerPeerId);
     this._currentReserveCeiling.set(sellerPeerId, 0n);
     this._initialReserveAmount.set(sellerPeerId, maxAmount);
     this._reserveSalt.set(sellerPeerId, salt);
@@ -1482,7 +1521,8 @@ export class BuyerPaymentManager {
 
   private _maxSignableForVerified(sellerPeerId: string, verified: bigint): bigint {
     const ceiling = this._getCeiling(sellerPeerId);
-    const maxSignable = verified + this._config.maxPerRequestUsdc;
+    // No overdraft window for a seller that claimed a cost the buyer owes nothing for.
+    const maxSignable = this._refusedClaims.has(sellerPeerId) ? verified : verified + this._config.maxPerRequestUsdc;
     return maxSignable < ceiling ? maxSignable : ceiling;
   }
 
@@ -1934,8 +1974,10 @@ export class BuyerPaymentManager {
 
     if (this.isRequestCovered(sellerPeerId, payload.requestId)) {
       debugWarn(
-        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} it served from a free allowance`,
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId}: ` +
+        `it is free (a route priced at zero, or served from a free allowance)`,
       );
+      this._recordRefusedClaim(sellerPeerId, payload);
       return false;
     }
 
@@ -1960,6 +2002,21 @@ export class BuyerPaymentManager {
         `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... claiming a cost for request ` +
         `${payload.requestId ?? '(none)'}: nothing is owed for it`,
       );
+      return false;
+    }
+    if (
+      record && pricedAtZero(record) && hasPositiveCost(payload.lastRequestCost)
+      && verifiedAtZero(requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService), requestBilling?.unitModel)
+    ) {
+      // The buyer received the response, read its usage and its price for the
+      // request is zero (not a small cost rounded to 0): nothing is owed for
+      // it, and nothing is signed for it from the overdraft window either. The
+      // record stays, so a close still attributes the response's usage.
+      debugWarn(
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... claiming ${payload.lastRequestCost} for request ` +
+        `${payload.requestId}: the buyer's own price for the response it received is 0`,
+      );
+      this._recordRefusedClaim(sellerPeerId, payload);
       return false;
     }
     if (record && hasPositiveCost(payload.lastRequestCost) !== record.costUsdc > 0n) {
@@ -2715,6 +2772,11 @@ export class BuyerPaymentManager {
     this._requestService.track(requestId, service);
   }
 
+  /** The service the buyer asked for in `requestId`, as tracked when it was sent. */
+  getRequestService(requestId: string): string | undefined {
+    return this._requestService.get(requestId);
+  }
+
   trackRequestBilling(requestId: string, entry: BuyerRequestBillingEntry): void {
     this._cleanupRequestBillingCache();
     this._requestService.track(requestId, entry.context.service);
@@ -2927,8 +2989,29 @@ export class BuyerPaymentManager {
   }
 
   /**
-   * `sellerPeerId` marked `requestId` as covered by a free allowance: forget its
-   * billing and refuse any later NeedAuth from that seller claiming a charge for it.
+   * A seller claimed a positive cost for a response the buyer owes nothing
+   * for. The claim is refused, and from here on the seller gets no overdraft
+   * window on this channel (see _refusedClaims).
+   */
+  private _recordRefusedClaim(sellerPeerId: string, payload: NeedAuthPayload): void {
+    if (!hasPositiveCost(payload.lastRequestCost)) return;
+    this._refusedClaims.add(sellerPeerId);
+  }
+
+  /**
+   * Whether the buyer refused a charge from `sellerPeerId` on the active
+   * channel (see _refusedClaims): it then signs nothing past verified cost for
+   * this seller, so the channel cannot serve another paid request.
+   */
+  hasRefusedClaim(sellerPeerId: string): boolean {
+    return this._refusedClaims.has(sellerPeerId);
+  }
+
+  /**
+   * Nothing is owed to `sellerPeerId` for `requestId`: the buyer sent it on a
+   * route priced at zero, or the seller marked it as covered by a free
+   * allowance. Forget its billing and refuse any later NeedAuth from that
+   * seller claiming a charge for it.
    */
   markRequestCovered(sellerPeerId: string, requestId: string): void {
     this.clearRequestBilling(requestId);
@@ -2975,7 +3058,7 @@ export class BuyerPaymentManager {
       const servicePricing = map.services[service];
       if (servicePricing) return servicePricing;
     }
-    return map.defaults;
+    return map.defaults ?? null;
   }
 
   /** Check if a session has been confirmed via AuthAck. */

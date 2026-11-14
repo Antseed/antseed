@@ -16,6 +16,13 @@ import type { ProxyMux } from './proxy-mux.js';
 import { PaymentMux } from './payment-mux.js';
 import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { BuyerPaymentNegotiator, SelectedBillingRoute } from './buyer-payment-negotiator.js';
+import {
+  announcedDefaultPricing,
+  isReadableTokenPricing,
+  paymentNegotiationFailureResponse,
+  PRICE_MISMATCH_MESSAGE,
+  PRICE_UNKNOWN_MESSAGE,
+} from './buyer-payment-negotiator.js';
 import { debugLog, debugWarn } from './debug.js';
 import type { VerificationMux } from './verification-mux.js';
 import type { ResponseAuthSink } from './interfaces.js';
@@ -228,10 +235,14 @@ export class BuyerRequestHandler {
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
+    // Free by its announced price (a retrieve is free to send, but its job is paid).
+    const isFreeRoute = isFreeService && videoRoute?.action !== 'retrieve';
     // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
     if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
       if (isFreeService) {
+        // Nothing is owed on a route priced at zero: a seller's charge for this request is refused.
+        if (isFreeRoute) negotiator.bpm?.markRequestCovered(peer.peerId, req.requestId);
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
         try {
           await negotiator.prepareFreeUsageOpen(peer, conn, delegationsHeader);
@@ -250,6 +261,23 @@ export class BuyerRequestHandler {
           throw new Error(
             `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
+        }
+        // Without a price the buyer cannot check what it is charged, so it
+        // sends nothing: the seller serves nothing and nothing is signed.
+        // An announced token price must be readable; with none, a unit model prices the route.
+        const priceKnown = billingRoute
+          ? (billingRoute.tokenPricing ? isReadableTokenPricing(billingRoute.tokenPricing) : Boolean(billingRoute.unitModel))
+          : Boolean(findPeerServicePricing(peer, requestedService)
+            || Object.values(peer.providerServiceUnitBillingModels ?? {}).some((models) => models.services[requestedService]));
+        if (!priceKnown) {
+          debugWarn(
+            `[BuyerRequest] ${peer.peerId.slice(0, 12)}... announces no price for ${requestedService} — not sending the request`,
+          );
+          return adaptPeerResponse(paymentNegotiationFailureResponse(
+            { requestId: req.requestId, statusCode: 409, headers: {}, body: new Uint8Array(0) },
+            'price_unknown',
+            PRICE_UNKNOWN_MESSAGE,
+          ));
         }
         const price = negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
         if (videoRoute?.action === 'create') videoPriceUsdc = price;
@@ -552,6 +580,16 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
+    if (negotiator && isFreeRoute && startsPaymentNegotiation(response)) {
+      // The buyer prices this route at zero, so it opens no channel and signs
+      // nothing for it: the seller's price and its announcement disagree.
+      debugWarn(
+        `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
+        `which it announces as free — refusing instead of negotiating`,
+      );
+      return adaptPeerResponse(paymentNegotiationFailureResponse(response, 'price_mismatch', PRICE_MISMATCH_MESSAGE));
+    }
+
     if (negotiator && startsPaymentNegotiation(response)) {
       // Parallel requests can leave the seller's spend several requests ahead
       // of the signed cumulative. Keep catching up while the gap shrinks or
@@ -850,19 +888,10 @@ function selectTokenPricing(
 ): SelectedBillingRoute["tokenPricing"] {
   const providerPricing = peer.providerPricing?.[provider];
   const pricing = providerPricing?.services?.[service] ?? providerPricing?.defaults;
+  // An unreadable price stays on the route, so the send gate refuses it
+  // instead of billing by another price (isZeroTokenPricing never reads it as free).
   if (pricing) return pricing;
-  return peerDefaultPricing(peer);
-}
-
-function peerDefaultPricing(peer: BuyerPeerView): SelectedBillingRoute["tokenPricing"] {
-  if (peer.defaultInputUsdPerMillion == null && peer.defaultOutputUsdPerMillion == null) {
-    return undefined;
-  }
-  return {
-    inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-    outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-    cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-  };
+  return announcedDefaultPricing(peer);
 }
 
 function isZeroTokenPricing(pricing: SelectedBillingRoute["tokenPricing"]): boolean {
@@ -1028,8 +1057,9 @@ function isPeerServiceFree(peer: BuyerPeerView, service: string): boolean {
   }
   const servicePricing = findPeerServicePricing(peer, service);
   if (!servicePricing) return false;
-  return (servicePricing.inputUsdPerMillion ?? 0) === 0
-    && (servicePricing.outputUsdPerMillion ?? 0) === 0
+  // A missing input or output price is unknown, not free.
+  return servicePricing.inputUsdPerMillion === 0
+    && servicePricing.outputUsdPerMillion === 0
     && (servicePricing.cachedInputUsdPerMillion ?? 0) === 0;
 }
 
@@ -1040,16 +1070,9 @@ function findPeerServicePricing(peer: BuyerPeerView, service: string): {
 } | null {
   for (const providerPricing of Object.values(peer.providerPricing ?? {})) {
     const servicePricing = providerPricing.services?.[service];
-    if (servicePricing) return servicePricing;
+    if (servicePricing) return isReadableTokenPricing(servicePricing) ? servicePricing : null;
   }
-  if (peer.defaultInputUsdPerMillion != null || peer.defaultOutputUsdPerMillion != null) {
-    return {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
-  }
-  return null;
+  return announcedDefaultPricing(peer) ?? null;
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {

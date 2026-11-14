@@ -87,6 +87,33 @@ describe('network service catalog', () => {
     });
   });
 
+  it('shows a service with its own price at the cached price it bills, not the default cached price', () => {
+    const offers = buildNetworkServiceOffers([peer({
+      providerPricing: {
+        openai: {
+          defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.3 },
+          services: { m: { inputUsdPerMillion: 0.2, outputUsdPerMillion: 0.4 }, n: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 } },
+        },
+      },
+      defaultCachedInputUsdPerMillion: 0.3,
+    })]);
+
+    const offer = (serviceId: string) => offers.find((candidate) => candidate.serviceId === serviceId);
+    // Its cached input is billed at its own input price.
+    expect(offer('m')).toMatchObject({ inputUsdPerMillion: 0.2, outputUsdPerMillion: 0.4 });
+    expect(offer('m')?.cachedInputUsdPerMillion).toBeUndefined();
+    expect(offer('n')).toMatchObject({ cachedInputUsdPerMillion: 0.1 });
+  });
+
+  it('shows a service priced by the defaults at the default cached price', () => {
+    const offers = buildNetworkServiceOffers([peer({
+      providers: ['openai'],
+      services: ['gpt-4o'],
+      providerPricing: { openai: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.3 } } },
+    })]);
+    expect(offers[0]).toMatchObject({ serviceId: 'gpt-4o', inputUsdPerMillion: 3, cachedInputUsdPerMillion: 0.3 });
+  });
+
   it('does not assign every legacy service only to the first provider', () => {
     const offers = buildNetworkServiceOffers([peer({
       providers: ['anthropic', 'openai-responses'],

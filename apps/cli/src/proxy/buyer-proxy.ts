@@ -477,6 +477,13 @@ function isBuyerPaymentNegotiationError(body: Buffer): boolean {
 }
 
 /**
+ * The buyer refused the seller's price: it asked for more than it announces,
+ * or announces none. Read from the buyer's own answer, flat (its `reason`) or
+ * adapted to a model API (its message, kept as `peer_message`).
+ */
+const SELLER_PRICE_REFUSED = /\bprice_(?:mismatch|unknown)\b|announces (?:as free|no price)|higher price than it announces|more than the prices it announces/i
+
+/**
  * The status peer health records for a response. A payment catch-up still
  * pending is the buyer's own channel state with a live seller: record it like
  * busy, which never escalates to a cooldown.
@@ -494,6 +501,11 @@ export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
   if (result.errorMessage) return { description: `request failed (${result.errorMessage.split('\n')[0]!.slice(0, 120)})`, sellerOnly: true, weight: 1 }
   // Busy is not broken: it costs the seller less, and only when another seller served.
   if (result.statusCode === 429) return { description: 'HTTP 429 (busy)', sellerOnly: false, weight: 0.5 }
+  // The seller's price disagrees with its announcement, or it announces none:
+  // that seller cannot serve the request, whoever else can.
+  if (isBuyerPaymentNegotiationError(result.responseBody) && SELLER_PRICE_REFUSED.test(result.responseBody.toString('utf8'))) {
+    return { description: `HTTP ${result.statusCode} (seller price refused)`, sellerOnly: true, weight: 1 }
+  }
   // The buyer's own payment state with the seller (a catch-up still short, a
   // channel being recovered) is transient and partly the buyer's: count it
   // like busy, not as a broken seller.

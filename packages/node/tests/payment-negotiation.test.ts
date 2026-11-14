@@ -574,6 +574,8 @@ describe('Buyer insufficient deposit handling', () => {
       peerId: toPeerId('a'.repeat(40)),
       lastSeen: Date.now(),
       providers: ['openai'],
+      defaultInputUsdPerMillion: 3,
+      defaultOutputUsdPerMillion: 15,
     };
     const req: SerializedHttpRequest = {
       requestId: 'req-short-balance',

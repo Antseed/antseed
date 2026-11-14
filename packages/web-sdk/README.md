@@ -22,7 +22,7 @@ const client = await AntseedWebClient.create({
 });
 
 const sellers = await client.sellers();
-const session = await client.connect(sellers[0].peerId);
+const session = await client.connect(sellers[0]);
 
 const response = await session.request(
   {
@@ -34,6 +34,12 @@ const response = await session.request(
   { onChunk: (data, done) => render(new TextDecoder().decode(data)) },
 );
 ```
+
+`connect()` takes the seller's prices from its announcement: the summary
+`sellers()` returned, or the one it lists for a peer id. A seller with no
+announcement (a relay's static seller) needs its prices passed as the second
+argument, `{ defaultInputUsdPerMillion, defaultOutputUsdPerMillion }`. Without
+a price, paid requests are refused before they are sent.
 
 ## Example page
 

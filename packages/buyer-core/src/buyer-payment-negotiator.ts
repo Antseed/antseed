@@ -182,6 +182,96 @@ function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
 /** The session a payment call started on was retired or replaced while it awaited. */
 class SessionReplacedError extends AntseedRequestError {}
 
+/** What the caller reads when a seller asks to be paid for something it announced as free. */
+export const PRICE_MISMATCH_MESSAGE = 'This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it. '
+  + 'Use another seller, or retry once the seller announces the price it charges.';
+
+/** What the caller reads when the buyer cannot read a price for the request. */
+export const PRICE_UNKNOWN_MESSAGE = 'This seller announces no price for this service, so the buyer signed nothing for it. Use another seller.';
+
+/** What the caller reads when a seller asks for more than the price the request's route was chosen at. */
+const PRICE_ABOVE_ANNOUNCED_MESSAGE = 'This seller asked for a higher price than it announces, so the buyer signed nothing for it. '
+  + 'Use another seller, or retry once the seller announces the price it charges.';
+
+/**
+ * Announced prices travel as f32, so the buyer reads the rounding of the
+ * price the seller states (f32 is exact to about 6e-8, relative).
+ */
+const ANNOUNCED_PRICE_TOLERANCE = 1e-5;
+
+/** The first token price a seller states above the route's, or null. */
+function priceAboveRoute(
+  stated: PaymentRequiredPayload,
+  route: ServicePricing,
+): { component: string; stated: number; route: number } | null {
+  const components: Array<[string, number | undefined, number]> = [
+    ['input', stated.inputUsdPerMillion, route.inputUsdPerMillion],
+    ['output', stated.outputUsdPerMillion, route.outputUsdPerMillion],
+    // Both sides bill cached input at the input price when no cached price is
+    // set (computeCostUsdc; the seller's 402 then states none).
+    ['cached input', stated.cachedInputUsdPerMillion ?? stated.inputUsdPerMillion, route.cachedInputUsdPerMillion ?? route.inputUsdPerMillion],
+  ];
+  for (const [component, statedPrice, routePrice] of components) {
+    if (statedPrice != null && statedPrice > routePrice * (1 + ANNOUNCED_PRICE_TOLERANCE)) {
+      return { component, stated: statedPrice, route: routePrice };
+    }
+  }
+  return null;
+}
+
+/**
+ * The peer's announced default price, or undefined. Known only when it is
+ * readable (isReadableTokenPricing): a missing price is unknown, never free.
+ * @internal
+ */
+export function announcedDefaultPricing(peer: BuyerPeerView): ServicePricing | undefined {
+  const pricing = {
+    inputUsdPerMillion: peer.defaultInputUsdPerMillion,
+    outputUsdPerMillion: peer.defaultOutputUsdPerMillion,
+    cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
+  };
+  return isReadableTokenPricing(pricing) ? pricing : undefined;
+}
+
+/**
+ * Whether the buyer can bill by `pricing`: input and output finite and not
+ * negative, and cached input too when present. Anything else is unknown.
+ * @internal
+ */
+export function isReadableTokenPricing(pricing: Partial<ServicePricing> | undefined): pricing is ServicePricing {
+  const readable = (price: unknown): boolean => typeof price === 'number' && Number.isFinite(price) && price >= 0;
+  return pricing != null && readable(pricing.inputUsdPerMillion) && readable(pricing.outputUsdPerMillion)
+    && (pricing.cachedInputUsdPerMillion == null || readable(pricing.cachedInputUsdPerMillion));
+}
+
+/** What the caller reads when the seller is short of a cost the buyer refused on the open channel. */
+const REFUSED_CLAIM_MESSAGE = 'This seller charged more than the prices it announces. The buyer refused that charge '
+  + 'and signs nothing more on this payment channel, so the seller no longer serves it. Use another seller, and close the channel to release its reserve.';
+
+/** A buyer-authored answer for a payment negotiation that was not completed. */
+export function paymentNegotiationFailureResponse(
+  response: SerializedHttpResponse,
+  reason: string,
+  message: string,
+  statusCode = 409,
+): SerializedHttpResponse {
+  return {
+    ...response,
+    statusCode,
+    headers: {
+      ...response.headers,
+      'content-type': 'application/json',
+      // A 503 is transient: tell clients when to retry.
+      ...(statusCode === 503 ? { 'retry-after': '2' } : {}),
+    },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: 'payment_negotiation_failed',
+      reason,
+      message,
+    })),
+  };
+}
+
 export class BuyerPaymentNegotiator {
   private readonly _bpm: BuyerPaymentManager;
   private readonly _depositsClient: DepositsClient | null;
@@ -888,25 +978,39 @@ export class BuyerPaymentNegotiator {
         `[BuyerNegotiator] Auto-negotiation failed for ${peer.peerId.slice(0, 12)}... — ` +
         `${reason}; returning non-payment error to caller`,
       );
-      return {
-        action: 'return',
-        response: {
-          ...response,
-          statusCode,
-          headers: {
-            ...response.headers,
-            'content-type': 'application/json',
-            // A 503 is transient: tell clients when to retry.
-            ...(statusCode === 503 ? { 'retry-after': '2' } : {}),
-          },
-          body: new TextEncoder().encode(JSON.stringify({
-            error: 'payment_negotiation_failed',
-            reason,
-            message,
-          })),
-        },
-      };
+      return { action: 'return', response: paymentNegotiationFailureResponse(response, reason, message, statusCode) };
     };
+
+    // The seller states what it charges for this request. Above the price the
+    // route was chosen at, it would charge more than it announces: refuse
+    // before any channel, extension or signature. A one-off (video) 402
+    // states no token price, and a lower one is fine: the buyer verifies cost
+    // at its own route price either way.
+    // Only prices stated for this request: the 402 body always is, while a
+    // frame is kept per seller and can be another request's. A frame for this
+    // request already buffered next to a complete body is compared too.
+    const frame = buffered ?? this._bufferedPaymentRequired.get(peer.peerId) ?? null;
+    const statedForRequest = [bodyRequirements, frame?.requestId === req.requestId ? frame : null];
+    const routeBilling = this._bpm.getRequestBilling(req.requestId);
+    const service = routeBilling ? routeBilling.context.service : this._bpm.getRequestService(req.requestId);
+    // A request with no billing route is verified at the session pricing this
+    // negotiation stores, so it is held to that price.
+    const routePricing = routeBilling ? routeBilling.tokenPricing : this._negotiatedPricing(peer, service);
+    const aboveRoute = routePricing
+      ? statedForRequest.map((stated) => stated && priceAboveRoute(stated, routePricing)).find((above) => above != null) ?? null
+      : null;
+    if (aboveRoute) {
+      debugWarn(
+        `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... asked ${aboveRoute.stated} USD per million ${aboveRoute.component} tokens ` +
+        `for ${service ?? 'a request'}, above the ${aboveRoute.route} it announces — refusing to sign`,
+      );
+      return returnNegotiationFailure('price_mismatch', PRICE_ABOVE_ANNOUNCED_MESSAGE);
+    }
+    // With no price at all the buyer cannot check what it is charged: it opens,
+    // extends and signs nothing.
+    if (!routePricing && !routeBilling?.unitModel) {
+      return returnNegotiationFailure('price_unknown', PRICE_UNKNOWN_MESSAGE);
+    }
 
     const oneOffPlan = directPaymentBody?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
       ? parseOneOffPlan(directPaymentBody.oneOffPlan)
@@ -1003,6 +1107,13 @@ export class BuyerPaymentNegotiator {
 
     const hasActiveSession = hadLockedSession || session != null;
 
+    // The seller wants more signed, and what it is short of includes a cost
+    // the buyer refused. Signing its target would pay that cost, and a fresh
+    // channel would give the same seller a new overdraft window.
+    if (hasActiveSession && this._bpm.hasRefusedClaim(peer.peerId)) {
+      return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
+    }
+
     if (channelExhausted && hasActiveSession) {
       debugLog(
         `[BuyerNegotiator] Channel exhausted for ${peer.peerId.slice(0, 12)}... ` +
@@ -1040,6 +1151,10 @@ export class BuyerPaymentNegotiator {
       }
       if (recovered) {
         return { action: 'retry' };
+      }
+      // Held while it recovered (a charge refused on a parallel request): never retire or replace it.
+      if (this._bpm.hasRefusedClaim(peer.peerId)) {
+        return returnNegotiationFailure('price_mismatch', REFUSED_CLAIM_MESSAGE);
       }
 
       // Older stored sessions for this seller (e.g. from a reserve that never
@@ -1136,7 +1251,7 @@ export class BuyerPaymentNegotiator {
     const billingEntry = this._bpm.getRequestBilling(request.requestId);
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
-        ?? this._peerDefaultPricing(peer);
+        ?? announcedDefaultPricing(peer);
     if (partial.statusCode >= 400 || !pricing || billingEntry?.unitModel || billingEntry?.requestFacts?.kind === 'video') return;
     const outputTokens = Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body));
     const costUsdc = computeCostUsdc(estimateTokensFromBytesSampled(request.body), outputTokens, pricing);
@@ -1206,7 +1321,7 @@ export class BuyerPaymentNegotiator {
       ?? (requestBody ? usageForBilling(requestBody, response).usage : parseResponseUsage(response.body));
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
-        ?? this._peerDefaultPricing(peer);
+        ?? announcedDefaultPricing(peer);
     const tokenCostUsdc = pricing
       ? computeCostUsdc(usage.freshInputTokens, usage.outputTokens, pricing, usage.cachedInputTokens)
       : 0n;
@@ -1501,15 +1616,10 @@ export class BuyerPaymentNegotiator {
     this._pendingCloseRequests.clear();
   }
 
-  private _peerDefaultPricing(peer: BuyerPeerView): ServicePricing | undefined {
-    if (peer.defaultInputUsdPerMillion == null && peer.defaultOutputUsdPerMillion == null) {
-      return undefined;
-    }
-    return {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
+  /** What getSessionPricing returns for `service` once a negotiation has stored this peer's pricing map. */
+  private _negotiatedPricing(peer: BuyerPeerView, service: string | undefined): ServicePricing | undefined {
+    const map = this._buildPricingMap(peer);
+    return (service ? map?.services[service] : undefined) ?? map?.defaults;
   }
 
   /**
@@ -1517,13 +1627,9 @@ export class BuyerPaymentNegotiator {
    * This ensures the buyer knows pricing for every service the seller offers,
    * not just the one that triggered the 402.
    */
-  private _buildPricingMap(peer: BuyerPeerView): { defaults: ServicePricing; services: Record<string, ServicePricing> } | undefined {
-    const defaults: ServicePricing = {
-      inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-      outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-      cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-    };
-    if (defaults.inputUsdPerMillion === 0 && defaults.outputUsdPerMillion === 0 && !peer.providerPricing) {
+  private _buildPricingMap(peer: BuyerPeerView): { defaults?: ServicePricing; services: Record<string, ServicePricing> } | undefined {
+    const defaults = announcedDefaultPricing(peer);
+    if (!defaults && !peer.providerPricing) {
       return undefined;
     }
 
@@ -1532,6 +1638,8 @@ export class BuyerPaymentNegotiator {
       for (const entry of Object.values(peer.providerPricing)) {
         if (entry.services) {
           for (const [serviceName, sp] of Object.entries(entry.services)) {
+            // An unreadable price is unknown: it never becomes what the buyer verifies by.
+            if (!isReadableTokenPricing(sp)) continue;
             services[serviceName] = {
               inputUsdPerMillion: sp.inputUsdPerMillion,
               outputUsdPerMillion: sp.outputUsdPerMillion,
@@ -1623,20 +1731,9 @@ export class BuyerPaymentNegotiator {
       suggestedAmount: amount.toString(),
     });
 
-    // Extract pricing from seller's PaymentRequired or peer metadata
-    const pricing = (requirements.inputUsdPerMillion != null || requirements.outputUsdPerMillion != null)
-      ? {
-          inputUsdPerMillion: requirements.inputUsdPerMillion ?? peer.defaultInputUsdPerMillion ?? 0,
-          outputUsdPerMillion: requirements.outputUsdPerMillion ?? peer.defaultOutputUsdPerMillion ?? 0,
-          cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion ?? peer.defaultCachedInputUsdPerMillion,
-        }
-      : (peer.defaultInputUsdPerMillion != null || peer.defaultOutputUsdPerMillion != null)
-        ? {
-            inputUsdPerMillion: peer.defaultInputUsdPerMillion ?? 0,
-            outputUsdPerMillion: peer.defaultOutputUsdPerMillion ?? 0,
-            cachedInputUsdPerMillion: peer.defaultCachedInputUsdPerMillion,
-          }
-        : undefined;
+    // Announced prices only: what the seller states in its PaymentRequired is
+    // never the price the buyer verifies its charges against.
+    const pricing = announcedDefaultPricing(peer);
 
     // Build full pricing map from peer metadata (defaults + all per-service overrides)
     const pricingMap = this._buildPricingMap(peer);
@@ -1825,6 +1922,8 @@ export class BuyerPaymentNegotiator {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
       this._assertLiveChannel(peer.peerId, session.sessionId);
     }
+    // Held while this read the chain: close, extend and retire nothing (the caller answers price_mismatch).
+    if (this._bpm.hasRefusedClaim(peer.peerId)) return false;
     const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
     const deposit = onChain.channel.deposit;
     if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
@@ -1907,6 +2006,8 @@ export class BuyerPaymentNegotiator {
         // lands, instead of the channel being retired with a top-up on its way.
         cumulativeAfter = await signedAfterExtend();
       }
+      // Held while the catch-up was signed: it signed nothing for that reason, not a wedged channel.
+      if (cumulativeAfter <= cumulativeBefore && this._bpm.hasRefusedClaim(peer.peerId)) return false;
       if (cumulativeAfter <= cumulativeBefore) {
         // extendCurrentSpendingAuth was a no-op — the overdraft window and reserve ceiling
         // are both wedged. Retire the session so the caller negotiates a fresh channel

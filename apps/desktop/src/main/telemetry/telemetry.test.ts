@@ -1766,6 +1766,19 @@ test('failure_reason classifies the real buyer-proxy error strings', () => {
   );
 });
 
+test('failure_reason does not count a refusal of the seller\'s price as the buyer\'s fault', () => {
+  // The buyer's 409 answers, as the chat sees them: flat, and adapted with the buyer's message.
+  const priceRefusals = [
+    '409 {"error":"payment_negotiation_failed","reason":"price_unknown","message":"This seller announces no price for this service, so the buyer signed nothing for it. Use another seller."}',
+    '409 {"error":{"type":"payment_negotiation_failed","message":"Oops, peer could not complete the request.","antseed_fault":"peer","peer_message":"This seller asked for a higher price than it announces, so the buyer signed nothing for it."}}',
+    '409 {"error":{"type":"payment_negotiation_failed","antseed_fault":"peer","peer_message":"This seller asked to be paid for a service it announces as free, so the buyer signed nothing for it."}}',
+    '409 {"error":{"type":"payment_negotiation_failed","antseed_fault":"peer","peer_message":"This seller charged more than the prices it announces. The buyer refused that charge."}}',
+  ];
+  for (const message of priceRefusals) assert.equal(reasonFor(message).reason, 'request_rejected', message);
+  // Any other payment negotiation failure is still the buyer's own.
+  assert.equal(reasonFor('503 {"error":"payment_negotiation_failed","reason":"catch_up_incomplete"}').reason, 'local_error');
+});
+
 test('connected-app request matcher needs a matching slug active since connect', () => {
   const conversations = [
     { tool: 'OpenCode', lastActiveAt: 5_000 },

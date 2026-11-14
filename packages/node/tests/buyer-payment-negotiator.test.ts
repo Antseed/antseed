@@ -52,6 +52,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
+    hasRefusedClaim: vi.fn().mockReturnValue(false),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     replayReserveAmount: vi.fn().mockReturnValue(100_000n),
@@ -62,6 +63,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     recordDeliveredResponse: vi.fn(),
     recordObservedUnitUsage: vi.fn(),
     getRequestBilling: vi.fn().mockReturnValue(undefined),
+    getRequestService: vi.fn().mockReturnValue(undefined),
     getSessionPricing: vi.fn().mockReturnValue(null),
     maxPerRequestUsdc: 100_000n,
     maxVideoRequestUsdc: 5_000_000n,
@@ -466,6 +468,20 @@ describe('BuyerPaymentNegotiator', () => {
         });
       });
 
+      it('signs nothing and opens no replacement when the seller is short of a cost the buyer refused', async () => {
+        setSigned(5_000_000n);
+        (bpm.hasRefusedClaim as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(result.action).toBe('return');
+        const answer = (result as { response: SerializedHttpResponse }).response;
+        expect(answer.statusCode).toBe(409);
+        expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+        for (const fn of [bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.authorizeSpending, bpm.retireSession]) {
+          expect(fn).not.toHaveBeenCalled();
+        }
+      });
+
       it('resends the current authorization instead of raising the signed cumulative', async () => {
         setSigned(5_600_000n);
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
@@ -749,6 +765,39 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    it('answers price_mismatch instead of replacing a channel held while its recovery read the chain', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue({ ...makeActiveSession(peer.peerId), authMax: '500' });
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(500n);
+      // The hold makes the catch-up sign nothing.
+      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+      (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      });
+      const readChain = channelsClient.getSession as ReturnType<typeof vi.fn>;
+      const onChain = await readChain();
+      // A parallel request's NeedAuth claim is refused, holding the channel, while this one reads the chain.
+      readChain.mockImplementation(async () => {
+        (bpm.hasRefusedClaim as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        return onChain;
+      });
+
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: paymentRequiredPayload.minBudgetPerRequest,
+        suggestedAmount: paymentRequiredPayload.suggestedAmount,
+        requiredCumulativeAmount: '600',
+      }), peer, conn, makeRequest());
+
+      expect(result.action).toBe('return');
+      const answer = (result as { response: SerializedHttpResponse }).response;
+      expect(answer.statusCode).toBe(409);
+      expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
+    });
+
     it('retires a missing on-chain session before negotiating a new reserve', async () => {
       const activeSession = makeActiveSession(peer.peerId);
       (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(activeSession);
@@ -900,6 +949,215 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
       expect(bpm.authorizeSpending).toHaveBeenCalled();
       expect(result.action).toBe('retry');
+    });
+
+    describe('when the seller states a price for the request', () => {
+      const ROUTE = { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 };
+      const IMAGE_MODEL = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.04 }] };
+
+      function routeChosenAt(tokenPricing: Record<string, number>, extra: Record<string, unknown> = {}) {
+        (bpm.getRequestBilling as ReturnType<typeof vi.fn>).mockReturnValue({
+          context: { sellerPeerId: peer.peerId, provider: 'openai', service: 'k3', serviceApiProtocol: 'openai-chat-completions' },
+          tokenPricing,
+          ...extra,
+        });
+      }
+
+      function stating(prices: Record<string, unknown>): SerializedHttpResponse {
+        return make402Response({ error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000', ...prices });
+      }
+
+      function confirmLocks() {
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+      }
+
+      function expectRefused(result: Awaited<ReturnType<BuyerPaymentNegotiator['handle402']>>) {
+        expect(result.action).toBe('return');
+        const answer = (result as { response: SerializedHttpResponse }).response;
+        expect(answer.statusCode).toBe(409);
+        expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
+          error: 'payment_negotiation_failed',
+          reason: 'price_mismatch',
+          message: expect.stringContaining('asked for a higher price than it announces'),
+        });
+        for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.resendReserveAuth, bpm.retireSession]) {
+          expect(fn).not.toHaveBeenCalled();
+        }
+      }
+
+      it('refuses the first request before opening a channel when the seller asks more than the route was chosen at', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest()));
+      });
+
+      it('refuses a higher price the seller states only in its PaymentRequired frame', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, { ...paymentRequiredPayload, inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+        expectRefused(await negotiator.handle402(make402Response(), peer, conn, makeRequest()));
+      });
+
+      it('does not hold a higher price stated in a frame for another request against this one', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        // A parallel request to a pricier service: its frame is the one buffered for this seller.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, {
+          ...paymentRequiredPayload, requestId: 'req-expensive', inputUsdPerMillion: 3, outputUsdPerMillion: 15,
+        });
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+
+      it('signs nothing more on an open channel when the seller asks more than the route was chosen at', async () => {
+        await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+        routeChosenAt(ROUTE);
+        expectRefused(await negotiator.handle402(stating({
+          requiredCumulativeAmount: '85119',
+          currentSpent: '85119',
+          currentAcceptedCumulative: '56218',
+          inputUsdPerMillion: 3,
+          outputUsdPerMillion: 15,
+        }), peer, conn, makeRequest()));
+      });
+
+      it('refuses a 402 that states no cached price for a route with a cached discount: the seller bills cached input at its input price', async () => {
+        routeChosenAt({ inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.75 });
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest()));
+      });
+
+      describe('with a complete 402 body and a PaymentRequired frame buffered for the seller', () => {
+        const catchUpWithoutPrices = { requiredCumulativeAmount: '85119', currentSpent: '85119', currentAcceptedCumulative: '56218' };
+        function frameFor(requestId: string) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (negotiator as any)._bufferedPaymentRequired.set(peer.peerId, {
+            ...paymentRequiredPayload, ...catchUpWithoutPrices, requestId, inputUsdPerMillion: 3, outputUsdPerMillion: 15,
+          });
+        }
+
+        beforeEach(async () => {
+          await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+          (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+          routeChosenAt(ROUTE);
+        });
+
+        it('refuses when the frame for this request states a higher price', async () => {
+          frameFor('req-1');
+          expectRefused(await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest()));
+        });
+
+        it('still negotiates when the higher price is in a frame for another request', async () => {
+          frameFor('req-expensive');
+          (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValueOnce(56218n).mockReturnValueOnce(85119n);
+          (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+            (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+          });
+          const result = await negotiator.handle402(stating({ ...catchUpWithoutPrices, channelId: makeActiveSession(peer.peerId).sessionId }), peer, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalled();
+        });
+      });
+
+      it('refuses a cached-input price above the input price when the route announces no cached price', async () => {
+        routeChosenAt(ROUTE);
+        confirmLocks();
+        expectRefused(await negotiator.handle402(stating({ ...ROUTE, cachedInputUsdPerMillion: 0.9 }), peer, conn, makeRequest()));
+      });
+
+      it.each([
+        // The announcement carries prices as f32, so the route holds the rounding of the price the seller states.
+        ['the price it announces, before f32 rounding', { inputUsdPerMillion: Math.fround(0.7), outputUsdPerMillion: Math.fround(0.1), cachedInputUsdPerMillion: Math.fround(0.35) }, { inputUsdPerMillion: 0.7, outputUsdPerMillion: 0.1, cachedInputUsdPerMillion: 0.35 }],
+        ['a lower price', ROUTE, { inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.6, cachedInputUsdPerMillion: 0.1 }],
+        ['no cached price, for a route with none', ROUTE, ROUTE],
+        ['the cached discount the route has', { ...ROUTE, cachedInputUsdPerMillion: 0.15 }, { ...ROUTE, cachedInputUsdPerMillion: 0.15 }],
+        // A cached price of 0 travels as no cached price, so the route has none.
+        ['a cached price of 0, for a route with none', ROUTE, { ...ROUTE, cachedInputUsdPerMillion: 0 }],
+      ])('still negotiates when the seller states %s', async (_label, route, stated) => {
+        routeChosenAt(route);
+        confirmLocks();
+        const result = await negotiator.handle402(stating(stated), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
+
+      describe('on a request with no billing route', () => {
+        function serviceTracked(service: string | undefined) {
+          (bpm.getRequestBilling as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+          (bpm.getRequestService as ReturnType<typeof vi.fn>).mockReturnValue(service);
+        }
+
+        it('refuses a higher price than the announced default it will be verified at', async () => {
+          serviceTracked('k3');
+          confirmLocks();
+          const announced = { ...peer, defaultInputUsdPerMillion: 0.6, defaultOutputUsdPerMillion: 1.2 };
+          expectRefused(await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), announced, conn, makeRequest()));
+        });
+
+        it('still negotiates the price it announces for the service, above its defaults', async () => {
+          serviceTracked('k3');
+          confirmLocks();
+          const announced = {
+            ...peer,
+            defaultInputUsdPerMillion: 0.6,
+            defaultOutputUsdPerMillion: 1.2,
+            providerPricing: {
+              openai: {
+                defaults: { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 },
+                services: { k3: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
+              },
+            },
+          };
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), announced, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+        });
+
+        it.each([
+          ['a service', 'k3'],
+          ['no service (a request with no model)', undefined],
+        ])('refuses to negotiate when the buyer has no price for a request naming %s', async (_label, service) => {
+          serviceTracked(service);
+          confirmLocks();
+          const unpriced = { peerId: peer.peerId, lastSeen: peer.lastSeen, providers: [] } as PeerInfo;
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), unpriced, conn, makeRequest());
+          expect(result.action).toBe('return');
+          const answer = (result as { response: SerializedHttpResponse }).response;
+          expect(answer.statusCode).toBe(409);
+          expect(JSON.parse(new TextDecoder().decode(answer.body))).toMatchObject({
+            error: 'payment_negotiation_failed',
+            reason: 'price_unknown',
+            message: expect.stringContaining('announces no price for this service'),
+          });
+          for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.resendReserveAuth, bpm.retireSession]) {
+            expect(fn).not.toHaveBeenCalled();
+          }
+        });
+
+        it('still negotiates a request with no model to a peer that announces default prices', async () => {
+          serviceTracked(undefined);
+          confirmLocks();
+          const result = await negotiator.handle402(stating({ inputUsdPerMillion: 3, outputUsdPerMillion: 15 }), peer, conn, makeRequest());
+          expect(result.action).toBe('retry');
+          expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+        });
+      });
+
+      it('still negotiates a per-image route whose 402 states zero token prices', async () => {
+        routeChosenAt({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, { unitModel: IMAGE_MODEL });
+        confirmLocks();
+        const result = await negotiator.handle402(stating({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 }), peer, conn, makeRequest());
+        expect(result.action).toBe('retry');
+        expect(bpm.authorizeSpending).toHaveBeenCalledOnce();
+      });
     });
 
     it('auto-negotiates and returns retry on success', async () => {
