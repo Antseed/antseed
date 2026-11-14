@@ -101,4 +101,90 @@ describe('model route ranking', () => {
 
     expect(chooseBestModelRoute([cheaper, allowed], restricted)?.peerId).toBe(allowed.peerId);
   });
+
+  it('rotates equally priced, equally scored sellers instead of pinning the first peer id', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const selected = Array.from({ length: 8 }, () => chooseBestModelRoute([beta, alpha], preferences)?.peerId);
+    const tally = new Map<string, number>();
+    for (const peerId of selected) tally.set(peerId ?? '', (tally.get(peerId ?? '') ?? 0) + 1);
+
+    expect(tally.get(alpha.peerId)).toBe(4);
+    expect(tally.get(beta.peerId)).toBe(4);
+    for (let i = 1; i < selected.length; i += 1) expect(selected[i]).not.toBe(selected[i - 1]);
+  });
+
+  it('follows a new ranking when one tied seller pulls ahead', () => {
+    const alpha = route({ peerId: 'c'.repeat(40) });
+    const beta = route({ peerId: 'd'.repeat(40) });
+    const whileTied = Array.from({ length: 4 }, () => chooseBestModelRoute([alpha, beta], preferences)?.peerId);
+    expect(new Set(whileTied)).toEqual(new Set([alpha.peerId, beta.peerId]));
+
+    const ahead = route({ peerId: alpha.peerId, effectiveReputationScore: 100 });
+    const after = Array.from({ length: 6 }, () => chooseBestModelRoute([beta, ahead], preferences)?.peerId);
+    expect(after).toEqual(Array(6).fill(ahead.peerId));
+  });
+
+  it('keeps selecting the only seller', () => {
+    const only = route({ peerId: 'e'.repeat(40) });
+    const selected = Array.from({ length: 5 }, () => chooseBestModelRoute([only], preferences)?.peerId);
+    expect(selected).toEqual(Array(5).fill(only.peerId));
+  });
+
+  it('returns no seller for an empty list', () => {
+    expect(chooseBestModelRoute([], preferences)).toBeNull();
+    expect(rankModelRoutes([], preferences)).toEqual([]);
+  });
+
+  it('rotates each tied pool on its own when rankings alternate', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const gamma = route({ peerId: 'c'.repeat(40) });
+    const delta = route({ peerId: 'd'.repeat(40) });
+    const firstPool: string[] = [];
+    const secondPool: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      firstPool.push(chooseBestModelRoute([alpha, beta], preferences)?.peerId ?? '');
+      secondPool.push(chooseBestModelRoute([gamma, delta], preferences)?.peerId ?? '');
+    }
+    expect(new Set(firstPool)).toEqual(new Set([alpha.peerId, beta.peerId]));
+    expect(new Set(secondPool)).toEqual(new Set([gamma.peerId, delta.peerId]));
+    for (let i = 1; i < firstPool.length; i += 1) {
+      expect(firstPool[i]).not.toBe(firstPool[i - 1]);
+      expect(secondPool[i]).not.toBe(secondPool[i - 1]);
+    }
+  });
+
+  it('lets a preview read the next seller without spending the turn', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const preview = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model', advance: false })[0]?.peerId;
+    const again = rankModelRoutes([beta, alpha], preferences, 1, { rotationKey: 'preview-model', advance: false })[0]?.peerId;
+    expect(again).toBe(preview);
+    const live = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model' })[0]?.peerId;
+    expect(live).toBe(preview);
+    const next = rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'preview-model' })[0]?.peerId;
+    expect(next).not.toBe(live);
+  });
+
+  it('keeps two models that share sellers on separate rotations', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const modelA: string[] = [];
+    const modelB: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(rankModelRoutes([alpha, beta], preferences, 1, { rotationKey: 'model-a' })[0]?.peerId ?? '');
+      modelB.push(rankModelRoutes([beta, alpha], preferences, 1, { rotationKey: 'model-b' })[0]?.peerId ?? '');
+    }
+    expect(new Set(modelA)).toEqual(new Set([alpha.peerId, beta.peerId]));
+    expect(new Set(modelB)).toEqual(new Set([alpha.peerId, beta.peerId]));
+  });
+
+  it('does not rotate a cooling seller ahead of a ready one at the same price', () => {
+    const now = 1_700_000_000_000;
+    const ready = route({ peerId: 'a'.repeat(40) });
+    const cooling = route({ peerId: 'b'.repeat(40), peerCooldownUntil: now + 30_000 });
+    const selected = Array.from({ length: 4 }, () => chooseBestModelRoute([cooling, ready], preferences, now)?.peerId);
+    expect(selected).toEqual(Array(4).fill(ready.peerId));
+  });
 });
