@@ -93,6 +93,8 @@ export interface AntsContextOptions {
   provider?: AbstractProvider;
   /** Persists the colony pools linked in this dashboard (all of them), so a restart still shows them. */
   saveColonyPools?: (addresses: string[]) => Promise<void>;
+  /** Persists the Macs linked in this dashboard, per pool, so their older ANTS stay claimable after a restart. */
+  saveColonyPoolWorkers?: (workers: Record<string, string[]>) => Promise<void>;
 }
 
 function sameAddress(a?: string | null, b?: string | null): boolean {
@@ -131,6 +133,9 @@ export class AntsContext {
   private indexerClient: Indexer | null | undefined;
   private rpcOrder: string[] | null = null;
   saveColonyPools: ((addresses: string[]) => Promise<void>) | undefined;
+  saveColonyPoolWorkers: ((workers: Record<string, string[]>) => Promise<void>) | undefined;
+  /** The Macs linked in this dashboard, per pool (lowercase). */
+  private readonly colonyWorkers = new Map<string, string[]>();
   /** Pools named in the configuration: shown always, never forgotten from the dashboard. */
   private readonly configuredColonyPools: ReadonlySet<string>;
 
@@ -145,6 +150,7 @@ export class AntsContext {
     this.probeRpc = options.probeRpc ?? probeRpcEndpoint;
     this.injectedProvider = options.provider ?? null;
     this.saveColonyPools = options.saveColonyPools;
+    this.saveColonyPoolWorkers = options.saveColonyPoolWorkers;
   }
 
   /**
@@ -284,6 +290,18 @@ export class AntsContext {
   async rememberColonyPool(address: string): Promise<void> {
     this.chain.colonyPoolAddresses = [...(this.chain.colonyPoolAddresses ?? []), address];
     await this.saveColonyPools?.(this.colonyPoolAddresses());
+  }
+  /** The Macs linked to a wallet from this dashboard on `pool`. */
+  colonyPoolWorkers(pool: string): string[] {
+    return this.colonyWorkers.get(pool.toLowerCase()) ?? [];
+  }
+  /** Remember a Mac linked on `pool`, and persist that through the host. */
+  async rememberColonyPoolWorker(pool: string, worker: string): Promise<void> {
+    const key = pool.toLowerCase();
+    const workers = this.colonyPoolWorkers(key);
+    if (workers.includes(worker.toLowerCase())) return;
+    this.colonyWorkers.set(key, [...workers, worker.toLowerCase()]);
+    await this.saveColonyPoolWorkers?.(Object.fromEntries(this.colonyWorkers));
   }
   /** Whether a pool was linked through this dashboard rather than configured. */
   isLinkedColonyPool(address: string): boolean {

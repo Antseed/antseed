@@ -243,9 +243,22 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///         withdrawn by its buyer, say) still holds for a later tail to
     ///         `remainderRecipient`. Callable by anyone.
     function releaseHeld(bytes32 channelId) external nonReentrant {
-        (,,,,,,,, uint8 status) = IAntseedChannelState(address(_channels())).channels(channelId);
+        _releaseHeldFrom(address(_channels()), channelId);
+    }
+
+    /// @notice `releaseHeld` for a channel of `channelsContract`, which may be a
+    ///         Channels contract the registry has since replaced. Only a contract
+    ///         this pool settled through ever has anything held under it.
+    function releaseHeldFrom(address channelsContract, bytes32 channelId) external nonReentrant {
+        _releaseHeldFrom(channelsContract, channelId);
+    }
+
+    function _releaseHeldFrom(address channelsContract, bytes32 channelId) internal {
+        bytes32 key = keccak256(abi.encode(channelsContract, channelId));
+        if (_heldUnits[key] == 0 && _heldHead[key] >= _held[key].length) return;
+        (,,,,,,,, uint8 status) = IAntseedChannelState(channelsContract).channels(channelId);
         if (status == 1) revert ChannelStillActive();
-        _releaseHeld(channelId, _channelKey(channelId));
+        _releaseHeld(channelId, key);
     }
 
     // ═══════════════════════════════════════════════════════════════════

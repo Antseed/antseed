@@ -64,21 +64,43 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
 /** What one colony pool owes the connected wallet over `epochs`, read against `stack`. */
 async function readColonyPool(ctx: AntsContext, address: string, epochs: number[], stack: ResolvedStack): Promise<ColonyPoolsView['pools'][number]> {
   const pool = ctx.colonyPool(address);
-  // Only an epoch the wallet has weight in can owe it ANTS, so the rest cost one batched read each.
-  const [usdcOwed, weights] = await Promise.all([
+  // Macs linked here keep their ANTS from before the link (older epochs than it moved): this
+  // wallet claims those with claimAntsFor, but only while each Mac's payout is still this wallet.
+  const linked = ctx.colonyPoolWorkers(address).filter((worker) => worker !== ctx.address.toLowerCase());
+  const payouts = await Promise.all(linked.map((worker) => pool.payoutOf(worker)));
+  const workers = linked.filter((_, index) => payouts[index]!.toLowerCase() === ctx.address.toLowerCase());
+  const [usdcOwed, own, ...workerEarnings] = await Promise.all([
     pool.usdcBalance(ctx.address),
-    readEach(ctx, address, 'epochWeight', epochs.map((epoch) => [epoch, ctx.address])),
+    accountAnts(ctx, address, ctx.address, epochs),
+    ...workers.map((worker) => accountAnts(ctx, address, worker, epochs)),
   ]);
+  const unfunded = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.unfunded))].sort((a, b) => a - b);
+  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, unfunded);
+  const workerAnts = workers
+    .map((worker, index) => ({ worker, antsOwed: workerEarnings[index]!.owed.toString(), antsEpochs: workerEarnings[index]!.epochs }))
+    .filter((entry) => entry.antsEpochs.length > 0);
+  const antsOwed = workerEarnings.reduce((sum, earned) => sum + earned.owed, own.owed);
+  return {
+    address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs: own.epochs, unfundedEpochs,
+    ...(workerAnts.length > 0 ? { workerAnts } : {}),
+    forgettable: ctx.isLinkedColonyPool(address),
+  };
+}
+
+/** What `account` has earned in ANTS on a pool over `epochs`: claimable now, and where the pool still has to pull its emissions. */
+async function accountAnts(ctx: AntsContext, pool: string, account: string, epochs: number[]): Promise<{ owed: bigint; epochs: number[]; unfunded: number[] }> {
+  // Only an epoch the account has weight in can owe it ANTS, so the rest cost one batched read each.
+  const weights = await readEach(ctx, pool, 'epochWeight', epochs.map((epoch) => [epoch, account]));
   const weighted = epochs.filter((_, index) => weights[index]! > 0n);
   const [owedEach, fundedEach] = await Promise.all([
-    readEach(ctx, address, 'pendingAnts', weighted.map((epoch) => [ctx.address, [epoch]])),
-    readEach(ctx, address, 'epochAnts', weighted.map((epoch) => [epoch])),
+    readEach(ctx, pool, 'pendingAnts', weighted.map((epoch) => [account, [epoch]])),
+    readEach(ctx, pool, 'epochAnts', weighted.map((epoch) => [epoch])),
   ]);
-  const perEpoch = weighted.map((epoch, index) => ({ epoch, owed: owedEach[index]!, unfunded: fundedEach[index] === 0n }));
-  const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
-  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch));
-  const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
-  return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs, forgettable: ctx.isLinkedColonyPool(address) };
+  return {
+    owed: owedEach.reduce((sum, owed) => sum + owed, 0n),
+    epochs: weighted.filter((_, index) => owedEach[index]! > 0n),
+    unfunded: weighted.filter((_, index) => fundedEach[index] === 0n),
+  };
 }
 
 /**
@@ -120,8 +142,7 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
         await report(`Colony pool emissions not pulled yet: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const owed = await readEach(ctx, address, 'pendingAnts', view.unfundedEpochs.map((epoch) => [ctx.address, [epoch]]));
-    antsEpochs = [...new Set([...antsEpochs, ...view.unfundedEpochs.filter((_, index) => owed[index]! > 0n)])].sort((a, b) => a - b);
+    antsEpochs = await withNewlyFunded(ctx, address, ctx.address, antsEpochs, view.unfundedEpochs);
   }
   if (request.ants) {
     for (const epochs of batches(antsEpochs, MAX_EPOCHS_PER_CLAIM)) {
@@ -129,9 +150,26 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
       hashes.push(hash);
       await report('ANTS claimed from the colony pool', hash);
     }
+    // Each linked Mac's own older ANTS: the pool pays them only to its payout, this wallet.
+    for (const linked of view?.workerAnts ?? []) {
+      const epochs = view!.unfundedEpochs.length > 0
+        ? await withNewlyFunded(ctx, address, linked.worker, linked.antsEpochs, view!.unfundedEpochs)
+        : linked.antsEpochs;
+      for (const batch of batches(epochs, MAX_EPOCHS_PER_CLAIM)) {
+        const hash = await pool.claimAntsFor(signer, linked.worker, batch);
+        hashes.push(hash);
+        await report(`ANTS a linked Mac (${linked.worker.slice(0, 10)}…) earned before its link claimed to this wallet`, hash);
+      }
+    }
   }
   if (hashes.length === 0) throw new Error('Nothing to claim from this colony pool');
   return { hashes };
+}
+
+/** `epochs`, plus those of `pulled` that owe `account` ANTS now their emissions were pulled. */
+async function withNewlyFunded(ctx: AntsContext, pool: string, account: string, epochs: number[], pulled: number[]): Promise<number[]> {
+  const owed = await readEach(ctx, pool, 'pendingAnts', pulled.map((epoch) => [account, [epoch]]));
+  return [...new Set([...epochs, ...pulled.filter((_, index) => owed[index]! > 0n)])].sort((a, b) => a - b);
 }
 
 /**
@@ -168,13 +206,13 @@ export async function linkWorkerPayout(ctx: AntsContext, request: WorkerPayoutLi
     throw new Error(`The colony pool did not record this wallet for the Mac (it pays ${recorded})`);
   }
   await report('Mac linked: its earnings now pay to this wallet', hash);
-  if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) {
-    // The link is on-chain either way; a failed save only means a restart forgets the pool until it is configured.
-    try {
-      await ctx.rememberColonyPool(authorization.pool);
-    } catch (error) {
-      await report(`Could not save the colony pool for later sessions: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  // The link is on-chain either way; a failed save only means a restart forgets the pool (until it is
+  // configured) or the Mac (whose ANTS from before the link this wallet then can't see here).
+  try {
+    if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) await ctx.rememberColonyPool(authorization.pool);
+    await ctx.rememberColonyPoolWorker(authorization.pool, authorization.worker);
+  } catch (error) {
+    await report(`Could not save the colony pool for later sessions: ${error instanceof Error ? error.message : String(error)}`);
   }
   return { hash, pool: authorization.pool, worker: authorization.worker };
 }

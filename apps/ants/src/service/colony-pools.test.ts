@@ -39,6 +39,7 @@ function fixture(pools: string[] = [pool], unfunded: number[] = [], empty: numbe
     pendingEmissions: vi.fn(async (_account: string, epochs: number[]) => (empty.includes(epochs[0]!) ? 0n : 5n)),
     claimUsdc: vi.fn(async () => 'usdc-hash'),
     claimAnts: vi.fn(async () => 'ants-hash'),
+    claimAntsFor: vi.fn(async () => 'ants-for-hash'),
     payout: '0x0000000000000000000000000000000000000000',
     payoutOf: vi.fn(async (): Promise<string> => client.payout),
     setPayout: vi.fn(async (_signer: unknown, authorization: { payout: string }) => { client.payout = authorization.payout; return 'link-hash'; }),
@@ -48,12 +49,17 @@ function fixture(pools: string[] = [pool], unfunded: number[] = [], empty: numbe
   multicall.calls = [];
   const chain = { evmChainId: 31337, colonyPoolAddresses: pools };
   const configured = new Set(pools.map((a) => a.toLowerCase()));
+  const linkedWorkers = new Map<string, string[]>();
   const ctx = {
     address: wallet.address,
     chain,
     stack: async () => ({ currentEpoch: 6, registryPointers: { emissions: '0x00000000000000000000000000000000000000ee', staking: '0x' } }),
     colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
     rememberColonyPool: async (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
+    colonyPoolWorkers: (address: string) => linkedWorkers.get(address.toLowerCase()) ?? [],
+    rememberColonyPoolWorker: async (address: string, linked: string) => {
+      linkedWorkers.set(address.toLowerCase(), [...(linkedWorkers.get(address.toLowerCase()) ?? []), linked.toLowerCase()]);
+    },
     isLinkedColonyPool: (address: string) => chain.colonyPoolAddresses.some((a) => a.toLowerCase() === address.toLowerCase()) && !configured.has(address.toLowerCase()),
     forgetColonyPool: async (address: string) => {
       if (configured.has(address.toLowerCase())) throw new Error('Only a colony pool linked from this dashboard can be forgotten here');
@@ -203,6 +209,24 @@ describe('colony pool rewards', () => {
     await expect(linkWorkerPayout(ctx, { code: linkCode() }, report)).resolves.toMatchObject({ hash: 'link-hash', pool, worker });
     expect(client.setPayout).toHaveBeenCalledWith(wallet, expect.objectContaining({ worker, payout: wallet.address }));
     expect(ctx.colonyPoolAddresses()).toEqual([pool]);
+  });
+
+  it('shows and claims the ANTS a Mac linked here earned before its link, while its payout is this wallet', async () => {
+    const { ctx, client } = fixture([]);
+    await linkWorkerPayout(ctx, { code: linkCode() }, report);
+    // The Mac's own weight in epoch 1, older than its link moved; this wallet's own in epoch 4.
+    client.epochWeight.mockImplementation(async (epoch: number, account: string) =>
+      (account === worker ? (epoch === 1 ? 10n : 0n) : epoch === 4 ? 10n : 0n));
+    client.pendingAnts.mockImplementation(async (account: string, epochs: number[]) =>
+      (account === worker ? (epochs[0] === 1 ? 9n : 0n) : epochs[0] === 4 ? 7n : 0n));
+    client.epochAnts.mockImplementation(async () => 100n);
+    const view = (await colonyPools(ctx)).pools[0]!;
+    expect(view).toMatchObject({ antsOwed: '16', antsEpochs: [4], workerAnts: [{ worker, antsOwed: '9', antsEpochs: [1] }] });
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['ants-hash', 'ants-for-hash'] });
+    expect(client.claimAntsFor).toHaveBeenCalledWith(wallet, worker, [1]);
+    // Linked elsewhere since: its ANTS are no longer this wallet's to claim.
+    client.payout = Wallet.createRandom().address;
+    expect((await colonyPools(ctx)).pools[0]!).not.toHaveProperty('workerAnts');
   });
 
   it('rejects a link for another wallet, another chain, or a malformed code', async () => {

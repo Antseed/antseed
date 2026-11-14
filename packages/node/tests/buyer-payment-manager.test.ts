@@ -801,6 +801,31 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(latest.metadata)).toEqual([{ worker, cumulativeAmount: 200n }]);
   });
 
+  it('keeps a worker\'s credit owed when headroom at the reserve ceiling covers its answer', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool-ceiling');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const worker = '0x1000000000000000000000000000000000000001';
+    // A reserve of 10000, and a seller prompt that signs all of it before any answer (its top-up
+    // is still pending, so 10000 is all the pool can settle).
+    (manager as unknown as { _currentReserveCeiling: Map<string, bigint> })._currentReserveCeiling.set(sellerPeerId, 10_000n);
+    await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: '10000', currentAcceptedCumulative: '0', deposit: '10000' }, mux);
+    const ceilingAuth = manager.latestSpendingAuth(sellerPeerId)!;
+    expect(ceilingAuth.cumulativeAmount).toBe('10000');
+    manager.recordWorkerAttribution(sellerPeerId, 'req-c', worker);
+    manager.recordDeliveredResponse(sellerPeerId, 'req-c', { costUsdc: 100n });
+    manager.recordWorkerDelivery('req-c', { inputTokens: 100n, cachedInputTokens: 0n, outputTokens: 10n });
+    await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n,
+      reportedInputTokens: 100n, reportedOutputTokens: 10n, service: 'qwen', requestId: 'req-c',
+    });
+    // No auth above 10000 fits, and one at 10000 could never carry the tail to the pool:
+    // the worker is not credited yet, and its credit stays owed for a later advance.
+    const latest = manager.latestSpendingAuth(sellerPeerId)!;
+    expect(latest.cumulativeAmount).toBe('10000');
+    expect(decodeWorkerTail(latest.metadata)).toBeNull();
+  });
+
   it('keeps every uncounted worker answer when more arrive than the request ledger holds', async () => {
     const sellerPeerId = fakePeerId('seller-colony-pool-ledger-cap');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

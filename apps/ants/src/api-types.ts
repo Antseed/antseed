@@ -453,6 +453,12 @@ export interface ColonyPoolsView {
     antsEpochs: number[];
     /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */
     unfundedEpochs: number[];
+    /**
+     * Macs linked to this wallet from this dashboard whose own ANTS (epochs
+     * older than the link moved) are still theirs: claiming sends them here
+     * with claimAntsFor. Counted in `antsOwed`.
+     */
+    workerAnts?: Array<{ worker: string; antsOwed: string; antsEpochs: number[] }>;
     /** Why this pool could not be read; its amounts are then zero and must not be claimed. */
     error?: string;
     /** Linked through this dashboard (not configured), so it can be forgotten here. */

@@ -257,6 +257,7 @@ async function main() {
   const pool = new Contract(poolAddress, [
     'function setRemainderRecipient(address)', 'function usdcBalance(address) view returns (uint256)', 'function claimUsdc()',
     'function workerCumulative(bytes32,address) view returns (uint128)', 'function channelCumulative(bytes32) view returns (uint128)',
+    'function heldUnattributed(bytes32) view returns (uint256 gross, uint256 net)',
     'event UsdcCredited(address indexed account, bytes32 indexed channelId, uint256 indexed epoch, uint256 amount)',
   ], deployer);
   await send(pool, 'setRemainderRecipient', operator);
@@ -283,7 +284,8 @@ async function main() {
   cleanup.push(() => bootstrap.stop());
   const bootstrapNodes = [{ host: '127.0.0.1', port: bootstrap.getPort() }];
   const payments = (channelsAddress) => ({
-    enabled: true, paymentMethod: 'crypto', rpcUrl: RPC_URL, chainId: CHAIN_ID, settlementIdleMs: 10 * 60_000,
+    // minSettleDelta 0: the demo's channels carry cents, below the default settlement minimum.
+    enabled: true, paymentMethod: 'crypto', rpcUrl: RPC_URL, chainId: CHAIN_ID, settlementIdleMs: 10 * 60_000, minSettleDelta: '0',
     depositsAddress: A.deposits, channelsAddress, usdcAddress: A.usdc, identityRegistryAddress: A.identity, stakingAddress: A.staking,
   });
   const ledger = new WorkerLedger(join(sellerDir, 'colony-pool.db'));
@@ -483,10 +485,19 @@ async function main() {
   const operatorBefore = await usdcToken.balanceOf(operator);
   const fromBlock = await provider.getBlockNumber();
   for (const buyer of BUYERS) await sellerNode._sellerPaymentManager.settleSession(buyer.node.peerId, { settleOnly: true });
-  const credits = await waitFor(async () => {
-    const events = await pool.queryFilter(pool.filters.UsdcCredited(), fromBlock + 1);
-    return events.length >= 2 ? events : null;
-  }, 'pool credits', 30_000, 500);
+  // Each channel on its own: the pool must have settled exactly what that buyer signed.
+  for (const buyer of BUYERS) {
+    await waitFor(async () => (await pool.channelCumulative(buyer.channelId)) === buyer.signed, `${buyer.name}'s channel to settle`, 30_000, 500)
+      .catch(async () => {
+        throw new Error(`${buyer.name}'s channel settled ${usdc(await pool.channelCumulative(buyer.channelId))} of the ${usdc(buyer.signed)} it signed`);
+      });
+  }
+  const channelIds = new Set(BUYERS.map((b) => b.channelId.toLowerCase()));
+  const credits = (await pool.queryFilter(pool.filters.UsdcCredited(), fromBlock + 1))
+    .filter((e) => channelIds.has(e.args.channelId.toLowerCase()));
+  // What no worker was attributed is held for later tails until the channel closes.
+  let held = 0n;
+  for (const buyer of BUYERS) held += (await pool.heldUnattributed(buyer.channelId)).net;
   for (const event of credits) {
     const who = event.args.account.toLowerCase() === operator.toLowerCase() ? 'remainder' : nameOf(event.args.account);
     logTo('chain', `${C.green}UsdcCredited${C.reset} ${who} ${usdc(event.args.amount)} (channel ${event.args.channelId.slice(0, 12)}…, tx ${event.transactionHash.slice(0, 12)}…)`);
@@ -499,12 +510,13 @@ async function main() {
     .reduce((sum, e) => sum + e.args.amount, 0n);
   const credited = credits.reduce((sum, e) => sum + e.args.amount, 0n);
   say(`buyers paid             ${usdc(gross)}`);
-  say(`protocol fee (Channels) ${usdc(gross - operatorFee - credited)}`);
+  say(`protocol fee (Channels) ${usdc(gross - operatorFee - credited - held)}`);
   say(`operator fee (10%)      ${usdc(operatorFee)} → operator wallet`);
   const payee = (w) => w.owner?.address ?? w.wallet.address;
   for (const w of workers) say(`${w.name.padEnd(9)} credited ${C.green}${usdc(creditOf(payee(w)))}${C.reset}${w.owner ? `  ${C.dim}→ owner wallet${C.reset}` : ''}`);
   const remainder = creditOf(operator);
   if (remainder > 0n) say(`remainder credited ${usdc(remainder)} (rounding)`);
+  if (held > 0n) say(`held for later tails  ${usdc(held)} (unattributed; the remainder's once the channels close)`);
 
   await step('Owners claim their Macs\' USDC from the pool (Rewards → Claim to wallet)');
   for (const w of workers) {

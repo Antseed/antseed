@@ -162,6 +162,20 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
   context.saveColonyPools = async (addresses) => {
     await writePrivateJson(colonyPoolsPath, addresses.filter((address) => !configuredPools.has(address)));
   };
+  // The Macs linked here, per pool: their ANTS from before the link stay theirs, claimed to this wallet with claimAntsFor.
+  const colonyWorkersPath = path.join(dataDir, 'ants-activity', `${statePrefix}-colony-pool-workers.json`);
+  try {
+    const saved = JSON.parse(await readFile(colonyWorkersPath, 'utf8')) as unknown;
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      for (const [pool, workers] of Object.entries(saved as Record<string, unknown>)) {
+        if (!/^0x[0-9a-fA-F]{40}$/.test(pool) || !Array.isArray(workers)) continue;
+        for (const worker of workers) if (typeof worker === 'string' && /^0x[0-9a-fA-F]{40}$/.test(worker)) await context.rememberColonyPoolWorker(pool, worker);
+      }
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read the linked Macs. Preserve the file and resolve the error before continuing.', { cause: error }); }
+  context.saveColonyPoolWorkers = async (workers) => {
+    await writePrivateJson(colonyWorkersPath, workers);
+  };
 
   const views = new ViewCache();
   const historyPath = path.join(dataDir, 'ants-activity', `${statePrefix}-positions.json`);

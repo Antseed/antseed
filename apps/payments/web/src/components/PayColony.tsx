@@ -6,6 +6,7 @@ import { getColony, signColonyLink, type ColonyState } from '../api';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
 import { formatColonyAnts, formatUsd, truncateAddress } from '../utils/format';
 import { ConnectWalletAction } from './ConnectWalletAction';
+import { colonyAntsToClaim } from './colony-claim';
 
 /** AntseedColonyPool: linking a worker's earnings to a wallet, and claiming them. */
 const COLONY_POOL_ABI = parseAbi([
@@ -189,13 +190,13 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
         setStep('Pulling the pool’s ANTS for finished epochs…');
         try { last = await send(pool, { functionName: 'claimEpochEmissions', args: [epochs.map(BigInt)] }); } catch { /* claimed later */ }
       }
-      const fresh = unpulled.length > 0 ? await reload() : colony;
-      for (const epochs of batches(fresh?.claim?.antsEpochs ?? [], MAX_EPOCHS_PER_CLAIM)) {
+      const { antsEpochs, workerAntsEpochs } = colonyAntsToClaim(unpulled.length > 0 ? await reload() : colony);
+      for (const epochs of batches(antsEpochs, MAX_EPOCHS_PER_CLAIM)) {
         setStep('Claiming ANTS…');
         last = await send(pool, { functionName: 'claimAnts', args: [epochs.map(BigInt)] });
       }
       // ANTS from before the link stay with the Mac's key; the pool sends them to this wallet.
-      for (const epochs of batches(fresh?.claim?.workerAntsEpochs ?? [], MAX_EPOCHS_PER_CLAIM)) {
+      for (const epochs of batches(workerAntsEpochs, MAX_EPOCHS_PER_CLAIM)) {
         setStep('Claiming this Mac’s earlier ANTS…');
         last = await send(pool, { functionName: 'claimAntsFor', args: [colony.worker as Address, epochs.map(BigInt)] });
       }

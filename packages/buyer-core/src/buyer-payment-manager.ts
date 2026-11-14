@@ -803,6 +803,12 @@ export class BuyerPaymentManager {
     return this._currentReserveCeiling.get(sellerPeerId) ?? this._config.maxReserveAmountUsdc;
   }
 
+  /** The most the pool can settle on the channel now: while a top-up is pending, only the deposit already locked. */
+  private _settleableCeiling(sellerPeerId: string): bigint {
+    const pending = this._pendingReserveAuth.get(sellerPeerId);
+    return pending ? pending.confirmedAmount : this._getCeiling(sellerPeerId);
+  }
+
   /** Clean up all in-memory state for a seller when the session ends. */
   cleanupSession(sellerPeerId: string): void {
     this._cumulativeAmount.delete(sellerPeerId);
@@ -2107,15 +2113,17 @@ export class BuyerPaymentManager {
     );
     // The verified worker answers counted here are credited to their workers.
     const countedCosts = counted.map(([requestId, record]) => [requestId, record.costUsdc] as const);
-    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts, newAmount);
-    const newMeta = credit.metadata;
-    // Worker credit from headroom already signed: one base unit higher when the
-    // reserve allows, so the pool can settle this auth even when it already
-    // settled that headroom (AntseedChannels never re-settles, or checks the
-    // signature of a close at, an amount already settled; see countUnsigned).
-    if (newMeta.workers !== usageMeta.workers && newAmount === prevAmount && newAmount < this._getCeiling(sellerPeerId)) {
-      newAmount += 1n;
+    // Worker credit from headroom already signed rides an auth one base unit
+    // higher, so the pool can settle it even when it already settled that
+    // headroom (AntseedChannels never re-settles, or checks the signature of a
+    // close at, an amount already settled; see countUnsigned). At the reserve
+    // ceiling nothing can advance: then that credit stays owed for a later advance.
+    let credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts, newAmount);
+    if (credit.metadata !== usageMeta && newAmount === prevAmount) {
+      if (newAmount < this._settleableCeiling(sellerPeerId)) newAmount += 1n;
+      else credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts);
     }
+    const newMeta = credit.metadata;
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
       `thisReq in=${estimatedInputTokens} out=${estimatedOutputTokens} | ` +
@@ -2508,10 +2516,12 @@ export class BuyerPaymentManager {
       if (!record) return;
       const counted = [[payload.requestId!, verifiedCostDelta] as const];
       const metadata = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
-      const credit = this._creditWorkers(sellerPeerId, metadata, 0n, counted, currentCumulative);
+      // At the reserve ceiling no auth can advance, so none can carry the credit
+      // to the pool: it stays owed until a top-up or a later advance pays it.
+      const canAdvance = currentCumulative < this._settleableCeiling(sellerPeerId);
+      const credit = this._creditWorkers(sellerPeerId, metadata, 0n, counted, canAdvance ? currentCumulative : undefined);
       if (credit.metadata !== metadata) {
-        const resigned = currentCumulative < ceiling ? currentCumulative + 1n : currentCumulative;
-        const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, resigned, credit.metadata);
+        const spendingAuth = await this._commitUpdatedSpendingAuth(session, sellerPeerId, currentCumulative + 1n, credit.metadata);
         if (typeof spendingAuth === 'string') return;
         this._metadata.set(sellerPeerId, credit.metadata);
         paymentMux.sendSpendingAuth(spendingAuth);

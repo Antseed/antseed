@@ -471,6 +471,28 @@ contract AntseedColonyPoolTest is Test {
         _assertSolvent();
     }
 
+    function test_releaseHeldFrom_aChannelsContractTheRegistryReplaced() public {
+        uint256 e0 = emissions.currentEpoch();
+        bytes32 ch = _reserve(bytes32(uint256(66)), 1000e6);
+        uint256 net = _settle(ch, 100e6, new Entry[](0));
+        vm.prank(buyerOperator);
+        channels.requestClose(ch);
+        vm.warp(block.timestamp + channels.TIMEOUT_GRACE_PERIOD() + 1);
+        vm.prank(buyerOperator);
+        channels.withdraw(ch);
+        // The registry moves to new Channels before anyone released the old channel's hold.
+        AntseedChannels replacement = new AntseedChannels(address(antseedRegistry));
+        antseedRegistry.setChannels(address(replacement));
+        pool.releaseHeld(ch);
+        assertEq(pool.totalUsdcHeld(), net, "the current contract has nothing held for it");
+        pool.releaseHeldFrom(address(channels), ch);
+        assertEq(pool.usdcBalance(remainderSink), net);
+        assertEq(pool.totalUsdcHeld(), 0);
+        assertEq(pool.epochHeldWeight(e0), 0);
+        assertEq(pool.epochWeight(e0, remainderSink), net);
+        _assertSolvent();
+    }
+
     function test_clampZeroesTrailingEntries() public {
         bytes32 ch = _reserve(bytes32(uint256(7)), 1000e6);
         Entry[] memory es = new Entry[](3);

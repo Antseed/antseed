@@ -51,8 +51,14 @@ func abiDecimal(_ word: some Sequence<UInt8>) -> Decimal {
 }
 
 extension Chain {
-    /// What `pool` owes `account`, over every finished epoch (pool ANTS never expire).
-    func colonyRewards(pool: String, account: String) async throws -> ColonyRewards {
+    /// What every rewards read of a pool shares: its emissions contract and the finished epochs. Read
+    /// once per refresh (never cached across refreshes, so new epochs and registry changes show).
+    struct RewardsContext: Sendable {
+        let emissions: String
+        let epochs: [Int]
+    }
+
+    func rewardsContext(pool: String) async throws -> RewardsContext {
         let registry = try await address(of: pool, "registry()")
         let emissions = try await address(of: registry, "emissions()")
         let current = WorkerPayment.saturating([UInt8](try await ethCall(to: emissions, data: Self.selector("currentEpoch()"))))
@@ -61,7 +67,15 @@ extension Chain {
         guard current <= UInt64(Self.maxRewardEpochs) else {
             throw Failure.rpc("The pool's emissions contract reports \(current) epochs, more than any real schedule")
         }
-        let epochs = Array(0..<Int(current))
+        return RewardsContext(emissions: emissions, epochs: Array(0..<Int(current)))
+    }
+
+    /// What `pool` owes `account`, over every finished epoch (pool ANTS never expire).
+    func colonyRewards(pool: String, account: String, context: RewardsContext? = nil) async throws -> ColonyRewards {
+        let resolved: RewardsContext
+        if let context { resolved = context } else { resolved = try await rewardsContext(pool: pool) }
+        let emissions = resolved.emissions
+        let epochs = resolved.epochs
         let account = try Self.addressWord(account)
 
         let usdc = abiDecimal(try await ethCall(to: pool, data: Self.selector("usdcBalance(address)") + account))

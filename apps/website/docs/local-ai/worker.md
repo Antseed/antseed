@@ -55,6 +55,6 @@ antseed-pool-worker --link-payout 0xYourWallet --pool-contract 0xPoolContract
 
 It prints an `antseed-link:…` code, valid for 7 days. In the ANTS dashboard (`antseed ants`), connect that wallet, open **Rewards**, choose **Link a Mac** and paste the code. The wallet submits the link, which also moves the worker's unclaimed USDC and its recent ANTS. From then on the worker's earnings go to that wallet, and you claim them from the dashboard's colony pool card.
 
-ANTS the worker earned more than 32 epochs before you linked stay with the worker's address. Anyone can send them to your wallet with the pool contract's `claimAntsFor(worker, epochs)`, and the pool never pays them anywhere else.
+ANTS the worker earned more than 32 epochs before you linked stay with the worker's address. The dashboard remembers the worker you linked there, shows those ANTS on the pool's card and claims them to your wallet with the pool contract's `claimAntsFor(worker, epochs)`. Anyone may call it, and the pool never pays them anywhere but your wallet.
 
 The Node.js worker attests no hardening, so buyers that require Apple-verified Macs never route to it. See [Privacy and verification](/docs/local-ai/privacy).

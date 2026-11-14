@@ -741,7 +741,8 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
    goes to the remainder at once. `close` gives what the channel still holds
    to the owner-set `remainderRecipient`, and once a channel is no longer
    active (its buyer timed it out and withdrew) anyone can with
-   `releaseHeld(channelId)`. `heldUnattributed(channelId)` reads it, and
+   `releaseHeld(channelId)` (`releaseHeldFrom(channelsContract, channelId)` for
+   a Channels contract the registry has since replaced). `heldUnattributed(channelId)` reads it, and
    `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
 7. Add each fresh credit to its account's weight for the current emissions
    epoch. Held USDC weighs in the epoch it settled in from the start
