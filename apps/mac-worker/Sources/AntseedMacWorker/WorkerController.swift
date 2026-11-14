@@ -69,6 +69,8 @@ final class WorkerController: ObservableObject {
     @Published private(set) var choice: ModelChoice?
     /// The chosen model failed to load (download or engine start): the owner may try it again.
     @Published private(set) var modelLoadFailed = false
+    /// Why the chosen model failed to load, shown again once the pool's welcome arrives.
+    private var modelLoadError: String?
     /// The models the pool pins that this app can run, for the owner to pick from.
     @Published private(set) var poolModels: [ModelChoice] = []
     /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
@@ -204,7 +206,9 @@ final class WorkerController: ObservableObject {
         startPolling()
         Task {
             // Without a model yet, it joins to learn which models the pool runs, and serves once one is picked.
-            if let choice, !(await load(choice)) { return }
+            // A saved model that fails to load joins too, offering nothing: the pool's welcome lists the
+            // models the owner can switch to, beside Retry.
+            if let choice { _ = await load(choice) }
             rejoin()
         }
     }
@@ -249,7 +253,8 @@ final class WorkerController: ObservableObject {
         } catch {
             if model === local, !Task.isCancelled {
                 modelLoadFailed = true
-                status = .failed("Model failed to load: \(error.localizedDescription)")
+                modelLoadError = "Model failed to load: \(error.localizedDescription)"
+                status = .failed(modelLoadError!)
             }
             return false
         }
@@ -527,6 +532,8 @@ final class WorkerController: ObservableObject {
             if let choice {
                 // Still loading: the progress stays; the app rejoins with the model once it is ready.
                 if checkpoint != nil { status = .joined(sharing: sharing, service: choice.service, rejected: frame["rejected"] as? [String] ?? []) }
+                // It failed to load: keep saying why, now with the pool's models to switch to beside Retry.
+                else if modelLoadFailed, let modelLoadError { status = .failed(modelLoadError) }
             } else {
                 status = .choosingModel
             }

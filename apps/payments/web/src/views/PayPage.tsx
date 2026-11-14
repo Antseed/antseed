@@ -33,46 +33,54 @@ interface PayPageProps {
   refreshBalance: () => Promise<void>;
 }
 
-const COPY: Record<PayPageAction, { eyebrow: string; title: string; subtitle: string }> = {
+const COPY: Record<PayPageAction, { eyebrow: string; title: string; subtitle: string; successTitle: string }> = {
   deposit: {
     eyebrow: 'Adding credits',
     title: 'Deposit USDC',
     subtitle: 'Connect a wallet to add credits to your Antseed account.',
+    successTitle: 'Payment complete',
   },
   withdraw: {
     eyebrow: 'Withdrawing credits',
     title: 'Withdraw USDC',
     subtitle: 'Send unused credits to your authorized wallet.',
+    successTitle: 'Withdrawal sent',
   },
   authorize: {
     eyebrow: 'Account security',
     title: 'Authorize a wallet',
     subtitle: 'Connect the wallet that will manage withdrawals for your account.',
+    successTitle: 'Wallet authorized',
   },
   claim: {
     eyebrow: 'Network rewards',
     title: 'Rewards dashboard',
     subtitle: 'Buyer rewards and staking now live in the ANTS dashboard.',
+    successTitle: 'Rewards claimed',
   },
   'close-channel': {
     eyebrow: 'Payment channel',
     title: 'Close channel',
     subtitle: 'Settle this channel and return its unused reserve to your balance.',
+    successTitle: 'Channel updated',
   },
   'share-free-tier': {
     eyebrow: 'Staked free tier',
     title: 'Share your stake',
     subtitle: 'Let this account use your ANTS stake for larger free allowances on the sellers you stake on.',
+    successTitle: 'Free tier shared',
   },
   'colony-link': {
     eyebrow: 'Antseed Colony',
     title: 'Link your wallet',
     subtitle: 'Send this Mac’s earnings from its pool to your wallet.',
+    successTitle: 'Wallet linked',
   },
   'colony-claim': {
     eyebrow: 'Antseed Colony',
     title: 'Claim Mac earnings',
     subtitle: 'Claim the USDC and ANTS this Mac earned to its payout wallet.',
+    successTitle: 'Earnings claimed',
   },
 };
 
@@ -268,16 +276,7 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                     <path d="M14 22.5l5.5 5.5 11-12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
                   </svg>
                 </div>
-                <h2>
-                  {action === 'deposit' ? 'Payment complete'
-                    : action === 'withdraw' ? 'Withdrawal sent'
-                      : action === 'claim' ? 'Rewards claimed'
-                        : action === 'close-channel' ? 'Channel updated'
-                          : action === 'share-free-tier' ? 'Free tier shared'
-                          : action === 'colony-link' ? 'Wallet linked'
-                            : action === 'colony-claim' ? 'Earnings claimed'
-                              : 'Wallet authorized'}
-                </h2>
+                <h2>{copy.successTitle}</h2>
                 <p>
                   {action === 'share-free-tier'
                     ? 'Your buyer starts sending it to sellers within a minute.'
