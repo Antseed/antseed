@@ -114,6 +114,30 @@ export async function setSelfAuthorizedWallet(input: SetSelfAuthorizedWalletInpu
   return input.client.setOperator(wallet, buyer, buyer, nonce, signature);
 }
 
+export interface AuthorizedWalletStatus {
+  buyer: string;
+  /** null when no operator is set (zero address). */
+  operator: string | null;
+  /** String, because bigint is not JSON-serializable. */
+  nonce: string;
+}
+
+export async function getAuthorizedWalletStatus(input: {
+  context: Pick<CryptoContext, 'address'>;
+  client: Pick<DepositsClient, 'getOperator' | 'getOperatorNonce'>;
+}): Promise<AuthorizedWalletStatus> {
+  const buyer = input.context.address;
+  const [operator, nonce] = await Promise.all([
+    input.client.getOperator(buyer),
+    input.client.getOperatorNonce(buyer),
+  ]);
+  return {
+    buyer,
+    operator: operator.toLowerCase() === ZeroAddress ? null : operator,
+    nonce: nonce.toString(),
+  };
+}
+
 export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void {
   buyerCmd
     .command('set-authorized-wallet')
