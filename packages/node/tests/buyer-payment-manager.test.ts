@@ -2635,14 +2635,14 @@ describe('BuyerPaymentManager', () => {
     manager.recordDeliveredResponse(sellerPeerId, 'received-request', { costUsdc: 4_000n });
     const returnedChannelId = await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux);
 
-    // verifiedCost advances by that response at the 1.4x tolerance (5_600), unblocking the
-    // overdraft window so maxSignable becomes verified (5_600) + maxPerRequest (10_000) =
-    // 15_600, still under the 100_000 reserve ceiling. The new SpendingAuth is signed at 15_600.
+    // verifiedCost advances by that response at the buyer's own price (4_000), unblocking the
+    // overdraft window so maxSignable becomes verified (4_000) + maxPerRequest (10_000) =
+    // 14_000, still under the 100_000 reserve ceiling. The new SpendingAuth is signed at 14_000.
     expect(returnedChannelId).toBe(channelId);
-    expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_600n);
-    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(15_600n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(4_000n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(14_000n);
     expect(mux.sentSpendingAuths).toHaveLength(1);
-    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('15600');
+    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('14000');
   });
 
   it('extendCurrentSpendingAuth catches up to an explicit target in a single step within overdraft window', async () => {

@@ -449,13 +449,13 @@ describe('review probes: the buyer\'s record of what it has paid', () => {
     deliver('a', 100_000n);
     await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux, 550_000n);
     expect(signed()).toBe(550_000n);
-    // The retry reopened the window for A alone, at the buyer's price for it within the tolerance.
-    expect(verified()).toBe(140_000n);
+    // The retry reopened the window for A alone, at the buyer's own price for it.
+    expect(verified()).toBe(100_000n);
     await sellerSends(claim('a', 100_000n, 650_000n));
     console.log(`[probe] response delivered during a reopening 402 retry: after its cost frame signed=${signed()} of 650000, verified=${verified()}`);
     // The seller's catch-up prompt for the next request is signed up to the window above A.
     await sellerSends({ requiredCumulativeAmount: '650000' });
-    expect(signed()).toBe(140_000n + WINDOW);
+    expect(signed()).toBe(100_000n + WINDOW);
   });
 
   it('the buyer\'s signing before a close does not sign what a 402 retry already signed on top of what the seller served', async () => {

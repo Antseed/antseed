@@ -753,17 +753,11 @@ export class BuyerPaymentManager {
     if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // A SpendingAuth committed while this one was signed already signed past the target.
     if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
-    // Reopening counted these responses toward verified cost. The seller's
-    // 402 asked for all it had served, so they are paid: counting one on top
-    // later would pay for it twice. A response recorded while this was signed
-    // was not counted, and stays owed, as does the rest of a response counted
-    // only in part.
+    // Reopening counted these responses toward verified cost, each whole, so
+    // they are paid: counting one again later would pay for it twice. A
+    // response recorded while this was signed was not counted, and stays owed.
     const ledger = this._requestLedgers.get(sellerPeerId);
-    for (const [countedId, record, unpaid] of reopened.counted) {
-      if (ledger?.get(countedId) !== record) continue;
-      if (unpaid > 0n) ledger.set(countedId, { ...record, costUsdc: unpaid });
-      else ledger.delete(countedId);
-    }
+    for (const [countedId, record] of reopened.counted) if (ledger?.get(countedId) === record) ledger.delete(countedId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
       sellerPeerId,
@@ -951,46 +945,34 @@ export class BuyerPaymentManager {
     context: 'extendCurrentSpendingAuth' | 'handleNeedAuth',
     targetCumulative?: bigint,
     verifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n,
-  ): { maxSignable: bigint; verifiedCost: bigint; counted: Array<[string, DeliveredResponse, bigint]> } {
+  ): { maxSignable: bigint; verifiedCost: bigint; counted: Array<[string, DeliveredResponse]> } {
     // A catch-up 402 on a used-up overdraft window (the buyer has signed up to
-    // `verified + maxPerRequest`) reopens it only for what the buyer has
-    // recorded as received and not yet paid for: the open ledger records with
-    // a cost, in ledger order. Verified cost advances by them up to a cap,
-    // the larger of `currentCumulative`, which the seller can already claim
-    // on-chain, and the seller's own target for what it served. Each record
-    // first counts at the buyer's own price: the first up to the cap, a later
-    // one only while the cap still covers its price. What the cap leaves then
-    // goes to the counted records, up to the tolerance on each price. Records
-    // the cap does not reach stay owed for their own NeedAuth, a later
-    // catch-up or the signing before a close, and so does the rest of the
-    // first record's price when the cap covers only part of it. With nothing
-    // counted the window stays used up and nothing more is signed. The
-    // records counted are returned with the part of each price still owed,
-    // for the caller to settle in the ledger once it signs.
+    // `verified + maxPerRequest`) reopens it only for responses the buyer
+    // received and priced and has not paid for yet: its open ledger records,
+    // oldest first, each counted whole at the buyer's own price, until verified
+    // cost reaches the seller's target or, if higher, what is already signed.
+    // An attempt cut off is paid only through its NeedAuth. No tolerance applies
+    // here, since the 402 names a total, not a response. Records not reached
+    // stay owed. With nothing counted the window stays used up and nothing
+    // more is signed. The records counted are returned for the caller to
+    // settle in the ledger once it signs.
     //
     // SECURITY: the trust anchor here is the buyer's own ledger. The seller's
     // target only lowers what counts; it never adds to verified cost.
-    const counted: Array<[string, DeliveredResponse, bigint]> = [];
+    const counted: Array<[string, DeliveredResponse]> = [];
     if (maxSignable > currentCumulative) return { maxSignable, verifiedCost, counted };
 
     if (currentCumulative <= verifiedCost) return { maxSignable, verifiedCost, counted };
 
     const cap = targetCumulative != null && targetCumulative > currentCumulative ? targetCumulative : currentCumulative;
-    let remaining = cap - verifiedCost;
-    let toleranceRoom = 0n;
+    let nextVerifiedCost = verifiedCost;
     for (const [requestId, record] of this._requestLedgers.get(sellerPeerId) ?? []) {
-      if (remaining <= 0n) break;
-      if (record.costCounted || record.costUsdc <= 0n) continue;
-      if (counted.length > 0 && record.costUsdc > remaining) break;
-      const taken = record.costUsdc < remaining ? record.costUsdc : remaining;
-      remaining -= taken;
-      const tolerated = BigInt(Math.ceil(Number(record.costUsdc) * this._costToleranceFor(this.getRequestBilling(requestId))));
-      toleranceRoom += tolerated > record.costUsdc ? tolerated - record.costUsdc : 0n;
-      counted.push([requestId, record, record.costUsdc - taken]);
+      if (nextVerifiedCost >= cap) break;
+      if (record.cutOff || record.costCounted || record.costUsdc <= 0n) continue;
+      nextVerifiedCost += record.costUsdc;
+      counted.push([requestId, record]);
     }
     if (counted.length === 0) return { maxSignable, verifiedCost, counted };
-    remaining -= toleranceRoom < remaining ? toleranceRoom : remaining;
-    const nextVerifiedCost = cap - remaining;
     const reopened = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     debugLog(
       `[BuyerPayment] ${context}: will advance verifiedCost ${verifiedCost} → ${nextVerifiedCost} ` +
