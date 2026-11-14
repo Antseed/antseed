@@ -220,6 +220,7 @@ const QUOTE = 0x22;
 const BACKSLASH = 0x5c;
 const OPEN_BRACE = 0x7b;
 const CLOSE_BRACE = 0x7d;
+const COMMA = 0x2c;
 const OPEN_BRACKET = 0x5b;
 const CLOSE_BRACKET = 0x5d;
 const COLON = 0x3a;
@@ -251,7 +252,10 @@ function usageKeyAt(body: Uint8Array, offset: number): { name: string; value: nu
       value = value * 10 + (body[at]! - 0x30);
       at++;
     }
-    return digits === 0 ? null : { name, value, end };
+    // A decimal or exponent is not a token count: the number must end the member.
+    at = skipSpace(body, at);
+    if (digits === 0 || (body[at] !== COMMA && body[at] !== CLOSE_BRACE)) return null;
+    return { name, value, end };
   }
   return null;
 }

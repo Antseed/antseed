@@ -273,6 +273,22 @@ test('judges every service of a seller and takes one live-SAME service per refer
   }
 })
 
+test('refuses more rounds than a proof takes before sending anything', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  const network = fakeNetwork(sellers)
+  const { contract } = fakeContract(sellers)
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'tokenizer-prover-'))
+  try {
+    const options = { proxyBaseUrl: 'http://proxy.test', peers: sellers.map((s) => peer(s)), reader: network.reader, contract, generator, signer: null, simulateFrom: '0x000000000000000000000000000000000000dEaD', evidenceDir, fetchFn: network.fetchFn }
+    await assert.rejects(runTokenizerProver({ ...options, rounds: 9 }), /at most 8 rounds/)
+    assert.equal(network.requests(), 0)
+    const eight = await runTokenizerProver({ ...options, rounds: 8 })
+    assert.equal(eight.results.find((r) => r.sellerName === 'Swapped')!.deltas.length, 8)
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
 test('references agree as a range, and a suspect within tolerance of any of them matches', async () => {
   const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 140, true), seller('Ref 3', 141, true), seller('Close', 143, false)]
   const { summary, submitted, evidenceDir } = await run(sellers)

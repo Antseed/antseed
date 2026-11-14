@@ -308,6 +308,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         agentIds = new uint256[](sellers.length);
         modelHashes = new bytes32[](sellers.length);
         liveSame = new bool[](sellers.length);
+        uint256 epoch = results.currentEpoch();
         for (uint256 i = 0; i < sellers.length; i++) {
             uint256 agentId = _agentIdForSeller(sellers[i]);
             agentIds[i] = agentId;
@@ -316,7 +317,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
                 ? IAntseedVerificationResults.Verdict.NONE
                 : results.liveVerdict(agentId, serviceHash);
             modelHashes[i] = _modelOf(agentId, serviceHash, live);
-            liveSame[i] = live == IAntseedVerificationResults.Verdict.SAME;
+            liveSame[i] = live == IAntseedVerificationResults.Verdict.SAME
+                && _flags[agentId][serviceHash].validUntilEpoch <= epoch;
         }
     }
 
@@ -404,7 +406,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     }
 
     /// @dev A reference is another seller and agent, not repeated in the round, whose service has a live SAME
-    ///      for `modelHash`.
+    ///      for `modelHash` and no live usage flag (its signed usage is known to be wrong).
     function _referenceAgent(
         uint256 index,
         uint256 k,
@@ -424,6 +426,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (
             results.liveVerdict(agentId, serviceHash) != IAntseedVerificationResults.Verdict.SAME
                 || results.serviceStatus(agentId, serviceHash).modelHash != modelHash
+                || _flags[agentId][serviceHash].validUntilEpoch > results.currentEpoch()
         ) revert NotAReference(index, k);
     }
 
@@ -610,7 +613,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         (ok, value) = _numberAfterColon(body, end);
     }
 
-    /// @dev Optional whitespace, a colon, optional whitespace, then 1 to 15 digits.
+    /// @dev Optional whitespace, a colon, optional whitespace, 1 to 15 digits, then optional whitespace and the
+    ///      end of the member (`,` or `}`): a decimal or exponent is not a token count.
     function _numberAfterColon(bytes calldata body, uint256 offset) private pure returns (bool, uint256) {
         uint256 length = body.length;
         while (offset < length && _isAsciiSpace(body[offset])) offset++;
@@ -624,7 +628,9 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             value = value * 10 + (uint8(body[offset]) - 48);
             offset++;
         }
-        return (digits != 0, value);
+        while (offset < length && _isAsciiSpace(body[offset])) offset++;
+        if (digits == 0 || offset >= length || (body[offset] != "," && body[offset] != "}")) return (false, 0);
+        return (true, value);
     }
 
     function _receiptKey(address seller, string calldata requestId) private pure returns (bytes32) {

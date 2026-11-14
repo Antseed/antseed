@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { loadConfig } from '../../../config/loader.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
-import { modelProbeGenerator, runTokenizerProver, type TokenizerPeer } from '../../../verifier/tokenizer-prover.js'
+import { modelProbeGenerator, runTokenizerProver } from '../../../verifier/tokenizer-prover.js'
 import { createTokenizerAuditsClient } from '../../payment-utils.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
@@ -69,7 +69,7 @@ export function registerVerifierProveTokenizerCommand(verifierCmd: Command): voi
       try {
         const summary = await runTokenizerProver({
           proxyBaseUrl: proxy.baseUrl,
-          peers: proxy.peers as unknown as TokenizerPeer[],
+          peers: proxy.peers,
           reader,
           contract,
           generator: modelProbeGenerator({ proxyBaseUrl: proxy.baseUrl, ...generator, fallbackModels: FALLBACK_GENERATORS }),

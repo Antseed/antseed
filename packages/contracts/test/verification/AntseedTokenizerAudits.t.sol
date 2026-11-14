@@ -277,6 +277,31 @@ contract AntseedTokenizerAuditsTest is Test {
         audits.proveTokenizerMismatch(modelHash, rounds);
     }
 
+    function test_aUsageFlaggedServiceIsNoReference() public {
+        // Flag reference 0's service: it misreports against the stranger and references 1 and 2.
+        uint256 stranger = _register(vm.addr(OTHER_KEY));
+        kbf.record(stranger, serviceHash, modelHash, SAME);
+        IAntseedTokenizerAudits.Round[] memory rounds = new IAntseedTokenizerAudits.Round[](3);
+        for (uint256 i = 0; i < 3; i++) {
+            rounds[i] = _round(MODEL_DELTA, _refs(MODEL_DELTA));
+            rounds[i].suspect = _pair(REF_KEYS[0], REF_SERVICES[0], rounds[i].a, rounds[i].b, 152);
+            rounds[i].references[0] = _pair(OTHER_KEY, SERVICE, rounds[i].a, rounds[i].b, MODEL_DELTA);
+        }
+        audits.proveTokenizerMismatch(modelHash, rounds);
+        assertEq(audits.liveFlags(refAgents[0]), 1);
+
+        address[] memory sellers = new address[](1);
+        string[] memory services = new string[](1);
+        (sellers[0], services[0]) = (vm.addr(REF_KEYS[0]), REF_SERVICES[0]);
+        (,, bool[] memory same) = audits.resolveServices(sellers, services);
+        assertFalse(same[0], "a flagged service is not offered as a reference");
+
+        _mapSuspect();
+        rounds = _rounds(3, 129, MODEL_DELTA);
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 0));
+        audits.proveTokenizerMismatch(modelHash, rounds);
+    }
+
     function test_referencesMustBeOtherDistinctSellers() public {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
@@ -526,6 +551,18 @@ contract AntseedTokenizerAuditsTest is Test {
         assertFalse(found, "two usage objects");
         (found,) = audits.promptTokensOf('{"x":{"usage":{"prompt_tokens":15}}}');
         assertFalse(found, "no top-level usage");
+    }
+
+    function test_readsWholeIntegerTokenCountsOnly() public view {
+        (bool found, uint256 tokens) = audits.promptTokensOf('{"usage":{"prompt_tokens": 1000 }}');
+        assertTrue(found);
+        assertEq(tokens, 1000);
+        (found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":1e3}}');
+        assertFalse(found, "an exponent is not read as its first digits");
+        (found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":15.0,"completion_tokens":2}}');
+        assertFalse(found, "a decimal is not read as its whole part");
+        (found,) = audits.promptTokensOf('{"usage":{"input_tokens":12x}}');
+        assertFalse(found, "trailing characters");
     }
 
     function test_serviceHashMatchesResultsKeys() public view {

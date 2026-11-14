@@ -6,6 +6,7 @@ import type { StoredResponseAuth } from '@antseed/node'
 import {
   isShapeRequest,
   jsonSafeContent,
+  MAX_TOKENIZER_PROOF_ROUNDS,
   pairDelta,
   shapeRequestBody,
   type ResolvedService,
@@ -163,6 +164,9 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
   if (shapes.length === 0) throw new Error('the tokenizer audits contract has no active request shape')
   const params = await options.contract.parameters()
   const roundCount = Math.max(params.minRounds, options.rounds ?? params.minRounds)
+  if (roundCount > MAX_TOKENIZER_PROOF_ROUNDS) {
+    throw new Error(`a proof takes at most ${MAX_TOKENIZER_PROOF_ROUNDS} rounds; ${roundCount} were asked for`)
+  }
 
   const byModel = await sellersByModel(options, shapes)
   const wantedServices = options.services?.length ? new Set(options.services.map((s) => s.trim().toLowerCase())) : null
@@ -348,12 +352,16 @@ function agreeingReferences(
     if (delta !== null) byAgent.set(member.agentId, { delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair })
   }
   const measured = [...byAgent.values()].sort((x, y) => x.delta - y.delta)
-  let best: typeof measured = []
+  let bestStart = 0
+  let bestLength = 0
   for (let start = 0, end = 0; start < measured.length; start++) {
     while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) end++
-    if (end - start > best.length) best = measured.slice(start, end)
+    if (end - start > bestLength) {
+      bestStart = start
+      bestLength = end - start
+    }
   }
-  return best
+  return measured.slice(bestStart, bestStart + bestLength)
 }
 
 /** A member's signed delta in a round, read once per round; null without a signed pair or usage. */

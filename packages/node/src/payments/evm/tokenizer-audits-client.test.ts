@@ -53,6 +53,13 @@ describe('promptTokensOfBody', () => {
     expect(read('{"object":"response","output":[{"content":[{"text":"{\\"usage\\":{\\"input_tokens\\":7}}"}]}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":3,"items":{"m":{"input_tokens":2}}},"tool_usage":{"image_gen":{"input_tokens":0}},"x":{"prompt_tokens":20}}')).toBe(12);
   });
 
+  it('reads whole integer token counts only, as the contract does', () => {
+    expect(read('{"usage":{"prompt_tokens": 1000 }}')).toBe(1000);
+    expect(read('{"usage":{"prompt_tokens":1e3}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":15.0,"completion_tokens":2}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":12x}}')).toBeNull();
+  });
+
   it('refuses ambiguous or missing usage, as the contract does', () => {
     expect(read('{"usage":{"prompt_tokens":15,"prompt_tokens":20}}')).toBeNull();
     expect(read('{"usage":{"prompt_tokens":15},"usage":{"prompt_tokens":20}}')).toBeNull();

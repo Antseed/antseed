@@ -35,7 +35,9 @@ import { IERC8004Registry } from "./IERC8004Registry.sol";
 ///      model a service name is sold as. A seller can still escape by reporting usage computed with the
 ///      model's own tokenizer. References sign their own usage, so `minReferences` colluding agents with a
 ///      live SAME for the model could prove a mismatch against an honest seller; the owner can clear such a
-///      flag, and the results layer's owner such a DIFF.
+///      flag, and the results layer's owner such a DIFF. The submitter is credited: a copy of a pending proof
+///      sent first takes the credit. That is accepted: the evidence is single-use and expires after
+///      `maxEvidenceAgeSeconds`, so a copy can't be replayed, and the seller's verdict is the same either way.
 interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     /// @notice A request to `path` whose body is `head + service + mid + content + tail`, with `content` = A
     ///         or A + B and `service` the advertised service the seller signed. E.g. path
@@ -167,7 +169,7 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     function liveFlags(uint256 agentId) external view returns (uint256);
 
     /// @notice For each seller and service: its agent, the model it counts as (its live results status, else
-    ///         the owner mapping), and whether it can serve as a reference (live SAME).
+    ///         the owner mapping), and whether it can serve as a reference (live SAME and no live usage flag).
     function resolveServices(address[] calldata sellers, string[] calldata services)
         external
         view
