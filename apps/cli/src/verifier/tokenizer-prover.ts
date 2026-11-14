@@ -206,7 +206,7 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
     await mapConcurrently(jobs, options.concurrency ?? DEFAULT_CONCURRENCY, async ({ modelHash, member }) => {
       pairs.set(memberKey(modelHash, member), await probePair(options, member, a, b))
     })
-    rounds.push({ a, b, pairs, deltas: new Map() })
+    rounds.push({ a, b, pairs, measurements: new Map() })
     log(`  round ${r + 1}: ${[...pairs.values()].filter((p) => typeof p !== 'string').length}/${jobs.length} signed pairs`)
   }
 
@@ -292,17 +292,17 @@ async function judge(
   const proofRounds: TokenizerRound[] = []
   let matched = false
   for (const [index, round] of rounds.entries()) {
-    const own = round.pairs.get(memberKey(modelHash, suspect))
-    const delta = measuredDelta(round, modelHash, suspect)
-    result.deltas.push(delta)
+    const own = measurementFor(round, modelHash, suspect)
+    result.deltas.push(own?.delta ?? null)
     const candidates = measured[index]!.filter((m) => m.agentId !== suspect.agentId)
     const references = agreeingReferences(candidates, params.tolerance)
     const range = references.length >= params.minReferences
       ? { min: references[0]!.delta, max: references[references.length - 1]!.delta }
       : null
     result.referenceRanges.push(range)
-    if (delta === null) {
-      result.reason ??= typeof own === 'string' ? own : 'no signed usage'
+    if (own === null) {
+      const failure = round.pairs.get(memberKey(modelHash, suspect))
+      result.reason ??= typeof failure === 'string' ? failure : 'no signed usage'
       continue
     }
     if (range === null) {
@@ -310,12 +310,12 @@ async function judge(
       continue
     }
     // As the contract judges it: a mismatch is more than `tolerance` outside the references' range.
-    if (delta >= range.min - params.tolerance && delta <= range.max + params.tolerance) {
+    if (own.delta >= range.min - params.tolerance && own.delta <= range.max + params.tolerance) {
       matched = true
       continue
     }
     proofRounds.push({
-      a: round.a, b: round.b, suspect: own as TokenizerProbePair,
+      a: round.a, b: round.b, suspect: own.pair,
       references: references.slice(0, params.minReferences).map((r) => r.pair),
     })
   }
@@ -339,18 +339,16 @@ async function judge(
   return result
 }
 
-/** A live-SAME seller service's signed delta in one round. */
-interface MeasuredReference {
+/** A live-SAME seller service's measurement in one round. */
+interface MeasuredReference extends Measurement {
   agentId: bigint
-  delta: number
-  pair: TokenizerProbePair
 }
 
 /** Every live-SAME service measured in a round, sorted by delta. */
 function measuredReferences(round: ProbeRound, modelHash: string, members: Member[]): MeasuredReference[] {
   return members.filter((m) => m.liveSame).flatMap((member) => {
-    const delta = measuredDelta(round, modelHash, member)
-    return delta === null ? [] : [{ agentId: member.agentId, delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair }]
+    const measurement = measurementFor(round, modelHash, member)
+    return measurement === null ? [] : [{ agentId: member.agentId, ...measurement }]
   }).sort((x, y) => x.delta - y.delta)
 }
 
@@ -370,14 +368,15 @@ function agreeingReferences(measured: readonly MeasuredReference[], tolerance: n
   return best
 }
 
-/** A member's signed delta in a round, read once per round; null without a signed pair or usage. */
-function measuredDelta(round: ProbeRound, modelHash: string, member: Member): number | null {
+/** A member's signed pair and its delta in a round, read once per round; null without a signed pair or usage. */
+function measurementFor(round: ProbeRound, modelHash: string, member: Member): Measurement | null {
   const key = memberKey(modelHash, member)
-  if (!round.deltas.has(key)) {
+  if (!round.measurements.has(key)) {
     const pair = round.pairs.get(key)
-    round.deltas.set(key, pair && typeof pair !== 'string' ? pairDelta(pair) : null)
+    const delta = pair && typeof pair !== 'string' ? pairDelta(pair) : null
+    round.measurements.set(key, pair && typeof pair !== 'string' && delta !== null ? { pair, delta } : null)
   }
-  return round.deltas.get(key) ?? null
+  return round.measurements.get(key) ?? null
 }
 
 /** One base/probed pair for a seller, sending its shape's requests byte for byte; an error string on failure. */
@@ -498,12 +497,18 @@ function proofStatus(result: TokenizerSuspectResult): string {
 
 type ProverState = Record<string, { checkedAt: number; outcome: TokenizerOutcome }>
 
-/** One round's prompt and, per member (`memberKey`), its signed pair or why there is none, and its delta. */
+/** A signed pair and the delta its usage shows. */
+interface Measurement {
+  pair: TokenizerProbePair
+  delta: number
+}
+
+/** One round's prompt and, per member (`memberKey`), its signed pair or why there is none, and its measurement. */
 interface ProbeRound {
   a: string
   b: string
   pairs: Map<string, TokenizerProbePair | string>
-  deltas: Map<string, number | null>
+  measurements: Map<string, Measurement | null>
 }
 
 function memberKey(modelHash: string, member: Member): string {
