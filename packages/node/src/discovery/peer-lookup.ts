@@ -420,9 +420,15 @@ export class PeerLookup {
   }
 
   async verifyMetadataSignature(metadata: PeerMetadata): Promise<boolean> {
-    const dataToVerify = encodeMetadataForSigning(metadata);
     const signature = hexToBytes(metadata.signature);
-    return verifySignature(metadata.peerId, signature, dataToVerify);
+    // Sellers sign with their host's historical locale-sensitive ordering, so
+    // try that first — unchanged for any seller this build already accepted.
+    if (verifySignature(metadata.peerId, signature, encodeMetadataForSigning(metadata))) return true;
+    // A seller on another locale produced a different but equally valid
+    // ordering of the same document. Reconstruct with deterministic code-unit
+    // order as the compatibility candidate (issue #1678). Both attempts are
+    // genuine ecrecover checks against the expected peer identity.
+    return verifySignature(metadata.peerId, signature, encodeMetadataForSigning(metadata, { serviceOrder: "code-unit" }));
   }
 
   getMetadataFreshness(metadata: PeerMetadata): {

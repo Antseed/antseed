@@ -1,6 +1,6 @@
 import type { ServiceApiProtocol } from "../../../types/service-api.js";
 import { isKnownServiceApiProtocol } from "../../../types/service-api.js";
-import type { ProviderField } from "../field.js";
+import { compareServiceNames, type ProviderField } from "../field.js";
 import { serviceMap } from "../wire.js";
 
 /** [count:1|2] then [serviceLen:1][service:N][protocolCount:1][protocolLen:1][protocol:N]... */
@@ -17,7 +17,7 @@ export const serviceApiProtocolsField: ProviderField = {
         )).sort(),
       ] as const)
       .filter(([, protocols]) => protocols.length > 0)
-      .sort(([a], [b]) => a.localeCompare(b));
+      .sort(([a], [b]) => compareServiceNames(a, b, ctx));
     writer.serviceEntryCount(entries.length, ctx.wideServiceCounts);
     for (const [service, protocols] of entries) {
       writer.utf8Wrapping(service);
