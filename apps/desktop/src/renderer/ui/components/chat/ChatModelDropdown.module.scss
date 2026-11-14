@@ -493,11 +493,42 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Price chips beside the name (soft `Badge`s from @antseed/ui): only their layout and label colour here. */
+/* Price chips (soft `Badge`s from @antseed/ui) end the row: only their layout and label colour here.
+   A shared minimum width starts each chip at the same place down the list. */
 .picker-prices {
   display: flex;
   flex: none;
   gap: 6px;
+
+  > * {
+    justify-content: flex-start;
+    min-width: 6.25rem;
+  }
+}
+
+/* Name with its tags right after it; it takes the room, so the chips sit at the end. */
+.picker-name-line {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+
+  .picker-name {
+    flex: 0 1 auto;
+  }
+
+  .tag {
+    flex: none;
+  }
+}
+
+/* The tick's place, kept on every row. */
+.picker-check {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
 }
 
 .picker-price-label {

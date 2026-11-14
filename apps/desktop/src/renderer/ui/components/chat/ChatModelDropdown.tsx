@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, Route01Icon, Search01Icon, Tick02Icon } from '@hugeicons/core-free-icons';
 import { Badge, BrandIcon, modelFamilyLabel, resolveBrandKey } from '@antseed/ui';
@@ -107,7 +107,7 @@ export function rowPriceChips(model: ChatModel): Array<{ label: string; price: s
 }
 
 /** A row's name with its price chips, or, in a narrow menu, with a second line of details. */
-function ModelRowContent({ model, oneLine }: { model: ChatModel; oneLine: boolean }) {
+function ModelRowContent({ model, oneLine, tags }: { model: ChatModel; oneLine: boolean; tags?: ReactNode }) {
   if (!oneLine) {
     return (
       <span className={styles.pickerNameGroup}>
@@ -116,9 +116,13 @@ function ModelRowContent({ model, oneLine }: { model: ChatModel; oneLine: boolea
       </span>
     );
   }
+  // Tags right after the name, so the price chips end every row in the same place.
   return (
     <>
-      <span className={styles.pickerName}>{model.label}</span>
+      <span className={styles.pickerNameLine}>
+        <span className={styles.pickerName}>{model.label}</span>
+        {tags}
+      </span>
       {renderRowPriceChips(model)}
     </>
   );
@@ -372,6 +376,13 @@ export function ChatModelDropdown({
   function renderModel(model: ChatModel) {
     const active = model === selected;
     const tee = teeTag(model);
+    const tags = (
+      <>
+        {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
+        {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
+        {model.freeForStakers && !model.free && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
+      </>
+    );
     return (
       <button
         key={model.id}
@@ -388,12 +399,13 @@ export function ChatModelDropdown({
         }}
       >
         <span className={styles.pickerMark}><ModelMark model={model} size={18} /></span>
-        <ModelRowContent model={model} oneLine={oneLine} />
+        <ModelRowContent model={model} oneLine={oneLine} tags={oneLine ? tags : undefined} />
         <span className={styles.pickerTags}>
-          {model.free && <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>}
-          {tee && <span title={tee.title} className={`${styles.tag}${tee.tone ? ` ${styles.tagTee}` : ''}`}>{tee.label}</span>}
-          {model.freeForStakers && !model.free && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
-          {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
+          {!oneLine && tags}
+          {/* The tick's place is kept on every row, so the selected row's chips don't move. */}
+          <span className={styles.pickerCheck}>
+            {active && <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2} className={styles.itemCheck} aria-hidden />}
+          </span>
         </span>
       </button>
     );
