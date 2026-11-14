@@ -21,7 +21,7 @@ export interface ResolvedVerifierModelConfig extends Omit<VerifierReferenceModel
   /**
    * The built-in OpenRouter provider pin (`AuditedModel.referenceProvider`), set only when the
    * verifier configures no `referenceProvider` of its own and the model's reference comes from
-   * OpenRouter. New banks use it; a bank built before keeps the pin it recorded.
+   * OpenRouter. Each epoch's first build uses it; the epoch's later builds keep the pin it recorded.
    */
   defaultReferenceProvider?: { order: string[] }
 }
@@ -193,7 +193,7 @@ export function builtInReferenceProvider(
   return isOpenRouterUrl(config?.referenceEndpoint?.baseUrl) ? { order: [...order] } : undefined
 }
 
-function isOpenRouterUrl(value: string | undefined): boolean {
+export function isOpenRouterUrl(value: string | undefined): boolean {
   if (!value) return false
   try {
     const host = new URL(value).hostname

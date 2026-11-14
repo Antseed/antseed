@@ -116,7 +116,7 @@ Before sending anything, `verifier run` stops with a list of problems and how to
 
 Each model is then checked on its own, once its questions are ready. A model isn't audited when:
 
-- its probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
+- its bank for the epoch can't be loaded (move `<banks>/<model>/epochs/<epoch>` aside and run again to build a new one);
 - it has no usable question set for this epoch. With `--no-enroll` this means the set is missing; by default the run builds it, see [Questions for each epoch](#questions-for-each-epoch).
 
 The other models carry on. The run lists the models it didn't audit, with the reason, and exits with an error.
@@ -153,11 +153,11 @@ priced $17/$85 per 1M, above the claude-fable-5.1 reference $10/$50 · not audit
 
 ## Reference banks
 
-A model's bank holds the questions and the genuine model's answers. Banks live in `<data-dir>/verifier/banks`, and seller audits never call the reference API: sellers are compared with the answers stored in the bank.
+A model's bank holds the questions and the genuine model's answers. Each epoch has its own bank per model (`<data-dir>/verifier/banks/<model>/epochs/<epoch>/bank.json`), and seller audits never call the reference API: sellers are compared with the answers stored in the bank.
 
 `verifier run` builds banks on its own, before it asks any seller:
 
-- **No question set for this epoch yet:** it builds new questions and adds them to the bank until they make the epoch's set (see below), up to 4 builds per model and run. A model without a bank gets one this way.
+- **No question set for this epoch yet:** it builds new questions and adds them to the epoch's bank until they make the epoch's set (see below), up to 4 builds per model and run. The epoch's first build makes its bank.
 - **This epoch's set is ready and calibrated:** no reference calls. A set that isn't calibrated yet is calibrated first (see below).
 
 ### Questions for each epoch
@@ -165,7 +165,8 @@ A model's bank holds the questions and the genuine model's answers. Banks live i
 Each auditor uses one question set per model and epoch (`<banks>/<model>/epochs/<epoch>/set.json`, selection method `epoch-shared-set-v1`):
 
 - **The same for every seller:** every seller of the model gets the same questions in the same order, and every close call the same extra sets. A confirming auditor uses its own set, so two auditors' audits stay independent.
-- **Built for the epoch:** the first run of a model in an epoch builds the set, then audits. Only questions built for that epoch can be in it, and a question whose text was asked before (in an earlier epoch, or in a bank from before shared sets) is left out, even under a new id.
+- **Built for the epoch:** the first run of a model in an epoch builds the set, then audits. Only questions built into that epoch's bank can be in it. Earlier epochs' questions are not checked for repeats: new questions rarely repeat an old one.
+- **Settings of the epoch:** the epoch's first build takes its settings from your config and the CLI's built-ins as they are then: provider pin, contrast models, thinking suppression, layout filter and request timeout. Later builds, the calibration, close calls and confirmations of that epoch keep them, so the whole epoch is measured one way. A setting changed during an epoch applies from the next one.
 - **Used once:** after its epoch, a set's questions, including extra questions nobody needed, are never asked again. Its evidence is published when its results are submitted.
 - **Retired when published:** `verifier submit` publishes a model's evidence with every question the bank holds for the epoch, so right before the upload it retires the model's set and its unused questions (`set.published-<n>.json`, `pool.published-<n>.json`). A later confirmation or audit of that model in the same epoch gets a new set, built from new questions. A retry of an audit made on the retired set starts again on the new set. A close call made on it gets no extra questions. If it confirms another auditor's `DIFF`, it counts as an undecided confirmation attempt: it is not submitted, and the seller is audited again from the start on the new set, up to the usual 3 attempts. Any other such close call is finished undecided and submitted as `UNDETERMINED`, and no new set is built for it. While a `verifier run` of the same data dir is going on, `verifier submit` publishes nothing of any model and says so; the next submit sends it. Once the chain has moved to the next epoch, `verifier submit` publishes nothing more of the epoch before.
 - **Sized like any reference:** the audit set is the smallest that has the statistical power and detects every testable contrast model. Each of the two extra sets is as large as the audit set, so a set needs about three times the audit set's questions.
@@ -174,11 +175,13 @@ Each auditor uses one question set per model and epoch (`<banks>/<model>/epochs/
 
 If the genuine model answers under 80% of any set, **the model isn't audited that epoch**. If it misses more than the 99% limit of the sets' self-test, the run prints a warning and goes on: the seller's limit comes from these trials anyway. Sets are sized so they reach the required power on the calibration's trials.
 
-Every epoch therefore needs a new build per model. The cost is in the bank's `referenceCosts` and in each build's log line.
+Every epoch therefore needs a new build per model, thinking discovery included. The cost is in the epoch bank's `referenceCosts` and in each build's log line.
 
 Before the self-test, a bank's new questions go through a **layout filter**: the unchecked pool is asked again in shuffled single-domain batches of up to ten, with audit prompt variants at temperature 0, twice by default, and any question whose answer moves in either pass is dropped. A question that only holds up next to the questions it was generated with would just add noise to the limit without telling models apart.
 
-A bank built by an earlier reference builder can't be used or extended: archive it and let `verifier run` build a new one.
+An epoch's bank built by an earlier reference builder can't be used or extended: move its epoch folder aside and let `verifier run` build a new one.
+
+Shared banks from earlier releases (one `<banks>/<model>/bank.json` for every epoch) and the question sets built on them are no longer read: such an epoch is not audited, resumed or submitted, and the files can be moved aside.
 
 A bank is built to tell the genuine model from a few **contrast models**: cheaper look-alikes a seller might serve instead. Each audited model has its own list built into the CLI, so every verifier's new banks are built against the same reviewed set. Every contrast is cheaper than the model it is listed for, as a substituting seller's model would be, and is one the audits' banks already use, never a `:free` model. `antseed verifier models` shows each model's contrasts and where they come from:
 
@@ -186,9 +189,9 @@ A bank is built to tell the genuine model from a few **contrast models**: cheape
 - **built-in:** the CLI's list.
 - **automatic:** only when neither is set, or with a manual `referenceEndpoint.contrastModelBank`: the highest-ranked catalog models priced at most 30% of the target (`contrastSelection.maxPriceRatio`), up to 3, never `:free`.
 
-A bank keeps the contrasts it was built with, so a changed list only applies to banks built from scratch.
+A bank keeps the contrasts it was built with, so a changed list applies from the next epoch's bank.
 
-Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need several builds for its epoch set. Building grows a bank and never replaces it. `--no-enroll` turns this off: a model with no set for the epoch is then not audited, and the run audits the others and exits with an error. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
+Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need several builds for its epoch set. Building grows the epoch's bank and never replaces it. `--no-enroll` turns this off: a model with no set for the epoch is then not audited, and the run audits the others and exits with an error.
 
 ## Reference upstreams
 
@@ -214,7 +217,9 @@ The genuine answers come from `verifier.referenceEndpoint` (OpenRouter in the se
 | `openrouter` | OpenRouter, optionally pinned to one provider with `referenceProvider: { "order": ["…"] }` |
 | `antseed` | One Antseed seller you trust (`peerId`), through your running buyer. Needs `upstream.pricing` |
 
-`antseed verifier models` shows where each model's answers come from. Use a source you trust to serve the real model: if it doesn't, every audit built on it is wrong. A bank keeps one source, so changing it later needs a new bank.
+`antseed verifier models` shows where each model's answers come from. Use a source you trust to serve the real model: if it doesn't, every audit built on it is wrong. A bank keeps one source, so a changed source applies from the next epoch's bank.
+
+On OpenRouter, each model is pinned to one provider (`referenceProvider`, or the CLI's built-in pin). Before an epoch's first build, the auditor reads which providers OpenRouter lists for the model and leaves out the pinned ones it no longer lists. When none is left, it pins one listed provider instead, the same one on every auditor: the first by tag of those with the pin's quantization (an `fp8` one for an `fp8` pin), else the first of all, never a speed tier. The run log names the pin it dropped and the one it used, and the epoch's references record the pin they were built with. If the list can't be read, the pin stays as it is.
 
 ## Getting approved
 
@@ -229,7 +234,7 @@ Submitting needs an **approved auditor address**. Ask in the [Antseed Telegram c
 For the contract owner, and for anyone running several auditors:
 
 - **Approve a new auditor at least 72 hours before the epoch it should start in.** An auditor approved during an epoch joins the split from the next one. Sellers may limit buyers that are new to them, by default for 72 hours after their first payment channel (the seller's `buyerLimits.newBuyers`, see [Buyer limits](/docs/provide/config#buyer-limits)), so a brand-new buyer's first audits can end `UNDETERMINED` for sellers that throttle it. Have the new auditor start its buyer, fund it and try an audit (`verifier run --all`) before its first epoch.
-- **Give every auditor its own data dir, buyer and reference key.** Each auditor pays sellers through the buyer in its own data dir (see [Become a verifier](/docs/verify/become-a-verifier)), and its question sets are built with the API key its `verifier.referenceEndpoint` names (`apiKeyEnv`). Two auditors sharing a buyer look like one buyer to sellers and share its limits; two sharing a key share its rate limits and spend.
+- **Give every auditor its own data dir, buyer and reference key.** Each auditor pays sellers through the buyer in its own data dir (see [Become a verifier](/docs/verify/)), and its question sets are built with the API key its `verifier.referenceEndpoint` names (`apiKeyEnv`). Two auditors sharing a buyer look like one buyer to sellers and share its limits; two sharing a key share its rate limits and spend.
 - **Give every auditor a keyed RPC of its own.** `verifier run` and `submit` read the contract's events every tick; public Base RPCs rate-limit and refuse wide log queries. Set `payments.crypto.rpcUrl` to a keyed endpoint and add `fallbackRpcUrls`.
 - **Remove an auditor at an epoch boundary, not mid-epoch.** A revocation restarts every report still waiting for a second auditor, from every auditor, so the `DIFF`s waiting at that moment have to be audited and confirmed again. Right after an epoch starts, few reports are waiting. A removal mid-epoch still works: the removed auditor's `verifier run` stops paying (see [If an auditor goes missing](#if-an-auditor-goes-missing)), and its models are handed over at once.
 - **Run the same CLI release on every auditor.** Auditors on different releases can split the models differently or disagree on who confirms. A release that raises the verifier compat is published at the end of an epoch (see [Up-to-date CLI](#up-to-date-cli)); update every auditor before the next epoch starts, and don't rebuild or update one auditor in the middle of an epoch.

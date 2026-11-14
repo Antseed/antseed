@@ -144,6 +144,56 @@ export function isSpeedTierEndpoint(tag: unknown): boolean {
   return tag.toLowerCase().split('/').slice(1).some((part) => SPEED_TIER_TAG_PARTS.has(part))
 }
 
+/** One provider endpoint OpenRouter lists for a model (`/models/<id>/endpoints`). */
+export interface OpenRouterEndpoint {
+  /** The tag a provider pin names: `alibaba/fp8`, `azure/us`, `venice`. */
+  tag: string
+  /** The provider's name (`Alibaba`), which a pin may name instead. */
+  provider: string | null
+  quantization: string | null
+}
+
+/** The provider endpoints OpenRouter lists for `model` now. Throws when the listing can't be read. */
+export async function loadOpenRouterEndpoints(
+  baseUrl: string,
+  model: string,
+  apiKey: string | undefined,
+  fetchFn: typeof fetch = fetch,
+  options: OpenRouterFetchOptions = {},
+): Promise<OpenRouterEndpoint[]> {
+  const url = `${baseUrl.replace(/\/+$/, '')}/models/${model}/endpoints`
+  const { body } = await fetchOpenRouterJson(url, `OpenRouter endpoints for ${model}`, apiKey, fetchFn, options)
+  const endpoints = (body as { data?: { endpoints?: unknown } } | null)?.data?.endpoints
+  if (!Array.isArray(endpoints)) throw new Error(`OpenRouter endpoints for ${model} (${url}) omitted data.endpoints[]`)
+  return endpoints.flatMap((raw) => {
+    const entry = (raw ?? {}) as Record<string, unknown>
+    const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null
+    const tag = text(entry.tag)
+    return tag ? [{ tag, provider: text(entry.provider_name), quantization: text(entry.quantization) }] : []
+  })
+}
+
+/**
+ * A provider pin (`provider.order`) without the providers OpenRouter no longer lists, in the same
+ * order. A pin entry is listed when an endpoint's tag is it or starts with it (`alibaba` lists
+ * `alibaba/fp8`), or when it is the endpoint's provider name. When none is listed, one listed endpoint takes their place, the same for every
+ * auditor: the first by tag of those with the first pin's quantization (`nebius/fp8` gives an `fp8`
+ * one), else the first of all, speed tiers left out. An empty listing keeps the pin.
+ */
+export function listedProviderOrder(order: readonly string[], endpoints: readonly OpenRouterEndpoint[]): string[] {
+  const pins = order.map((provider) => provider.trim())
+  const kept = pins.filter((pin) => {
+    const name = pin.toLowerCase()
+    return endpoints.some(({ tag, provider }) => tag === name || tag.startsWith(`${name}/`) || provider === name)
+  })
+  if (kept.length > 0) return kept
+  const candidates = endpoints.filter(({ tag }) => !isSpeedTierEndpoint(tag))
+  const quantization = pins[0]?.toLowerCase().split('/')[1]
+  const sameQuantization = candidates.filter((endpoint) => quantization !== undefined && endpoint.quantization === quantization)
+  const tags = (sameQuantization.length > 0 ? sameQuantization : candidates).map(({ tag }) => tag).sort()
+  return tags.length > 0 ? [tags[0]!] : pins
+}
+
 /**
  * The highest price any OpenRouter provider charges for `upstreamModel` (`/models/<id>/endpoints`),
  * input and output each at their maximum, or null when the model lists no priced endpoint.

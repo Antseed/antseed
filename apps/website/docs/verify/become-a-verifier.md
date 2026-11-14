@@ -118,13 +118,13 @@ If its price cap is too low for an audited model, `verifier run` stops and says 
 antseed-verifier verifier run
 ```
 
-Follow it from a second terminal with `antseed-verifier verifier status`. The first run takes longest: it builds each model's question bank from the reference API before it asks any seller (see [Reference banks](/docs/verify/audits#reference-banks)). When it finishes, it prints the epoch overview, `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`, with every seller's verdict (see [The epoch overview](/docs/verify/audits#the-epoch-overview)).
+Follow it from a second terminal with `antseed-verifier verifier status`. The first run of each epoch takes longest: it builds each model's question bank for the epoch from the reference API before it asks any seller (see [Reference banks](/docs/verify/audits#reference-banks)). When it finishes, it prints the epoch overview, `<data-dir>/verifier/evidence/epochs/<epoch>/overview.html`, with every seller's verdict (see [The epoch overview](/docs/verify/audits#the-epoch-overview)).
 
 Until you are approved, the run has no models to audit: add `--all` (or name one model) to try an audit without submitting it.
 
 ## Logs
 
-`verifier run`, `watch`, `submit`, `assignment`, `check` and `reference build` write what they print to `<evidenceDir>/logs/verifier-<date>.log`, one file per UTC day, kept for 14 days. By default that's `~/.antseed/verifier/evidence/logs`. Each line has its time and the command that wrote it, and live progress bars are left out.
+`verifier run`, `watch`, `submit`, `assignment` and `check` write what they print to `<evidenceDir>/logs/verifier-<date>.log`, one file per UTC day, kept for 14 days. By default that's `~/.antseed/verifier/evidence/logs`. Each line has its time and the command that wrote it, and live progress bars are left out.
 
 API keys, passwords and RPC URLs that hold a key are removed before a line is written. Logs stay on your machine and aren't part of the evidence published to IPFS.
 

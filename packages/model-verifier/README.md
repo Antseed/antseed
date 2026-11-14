@@ -46,8 +46,8 @@ Use `--protocol anthropic` for Messages-API endpoints, `--out audit.json` to kee
 raw request and response bytes, and `--json` for machine-readable output.
 
 References are content-addressed: `referenceId` is a hash of the reference itself,
-and `loadReference` rejects one whose content does not match it. Build references
-with `antseed verifier reference` (in `@antseed/cli`).
+and `loadReference` rejects one whose content does not match it. `antseed verifier
+run` (in `@antseed/cli`) builds them, and every published audit carries the ones it used.
 
 ## Library
 

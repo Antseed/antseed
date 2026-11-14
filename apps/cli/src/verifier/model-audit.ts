@@ -476,7 +476,7 @@ export async function prepareModelAudits(input: {
     ))
     const partCount = Math.ceil(accepted.length / maxResults)
     // Read once per model, not once per part: neither depends on the part.
-    const bankExchanges = await loadBankReferenceExchanges(input.banksDir, model)
+    const bankExchanges = await loadBankReferenceExchanges(input.banksDir, model, input.manifest.epoch)
     const questionSets = new Map<string, Promise<EpochQuestionSetV1 | null>>()
     const questionSetOf = (referenceId: string): Promise<EpochQuestionSetV1 | null> => {
       let found = questionSets.get(referenceId)

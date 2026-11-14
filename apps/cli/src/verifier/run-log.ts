@@ -109,7 +109,7 @@ async function removeExpiredLogs(dir: string, now: Date): Promise<void> {
 
 export interface VerifierRunLogOptions {
   dir: string
-  /** e.g. `run` or `reference build`: labels every line, so a watch and its steps can share a file. */
+  /** e.g. `run` or `watch`: labels every line, so a watch and its steps can share a file. */
   command: string
   argv: readonly string[]
   version: string

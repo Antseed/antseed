@@ -4,7 +4,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
 import type { PeerInfo } from '@antseed/node'
@@ -81,6 +81,7 @@ import {
 import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
+  epochQuestionSetPath,
   epochSetCalibrationProblem,
   isRetiredEpochQuestionSetReference,
   loadEpochQuestionSet,
@@ -2216,7 +2217,7 @@ async function collectQuestionSetProblems(input: {
       return [`${model}: the question set for epoch ${input.epoch} ${calibrationProblem}`
         + `${set.calibration ? '; the model is not audited this epoch' : '; run without --no-enroll to calibrate it'}`]
     }
-    const missing = await missingBankReferenceExchanges(input.banksDir, model)
+    const missing = await missingBankReferenceExchanges(input.banksDir, model, input.epoch)
     if (missing.length > 0) {
       return [`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
         + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
@@ -2224,8 +2225,8 @@ async function collectQuestionSetProblems(input: {
     }
     return []
   } catch (error) {
-    return [`${model}: the probe bank can't be used (${asError(error).message}); `
-      + `rebuild it with antseed verifier reference build ${model}`]
+    return [`${model}: the probe bank for epoch ${input.epoch} can't be used (${asError(error).message}); `
+      + `move ${dirname(epochQuestionSetPath(input.banksDir, model, input.epoch))} aside and run again to build a new one`]
   }
 }
 

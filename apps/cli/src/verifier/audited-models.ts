@@ -23,7 +23,8 @@ export interface AuditedModel {
    * reference code pins one provider per model: an unpinned reference is answered by whichever
    * host OpenRouter picks (often fp4/mxfp4 quantizations), which inflates the self-test error and
    * makes honest sellers look like a different model. Prefer the model maker's own endpoint.
-   * `verifier.models.<model>.referenceProvider` overrides it; a bank keeps the pin it was built with.
+   * `verifier.models.<model>.referenceProvider` overrides it. Each epoch's bank keeps the pin its first
+   * build used; a pinned provider OpenRouter no longer lists is replaced then (`listedProviderOrder`).
    */
   referenceProvider?: readonly string[]
   /**

@@ -18,7 +18,7 @@ import {
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
-import { NO_EPOCH_QUESTION_SET, epochQuestionSetPath, questionTextKey, reserveModelAuditReference } from './probe-bank.js'
+import { NO_EPOCH_QUESTION_SET, epochQuestionSetPath, reserveModelAuditReference } from './probe-bank.js'
 import {
   CONFIRMATION_WINDOW_SECONDS, loadBlockTimestamps, loadEpochReports, pendingConfirmations, waitingReportBlocks,
 } from './pending-confirmations.js'
@@ -583,8 +583,7 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
     assert.equal(reserved.reference.referenceId, second.reference.referenceId)
     const published = [first.reference, ...first.extensions].flatMap((reference) => reference.probes)
     const publishedIds = new Set(published.map((probe) => probe.id))
-    const publishedText = new Set(published.map(questionTextKey))
-    assert.equal(reserved.reference.probes.some((probe) => publishedIds.has(probe.id) || publishedText.has(questionTextKey(probe))), false)
+    assert.equal(reserved.reference.probes.some((probe) => publishedIds.has(probe.id)), false)
     await b.writeRun('b-confirm-3', [diff(3, second.reference)])
     const confirmed3 = submit(b, 'b-confirm-3', ['--yes'])
     assert.equal(confirmed3.status, 0, confirmed3.output)

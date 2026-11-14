@@ -3,12 +3,19 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { computeReferenceId } from '@antseed/fingerprints'
 import { setAuditedModelsForTesting } from './audited-models.js'
 import { BUILD_REQUEST_RUNS, EPOCH_SET_BUILD_ROUNDS, buildRequestLimits, enrollFreshProbes, ensureEpochQuestionSet } from './ensure-auditable-reference.js'
-import type { EpochQuestionSetSelection, EpochQuestionSetV1 } from './probe-bank.js'
+import {
+  appendModelReferenceToBank,
+  loadBankEnrollmentReference,
+  loadBankProbeIndex,
+  type EpochQuestionSetSelection,
+  type EpochQuestionSetV1,
+} from './probe-bank.js'
 
 setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a', contrastModels: [] } })
-import { referenceFixture } from './model-audit-fixtures.test-support.js'
+import { freshReferenceFixture, referenceFixture } from './model-audit-fixtures.test-support.js'
 
 type EnrollOperations = NonNullable<Parameters<typeof enrollFreshProbes>[1]>
 
@@ -16,7 +23,7 @@ async function fixture(body: (input: Parameters<typeof enrollFreshProbes>[0], ca
   const directory = await mkdtemp(join(tmpdir(), 'antseed-ensure-reference-'))
   const calls: string[] = []
   const input = {
-    model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), maxRequests: 10,
+    model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), epoch: '7', maxRequests: 10,
     config: { referenceMaxRequestsPerBuild: 20, referenceEndpoint: {
       baseUrl: 'https://reference.test', sourceId: 'test', trust: 'trusted' as const,
     } },
@@ -39,10 +46,13 @@ async function fixture(body: (input: Parameters<typeof enrollFreshProbes>[0], ca
   try { await body(input, calls, operations) } finally { await rm(directory, { recursive: true, force: true }) }
 }
 
-test('fresh enrollment builds a new reference that excludes every banked probe', async () => fixture(async (input, calls, operations) => {
+test('fresh enrollment builds a new reference that excludes every probe of the epoch\'s bank', async () => fixture(async (input, calls, operations) => {
+  operations.loadIndex = async (_banksDir, _model, epoch) => { calls.push(`index:${epoch}`); return { contrastModels: ['contrast-x'], probeIds: ['banked-1', 'banked-2'] } }
+  operations.loadSeed = async (_banksDir, _model, epoch) => { calls.push(`seed:${epoch}`); return referenceFixture('model-a', 100) }
+  const append = operations.append
+  operations.append = async (options) => { assert.equal(options.epoch, '7'); return append(options) }
   operations.build = async (options) => {
     calls.push('build')
-    assert.equal(options.initialReference, undefined)
     // The bank's enrollment supplies the request settings, not probes to reuse.
     assert.equal(options.settingsReference?.referenceModel, 'model-a')
     assert.deepEqual([...(options.excludedProbeIds ?? [])], ['banked-1', 'banked-2'])
@@ -54,21 +64,69 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
       finalize: async () => { calls.push('finalize') } }
   }
   const enrolled = await enrollFreshProbes(input, operations)
-  assert.deepEqual(calls, ['index', 'seed', 'catalog', 'build', 'append', 'finalize'])
+  assert.deepEqual(calls, ['index:7', 'seed:7', 'catalog', 'build', 'append', 'finalize'])
   assert.equal(enrolled.addedProbeCount, 10)
 }))
+
+test('each epoch\'s first build takes fresh settings, never an earlier epoch\'s bank; its later builds keep the epoch\'s', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-ensure-reference-epochs-'))
+  const cost = { totalUsdMicros: '0', requestCount: 0, models: [], purposes: [] }
+  const builds: Array<Parameters<EnrollOperations['build']>[0]> = []
+  const operations: EnrollOperations = {
+    loadSeed: loadBankEnrollmentReference,
+    loadIndex: loadBankProbeIndex,
+    append: appendModelReferenceToBank,
+    catalog: async () => null,
+    build: async (options) => {
+      builds.push(options)
+      return { reference: freshReferenceFixture('model-a', `b${builds.length}`, 100), path: 'reference.json', cost, finalize: async () => {} }
+    },
+  }
+  const enroll = (epoch: string) => enrollFreshProbes({
+    model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), epoch, maxRequests: 10,
+    config: {
+      referenceEndpoint: { baseUrl: 'https://reference.test', sourceId: 'test', trust: 'trusted' },
+      models: { 'model-a': { contrastModels: ['contrast-now'] } },
+    },
+  }, operations)
+  try {
+    // Epoch 31's bank was built with the contrast and pin of its day.
+    const old = referenceFixture('model-a', 100)
+    old.generator.params.referenceProvider = { pinned: { order: ['gone/fp8'], allowFallbacks: false }, served: [] }
+    old.referenceId = computeReferenceId(old)
+    const earlier = await appendModelReferenceToBank({ banksDir: directory, model: 'model-a', epoch: '31', reference: old, cost })
+
+    const first = await enroll('32')
+    assert.equal(builds[0]!.epoch, '32', 'the build\'s checkpoints are the epoch\'s')
+    assert.equal(builds[0]!.settingsReference, undefined, 'no settings of an earlier epoch')
+    assert.deepEqual([...builds[0]!.excludedProbeIds ?? []], [])
+    assert.deepEqual(builds[0]!.config?.models?.['model-a']?.contrastModels, ['contrast-now'])
+    assert.equal(first.addedProbeCount, 100)
+
+    await enroll('32')
+    assert.deepEqual(builds[1]!.settingsReference?.probes.map((probe) => probe.id).slice(0, 2), ['b1-1', 'b1-2'], 'the epoch\'s own settings')
+    assert.deepEqual([...builds[1]!.excludedProbeIds ?? []], first.addedProbeIds)
+    assert.deepEqual(builds[1]!.config?.models?.['model-a']?.contrastModels, ['model-a-contrast'])
+
+    // Epoch 31's next build keeps epoch 31's settings.
+    await enroll('31')
+    assert.deepEqual(builds[2]!.settingsReference?.generator.params.referenceProvider, old.generator.params.referenceProvider)
+    assert.deepEqual([...builds[2]!.excludedProbeIds ?? []], earlier.addedProbeIds)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('fresh enrollment needs an explicit budget before any call', async () => fixture(async (input, calls, operations) => {
   await assert.rejects(enrollFreshProbes({ ...input, maxRequests: 0 }, operations), /explicit positive/)
   assert.deepEqual(calls, [])
 }))
 
-const SET = { reference: { probes: [] }, extensions: [], candidateProbeCount: 0, previouslyAskedProbeCount: 0 } as unknown as EpochQuestionSetV1
+const SET = { reference: { probes: [] }, extensions: [], candidateProbeCount: 0 } as unknown as EpochQuestionSetV1
 
-function setOperations(selections: EpochQuestionSetSelection[], calls: string[], options: { banked?: number; added?: number[] } = {}) {
+function setOperations(selections: EpochQuestionSetSelection[], calls: string[], options: { added?: number[] } = {}) {
   const added = [...(options.added ?? [])]
   return {
-    inspect: async () => ({ totalProbeCount: options.banked ?? 100, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }),
     select: async () => { calls.push('select'); return selections.shift() ?? { status: 'short' as const, reason: 'still short', candidateProbeCount: 0 } },
     enrollFresh: async () => {
       calls.push('build')
@@ -99,10 +157,11 @@ test('new questions are built and recorded for the epoch until they make its que
   assert.deepEqual(calls, ['select', 'build', 'record:10', 'select', 'build', 'record:10', 'select', 'calibrate'])
 })
 
-test('a model without a bank builds its first questions before selecting', async () => {
+test('an epoch without a bank yet builds its first questions, then selects', async () => {
   const calls: string[] = []
-  await ensureEpochQuestionSet(setInput, setOperations([{ status: 'ready', set: SET }], calls, { banked: 0 }))
-  assert.deepEqual(calls, ['build', 'record:10', 'select', 'calibrate'])
+  const none = { status: 'short' as const, reason: 'no questions were built for epoch 7 yet', candidateProbeCount: 0 }
+  await ensureEpochQuestionSet(setInput, setOperations([none, { status: 'ready', set: SET }], calls))
+  assert.deepEqual(calls, ['select', 'build', 'record:10', 'select', 'calibrate'])
 })
 
 test('no question set after the build limit, or a build that adds nothing, means no audit of the model', async () => {

@@ -22,7 +22,7 @@ import { kbfAuditBatches } from './kbf-batching.js'
 import { calibrateReferenceSets } from './model-reference.js'
 import {
   appendModelReferenceToBank,
-  bankPath,
+  epochBankPath,
   epochQuestionSetPath,
   loadBankReferenceExchanges,
   loadEpochQuestionSet,
@@ -138,7 +138,7 @@ async function withSet(
   const directory = await mkdtemp(join(tmpdir(), 'antseed-epoch-calibration-'))
   try {
     const appended = await appendModelReferenceToBank({
-      banksDir: directory, model: 'model-a', reference: bankedReference(selfMisses),
+      banksDir: directory, model: 'model-a', epoch: EPOCH, reference: bankedReference(selfMisses),
       cost: { totalUsdMicros: '0', requestCount: 0, models: [], purposes: [] },
     })
     await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: EPOCH, probeIds: appended.addedProbeIds })
@@ -290,7 +290,6 @@ test('a set that exists without a calibration gets one through ensureEpochQuesti
     model: 'model-a', banksDir: directory, referencesDir: join(directory, 'references'), config, maxRequests: 1_000,
     epoch: EPOCH, runId: 'run-b', extensionCount: 2,
   }, {
-    inspect: async () => ({ totalProbeCount: 690, eligibleProbeCount: 690, selectedProbeCount: null, statisticalPower: null }),
     select: selectEpochQuestionSet,
     enrollFresh: async () => { throw new Error('must not build') },
     record: recordEpochQuestionPool,
@@ -343,24 +342,28 @@ test('a reference batch is treated like a seller\'s: think blocks stripped, cut-
 test('calibration publishes its raw exchanges with the bank, and a third party can recompute the limit', async () => withSet(async ({ directory, set }) => {
   const { sent, fetchFn } = endpoint()
   const calibrated = await calibrate(directory, set, fetchFn)
-  const exchanges = await loadBankReferenceExchanges(directory, 'model-a')
+  const exchanges = await loadBankReferenceExchanges(directory, 'model-a', EPOCH)
   const stored = exchanges.find((entry) => entry.referenceId === calibrated.reference.referenceId)!
   assert.equal(stored.exchangeCount, sent.length)
   const file = JSON.parse(await readFile(stored.absolutePath, 'utf8')) as { exchanges: Array<{ purpose: string; requestBody: string; responseBody: string }> }
   assert.equal(file.exchanges.length, sent.length)
   assert.equal(file.exchanges.every((exchange) => exchange.purpose === 'calibration'), true)
-  const bank = JSON.parse(await readFile(bankPath(directory, 'model-a'), 'utf8')) as { referenceExchanges: unknown[] }
+  const bank = JSON.parse(await readFile(epochBankPath(directory, 'model-a', EPOCH), 'utf8')) as { referenceExchanges: unknown[] }
   assert.equal(bank.referenceExchanges.length, 1)
 }))
 
-test('calibration refuses another endpoint or provider than the bank was enrolled on', async () => withSet(async ({ directory, set }) => {
+test('calibration refuses another endpoint than the bank was enrolled on, and asks the provider the bank pinned whatever the config pins now', async () => withSet(async ({ directory, set }) => {
   const { sent, fetchFn } = endpoint()
   const ask = (value: VerifierCLIConfig) => calibrateEpochQuestionSet({
-    model: 'model-a', banksDir: directory, config: value, maxRequests: 100, epoch: EPOCH, set, fetchFn,
+    model: 'model-a', banksDir: directory, config: value, maxRequests: 1_000, epoch: EPOCH, set, fetchFn,
   }, operations)
   await assert.rejects(ask({ ...config, referenceEndpoint: { ...config.referenceEndpoint!, sourceId: 'other-source' } }), /was enrolled on reference-source/)
-  await assert.rejects(ask({
-    ...config, models: { 'model-a': { ...config.models!['model-a']!, referenceProvider: { order: ['provider-b'] } } },
-  }), /another provider/)
   assert.equal(sent.length, 0)
+  // The epoch's settings are fixed once its bank exists: a pin changed in the config since waits for the next epoch.
+  const calibrated = await ask({
+    ...config, models: { 'model-a': { ...config.models!['model-a']!, referenceProvider: { order: ['provider-b'] } } },
+  })
+  assert.equal(calibrated.calibration?.status, 'passed')
+  assert.ok(sent.length > 0)
+  for (const { body } of sent) assert.deepEqual(body.provider, { order: ['provider-a'], allow_fallbacks: false })
 }))

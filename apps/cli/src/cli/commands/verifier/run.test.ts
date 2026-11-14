@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { Command } from 'commander'
 import { createReferenceQueryProfile } from '@antseed/fingerprints'
@@ -12,6 +12,7 @@ import {
   type ProxyAuditEvidenceV1,
 } from '../../../verifier/proxy-evidence.js'
 import { setAuditedModelsForTesting } from '../../../verifier/audited-models.js'
+import { sellerLedgerPath } from '../../../verifier/probe-bank.js'
 import { registerVerifierCommands } from './index.js'
 import { validateRunEpoch } from './submit.js'
 import {
@@ -42,12 +43,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, logs, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
+test('verifier exposes run, assignment, logs, models, overview, status, submit, watch, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'logs', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
+    ['assignment', 'check', 'logs', 'models', 'overview', 'profile', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 
@@ -57,14 +58,6 @@ test('verifier submit and rewards expose the auditor controls', () => {
     .options.map((option) => option.long)
   assert.deepEqual(options('submit'), ['--run-id', '--no-publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
-})
-
-test('verifier reference exposes only the explicit build workflow', () => {
-  const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
-  const reference = verifier.commands.find((entry) => entry.name() === 'reference')!
-  assert.deepEqual(reference.commands.map((entry) => entry.name()), ['build'])
-  assert.deepEqual(reference.commands[0]!.registeredArguments.map((argument) => argument.name()), ['model'])
-  assert.deepEqual(reference.commands[0]!.options.map((option) => option.long), ['--all'])
 })
 
 test('verifier run accepts one model, all configured models, or an auditor assignment', () => {
@@ -301,13 +294,15 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
     exchanges: [],
   }
   try {
-    const modelBankDir = join(banksDir, 'claude-opus-4-6')
-    await mkdir(modelBankDir, { recursive: true })
-    await writeFile(join(modelBankDir, 'bank.json'), JSON.stringify({
-      referenceCosts: [],
-      referenceTemplate: {
-        generator: { name: 'antseed-simple-reference-builder', version: '3' },
-      },
+    // Its reservation is on no question set any more (an archived bank).
+    const ledgerPath = sellerLedgerPath(banksDir, candidate.model, candidate.peerId)
+    await mkdir(dirname(ledgerPath), { recursive: true })
+    await writeFile(ledgerPath, JSON.stringify({
+      version: 1, kind: 'antseed-kbf-seller-probe-ledger', model: candidate.model, sellerPeerId: candidate.peerId,
+      assignments: [{
+        auditId: candidate.reservationAuditId, runId: 'archived-run', epoch: '2026-08-12', service: candidate.service,
+        referenceId: candidate.referenceId, probeIds: candidate.probeIds, selection: 'epoch-shared-set-v1', reservedAt: '2026-08-12T00:00:00.000Z',
+      }],
     }))
     const candidates = new Map([['candidate', candidate]])
     const automatic = await filterCompatibleResumeCandidates({
@@ -324,7 +319,7 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
         epoch: '2026-08-13',
         strict: true,
       }),
-      /incompatible with the active probe bank: probe bank for claude-opus-4-6 uses reference enrollment/,
+      /incompatible with the active probe bank: audit reservation 0x3{64} is on no claude-opus-4-6 question set of epoch 2026-08-12/,
     )
   } finally {
     await rm(directory, { recursive: true, force: true })

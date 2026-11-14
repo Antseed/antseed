@@ -9,7 +9,6 @@ import {
   appendModelReferenceToBank,
   epochQuestionSetPath,
   epochSetCalibrationProblem,
-  inspectModelProbeBankPower,
   loadBankEnrollmentReference,
   loadBankProbeIndex,
   loadEpochQuestionSet,
@@ -50,13 +49,15 @@ export function buildRequestLimits(maxRequests: number, configuredTotal: number 
 }
 
 /**
- * Builds a brand-new reference (fresh questions) and appends it to the bank, keeping the bank's
- * contrast models. Returns the ids of the questions it added.
+ * Builds a brand-new reference (fresh questions) and appends it to the epoch's bank. The epoch's first
+ * build takes its settings from the config and built-ins; later builds keep the bank's request
+ * settings and contrast models. Returns the ids of the questions it added.
  */
 export async function enrollFreshProbes(input: {
   model: string
   banksDir: string
   referencesDir: string
+  epoch: string
   config: VerifierCLIConfig | undefined
   maxRequests: number
   buyerProxyPort?: number
@@ -68,10 +69,10 @@ export async function enrollFreshProbes(input: {
   }
   const lock = await acquirePidFileLock(join(input.banksDir, safeServiceSlug(input.model), '.enrollment.lock'))
   try {
-    const bank = await operations.loadIndex(input.banksDir, input.model)
-    // The bank's request settings (thinking suppression etc.), so the fresh probes are measured
-    // like the banked ones and the bank accepts them.
-    const settingsReference = bank ? await operations.loadSeed(input.banksDir, input.model) : undefined
+    const bank = await operations.loadIndex(input.banksDir, input.model, input.epoch)
+    // The bank's request settings (provider pin, thinking suppression etc.), so the fresh probes are
+    // measured like the banked ones and the bank accepts them.
+    const settingsReference = bank ? await operations.loadSeed(input.banksDir, input.model, input.epoch) : undefined
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
     if (!config?.referenceEndpoint || !entry) {
@@ -92,12 +93,13 @@ export async function enrollFreshProbes(input: {
       buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
       log: input.log,
+      epoch: input.epoch,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
       maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
-      banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch, reference: built.reference, cost: built.cost,
       answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
       exchanges: built.exchanges,
     })
@@ -198,8 +200,8 @@ export const EPOCH_SET_BUILD_ROUNDS = 4
 
 /**
  * This epoch's question set for a model (`epochs/<epoch>/set.json`), built on the spot when there is
- * none yet: fresh questions are built and added to the bank (up to `EPOCH_SET_BUILD_ROUNDS` builds
- * per run, recorded so an interrupted run's builds still count) until they make an audit set and
+ * none yet: fresh questions are built and added to the epoch's bank (up to `EPOCH_SET_BUILD_ROUNDS`
+ * builds per run, recorded so an interrupted run's builds still count) until they make an audit set and
  * `extensionCount` extra sets, then calibrated. Only questions built for this epoch can be in it.
  * Throws when the builds don't get there or calibration stops the model; it is then not audited in
  * this run.
@@ -217,13 +219,12 @@ export async function ensureEpochQuestionSet(input: {
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
 }, operations: {
-  inspect: typeof inspectModelProbeBankPower
   select: typeof selectEpochQuestionSet
   enrollFresh: typeof enrollFreshProbes
   record: typeof recordEpochQuestionPool
   calibrate: typeof calibrateEpochQuestionSet
 } = {
-  inspect: inspectModelProbeBankPower, select: selectEpochQuestionSet, enrollFresh: enrollFreshProbes, record: recordEpochQuestionPool,
+  select: selectEpochQuestionSet, enrollFresh: enrollFreshProbes, record: recordEpochQuestionPool,
   calibrate: calibrateEpochQuestionSet,
 }): Promise<EpochQuestionSetV1> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
@@ -242,20 +243,18 @@ export async function ensureEpochQuestionSet(input: {
       ...(input.log ? { log: input.log } : {}),
     })
   }
-  // A model without a bank has nothing to select from yet: its first build makes the bank.
-  let selection = await operations.inspect({ banksDir: input.banksDir, model: input.model, config: input.config })
-    .then((status) => status.totalProbeCount === 0 ? null : select())
-  if (selection?.status === 'ready') return ready(selection.set)
+  let selection = await select()
+  if (selection.status === 'ready') return ready(selection.set)
   if (await retiredEpochQuestionSetCount(input) > 0) {
     input.log?.(`a submit published the epoch ${input.epoch} question set, so its sellers are not asked it again; building a new one`)
   }
   for (let round = 1; round <= EPOCH_SET_BUILD_ROUNDS; round += 1) {
     input.log?.(
       `building new questions for the epoch ${input.epoch} question set (build ${round}/${EPOCH_SET_BUILD_ROUNDS}`
-      + `${selection ? `; ${selection.reason}` : ''})`,
+      + `; ${selection.reason})`,
     )
     const enrolled = await operations.enrollFresh({
-      model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, config: input.config,
+      model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, epoch: input.epoch, config: input.config,
       maxRequests: input.maxRequests, buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
       ...(input.log ? { log: input.log } : {}),
@@ -265,10 +264,10 @@ export async function ensureEpochQuestionSet(input: {
     if (selection.status === 'ready') return ready(selection.set)
     if (enrolled.addedProbeCount === 0) break
   }
-  throw new Error(`no question set for epoch ${input.epoch}: ${selection?.reason ?? 'the build added no questions'}`)
+  throw new Error(`no question set for epoch ${input.epoch}: ${selection.reason}`)
 }
 
 function describeSet(set: EpochQuestionSetV1): string {
   return `${set.reference.probes.length} questions and ${set.extensions.length} extra set(s) of as many, `
-    + `from ${set.candidateProbeCount} new questions (${set.previouslyAskedProbeCount} left out as asked before)`
+    + `from ${set.candidateProbeCount} new questions`
 }

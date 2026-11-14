@@ -43,9 +43,9 @@ import {
   appendModelReferenceToBank,
   recordEpochQuestionPool,
   recordEpochSetCalibration,
+  EPOCH_QUESTION_SET_METHOD,
+  epochQuestionSetPath,
   selectEpochQuestionSet,
-  sellerEpochProbeReferencePath,
-  SELLER_PROBE_SELECTION_METHOD,
   type EpochQuestionSetV1,
 } from './probe-bank.js'
 import {
@@ -159,8 +159,8 @@ export function freshReferenceFixture(model: string, prefix: string, probeCount 
 const NO_COST = { totalUsdMicros: '0', requestCount: 0, models: [], purposes: [] }
 
 /**
- * The epoch's question set as `verifier run` makes it: `reference`'s questions are banked as this
- * epoch's build, the set is selected from them in order and calibrated with a clean pass.
+ * The epoch's question set as `verifier run` makes it: `reference`'s questions are banked in the
+ * epoch's own bank as its build, the set is selected from them in order and calibrated with a clean pass.
  */
 export async function writeCalibratedEpochSet(input: {
   banksDir: string
@@ -169,7 +169,9 @@ export async function writeCalibratedEpochSet(input: {
   reference: KbfReferenceV1
   extensionCount?: number
 }): Promise<EpochQuestionSetV1> {
-  const appended = await appendModelReferenceToBank({ banksDir: input.banksDir, model: input.model, reference: input.reference, cost: NO_COST })
+  const appended = await appendModelReferenceToBank({
+    banksDir: input.banksDir, model: input.model, epoch: input.epoch, reference: input.reference, cost: NO_COST,
+  })
   await recordEpochQuestionPool({ banksDir: input.banksDir, model: input.model, epoch: input.epoch, probeIds: appended.addedProbeIds })
   const selection = await selectEpochQuestionSet({
     banksDir: input.banksDir, model: input.model, epoch: input.epoch, runId: 'set-run',
@@ -205,7 +207,10 @@ export function peerIdOf(wallet: Wallet): string {
   return wallet.address.slice(2).toLowerCase()
 }
 
-/** Writes a completed run (summaries, signed evidence, seller references) and returns its manifest. */
+/**
+ * Writes a completed run (summaries, signed evidence) and returns its manifest. Each audit's reference
+ * is stored as a question set of the epoch (`epochs/<epoch>/fixture-sets/`), where a submit finds it.
+ */
 export async function writeSignedAuditRun(input: {
   evidenceDir: string
   banksDir: string
@@ -228,22 +233,18 @@ export async function writeSignedAuditRun(input: {
     for (const [index, audit] of input.audits.filter((entry) => entry.model === model).entries()) {
       const reference = audit.reference ?? referenceFixture(model)
       const peerId = peerIdOf(audit.seller)
-      const referencePath = sellerEpochProbeReferencePath(input.banksDir, model, input.epoch, peerId)
+      const referencePath = join(dirname(epochQuestionSetPath(input.banksDir, model, input.epoch)), 'fixture-sets', `${peerId}.json`)
       await mkdir(dirname(referencePath), { recursive: true })
       await writeJsonAtomic(referencePath, {
         version: 1,
-        kind: 'antseed-kbf-seller-epoch-probe-reference',
+        kind: 'antseed-kbf-epoch-question-set',
+        method: EPOCH_QUESTION_SET_METHOD,
         model,
         epoch: input.epoch,
-        sellerPeerId: peerId,
         compatibilityHash: `0x${'00'.repeat(32)}`,
-        selection: {
-          method: SELLER_PROBE_SELECTION_METHOD,
-          eligibleProbeCount: reference.probes.length,
-          excludedPreviouslyAssignedProbeCount: 0,
-          allowProbeReuse: false,
-        },
+        candidateProbeCount: reference.probes.length,
         reference,
+        extensions: [],
         createdAt: timestamps.startedAt,
         createdByRunId: input.runId,
       })

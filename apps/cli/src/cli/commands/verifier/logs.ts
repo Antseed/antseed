@@ -15,7 +15,7 @@ import {
 } from '../../../verifier/run-log.js'
 
 /** Commands that do an auditor's work; read-only ones would only add noise. */
-const LOGGED_COMMANDS = new Set(['run', 'watch', 'submit', 'assignment', 'check', 'reference build'])
+const LOGGED_COMMANDS = new Set(['run', 'watch', 'submit', 'assignment', 'check'])
 const DEFAULT_BUNDLE_DAYS = 7
 
 function verifierCommandName(command: Command): string {

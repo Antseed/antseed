@@ -28,7 +28,6 @@ import {
   computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
-  rescoreKbfReference,
   sha256Hex,
   stripKbfThinkBlocks,
   validateKbfReferenceV1,
@@ -49,13 +48,17 @@ import {
   REFERENCE_POWER_ALPHA,
   REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
   REFERENCE_POWER_CONFIDENCE,
-  isReferenceProbeCountAllowed,
   resolveReferenceSizingPolicy,
 } from './reference-sizing.js'
 import { probeBankCompatibilityHash } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
-import { auditedVerifierModels, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
-import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter-catalog.js'
+import { auditedVerifierModels, isOpenRouterUrl, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
+import {
+  listedProviderOrder,
+  loadOpenRouterEndpoints,
+  type VerifierModelCatalog,
+  type VerifierReasoningEffort,
+} from './openrouter-catalog.js'
 import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
@@ -325,61 +328,6 @@ export interface ReferenceExchangesV1 {
   exchanges: ReferenceExchangeV1[]
 }
 
-export async function loadModelReference(input: {
-  model: string
-  referencesDir: string
-  config?: VerifierCLIConfig
-}): Promise<{ reference: KbfReferenceV1; path: string }> {
-  const path = referencePath(input.referencesDir, input.model)
-  let raw: string
-  try {
-    raw = await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`no reference exists for ${input.model}; run antseed verifier reference build ${input.model}`)
-    }
-    throw error
-  }
-  try {
-    const sizing = resolveReferenceSizingPolicy(input.config)
-    // References built before unscoreable answers were left out are re-scored on load.
-    const reference = rescoreKbfReference(validateKbfReferenceV1(JSON.parse(raw), {
-      trustImported: true,
-      minimumStatisticalPower: Number.EPSILON,
-    }))
-    if (!reference.serviceAliases.some((alias) => normalized(alias) === normalized(input.model))) {
-      throw new Error(`reference does not include service alias ${input.model}`)
-    }
-    if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
-      throw new Error(
-        `reference probe count ${reference.probes.length} is outside the configured adaptive sizing sequence`,
-      )
-    }
-    if (Math.abs(reference.minimumMismatchDelta - REFERENCE_MINIMUM_MISMATCH_DELTA) > 1e-12) {
-      throw new Error(`reference minimumMismatchDelta must be ${REFERENCE_MINIMUM_MISMATCH_DELTA}`)
-    }
-    if (Math.abs(reference.statisticalPowerEvidence.alpha - REFERENCE_POWER_ALPHA) > 1e-12) {
-      throw new Error(`reference statistical power alpha must be ${REFERENCE_POWER_ALPHA}`)
-    }
-    if (Math.abs(
-      reference.statisticalPowerEvidence.clopperPearsonConfidence - REFERENCE_POWER_CONFIDENCE,
-    ) > 1e-12) {
-      throw new Error(
-        `reference Clopper-Pearson confidence must be ${REFERENCE_POWER_CONFIDENCE}`,
-      )
-    }
-    if (reference.statisticalPower < sizing.minimumStatisticalPower) {
-      throw new Error(
-        `reference statistical power ${reference.statisticalPower.toFixed(3)} is below `
-        + sizing.minimumStatisticalPower.toFixed(3),
-      )
-    }
-    return { reference, path }
-  } catch (error) {
-    throw new Error(`invalid reference for ${input.model}: ${asError(error).message}; run antseed verifier reference build ${input.model}`)
-  }
-}
-
 export async function buildModelReference(input: {
   model: string
   referencesDir: string
@@ -389,14 +337,11 @@ export async function buildModelReference(input: {
   fetchFn?: typeof fetch
   log?: (message: string) => void
   requestLimiter?: ReferenceRequestLimiter
-  initialReference?: KbfReferenceV1
   /**
-   * Probes already certified stable for this model by an earlier enrollment
-   * with the same enrollment prompt, temperatures and stability rule. They skip
-   * candidate generation and stability passes only; contrast checks and
-   * self-tests are measured again by this build.
+   * The epoch this build is for. Its checkpoints are kept per epoch, so a build never resumes the
+   * cached answers of another epoch's build.
    */
-  seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
+  epoch?: string
   /** Probe ids already banked; generation never returns them, so every selected probe is new. */
   excludedProbeIds?: ReadonlySet<string>
   /**
@@ -429,24 +374,19 @@ export async function buildModelReference(input: {
   const sizing = resolveReferenceSizingPolicy(input.config)
   const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
   assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
-  const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
+  // The request settings of the bank this build adds fresh probes to, so they are measured exactly
+  // like the banked ones.
+  const settings = input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
     minimumStatisticalPower: Number.EPSILON,
   })
-  if (initial && input.settingsReference) throw new Error('initialReference already carries the bank settings')
-  // Where this build's request settings come from: the enrollment it extends, or the bank it adds
-  // fresh probes to. Either way new probes are measured exactly like the banked ones.
-  const settings = initial ?? (input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
-    minimumStatisticalPower: Number.EPSILON,
-  }))
-  // The provider pin: the verifier's own, else the one the bank being extended was built with (so
-  // its measurements stay comparable), else the built-in pin for a new bank.
+  // The provider pin: the one the bank being extended was built with, so its measurements stay
+  // comparable (an epoch keeps its first build's pin), else the verifier's own or the built-in one.
   const recordedPin = settings
     ? (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
     : undefined
-  const targetReferenceProvider = modelConfig.referenceProvider
-    ?? (settings
-      ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
-      : modelConfig.defaultReferenceProvider)
+  const targetReferenceProvider = settings
+    ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
+    : modelConfig.referenceProvider ?? modelConfig.defaultReferenceProvider
   // KBF layout filter (`generate_probes.py --layout-filter`): a bank keeps the setting it was built
   // with; a new bank uses the config (default one pass).
   const layoutFilterPasses = settings
@@ -472,6 +412,11 @@ export async function buildModelReference(input: {
       })] as const
     }),
   )
+  // A new bank's pin leaves out providers OpenRouter no longer lists for the model.
+  if (!settings) {
+    const targetKey = normalized(modelConfig.upstreamModel)
+    routesByModel.set(targetKey, await withListedProviders(routesByModel.get(targetKey)!, input.fetchFn ?? fetch, input.log))
+  }
   // The request timeout is part of the measurement (it decides which slow answers count), so a
   // bank keeps the one it was enrolled with.
   const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
@@ -503,6 +448,7 @@ export async function buildModelReference(input: {
   const discoveryCheckpoint = discover ? await ReferenceBuildCheckpoint.open(discoveryCheckpointPath, canonicalHashBytes32({
     version: 1,
     model: normalized(input.model),
+    ...(input.epoch !== undefined ? { epoch: input.epoch } : {}),
     routesByModel: [...routesByModel.entries()],
   })) : null
   const discoveryUsedBefore = discoveryCheckpoint?.requestsUsed ?? 0
@@ -644,12 +590,8 @@ export async function buildModelReference(input: {
     timeoutMs,
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
-    ...(initial ? { initialReferenceId: initial.referenceId } : {}),
+    ...(input.epoch !== undefined ? { epoch: input.epoch } : {}),
     ...(input.excludedProbeIds ? { excludedProbeIds: canonicalHashBytes32([...input.excludedProbeIds].sort()) } : {}),
-    ...(input.seedProbes ? {
-      seedProbeIds: canonicalHashBytes32(input.seedProbes.probes.map((probe) => probe.id)),
-      seedSource: input.seedProbes.source,
-    } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
   const usedBefore = checkpoint.requestsUsed + discoveryUsedBefore
@@ -677,50 +619,8 @@ export async function buildModelReference(input: {
     log: input.log,
   })
   const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
-  const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
-  const retained = initial?.probes.filter((probe) => !excludedDomains.has(probe.domain)) ?? []
-  const selfById = new Map(initial?.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]) ?? [])
-  let collected: CollectedReferenceProbes | undefined = initial ? {
-    probes: [...retained],
-    candidateCount: initial.probes.length,
-    distinguishingProbeIdsByModel: new Map(initial.contrasts.map((entry) => [entry.model, [...entry.distinguishingProbeIds]])),
-    answeredContrastModelsByProbeId: new Map(retained.map((probe) => [probe.id, [...modelConfig.contrastModels]])),
-    generatedProbeIds: new Set(initial.probes.map((probe) => probe.id)),
-    reserveProbes: [],
-    generationRound: Math.max(0, ...initial.probes.map((probe) => Number(probe.generationRound) || 0)),
-  } : undefined
-  const selfOutcomes: ReferenceProbeSelfTestV1[] = retained.map((probe) => {
-    const outcome = selfById.get(probe.id)
-    if (!outcome) throw new Error(`existing bank enrollment lacks a self-test for probe ${probe.id}`)
-    return outcome
-  })
-  if (initial) input.log?.(`reusing ${retained.length} enrolled probes and self-test outcomes; checking every contrast before audit`)
-  let seededProbeCount = 0
-  if (input.seedProbes) {
-    if (initial) throw new Error('seed probes cannot be combined with an existing bank enrollment')
-    const seeds = input.seedProbes.probes
-      .filter((probe) => !excludedDomains.has(probe.domain))
-      .map(({ contrast: _contrast, ...probe }) => probe as KbfProbe)
-    input.log?.(`seeding ${seeds.length} previously certified stable probes; re-checking contrasts`)
-    const { outcomes, answered } = await queryContrastOutcomes(seeds, modelConfig.contrastModels, query, input.log)
-    const reserveProbes = seeds.flatMap((probe) => {
-      const distinguishingModels = outcomes.get(probe.id) ?? []
-      return modelConfig.contrastModels.length === 0 || distinguishingModels.length > 0
-        ? [{ ...probe, ...(distinguishingModels.length > 0 ? { contrast: { distinguishingModels } } : {}) }]
-        : []
-    })
-    seededProbeCount = reserveProbes.length
-    input.log?.(`${reserveProbes.length}/${seeds.length} seeded probes distinguish at least one current contrast`)
-    collected = {
-      probes: [],
-      candidateCount: seeds.length,
-      distinguishingProbeIdsByModel: new Map(modelConfig.contrastModels.map((model) => [model, [] as string[]])),
-      answeredContrastModelsByProbeId: answered,
-      generatedProbeIds: new Set(seeds.map((probe) => probe.id)),
-      reserveProbes,
-      generationRound: Math.max(0, ...seeds.map((probe) => Number(probe.generationRound) || 0)),
-    }
-  }
+  let collected: CollectedReferenceProbes | undefined
+  const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
     probes: KbfProbe[]
     selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
@@ -830,7 +730,7 @@ export async function buildModelReference(input: {
       }
     }
   } catch (error) {
-    if (!initial && asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
+    if (asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
     throw error
   }
   if (!collected || !selected) {
@@ -908,10 +808,6 @@ export async function buildModelReference(input: {
         } : {}),
         ...(thinkingDiscovery ?? initialDiscovery ? { thinkingDiscovery: thinkingDiscovery ?? initialDiscovery } : {}),
         ...(candidateWriting.summary() ? { candidateWriting: candidateWriting.summary() } : {}),
-        ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
-        ...(input.seedProbes ? {
-          seededStableProbes: { ...input.seedProbes.source, offeredProbeCount: input.seedProbes.probes.length, acceptedProbeCount: seededProbeCount },
-        } : {}),
         ...(targetRoute.type === 'direct' ? {
           referenceProvider: {
             pinned: targetRoute.providerRouting
@@ -1023,7 +919,10 @@ export async function calibrateReferenceSets(input: {
     apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
     catalog,
     referenceRoute: modelConfig.referenceRoute,
-    referenceProvider: modelConfig.referenceProvider ?? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined),
+    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
+    referenceProvider: recordedPin === undefined
+      ? modelConfig.referenceProvider
+      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
     upstream: modelConfig.upstream ? {
       name: modelConfig.upstream.name,
       model: modelConfig.upstream.model,
@@ -2857,6 +2756,32 @@ function resolveReferenceRequestRoute(input: {
       },
     } : {}),
   }
+}
+
+/**
+ * An OpenRouter route without the pinned providers OpenRouter no longer lists for its model
+ * (`listedProviderOrder`), so a provider that left does not stop a new bank's build. When the listing
+ * can't be read, the pin stays as it is.
+ */
+async function withListedProviders(
+  route: ReferenceRequestRoute,
+  fetchFn: typeof fetch,
+  log: ((message: string) => void) | undefined,
+): Promise<ReferenceRequestRoute> {
+  const pinned = route.providerRouting?.order
+  if (route.type !== 'direct' || !pinned?.length
+    || !(route.upstream ? route.upstream.type === 'openrouter' : isOpenRouterUrl(route.baseUrl))) return route
+  let order: string[]
+  try {
+    order = listedProviderOrder(pinned, await loadOpenRouterEndpoints(route.baseUrl, route.model, route.apiKey, fetchFn))
+  } catch (error) {
+    log?.(`could not read which providers OpenRouter lists for ${route.model} (${asError(error).message}); keeping the pin ${pinned.join(', ')}`)
+    return route
+  }
+  if (order.length === pinned.length && order.every((provider, index) => provider === pinned[index])) return route
+  const dropped = pinned.filter((provider) => !order.includes(provider))
+  log?.(`OpenRouter no longer lists ${dropped.join(', ')} for ${route.model}; pinning ${order.join(', ')} instead`)
+  return { ...route, providerRouting: { ...route.providerRouting!, order } }
 }
 
 function applyReferenceRouteToBody(

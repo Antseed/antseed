@@ -4,8 +4,10 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import {
   clearVerifierModelCatalogCache,
   isSpeedTierEndpoint,
+  listedProviderOrder,
   loadConfiguredVerifierModelCatalog,
   loadHighestEndpointPrice,
+  loadOpenRouterEndpoints,
   loadVerifierModelCatalog,
   OPENROUTER_FETCH_ATTEMPTS,
 } from './openrouter-catalog.js'
@@ -172,4 +174,50 @@ test('a failed shared catalog download is not kept', async () => {
     globalThis.fetch = original
     clearVerifierModelCatalogCache()
   }
+})
+
+/** What OpenRouter listed for a model whose pinned provider had left it: no `nebius/fp8` any more. */
+const LISTED = [
+  'baidu/fp8', 'streamlake/fp8', 'relace/fp4', 'gmicloud/fp8', 'siliconflow/fp8', 'digitalocean', 'deepinfra/fp8',
+  'alibaba/fp8', 'alibaba/fp8/us-east-1', 'novita/fp8', 'venice', 'atlas-cloud/fp4', 'azure/us',
+].map((tag) => ({ tag, provider: tag.split('/')[0]!, quantization: tag.split('/')[1]?.startsWith('fp') ? tag.split('/')[1]! : 'unknown' }))
+
+test('a pin keeps the providers OpenRouter still lists, in order; with none left, every auditor picks the same one', () => {
+  assert.deepEqual(listedProviderOrder(['baidu/fp8'], LISTED), ['baidu/fp8'])
+  assert.deepEqual(listedProviderOrder(['nebius/fp8', 'novita/fp8', 'baidu/fp8'], LISTED), ['novita/fp8', 'baidu/fp8'])
+  // A provider lists any of its endpoints, also by its name.
+  assert.deepEqual(listedProviderOrder(['alibaba'], LISTED), ['alibaba'])
+  assert.deepEqual(listedProviderOrder(['Atlas Cloud'], [{ tag: 'atlas-cloud/fp4', provider: 'atlas cloud', quantization: 'fp4' }]), ['Atlas Cloud'])
+  // None left: the first tag of the pin's quantization, else the first of all.
+  assert.deepEqual(listedProviderOrder(['nebius/fp8'], LISTED), ['alibaba/fp8'])
+  assert.deepEqual(listedProviderOrder(['nebius/fp8'], [...LISTED].reverse()), ['alibaba/fp8'], 'the listing order does not matter')
+  assert.deepEqual(listedProviderOrder(['nebius/bf16'], LISTED), ['alibaba/fp8'])
+  assert.deepEqual(listedProviderOrder(['nebius'], LISTED.filter(({ tag }) => !tag.startsWith('alibaba'))), ['atlas-cloud/fp4'])
+  // Speed tiers are the same model at another price, never the pick.
+  assert.deepEqual(listedProviderOrder(['gone'], [{ tag: 'aaa/fast', provider: null, quantization: null }, { tag: 'bbb', provider: null, quantization: null }]), ['bbb'])
+  // An empty listing is no reason to drop the pin.
+  assert.deepEqual(listedProviderOrder(['nebius/fp8'], []), ['nebius/fp8'])
+})
+
+test('the endpoint listing gives each endpoint\'s tag and quantization, and throws when it can\'t be read', async () => {
+  let requestUrl = ''
+  const endpoints = await loadOpenRouterEndpoints('https://openrouter.test/api/v1/', 'maker/model-a', undefined, async (url) => {
+    requestUrl = String(url)
+    return Response.json({ data: { endpoints: [
+      { tag: 'Alibaba/FP8', provider_name: 'Alibaba', quantization: 'FP8' }, { tag: 'venice' }, { name: 'no tag' },
+    ] } })
+  })
+  assert.equal(requestUrl, 'https://openrouter.test/api/v1/models/maker/model-a/endpoints')
+  assert.deepEqual(endpoints, [
+    { tag: 'alibaba/fp8', provider: 'alibaba', quantization: 'fp8' }, { tag: 'venice', provider: null, quantization: null },
+  ])
+  await assert.rejects(loadOpenRouterEndpoints('https://openrouter.test/api/v1', 'maker/model-a', undefined, async () => {
+    throw new Error('offline')
+  }, { retryDelayMs: 1 }), /failed after \d+ attempts; last: request failed: offline/)
+  await assert.rejects(loadOpenRouterEndpoints('https://openrouter.test/api/v1', 'maker/model-a', undefined, async () => (
+    Response.json({ error: 'not found' }, { status: 404 })
+  )), /answered HTTP 404/)
+  await assert.rejects(loadOpenRouterEndpoints('https://openrouter.test/api/v1', 'maker/model-a', undefined, async () => (
+    Response.json({ data: {} })
+  )), /omitted data\.endpoints/)
 })

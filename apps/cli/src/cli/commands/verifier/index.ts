@@ -5,7 +5,6 @@ import { registerVerifierLogsCommand, startVerifierCommandLog } from './logs.js'
 import { registerVerifierModelsCommand } from './models.js'
 import { registerVerifierOverviewCommand } from './overview.js'
 import { registerVerifierProfileCommand } from './profile.js'
-import { registerVerifierReferenceCommand } from './reference.js'
 import { registerVerifierRewardsCommand } from './rewards.js'
 import { registerVerifierRunCommand } from './run.js'
 import { registerVerifierStatusCommand } from './status.js'
@@ -20,7 +19,6 @@ export function registerVerifierCommands(program: Command): void {
   registerVerifierRunCommand(verifier)
   registerVerifierAssignmentCommand(verifier)
   registerVerifierModelsCommand(verifier)
-  registerVerifierReferenceCommand(verifier)
   registerVerifierStatusCommand(verifier)
   registerVerifierOverviewCommand(verifier)
   registerVerifierSubmitCommand(verifier)

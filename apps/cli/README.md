@@ -678,8 +678,8 @@ verifier models` prints each model's source, model id, provider pin and contrast
 `pricing` and `referenceRoute`. Each audited model has built-in contrast
 models (OpenRouter ids, never `:free`); `contrastModels` replaces them. Without
 either, or with `referenceEndpoint.contrastModelBank` set, they are picked
-automatically when a bank is built. A bank keeps the contrasts it was built
-with. `antseed verifier models` shows each model's contrasts and their source. A model list under
+automatically when a bank is built. Each epoch's bank keeps the contrasts, provider
+pin and other settings of its first build; a change applies from the next epoch. `antseed verifier models` shows each model's contrasts and their source. A model list under
 `referenceEndpoint.models` (older configs) is rejected. Models can't be turned
 off: an auditor audits every model assigned to it, so `enabled` is rejected too.
 
@@ -785,8 +785,11 @@ Every seller of a model gets the same questions: the auditor's question set for
 the model and epoch (`<banksDir>/<model>/epochs/<epoch>/set.json`, method
 `epoch-shared-set-v1`), with two extra sets for close calls. Unless the run uses
 `--no-enroll`, the model's first run of the epoch builds it from new questions
-(up to 4 builds), leaving out any question whose text was asked before; it is
-never used after its epoch. Each model is audited once per epoch in an audit
+in the epoch's own bank (`<banksDir>/<model>/epochs/<epoch>/bank.json`, up to 4
+builds); it is never used after its epoch. A pinned OpenRouter provider that
+OpenRouter no longer lists for the model is left out of the epoch's pin, and when
+none is left one listed provider is pinned in its place (same quantization first,
+then by tag), the same on every auditor. Each model is audited once per epoch in an audit
 window (`<evidenceDir>/epochs/<epoch>/windows/<model>.json`): the first run fixes
 the window's sellers, later runs only retry them and finish their close calls,
 and `verifier submit` sends the model once the window closes (every seller
@@ -835,9 +838,8 @@ submitted on-chain.
 
 ## Model Audits With Reference Enrollment
 
-Audits use existing reference banks and make reference-building calls only
-when a selected model's bank is missing, fails the self-test, statistical-power
-or contrast-detection checks, or is worn out for the sellers about to be audited.
+Audits use the epoch's question set and make reference-building calls only
+when a selected model has no set for the epoch yet, or its set isn't calibrated.
 This is on by default; `--no-enroll` turns it off. A model whose bank isn't ready
 is then not audited, and the run audits the others and exits with an error:
 
@@ -855,7 +857,7 @@ Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
 configured no-progress limit. An assigned or `--all` run applies this process to
 each model with eligible sellers; it can therefore spend up to the per-model limit for each.
 
-Compatible banks retain their enrolled probes and self-test answers. New stable
+An epoch's bank retains its enrolled probes and self-test answers. New stable
 candidates are checked against the existing contrasts, with preference given to
 probes distinguishing failing contrasts. Existing contrast models are not replaced
 with easier ones. A model whose question set for the epoch is ready causes no

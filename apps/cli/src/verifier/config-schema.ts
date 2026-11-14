@@ -52,7 +52,8 @@ export const VerifierAntseedReferenceRouteSchema = strictObject({
 /**
  * Pins the reference endpoint's upstream provider (OpenRouter `provider`
  * routing with `allow_fallbacks: false`), so the reference is always served by
- * the same hardware and quantization.
+ * the same hardware and quantization. An epoch's first build leaves out the
+ * providers OpenRouter no longer lists for the model (`listedProviderOrder`).
  */
 export const VerifierReferenceProviderSchema = strictObject({
   order: uniqueStringsSchema(

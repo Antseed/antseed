@@ -317,10 +317,12 @@ test('evidence lists, copies, and round-trips the bank\'s raw reference exchange
     assert.deepEqual(rebuilt.referenceEvidence.map((item) => item.path), [copied])
   }, {
     beforePrepare: async (banksDir) => {
-      const bankFile = join(banksDir, 'model-a', 'bank.json')
+      // The epoch's own bank: a submission publishes its exchange files.
+      const bankDirectory = join(banksDir, 'model-a', 'epochs', '7')
+      const bankFile = join(bankDirectory, 'bank.json')
       const bank: Record<string, unknown> = { version: 1, kind: 'antseed-kbf-probe-bank', model: 'model-a' }
-      await mkdir(join(banksDir, 'model-a', 'reference-evidence'), { recursive: true })
-      await writeFile(join(banksDir, 'model-a', 'reference-evidence', 'cdcdcdcdcdcdcdcd.exchanges.json'), raw)
+      await mkdir(join(bankDirectory, 'reference-evidence'), { recursive: true })
+      await writeFile(join(bankDirectory, 'reference-evidence', 'cdcdcdcdcdcdcdcd.exchanges.json'), raw)
       bank.referenceExchanges = [{
         referenceId: `0x${'cd'.repeat(32)}`,
         path: 'reference-evidence/cdcdcdcdcdcdcdcd.exchanges.json',
