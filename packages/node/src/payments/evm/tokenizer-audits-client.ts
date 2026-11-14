@@ -165,19 +165,28 @@ export function isShapeRequest(
 
 /**
  * The prompt tokens a signed response body reports, read exactly as the contract does and as the buyer reads
- * usage (`extractUsage`): inside the one top-level `usage` object, one `"prompt_tokens"`; else one
- * `"input_tokens"`, alone beside `"input_tokens_details"` (whose cached tokens it includes) or plus the cache
- * creation and cache reads (`cache_read_input_tokens`, else `prompt_cache_hit_tokens`). Nested breakdowns
- * (e.g. Responses' per-item usage) and text are ignored. Null when the body has no single usage field.
+ * usage (`extractUsage`), inside the one top-level `usage` object: one `"prompt_tokens"` is the whole input; so is
+ * one `"input_tokens"` when `input_tokens_details` has `cached_tokens` (a subset). Otherwise `input_tokens` is
+ * fresh only, and the cache creation and the cached input are added: the larger of
+ * `prompt_tokens_details.cached_tokens` and the cache reads (`cache_read_input_tokens`, else
+ * `prompt_cache_hit_tokens`). Other nested breakdowns (e.g. Responses' per-item usage) and text are ignored.
+ * Null when the body has no single usage field.
  */
 export function promptTokensOfBody(body: Uint8Array): number | null {
   const counts = new Map<string, number[]>();
+  const record = (name: string, value: number) => {
+    const values = counts.get(name);
+    if (values) values.push(value);
+    else counts.set(name, [value]);
+  };
   let objects = 0;
   let depth = 0;
   let inString = false;
   let escaped = false;
   let inUsage = false;
-  let detailsCount = 0;
+  let inDetails: DetailsKey | null = null;
+  const detailsSeen = new Map<DetailsKey, number>();
+  let inputCached = 0;
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     if (inString) {
@@ -190,9 +199,10 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
       depth++;
     } else if (c === CLOSE_BRACE || c === CLOSE_BRACKET) {
       if (depth === 2 && inUsage) inUsage = false;
+      if (depth === 3) inDetails = null;
       if (depth !== 0) depth--;
     } else if (c === QUOTE) {
-      const usageObject = depth === 1 ? usageObjectAfter(body, i) : 0;
+      const usageObject = depth === 1 ? objectAfter(body, i, 'usage') : 0;
       if (usageObject !== 0) {
         objects++;
         inUsage = true;
@@ -200,21 +210,36 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
         i = usageObject;
         continue;
       }
-      const details = depth === 2 && inUsage ? objectKeyEnd(body, i, 'input_tokens_details') : 0;
-      if (details !== 0) {
-        detailsCount++;
-        i = details - 1;
-        continue;
+      let next = 0;
+      if (depth === 2 && inUsage) {
+        const details = DETAILS_KEYS.find((name) => objectAfter(body, i, name) !== 0);
+        if (details) {
+          detailsSeen.set(details, (detailsSeen.get(details) ?? 0) + 1);
+          inDetails = details;
+          depth = 3;
+          i = objectAfter(body, i, details);
+          continue;
+        }
+        const key = numberKeyAt(body, i, USAGE_KEYS);
+        if (key) {
+          record(key.name, key.value);
+          next = key.end;
+        }
+      } else if (depth === 3 && inDetails === 'input_tokens_details') {
+        // `extractUsage` only checks that `cached_tokens` is there, whatever its value.
+        if (colonAfterKey(body, i, 'cached_tokens') !== 0) {
+          inputCached++;
+          next = quotedKeyEnd(body, i, 'cached_tokens');
+        }
+      } else if (depth === 3 && inDetails === 'prompt_tokens_details') {
+        const key = numberKeyAt(body, i, ['cached_tokens']);
+        if (key) {
+          record('prompt_tokens_details.cached_tokens', key.value);
+          next = key.end;
+        }
       }
-      const key = depth === 2 && inUsage ? usageKeyAt(body, i) : null;
-      if (key) {
-        const values = counts.get(key.name);
-        if (values) values.push(key.value);
-        else counts.set(key.name, [key.value]);
-        i = key.end - 1;
-      } else {
-        inString = true;
-      }
+      if (next !== 0) i = next - 1;
+      else inString = true;
     }
   }
   if (objects !== 1) return null;
@@ -225,11 +250,14 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
   const read = values('cache_read_input_tokens');
   const creation = values('cache_creation_input_tokens');
   const hit = values('prompt_cache_hit_tokens');
-  if (prompt.length > 1 || input.length !== 1 || read.length > 1 || creation.length > 1 || hit.length > 1 || detailsCount > 1) {
-    return null;
-  }
-  if (detailsCount === 1) return input[0]!;
-  return input[0]! + (creation[0] ?? 0) + (read[0] ?? hit[0] ?? 0);
+  const promptCached = values('prompt_tokens_details.cached_tokens');
+  if (
+    prompt.length > 1 || input.length !== 1 || read.length > 1 || creation.length > 1 || hit.length > 1
+    || [...detailsSeen.values()].some((n) => n > 1) || inputCached > 1 || promptCached.length > 1
+  ) return null;
+  if (inputCached === 1) return input[0]!;
+  const separate = read[0] ?? hit[0] ?? 0;
+  return input[0]! + (creation[0] ?? 0) + Math.max(promptCached[0] ?? 0, separate);
 }
 
 const QUOTE = 0x22;
@@ -241,36 +269,32 @@ const OPEN_BRACKET = 0x5b;
 const CLOSE_BRACKET = 0x5d;
 const COLON = 0x3a;
 const USAGE_KEYS = ['prompt_tokens', 'input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'prompt_cache_hit_tokens'];
+const DETAILS_KEYS = ['input_tokens_details', 'prompt_tokens_details'] as const;
+type DetailsKey = (typeof DETAILS_KEYS)[number];
 const MAX_TOKEN_DIGITS = 15;
 
-/** If a `"usage"` key whose value is an object starts at `offset`, the offset of that `{`; else 0. */
-function usageObjectAfter(body: Uint8Array, offset: number): number {
-  let end = quotedKeyEnd(body, offset, 'usage');
-  if (end === 0) return 0;
-  end = skipSpace(body, end);
-  if (body[end] !== COLON) return 0;
-  end = skipSpace(body, end + 1);
-  return body[end] === OPEN_BRACE ? end : 0;
-}
-
-/** If `"name"` starts at `offset` and its value is an object, the offset after the key; else 0. */
-function objectKeyEnd(body: Uint8Array, offset: number, name: string): number {
+/** If `"name"` starts at `offset` followed by a colon, the offset after the colon; else 0. */
+function colonAfterKey(body: Uint8Array, offset: number, name: string): number {
   const end = quotedKeyEnd(body, offset, name);
   if (end === 0) return 0;
-  let at = skipSpace(body, end);
-  if (body[at] !== COLON) return 0;
-  at = skipSpace(body, at + 1);
-  return body[at] === OPEN_BRACE ? end : 0;
+  const at = skipSpace(body, end);
+  return body[at] === COLON ? at + 1 : 0;
 }
 
-/** The usage key starting at `offset` when it is followed by a colon and a number. */
-function usageKeyAt(body: Uint8Array, offset: number): { name: string; value: number; end: number } | null {
-  for (const name of USAGE_KEYS) {
-    const end = quotedKeyEnd(body, offset, name);
-    if (end === 0) continue;
-    let at = skipSpace(body, end);
-    if (body[at] !== COLON) return null;
-    at = skipSpace(body, at + 1);
+/** If `"name"` starts at `offset` and its value is an object, the offset of that `{`; else 0. */
+function objectAfter(body: Uint8Array, offset: number, name: string): number {
+  const afterColon = colonAfterKey(body, offset, name);
+  if (afterColon === 0) return 0;
+  const at = skipSpace(body, afterColon);
+  return body[at] === OPEN_BRACE ? at : 0;
+}
+
+/** One of `names` starting at `offset` when it is followed by a colon and a whole number. */
+function numberKeyAt(body: Uint8Array, offset: number, names: readonly string[]): { name: string; value: number; end: number } | null {
+  for (const name of names) {
+    const afterColon = colonAfterKey(body, offset, name);
+    if (afterColon === 0) continue;
+    let at = skipSpace(body, afterColon);
     let digits = 0;
     let value = 0;
     while (at < body.length && body[at]! >= 0x30 && body[at]! <= 0x39) {
@@ -281,7 +305,7 @@ function usageKeyAt(body: Uint8Array, offset: number): { name: string; value: nu
     // A decimal or exponent is not a token count: the number must end the member.
     at = skipSpace(body, at);
     if (digits === 0 || (body[at] !== COMMA && body[at] !== CLOSE_BRACE)) return null;
-    return { name, value, end };
+    return { name, value, end: quotedKeyEnd(body, offset, name) };
   }
   return null;
 }

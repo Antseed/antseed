@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { AbiCoder, Wallet, getAddress } from 'ethers';
 import { createResponseAuthPayload } from '@antseed/buyer-core';
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
+import { extractUsage } from '@antseed/api-adapter';
 import {
   isShapeRequest,
   jsonSafeContent,
@@ -57,6 +58,24 @@ describe('promptTokensOfBody', () => {
     expect(read('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}')).toBe(750);
     expect(read('{"usage":{"input_tokens":150,"cache_read_input_tokens":600,"prompt_cache_hit_tokens":600}}')).toBe(750);
     expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"cache_read_input_tokens":4}}')).toBe(12);
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":null},"cache_read_input_tokens":4}}')).toBe(12);
+    expect(read('{"usage":{"input_tokens":50,"cache_read_input_tokens":70,"input_tokens_details":{"reasoning":1}}}')).toBe(120);
+    expect(read('{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"cache_read_input_tokens":20}}')).toBe(130);
+  });
+
+  it('agrees with the buyer (extractUsage) on every usage shape it reads', () => {
+    const shapes = [
+      { prompt_tokens: 67, prompt_tokens_details: { cached_tokens: 10 } },
+      { input_tokens: 12, input_tokens_details: { cached_tokens: 4 }, output_tokens: 3 },
+      { input_tokens: 200, cache_read_input_tokens: 800 },
+      { input_tokens: 150, prompt_cache_hit_tokens: 600 },
+      { input_tokens: 150, cache_creation_input_tokens: 50, cache_read_input_tokens: 600 },
+      { input_tokens: 50, cache_read_input_tokens: 70, input_tokens_details: {} },
+      { input_tokens: 100, prompt_tokens_details: { cached_tokens: 30 }, cache_read_input_tokens: 20 },
+    ];
+    for (const usage of shapes) {
+      expect(read(JSON.stringify({ usage }))).toBe(extractUsage({ usage }).inputTokens);
+    }
   });
 
   it('reads whole integer token counts only, as the contract does', () => {

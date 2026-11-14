@@ -213,8 +213,10 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
   // ── judge every suspect against the references of each round ──
   const results: TokenizerSuspectResult[] = []
   for (const { modelHash, members, suspects } of plan) {
+    // Every live-SAME seller's measurement, sorted by delta: once per round, shared by every suspect.
+    const measured = rounds.map((round) => measuredReferences(round, modelHash, members))
     for (const suspect of suspects) {
-      const result = await judge(options, params, roundCount, modelHash, members, suspect, rounds)
+      const result = await judge(options, params, roundCount, modelHash, suspect, rounds, measured)
       results.push(result)
       const key = stateKey(suspect.peerId, suspect.service)
       if (result.outcome === 'mismatch' && !result.txHash) delete state[key]
@@ -279,9 +281,9 @@ async function judge(
   params: TokenizerParameters,
   roundCount: number,
   modelHash: string,
-  members: Member[],
   suspect: Member,
   rounds: ProbeRound[],
+  measured: MeasuredReference[][],
 ): Promise<TokenizerSuspectResult> {
   const result: TokenizerSuspectResult = {
     peerId: suspect.peerId, sellerName: suspect.sellerName, service: suspect.service, modelHash, liveSame: suspect.liveSame,
@@ -289,12 +291,12 @@ async function judge(
   }
   const proofRounds: TokenizerRound[] = []
   let matched = false
-  for (const round of rounds) {
+  for (const [index, round] of rounds.entries()) {
     const own = round.pairs.get(memberKey(modelHash, suspect))
     const delta = measuredDelta(round, modelHash, suspect)
     result.deltas.push(delta)
-    const candidates = members.filter((m) => m.liveSame && m.agentId !== suspect.agentId)
-    const references = agreeingReferences(round, modelHash, candidates, params.tolerance)
+    const candidates = measured[index]!.filter((m) => m.agentId !== suspect.agentId)
+    const references = agreeingReferences(candidates, params.tolerance)
     const range = references.length >= params.minReferences
       ? { min: references[0]!.delta, max: references[references.length - 1]!.delta }
       : null
@@ -337,21 +339,27 @@ async function judge(
   return result
 }
 
+/** A live-SAME seller service's signed delta in one round. */
+interface MeasuredReference {
+  agentId: bigint
+  delta: number
+  pair: TokenizerProbePair
+}
+
+/** Every live-SAME service measured in a round, sorted by delta. */
+function measuredReferences(round: ProbeRound, modelHash: string, members: Member[]): MeasuredReference[] {
+  return members.filter((m) => m.liveSame).flatMap((member) => {
+    const delta = measuredDelta(round, modelHash, member)
+    return delta === null ? [] : [{ agentId: member.agentId, delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair }]
+  }).sort((x, y) => x.delta - y.delta)
+}
+
 /**
  * The largest set of references, one service per agent, whose deltas all lie within `tolerance` of each other
  * (the contract checks their whole range), sorted by delta. Every measured service is a candidate, so an
  * agent whose services disagree still counts through the one that agrees with the others.
  */
-function agreeingReferences(
-  round: ProbeRound,
-  modelHash: string,
-  references: Member[],
-  tolerance: number,
-): Array<{ delta: number; pair: TokenizerProbePair }> {
-  const measured = references.flatMap((member) => {
-    const delta = measuredDelta(round, modelHash, member)
-    return delta === null ? [] : [{ agentId: member.agentId, delta, pair: round.pairs.get(memberKey(modelHash, member)) as TokenizerProbePair }]
-  }).sort((x, y) => x.delta - y.delta)
+function agreeingReferences(measured: readonly MeasuredReference[], tolerance: number): Array<{ delta: number; pair: TokenizerProbePair }> {
   let best: Array<{ delta: number; pair: TokenizerProbePair }> = []
   for (let start = 0, end = 0; start < measured.length; start++) {
     while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) end++

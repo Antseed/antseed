@@ -43,6 +43,11 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     bytes private constant CACHE_CREATION_TOKENS = '"cache_creation_input_tokens"';
     bytes private constant CACHE_HIT_TOKENS = '"prompt_cache_hit_tokens"';
     bytes private constant INPUT_TOKENS_DETAILS = '"input_tokens_details"';
+    bytes private constant PROMPT_TOKENS_DETAILS = '"prompt_tokens_details"';
+    bytes private constant CACHED_TOKENS = '"cached_tokens"';
+    /// @dev Which `*_tokens_details` object of `usage` the parser is inside.
+    uint256 private constant IN_INPUT_DETAILS = 1;
+    uint256 private constant IN_PROMPT_DETAILS = 2;
 
     IAntseedVerificationResults public immutable override results;
     IERC8004Registry public immutable override identityRegistry;
@@ -345,19 +350,22 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     }
 
     /// @dev The buyer's own reading of usage (`extractUsage` in `packages/api-adapter`): `prompt_tokens` is the
-    ///      whole input; so is `input_tokens` beside `input_tokens_details` (its cached tokens are a subset);
-    ///      otherwise `input_tokens` is fresh only, and the cache creation and cache reads
-    ///      (`cache_read_input_tokens`, else `prompt_cache_hit_tokens`) are added to it.
+    ///      whole input; so is `input_tokens` when `input_tokens_details` has `cached_tokens` (a subset).
+    ///      Otherwise `input_tokens` is fresh only, and the cache creation and the cached input are added: the
+    ///      larger of `prompt_tokens_details.cached_tokens` and the cache reads (`cache_read_input_tokens`,
+    ///      else `prompt_cache_hit_tokens`).
     function promptTokensOf(bytes calldata responseBody) public pure override returns (bool found, uint256 tokens) {
         UsageKeys memory usage = _usageKeys(responseBody);
         if (usage.objects != 1) return (false, 0);
         if (usage.promptCount == 1) return (true, usage.prompt);
         if (
             usage.promptCount > 1 || usage.inputCount != 1 || usage.readCount > 1 || usage.creationCount > 1
-                || usage.hitCount > 1 || usage.detailsCount > 1
+                || usage.hitCount > 1 || usage.inputDetailsCount > 1 || usage.promptDetailsCount > 1
+                || usage.inputCachedCount > 1 || usage.promptCachedCount > 1
         ) return (false, 0);
-        if (usage.detailsCount == 1) return (true, usage.input);
-        uint256 cached = usage.readCount == 1 ? usage.cacheRead : usage.cacheHit;
+        if (usage.inputCachedCount == 1) return (true, usage.input);
+        uint256 separate = usage.readCount == 1 ? usage.cacheRead : usage.cacheHit;
+        uint256 cached = usage.promptCached > separate ? usage.promptCached : separate;
         return (true, usage.input + usage.cacheCreation + cached);
     }
 
@@ -520,7 +528,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     }
 
     /// @dev The top-level `usage` objects of a response, and inside them how many times each usage key
-    ///      appears with a number, and its first number.
+    ///      appears with a number, and its first number. `inputCachedCount` counts `cached_tokens` keys in
+    ///      `input_tokens_details` whatever their value, as `extractUsage` only checks it is there.
     struct UsageKeys {
         uint256 objects;
         uint256 promptCount;
@@ -533,18 +542,24 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         uint256 cacheCreation;
         uint256 hitCount;
         uint256 cacheHit;
-        uint256 detailsCount;
+        uint256 inputDetailsCount;
+        uint256 promptDetailsCount;
+        uint256 inputCachedCount;
+        uint256 promptCachedCount;
+        uint256 promptCached;
     }
 
     /// @dev One pass over the JSON `body`, tracking strings and nesting, that reads the usage keys directly
-    ///      inside the top-level `usage` object only (nested breakdowns, e.g. Responses' per-item usage, and
-    ///      text that looks like a key are ignored).
+    ///      inside the top-level `usage` object, and `cached_tokens` directly inside its `input_tokens_details`
+    ///      and `prompt_tokens_details`, only (other nested breakdowns, e.g. Responses' per-item usage, and text
+    ///      that looks like a key are ignored).
     function _usageKeys(bytes calldata body) private pure returns (UsageKeys memory usage) {
         uint256 length = body.length;
         uint256 depth;
         bool inString;
         bool escaped;
         bool inUsage;
+        uint256 inDetails;
         for (uint256 i = 0; i < length; i++) {
             bytes1 c;
             assembly {
@@ -561,9 +576,10 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
                 depth++;
             } else if (c == "}" || c == "]") {
                 if (depth == 2 && inUsage) inUsage = false;
+                if (depth == 3) inDetails = 0;
                 if (depth != 0) depth--;
             } else if (c == '"') {
-                uint256 next = depth == 1 ? _usageObjectAfter(body, i) : 0;
+                uint256 next = depth == 1 ? _objectAfter(body, i, USAGE) : 0;
                 if (next != 0) {
                     usage.objects++;
                     inUsage = true;
@@ -571,23 +587,68 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
                     i = next;
                     continue;
                 }
-                next = depth == 2 && inUsage ? _readUsageKey(body, i, usage) : 0;
+                if (depth == 2 && inUsage) {
+                    inDetails = _detailsAt(body, i);
+                    if (inDetails != 0) {
+                        if (inDetails == IN_INPUT_DETAILS) usage.inputDetailsCount++;
+                        else usage.promptDetailsCount++;
+                        depth = 3;
+                        i = _objectAfter(body, i, inDetails == IN_INPUT_DETAILS ? INPUT_TOKENS_DETAILS : PROMPT_TOKENS_DETAILS);
+                        continue;
+                    }
+                    next = _readUsageKey(body, i, usage);
+                } else if (depth == 3 && inDetails != 0) {
+                    next = _readCachedTokens(body, i, inDetails, usage);
+                }
                 if (next != 0) i = next - 1;
                 else inString = true;
             }
         }
     }
 
-    /// @dev If a `"usage"` key whose value is an object starts at `offset`, the offset of that `{`; else 0.
-    function _usageObjectAfter(bytes calldata body, uint256 offset) private pure returns (uint256) {
-        uint256 end = offset + USAGE.length;
-        if (end > body.length || keccak256(USAGE) != AntseedResponseAuth.hashCalldata(body[offset:end])) return 0;
+    /// @dev If `key` (quotes included) starts at `offset` and its value is an object, the offset of that `{`;
+    ///      else 0.
+    function _objectAfter(bytes calldata body, uint256 offset, bytes memory key) private pure returns (uint256) {
+        uint256 end = _colonAfterKey(body, offset, key);
+        if (end == 0) return 0;
         uint256 length = body.length;
         while (end < length && _isAsciiSpace(body[end])) end++;
-        if (end >= length || body[end] != ":") return 0;
-        end++;
-        while (end < length && _isAsciiSpace(body[end])) end++;
         return end < length && body[end] == "{" ? end : 0;
+    }
+
+    /// @dev If `key` (quotes included) starts at `offset` followed by a colon, the offset after the colon; else 0.
+    function _colonAfterKey(bytes calldata body, uint256 offset, bytes memory key) private pure returns (uint256) {
+        uint256 end = offset + key.length;
+        if (end > body.length || keccak256(key) != AntseedResponseAuth.hashCalldata(body[offset:end])) return 0;
+        uint256 length = body.length;
+        while (end < length && _isAsciiSpace(body[end])) end++;
+        return end < length && body[end] == ":" ? end + 1 : 0;
+    }
+
+    /// @dev Which `*_tokens_details` object starts at `offset` (`IN_INPUT_DETAILS` or `IN_PROMPT_DETAILS`); 0 if none.
+    function _detailsAt(bytes calldata body, uint256 offset) private pure returns (uint256) {
+        if (_objectAfter(body, offset, INPUT_TOKENS_DETAILS) != 0) return IN_INPUT_DETAILS;
+        if (_objectAfter(body, offset, PROMPT_TOKENS_DETAILS) != 0) return IN_PROMPT_DETAILS;
+        return 0;
+    }
+
+    /// @dev Reads a `cached_tokens` key starting at `offset` inside a details object: in `input_tokens_details`
+    ///      any value counts (only its presence matters), in `prompt_tokens_details` a number. Returns the offset
+    ///      just after the key's closing quote; 0 otherwise.
+    function _readCachedTokens(bytes calldata body, uint256 offset, uint256 inDetails, UsageKeys memory usage)
+        private
+        pure
+        returns (uint256)
+    {
+        if (inDetails == IN_INPUT_DETAILS) {
+            if (_colonAfterKey(body, offset, CACHED_TOKENS) == 0) return 0;
+            usage.inputCachedCount++;
+            return offset + CACHED_TOKENS.length;
+        }
+        (bool ok, uint256 value, uint256 end) = _keyNumber(body, offset, CACHED_TOKENS);
+        if (!ok) return 0;
+        if (usage.promptCachedCount++ == 0) usage.promptCached = value;
+        return end;
     }
 
     /// @dev Reads the usage key starting at `offset`, if it is one followed by a number, and returns the
@@ -607,13 +668,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             }
         } else if (first == "i") {
             (ok, value, end) = _keyNumber(body, offset, INPUT_TOKENS);
-            if (ok) {
-                if (usage.inputCount++ == 0) usage.input = value;
-            } else {
-                end = _keyObject(body, offset, INPUT_TOKENS_DETAILS);
-                ok = end != 0;
-                if (ok) usage.detailsCount++;
-            }
+            if (ok && usage.inputCount++ == 0) usage.input = value;
         } else if (first == "c") {
             (ok, value, end) = _keyNumber(body, offset, CACHE_READ_TOKENS);
             if (ok) {
@@ -624,20 +679,6 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             }
         }
         return ok ? end : 0;
-    }
-
-    /// @dev If `key` (quotes included) starts at `offset` and its value is an object, the offset after the key;
-    ///      else 0. The object itself is then read as nested.
-    function _keyObject(bytes calldata body, uint256 offset, bytes memory key) private pure returns (uint256) {
-        uint256 end = offset + key.length;
-        if (end > body.length || keccak256(key) != AntseedResponseAuth.hashCalldata(body[offset:end])) return 0;
-        uint256 at = end;
-        uint256 length = body.length;
-        while (at < length && _isAsciiSpace(body[at])) at++;
-        if (at >= length || body[at] != ":") return 0;
-        at++;
-        while (at < length && _isAsciiSpace(body[at])) at++;
-        return at < length && body[at] == "{" ? end : 0;
     }
 
     /// @dev Whether `key` (quotes included) starts at `offset` and is followed by a colon and a number; the

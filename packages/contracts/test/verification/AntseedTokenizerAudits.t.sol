@@ -606,7 +606,54 @@ contract AntseedTokenizerAuditsTest is Test {
         (, tokens) = audits.promptTokensOf(
             '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"cache_read_input_tokens":4}}'
         );
-        assertEq(tokens, 12, "beside input_tokens_details, input_tokens already includes the cached tokens");
+        assertEq(tokens, 12, "beside input_tokens_details.cached_tokens, input_tokens already includes the cache");
+        (, tokens) = audits.promptTokensOf(
+            '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":null},"cache_read_input_tokens":4}}'
+        );
+        assertEq(tokens, 12, "cached_tokens counts by being there, whatever its value");
+        (, tokens) = audits.promptTokensOf(
+            '{"usage":{"input_tokens":50,"cache_read_input_tokens":70,"input_tokens_details":{"reasoning":1}}}'
+        );
+        assertEq(tokens, 120, "details without cached_tokens leave the cache reads separate");
+        (, tokens) = audits.promptTokensOf(
+            '{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"cache_read_input_tokens":20}}'
+        );
+        assertEq(tokens, 130, "the larger of the two cached counts");
+    }
+
+    function test_anHonestSellerWithEmptyDetailsCannotBeProven() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        for (uint256 i = 0; i < 3; i++) {
+            // input_tokens_details is there but empty: the cache reads stay separate, as the buyer reads them.
+            rounds[i].suspect.base = _receiptAt(
+                SUSPECT_KEY,
+                SERVICE,
+                MESSAGES_PATH,
+                abi.encodePacked(HEAD, SERVICE, MESSAGES_MID, rounds[i].a, MESSAGES_TAIL),
+                abi.encodePacked(
+                    '{"usage":{"input_tokens":', bytes(vm.toString(BASE_TOKENS)), ',"cache_read_input_tokens":0,"input_tokens_details":{}}}'
+                )
+            );
+            rounds[i].suspect.probed = _receiptAt(
+                SUSPECT_KEY,
+                SERVICE,
+                MESSAGES_PATH,
+                abi.encodePacked(HEAD, SERVICE, MESSAGES_MID, rounds[i].a, rounds[i].b, MESSAGES_TAIL),
+                abi.encodePacked(
+                    '{"usage":{"input_tokens":10,"cache_read_input_tokens":',
+                    bytes(vm.toString(uint256(int256(BASE_TOKENS) + MODEL_DELTA) - 10)),
+                    ',"input_tokens_details":{}}}'
+                )
+            );
+            rounds[i].suspect.shapeId = messagesShapeId;
+        }
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
+            )
+        );
+        audits.proveTokenizerMismatch(modelHash, rounds);
     }
 
     function test_anHonestSellerServedFromTheCacheCannotBeProven() public {
