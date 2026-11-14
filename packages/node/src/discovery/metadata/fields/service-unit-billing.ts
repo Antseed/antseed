@@ -8,8 +8,8 @@ import type {
   UnitBillingUnitV1,
 } from "../../../types/billing.js";
 import { UNIT_BILLING_MATCH_KEYS_V1, UNIT_BILLING_UNITS_V1 } from "../../../types/billing.js";
-import type { ProviderField } from "../field.js";
-import { compareCodeUnits, serviceMap } from "../wire.js";
+import { compareServiceNames, type ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 const UNITS_BY_ID: UnitBillingUnitV1[] = [...UNIT_BILLING_UNITS_V1];
 const UNIT_IDS = new Map<UnitBillingUnitV1, number>(UNITS_BY_ID.map((unit, index) => [unit, index]));
@@ -33,10 +33,9 @@ export const serviceUnitBillingField: ProviderField = {
     }
     entries.sort(([serviceA, protocolA], [serviceB, protocolB]) =>
       serviceA === serviceB
-        ? WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolA) - WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolB)
-        : ctx.serviceOrder === "code-unit"
-          ? compareCodeUnits(serviceA, serviceB)
-          : serviceA.localeCompare(serviceB),
+        ? WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolA)
+          - WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolB)
+        : compareServiceNames(serviceA, serviceB, ctx),
     );
     writer.serviceEntryCount(entries.length, ctx.wideServiceCounts);
     for (const [service, protocol, model] of entries) {

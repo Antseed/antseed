@@ -1,6 +1,6 @@
 import type { TokenPricingUsdPerMillion } from "../../peer-metadata.js";
-import type { ProviderField } from "../field.js";
-import { compareCodeUnits, serviceMap } from "../wire.js";
+import { compareServiceNames, type ProviderField } from "../field.js";
+import { serviceMap } from "../wire.js";
 
 /** [providerLen:1][provider:N] */
 export const providerNameField: ProviderField = {
@@ -59,10 +59,7 @@ export const servicePricingField: ProviderField = {
     // Default ordering is the historical host-localeCompare sort, so existing
     // signed bytes are unchanged. The verifier may request code-unit order as
     // its compatibility candidate for sellers on other locales (issue #1678).
-    const order = ctx.serviceOrder === "code-unit"
-      ? compareCodeUnits
-      : (a: string, b: string) => a.localeCompare(b);
-    const entries = Object.entries(provider.servicePricing ?? {}).sort(([a], [b]) => order(a, b));
+    const entries = Object.entries(provider.servicePricing ?? {}).sort(([a], [b]) => compareServiceNames(a, b, ctx));
     writer.serviceEntryCount(entries.length, ctx.wideServiceCounts);
     for (const [service, pricing] of entries) {
       writer.utf8Wrapping(service);

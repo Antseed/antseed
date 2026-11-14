@@ -1,5 +1,5 @@
 import type { PeerMetadata, ProviderAnnouncement } from "../peer-metadata.js";
-import type { MetadataReader, MetadataWriter } from "./wire.js";
+import { compareCodeUnits, type MetadataReader, type MetadataWriter } from "./wire.js";
 
 export interface MetadataFieldContext {
   version: number;
@@ -14,6 +14,22 @@ export interface MetadataFieldContext {
    * (issue #1678).
    */
   serviceOrder?: "legacy-locale" | "code-unit";
+}
+
+/**
+ * Comparator for signed service-map entry order, selected by the field
+ * context: "code-unit" is the deterministic order the compatibility-aware
+ * verifier also accepts, and "legacy-locale" (the default) is the
+ * historical host-localeCompare sort.
+ */
+export function compareServiceNames(
+  a: string,
+  b: string,
+  ctx: MetadataFieldContext,
+): number {
+  return ctx.serviceOrder === "code-unit"
+    ? compareCodeUnits(a, b)
+    : a.localeCompare(b);
 }
 
 /**
