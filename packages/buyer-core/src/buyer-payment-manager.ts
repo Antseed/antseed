@@ -916,10 +916,19 @@ export class BuyerPaymentManager {
     if (!session) return;
 
     const pending = this._pendingReserveAuth.get(sellerPeerId);
-    const applied = pending != null && onChainAmount >= pending.maxAmount;
+    // A channel's deposit only grows: a read below the deposit already
+    // confirmed comes from an RPC behind the chain, not from the chain.
+    const confirmed = BigInt(session.confirmedReserveAmount ?? '0');
+    const deposit = onChainAmount > confirmed ? onChainAmount : confirmed;
+    const applied = pending != null && deposit >= pending.maxAmount;
     // The chain is authoritative even when it is ahead of our latest locally
     // persisted authorization (for example after recovery on another device).
-    this._currentReserveCeiling.set(sellerPeerId, onChainAmount);
+    // A pending top-up the read has not seen yet keeps the ceiling
+    // topUpReserve gave it; the read only says what is confirmed so far.
+    // Dropping the ceiling below it left the buyer unable to sign for work
+    // already served past the old deposit, once the top-up had landed.
+    const ceiling = this._getCeiling(sellerPeerId);
+    this._currentReserveCeiling.set(sellerPeerId, pending != null && !applied && ceiling > deposit ? ceiling : deposit);
     if (applied) {
       this._pendingReserveAuth.delete(sellerPeerId);
       // An initial ReserveAuth can land on-chain immediately before the browser
@@ -933,7 +942,7 @@ export class BuyerPaymentManager {
     await this._commitAuthorization({
       ...session,
       reserveAuthPending: pending != null && !applied,
-      confirmedReserveAmount: onChainAmount.toString(),
+      confirmedReserveAmount: deposit.toString(),
       updatedAt: Date.now(),
     }, metadata);
   }

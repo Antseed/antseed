@@ -29,6 +29,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Website: the ecosystem page lists SeedTunnel (sippar.network/seedtunnel), the easy way into Antseed for teams: their own Antseed gateway, Antseed inside Claude, ChatGPT or Gemini through the Sippar MCP Connector, and the prepaid Antseed Unlock card.
 
 ### Fixed
+- Buyer (`@antseed/buyer-core`): a channel read from an RPC that has not caught up with the chain no longer lowers the buyer's reserve ceiling. A read that missed a top-up dropped the ceiling below what the buyer had already signed, so the next request's cost stayed unsigned until the close and the next top-up was signed below the one already sent. The deposit a read reports is never taken below the deposit already confirmed, and a pending top-up keeps its ceiling until a read shows it landed.
 - Buyer (`@antseed/buyer-core`): a request that crosses the old deposit while a top-up is pending is signed up to the deposit locked on-chain, read at that moment, instead of the deposit the buyer last confirmed. When the top-up had already landed and the seller's prompt for it came before that request, the rest stayed unsigned until the next request or the close.
 - Seller (`@antseed/node`): a channel's accepted amount is always an amount the buyer signed a SpendingAuth for. A newly reserved channel starts with nothing accepted and stays that way across a seller restart until the buyer's first SpendingAuth arrives; a channel with a signed SpendingAuth keeps its accepted amount across a restart, as before.
 
