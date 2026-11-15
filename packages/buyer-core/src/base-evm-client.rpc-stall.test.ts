@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type RequestListener, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FetchRequest, JsonRpcProvider, keccak256, makeError, Network, Wallet } from 'ethers';
 import { ChannelsClient } from './channels-client.js';
@@ -15,6 +15,16 @@ afterEach(async () => {
     server.close(resolve);
   })));
 });
+
+/** Serve `handler` on a free local port, closed after the test; returns the port. */
+async function serve(handler: RequestListener): Promise<number> {
+  const server = createServer(handler);
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  return address.port;
+}
 
 /**
  * A Base JSON-RPC endpoint with just enough state for one write. With `stall`, every response
@@ -50,7 +60,7 @@ async function rpcEndpoint(stall = false): Promise<string> {
       default: throw new Error(`unexpected ${method}`);
     }
   };
-  const server = createServer((req, res) => {
+  const port = await serve((req, res) => {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
@@ -63,11 +73,7 @@ async function rpcEndpoint(stall = false): Promise<string> {
       res.end(JSON.stringify({ jsonrpc: '2.0', id, result: answer(method, params) }));
     });
   });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('no port');
-  return `http://127.0.0.1:${address.port}`;
+  return `http://127.0.0.1:${port}`;
 }
 
 describe('BaseEvmClient with an RPC whose responses never finish', () => {
@@ -103,16 +109,12 @@ describe('BaseEvmClient with an RPC whose responses never finish', () => {
 describe('fetchWithDeadline', () => {
   it('sends credentials in the RPC URL as Basic auth, not in the URL', async () => {
     const seen: Array<{ url?: string; authorization?: string }> = [];
-    const server = createServer((req, res) => {
+    const port = await serve((req, res) => {
       seen.push({ url: req.url, authorization: req.headers.authorization });
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x100' }));
     });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('no port');
-    const request = new FetchRequest(`http://rpc-user:p%40ss@127.0.0.1:${address.port}/v1/key`);
+    const request = new FetchRequest(`http://rpc-user:p%40ss@127.0.0.1:${port}/v1/key`);
     request.getUrlFunc = fetchWithDeadline;
     request.body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] });
 
@@ -126,20 +128,12 @@ describe('fetchWithDeadline', () => {
 describe('fetchWithDeadline redirects', () => {
   it('refuses to follow a redirect, so the RPC body is never resent elsewhere', async () => {
     let redirected = 0;
-    const target = createServer((_req, res) => { redirected += 1; res.end('{}'); });
-    servers.push(target);
-    await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
-    const targetAddress = target.address();
-    if (!targetAddress || typeof targetAddress === 'string') throw new Error('no port');
-    const redirecting = createServer((_req, res) => {
-      res.writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}/` });
+    const targetPort = await serve((_req, res) => { redirected += 1; res.end('{}'); });
+    const port = await serve((_req, res) => {
+      res.writeHead(307, { location: `http://127.0.0.1:${targetPort}/` });
       res.end();
     });
-    servers.push(redirecting);
-    await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
-    const address = redirecting.address();
-    if (!address || typeof address === 'string') throw new Error('no port');
-    const request = new FetchRequest(`http://127.0.0.1:${address.port}/`);
+    const request = new FetchRequest(`http://127.0.0.1:${port}/`);
     request.getUrlFunc = fetchWithDeadline;
     request.body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: ['0x00'] });
 
