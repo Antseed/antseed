@@ -454,6 +454,7 @@ export {
   rankModelRoutes,
   scoreModelRoute,
   type ModelRouteCandidate,
+  type ModelRouteRankingOptions,
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';
