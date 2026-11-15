@@ -449,6 +449,12 @@ export interface ColonyPoolsView {
     usdcOwed: string;
     /** ANTS wei, from emissions already pulled into the pool. */
     antsOwed: string;
+    /**
+     * The part of `antsOwed` the pool owes this wallet outright rather than by
+     * epoch (its operator fee, or the emissions of an epoch it credited no
+     * USDC in): claiming takes it with claimOwedAnts.
+     */
+    outrightAnts?: string;
     /** Finished epochs with ANTS owed. */
     antsEpochs: number[];
     /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */

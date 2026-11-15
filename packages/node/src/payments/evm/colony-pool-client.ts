@@ -12,11 +12,15 @@ export const COLONY_POOL_ABI = [
   'function claimUsdc() external',
   'function claimAnts(uint256[] epochs) external',
   'function claimAntsFor(address worker, uint256[] epochs) external',
+  'function claimOwedAnts() external',
+  'function releaseHeld(bytes32 channelId) external',
   'function payoutDigest(address worker, address payout, uint256 deadline) external view returns (bytes32)',
   'function claimEpochEmissions(uint256[] epochs) external',
   'function setPayout(address worker, address payout, uint256 deadline, bytes signature) external',
   'function usdcBalance(address account) external view returns (uint256)',
   'function pendingAnts(address account, uint256[] epochs) external view returns (uint256)',
+  'function antsOwed(address account) external view returns (uint256)',
+  'function heldUnattributed(bytes32 channelId) external view returns (uint256 gross, uint256 net)',
   'function epochAnts(uint256 epoch) external view returns (uint256)',
   'function epochWeight(uint256 epoch, address account) external view returns (uint256)',
   'function payoutOf(address worker) external view returns (address)',
@@ -24,6 +28,7 @@ export const COLONY_POOL_ABI = [
   'function workerCredit(bytes32 channelId, address worker) external view returns (uint128 settled, uint128 credited)',
   'function antsTransferable() external view returns (bool)',
   'error AntsNotTransferableYet()',
+  'error ChannelStillActive()',
 ] as const;
 
 /** A worker's signed instruction to pay its earnings to `payout` (see AntseedColonyPool.setPayout). */
@@ -79,6 +84,20 @@ export class ColonyPoolClient extends BaseEvmClient {
     return this.read().getFunction('pendingAnts')(account, epochs);
   }
 
+  /**
+   * ANTS the pool owes `account` outright, not by epoch weight: the operator
+   * fee, and the emissions of an epoch the pool credited no USDC in.
+   */
+  async antsOwed(account: string): Promise<bigint> {
+    return this.read().getFunction('antsOwed')(account);
+  }
+
+  /** What a channel settled without a worker attribution and still holds (channel units, and the net USDC they paid). */
+  async heldUnattributed(channelId: string): Promise<{ gross: bigint; net: bigint }> {
+    const [gross, net] = await this.read().getFunction('heldUnattributed')(channelId) as [bigint, bigint];
+    return { gross, net };
+  }
+
   async epochAnts(epoch: number): Promise<bigint> {
     return this.read().getFunction('epochAnts')(epoch);
   }
@@ -128,6 +147,20 @@ export class ColonyPoolClient extends BaseEvmClient {
   /** Pay a linked worker's own ANTS for `epochs` (older than its link moved) to its payout wallet (anyone may call). */
   async claimAntsFor(signer: AbstractSigner, worker: string, epochs: number[]): Promise<string> {
     return this._execWrite(signer, COLONY_POOL_ABI, 'claimAntsFor', worker, epochs);
+  }
+
+  /** Claim the ANTS the pool owes the signer outright (see `antsOwed`). */
+  async claimOwedAnts(signer: AbstractSigner): Promise<string> {
+    return this._execWrite(signer, COLONY_POOL_ABI, 'claimOwedAnts');
+  }
+
+  /**
+   * Give what an ended channel still holds to the pool's remainder recipient
+   * (anyone may call). Reverts while the channel is active: the pool's own
+   * close releases it.
+   */
+  async releaseHeld(signer: AbstractSigner, channelId: string): Promise<string> {
+    return this._execWrite(signer, COLONY_POOL_ABI, 'releaseHeld', channelId);
   }
 
   /**

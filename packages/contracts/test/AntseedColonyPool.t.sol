@@ -18,6 +18,26 @@ import { AntseedEmissionsGate } from "../emissions/AntseedEmissionsGate.sol";
 import { AntseedUsageAccounting } from "../emissions/AntseedUsageAccounting.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
+/// @dev Exposes the tail reader the pool only uses while settling.
+contract TailReader is AntseedColonyPool {
+    constructor(address _registry, address initialOperator) AntseedColonyPool(_registry, initialOperator) { }
+
+    function parseWorkerTail(bytes calldata metadata)
+        external
+        pure
+        returns (address[] memory workers, uint128[] memory amounts)
+    {
+        uint256 n = _validTailCount(metadata);
+        workers = new address[](n);
+        amounts = new uint128[](n);
+        if (n == 0) return (workers, amounts);
+        uint256 base = metadata.length - _TAIL_TRAILER_BYTES - _ENTRY_BYTES * n;
+        for (uint256 i = 0; i < n; i++) {
+            (workers[i], amounts[i]) = _readEntry(metadata, base + _ENTRY_BYTES * i);
+        }
+    }
+}
+
 /// @dev Channels stand-in that re-enters the pool while the pool is inside
 ///      its `settle` override.
 contract ReentrantChannels {
@@ -78,6 +98,7 @@ contract AntseedColonyPoolTest is Test {
     AntseedEmissions emissions;
 
     AntseedColonyPool pool;
+    TailReader tails;
     uint256 poolAgentId;
     bool buyerReady;
 
@@ -117,6 +138,7 @@ contract AntseedColonyPoolTest is Test {
 
         vm.prank(owner);
         pool = new AntseedColonyPool(address(antseedRegistry), operator);
+        tails = new TailReader(address(antseedRegistry), operator);
 
         vm.prank(owner);
         poolAgentId = pool.registerAgent("ipfs://colony-pool");
@@ -132,6 +154,16 @@ contract AntseedColonyPoolTest is Test {
     }
 
     // ─── Helpers ────────────────────────────────────────────────────
+
+    /// @dev What the pool paid `worker` on `ch` so far (channel units).
+    function _paid(bytes32 ch, address worker) internal view returns (uint256 credited) {
+        (, credited) = pool.workerCredit(ch, worker);
+    }
+
+    /// @dev What the pool settled on `ch` so far.
+    function _settled(bytes32 ch) internal view returns (uint256 settled) {
+        (settled,) = pool.workerCredit(ch, address(0));
+    }
 
     function _setupBuyer(uint256 depositAmount) internal {
         if (!buyerReady) {
@@ -248,8 +280,8 @@ contract AntseedColonyPoolTest is Test {
         assertGt(net, 0);
         assertEq(_rem(ch) - remBefore, net, "all net to remainder");
         assertEq(pool.usdcBalance(probe), 0, "probe worker not credited");
-        assertEq(pool.workerCumulative(ch, probe), 0, "probe cumulative untouched");
-        assertEq(pool.channelCumulative(ch), 100e6);
+        assertEq(_paid(ch, probe), 0, "probe cumulative untouched");
+        assertEq(_settled(ch), 100e6);
         _assertSolvent();
     }
 
@@ -272,9 +304,9 @@ contract AntseedColonyPoolTest is Test {
         assertEq(pool.usdcBalance(workerB) - b1, (net2 * 60e6) / 100e6);
         assertEq(_rem(ch) - r1, net2 - (net2 * 40e6) / 100e6 - (net2 * 60e6) / 100e6);
 
-        assertEq(pool.workerCumulative(ch, workerA), 100e6);
-        assertEq(pool.workerCumulative(ch, workerB), 90e6);
-        assertEq(pool.channelCumulative(ch), 200e6);
+        assertEq(_paid(ch, workerA), 100e6);
+        assertEq(_paid(ch, workerB), 90e6);
+        assertEq(_settled(ch), 200e6);
         assertEq(pool.totalUsdcOwed() + pool.totalUsdcHeld(), net1 + net2);
         _assertSolvent();
     }
@@ -342,13 +374,13 @@ contract AntseedColonyPoolTest is Test {
         assertEq(pool.usdcBalance(workerB), (net * 20e6) / 100e6, "B clamped to remaining 20");
         assertEq(_rem(ch), net - (net * 80e6) / 100e6 - (net * 20e6) / 100e6);
         // B's stored value is what was paid, so the clamped 60 stays owed.
-        assertEq(pool.workerCumulative(ch, workerB), 20e6);
+        assertEq(_paid(ch, workerB), 20e6);
 
         // The next settlement pays B's carried-over 60 from its delta of 100.
         uint256 b1 = pool.usdcBalance(workerB);
         uint256 net2 = _settle(ch, 200e6, _e2(workerA, 80e6, workerB, 80e6));
         assertEq(pool.usdcBalance(workerB) - b1, (net2 * 60e6) / 100e6, "carried over");
-        assertEq(pool.workerCumulative(ch, workerB), 80e6);
+        assertEq(_paid(ch, workerB), 80e6);
         (uint128 settled, uint128 credited) = pool.workerCredit(ch, workerB);
         assertEq(settled, 200e6);
         assertEq(credited, 80e6);
@@ -359,12 +391,12 @@ contract AntseedColonyPoolTest is Test {
         bytes32 ch = _reserve(bytes32(uint256(61)), 1000e6);
         // A's 150 lands in a delta of 100 with nothing held: 100 is paid now.
         _settle(ch, 100e6, _e1(workerA, 150e6));
-        assertEq(pool.workerCumulative(ch, workerA), 100e6);
+        assertEq(_paid(ch, workerA), 100e6);
         // Later deltas pay the remaining 50 and no more.
         uint256 a1 = pool.usdcBalance(workerA);
         uint256 net = _settle(ch, 300e6, _e1(workerA, 150e6));
         assertEq(pool.usdcBalance(workerA) - a1, (net * 50e6) / 200e6);
-        assertEq(pool.workerCumulative(ch, workerA), 150e6);
+        assertEq(_paid(ch, workerA), 150e6);
         uint256 a2 = pool.usdcBalance(workerA);
         _settle(ch, 400e6, _e1(workerA, 150e6));
         assertEq(pool.usdcBalance(workerA), a2, "nothing paid twice");
@@ -387,7 +419,7 @@ contract AntseedColonyPoolTest is Test {
         bytes memory sig = _signSpend(ch, 500e6 + 1, metadata);
         vm.prank(operator);
         uint256 net2 = pool.close(ch, 500e6 + 1, metadata, sig);
-        assertEq(pool.workerCumulative(ch, workerA), 100e6);
+        assertEq(_paid(ch, workerA), 100e6);
         // 1 unit from the close's own delta, 99,999,999 from what the first settlement held.
         assertEq(pool.usdcBalance(workerA), net2 + (net1 * (100e6 - 1)) / 500e6);
         // Closed: the rest of what was held is the remainder's.
@@ -405,7 +437,7 @@ contract AntseedColonyPoolTest is Test {
         // Two answers of 100 each, each signed one unit higher.
         uint256 net2 = _settle(ch, 500e6 + 1, _e1(workerA, 100e6));
         uint256 net3 = _settle(ch, 500e6 + 2, _e1(workerA, 200e6));
-        assertEq(pool.workerCumulative(ch, workerA), 200e6, "both answers paid in full");
+        assertEq(_paid(ch, workerA), 200e6, "both answers paid in full");
         uint256 fromHeld = (net1 * (100e6 - 1)) / 500e6;
         fromHeld += ((net1 - fromHeld) * (100e6 - 1)) / (400e6 + 1);
         assertEq(pool.usdcBalance(workerA), net2 + net3 + fromHeld);
@@ -514,9 +546,9 @@ contract AntseedColonyPoolTest is Test {
         // A goes "down" to 10 (ignored), B grows by 50.
         uint256 net = _settle(ch, 200e6, _e2(workerA, 10e6, workerB, 90e6));
         assertEq(pool.usdcBalance(workerA), a1, "A unchanged");
-        assertEq(pool.workerCumulative(ch, workerA), 60e6, "A stored value never decreases");
+        assertEq(_paid(ch, workerA), 60e6, "A stored value never decreases");
         assertEq(pool.usdcBalance(workerB) - b1, (net * 50e6) / 100e6);
-        assertEq(pool.workerCumulative(ch, workerB), 90e6);
+        assertEq(_paid(ch, workerB), 90e6);
 
         // A returns to 70: only the 10 above its high-water mark counts.
         uint256 a2 = pool.usdcBalance(workerA);
@@ -591,18 +623,18 @@ contract AntseedColonyPoolTest is Test {
     function test_parseWorkerTail_shortMetadataIsEmpty() public view {
         uint256[3] memory lengths = [uint256(0), 1, 32];
         for (uint256 i = 0; i < lengths.length; i++) {
-            (address[] memory ws, uint128[] memory as_) = pool.parseWorkerTail(new bytes(lengths[i]));
+            (address[] memory ws, uint128[] memory as_) = tails.parseWorkerTail(new bytes(lengths[i]));
             assertEq(ws.length, 0);
             assertEq(as_.length, 0);
         }
     }
 
     function test_parseWorkerTail() public view {
-        (address[] memory ws, uint128[] memory as_) = pool.parseWorkerTail(_meta(1, _e2(workerA, 5, workerB, 7)));
+        (address[] memory ws, uint128[] memory as_) = tails.parseWorkerTail(_meta(1, _e2(workerA, 5, workerB, 7)));
         assertEq(ws.length, 2);
         assertEq(ws[0], workerA);
         assertEq(as_[1], 7);
-        (ws,) = pool.parseWorkerTail(_meta(1, _e2(workerB, 5, workerA, 7)));
+        (ws,) = tails.parseWorkerTail(_meta(1, _e2(workerB, 5, workerA, 7)));
         assertEq(ws.length, 0);
     }
 
@@ -632,7 +664,7 @@ contract AntseedColonyPoolTest is Test {
         vm.prank(operator);
         uint256 net = pool.close(ch, 100e6, forged, "");
         assertEq(net, 0);
-        assertEq(pool.workerCumulative(ch, workerB), 0);
+        assertEq(_paid(ch, workerB), 0);
         assertEq(pool.usdcBalance(workerB), 0);
     }
 
@@ -648,7 +680,7 @@ contract AntseedColonyPoolTest is Test {
         assertGt(net, 0);
         assertEq(pool.usdcBalance(workerA), (net * 30e6) / 90e6);
         assertEq(pool.usdcBalance(workerB), (net * 60e6) / 90e6);
-        assertEq(pool.channelCumulative(ch), 90e6);
+        assertEq(_settled(ch), 90e6);
         _assertSolvent();
     }
 
@@ -663,7 +695,7 @@ contract AntseedColonyPoolTest is Test {
         vm.prank(operator);
         uint256 net = pool.topUp(ch, 90e6, forged, "", 200e6, deadline, reserveSig);
         assertEq(net, 0);
-        assertEq(pool.workerCumulative(ch, workerB), 0);
+        assertEq(_paid(ch, workerB), 0);
     }
 
     // ─── Access control ─────────────────────────────────────────────
@@ -697,23 +729,6 @@ contract AntseedColonyPoolTest is Test {
         vm.prank(owner);
         vm.expectRevert(AntseedSellerDelegation.InvalidAddress.selector);
         pool.setRemainderRecipient(address(0));
-        vm.prank(operator);
-        vm.expectRevert();
-        pool.pause();
-    }
-
-    function test_pause_blocksSettlement_notClaims() public {
-        bytes32 ch = _reserve(bytes32(uint256(32)), 100e6);
-        _settle(ch, 10e6, _e1(workerA, 10e6));
-        vm.prank(owner);
-        pool.pause();
-        bytes memory m = _meta(20e6, _e1(workerA, 20e6));
-        bytes memory sig = _signSpend(ch, 20e6, m);
-        vm.prank(operator);
-        vm.expectRevert();
-        pool.settle(ch, 20e6, m, sig);
-        vm.prank(workerA);
-        pool.claimUsdc();
     }
 
     // ─── USDC claims ────────────────────────────────────────────────
@@ -786,8 +801,8 @@ contract AntseedColonyPoolTest is Test {
         uint256 pot1 = pool.epochAnts(e1);
         assertGt(pot0, 0);
         assertGt(pot1, 0);
-        // The pool also keeps the operator fee's ANTS, credited for claimAntsFee.
-        assertEq(ants.balanceOf(address(pool)) - antsBefore, pot0 + pot1 + pool.antsFeeOwed(operator));
+        // The pool also keeps the operator fee's ANTS, credited for claimOwedAnts.
+        assertEq(ants.balanceOf(address(pool)) - antsBefore, pot0 + pot1 + pool.antsOwed(operator));
 
         // Calling again pulls nothing new and doesn't revert.
         pool.claimEpochEmissions(_epochs2(e0, e1));
@@ -892,12 +907,12 @@ contract AntseedColonyPoolTest is Test {
         uint256 fee = (gross * pool.operatorFeeBps()) / 10_000;
         // Credited, not sent: a pull never needs ANTS to be transferable.
         assertEq(ants.balanceOf(operator), opBefore);
-        assertEq(pool.antsFeeOwed(operator), fee);
+        assertEq(pool.antsOwed(operator), fee);
         assertEq(pool.epochAnts(e0), gross - fee);
         vm.prank(operator);
-        pool.claimAntsFee();
+        pool.claimOwedAnts();
         assertEq(ants.balanceOf(operator) - opBefore, fee);
-        assertEq(pool.antsFeeOwed(operator), 0);
+        assertEq(pool.antsOwed(operator), 0);
     }
 
     /// While ANTS transfers are closed and the token owner never whitelisted the
@@ -918,7 +933,7 @@ contract AntseedColonyPoolTest is Test {
         pool.claimAnts(_epochs1(e0));
         vm.prank(operator);
         vm.expectRevert(AntseedColonyPool.AntsNotTransferableYet.selector);
-        pool.claimAntsFee();
+        pool.claimOwedAnts();
 
         ants.enableTransfers();
         assertTrue(pool.antsTransferable());
@@ -926,7 +941,34 @@ contract AntseedColonyPoolTest is Test {
         pool.claimAnts(_epochs1(e0));
         assertEq(ants.balanceOf(workerA), owed);
         vm.prank(operator);
-        pool.claimAntsFee();
+        pool.claimOwedAnts();
+    }
+
+    /// Emissions of an epoch the pool credited no USDC in have no shareholder,
+    /// so they are owed to the remainder recipient outright.
+    function test_emissions_ofAnEpochWithNoCreditedUsdc_goToRemainder() public {
+        // The pool earns seller points in an epoch it credited nothing in.
+        uint256 e0 = emissions.currentEpoch();
+        vm.prank(address(channels));
+        emissions.accrueSellerPoints(address(pool), 100e6);
+        assertEq(pool.epochTotalWeight(e0), 0);
+
+        vm.warp(block.timestamp + EPOCH_DURATION);
+        uint256[] memory ids = _epochs1(e0);
+        (uint256 gross,) = emissions.pendingEmissions(address(pool), ids);
+        assertGt(gross, 0);
+        pool.claimEpochEmissions(ids);
+        uint256 fee = (gross * pool.operatorFeeBps()) / 10_000;
+        assertEq(pool.epochAnts(e0), 0);
+        assertEq(pool.antsOwed(remainderSink), gross - fee);
+        assertEq(pool.pendingAnts(workerA, ids), 0);
+
+        vm.prank(remainderSink);
+        pool.claimOwedAnts();
+        assertEq(ants.balanceOf(remainderSink), gross - fee);
+        vm.prank(remainderSink);
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
+        pool.claimOwedAnts();
     }
 
     function test_emissions_invalidInputs() public {
@@ -961,8 +1003,8 @@ contract AntseedColonyPoolTest is Test {
         vm.prank(operator);
         vm.expectRevert();
         pool.settle(ch, 200e6, m, sig);
-        assertEq(pool.channelCumulative(ch), 0);
-        assertEq(pool.workerCumulative(ch, workerA), 0);
+        assertEq(_settled(ch), 0);
+        assertEq(_paid(ch, workerA), 0);
         assertEq(pool.totalUsdcOwed(), 0);
     }
 
@@ -1019,7 +1061,7 @@ contract AntseedColonyPoolTest is Test {
         uint256 net = _settle(ch, 100e6, _e1(mac, 100e6));
         assertEq(pool.usdcBalance(wallet), net, "credit goes to payout");
         assertEq(pool.usdcBalance(mac), 0);
-        assertEq(pool.workerCumulative(ch, mac), 100e6, "cursor keyed by worker");
+        assertEq(_paid(ch, mac), 100e6, "cursor keyed by worker");
         assertEq(pool.epochWeight(e0, wallet), net, "weight goes to payout");
         assertEq(pool.epochWeight(e0, mac), 0);
 
@@ -1097,7 +1139,7 @@ contract AntseedColonyPoolTest is Test {
         assertGt(owed, 0, "the share outside the window stays with the worker");
 
         vm.expectEmit(true, true, false, true, address(pool));
-        emit AntseedColonyPool.AntsClaimedFor(mac, wallet, _epochs1(e0), owed);
+        emit AntseedColonyPool.AntsClaimed(mac, wallet, _epochs1(e0), owed);
         vm.prank(address(0xD00D));
         pool.claimAntsFor(mac, _epochs1(e0));
         assertEq(ants.balanceOf(wallet), owed, "paid to the linked wallet");
@@ -1261,7 +1303,7 @@ contract AntseedColonyPoolTest is Test {
     // with two workers given out of order); the contract must read the same block.
     function test_parsesTypeScriptEncodedMetadata() public view {
         bytes memory metadata = hex"000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000100000000000000000000000000000bb8200000000000000000000000000000000000000200000000000000000000000000001b58028648a71dd010296ef21e85b13e8b14728f74bae957239f6c65e28db02dfe64e0";
-        (address[] memory workers, uint128[] memory amounts) = pool.parseWorkerTail(metadata);
+        (address[] memory workers, uint128[] memory amounts) = tails.parseWorkerTail(metadata);
         assertEq(workers.length, 2);
         assertEq(workers[0], 0x1000000000000000000000000000000000000001);
         assertEq(amounts[0], 3000);

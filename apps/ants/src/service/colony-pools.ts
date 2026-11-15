@@ -75,8 +75,9 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
     return payout;
   });
   const workers = linked.filter((_, index) => payouts[index]!.toLowerCase() === ctx.address.toLowerCase());
-  const [usdcOwed, [own, ...workerEarnings]] = await Promise.all([
+  const [usdcOwed, outright, [own, ...workerEarnings]] = await Promise.all([
     pool.usdcBalance(ctx.address),
+    pool.antsOwed(ctx.address),
     accountsAnts(ctx, address, [ctx.address, ...workers], epochs) as Promise<[AccountAnts, ...AccountAnts[]]>,
   ]);
   // Funding depends only on the pool and epoch: one read for every account's weighted epochs.
@@ -90,9 +91,10 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
     .map((worker, index) => ({ worker, earned: workerEarnings[index]! }))
     .filter(({ earned }) => earned.epochs.length > 0 || earned.weighted.some((epoch) => pullable.has(epoch)))
     .map(({ worker, earned }) => ({ worker, antsOwed: earned.owed.toString(), antsEpochs: earned.epochs }));
-  const antsOwed = workerEarnings.reduce((sum, earned) => sum + earned.owed, own.owed);
+  const antsOwed = workerEarnings.reduce((sum, earned) => sum + earned.owed, own.owed + outright);
   return {
     address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs: own.epochs, unfundedEpochs,
+    ...(outright > 0n ? { outrightAnts: outright.toString() } : {}),
     ...(workerAnts.length > 0 ? { workerAnts } : {}),
     forgettable: ctx.isLinkedColonyPool(address),
   };
@@ -164,7 +166,7 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
   }
   // Until ANTS transfers open, the pool keeps what it owes: say so rather than send claims that revert.
   const antsOpen = !request.ants || await pool.antsTransferable().catch(() => true);
-  if (request.ants && !antsOpen && (antsEpochs.length > 0 || (view?.workerAnts?.length ?? 0) > 0)) {
+  if (request.ants && !antsOpen && (antsEpochs.length > 0 || (view?.workerAnts?.length ?? 0) > 0 || view?.outrightAnts !== undefined)) {
     await report('ANTS stay owed in the colony pool until ANTS transfers open; claim them then');
   }
   if (request.ants && antsOpen) {
@@ -183,6 +185,12 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
         hashes.push(hash);
         await report(`ANTS a linked Mac (${linked.worker.slice(0, 10)}…) earned before its link claimed to this wallet`, hash);
       }
+    }
+    // Read now, not from the view: a pull above credits the operator fee of the epochs it funded.
+    if (view && await pool.antsOwed(ctx.address) > 0n) {
+      const hash = await pool.claimOwedAnts(signer);
+      hashes.push(hash);
+      await report('ANTS the colony pool owed this wallet outright claimed', hash);
     }
   }
   if (hashes.length === 0) {

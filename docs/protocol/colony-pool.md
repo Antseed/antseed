@@ -716,8 +716,8 @@ WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
 `AntseedColonyPool is AntseedSellerDelegation`. It keeps the façade ABI
 unchanged, so seller nodes settle through it with no code changes.
 
-On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
-`pause()`):
+On every `settle`, `close` and `topUp` (all `nonReentrant`; the pool has no
+pause of its own, `AntseedChannels` has one):
 
 1. Call the parent, which forwards to `AntseedChannels` (which verifies the
    buyer's signature over `keccak256(metadata)`), receives the USDC payout and
@@ -733,8 +733,9 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
 4. For each worker, `workerDelta` = its new cumulative amount minus the
    amount already paid to it on this channel (0 if lower), clamped so the sum
    stays ≤ `delta` plus what the channel holds unattributed (below). The
-   worker's recorded amount (`workerCumulative`) grows by `workerDelta`, not
-   to the signed amount, so attribution a settlement could not cover stays
+   worker's recorded amount (`credited` in `workerCredit(channelId, worker)`,
+   which also returns the channel's `settled` amount) grows by `workerDelta`,
+   not to the signed amount, so attribution a settlement could not cover stays
    owed and is paid first from the next one.
 5. Each worker's `workerDelta` is paid from this settlement's `delta` first,
    at `net / delta` per unit, then from what the channel holds, oldest first,
@@ -745,7 +746,9 @@ On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by
    to the owner-set `remainderRecipient`, and once a channel is no longer
    active (its buyer timed it out and withdrew) anyone can with
    `releaseHeld(channelId)` (`releaseHeldFrom(channelsContract, channelId)` for
-   a Channels contract the registry has since replaced). `heldUnattributed(channelId)` reads it, and
+   a Channels contract the registry has since replaced). The pool's seller
+   node does this itself when it finds one of its channels ended on-chain
+   without a `close`. `heldUnattributed(channelId)` reads it, and
    `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
 7. Add each fresh credit to its account's weight for the current emissions
    epoch. Held USDC weighs in the epoch it settled in from the start
@@ -767,14 +770,16 @@ clean. Credited and held USDC always add up to `net`.
 Emissions are claimed into the contract by anyone with
 `claimEpochEmissions(epochs)`, only for finished epochs (weights are final
 once an epoch ends). A pull transfers nothing out: the operator fee's ANTS are
-credited to `operatorFeeRecipient` (`antsFeeOwed`, taken with `claimAntsFee`),
-so pulls work while ANTS transfers are still closed. ANTS claims need the pool
+credited to `operatorFeeRecipient`, and the ANTS of an epoch the pool credited
+no USDC in to `remainderRecipient` (both in `antsOwed`, taken with
+`claimOwedAnts`), so pulls work while ANTS transfers are still closed. ANTS claims need the pool
 to be able to send ANTS (`antsTransferable()`: the token enabled transfers, or
 whitelisted the pool); until then they revert with `AntsNotTransferableYet`
 and every amount stays recorded. Each worker claims its share of an epoch's ANTS (after
-the operator fee) in proportion to its weight; ANTS for an epoch with no
-weight go to the remainder. Workers claim USDC with `claimUsdc()` and ANTS
-with `claimAnts(epochs)`; pausing never blocks these claims.
+the operator fee) in proportion to its weight. Workers claim USDC with
+`claimUsdc()` and ANTS with `claimAnts(epochs)`; `claimAntsFor(worker,
+epochs)` sends a linked worker's own ANTS to its payout wallet. Both emit
+`AntsClaimed(account, to, epochs, amount)`.
 
 The pool must own its ERC-8004 agent to be staked and to receive emissions.
 The owner mints one for the pool with `registerAgent(agentURI)` (or transfers

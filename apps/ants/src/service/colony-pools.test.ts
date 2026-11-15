@@ -40,6 +40,8 @@ function fixture(pools: string[] = [pool], unfunded: number[] = [], empty: numbe
     claimUsdc: vi.fn(async () => 'usdc-hash'),
     claimAnts: vi.fn(async () => 'ants-hash'),
     claimAntsFor: vi.fn(async () => 'ants-for-hash'),
+    antsOwed: vi.fn(async () => 0n),
+    claimOwedAnts: vi.fn(async () => 'owed-hash'),
     antsTransferable: vi.fn(async () => true),
     payout: '0x0000000000000000000000000000000000000000',
     payoutOf: vi.fn(async (): Promise<string> => client.payout),
@@ -87,6 +89,22 @@ describe('colony pool rewards', () => {
     const { ctx, client } = fixture();
     await expect(claimColonyPool(ctx, { pool, usdc: true, ants: true }, report)).resolves.toEqual({ hashes: ['usdc-hash', 'ants-hash'] });
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4]);
+  });
+
+  it('counts and claims the ANTS the pool owes the wallet outright (operator fee)', async () => {
+    const { ctx, client } = fixture();
+    client.antsOwed.mockResolvedValue(5n);
+    expect((await colonyPools(ctx)).pools[0]!).toMatchObject({ antsOwed: '12', outrightAnts: '5', antsEpochs: [4] });
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['ants-hash', 'owed-hash'] });
+    expect(client.claimOwedAnts).toHaveBeenCalledWith(wallet);
+  });
+
+  it('keeps ANTS owed outright while ANTS transfers are closed', async () => {
+    const { ctx, client } = fixture();
+    client.antsOwed.mockResolvedValue(5n);
+    client.antsTransferable.mockResolvedValue(false);
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).rejects.toThrow(/until ANTS transfers open/);
+    expect(client.claimOwedAnts).not.toHaveBeenCalled();
   });
 
   it('pulls the pool\'s emissions for earned but unfunded epochs before claiming ANTS', async () => {

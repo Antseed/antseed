@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { AbiCoder, Contract, JsonRpcProvider, NonceManager, Wallet, formatUnits, getBytes, id, keccak256 } from 'ethers';
+import { AbiCoder, Contract, JsonRpcProvider, NonceManager, Wallet, ZeroAddress, formatUnits, getBytes, id, keccak256 } from 'ethers';
 
 import { AntseedNode, ChannelsClient, loadOrCreateIdentity, toPeerId } from '@antseed/node';
 import { ColonyPoolClient, parseWorkerPayoutLink } from '@antseed/node/payments';
@@ -261,11 +261,12 @@ async function main() {
   await send(staking, 'stakeFor', poolAddress, agentId, STAKE);
   const pool = new Contract(poolAddress, [
     'function setRemainderRecipient(address)', 'function usdcBalance(address) view returns (uint256)', 'function claimUsdc()',
-    'function workerCumulative(bytes32,address) view returns (uint128)', 'function channelCumulative(bytes32) view returns (uint128)',
+    'function workerCredit(bytes32,address) view returns (uint128 settled, uint128 credited)',
     'function heldUnattributed(bytes32) view returns (uint256 gross, uint256 net)',
     'event UsdcCredited(address indexed account, bytes32 indexed channelId, uint256 indexed epoch, uint256 amount)',
   ], deployer);
   await send(pool, 'setRemainderRecipient', operator);
+  const settledOn = async (channelId) => (await pool.workerCredit(channelId, ZeroAddress)).settled;
   say(`agent #${agentId} owned by the pool · staked ${usdc(await staking.getStake(poolAddress))} USDC`);
 
   // ── buyer funds ──
@@ -501,9 +502,9 @@ async function main() {
   for (const buyer of BUYERS) await sellerNode._sellerPaymentManager.settleSession(buyer.node.peerId, { settleOnly: true });
   // Each channel on its own: the pool must have settled exactly what that buyer signed.
   for (const buyer of BUYERS) {
-    await waitFor(async () => (await pool.channelCumulative(buyer.channelId)) === buyer.signed, `${buyer.name}'s channel to settle`, 30_000, 500)
+    await waitFor(async () => (await settledOn(buyer.channelId)) === buyer.signed, `${buyer.name}'s channel to settle`, 30_000, 500)
       .catch(async () => {
-        throw new Error(`${buyer.name}'s channel settled ${usdc(await pool.channelCumulative(buyer.channelId))} of the ${usdc(buyer.signed)} it signed`);
+        throw new Error(`${buyer.name}'s channel settled ${usdc(await settledOn(buyer.channelId))} of the ${usdc(buyer.signed)} it signed`);
       });
   }
   const channelIds = new Set(BUYERS.map((b) => b.channelId.toLowerCase()));

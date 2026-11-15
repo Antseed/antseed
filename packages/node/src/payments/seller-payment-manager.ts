@@ -44,6 +44,12 @@ export interface SellerPaymentConfig {
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
   serveWhileClosePending?: boolean;
+  /**
+   * Called when this seller stops tracking a channel it did not just close
+   * itself: the buyer withdrew it, or it was found ended or gone on-chain.
+   * Best effort: what it throws or rejects with is only logged.
+   */
+  onChannelEnded?: (channelId: string) => void | Promise<void>;
 }
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
@@ -476,6 +482,15 @@ export class SellerPaymentManager {
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
+    this._notifyChannelEnded(channelId);
+  }
+
+  private _notifyChannelEnded(channelId: string): void {
+    const onChannelEnded = this._config.onChannelEnded;
+    if (!onChannelEnded) return;
+    void Promise.resolve().then(() => onChannelEnded(channelId)).catch((err: unknown) => {
+      debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /** Remove connectivity only if it still belongs to the channel being cleaned up. */
@@ -2430,6 +2445,7 @@ export class SellerPaymentManager {
           const settled = state.exists ? state.channel.settled : 0n;
           this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
           this._timedOutCloseAttempts.delete(channelId);
+          this._notifyChannelEnded(channelId);
           continue;
         }
         if (state.status !== CHANNEL_STATUS.ACTIVE) {

@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
+import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
@@ -27,9 +27,7 @@ interface IAntseedRewardedEpochFloor {
     function firstRewardedEpoch() external view returns (uint256);
 }
 
-/// @dev AntseedEmissionsV2 mints a seller's reward into a rewards pool,
-///      locked, unless its unlock policy lets the seller claim directly.
-/// @dev AntseedChannels' public `channels` getter, for a channel's status (1 = Active).
+/// @dev AntseedChannels' public `channels` getter, for a channel's status.
 interface IAntseedChannelState {
     function channels(bytes32 channelId)
         external
@@ -43,6 +41,8 @@ interface IAntsTransferGate {
     function transferWhitelist(address account) external view returns (bool);
 }
 
+/// @dev AntseedEmissionsV2 mints a seller's reward into a rewards pool,
+///      locked, unless its unlock policy lets the seller claim directly.
 interface IAntseedLockingEmissions {
     function sellerRewardsPool() external view returns (address);
 }
@@ -86,8 +86,9 @@ interface IAntseedLockedSellerRewards {
  *         (`registerSeller`); ANTS stake for that agent then makes the pool
  *         channel-eligible.
  */
-contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
+contract AntseedColonyPool is AntseedSellerDelegation {
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
 
     // ─── Constants ──────────────────────────────────────────────────
     /// @notice Marker closing a worker-attribution tail.
@@ -102,12 +103,18 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     /// @notice Maximum epochs per `claimEpochEmissions` / `claimAnts` call.
     uint256 public constant MAX_EPOCHS_PER_CLAIM = 32;
 
+    /// @notice Epoch of a credit made while no emissions epoch could be read
+    ///         (it adds no ANTS weight); appears as the epoch of `UsdcCredited`.
+    uint256 public constant NO_EPOCH = type(uint256).max;
+
+    /// @dev AntseedChannels.ChannelStatus.Active.
+    uint8 private constant _CHANNEL_ACTIVE = 1;
     /// @dev ABI v4 metadata head is at least 8 words.
     uint256 private constant _MIN_HEAD_BYTES = 256;
     /// @dev uint8 count + bytes32 magic.
-    uint256 private constant _TAIL_TRAILER_BYTES = 33;
+    uint256 internal constant _TAIL_TRAILER_BYTES = 33;
     /// @dev address (20) + uint128 (16).
-    uint256 private constant _ENTRY_BYTES = 36;
+    uint256 internal constant _ENTRY_BYTES = 36;
 
     // ─── Attribution state ──────────────────────────────────────────
     /// @dev Keyed by `keccak256(abi.encode(channelsContract, channelId))`:
@@ -117,23 +124,43 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     mapping(bytes32 => mapping(address => uint128)) internal _workerCumulative;
 
     /// @dev Settled value no worker was attributed yet: `gross` channel units
-    ///      and the `net` USDC they paid, from settlements in reward `epoch`.
+    ///      and the `net` USDC they paid, from settlements in reward `epoch`
+    ///      (`NO_EPOCH` if there was none).
     struct HeldChunk {
         uint128 gross;
         uint128 net;
-        uint64 epoch;
-        bool hasEpoch;
+        uint256 epoch;
     }
 
-    /// @dev Per channel, what settled unattributed, oldest first, held while
-    ///      the channel is active: a buyer may sign headroom first and attribute
-    ///      it to a worker only after that headroom settled, and later tails are
-    ///      paid from it. `close` (or `releaseHeld`, once the channel is no longer
-    ///      active) gives what is left to `remainderRecipient`. `_heldHead` skips
-    ///      used-up chunks; `_heldUnits` is the gross still held.
-    mapping(bytes32 => HeldChunk[]) internal _held;
-    mapping(bytes32 => uint256) internal _heldHead;
-    mapping(bytes32 => uint256) internal _heldUnits;
+    /// @dev What a channel settled unattributed, oldest first: `head` skips
+    ///      used-up chunks and `units` is the gross still held.
+    struct Held {
+        HeldChunk[] chunks;
+        uint256 head;
+        uint256 units;
+    }
+
+    /// @dev One settlement being split: `delta` channel units paid `net` USDC in
+    ///      reward `epoch`. `fresh` (of its own delta) and `held` (from earlier
+    ///      settlements) are the units still unattributed; `creditedFresh` is
+    ///      the net credited from its own delta so far.
+    struct Settlement {
+        bytes32 channelId;
+        bytes32 key;
+        uint256 epoch;
+        uint256 delta;
+        uint256 net;
+        uint256 fresh;
+        uint256 held;
+        uint256 creditedFresh;
+    }
+
+    /// @dev Per channel, what settled unattributed, held while the channel is
+    ///      active: a buyer may sign headroom first and attribute it to a worker
+    ///      only after that headroom settled, and later tails are paid from it.
+    ///      `close` (or `releaseHeld`, once the channel is no longer active)
+    ///      gives what is left to `remainderRecipient`.
+    mapping(bytes32 => Held) internal _held;
     /// @notice Net USDC held for channels' later tails (never swept as orphaned).
     uint256 public totalUsdcHeld;
     /// @notice Per epoch, the weight of held USDC settled in it. It counts in
@@ -142,10 +169,12 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     ///         to; nobody can claim it while it is held.
     mapping(uint256 => uint256) public epochHeldWeight;
 
-    /// @notice The operator fee's ANTS, kept here rather than sent when emissions
+    /// @notice ANTS owed outright, not by epoch weight: the operator fee, and
+    ///         the emissions of an epoch in which no USDC was credited (to the
+    ///         remainder recipient). Kept here rather than sent when emissions
     ///         are pulled, so a pull never needs ANTS to be transferable; the
-    ///         recipient takes them with `claimAntsFee`.
-    mapping(address => uint256) public antsFeeOwed;
+    ///         account takes them with `claimOwedAnts`.
+    mapping(address => uint256) public antsOwed;
 
     // ─── Worker payout addresses ────────────────────────────────────
     /// @notice Where a worker's credits go (zero = the worker itself).
@@ -180,9 +209,9 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     event UsdcCredited(address indexed account, bytes32 indexed channelId, uint256 indexed epoch, uint256 amount);
     event UsdcClaimed(address indexed account, uint256 amount);
     event EpochEmissionsClaimed(uint256 indexed epoch, uint256 antsAmount);
-    event AntsClaimed(address indexed account, uint256[] epochs, uint256 amount);
-    event AntsFeeClaimed(address indexed recipient, uint256 amount);
-    event AntsClaimedFor(address indexed worker, address indexed payout, uint256[] epochs, uint256 amount);
+    /// @dev `to` is `account` itself, or its payout wallet (`claimAntsFor`).
+    event AntsClaimed(address indexed account, address indexed to, uint256[] epochs, uint256 amount);
+    event OwedAntsClaimed(address indexed account, uint256 amount);
     event OrphanUsdcSwept(address indexed recipient, uint256 amount);
     event UnattributedHeld(bytes32 indexed channelId, uint256 gross, uint256 net);
     event HeldReleased(bytes32 indexed channelId, uint256 net);
@@ -223,7 +252,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         uint128 newMaxAmount,
         uint256 deadline,
         bytes calldata reserveSig
-    ) public override nonReentrant whenNotPaused returns (uint256 netPayout) {
+    ) public override nonReentrant returns (uint256 netPayout) {
         netPayout = super.topUp(channelId, cumulativeAmount, metadata, spendingSig, newMaxAmount, deadline, reserveSig);
         _attribute(channelId, cumulativeAmount, metadata, netPayout);
     }
@@ -232,7 +261,6 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         public
         override
         nonReentrant
-        whenNotPaused
         returns (uint256 netPayout)
     {
         netPayout = super.settle(channelId, cumulativeAmount, metadata, buyerSig);
@@ -243,7 +271,6 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         public
         override
         nonReentrant
-        whenNotPaused
         returns (uint256 netPayout)
     {
         netPayout = super.close(channelId, finalAmount, metadata, buyerSig);
@@ -267,10 +294,10 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     }
 
     function _releaseHeldFrom(address channelsContract, bytes32 channelId) internal {
-        bytes32 key = keccak256(abi.encode(channelsContract, channelId));
-        if (_heldUnits[key] == 0 && _heldHead[key] >= _held[key].length) return;
+        bytes32 key = _keyOf(channelsContract, channelId);
+        if (_held[key].units == 0) return;
         (,,,,,,,, uint8 status) = IAntseedChannelState(channelsContract).channels(channelId);
-        if (status == 1) revert ChannelStillActive();
+        if (status == _CHANNEL_ACTIVE) revert ChannelStillActive();
         _releaseHeld(channelId, key);
     }
 
@@ -279,7 +306,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     // ═══════════════════════════════════════════════════════════════════
 
     /// @notice Transfer the caller's claimable USDC.
-    /// @dev Intentionally not pausable: the owner cannot freeze credited funds.
+    /// @dev Never blocked by the owner: credited funds cannot be frozen.
     function claimUsdc() external nonReentrant {
         uint256 amount = usdcBalance[msg.sender];
         if (amount == 0) revert NothingToClaim();
@@ -292,7 +319,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     /// @notice Pull the pool's seller emissions for finalized `epochs` into
     ///         this contract. Callable by anyone, and more than once per
     ///         epoch (later pulls accumulate).
-    function claimEpochEmissions(uint256[] calldata epochs) external nonReentrant whenNotPaused {
+    function claimEpochEmissions(uint256[] calldata epochs) external nonReentrant {
         uint256 len = epochs.length;
         if (len == 0 || len > MAX_EPOCHS_PER_CLAIM) revert InvalidEpochs();
         uint256 current = _currentEmissionsEpoch();
@@ -306,12 +333,12 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
             uint256 antsAmount = _claimUnlockedSellerEmissions(single);
             if (antsAmount == 0) continue;
             if (epochTotalWeight[epoch] == 0) {
-                // ANTS for an epoch with no credited USDC would otherwise be
-                // stranded; give it to the remainder recipient.
-                epochWeight[epoch][remainderRecipient] = 1;
-                epochTotalWeight[epoch] = 1;
+                // No USDC was credited in this epoch, so nobody holds a share
+                // of its ANTS: they go to the remainder recipient.
+                antsOwed[remainderRecipient] += antsAmount;
+            } else {
+                epochAnts[epoch] += antsAmount;
             }
-            epochAnts[epoch] += antsAmount;
             emit EpochEmissionsClaimed(epoch, antsAmount);
         }
     }
@@ -333,44 +360,38 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         }
     }
 
-    /// @notice Claim the operator fee's ANTS credited to the caller by emissions pulls.
-    function claimAntsFee() external nonReentrant {
-        uint256 amount = antsFeeOwed[msg.sender];
+    /// @notice Claim the ANTS owed to the caller outright (`antsOwed`).
+    function claimOwedAnts() external nonReentrant {
+        uint256 amount = antsOwed[msg.sender];
         if (amount == 0) revert NothingToClaim();
         if (!antsTransferable()) revert AntsNotTransferableYet();
-        antsFeeOwed[msg.sender] = 0;
+        antsOwed[msg.sender] = 0;
         IERC20(registry.antsToken()).safeTransfer(msg.sender, amount);
-        emit AntsFeeClaimed(msg.sender, amount);
+        emit OwedAntsClaimed(msg.sender, amount);
     }
 
     /// @notice Claim the caller's ANTS share of funded `epochs`.
-    /// @dev Intentionally not pausable: the owner cannot freeze credited funds.
+    /// @dev Never blocked by the owner: credited funds cannot be frozen.
     function claimAnts(uint256[] calldata epochs) external nonReentrant {
-        if (!antsTransferable()) revert AntsNotTransferableYet();
-        uint256 total = _markAntsClaimed(msg.sender, epochs);
-        IERC20(registry.antsToken()).safeTransfer(msg.sender, total);
-        emit AntsClaimed(msg.sender, epochs, total);
+        _claimAnts(msg.sender, msg.sender, epochs);
     }
 
     /// @notice Pay a linked `worker`'s own ANTS share of funded `epochs` to its
     ///         payout wallet: the shares `setPayout` left with the worker key
     ///         (epochs older than its migration window). Callable by anyone,
     ///         since the ANTS only ever go where the worker itself linked.
-    /// @dev Intentionally not pausable, like `claimAnts`.
     function claimAntsFor(address worker, uint256[] calldata epochs) external nonReentrant {
         address payout = payoutOf[worker];
         if (payout == address(0) || payout == worker) revert NoPayout();
-        if (!antsTransferable()) revert AntsNotTransferableYet();
-        uint256 total = _markAntsClaimed(worker, epochs);
-        IERC20(registry.antsToken()).safeTransfer(payout, total);
-        emit AntsClaimedFor(worker, payout, epochs, total);
+        _claimAnts(worker, payout, epochs);
     }
 
-    /// @dev Records `account`'s pending ANTS for `epochs` as claimed and returns
-    ///      the total (checks and effects before the caller's transfer).
-    function _markAntsClaimed(address account, uint256[] calldata epochs) internal returns (uint256 total) {
+    /// @dev Sends `account`'s pending ANTS for `epochs` to `to`.
+    function _claimAnts(address account, address to, uint256[] calldata epochs) internal {
+        if (!antsTransferable()) revert AntsNotTransferableYet();
         uint256 len = epochs.length;
         if (len == 0 || len > MAX_EPOCHS_PER_CLAIM) revert InvalidEpochs();
+        uint256 total;
         for (uint256 i = 0; i < len; i++) {
             uint256 epoch = epochs[i];
             uint256 owed = _pendingAnts(account, epoch);
@@ -379,6 +400,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
             total += owed;
         }
         if (total == 0) revert NothingToClaim();
+        IERC20(registry.antsToken()).safeTransfer(to, total);
+        emit AntsClaimed(account, to, epochs, total);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -421,23 +444,27 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
             usdcBalance[to] += usdc;
             emit EarningsMoved(from, to, usdc);
         }
-        (bool hasEpoch, uint256 current) = _tryCurrentEpoch();
-        if (!hasEpoch) return;
+        uint256 current = _tryCurrentEpoch();
+        if (current == NO_EPOCH) return;
         uint256 oldest = current > MAX_EPOCHS_PER_CLAIM ? current - MAX_EPOCHS_PER_CLAIM : 0;
-        // Weights recorded during the gate cutover sit in the first rewarded
-        // epoch, ahead of the current one; move those too.
-        (, uint256 newest) = _tryRewardEpoch();
-        if (newest < current) newest = current;
-        for (uint256 epoch = oldest; epoch <= newest; epoch++) {
-            uint256 weight = epochWeight[epoch][from];
-            if (weight == 0) continue;
-            epochWeight[epoch][from] = 0;
-            epochWeight[epoch][to] += weight;
-            uint256 claimed = antsClaimed[epoch][from];
-            if (claimed > 0) {
-                antsClaimed[epoch][from] = 0;
-                antsClaimed[epoch][to] += claimed;
-            }
+        for (uint256 epoch = oldest; epoch <= current; epoch++) {
+            _moveEpochShare(epoch, from, to);
+        }
+        // Weight recorded during the gate cutover sits in the first rewarded
+        // epoch, ahead of the current one; move that too.
+        uint256 reward = _rewardEpochAt(current);
+        if (reward > current) _moveEpochShare(reward, from, to);
+    }
+
+    function _moveEpochShare(uint256 epoch, address from, address to) internal {
+        uint256 weight = epochWeight[epoch][from];
+        if (weight == 0) return;
+        epochWeight[epoch][from] = 0;
+        epochWeight[epoch][to] += weight;
+        uint256 claimed = antsClaimed[epoch][from];
+        if (claimed > 0) {
+            antsClaimed[epoch][from] = 0;
+            antsClaimed[epoch][to] += claimed;
         }
     }
 
@@ -477,15 +504,6 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         emit RemainderRecipientSet(recipient);
     }
 
-    /// @notice Pause settlement and emissions pulls. Claims stay open.
-    function pause() external onlyOwner {
-        _pause();
-    }
-
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
     /// @notice Recover USDC held above the sum of claimable balances (e.g.
     ///         a stray transfer). Never touches credited funds.
     function sweepOrphanUsdc(address recipient) external nonReentrant onlyOwner {
@@ -503,59 +521,28 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     //                        VIEWS
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice Last channel cumulative amount recorded for `channelId` on
-    ///         the current channels contract.
-    function channelCumulative(bytes32 channelId) external view returns (uint128) {
-        return _channelCumulative[_channelKey(channelId)];
-    }
-
     /// @notice What `channelId` settled unattributed and still holds for later
     ///         tails (channel units, and the net USDC they paid).
     function heldUnattributed(bytes32 channelId) external view returns (uint256 gross, uint256 net) {
-        bytes32 key = _channelKey(channelId);
-        HeldChunk[] storage chunks = _held[key];
-        for (uint256 i = _heldHead[key]; i < chunks.length; i++) net += chunks[i].net;
-        return (_heldUnits[key], net);
+        Held storage held = _held[_channelKey(channelId)];
+        for (uint256 i = held.head; i < held.chunks.length; i++) net += held.chunks[i].net;
+        return (held.units, net);
     }
 
-    /// @notice What this pool settled on `channelId` and paid `worker` there, read
-    ///         together so a worker never compares the two across a settlement.
+    /// @notice What this pool settled on `channelId` (current channels contract)
+    ///         and paid `worker` there, read together so a worker never compares
+    ///         the two across a settlement. `credited` trails the buyer-signed
+    ///         amount only while a settlement's delta could not cover it; the
+    ///         next settlement pays the rest first.
     function workerCredit(bytes32 channelId, address worker) external view returns (uint128 settled, uint128 credited) {
         bytes32 key = _channelKey(channelId);
         return (_channelCumulative[key], _workerCumulative[key][worker]);
-    }
-
-    /// @notice How much of the buyer's attribution to `worker` on `channelId`
-    ///         (current channels contract) settlements have paid. It trails the
-    ///         buyer-signed amount only while a settlement's delta could not
-    ///         cover it; the next settlement pays the rest first.
-    function workerCumulative(bytes32 channelId, address worker) external view returns (uint128) {
-        return _workerCumulative[_channelKey(channelId)][worker];
     }
 
     /// @notice ANTS `account` can claim now for funded `epochs`.
     function pendingAnts(address account, uint256[] calldata epochs) external view returns (uint256 total) {
         for (uint256 i = 0; i < epochs.length; i++) {
             total += _pendingAnts(account, epochs[i]);
-        }
-    }
-
-    /// @notice Parse the worker tail of `metadata`. Returns an empty array
-    ///         when the tail is absent or malformed (exactly what settlement
-    ///         would attribute).
-    function parseWorkerTail(bytes calldata metadata)
-        external
-        pure
-        returns (address[] memory workers, uint128[] memory amounts)
-    {
-        uint256 n = _validTailCount(metadata);
-        workers = new address[](n);
-        amounts = new uint128[](n);
-        // Shorter metadata than a trailer would underflow the offset below.
-        if (n == 0) return (workers, amounts);
-        uint256 base = metadata.length - _TAIL_TRAILER_BYTES - _ENTRY_BYTES * n;
-        for (uint256 i = 0; i < n; i++) {
-            (workers[i], amounts[i]) = _readEntry(metadata, base + _ENTRY_BYTES * i);
         }
     }
 
@@ -566,101 +553,91 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     function _attribute(bytes32 channelId, uint128 newCumulative, bytes calldata metadata, uint256 net) internal {
         bytes32 key = _channelKey(channelId);
         uint128 last = _channelCumulative[key];
-        (bool hasEpoch, uint256 epoch) = _tryRewardEpoch();
+        uint256 epoch = _rewardEpochAt(_tryCurrentEpoch());
 
         if (newCumulative <= last) {
             // AntseedChannels settled nothing new, so it did not verify the
             // buyer's signature over `metadata`: ignore the tail entirely.
-            if (net > 0) _credit(remainderRecipient, channelId, net, hasEpoch, epoch);
+            if (net > 0) _credit(remainderRecipient, channelId, net, epoch);
             emit ChannelAttributed(channelId, 0, net, 0, false);
             return;
         }
 
-        uint256 delta = uint256(newCumulative) - uint256(last);
         _channelCumulative[key] = newCumulative;
+        uint256 delta = uint256(newCumulative) - uint256(last);
 
         // Attribution is paid from this settlement's delta first, then from what
         // earlier settlements on the channel left unattributed.
-        Split memory split = Split({ fresh: delta, held: _heldUnits[key], creditedFresh: 0 });
+        Settlement memory s = Settlement({
+            channelId: channelId,
+            key: key,
+            epoch: epoch,
+            delta: delta,
+            net: net,
+            fresh: delta,
+            held: _held[key].units,
+            creditedFresh: 0
+        });
         uint256 n = _validTailCount(metadata);
         if (n > 0) {
             uint256 base = metadata.length - _TAIL_TRAILER_BYTES - _ENTRY_BYTES * n;
             for (uint256 i = 0; i < n; i++) {
                 (address worker, uint128 cumulative) = _readEntry(metadata, base + _ENTRY_BYTES * i);
-                _payWorker(channelId, key, worker, cumulative, delta, net, split, hasEpoch, epoch);
+                _payWorker(s, worker, cumulative);
             }
         }
 
         // This settlement's unattributed part is held for later tails (rounding
         // with no unattributed part left goes to the remainder now).
-        uint256 freshLeft = net - split.creditedFresh;
-        if (split.fresh > 0 && freshLeft > 0) {
-            _hold(channelId, key, split.fresh, freshLeft, hasEpoch, epoch);
-        } else if (freshLeft > 0) {
-            _credit(remainderRecipient, channelId, freshLeft, hasEpoch, epoch);
+        uint256 freshLeft = net - s.creditedFresh;
+        if (freshLeft > 0) {
+            if (s.fresh > 0) _hold(channelId, key, s.fresh, freshLeft, epoch);
+            else _credit(remainderRecipient, channelId, freshLeft, epoch);
         }
 
         emit ChannelAttributed(channelId, delta, net, n, n > 0);
     }
 
-    /// @dev Attribution budget left in one settlement: its own delta (`fresh`)
-    ///      and what the channel holds (`held`), in channel units, and the net
-    ///      USDC credited from its own delta so far.
-    struct Split {
-        uint256 fresh;
-        uint256 held;
-        uint256 creditedFresh;
-    }
-
-    function _payWorker(
-        bytes32 channelId,
-        bytes32 key,
-        address worker,
-        uint128 cumulative,
-        uint256 delta,
-        uint256 net,
-        Split memory split,
-        bool hasEpoch,
-        uint256 epoch
-    ) internal {
-        uint128 prev = _workerCumulative[key][worker];
+    function _payWorker(Settlement memory s, address worker, uint128 cumulative) internal {
+        uint128 prev = _workerCumulative[s.key][worker];
         if (cumulative <= prev) return;
         uint256 workerDelta = uint256(cumulative) - uint256(prev);
-        uint256 fromFresh = workerDelta < split.fresh ? workerDelta : split.fresh;
+        uint256 fromFresh = workerDelta < s.fresh ? workerDelta : s.fresh;
         uint256 rest = workerDelta - fromFresh;
-        uint256 fromHeld = rest < split.held ? rest : split.held;
+        uint256 fromHeld = rest < s.held ? rest : s.held;
         if (fromFresh + fromHeld == 0) return;
-        split.fresh -= fromFresh;
-        split.held -= fromHeld;
+        s.fresh -= fromFresh;
+        s.held -= fromHeld;
         // Only what this settlement covered: attribution beyond it stays owed
         // and counts at the next settlement.
         uint128 paidCumulative = prev + uint128(fromFresh + fromHeld);
-        _workerCumulative[key][worker] = paidCumulative;
-        emit WorkerCumulativeUpdated(channelId, worker, paidCumulative);
+        _workerCumulative[s.key][worker] = paidCumulative;
+        emit WorkerCumulativeUpdated(s.channelId, worker, paidCumulative);
 
         address payout = payoutOf[worker];
         address account = payout == address(0) ? worker : payout;
         // Σ floor(net·fᵢ/delta) ≤ net.
-        uint256 amount = (net * fromFresh) / delta;
-        split.creditedFresh += amount;
-        if (amount > 0) _credit(account, channelId, amount, hasEpoch, epoch);
-        if (fromHeld > 0) _drawHeld(channelId, key, account, fromHeld);
+        uint256 amount = (s.net * fromFresh) / s.delta;
+        s.creditedFresh += amount;
+        if (amount > 0) _credit(account, s.channelId, amount, s.epoch);
+        if (fromHeld > 0) _drawHeld(s.channelId, s.key, account, fromHeld);
     }
 
     /// @dev Hold `gross` units settled unattributed (paid `net`) on a channel,
     ///      reserving their weight in the epoch they settled in.
-    function _hold(bytes32 channelId, bytes32 key, uint256 gross, uint256 net, bool hasEpoch, uint256 epoch) internal {
-        HeldChunk[] storage chunks = _held[key];
-        uint256 len = chunks.length;
-        if (len > _heldHead[key] && chunks[len - 1].hasEpoch == hasEpoch && chunks[len - 1].epoch == epoch) {
-            chunks[len - 1].gross += uint128(gross);
-            chunks[len - 1].net += uint128(net);
+    function _hold(bytes32 channelId, bytes32 key, uint256 gross, uint256 net, uint256 epoch) internal {
+        Held storage held = _held[key];
+        uint256 len = held.chunks.length;
+        if (len > held.head && held.chunks[len - 1].epoch == epoch) {
+            HeldChunk storage newest = held.chunks[len - 1];
+            newest.gross += gross.toUint128();
+            newest.net += net.toUint128();
         } else {
-            chunks.push(HeldChunk({ gross: uint128(gross), net: uint128(net), epoch: uint64(epoch), hasEpoch: hasEpoch }));
+            held.chunks.push(HeldChunk({ gross: gross.toUint128(), net: net.toUint128(), epoch: epoch }));
         }
-        _heldUnits[key] += gross;
+        held.units += gross;
         totalUsdcHeld += net;
-        if (hasEpoch) {
+        if (epoch != NO_EPOCH) {
             epochHeldWeight[epoch] += net;
             epochTotalWeight[epoch] += net;
         }
@@ -670,55 +647,53 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     /// @dev Credit `account` for `units` of a channel's held value, oldest first,
     ///      each part with the weight of the epoch it settled in.
     function _drawHeld(bytes32 channelId, bytes32 key, address account, uint256 units) internal {
-        HeldChunk[] storage chunks = _held[key];
-        uint256 head = _heldHead[key];
-        _heldUnits[key] -= units;
-        while (units > 0 && head < chunks.length) {
-            HeldChunk storage chunk = chunks[head];
+        Held storage held = _held[key];
+        uint256 head = held.head;
+        held.units -= units;
+        while (units > 0 && head < held.chunks.length) {
+            HeldChunk storage chunk = held.chunks[head];
             uint256 take = units < chunk.gross ? units : chunk.gross;
             // A chunk taken whole gives all its net, so no rounding dust stays behind.
             uint256 amount = take == chunk.gross ? chunk.net : (uint256(chunk.net) * take) / chunk.gross;
             chunk.gross -= uint128(take);
             chunk.net -= uint128(amount);
             units -= take;
-            _creditHeld(account, channelId, amount, chunk.hasEpoch, chunk.epoch);
+            _creditHeld(account, channelId, amount, chunk.epoch);
             if (chunk.gross == 0) head++;
         }
-        _heldHead[key] = head;
+        held.head = head;
     }
 
     /// @dev Give what a channel still holds to the remainder: it can no longer get a tail.
     function _releaseHeld(bytes32 channelId, bytes32 key) internal {
-        HeldChunk[] storage chunks = _held[key];
+        Held storage held = _held[key];
         uint256 released;
-        for (uint256 i = _heldHead[key]; i < chunks.length; i++) {
-            uint256 amount = chunks[i].net;
+        for (uint256 i = held.head; i < held.chunks.length; i++) {
+            uint256 amount = held.chunks[i].net;
             released += amount;
-            _creditHeld(remainderRecipient, channelId, amount, chunks[i].hasEpoch, chunks[i].epoch);
+            _creditHeld(remainderRecipient, channelId, amount, held.chunks[i].epoch);
         }
         delete _held[key];
-        delete _heldHead[key];
-        delete _heldUnits[key];
         if (released > 0) emit HeldReleased(channelId, released);
     }
 
     /// @dev Credit held USDC: its weight, reserved in the epoch it settled in, moves to `account`.
-    function _creditHeld(address account, bytes32 channelId, uint256 amount, bool hasEpoch, uint256 epoch) internal {
+    function _creditHeld(address account, bytes32 channelId, uint256 amount, uint256 epoch) internal {
         if (amount == 0) return;
         usdcBalance[account] += amount;
         totalUsdcOwed += amount;
         totalUsdcHeld -= amount;
-        if (hasEpoch) {
+        if (epoch != NO_EPOCH) {
             epochHeldWeight[epoch] -= amount;
             epochWeight[epoch][account] += amount;
         }
         emit UsdcCredited(account, channelId, epoch, amount);
     }
 
-    function _credit(address account, bytes32 channelId, uint256 amount, bool hasEpoch, uint256 epoch) internal {
+    function _credit(address account, bytes32 channelId, uint256 amount, uint256 epoch) internal {
         usdcBalance[account] += amount;
         totalUsdcOwed += amount;
-        if (hasEpoch) {
+        if (epoch != NO_EPOCH) {
             epochWeight[epoch][account] += amount;
             epochTotalWeight[epoch] += amount;
         }
@@ -774,32 +749,37 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     }
 
     function _channelKey(bytes32 channelId) internal view returns (bytes32) {
-        return keccak256(abi.encode(address(_channels()), channelId));
+        return _keyOf(address(_channels()), channelId);
     }
 
-    /// @dev Settlement must not revert if the registry has no emissions
-    ///      contract (AntseedChannels tolerates that too): weights are then
-    ///      simply not recorded.
-    function _tryCurrentEpoch() internal view returns (bool ok, uint256 epoch) {
+    function _keyOf(address channelsContract, bytes32 channelId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(channelsContract, channelId));
+    }
+
+    /// @dev The current emissions epoch, or `NO_EPOCH`: settlement must not
+    ///      revert if the registry has no emissions contract (AntseedChannels
+    ///      tolerates that too); weights are then simply not recorded.
+    function _tryCurrentEpoch() internal view returns (uint256) {
         address emissions = registry.emissions();
-        if (emissions == address(0)) return (false, 0);
-        try IAntseedEmissions(emissions).currentEpoch() returns (uint256 e) {
-            return (true, e);
+        if (emissions == address(0)) return NO_EPOCH;
+        try IAntseedEmissions(emissions).currentEpoch() returns (uint256 epoch) {
+            return epoch;
         } catch {
-            return (false, 0);
+            return NO_EPOCH;
         }
     }
 
-    /// @dev The epoch whose emissions reward a settlement made now. Matches
-    ///      AntseedUsageAccounting, which accounts usage settled before its
-    ///      `firstRewardedEpoch` under that epoch; other emissions contracts
+    /// @dev The epoch whose emissions reward a settlement made in `current`.
+    ///      Matches AntseedUsageAccounting, which accounts usage settled before
+    ///      its `firstRewardedEpoch` under that epoch; other emissions contracts
     ///      reward the current epoch.
-    function _tryRewardEpoch() internal view returns (bool ok, uint256 epoch) {
-        (ok, epoch) = _tryCurrentEpoch();
-        if (!ok) return (ok, epoch);
+    function _rewardEpochAt(uint256 current) internal view returns (uint256) {
+        if (current == NO_EPOCH) return current;
         try IAntseedRewardedEpochFloor(registry.emissions()).firstRewardedEpoch() returns (uint256 first) {
-            if (epoch < first) epoch = first;
-        } catch { }
+            return current < first ? first : current;
+        } catch {
+            return current;
+        }
     }
 
     /// @dev Claim seller emissions, refusing a claim that AntseedEmissionsV2
@@ -816,7 +796,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         IAntseedEmissions(registry.emissions()).claimSellerEmissions(epochs);
         uint256 gross = antsToken.balanceOf(address(this)) - beforeBal;
         uint256 fee = _operatorFeeAmount(gross);
-        if (fee > 0) antsFeeOwed[operatorFeeRecipient] += fee;
+        if (fee > 0) antsOwed[operatorFeeRecipient] += fee;
         antsAmount = gross - fee;
         if (lockPool != address(0) && IAntseedLockedSellerRewards(lockPool).lockedRewards(address(this)) > lockedBefore) {
             revert EmissionsLocked();

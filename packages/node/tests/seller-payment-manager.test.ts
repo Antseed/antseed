@@ -2427,6 +2427,29 @@ describe('SellerPaymentManager', () => {
       expect(store.getChannel(openChannelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
 
+    it('reports a channel the buyer withdrew as ended', async () => {
+      const channelId = makeChannelId(93);
+      storeTimedOutChannel(channelId);
+      const onChannelEnded = vi.fn();
+      const withListener = new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:8545',
+        channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID,
+        dataDir: tempDir,
+        onChannelEnded,
+      }, store);
+      vi.spyOn(withListener.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 300_000n, status: 3 }),
+      );
+
+      await withListener.checkTimeouts();
+      vi.setSystemTime(Date.now() + TIMED_OUT_CLOSE_RETRY_INTERVAL_MS);
+      await withListener.checkTimeouts();
+
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId));
+      expect(onChannelEnded).toHaveBeenCalledOnce();
+    });
+
     it('records a channel the buyer already withdrew and stops reading it, also after a restart', async () => {
       const channelId = makeChannelId(92);
       storeTimedOutChannel(channelId);
@@ -2818,6 +2841,22 @@ describe('SellerPaymentManager', () => {
       await mgr.validateHydratedChannels();
 
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    });
+
+    it('reports a channel found ended on-chain, and survives the listener failing', async () => {
+      const channelId = makeChannelId(33);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      const onChannelEnded = vi.fn(async () => { throw new Error('listener failed'); });
+
+      const mgr = makeFreshManager({ onChannelEnded });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }),
+      );
+
+      await mgr.validateHydratedChannels();
+
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId));
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
 

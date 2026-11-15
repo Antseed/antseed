@@ -106,7 +106,8 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { NodeWorkerE2EClient, type NodeWorkerE2EClientOptions } from "./colony-pool/client.js";
-import { workerE2EProviderCapability } from "./colony-pool/worker-crypto.js";
+import { WORKER_E2E_CAPABILITY, workerE2EProviderCapability } from "./colony-pool/worker-crypto.js";
+import { ColonyPoolClient } from "./payments/evm/colony-pool-client.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -626,6 +627,8 @@ export class AntseedNode extends EventEmitter {
   private _buyerHandler: BuyerRequestHandler | null = null;
   /** Seller-side payment manager (initialized when seller has payment config). */
   private _sellerPaymentManager: SellerPaymentManager | null = null;
+  /** This seller's colony pool contract, once a channel of it ended without the pool's close. */
+  private _colonyPoolClient: ColonyPoolClient | null = null;
   /** Shared channel store for payment persistence. */
   private _channelStore: ChannelStore | null = null;
   /** Buyer-side response authentication storage. */
@@ -1941,6 +1944,28 @@ export class AntseedNode extends EventEmitter {
     };
   }
 
+  /**
+   * A colony pool contract holds what a channel settled without a worker
+   * attribution until the channel ends, and its own close releases that to
+   * the remainder recipient. A channel that ended another way (the buyer
+   * withdrew it) is released here.
+   */
+  private async _releaseColonyPoolHeld(channelId: string): Promise<void> {
+    const pool = this._config.sellerContract?.sellerContract;
+    const payments = this._config.payments;
+    if (!pool || !payments?.rpcUrl || !this._identity) return;
+    if (!this._providers.some((provider) => provider.peerCapabilities?.includes(WORKER_E2E_CAPABILITY))) return;
+    const client = this._colonyPoolClient ??= new ColonyPoolClient({
+      rpcUrl: payments.rpcUrl,
+      ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
+      contractAddress: pool,
+      ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
+    });
+    if ((await client.heldUnattributed(channelId)).gross === 0n) return;
+    const hash = await client.releaseHeld(this._identity.wallet, channelId);
+    debugLog(`[Node] Released what colony pool channel ${channelId.slice(0, 18)}... held unattributed (tx ${hash.slice(0, 12)}...)`);
+  }
+
   /** Colony pool trust policy, the same for every buyer identity. */
   private _workerPolicy(): NodeWorkerE2EClientOptions {
     return {
@@ -2829,6 +2854,7 @@ export class AntseedNode extends EventEmitter {
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
+        onChannelEnded: (channelId) => this._releaseColonyPoolHeld(channelId),
       };
       this._sellerPaymentManager = new SellerPaymentManager(
         this._identity,
