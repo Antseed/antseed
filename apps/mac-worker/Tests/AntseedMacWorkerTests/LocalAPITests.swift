@@ -110,7 +110,7 @@ final class LocalAPITests: XCTestCase {
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let bound = withUnsafeMutablePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0 }
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0 }
         }
         guard bound else { throw XCTSkip("no loopback port to bind") }
         return UInt16(bigEndian: address.sin_port)
