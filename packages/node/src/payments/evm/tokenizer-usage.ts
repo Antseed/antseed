@@ -1,6 +1,6 @@
 // The usage reader the tokenizer audit contract runs on-chain (`promptTokensOf` in
 // `packages/contracts/verification/AntseedTokenizerUsageReader.sol`), byte for byte, so a proof is checked off-chain
-// exactly as the contract will check it. A byte scanner, not JSON.parse: duplicate keys and whole-integer reads
+// exactly as the contract will check it. A byte scanner, not JSON.parse: repeated members and whole-integer reads
 // mirror the Solidity. Change both sides together.
 
 /**
@@ -10,27 +10,19 @@
  * fresh only, and the cache creation and the cached input are added: the larger of
  * `prompt_tokens_details.cached_tokens` and the cache reads (`cache_read_input_tokens`, else
  * `prompt_cache_hit_tokens`). Other nested breakdowns (e.g. Responses' per-item usage) and text are ignored.
- * Null when the body has no single usage field, or when JSON.parse could read it differently: a member name with
- * an escape where usage is read, or a usage value that is neither a whole number nor null (null is absent).
+ * Null when the body has no usage to read, or when JSON.parse could read it differently: a member the reader looks
+ * for twice (whatever its values; JSON.parse keeps the last), a member name with an escape where usage is read, or
+ * a usage value that is neither a whole number nor null (null is absent).
  */
 export function promptTokensOfBody(body: Uint8Array): number | null {
-  const counts = new Map<string, number[]>();
-  const record = (name: string, value: number) => {
-    const values = counts.get(name);
-    if (values) values.push(value);
-    else counts.set(name, [value]);
-  };
-  let objects = 0;
+  const usage: Usage = { seen: new Set(), numbers: new Map(), entered: false, ambiguous: false };
   let depth = 0;
   let inString = false;
   let escaped = false;
   let watched = false;
   let hadEscape = false;
-  let ambiguous = false;
   let inUsage = false;
   let inDetails: DetailsKey | null = null;
-  const detailsSeen = new Map<DetailsKey, number>();
-  let inputCached = 0;
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     if (inString) {
@@ -42,54 +34,37 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
       } else if (c === QUOTE) {
         inString = false;
         // An escaped member name may decode to a key this reader looks for.
-        if (watched && hadEscape && body[skipSpace(body, i + 1)] === COLON) ambiguous = true;
+        if (watched && hadEscape && body[skipSpace(body, i + 1)] === COLON) usage.ambiguous = true;
       }
       continue;
     }
     if (c === OPEN_BRACE || c === OPEN_BRACKET) {
       depth++;
     } else if (c === CLOSE_BRACE || c === CLOSE_BRACKET) {
-      if (depth === 2 && inUsage) inUsage = false;
+      if (depth === 2) inUsage = false;
       if (depth === 3) inDetails = null;
       if (depth !== 0) depth--;
     } else if (c === QUOTE) {
-      const usageObject = depth === 1 ? objectAfter(body, i, 'usage') : 0;
-      if (usageObject !== 0) {
-        objects++;
-        inUsage = true;
-        depth = 2;
-        i = usageObject;
-        continue;
-      }
+      // Where to go on from when a member the reader looks for starts here; else 0.
       let next = 0;
-      if (depth === 2 && inUsage) {
-        const details = DETAILS_KEYS.find((name) => objectAfter(body, i, name) !== 0);
-        if (details) {
-          detailsSeen.set(details, (detailsSeen.get(details) ?? 0) + 1);
+      if (depth === 1) {
+        next = enterObject(body, i, 'usage', usage);
+        if (next !== 0) {
+          depth = 2;
+          inUsage = true;
+          usage.entered = true;
+        }
+      } else if (depth === 2 && inUsage) {
+        for (const details of DETAILS_KEYS) {
+          next = enterObject(body, i, details, usage);
+          if (next === 0) continue;
           inDetails = details;
           depth = 3;
-          i = objectAfter(body, i, details);
-          continue;
+          break;
         }
-        const key = keyValueAt(body, i, USAGE_KEYS);
-        if (key) {
-          if (key.kind === 'number') record(key.name, key.value);
-          if (key.kind === 'bad') ambiguous = true;
-          next = key.end;
-        }
-      } else if (depth === 3 && inDetails === 'input_tokens_details') {
-        // `extractUsage` only checks that `cached_tokens` is there, whatever its value.
-        if (colonAfterKey(body, i, 'cached_tokens') !== 0) {
-          inputCached++;
-          next = quotedKeyEnd(body, i, 'cached_tokens');
-        }
-      } else if (depth === 3 && inDetails === 'prompt_tokens_details') {
-        const key = keyValueAt(body, i, ['cached_tokens']);
-        if (key) {
-          if (key.kind === 'number') record('prompt_tokens_details.cached_tokens', key.value);
-          if (key.kind === 'bad') ambiguous = true;
-          next = key.end;
-        }
+        if (next === 0) next = readUsageKey(body, i, usage);
+      } else if (depth === 3 && inDetails !== null) {
+        next = readNumber(body, i, 'cached_tokens', `${inDetails}.cached_tokens`, usage);
       }
       if (next !== 0) {
         i = next - 1;
@@ -100,22 +75,28 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
       }
     }
   }
-  if (objects !== 1 || ambiguous) return null;
-  const values = (name: string) => counts.get(name) ?? [];
-  const prompt = values('prompt_tokens');
-  if (prompt.length === 1) return prompt[0]!;
-  const input = values('input_tokens');
-  const read = values('cache_read_input_tokens');
-  const creation = values('cache_creation_input_tokens');
-  const hit = values('prompt_cache_hit_tokens');
-  const promptCached = values('prompt_tokens_details.cached_tokens');
-  if (
-    prompt.length > 1 || input.length !== 1 || read.length > 1 || creation.length > 1 || hit.length > 1
-    || [...detailsSeen.values()].some((n) => n > 1) || inputCached > 1 || promptCached.length > 1
-  ) return null;
-  if (inputCached === 1) return input[0]!;
-  const separate = read[0] ?? hit[0] ?? 0;
-  return input[0]! + (creation[0] ?? 0) + Math.max(promptCached[0] ?? 0, separate);
+  if (!usage.entered || usage.ambiguous) return null;
+  const prompt = usage.numbers.get('prompt_tokens');
+  if (prompt !== undefined) return prompt;
+  const input = usage.numbers.get('input_tokens');
+  if (input === undefined) return null;
+  // `extractUsage` only checks that `cached_tokens` is there, so null counts too.
+  if (usage.seen.has('input_tokens_details.cached_tokens')) return input;
+  const separate = usage.numbers.get('cache_read_input_tokens') ?? usage.numbers.get('prompt_cache_hit_tokens') ?? 0;
+  const cached = Math.max(usage.numbers.get('prompt_tokens_details.cached_tokens') ?? 0, separate);
+  return input + (usage.numbers.get('cache_creation_input_tokens') ?? 0) + cached;
+}
+
+/**
+ * What one pass over a response found where usage is read. `seen` holds the members met, whatever their value: a
+ * second one makes the usage ambiguous. `numbers` holds those whose value is a whole number.
+ */
+interface Usage {
+  seen: Set<string>;
+  numbers: Map<string, number>;
+  /** Whether the top-level `usage` is an object. */
+  entered: boolean;
+  ambiguous: boolean;
 }
 
 const QUOTE = 0x22;
@@ -131,62 +112,68 @@ const DETAILS_KEYS = ['input_tokens_details', 'prompt_tokens_details'] as const;
 type DetailsKey = (typeof DETAILS_KEYS)[number];
 const MAX_TOKEN_DIGITS = 15;
 
+/** Reads the token count starting at `offset` directly inside `usage`, if it is one; the offset after its name, else 0. */
+function readUsageKey(body: Uint8Array, offset: number, usage: Usage): number {
+  for (const name of USAGE_KEYS) {
+    const end = readNumber(body, offset, name, name, usage);
+    if (end !== 0) return end;
+  }
+  return 0;
+}
+
+/**
+ * If the member `name` starts at `offset`: marks `slot` seen, keeps its value when it is a whole number (1 to 15
+ * digits ending the member; a decimal or exponent is no token count) and makes the usage ambiguous when it is
+ * anything else but null. Returns the offset after the name; 0 when `name` is not there.
+ */
+function readNumber(body: Uint8Array, offset: number, name: string, slot: string, usage: Usage): number {
+  let at = colonAfterKey(body, offset, name);
+  if (at === 0) return 0;
+  markSeen(usage, slot);
+  at = skipSpace(body, at);
+  const isNull = body[at] === 0x6e && body[at + 1] === 0x75 && body[at + 2] === 0x6c && body[at + 3] === 0x6c;
+  let value = 0;
+  let digits = 0;
+  if (isNull) {
+    at += 4;
+  } else {
+    while (at < body.length && body[at]! >= 0x30 && body[at]! <= 0x39 && digits <= MAX_TOKEN_DIGITS) {
+      value = value * 10 + (body[at]! - 0x30);
+      digits++;
+      at++;
+    }
+  }
+  at = skipSpace(body, at);
+  const endsMember = body[at] === COMMA || body[at] === CLOSE_BRACE;
+  if (!endsMember || (!isNull && (digits === 0 || digits > MAX_TOKEN_DIGITS))) usage.ambiguous = true;
+  else if (!isNull) usage.numbers.set(slot, value);
+  return offset + name.length + 2;
+}
+
+/**
+ * If the member `name` starts at `offset`: marks it seen and, when its value is an object, returns the offset
+ * after that `{`. 0 when `name` is not there or its value is no object.
+ */
+function enterObject(body: Uint8Array, offset: number, name: string, usage: Usage): number {
+  const afterColon = colonAfterKey(body, offset, name);
+  if (afterColon === 0) return 0;
+  markSeen(usage, name);
+  const at = skipSpace(body, afterColon);
+  return body[at] === OPEN_BRACE ? at + 1 : 0;
+}
+
 /** If `"name"` starts at `offset` followed by a colon, the offset after the colon; else 0. */
 function colonAfterKey(body: Uint8Array, offset: number, name: string): number {
-  const end = quotedKeyEnd(body, offset, name);
-  if (end === 0) return 0;
+  const end = offset + name.length + 2;
+  if (body[offset] !== QUOTE || end > body.length || body[end - 1] !== QUOTE) return 0;
+  for (let j = 0; j < name.length; j++) if (body[offset + 1 + j] !== name.charCodeAt(j)) return 0;
   const at = skipSpace(body, end);
   return body[at] === COLON ? at + 1 : 0;
 }
 
-/** If `"name"` starts at `offset` and its value is an object, the offset of that `{`; else 0. */
-function objectAfter(body: Uint8Array, offset: number, name: string): number {
-  const afterColon = colonAfterKey(body, offset, name);
-  if (afterColon === 0) return 0;
-  const at = skipSpace(body, afterColon);
-  return body[at] === OPEN_BRACE ? at : 0;
-}
-
-/**
- * One of `names` starting at `offset` as a member name, and its value: a whole number (1 to 15 digits ending the
- * member; a decimal or exponent is no token count), null, or anything else ('bad').
- */
-function keyValueAt(
-  body: Uint8Array,
-  offset: number,
-  names: readonly string[],
-): { name: string; kind: 'number' | 'null' | 'bad'; value: number; end: number } | null {
-  for (const name of names) {
-    const afterColon = colonAfterKey(body, offset, name);
-    if (afterColon === 0) continue;
-    const end = quotedKeyEnd(body, offset, name);
-    let at = skipSpace(body, afterColon);
-    let kind: 'number' | 'null' = 'number';
-    let value = 0;
-    if (body[at] === 0x6e && body[at + 1] === 0x75 && body[at + 2] === 0x6c && body[at + 3] === 0x6c) {
-      kind = 'null';
-      at += 4;
-    } else {
-      let digits = 0;
-      while (at < body.length && body[at]! >= 0x30 && body[at]! <= 0x39) {
-        if (++digits > MAX_TOKEN_DIGITS) return { name, kind: 'bad', value: 0, end };
-        value = value * 10 + (body[at]! - 0x30);
-        at++;
-      }
-      if (digits === 0) return { name, kind: 'bad', value: 0, end };
-    }
-    at = skipSpace(body, at);
-    if (body[at] !== COMMA && body[at] !== CLOSE_BRACE) return { name, kind: 'bad', value: 0, end };
-    return { name, kind, value, end };
-  }
-  return null;
-}
-
-/** The offset after `"name"` when it starts at `offset`; else 0. */
-function quotedKeyEnd(body: Uint8Array, offset: number, name: string): number {
-  if (body[offset] !== QUOTE || offset + name.length + 2 > body.length) return 0;
-  for (let j = 0; j < name.length; j++) if (body[offset + 1 + j] !== name.charCodeAt(j)) return 0;
-  return body[offset + 1 + name.length] === QUOTE ? offset + name.length + 2 : 0;
+function markSeen(usage: Usage, slot: string): void {
+  if (usage.seen.has(slot)) usage.ambiguous = true;
+  usage.seen.add(slot);
 }
 
 /** JSON whitespace plus the vertical tab and form feed, as the contract skips them. */

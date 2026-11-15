@@ -59,6 +59,7 @@ export {
   TOKENIZER_AUDITS_ABI,
   MAX_TOKENIZER_PROOF_ROUNDS,
   MAX_TOKENIZER_PROOF_REFERENCES,
+  MAX_TOKENIZER_PROBE_BYTES,
   tokenizerServiceHash,
   jsonSafeContent,
   shapeRequestBody,

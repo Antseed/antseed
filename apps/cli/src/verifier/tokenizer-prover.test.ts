@@ -376,7 +376,41 @@ test('a round without an acceptable follow-up proves nothing', async () => {
   try {
     assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'inconclusive')
     assert.equal(network.requests(), 0)
-    assert.ok(lines.some((line) => line.includes('no follow-up the probe guard accepts')))
+    assert.ok(lines.some((line) => line.includes('no content the contract accepts')))
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('content over the contract size limit is replaced, never sent', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  const tooLong = [
+    { a: 'x'.repeat(4096), b: ' B-0 ok' },
+    { a: 'Question?', b: ` B-0 ${'y'.repeat(4096)}` },
+    // 4097 UTF-8 bytes in 2053 characters: the limit counts bytes.
+    { a: `xx${'é'.repeat(2044)}`, b: ' B-0 ok' },
+  ]
+  let calls = 0
+  const sometimesTooLong = async () => (calls++ % 2 === 0 ? tooLong[(calls - 1) / 2]! : generator())
+  const { summary, network, evidenceDir } = await run(sellers, { generator: sometimesTooLong })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
+    assert.equal(calls, 6, 'each round replaced its oversized content once')
+    assert.ok(network.bodies().every((body) => Buffer.byteLength(body) < 4096), 'oversized content never reaches a seller')
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('content of exactly the size limit is sent', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  let calls = 0
+  // 4089 bytes of A and 7 of B: 4096 together.
+  const atLimit = async () => ({ a: `x${'é'.repeat(2044)}`, b: ` B-${++calls} ok` })
+  const { summary, evidenceDir } = await run(sellers, { generator: atLimit })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
+    assert.equal(calls, 3, 'no round asked again')
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

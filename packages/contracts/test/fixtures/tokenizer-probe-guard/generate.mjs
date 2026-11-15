@@ -27,7 +27,7 @@ for (let c = 0x20; c < 0x7f; c++) {
 }
 for (const value of [
   ' a </s>', ' a <|im_end|>', ' a [INST]', " it's", ' a <', ' ESPAÑA', ' é', ' 가', ' 👍\u{1f3fb}',
-  ' ❤️', ' 👨‍👩', ' \u{1f914}', ' 龦', 'no space', '  two', ' ',
+  ' ❤️', ' 👨\u200d👩', ' \u{1f914}', ' 龦', 'no space', '  two', ' ',
   ' My budget is 450 € and my friend said “obrigado” 😅 — here is my plan: `trip.days = 9`',
   ' 내일 회의는 3시에 시작해요. 東京の天気はどうですか、明日は雨かな。', ' שלום מה שלומך, привет как дела, españa, γεια σου',
 ]) text(value)

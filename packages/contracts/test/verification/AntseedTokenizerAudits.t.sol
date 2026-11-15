@@ -10,7 +10,6 @@ import { AntseedTokenizerAudits } from "../../verification/AntseedTokenizerAudit
 import { AntseedTokenizerProbeGuard } from "../../verification/AntseedTokenizerProbeGuard.sol";
 import { AntseedTokenizerUsageReader } from "../../verification/AntseedTokenizerUsageReader.sol";
 import { AntseedVerificationResults } from "../../verification/AntseedVerificationResults.sol";
-import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { ResponseAuthHarness } from "../mocks/ResponseAuthHarness.sol";
 import { MockVerificationAudit } from "../mocks/MockVerificationAudit.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
@@ -43,7 +42,7 @@ contract AntseedTokenizerAuditsTest is Test {
     AntseedVerificationResults private results;
     AntseedTokenizerAudits private audits;
     MockVerificationAudit private kbf;
-    MockERC8004Registry private identityRegistry;
+    uint256 private agentCount;
     MockVerificationEmissionsGate private gate;
     MockVerificationSellerPools private pools;
     ResponseAuthHarness private responseAuth = new ResponseAuthHarness();
@@ -62,14 +61,13 @@ contract AntseedTokenizerAuditsTest is Test {
 
     function setUp() public {
         vm.warp(1_800_000_000);
-        identityRegistry = new MockERC8004Registry();
         gate = new MockVerificationEmissionsGate();
         gate.setEmissionsReserve(address(0x5E5E));
         pools = new MockVerificationSellerPools();
         gate.setCurrentEpoch(EPOCH - 1);
         results = new AntseedVerificationResults(address(gate));
         audits = new AntseedTokenizerAudits(
-            address(results), address(pools), address(identityRegistry), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
+            address(results), address(pools), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
         );
         kbf = new MockVerificationAudit(address(results));
         results.setAudit(address(audits), true);
@@ -544,14 +542,6 @@ contract AntseedTokenizerAuditsTest is Test {
         assertEq(uint8(results.liveVerdict(other, serviceHash)), uint8(DIFF));
     }
 
-    function test_agentOwnerCannotProveItsOwnAgent() public {
-        _mapSuspect();
-        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
-        vm.prank(suspect);
-        vm.expectRevert(IAntseedTokenizerAudits.SelfAudit.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds, _auth(suspect));
-    }
-
     // ── points ───────────────────────────────────────────────────────
 
     function test_flagCutsSellerPointsUntilItExpires() public {
@@ -663,6 +653,25 @@ contract AntseedTokenizerAuditsTest is Test {
         assertFalse(found, "no top-level usage");
     }
 
+    function test_aRepeatedUsageMemberIsUnreadableWhateverItsValue() public view {
+        // The buyer's JSON parser keeps the last of a repeated member: in the first body it reads 10, where a
+        // reader counting only numeric values would read 15.
+        string[8] memory bodies = [
+            '{"usage":{"input_tokens":10,"prompt_tokens":15,"prompt_tokens":null}}',
+            '{"usage":{"prompt_tokens":null,"prompt_tokens":15}}',
+            '{"usage":{"prompt_tokens":15,"cache_read_input_tokens":1,"cache_read_input_tokens":null}}',
+            '{"usage":{"prompt_tokens":15},"usage":null}',
+            '{"usage":"none","usage":{"prompt_tokens":15}}',
+            '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4},"input_tokens_details":null}}',
+            '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4,"cached_tokens":null}}}',
+            '{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"prompt_tokens_details":7}}'
+        ];
+        for (uint256 i = 0; i < bodies.length; i++) {
+            (bool found,) = audits.usageReader().promptTokensOf(bytes(bodies[i]));
+            assertFalse(found, bodies[i]);
+        }
+    }
+
     function test_readsUsageAsTheBuyerDoes() public view {
         (bool found, uint256 tokens) =
             audits.usageReader().promptTokensOf('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}');
@@ -679,7 +688,7 @@ contract AntseedTokenizerAuditsTest is Test {
         (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":null},"cache_read_input_tokens":4}}'
         );
-        assertEq(tokens, 12, "cached_tokens counts by being there, whatever its value");
+        assertEq(tokens, 12, "a null cached_tokens still counts as there");
         (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":50,"cache_read_input_tokens":70,"input_tokens_details":{"reasoning":1}}}'
         );
@@ -786,6 +795,8 @@ contract AntseedTokenizerAuditsTest is Test {
         assertFalse(found, "a string count");
         (found,) = audits.usageReader().promptTokensOf('{"usage":{"input_tokens":10,"cache_read_input_tokens":true}}');
         assertFalse(found, "a boolean count");
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":"4"}}}');
+        assertFalse(found, "a string cached_tokens");
         uint256 tokens;
         (found, tokens) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":null,"input_tokens":7}}');
         assertTrue(found, "null is absent, as the buyer reads it");
@@ -892,10 +903,9 @@ contract AntseedTokenizerAuditsTest is Test {
 
     // ── helpers ──────────────────────────────────────────────────────
 
-    function _register(address owner) private returns (uint256 id) {
-        vm.prank(owner);
-        id = identityRegistry.register();
-        pools.setSeller(owner, id);
+    function _register(address seller) private returns (uint256 id) {
+        id = ++agentCount;
+        pools.setSeller(seller, id);
         pools.setPower(id, EPOCH, 100);
     }
 

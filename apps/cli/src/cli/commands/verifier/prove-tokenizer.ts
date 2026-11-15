@@ -67,6 +67,12 @@ export function registerVerifierProveTokenizerCommand(verifierCmd: Command): voi
       const proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
       // The buyer proxy's identity collected the receipts, so it names who may prove with them.
       const { wallet: buyer } = await loadCryptoContext(globalOptions.dataDir)
+      // A pass proves from one address, so one signature covers every proof in it.
+      let proverAuth: { prover: string; signature: string } | undefined
+      const authorizeProver = async (prover: string): Promise<string> => {
+        if (proverAuth?.prover !== prover) proverAuth = { prover, signature: await contract.signProverAuth(buyer, prover) }
+        return proverAuth.signature
+      }
       const reader = await openResponseAuthReader({ dataDir: globalOptions.dataDir })
       try {
         const summary = await runTokenizerProver({
@@ -77,7 +83,7 @@ export function registerVerifierProveTokenizerCommand(verifierCmd: Command): voi
           generator: modelProbeGenerator({ proxyBaseUrl: proxy.baseUrl, ...generator, fallbackModels: FALLBACK_GENERATORS }),
           signer: signer ? { wallet: signer.wallet, address: signer.address } : null,
           simulateFrom: DRY_RUN_PROVER,
-          authorizeProver: (prover) => contract.signProverAuth(buyer, prover),
+          authorizeProver,
           ...(options.rounds ? { rounds: positiveInteger(options.rounds, '--rounds') } : {}),
           ...(options.service?.length ? { services: options.service } : {}),
           ...(options.peer?.length ? { peerIds: options.peer } : {}),

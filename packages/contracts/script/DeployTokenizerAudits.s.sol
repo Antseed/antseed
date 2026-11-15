@@ -10,9 +10,10 @@ import { AntseedTokenizerProbeGuard } from "../verification/AntseedTokenizerProb
 import { AntseedTokenizerUsageReader } from "../verification/AntseedTokenizerUsageReader.sol";
 
 /// @title DeployTokenizerAudits
-/// @notice Deploys `AntseedTokenizerAudits` (with its `AntseedTokenizerUsageReader` and `AntseedTokenizerProbeGuard`) next to an existing KBF audit, on the same results layer,
-///         seller pools and identity registry, and registers the standard request shapes: one per API
-///         `antseed verifier prove-tokenizer` probes in (Chat Completions, Anthropic Messages, Responses).
+/// @notice Deploys `AntseedTokenizerAudits` (with its `AntseedTokenizerUsageReader` and
+///         `AntseedTokenizerProbeGuard`) next to an existing KBF audit, on the same results layer and seller
+///         pools, and registers the standard request shapes: one per API `antseed verifier prove-tokenizer`
+///         probes in (Chat Completions, Anthropic Messages, Responses).
 ///
 /// It never touches the results layer: the results owner then registers the audit
 /// (`results.setAudit(tokenizerAudits, true)`), gives it a share (`setAuditShareBps`) and turns its
@@ -23,8 +24,7 @@ import { AntseedTokenizerUsageReader } from "../verification/AntseedTokenizerUsa
 ///
 /// Required environment:
 ///   EXPECTED_CHAIN_ID   Target chain ID.
-///   KBF_AUDITS          Existing AntseedKbfAudits; the results layer, seller pools and identity
-///                       registry are read from it.
+///   KBF_AUDITS          Existing AntseedKbfAudits; the results layer and seller pools are read from it.
 ///   TOKENIZER_OWNER     Wallet that will own the tokenizer audit.
 ///
 /// Example dry run:
@@ -73,13 +73,12 @@ contract DeployTokenizerAudits is Script {
         IAntseedKbfAudits kbf = IAntseedKbfAudits(config.kbfAudits);
         address results = address(kbf.results());
         address sellerPools = address(kbf.sellerPools());
-        address identityRegistry = address(kbf.identityRegistry());
         ShapeBytes[] memory shapes = standardShapes();
 
         vm.startBroadcast(config.owner);
         AntseedTokenizerUsageReader reader = new AntseedTokenizerUsageReader();
         AntseedTokenizerProbeGuard guard = new AntseedTokenizerProbeGuard();
-        audits = new AntseedTokenizerAudits(results, sellerPools, identityRegistry, address(reader), address(guard));
+        audits = new AntseedTokenizerAudits(results, sellerPools, address(reader), address(guard));
         shapeIds = new bytes32[](shapes.length);
         for (uint256 i = 0; i < shapes.length; i++) {
             shapeIds[i] = audits.setShape(shapes[i].path, shapes[i].head, shapes[i].mid, shapes[i].tail, true);
@@ -89,7 +88,6 @@ contract DeployTokenizerAudits is Script {
         require(audits.owner() == config.owner, "tokenizer: wrong owner");
         require(address(audits.results()) == results, "tokenizer: wrong results");
         require(address(audits.sellerPools()) == sellerPools, "tokenizer: wrong seller pools");
-        require(address(audits.identityRegistry()) == identityRegistry, "tokenizer: wrong identity registry");
         require(address(audits.usageReader()) == address(reader), "tokenizer: wrong usage reader");
         require(address(audits.probeGuard()) == address(guard), "tokenizer: wrong probe guard");
 
@@ -98,7 +96,6 @@ contract DeployTokenizerAudits is Script {
         console.log("TokenizerAudits:    ", address(audits));
         console.log("VerificationResults:", results);
         console.log("SellerPools:        ", sellerPools);
-        console.log("IdentityRegistry:   ", identityRegistry);
         console.log("UsageReader:        ", address(reader));
         console.log("ProbeGuard:         ", address(guard));
     }

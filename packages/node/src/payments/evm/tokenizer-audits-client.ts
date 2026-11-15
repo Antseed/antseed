@@ -51,9 +51,7 @@ export const TOKENIZER_AUDITS_ABI = [
   'function setServiceModels(bytes32[] serviceHashes,bytes32 modelHash) external',
   'function setParameters(uint8 rounds,uint8 references,uint32 tolerance,uint32 maxRoundSpreadSeconds) external',
   'function setPenaltyBps(uint256 penaltyBps) external',
-  'event TokenizerMismatchProven(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed prover,address seller,bytes32 modelHash,bool usageMisreported,uint256 epoch,int256[] suspectDeltas,int256[] referenceMinDeltas,int256[] referenceMaxDeltas,bytes32 evidenceHash)',
-  'event UsageMisreported(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint256 validUntilEpoch)',
-  'event ProofCredited(uint256 indexed epoch,address indexed prover,uint256 credits)',
+  'event TokenizerMismatchProven(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed prover,address seller,bytes32 modelHash,bool usageMisreported,uint256 epoch,int256[] suspectDeltas,int256[] referenceMinDeltas,int256[] referenceMaxDeltas)',
   'error InvalidShape()',
   'error InvalidRounds()',
   'error InvalidContent()',
@@ -71,7 +69,6 @@ export const TOKENIZER_AUDITS_ABI = [
   'error StaleEvidence(uint256 round)',
   'error FutureEvidence(uint256 round)',
   'error UnknownAgent()',
-  'error SelfAudit()',
   'error NotApprovedAudit()',
   'error NotAuthorizedProver()',
   'error DifferentBuyer()',
@@ -87,6 +84,8 @@ export const TOKENIZER_AUDITS_ABI = [
 /** AntseedTokenizerAudits.MAX_ROUNDS and MAX_REFERENCES. */
 export const MAX_TOKENIZER_PROOF_ROUNDS = 8;
 export const MAX_TOKENIZER_PROOF_REFERENCES = 8;
+/** AntseedTokenizerAudits.MAX_CONTENT_BYTES: the most UTF-8 bytes a round's A and B may have together. */
+export const MAX_TOKENIZER_PROBE_BYTES = 4096;
 
 /**
  * A request shape: a POST to `path` whose body is `head + service + mid + content + tail`, so all sellers in

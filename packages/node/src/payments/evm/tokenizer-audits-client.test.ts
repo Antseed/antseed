@@ -100,10 +100,29 @@ describe('promptTokensOfBody', () => {
     expect(read('{"usage":{"prompt_tokens":10,"prompt_tokens":2e1}}')).toBeNull();
     expect(read('{"usage":{"prompt_tokens":"20"}}')).toBeNull();
     expect(read('{"usage":{"input_tokens":10,"cache_read_input_tokens":true}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":"4"}}}')).toBeNull();
     expect(read('{"usage":{"prompt_tokens":null,"input_tokens":7}}')).toBe(7);
     expect(read('{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}')).toBe(10);
     for (const body of ['{"usage":{"prompt_tokens":null,"input_tokens":7}}', '{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}']) {
       expect(read(body)).toBe(extractUsage(JSON.parse(body)).inputTokens);
+    }
+  });
+
+  it('refuses a repeated usage member whatever its values, since JSON.parse keeps the last', () => {
+    // The buyer reads 10 here; a reader that only counted numeric values would read 15.
+    const lastWins = '{"usage":{"input_tokens":10,"prompt_tokens":15,"prompt_tokens":null}}';
+    expect(extractUsage(JSON.parse(lastWins)).inputTokens).toBe(10);
+    for (const body of [
+      '{"usage":{"input_tokens":10,"prompt_tokens":15,"prompt_tokens":null}}',
+      '{"usage":{"prompt_tokens":null,"prompt_tokens":15}}',
+      '{"usage":{"prompt_tokens":15,"cache_read_input_tokens":1,"cache_read_input_tokens":null}}',
+      '{"usage":{"prompt_tokens":15},"usage":null}',
+      '{"usage":"none","usage":{"prompt_tokens":15}}',
+      '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4},"input_tokens_details":null}}',
+      '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4,"cached_tokens":null}}}',
+      '{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"prompt_tokens_details":7}}',
+    ]) {
+      expect(read(body), body).toBeNull();
     }
   });
 

@@ -57,14 +57,13 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
   try {
     await waitForRpcReady(rpcUrl, anvil)
     // ── chain: results layer, a stand-in KBF, tokenizer audits ───────
-    const identityRegistry = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
     const gate = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
     const pools = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
     castSend(rpcUrl, gate, 'setCurrentEpoch(uint256)', [String(EPOCH - 1)])
     const results = deployContract(rpcUrl, 'verification/AntseedVerificationResults.sol:AntseedVerificationResults', [gate])
     const usageReader = deployContract(rpcUrl, 'verification/AntseedTokenizerUsageReader.sol:AntseedTokenizerUsageReader')
     const probeGuard = deployContract(rpcUrl, 'verification/AntseedTokenizerProbeGuard.sol:AntseedTokenizerProbeGuard')
-    const audits = deployContract(rpcUrl, 'verification/AntseedTokenizerAudits.sol:AntseedTokenizerAudits', [results, pools, identityRegistry, usageReader, probeGuard])
+    const audits = deployContract(rpcUrl, 'verification/AntseedTokenizerAudits.sol:AntseedTokenizerAudits', [results, pools, usageReader, probeGuard])
     const kbf = deployContract(rpcUrl, 'test/mocks/MockVerificationAudit.sol:MockVerificationAudit', [results])
     castSend(rpcUrl, results, 'setAudit(address,bool)', [audits, 'true'])
     castSend(rpcUrl, results, 'setAudit(address,bool)', [kbf, 'true'])
@@ -89,7 +88,6 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
       { name: 'Honest', delta: MODEL_DELTA, kbfSame: false, protocols: ['openai-responses'] },
     ].map((s, index) => ({ ...s, agentId: index + 1, wallet: new Wallet(Wallet.createRandom().privateKey) }))
     for (const seller of sellers) {
-      castSend(rpcUrl, identityRegistry, 'setOwner(uint256,address)', [String(seller.agentId), seller.wallet.address])
       castSend(rpcUrl, pools, 'setSeller(address,uint256)', [seller.wallet.address, String(seller.agentId)])
       castSend(rpcUrl, pools, 'setPower(uint256,uint256,uint256)', [String(seller.agentId), String(EPOCH), '100'])
       if (seller.kbfSame) castSend(rpcUrl, kbf, 'record(uint256,bytes32,bytes32,uint8)', [String(seller.agentId), serviceHash, modelHash, '1'])

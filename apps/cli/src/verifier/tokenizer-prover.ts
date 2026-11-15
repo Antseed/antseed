@@ -6,6 +6,7 @@ import {
   isSafeProbe,
   isShapeRequest,
   jsonSafeContent,
+  MAX_TOKENIZER_PROBE_BYTES,
   MAX_TOKENIZER_PROOF_ROUNDS,
   pairDelta,
   shapeRequestBody,
@@ -211,7 +212,7 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
       break
     }
     if (!probe) {
-      log(`  round ${r + 1}: no follow-up the probe guard accepts after ${PROBE_ATTEMPTS} tries`)
+      log(`  round ${r + 1}: no content the contract accepts after ${PROBE_ATTEMPTS} tries`)
       break
     }
     const { a, b } = probe
@@ -447,19 +448,21 @@ async function signedRequest(options: TokenizerProverOptions, member: Member, bo
   return { payload, request: requestPreimage, response: responsePreimage }
 }
 
-/** Tries for a follow-up the probe guard accepts before a round gives up. */
+/** Tries for content the contract accepts before a round gives up. */
 const PROBE_ATTEMPTS = 4
 
 /**
- * Generated content made JSON-safe, with a follow-up B the on-chain probe guard accepts (`isSafeProbe`). B is
- * what sellers' counts are compared on, so it is limited to text every honest engine counts alike; anything
- * else stays in A, where it cancels out. Generated text that fails is replaced, never rewritten to fit.
+ * Generated content made JSON-safe that the contract accepts in a proof: a follow-up B the on-chain probe guard
+ * passes (`isSafeProbe`), and A and B within the content size limit together. B is what sellers' counts are
+ * compared on, so it is limited to text every honest engine counts alike; anything else stays in A, where it
+ * cancels out. Generated text that fails is replaced, never rewritten to fit.
  */
 async function safeProbe(generator: ProbeGenerator): Promise<{ a: string; b: string } | null> {
   for (let attempt = 0; attempt < PROBE_ATTEMPTS; attempt++) {
     const generated = await generator()
+    const a = jsonSafeContent(generated.a).trim()
     const b = ' ' + jsonSafeContent(generated.b).trim()
-    if (isSafeProbe(b)) return { a: jsonSafeContent(generated.a).trim(), b }
+    if (isSafeProbe(b) && Buffer.byteLength(a + b, 'utf8') <= MAX_TOKENIZER_PROBE_BYTES) return { a, b }
   }
   return null
 }

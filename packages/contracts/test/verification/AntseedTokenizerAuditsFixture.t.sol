@@ -9,7 +9,6 @@ import { AntseedTokenizerAudits } from "../../verification/AntseedTokenizerAudit
 import { AntseedTokenizerProbeGuard } from "../../verification/AntseedTokenizerProbeGuard.sol";
 import { AntseedTokenizerUsageReader } from "../../verification/AntseedTokenizerUsageReader.sol";
 import { AntseedVerificationResults } from "../../verification/AntseedVerificationResults.sol";
-import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { MockVerificationAudit } from "../mocks/MockVerificationAudit.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
@@ -26,7 +25,7 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
     AntseedTokenizerAudits private audits;
     MockVerificationAudit private kbf;
     MockVerificationSellerPools private pools;
-    MockERC8004Registry private identityRegistry;
+    uint256 private agentCount;
     ResponseAuthHarness private responseAuth = new ResponseAuthHarness();
     uint256 private suspectAgent;
     bytes32 private serviceHash = keccak256(bytes(TokenizerProofFixture.SERVICE));
@@ -34,13 +33,12 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
 
     function setUp() public {
         vm.warp(1_800_000_100); // just after the fixture's receipts were signed
-        identityRegistry = new MockERC8004Registry();
         MockVerificationEmissionsGate gate = new MockVerificationEmissionsGate();
         pools = new MockVerificationSellerPools();
         gate.setCurrentEpoch(1);
         results = new AntseedVerificationResults(address(gate));
         audits = new AntseedTokenizerAudits(
-            address(results), address(pools), address(identityRegistry), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
+            address(results), address(pools), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
         );
         kbf = new MockVerificationAudit(address(results));
         results.setAudit(address(audits), true);
@@ -78,10 +76,9 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(IAntseedVerificationResults.Verdict.DIFF));
     }
 
-    function _register(address owner) private returns (uint256 id) {
-        vm.prank(owner);
-        id = identityRegistry.register();
-        pools.setSeller(owner, id);
+    function _register(address seller) private returns (uint256 id) {
+        id = ++agentCount;
+        pools.setSeller(seller, id);
     }
 
     function _rounds() private pure returns (IAntseedTokenizerAudits.Round[] memory) {

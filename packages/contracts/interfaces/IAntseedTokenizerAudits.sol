@@ -7,7 +7,6 @@ import { IAntseedSellerPools } from "./IAntseedSellerPools.sol";
 import { IAntseedTokenizerProbeGuard } from "./IAntseedTokenizerProbeGuard.sol";
 import { IAntseedTokenizerUsageReader } from "./IAntseedTokenizerUsageReader.sol";
 import { IAntseedVerificationResults } from "./IAntseedVerificationResults.sol";
-import { IERC8004Registry } from "./IERC8004Registry.sol";
 
 /// @notice Tokenizer audits: a permissionless verification method that proves, from sellers' own signed
 ///         receipts, that a service's reported usage is not its model's tokenizer.
@@ -29,14 +28,15 @@ import { IERC8004Registry } from "./IERC8004Registry.sol";
 ///         The suspect must be off the references' delta by more than `tolerance` in every round (at least
 ///         `minRounds` rounds), every receipt signed within `maxEvidenceAgeSeconds` before the proof. Then:
 ///         - if the suspect's service has a live SAME itself (it answers like the model), the contract flags
-///           it `UsageMisreported`: the usage it signs, and is paid on, is not the model's. This contract is
-///           also a points modifier that cuts seller points for flagged services;
+///           it as misreporting usage: the usage it signs, and is paid on, is not the model's. This contract
+///           is also a points modifier that cuts seller points for flagged services;
 ///         - otherwise it records DIFF for the service on the results layer, like any other audit.
 ///
 ///         Credits: a proof that creates a new DIFF or a new flag for a staked agent earns the prover
-///         `creditsPerProof` through the results layer. The prover is the sender, and the buyer that collected
-///         the suspect receipts (every suspect receipt names it) must have signed an EIP-712
-///         `ProverAuth(address prover)` naming it, so a copy of a pending proof sent from another address reverts.
+///         `creditsPerProof` through the results layer, which emits `Credited`. The prover is the sender, and
+///         the buyer that collected the suspect receipts (every suspect receipt names it) must have signed an
+///         EIP-712 `ProverAuth(address prover)` naming it, so a copy of a pending proof sent from another address
+///         reverts.
 /// @dev Trust: the owner registers request shapes and, for services no audit has recorded yet, which
 ///      model a service name is sold as. A seller can still escape by reporting usage computed with the
 ///      model's own tokenizer. References sign their own usage, so `minReferences` colluding agents with a
@@ -95,6 +95,9 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     event ValidityEpochsSet(uint8 validityEpochs);
     event CreditsPerProofSet(uint32 credits);
     event PenaltyBpsSet(uint256 penaltyBps);
+    /// @notice A proof was accepted. Its receipts are the transaction's calldata.
+    /// @param usageMisreported True when the service was flagged (`flag` has until when), false when DIFF was
+    ///        recorded on the results layer.
     /// @param suspectDeltas The suspect's signed delta in each round.
     /// @param referenceMinDeltas The smallest reference delta in each round.
     /// @param referenceMaxDeltas The largest reference delta in each round (within `tolerance` of the smallest).
@@ -108,12 +111,9 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
         uint256 epoch,
         int256[] suspectDeltas,
         int256[] referenceMinDeltas,
-        int256[] referenceMaxDeltas,
-        bytes32 evidenceHash
+        int256[] referenceMaxDeltas
     );
-    event UsageMisreported(uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, uint256 validUntilEpoch);
     event FlagCleared(uint256 indexed agentId, bytes32 indexed serviceHash);
-    event ProofCredited(uint256 indexed epoch, address indexed prover, uint256 credits);
 
     error InvalidAddress();
     error InvalidValue();
@@ -136,7 +136,6 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     /// @notice A receipt signed later than the block's time (beyond a small clock skew).
     error FutureEvidence(uint256 round);
     error UnknownAgent();
-    error SelfAudit();
     /// @notice The results layer does not (or no longer) approve this contract as an audit.
     error NotApprovedAudit();
     /// @notice The round's probe content B is outside what the probe guard accepts.
@@ -152,7 +151,6 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     function usageReader() external view returns (IAntseedTokenizerUsageReader);
     /// @notice Decides which probe content B a proof may measure (see `IAntseedTokenizerProbeGuard`).
     function probeGuard() external view returns (IAntseedTokenizerProbeGuard);
-    function identityRegistry() external view returns (IERC8004Registry);
 
     /// @notice Every shape ever registered, active or not, in registration order.
     function shapeIds() external view returns (bytes32[] memory);

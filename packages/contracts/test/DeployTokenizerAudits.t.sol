@@ -40,7 +40,6 @@ contract DeployTokenizerAuditsTest is Test {
         assertEq(audits.owner(), owner);
         assertEq(address(audits.results()), address(results));
         assertEq(address(audits.sellerPools()), address(pools));
-        assertEq(address(audits.identityRegistry()), address(identity));
         assertEq(audits.shapeIds(), shapeIds);
         assertEq(shapeIds.length, 3);
         assertEq(string(audits.shape(shapeIds[0]).path), "/v1/chat/completions");

@@ -11,7 +11,6 @@ import { IAntseedTokenizerAudits } from "../interfaces/IAntseedTokenizerAudits.s
 import { IAntseedTokenizerProbeGuard } from "../interfaces/IAntseedTokenizerProbeGuard.sol";
 import { IAntseedTokenizerUsageReader } from "../interfaces/IAntseedTokenizerUsageReader.sol";
 import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
-import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 import { AntseedResponseAuth } from "./AntseedResponseAuth.sol";
 
 /// @notice Tokenizer audit. See `IAntseedTokenizerAudits`.
@@ -47,7 +46,6 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     bytes32 private constant PROVER_AUTH_TYPEHASH = keccak256("ProverAuth(address prover)");
 
     IAntseedVerificationResults public immutable override results;
-    IERC8004Registry public immutable override identityRegistry;
     IAntseedSellerPools public override sellerPools;
     IAntseedTokenizerUsageReader public immutable override usageReader;
     IAntseedTokenizerProbeGuard public override probeGuard;
@@ -79,34 +77,21 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     /// @inheritdoc IAntseedTokenizerAudits
     mapping(uint256 agentId => mapping(bytes32 serviceHash => uint64 timestamp)) public override flagClearedAt;
 
-    /// @dev What one round showed: the suspect's delta, the references' range and the receipts it covered.
-    struct RoundResult {
-        int256 suspectDelta;
-        int256 referenceMin;
-        int256 referenceMax;
-        bytes32 digests;
+    /// @dev What every round of one proof is checked against: the suspect and the epoch it is proven in.
+    struct Suspect {
+        address seller;
+        address buyer;
+        uint256 agentId;
+        bytes32 serviceHash;
+        bytes32 modelHash;
+        uint256 epoch;
     }
 
-    /// @dev One checked pair: its delta, the earliest and latest signed start (ms), and its receipts' digests.
-    struct PairResult {
-        int256 delta;
-        uint64 firstAt;
-        uint64 lastAt;
-        bytes32 digests;
-    }
-
-    constructor(
-        address results_,
-        address sellerPools_,
-        address identityRegistry_,
-        address usageReader_,
-        address probeGuard_
-    ) Ownable(msg.sender) {
-        if (results_.code.length == 0 || identityRegistry_.code.length == 0 || usageReader_.code.length == 0) {
-            revert InvalidAddress();
-        }
+    constructor(address results_, address sellerPools_, address usageReader_, address probeGuard_)
+        Ownable(msg.sender)
+    {
+        if (results_.code.length == 0 || usageReader_.code.length == 0) revert InvalidAddress();
         results = IAntseedVerificationResults(results_);
-        identityRegistry = IERC8004Registry(identityRegistry_);
         usageReader = IAntseedTokenizerUsageReader(usageReader_);
         _setSellerPools(sellerPools_);
         _setProbeGuard(probeGuard_);
@@ -223,58 +208,60 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (modelHash == bytes32(0) || count < minRounds || count > MAX_ROUNDS) revert InvalidRounds();
         // The buyer that collected the suspect receipts names who proves with them, so a copy of a pending
         // proof sent from another address reverts.
-        address buyer = rounds[0].suspect.base.buyer;
-        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(proverAuthDigest(msg.sender), buyerSignature);
-        if (err != ECDSA.RecoverError.NoError || signer != buyer || signer == address(0)) revert NotAuthorizedProver();
+        AntseedResponseAuth.Receipt calldata first = rounds[0].suspect.base;
+        if (!_signedBy(proverAuthDigest(msg.sender), buyerSignature, first.buyer)) revert NotAuthorizedProver();
 
-        address seller = rounds[0].suspect.base.seller;
-        bytes32 serviceHash = serviceHashOf(rounds[0].suspect.base.advertisedService);
-        uint256 agentId = _agentIdForSeller(seller);
-        if (agentId == 0) revert UnknownAgent();
-        (bool known, address agentOwner) = _agentOwner(agentId);
-        if (!known) revert UnknownAgent();
-        if (agentOwner == msg.sender) revert SelfAudit();
-        IAntseedVerificationResults.Verdict live = results.liveVerdict(agentId, serviceHash);
-        if (_modelOf(agentId, serviceHash, live) != modelHash) revert UnknownService();
+        Suspect memory suspect = Suspect({
+            seller: first.seller,
+            buyer: first.buyer,
+            agentId: _agentIdForSeller(first.seller),
+            serviceHash: serviceHashOf(first.advertisedService),
+            modelHash: modelHash,
+            epoch: results.currentEpoch()
+        });
+        if (suspect.agentId == 0) revert UnknownAgent();
+        IAntseedVerificationResults.Verdict live = results.liveVerdict(suspect.agentId, suspect.serviceHash);
+        if (_modelOf(suspect.agentId, suspect.serviceHash, live) != modelHash) revert UnknownService();
 
         int256[] memory suspectDeltas = new int256[](count);
         int256[] memory referenceMins = new int256[](count);
         int256[] memory referenceMaxes = new int256[](count);
-        bytes32 evidenceHash = bytes32(0);
         for (uint256 i = 0; i < count; i++) {
-            RoundResult memory round = _checkRound(i, rounds[i], seller, buyer, serviceHash, agentId, modelHash);
-            suspectDeltas[i] = round.suspectDelta;
-            referenceMins[i] = round.referenceMin;
-            referenceMaxes[i] = round.referenceMax;
-            evidenceHash = keccak256(abi.encode(evidenceHash, round.digests));
+            (suspectDeltas[i], referenceMins[i], referenceMaxes[i]) = _checkRound(i, rounds[i], suspect);
         }
 
-        uint256 epoch = results.currentEpoch();
-        uint256 validUntil = epoch + validityEpochs;
+        uint256 validUntil = suspect.epoch + validityEpochs;
         bool misreported = live == IAntseedVerificationResults.Verdict.SAME;
         bool isNew;
         if (misreported) {
-            Flag storage existing = _flags[agentId][serviceHash];
-            isNew = existing.validUntilEpoch <= epoch;
-            if (existing.validUntilEpoch == 0) _flaggedServices[agentId].push(serviceHash);
-            _flags[agentId][serviceHash] = Flag(modelHash, uint64(epoch), uint64(validUntil));
-            emit UsageMisreported(agentId, serviceHash, modelHash, validUntil);
+            Flag storage existing = _flags[suspect.agentId][suspect.serviceHash];
+            isNew = existing.validUntilEpoch <= suspect.epoch;
+            if (existing.validUntilEpoch == 0) _flaggedServices[suspect.agentId].push(suspect.serviceHash);
+            _flags[suspect.agentId][suspect.serviceHash] = Flag(modelHash, uint64(suspect.epoch), uint64(validUntil));
         } else {
             isNew = live != IAntseedVerificationResults.Verdict.DIFF;
         }
         emit TokenizerMismatchProven(
-            agentId, serviceHash, msg.sender, seller, modelHash, misreported, epoch, suspectDeltas, referenceMins, referenceMaxes,
-            evidenceHash
+            suspect.agentId,
+            suspect.serviceHash,
+            msg.sender,
+            suspect.seller,
+            modelHash,
+            misreported,
+            suspect.epoch,
+            suspectDeltas,
+            referenceMins,
+            referenceMaxes
         );
         if (!misreported) {
-            results.record(agentId, serviceHash, modelHash, IAntseedVerificationResults.Verdict.DIFF, validUntil);
+            results.record(
+                suspect.agentId, suspect.serviceHash, modelHash, IAntseedVerificationResults.Verdict.DIFF, validUntil
+            );
         }
 
+        // The results layer emits `Credited` for what it gives.
         uint32 credits = creditsPerProof;
-        if (isNew && credits != 0 && _hasPoolPower(agentId, epoch)) {
-            uint256 credited = results.credit(msg.sender, credits);
-            if (credited != 0) emit ProofCredited(epoch, msg.sender, credited);
-        }
+        if (isNew && credits != 0 && _hasPoolPower(suspect.agentId, suspect.epoch)) results.credit(msg.sender, credits);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -378,15 +365,11 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     //                        INTERNAL
     // ═══════════════════════════════════════════════════════════════════
 
-    function _checkRound(
-        uint256 index,
-        Round calldata round,
-        address seller,
-        address buyer,
-        bytes32 serviceHash,
-        uint256 suspectAgent,
-        bytes32 modelHash
-    ) private returns (RoundResult memory result) {
+    /// @dev Checks one round and returns the suspect's delta and the references' range.
+    function _checkRound(uint256 index, Round calldata round, Suspect memory suspect)
+        private
+        returns (int256 suspectDelta, int256 referenceMin, int256 referenceMax)
+    {
         if (
             round.b.length == 0 || round.a.length + round.b.length > MAX_CONTENT_BYTES || !_isJsonStringSafe(round.a)
                 || !_isJsonStringSafe(round.b)
@@ -395,83 +378,78 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         uint256 refCount = round.references.length;
         if (refCount < minReferences || refCount > MAX_REFERENCES) revert InvalidRounds();
 
-        if (serviceHashOf(round.suspect.base.advertisedService) != serviceHash) revert DifferentService();
-        PairResult memory suspect = _checkPair(round.suspect, round.a, round.b, seller, buyer);
-        uint256 clearedAt = flagClearedAt[suspectAgent][serviceHash];
+        if (serviceHashOf(round.suspect.base.advertisedService) != suspect.serviceHash) revert DifferentService();
+        uint64 firstAt;
+        uint64 lastAt;
+        (suspectDelta, firstAt, lastAt) = _checkPair(round.suspect, round.a, round.b, suspect.seller, suspect.buyer);
+        uint256 clearedAt = flagClearedAt[suspect.agentId][suspect.serviceHash];
         // Receipts may run up to the clock skew ahead of the block, so a clear also covers that window.
-        if (clearedAt != 0 && uint256(suspect.firstAt) <= (clearedAt + MAX_CLOCK_SKEW_SECONDS) * 1000) {
+        if (clearedAt != 0 && uint256(firstAt) <= (clearedAt + MAX_CLOCK_SKEW_SECONDS) * 1000) {
             revert StaleEvidence(index);
         }
-        uint64 firstAt = suspect.firstAt;
-        uint64 lastAt = suspect.lastAt;
-        result.suspectDelta = suspect.delta;
-        result.digests = suspect.digests;
 
         uint256[] memory agents = new uint256[](refCount);
         for (uint256 k = 0; k < refCount; k++) {
             ProbePair calldata pair = round.references[k];
-            agents[k] = _referenceAgent(index, k, pair, seller, suspectAgent, modelHash, agents);
-            PairResult memory ref = _checkPair(pair, round.a, round.b, pair.base.seller, address(0));
-            if (k == 0 || ref.delta < result.referenceMin) result.referenceMin = ref.delta;
-            if (k == 0 || ref.delta > result.referenceMax) result.referenceMax = ref.delta;
-            if (ref.firstAt < firstAt) firstAt = ref.firstAt;
-            if (ref.lastAt > lastAt) lastAt = ref.lastAt;
-            result.digests = keccak256(abi.encode(result.digests, ref.digests));
+            agents[k] = _referenceAgent(index, k, pair, suspect, agents);
+            (int256 delta, uint64 pairFirstAt, uint64 pairLastAt) =
+                _checkPair(pair, round.a, round.b, pair.base.seller, address(0));
+            if (k == 0 || delta < referenceMin) referenceMin = delta;
+            if (k == 0 || delta > referenceMax) referenceMax = delta;
+            if (pairFirstAt < firstAt) firstAt = pairFirstAt;
+            if (pairLastAt > lastAt) lastAt = pairLastAt;
         }
+        int256 allowed = int256(uint256(tolerance));
         // The references agree when their whole range fits in `tolerance`, whatever their order.
-        if (uint256(result.referenceMax - result.referenceMin) > tolerance) revert ReferencesDisagree(index);
+        if (referenceMax - referenceMin > allowed) revert ReferencesDisagree(index);
         if (uint256(lastAt - firstAt) > uint256(maxRoundSpreadSeconds) * 1000) revert RoundTooSpread(index);
         uint256 nowMs = block.timestamp * 1000;
         if (uint256(firstAt) + uint256(maxEvidenceAgeSeconds) * 1000 < nowMs) revert StaleEvidence(index);
         if (uint256(lastAt) > nowMs + MAX_CLOCK_SKEW_SECONDS * 1000) revert FutureEvidence(index);
         // A mismatch is a suspect delta more than `tolerance` outside the references' range.
-        if (
-            result.suspectDelta + int256(uint256(tolerance)) >= result.referenceMin
-                && result.suspectDelta <= result.referenceMax + int256(uint256(tolerance))
-        ) {
-            revert WithinTolerance(index, result.suspectDelta, result.referenceMin, result.referenceMax);
+        if (suspectDelta + allowed >= referenceMin && suspectDelta <= referenceMax + allowed) {
+            revert WithinTolerance(index, suspectDelta, referenceMin, referenceMax);
         }
     }
 
     /// @dev A reference is another seller and agent, not repeated in the round, whose service has a live SAME
-    ///      for `modelHash` and no live usage flag (its signed usage is known to be wrong).
+    ///      for the suspect's model and no live usage flag (its signed usage is known to be wrong).
     function _referenceAgent(
         uint256 index,
         uint256 k,
         ProbePair calldata pair,
-        address suspectSeller,
-        uint256 suspectAgent,
-        bytes32 modelHash,
+        Suspect memory suspect,
         uint256[] memory earlier
     ) private view returns (uint256 agentId) {
         address seller = pair.base.seller;
         agentId = _agentIdForSeller(seller);
-        if (agentId == 0 || agentId == suspectAgent || seller == suspectSeller) revert NotAReference(index, k);
+        if (agentId == 0 || agentId == suspect.agentId || seller == suspect.seller) revert NotAReference(index, k);
         for (uint256 j = 0; j < k; j++) {
             if (earlier[j] == agentId) revert NotAReference(index, k);
         }
         bytes32 serviceHash = serviceHashOf(pair.base.advertisedService);
         if (
             results.liveVerdict(agentId, serviceHash) != IAntseedVerificationResults.Verdict.SAME
-                || results.serviceStatus(agentId, serviceHash).modelHash != modelHash
-                || _flags[agentId][serviceHash].validUntilEpoch > results.currentEpoch()
+                || results.serviceStatus(agentId, serviceHash).modelHash != suspect.modelHash
+                || _flags[agentId][serviceHash].validUntilEpoch > suspect.epoch
         ) revert NotAReference(index, k);
     }
 
     /// @dev Both receipts signed by `seller` for the same service, HTTP 200, requests exactly the pair's
     ///      active shape with content A and A + B, and a readable usage field. A suspect pair (`buyer` set) must
-    ///      name `buyer` and is marked used; a reference pair (`buyer` zero) may come from any buyer.
+    ///      name `buyer` and is marked used; a reference pair (`buyer` zero) may come from any buyer. Returns
+    ///      the pair's delta and its earliest and latest signed start (ms).
     function _checkPair(
         ProbePair calldata pair,
         bytes calldata a,
         bytes calldata b,
         address seller,
         address buyer
-    ) private returns (PairResult memory result) {
+    ) private returns (int256 delta, uint64 firstAt, uint64 lastAt) {
         bytes memory service = bytes(pair.base.advertisedService);
         if (keccak256(service) != keccak256(bytes(pair.probed.advertisedService))) revert DifferentService();
-        (uint256 baseTokens, bytes32 baseDigest) = _checkReceipt(pair.base, seller, buyer);
-        (uint256 probedTokens, bytes32 probedDigest) = _checkReceipt(pair.probed, seller, buyer);
+        uint256 baseTokens = _checkReceipt(pair.base, seller, buyer);
+        uint256 probedTokens = _checkReceipt(pair.probed, seller, buyer);
         Shape storage shape_ = _shapes[pair.shapeId];
         if (!shape_.active) revert InvalidShape();
         bytes32 path = keccak256(shape_.path);
@@ -479,11 +457,10 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         _checkRequest(
             pair.probed.request, path, keccak256(abi.encodePacked(shape_.head, service, shape_.mid, a, b, shape_.tail))
         );
-        result.delta = int256(probedTokens) - int256(baseTokens);
-        (result.firstAt, result.lastAt) = pair.base.responseStartedAt <= pair.probed.responseStartedAt
+        delta = int256(probedTokens) - int256(baseTokens);
+        (firstAt, lastAt) = pair.base.responseStartedAt <= pair.probed.responseStartedAt
             ? (pair.base.responseStartedAt, pair.probed.responseStartedAt)
             : (pair.probed.responseStartedAt, pair.base.responseStartedAt);
-        result.digests = keccak256(abi.encode(baseDigest, probedDigest));
     }
 
     function _checkRequest(bytes calldata request, bytes32 path, bytes32 body) private pure {
@@ -497,14 +474,12 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
     function _checkReceipt(AntseedResponseAuth.Receipt calldata receipt, address seller, address buyer)
         private
-        returns (uint256 tokens, bytes32 digest)
+        returns (uint256 tokens)
     {
         if (receipt.seller != seller) revert DifferentService();
         if (buyer != address(0) && receipt.buyer != buyer) revert DifferentBuyer();
         if (receipt.statusCode != 200) revert NotOk();
-        digest = AntseedResponseAuth.digest(receipt);
-        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, receipt.signature);
-        if (err != ECDSA.RecoverError.NoError || signer != seller || signer == address(0)) revert BadSignature();
+        if (!_signedBy(AntseedResponseAuth.digest(receipt), receipt.signature, seller)) revert BadSignature();
         if (buyer != address(0)) {
             bytes32 key = _receiptKey(seller, receipt.requestId);
             if (_usedReceipts[key]) revert ReceiptUsed();
@@ -515,6 +490,11 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         bool found;
         (found, tokens) = usageReader.promptTokensOf(receipt.response[start:start + length]);
         if (!found) revert UsageNotFound();
+    }
+
+    function _signedBy(bytes32 digest, bytes calldata signature, address signer) private pure returns (bool) {
+        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, signature);
+        return err == ECDSA.RecoverError.NoError && recovered == signer && signer != address(0);
     }
 
     /// @dev The model a service counts as: its live results status if it has one, else the owner mapping.
@@ -545,14 +525,6 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             return agentId;
         } catch {
             return 0;
-        }
-    }
-
-    function _agentOwner(uint256 agentId) private view returns (bool known, address owner) {
-        try identityRegistry.ownerOf(agentId) returns (address agentOwner_) {
-            return (agentOwner_ != address(0), agentOwner_);
-        } catch {
-            return (false, address(0));
         }
     }
 
