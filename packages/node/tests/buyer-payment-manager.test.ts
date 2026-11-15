@@ -2188,6 +2188,79 @@ describe('BuyerPaymentManager', () => {
     expect(await crossOldDeposit()).toEqual(['250000']);
   });
 
+  it('reconcileReserveAmount keeps a pending top-up when the chain read has not seen it land yet', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+
+    const sellerPeerId = fakePeerId('seller-reconcile-lagging-read');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId,
+        requestId,
+        requiredCumulativeAmount: required.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        deposit: '250000',
+        lastRequestCost: cost.toString(),
+      }, mux);
+    };
+    const spendOnly = () => mux.sentSpendingAuths
+      .map((a) => a as Record<string, unknown>)
+      .filter((a) => a.reserveMaxAmount == null)
+      .map((a) => a.cumulativeAmount);
+    await needAuth('r1', 105_327n, 105_327n, 0n);
+    await manager.topUpReserve(sellerPeerId, mux);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(500_000n);
+
+    // A recovery reads the channel from an RPC that has not seen the top-up
+    // land: the deposit it reports is the old one.
+    await manager.reconcileReserveAmount(sellerPeerId, 250_000n);
+
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(500_000n);
+    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
+    // Signing goes on past the old deposit once the seller has the top-up.
+    await needAuth('r2', 49_638n, 154_965n, 105_327n);
+    mux.sentSpendingAuths.length = 0;
+    await needAuth('r3', 99_879n, 254_844n, 154_965n);
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '254844',
+      currentAcceptedCumulative: '250000',
+      deposit: '250000',
+    }, mux);
+    expect(spendOnly()).toEqual(['250000', '254844']);
+  });
+
+  it('reconcileReserveAmount never takes a read below the deposit already confirmed', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const sellerPeerId = fakePeerId('seller-reconcile-behind-confirmed');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    await manager.topUpReserve(sellerPeerId, mux);
+    // One read sees the top-up land...
+    await manager.reconcileReserveAmount(sellerPeerId, 500_000n);
+    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(false);
+
+    // ...and a later one, from an RPC behind it, still reports the old deposit.
+    await manager.reconcileReserveAmount(sellerPeerId, 250_000n);
+
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(500_000n);
+    expect(store.getChannel(channelId)!.confirmedReserveAmount).toBe('500000');
+  });
+
   it('topUpReserve sends new ReserveAuth with increased ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-topup-rsv');
     await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
