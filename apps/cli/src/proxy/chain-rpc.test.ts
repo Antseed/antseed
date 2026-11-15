@@ -240,3 +240,21 @@ test('moves to the next endpoint when a response keeps trickling in past the dea
   assert.equal(await provider.send('eth_getCode', [addresses[0], 'latest']), '0x6080604052')
   assert.ok(Date.now() - startedAt < 15_000, 'the stalled endpoint is given up at its 10 s deadline')
 })
+
+test('sends credentials in an RPC URL as Basic auth', async (t) => {
+  const seen: Array<string | undefined> = []
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x100' }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const provider = new ChainRpcProvider([`http://rpc-user:p%40ss@127.0.0.1:${address.port}`], 8453)
+  t.after(() => provider.destroy())
+
+  assert.equal(await provider.send('eth_blockNumber', []), '0x100')
+  assert.deepEqual(seen, [`Basic ${Buffer.from('rpc-user:p@ss').toString('base64')}`])
+})

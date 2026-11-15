@@ -477,9 +477,18 @@ function retryAfter(value: string | null | undefined): number | null {
  * waiting on it held its signer's nonce lock for good.
  */
 async function fetchTransport(url: string, body: string): Promise<RpcTransportResponse> {
-  const response = await fetch(url, {
+  // fetch refuses a URL with credentials in it; send them as Basic auth, as Node's http module did.
+  const target = new URL(url)
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (target.username || target.password) {
+    const credentials = `${decodeURIComponent(target.username)}:${decodeURIComponent(target.password)}`
+    headers['authorization'] = `Basic ${Buffer.from(credentials).toString('base64')}`
+    target.username = ''
+    target.password = ''
+  }
+  const response = await fetch(target.href, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })

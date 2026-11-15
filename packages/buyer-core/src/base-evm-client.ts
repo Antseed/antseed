@@ -45,6 +45,21 @@ const MAX_RECENT_TIP_WEI = 100_000_000n;
 const NONCE_CURSOR_TRUST_MS = 60_000;
 
 /**
+ * `url` without its user and password, sent instead as a Basic Authorization header (unless one is
+ * set), as Node's http module did: fetch refuses a URL with credentials in it.
+ */
+function withUrlCredentials(url: string, headers: Record<string, string>): { url: string; headers: Record<string, string> } {
+  const parsed = new URL(url);
+  if (!parsed.username && !parsed.password) return { url, headers };
+  const credentials = `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`;
+  parsed.username = '';
+  parsed.password = '';
+  if (Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) return { url: parsed.href, headers };
+  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(credentials)));
+  return { url: parsed.href, headers: { ...headers, authorization: `Basic ${encoded}` } };
+}
+
+/**
  * Send one RPC request with fetch, aborted once `req.timeout` has passed in total. ethers' Node
  * transport only times out a socket that goes quiet, so a response that keeps trickling in never
  * failed, and a write waiting on it held the signer's nonce lock, and every later write, forever.
@@ -58,9 +73,10 @@ export async function fetchWithDeadline(req: FetchRequest, signal?: FetchCancelS
   });
   const timer = setTimeout(() => controller.abort(), req.timeout);
   try {
-    const response = await fetch(req.url, {
+    const { url, headers: requestHeaders } = withUrlCredentials(req.url, req.headers);
+    const response = await fetch(url, {
       method: req.method,
-      headers: req.headers,
+      headers: requestHeaders,
       ...(req.body ? { body: new Uint8Array(req.body) } : {}),
       signal: controller.signal,
     });

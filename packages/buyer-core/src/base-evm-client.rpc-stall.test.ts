@@ -100,6 +100,29 @@ describe('BaseEvmClient with an RPC whose responses never finish', () => {
   });
 });
 
+describe('fetchWithDeadline', () => {
+  it('sends credentials in the RPC URL as Basic auth, not in the URL', async () => {
+    const seen: Array<{ url?: string; authorization?: string }> = [];
+    const server = createServer((req, res) => {
+      seen.push({ url: req.url, authorization: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x100' }));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('no port');
+    const request = new FetchRequest(`http://rpc-user:p%40ss@127.0.0.1:${address.port}/v1/key`);
+    request.getUrlFunc = fetchWithDeadline;
+    request.body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] });
+
+    const response = await request.send();
+
+    expect(response.statusCode).toBe(200);
+    expect(seen).toEqual([{ url: '/v1/key', authorization: `Basic ${btoa('rpc-user:p@ss')}` }]);
+  });
+});
+
 describe('StaggeredFallbackProvider', () => {
   const network = Network.from(CHAIN_ID);
   const backend = (blockNumber: () => Promise<number>) => {
