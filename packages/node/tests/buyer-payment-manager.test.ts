@@ -2105,7 +2105,11 @@ describe('BuyerPaymentManager', () => {
     expect(spendOnly()).toEqual(['250000', '254844']);
   });
 
-  it('handleNeedAuth signs up to the deposit on-chain when an earlier top-up landed and a later one is pending', async () => {
+  /**
+   * A channel whose 250000 deposit a pending top-up raises: r1 and r2 are
+   * signed, and `crossOldDeposit` sends r3, whose cost crosses the deposit.
+   */
+  async function channelWithPendingTopUp(name: string) {
     store.close();
     store = new ChannelStore(tempDir);
     manager = new BuyerPaymentManager(
@@ -2114,8 +2118,7 @@ describe('BuyerPaymentManager', () => {
       store,
     );
     manager.setSigner(Wallet.createRandom());
-
-    const sellerPeerId = fakePeerId('seller-needauth-cross-landed-topup');
+    const sellerPeerId = fakePeerId(name);
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
     const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
       manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
@@ -2131,103 +2134,58 @@ describe('BuyerPaymentManager', () => {
     await needAuth('r1', 105_327n, 105_327n, 0n);
     await manager.topUpReserve(sellerPeerId, mux);
     await needAuth('r2', 49_638n, 154_965n, 105_327n);
+    const crossOldDeposit = async (): Promise<unknown[]> => {
+      mux.sentSpendingAuths.length = 0;
+      await needAuth('r3', 99_879n, 254_844n, 154_965n);
+      return mux.sentSpendingAuths
+        .map((a) => a as Record<string, unknown>)
+        .filter((a) => a.reserveMaxAmount == null)
+        .map((a) => a.cumulativeAmount);
+    };
+    return { sellerPeerId, channelId, crossOldDeposit };
+  }
+
+  it('handleNeedAuth signs up to the deposit on-chain when an earlier top-up landed and a later one is pending', async () => {
+    const { channelId, crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-landed-topup');
     // The first top-up (to 500000) lands on-chain, and the seller's catch-up
     // prompt for it came and went before the next request: nothing prompts
     // again. A later top-up the buyer sent is still pending.
     const deposits: string[] = [];
     manager.setChannelDepositReader(async (id) => { deposits.push(id); return 500_000n; });
-    mux.sentSpendingAuths.length = 0;
 
-    await needAuth('r3', 99_879n, 254_844n, 154_965n);
-
-    const spendOnly = mux.sentSpendingAuths
-      .map((a) => a as Record<string, unknown>)
-      .filter((a) => a.reserveMaxAmount == null)
-      .map((a) => a.cumulativeAmount);
-    expect(spendOnly).toEqual(['254844']);
+    expect(await crossOldDeposit()).toEqual(['254844']);
     expect(deposits).toContain(channelId);
   });
 
-  it('handleNeedAuth signs the full amount when every pending top-up has landed', async () => {
-    store.close();
-    store = new ChannelStore(tempDir);
-    manager = new BuyerPaymentManager(
-      identity,
-      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
-      store,
-    );
-    manager.setSigner(Wallet.createRandom());
-
-    const sellerPeerId = fakePeerId('seller-needauth-cross-fully-landed-topup');
-    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
-    const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
-      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId,
-        requestId,
-        requiredCumulativeAmount: required.toString(),
-        currentAcceptedCumulative: accepted.toString(),
-        deposit: '250000',
-        lastRequestCost: cost.toString(),
-      }, mux);
-    };
-    await needAuth('r1', 105_327n, 105_327n, 0n);
-    await manager.topUpReserve(sellerPeerId, mux);
-    await needAuth('r2', 49_638n, 154_965n, 105_327n);
+  it('handleNeedAuth signs the full amount when every pending top-up has landed, and keeps the landed deposit stored', async () => {
+    const { sellerPeerId, channelId, crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-fully-landed-topup');
     // Every top-up the buyer sent is on-chain: the deposit is the ceiling.
     const ceiling = manager.getReserveCeiling(sellerPeerId);
     manager.setChannelDepositReader(async () => ceiling);
     const reconcile = vi.spyOn(manager, 'reconcileReserveAmount');
-    mux.sentSpendingAuths.length = 0;
+    // Hold back the next top-up, whose own write would hide what signing stored.
+    vi.spyOn(manager, 'topUpReserve').mockResolvedValue(channelId);
 
-    await needAuth('r3', 99_879n, 254_844n, 154_965n);
-
-    const spendOnly = mux.sentSpendingAuths
-      .map((a) => a as Record<string, unknown>)
-      .filter((a) => a.reserveMaxAmount == null)
-      .map((a) => a.cumulativeAmount);
-    expect(spendOnly).toEqual(['254844']);
-    // The landed top-up is reconciled before signing, not left pending.
+    expect(await crossOldDeposit()).toEqual(['254844']);
+    // The landed top-up is reconciled before signing, not left pending...
     expect(reconcile).toHaveBeenCalledWith(sellerPeerId, ceiling);
-  });
-
-  it('handleNeedAuth still signs only the confirmed deposit when the read shows the top-up pending', async () => {
-    store.close();
-    store = new ChannelStore(tempDir);
-    manager = new BuyerPaymentManager(
+    // ...and signing onto the channel keeps it: the stored deposit is the
+    // landed one, not the 250000 confirmed before, and a restart reads it.
+    expect(store.getChannel(channelId)!.confirmedReserveAmount).toBe(ceiling.toString());
+    expect(store.getChannel(channelId)!.reserveAuthPending).toBe(false);
+    const restarted = new BuyerPaymentManager(
       identity,
       makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
       store,
     );
-    manager.setSigner(Wallet.createRandom());
+    expect(restarted.getReserveCeiling(sellerPeerId)).toBeGreaterThanOrEqual(254_844n);
+  });
 
-    const sellerPeerId = fakePeerId('seller-needauth-cross-unlanded-topup');
-    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
-    const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
-      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
-      await manager.handleNeedAuth(sellerPeerId, {
-        channelId,
-        requestId,
-        requiredCumulativeAmount: required.toString(),
-        currentAcceptedCumulative: accepted.toString(),
-        deposit: '250000',
-        lastRequestCost: cost.toString(),
-      }, mux);
-    };
-    await needAuth('r1', 105_327n, 105_327n, 0n);
-    await manager.topUpReserve(sellerPeerId, mux);
-    await needAuth('r2', 49_638n, 154_965n, 105_327n);
+  it('handleNeedAuth still signs only the confirmed deposit when the read shows the top-up pending', async () => {
+    const { crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-unlanded-topup');
     manager.setChannelDepositReader(async () => 250_000n);
-    mux.sentSpendingAuths.length = 0;
 
-    await needAuth('r3', 99_879n, 254_844n, 154_965n);
-
-    const spendOnly = mux.sentSpendingAuths
-      .map((a) => a as Record<string, unknown>)
-      .filter((a) => a.reserveMaxAmount == null)
-      .map((a) => a.cumulativeAmount);
-    expect(spendOnly).toEqual(['250000']);
-    expect(manager.hasPendingReserveAuth(sellerPeerId)).toBe(true);
+    expect(await crossOldDeposit()).toEqual(['250000']);
   });
 
   it('topUpReserve sends new ReserveAuth with increased ceiling', async () => {
