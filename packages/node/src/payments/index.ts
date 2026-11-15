@@ -79,6 +79,9 @@ export type {
   SignedReceipt,
   TokenizerProbePair,
   TokenizerRound,
+  ReceiptTuple,
+  PairTuple,
+  RoundTuple,
   ResolvedService,
 } from './evm/tokenizer-audits-client.js';
 export {

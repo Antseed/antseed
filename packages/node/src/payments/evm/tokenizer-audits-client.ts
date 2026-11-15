@@ -185,8 +185,29 @@ export function pairDelta(pair: TokenizerProbePair): number | null {
   return base === null || probed === null ? null : probed - base;
 }
 
+/** `AntseedResponseAuth.Receipt`, field by field. */
+export type ReceiptTuple = [
+  version: number,
+  requestId: string,
+  channelId: string,
+  buyer: string,
+  seller: string,
+  advertisedService: string,
+  provider: string,
+  statusCode: number,
+  responseStartedAt: bigint,
+  responseCompletedAt: bigint,
+  signature: string,
+  request: Uint8Array,
+  response: Uint8Array,
+];
+/** `IAntseedTokenizerAudits.ProbePair`. */
+export type PairTuple = [shapeId: string, base: ReceiptTuple, probed: ReceiptTuple];
+/** `IAntseedTokenizerAudits.Round`. */
+export type RoundTuple = [a: Uint8Array, b: Uint8Array, suspect: PairTuple, references: PairTuple[]];
+
 /** The tuple `AntseedResponseAuth.Receipt` takes. */
-export function receiptTuple(receipt: SignedReceipt): unknown[] {
+export function receiptTuple(receipt: SignedReceipt): ReceiptTuple {
   const p = receipt.payload;
   const signature = p.signature.startsWith('0x') ? p.signature : `0x${p.signature}`;
   return [
@@ -206,11 +227,11 @@ export function receiptTuple(receipt: SignedReceipt): unknown[] {
   ];
 }
 
-export function pairTuple(pair: TokenizerProbePair): unknown[] {
+export function pairTuple(pair: TokenizerProbePair): PairTuple {
   return [pair.shapeId, receiptTuple(pair.base), receiptTuple(pair.probed)];
 }
 
-export function roundTuple(round: TokenizerRound): unknown[] {
+export function roundTuple(round: TokenizerRound): RoundTuple {
   const encoder = new TextEncoder();
   return [encoder.encode(round.a), encoder.encode(round.b), pairTuple(round.suspect), round.references.map(pairTuple)];
 }
