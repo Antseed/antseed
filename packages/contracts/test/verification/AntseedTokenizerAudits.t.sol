@@ -19,6 +19,8 @@ contract AntseedTokenizerAuditsTest is Test {
     uint256 private constant EPOCH = 5;
     uint256 private constant SUSPECT_KEY = 0xA11CE;
     uint256 private constant OTHER_KEY = 0xB0B;
+    uint256 private constant BUYER_KEY = 0xB1;
+    uint256 private constant OTHER_BUYER_KEY = 0xB2;
     uint256[3] private REF_KEYS = [uint256(0xC1), 0xC2, 0xC3];
     string[3] private REF_SERVICES = ["glm-5.3", "z-ai/glm-5.3", "GLM-5.3"];
     string private constant SERVICE = "glm-5.3";
@@ -44,7 +46,7 @@ contract AntseedTokenizerAuditsTest is Test {
 
     address private suspect;
     address private prover = address(0xF00D);
-    address private buyer = address(0xB1);
+    address private buyer = vm.addr(BUYER_KEY);
     uint256 private suspectAgent;
     uint256[3] private refAgents;
     bytes32 private shapeId;
@@ -88,7 +90,7 @@ contract AntseedTokenizerAuditsTest is Test {
         _mapSuspect();
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.prank(prover);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(DIFF));
         assertEq(results.serviceStatus(suspectAgent, serviceHash).audit, address(audits));
         assertEq(results.auditorEpochCredits(address(audits), EPOCH, prover), 1);
@@ -99,7 +101,7 @@ contract AntseedTokenizerAuditsTest is Test {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.prank(prover);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(SAME), "KBF's SAME stays");
         assertEq(audits.liveFlags(suspectAgent), 1);
         IAntseedTokenizerAudits.Flag memory f = audits.flag(suspectAgent, serviceHash);
@@ -112,7 +114,7 @@ contract AntseedTokenizerAuditsTest is Test {
         kbf.record(suspectAgent, serviceHash, modelHash, DIFF);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.prank(prover);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
         // Same DIFF, same epoch and expiry: the results layer keeps it as it was.
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(DIFF));
         assertEq(results.auditorEpochCredits(address(audits), EPOCH, prover), 0);
@@ -121,9 +123,70 @@ contract AntseedTokenizerAuditsTest is Test {
     function test_anyoneCanProve() public {
         _mapSuspect();
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
-        vm.prank(makeAddr("stranger"));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(stranger));
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(DIFF));
+    }
+
+    // ── who may prove ────────────────────────────────────────────────
+
+    function test_aCopyOfAPendingProofCannotTakeItsCredit() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        bytes memory signature = _auth(prover);
+        address copier = makeAddr("copier");
+        vm.prank(copier);
+        vm.expectRevert(IAntseedTokenizerAudits.NotAuthorizedProver.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds, signature);
+
+        vm.prank(prover);
+        audits.proveTokenizerMismatch(modelHash, rounds, signature);
+        assertEq(results.auditorEpochCredits(address(audits), EPOCH, prover), 1);
+        assertEq(results.auditorEpochCredits(address(audits), EPOCH, copier), 0);
+    }
+
+    function test_onlyTheSuspectReceiptsBuyerAuthorizesAProver() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        bytes memory otherBuyers = _authBy(OTHER_BUYER_KEY, prover);
+        vm.prank(prover);
+        vm.expectRevert(IAntseedTokenizerAudits.NotAuthorizedProver.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds, otherBuyers);
+
+        vm.prank(prover);
+        vm.expectRevert(IAntseedTokenizerAudits.NotAuthorizedProver.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds, "");
+    }
+
+    function test_suspectReceiptsNameOneBuyer() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        address original = buyer;
+        buyer = vm.addr(OTHER_BUYER_KEY);
+        rounds[2].suspect = _pair(SUSPECT_KEY, SERVICE, rounds[2].a, rounds[2].b, 129);
+        buyer = original;
+        vm.prank(prover);
+        vm.expectRevert(IAntseedTokenizerAudits.DifferentBuyer.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
+    }
+
+    function test_referencesMayComeFromAnyBuyer() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        address original = buyer;
+        buyer = vm.addr(OTHER_BUYER_KEY);
+        for (uint256 i = 0; i < rounds.length; i++) {
+            rounds[i].references[0] = _pair(REF_KEYS[0], REF_SERVICES[0], rounds[i].a, rounds[i].b, MODEL_DELTA);
+        }
+        buyer = original;
+        vm.prank(prover);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
+        assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(DIFF));
+    }
+
+    function test_proverAuthDigestIsEip712() public view {
+        assertEq(audits.proverAuthDigest(prover), _proverAuthDigest(prover));
     }
 
     // ── what a proof must show ───────────────────────────────────────
@@ -135,7 +198,7 @@ contract AntseedTokenizerAuditsTest is Test {
             abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA + 2, MODEL_DELTA, MODEL_DELTA
             )
         );
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_everyRoundMustMismatch() public {
@@ -148,7 +211,7 @@ contract AntseedTokenizerAuditsTest is Test {
             abi.encodeWithSelector(IAntseedTokenizerAudits.WithinTolerance.selector, 1, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
             )
         );
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_referencesMustAgree() public {
@@ -158,7 +221,7 @@ contract AntseedTokenizerAuditsTest is Test {
         (split[0], split[1], split[2]) = (MODEL_DELTA, MODEL_DELTA, 120);
         rounds[0] = _round(129, split);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.ReferencesDisagree.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_referencesAgreeOnlyWhenTheirWholeRangeFits() public {
@@ -173,7 +236,7 @@ contract AntseedTokenizerAuditsTest is Test {
             IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
             rounds[0] = _round(129, _deltas(orders[o]));
             vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.ReferencesDisagree.selector, 0));
-            audits.proveTokenizerMismatch(modelHash, rounds);
+            audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         }
     }
 
@@ -191,7 +254,7 @@ contract AntseedTokenizerAuditsTest is Test {
                     IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA + 3, MODEL_DELTA - 1, MODEL_DELTA + 1
                 )
             );
-            audits.proveTokenizerMismatch(modelHash, rounds);
+            audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         }
     }
 
@@ -200,10 +263,10 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.warp(block.timestamp + 1 days + 1);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         vm.warp(block.timestamp - 2);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_evidenceCannotBeFromTheFuture() public {
@@ -211,33 +274,33 @@ contract AntseedTokenizerAuditsTest is Test {
         signedAt += 10 minutes * 1000;
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.FutureEvidence.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_evidenceFromBeforeAClearCannotFlagAgain() public {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         IAntseedTokenizerAudits.Round[] memory archived = _rounds(3, 129, MODEL_DELTA);
         vm.warp(block.timestamp + 1 hours);
         audits.clearFlag(suspectAgent, serviceHash);
         assertEq(audits.flagClearedAt(suspectAgent, serviceHash), block.timestamp);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, archived);
+        audits.proveTokenizerMismatch(modelHash, archived, _auth(address(this)));
 
         _signAfterClear();
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         assertEq(audits.liveFlags(suspectAgent), 1);
     }
 
     function test_evidenceSignedAheadOfAClearCannotFlagAgain() public {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         // A seller clock 4 minutes ahead: accepted as not from the future, yet collected before the clear.
         signedAt = uint64((block.timestamp + 4 minutes) * 1000);
         IAntseedTokenizerAudits.Round[] memory archived = _rounds(3, 129, MODEL_DELTA);
         audits.clearFlag(suspectAgent, serviceHash);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.StaleEvidence.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, archived);
+        audits.proveTokenizerMismatch(modelHash, archived, _auth(address(this)));
     }
 
     function test_maxEvidenceAge() public {
@@ -255,14 +318,14 @@ contract AntseedTokenizerAuditsTest is Test {
         _mapSuspect();
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(2, 129, MODEL_DELTA);
         vm.expectRevert(IAntseedTokenizerAudits.InvalidRounds.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         rounds = _rounds(3, 129, MODEL_DELTA);
         IAntseedTokenizerAudits.ProbePair[] memory two = new IAntseedTokenizerAudits.ProbePair[](2);
         (two[0], two[1]) = (rounds[0].references[0], rounds[0].references[1]);
         rounds[0].references = two;
         vm.expectRevert(IAntseedTokenizerAudits.InvalidRounds.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_referencesMustBeLiveSameForTheModel() public {
@@ -272,31 +335,31 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[0].references[2] = _pair(OTHER_KEY, SERVICE, rounds[0].a, rounds[0].b, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 2));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         // SAME, but for another model.
         kbf.record(stranger, serviceHash, keccak256("glm-5.2"), SAME);
         rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[0].references[2] = _pair(OTHER_KEY, SERVICE, rounds[0].a, rounds[0].b, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 2));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         // SAME verdicts that have expired.
         gate.setCurrentEpoch(EPOCH + 2);
         rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_aRevokedAuditProvesNothing() public {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         results.setAudit(address(audits), false);
 
         // Refreshing a live flag earns no credit, so it never reached the results layer's own check.
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(IAntseedTokenizerAudits.NotApprovedAudit.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         // Nor does a new flag with credits turned off.
         audits.clearFlag(suspectAgent, serviceHash);
@@ -304,7 +367,7 @@ contract AntseedTokenizerAuditsTest is Test {
         signedAt += 1000;
         rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(IAntseedTokenizerAudits.NotApprovedAudit.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_aUsageFlaggedServiceIsNoReference() public {
@@ -317,7 +380,7 @@ contract AntseedTokenizerAuditsTest is Test {
             rounds[i].suspect = _pair(REF_KEYS[0], REF_SERVICES[0], rounds[i].a, rounds[i].b, 152);
             rounds[i].references[0] = _pair(OTHER_KEY, SERVICE, rounds[i].a, rounds[i].b, MODEL_DELTA);
         }
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         assertEq(audits.liveFlags(refAgents[0]), 1);
 
         address[] memory sellers = new address[](1);
@@ -329,7 +392,7 @@ contract AntseedTokenizerAuditsTest is Test {
         _mapSuspect();
         rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_referencesMustBeOtherDistinctSellers() public {
@@ -337,22 +400,22 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[0].references[1] = rounds[0].references[0];
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 1));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[0].references[2] = _pair(SUSPECT_KEY, SERVICE, rounds[0].a, rounds[0].b, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.NotAReference.selector, 0, 2));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_suspectServiceMustBeTheModel() public {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.expectRevert(IAntseedTokenizerAudits.UnknownService.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         // Audited as another model: the proof must use that model.
         kbf.record(suspectAgent, serviceHash, keccak256("glm-5.2"), SAME);
         vm.expectRevert(IAntseedTokenizerAudits.UnknownService.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     // ── nobody can frame a seller ────────────────────────────────────
@@ -363,7 +426,7 @@ contract AntseedTokenizerAuditsTest is Test {
         // The suspect got a longer B than the references.
         rounds[0].suspect = _pair(SUSPECT_KEY, SERVICE, rounds[0].a, abi.encodePacked(rounds[0].b, " more"), 129);
         vm.expectRevert(IAntseedTokenizerAudits.NotProbePair.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_rejectsProbeInAFieldTheModelIgnores() public {
@@ -374,7 +437,7 @@ contract AntseedTokenizerAuditsTest is Test {
         rounds[0].suspect.probed =
             _receipt(SUSPECT_KEY, SERVICE, abi.encodePacked(head, rounds[0].b, '"}'), _usage(BASE_TOKENS));
         vm.expectRevert(IAntseedTokenizerAudits.NotProbePair.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_contentMustStayInsideTheMessage() public {
@@ -382,7 +445,7 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[0].b = ' ","metadata":"x';
         vm.expectRevert(IAntseedTokenizerAudits.InvalidContent.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_pairsMayUseDifferentApis() public {
@@ -393,7 +456,7 @@ contract AntseedTokenizerAuditsTest is Test {
             rounds[i].references[1] = _messagesPair(REF_KEYS[1], REF_SERVICES[1], rounds[i].a, rounds[i].b, MODEL_DELTA);
         }
         vm.prank(prover);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(prover));
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(DIFF));
     }
 
@@ -411,7 +474,7 @@ contract AntseedTokenizerAuditsTest is Test {
         );
         rounds[0].suspect = pair;
         vm.expectRevert(IAntseedTokenizerAudits.NotProbePair.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_everyPairNeedsAnActiveShape() public {
@@ -420,7 +483,7 @@ contract AntseedTokenizerAuditsTest is Test {
         audits.setShape(MESSAGES_PATH, HEAD, MESSAGES_MID, MESSAGES_TAIL, false);
         rounds[1].references[0] = _messagesPair(REF_KEYS[0], REF_SERVICES[0], rounds[1].a, rounds[1].b, MODEL_DELTA);
         vm.expectRevert(IAntseedTokenizerAudits.InvalidShape.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_listsShapesOnce() public {
@@ -438,7 +501,7 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         rounds[1].suspect.probed.signature = _sign(OTHER_KEY, rounds[1].suspect.probed);
         vm.expectRevert(IAntseedTokenizerAudits.BadSignature.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_rejectsEditedUsage() public {
@@ -446,7 +509,7 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, MODEL_DELTA, MODEL_DELTA);
         rounds[0].suspect.probed.response = _response(rounds[0].suspect.probed.requestId, _usage(BASE_TOKENS + 129));
         vm.expectRevert(IAntseedTokenizerAudits.BadSignature.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_roundMustBeSignedTogether() public {
@@ -455,23 +518,23 @@ contract AntseedTokenizerAuditsTest is Test {
         signedAt += 2 hours * 1000;
         rounds[0].references[2] = _pair(REF_KEYS[2], REF_SERVICES[2], rounds[0].a, rounds[0].b, MODEL_DELTA);
         vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.RoundTooSpread.selector, 0));
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_suspectReceiptsAreSingleUseReferencesAreNot() public {
         _mapSuspect();
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         assertTrue(audits.receiptUsed(suspect, rounds[0].suspect.base.requestId));
         vm.expectRevert(IAntseedTokenizerAudits.ReceiptUsed.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
 
         // The same reference rounds back a proof against another suspect.
         uint256 other = _register(vm.addr(OTHER_KEY));
         for (uint256 i = 0; i < 3; i++) {
             rounds[i].suspect = _pair(OTHER_KEY, SERVICE, rounds[i].a, rounds[i].b, 129);
         }
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         assertEq(uint8(results.liveVerdict(other, serviceHash)), uint8(DIFF));
     }
 
@@ -480,7 +543,7 @@ contract AntseedTokenizerAuditsTest is Test {
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
         vm.prank(suspect);
         vm.expectRevert(IAntseedTokenizerAudits.SelfAudit.selector);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(suspect));
     }
 
     // ── points ───────────────────────────────────────────────────────
@@ -490,7 +553,7 @@ contract AntseedTokenizerAuditsTest is Test {
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         (uint256 before,) = audits.points(bytes32(0), buyer, suspect, 100, 100);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         (uint256 sellerPoints, uint256 buyerPoints) = audits.points(bytes32(0), buyer, suspect, 100, 100);
         assertEq(before, 100);
         assertEq(sellerPoints, 90);
@@ -504,7 +567,7 @@ contract AntseedTokenizerAuditsTest is Test {
         audits.setPenaltyBps(1_000);
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
         audits.clearFlag(suspectAgent, serviceHash);
         assertEq(audits.liveFlags(suspectAgent), 0);
         (uint256 sellerPoints,) = audits.points(bytes32(0), buyer, suspect, 100, 100);
@@ -514,10 +577,10 @@ contract AntseedTokenizerAuditsTest is Test {
     function test_aClearedFlagProvenAgainCountsOnce() public {
         audits.setPenaltyBps(1_000);
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         audits.clearFlag(suspectAgent, serviceHash);
         _signAfterClear();
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         assertEq(audits.liveFlags(suspectAgent), 1);
         (uint256 sellerPoints,) = audits.points(bytes32(0), buyer, suspect, 100, 100);
         assertEq(sellerPoints, 90);
@@ -526,7 +589,7 @@ contract AntseedTokenizerAuditsTest is Test {
     function test_pointsNeverRevert() public {
         audits.setPenaltyBps(1_000);
         kbf.record(suspectAgent, serviceHash, modelHash, SAME);
-        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA));
+        audits.proveTokenizerMismatch(modelHash, _rounds(3, 129, MODEL_DELTA), _auth(address(this)));
         (uint256 sellerPoints, uint256 buyerPoints) = audits.points(bytes32(0), buyer, suspect, 100, 50);
         assertEq(sellerPoints, 90, "the live flag applies");
 
@@ -653,7 +716,7 @@ contract AntseedTokenizerAuditsTest is Test {
                 IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
             )
         );
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_anHonestSellerServedFromTheCacheCannotBeProven() public {
@@ -687,7 +750,7 @@ contract AntseedTokenizerAuditsTest is Test {
                 IAntseedTokenizerAudits.WithinTolerance.selector, 0, MODEL_DELTA, MODEL_DELTA, MODEL_DELTA
             )
         );
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     function test_readsWholeIntegerTokenCountsOnly() public view {
@@ -740,7 +803,7 @@ contract AntseedTokenizerAuditsTest is Test {
         int256 suspectDelta = int256(uint256(delta)) + bound(int256(drift), -2, 2);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, suspectDelta, int256(uint256(delta)));
         vm.expectRevert();
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -854,6 +917,32 @@ contract AntseedTokenizerAuditsTest is Test {
         receipt.request = _request(requestId, path, requestBody);
         receipt.response = _response(requestId, responseBody);
         receipt.signature = _sign(key, receipt);
+    }
+
+    /// @dev The suspect receipts' buyer lets `prover` prove with them.
+    function _auth(address prover_) private view returns (bytes memory) {
+        return _authBy(BUYER_KEY, prover_);
+    }
+
+    function _authBy(uint256 key, address prover_) private view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, _proverAuthDigest(prover_));
+        return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev Built here rather than read from the contract, so a prank before the proof is not spent on it.
+    function _proverAuthDigest(address prover_) private view returns (bytes32) {
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("AntseedTokenizerAudits"),
+                keccak256("1"),
+                block.chainid,
+                address(audits)
+            )
+        );
+        return keccak256(
+            abi.encodePacked("\x19\x01", domain, keccak256(abi.encode(keccak256("ProverAuth(address prover)"), prover_)))
+        );
     }
 
     function _sign(uint256 key, AntseedResponseAuth.Receipt memory receipt) private view returns (bytes memory) {

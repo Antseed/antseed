@@ -1,6 +1,7 @@
 import { Contract, getAddress, type AbstractSigner } from 'ethers';
 import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/protocol/request-codec';
+import { makeTokenizerAuditsDomain, signProverAuth } from '@antseed/protocol/signatures';
 import { BaseEvmClient } from './base-evm-client.js';
 import { hexToBytes } from '../../utils/hex.js';
 import { serviceHash } from './verifier-client.js';
@@ -23,7 +24,7 @@ const ROUND_TUPLE = `(bytes a,bytes b,${PAIR_TUPLE} suspect,${PAIR_TUPLE}[] refe
 
 /** `AntseedTokenizerAudits`: permissionless tokenizer proofs against live-SAME reference sellers. */
 export const TOKENIZER_AUDITS_ABI = [
-  `function proveTokenizerMismatch(bytes32 modelHash,${ROUND_TUPLE}[] rounds) external`,
+  `function proveTokenizerMismatch(bytes32 modelHash,${ROUND_TUPLE}[] rounds,bytes buyerSignature) external`,
   'function shapeIds() external view returns (bytes32[])',
   'function shape(bytes32 shapeId) external view returns ((bytes path,bytes head,bytes mid,bytes tail,bool active))',
   'function serviceModel(bytes32 serviceHash) external view returns (bytes32)',
@@ -42,6 +43,7 @@ export const TOKENIZER_AUDITS_ABI = [
   'function liveFlags(uint256 agentId) external view returns (uint256)',
   'function serviceHashOf(string serviceName) external pure returns (bytes32)',
   `function receiptDigest(${RECEIPT_TUPLE} receipt) external pure returns (bytes32)`,
+  'function proverAuthDigest(address prover) external view returns (bytes32)',
   'function promptTokensOf(bytes responseBody) external pure returns (bool found,uint256 tokens)',
   'function points(bytes32 channelId,address buyer,address seller,uint256 sellerPoints,uint256 buyerPoints) external view returns (uint256,uint256)',
   'function results() external view returns (address)',
@@ -71,6 +73,8 @@ export const TOKENIZER_AUDITS_ABI = [
   'error UnknownAgent()',
   'error SelfAudit()',
   'error NotApprovedAudit()',
+  'error NotAuthorizedProver()',
+  'error DifferentBuyer()',
   'error MalformedRequest()',
   'error MalformedResponse()',
   // From the results layer the proof records into.
@@ -213,7 +217,8 @@ export function roundTuple(round: TokenizerRound): unknown[] {
 
 /**
  * Reads shapes, parameters and reference eligibility from `AntseedTokenizerAudits`, and submits proofs.
- * Proving is permissionless: any signer may call `proveTokenizerMismatch`.
+ * Proving is permissionless: any signer may call `proveTokenizerMismatch`, with a `ProverAuth` naming it from the
+ * buyer that collected the suspect receipts.
  */
 export class TokenizerAuditsClient extends BaseEvmClient {
   private _contractInstance: Contract | null = null;
@@ -288,9 +293,24 @@ export class TokenizerAuditsClient extends BaseEvmClient {
    * Simulates the proof as `from` and returns null when it would succeed, else the contract's error
    * (e.g. `WithinTolerance(1, 139, 139)`), so a prover never pays gas for a proof that reverts.
    */
-  async checkProof(from: string, modelHash: string, rounds: readonly TokenizerRound[]): Promise<string | null> {
+  /**
+   * The buyer's EIP-712 `ProverAuth` letting `prover` prove (and be credited) with the receipts the buyer
+   * collected. Every proof needs one from the buyer its suspect receipts name.
+   */
+  async signProverAuth(buyer: AbstractSigner, prover: string): Promise<string> {
+    const { chainId } = await this._provider.getNetwork();
+    return signProverAuth(buyer, makeTokenizerAuditsDomain(Number(chainId), this._contractAddress), getAddress(prover));
+  }
+
+  async checkProof(
+    from: string,
+    modelHash: string,
+    rounds: readonly TokenizerRound[],
+    buyerSignature: string,
+  ): Promise<string | null> {
     try {
-      await this._contract().getFunction('proveTokenizerMismatch').staticCall(modelHash, rounds.map(roundTuple), { from });
+      await this._contract().getFunction('proveTokenizerMismatch')
+        .staticCall(modelHash, rounds.map(roundTuple), buyerSignature, { from });
       return null;
     } catch (err) {
       const failure = err as { revert?: { name?: string; args?: unknown[] }; shortMessage?: string; data?: string };
@@ -301,9 +321,16 @@ export class TokenizerAuditsClient extends BaseEvmClient {
   }
 
   /** Submits a proof; returns the transaction hash. */
-  async proveTokenizerMismatch(signer: AbstractSigner, modelHash: string, rounds: readonly TokenizerRound[]): Promise<string> {
+  async proveTokenizerMismatch(
+    signer: AbstractSigner,
+    modelHash: string,
+    rounds: readonly TokenizerRound[],
+    buyerSignature: string,
+  ): Promise<string> {
     if (rounds.length === 0 || rounds.length > MAX_TOKENIZER_PROOF_ROUNDS) throw new Error('invalid number of rounds');
-    return this._execWrite(signer, TOKENIZER_AUDITS_ABI, 'proveTokenizerMismatch', modelHash, rounds.map(roundTuple));
+    return this._execWrite(
+      signer, TOKENIZER_AUDITS_ABI, 'proveTokenizerMismatch', modelHash, rounds.map(roundTuple), buyerSignature,
+    );
   }
 }
 

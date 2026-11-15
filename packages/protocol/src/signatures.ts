@@ -43,6 +43,16 @@ export const FREE_USAGE_AUTH_TYPES = {
   ],
 };
 
+/**
+ * AntseedTokenizerAudits: the buyer whose receipts back a tokenizer proof names the address that may prove with
+ * them (and is credited), so a copy of a pending proof sent from another address reverts.
+ */
+export const PROVER_AUTH_TYPES = {
+  ProverAuth: [
+    { name: 'prover', type: 'address' },
+  ],
+};
+
 // =========================================================================
 // EIP-712 Types — EIP-3009 (USDC)
 // =========================================================================
@@ -581,6 +591,15 @@ export function makeFreeUsageDomain(chainId: number, contractAddress: string): T
   };
 }
 
+export function makeTokenizerAuditsDomain(chainId: number, contractAddress: string): TypedDataDomain {
+  return {
+    name: 'AntseedTokenizerAudits',
+    version: '1',
+    chainId,
+    verifyingContract: contractAddress,
+  };
+}
+
 /**
  * EIP-712 domain of Circle's USDC (FiatTokenV2). Verified against the deployed
  * Base mainnet token (0x8335...2913): name "USD Coin", version "2". MockUSDC
@@ -623,6 +642,14 @@ export async function signSetOperator(
   msg: SetOperatorMessage,
 ): Promise<string> {
   return signer.signTypedData(domain, SET_OPERATOR_TYPES, msg);
+}
+
+export async function signProverAuth(
+  signer: AbstractSigner,
+  domain: TypedDataDomain,
+  prover: string,
+): Promise<string> {
+  return signer.signTypedData(domain, PROVER_AUTH_TYPES, { prover });
 }
 
 export async function signFreeUsageOpen(

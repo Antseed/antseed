@@ -221,7 +221,7 @@ It checks the usage sellers sign, which is what they are paid on. Each round, a 
 
 - A seller without a `SAME` gets a `DIFF`, like a KBF `DIFF`.
 - A seller with a `SAME` (it answers like the model, but its usage isn't the model's) gets a **usage flag**, which can cut its points.
-- A proof that creates a new `DIFF` or flag for a staked seller earns you a credit; `verifier rewards` shows and claims them with your KBF rewards (see [Rewards](#rewards)).
+- A proof that creates a new `DIFF` or flag for a staked seller earns you a credit; `verifier rewards` shows and claims them with your KBF rewards (see [Rewards](#rewards)). Your buyer, which collected the receipts, signs that the proof is yours, so a copy of it sent from another address fails and nobody can take your credit. The CLI does this for you.
 
 What it costs: two short requests per seller per round, three rounds, about once a day per seller (a seller it couldn't check is retried after 6 hours), plus the gas of each proof on Base. `prove-tokenizer --dry-run` checks everything and sends nothing, and the next real pass still proves what it found. Each pass writes its evidence to `<data-dir>/verifier/evidence/tokenizer/`.
 

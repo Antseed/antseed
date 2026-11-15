@@ -17,6 +17,8 @@ import { TokenizerProofFixture } from "../fixtures/tokenizer-proof/TokenizerProo
 /// @dev Rounds signed by the TypeScript seller code and encoded by the prover's client prove on-chain.
 ///      Regenerate the fixture with `node packages/contracts/test/fixtures/tokenizer-proof/generate.mjs`.
 contract AntseedTokenizerAuditsFixtureTest is Test {
+    /// @dev generate.mjs's throwaway buyer key, which the fixture's receipts name.
+    uint256 private constant FIXTURE_BUYER_KEY = 0x2222222222222222222222222222222222222222222222222222222222222222;
     AntseedVerificationResults private results;
     AntseedTokenizerAudits private audits;
     MockVerificationAudit private kbf;
@@ -65,7 +67,8 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
         services[0] = serviceHash;
         audits.setServiceModels(services, modelHash);
         IAntseedTokenizerAudits.Round[] memory rounds = _rounds();
-        audits.proveTokenizerMismatch(modelHash, rounds);
+        (uint8 v, bytes32 r, bytes32 sig) = vm.sign(FIXTURE_BUYER_KEY, audits.proverAuthDigest(address(this)));
+        audits.proveTokenizerMismatch(modelHash, rounds, abi.encodePacked(r, sig, v));
         assertEq(uint8(results.liveVerdict(suspectAgent, serviceHash)), uint8(IAntseedVerificationResults.Verdict.DIFF));
     }
 

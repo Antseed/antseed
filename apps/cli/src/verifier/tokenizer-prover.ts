@@ -81,6 +81,11 @@ export interface TokenizerProverOptions {
   signer: { wallet: AbstractSigner; address: string } | null
   /** Address simulated proofs are sent from when there is no signer. */
   simulateFrom: string
+  /**
+   * The buyer's `ProverAuth` for a prover address: the buyer whose receipts back a proof names who may send it,
+   * so nobody else can take its credit. Signed by the buyer proxy's identity, which collected the receipts.
+   */
+  authorizeProver: (prover: string) => Promise<string>
   /** Rounds per pass (at least the contract's `minRounds`). */
   rounds?: number
   /** Only these service names (case-insensitive) as suspects, when given. References come from all. */
@@ -329,10 +334,11 @@ async function judge(
   result.outcome = 'mismatch'
   result.reason = null
   const from = options.signer?.address ?? options.simulateFrom
-  result.proofCheck = await options.contract.checkProof(from, modelHash, proofRounds)
+  const buyerSignature = await options.authorizeProver(from)
+  result.proofCheck = await options.contract.checkProof(from, modelHash, proofRounds, buyerSignature)
   if (result.proofCheck !== null || !options.signer) return result
   try {
-    result.txHash = await options.contract.proveTokenizerMismatch(options.signer.wallet, modelHash, proofRounds)
+    result.txHash = await options.contract.proveTokenizerMismatch(options.signer.wallet, modelHash, proofRounds, buyerSignature)
   } catch (error) {
     result.reason = `proof transaction failed: ${asError(error).message}`
   }

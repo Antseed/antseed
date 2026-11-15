@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 import { IAntseedSellerPools } from "../interfaces/IAntseedSellerPools.sol";
 import { IAntseedTokenizerAudits } from "../interfaces/IAntseedTokenizerAudits.sol";
@@ -23,7 +24,8 @@ import { AntseedResponseAuth } from "./AntseedResponseAuth.sol";
 ///         receipts of a round must be signed within `maxRoundSpreadSeconds` of each other, none more than
 ///         `maxEvidenceAgeSeconds` before the proof or in its future, and the suspect's after any `clearFlag` of
 ///         the service. Suspect receipts are single-use; reference receipts may back several proofs (the same
-///         round can be checked against many suspects).
+///         round can be checked against many suspects). All suspect receipts name one buyer, whose EIP-712
+///         `ProverAuth` must name the sender.
 contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     uint8 public constant MAX_ROUNDS = 8;
     uint8 public constant MAX_REFERENCES = 8;
@@ -48,6 +50,13 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     /// @dev Which `*_tokens_details` object of `usage` the parser is inside.
     uint256 private constant IN_INPUT_DETAILS = 1;
     uint256 private constant IN_PROMPT_DETAILS = 2;
+    /// @dev EIP-712 domain `AntseedTokenizerAudits` version 1, built inline: OpenZeppelin's `EIP712` (with
+    ///      ERC-5267) does not fit under the contract size limit.
+    bytes32 private constant DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant DOMAIN_NAME_HASH = keccak256("AntseedTokenizerAudits");
+    bytes32 private constant DOMAIN_VERSION_HASH = keccak256("1");
+    bytes32 private constant PROVER_AUTH_TYPEHASH = keccak256("ProverAuth(address prover)");
 
     IAntseedVerificationResults public immutable override results;
     IERC8004Registry public immutable override identityRegistry;
@@ -199,11 +208,19 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     // ═══════════════════════════════════════════════════════════════════
 
     /// @inheritdoc IAntseedTokenizerAudits
-    function proveTokenizerMismatch(bytes32 modelHash, Round[] calldata rounds) external override {
+    function proveTokenizerMismatch(bytes32 modelHash, Round[] calldata rounds, bytes calldata buyerSignature)
+        external
+        override
+    {
         // A revoked audit records nothing, flags included (they never reach the results layer's own check).
         if (!results.isAudit(address(this))) revert NotApprovedAudit();
         uint256 count = rounds.length;
         if (modelHash == bytes32(0) || count < minRounds || count > MAX_ROUNDS) revert InvalidRounds();
+        // The buyer that collected the suspect receipts names who proves with them, so a copy of a pending
+        // proof sent from another address reverts.
+        address buyer = rounds[0].suspect.base.buyer;
+        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(proverAuthDigest(msg.sender), buyerSignature);
+        if (err != ECDSA.RecoverError.NoError || signer != buyer || signer == address(0)) revert NotAuthorizedProver();
 
         address seller = rounds[0].suspect.base.seller;
         bytes32 serviceHash = serviceHashOf(rounds[0].suspect.base.advertisedService);
@@ -220,7 +237,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         int256[] memory referenceMaxes = new int256[](count);
         bytes32 evidenceHash = bytes32(0);
         for (uint256 i = 0; i < count; i++) {
-            RoundResult memory round = _checkRound(i, rounds[i], seller, serviceHash, agentId, modelHash);
+            RoundResult memory round = _checkRound(i, rounds[i], seller, buyer, serviceHash, agentId, modelHash);
             suspectDeltas[i] = round.suspectDelta;
             referenceMins[i] = round.referenceMin;
             referenceMaxes[i] = round.referenceMax;
@@ -349,6 +366,13 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         return AntseedResponseAuth.digest(receipt);
     }
 
+    /// @inheritdoc IAntseedTokenizerAudits
+    function proverAuthDigest(address prover) public view override returns (bytes32) {
+        bytes32 domain =
+            keccak256(abi.encode(DOMAIN_TYPEHASH, DOMAIN_NAME_HASH, DOMAIN_VERSION_HASH, block.chainid, address(this)));
+        return MessageHashUtils.toTypedDataHash(domain, keccak256(abi.encode(PROVER_AUTH_TYPEHASH, prover)));
+    }
+
     /// @dev The buyer's own reading of usage (`extractUsage` in `packages/api-adapter`): `prompt_tokens` is the
     ///      whole input; so is `input_tokens` when `input_tokens_details` has `cached_tokens` (a subset).
     ///      Otherwise `input_tokens` is fresh only, and the cache creation and the cached input are added: the
@@ -377,6 +401,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         uint256 index,
         Round calldata round,
         address seller,
+        address buyer,
         bytes32 serviceHash,
         uint256 suspectAgent,
         bytes32 modelHash
@@ -389,7 +414,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (refCount < minReferences || refCount > MAX_REFERENCES) revert InvalidRounds();
 
         if (serviceHashOf(round.suspect.base.advertisedService) != serviceHash) revert DifferentService();
-        PairResult memory suspect = _checkPair(round.suspect, round.a, round.b, seller, true);
+        PairResult memory suspect = _checkPair(round.suspect, round.a, round.b, seller, buyer);
         uint256 clearedAt = flagClearedAt[suspectAgent][serviceHash];
         // Receipts may run up to the clock skew ahead of the block, so a clear also covers that window.
         if (clearedAt != 0 && uint256(suspect.firstAt) <= (clearedAt + MAX_CLOCK_SKEW_SECONDS) * 1000) {
@@ -404,7 +429,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         for (uint256 k = 0; k < refCount; k++) {
             ProbePair calldata pair = round.references[k];
             agents[k] = _referenceAgent(index, k, pair, seller, suspectAgent, modelHash, agents);
-            PairResult memory ref = _checkPair(pair, round.a, round.b, pair.base.seller, false);
+            PairResult memory ref = _checkPair(pair, round.a, round.b, pair.base.seller, address(0));
             if (k == 0 || ref.delta < result.referenceMin) result.referenceMin = ref.delta;
             if (k == 0 || ref.delta > result.referenceMax) result.referenceMax = ref.delta;
             if (ref.firstAt < firstAt) firstAt = ref.firstAt;
@@ -452,18 +477,19 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     }
 
     /// @dev Both receipts signed by `seller` for the same service, HTTP 200, requests exactly the pair's
-    ///      active shape with content A and A + B, and a readable usage field. Suspect receipts are marked used.
+    ///      active shape with content A and A + B, and a readable usage field. A suspect pair (`buyer` set) must
+    ///      name `buyer` and is marked used; a reference pair (`buyer` zero) may come from any buyer.
     function _checkPair(
         ProbePair calldata pair,
         bytes calldata a,
         bytes calldata b,
         address seller,
-        bool markUsed
+        address buyer
     ) private returns (PairResult memory result) {
         bytes memory service = bytes(pair.base.advertisedService);
         if (keccak256(service) != keccak256(bytes(pair.probed.advertisedService))) revert DifferentService();
-        (uint256 baseTokens, bytes32 baseDigest) = _checkReceipt(pair.base, seller, markUsed);
-        (uint256 probedTokens, bytes32 probedDigest) = _checkReceipt(pair.probed, seller, markUsed);
+        (uint256 baseTokens, bytes32 baseDigest) = _checkReceipt(pair.base, seller, buyer);
+        (uint256 probedTokens, bytes32 probedDigest) = _checkReceipt(pair.probed, seller, buyer);
         Shape storage shape_ = _shapes[pair.shapeId];
         if (!shape_.active) revert InvalidShape();
         bytes32 path = keccak256(shape_.path);
@@ -487,16 +513,17 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         ) revert NotProbePair();
     }
 
-    function _checkReceipt(AntseedResponseAuth.Receipt calldata receipt, address seller, bool markUsed)
+    function _checkReceipt(AntseedResponseAuth.Receipt calldata receipt, address seller, address buyer)
         private
         returns (uint256 tokens, bytes32 digest)
     {
         if (receipt.seller != seller) revert DifferentService();
+        if (buyer != address(0) && receipt.buyer != buyer) revert DifferentBuyer();
         if (receipt.statusCode != 200) revert NotOk();
         digest = AntseedResponseAuth.digest(receipt);
         (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, receipt.signature);
         if (err != ECDSA.RecoverError.NoError || signer != seller || signer == address(0)) revert BadSignature();
-        if (markUsed) {
+        if (buyer != address(0)) {
             bytes32 key = _receiptKey(seller, receipt.requestId);
             if (_usedReceipts[key]) revert ReceiptUsed();
             _usedReceipts[key] = true;

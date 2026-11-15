@@ -84,8 +84,12 @@ function fakeNetwork(sellers: FakeSeller[]) {
   return { fetchFn, reader, requests: () => requests, paths }
 }
 
+const PROVER = '0x000000000000000000000000000000000000bEEF'
+/** Stands in for the buyer's `ProverAuth` signature naming `prover`. */
+const proverAuth = (prover: string) => `auth:${prover.toLowerCase()}`
+
 function fakeContract(sellers: FakeSeller[]) {
-  const submitted: Array<{ modelHash: string; rounds: TokenizerRound[] }> = []
+  const submitted: Array<{ modelHash: string; rounds: TokenizerRound[]; buyerSignature: string }> = []
   const contract: TokenizerAuditsReader = {
     activeShapes: async () => [CHAT, MESSAGES],
     parameters: async () => ({ minRounds: 3, minReferences: 3, tolerance: 2, maxRoundSpreadSeconds: 3600 }),
@@ -94,9 +98,12 @@ function fakeContract(sellers: FakeSeller[]) {
       const service = servicesOf(sellers[index]!).find((x) => x.name === e.service)!
       return { agentId: BigInt(index + 1), modelHash: MODEL, liveSame: service.liveSame }
     }),
-    checkProof: async (_from, _model, rounds) => rounds.length >= 3 && rounds.every((r) => r.references.length >= 3) ? null : 'InvalidRounds()',
-    proveTokenizerMismatch: async (_signer, modelHash, rounds) => {
-      submitted.push({ modelHash, rounds: [...rounds] })
+    checkProof: async (from, _model, rounds, buyerSignature) => {
+      if (buyerSignature !== proverAuth(from)) return 'NotAuthorizedProver()'
+      return rounds.length >= 3 && rounds.every((r) => r.references.length >= 3) ? null : 'InvalidRounds()'
+    },
+    proveTokenizerMismatch: async (_signer, modelHash, rounds, buyerSignature) => {
+      submitted.push({ modelHash, rounds: [...rounds], buyerSignature })
       return `0x${'99'.repeat(32)}`
     },
   }
@@ -116,8 +123,9 @@ async function run(sellers: FakeSeller[], extra: Partial<Parameters<typeof runTo
     reader: network.reader,
     contract,
     generator,
-    signer: { wallet: Wallet.createRandom(), address: '0x000000000000000000000000000000000000bEEF' },
+    signer: { wallet: Wallet.createRandom(), address: PROVER },
     simulateFrom: '0x000000000000000000000000000000000000dEaD',
+    authorizeProver: async (prover) => proverAuth(prover),
     concurrency: 4,
     evidenceDir,
     fetchFn: network.fetchFn,
@@ -141,6 +149,7 @@ test('proves a swapped seller against agreeing live-SAME references and leaves h
     assert.equal(byName('Honest').outcome, 'match')
     for (const ref of refs) assert.equal(byName(ref.name).outcome, 'match', 'a reference is judged against the other references')
     assert.equal(submitted.length, 1)
+    assert.equal(submitted[0]!.buyerSignature, proverAuth(PROVER), 'the buyer authorizes the signer, who is credited')
     assert.equal(submitted[0]!.rounds.length, 3)
     for (const round of submitted[0]!.rounds) {
       assert.equal(round.references.length, 3)
@@ -282,7 +291,7 @@ test('refuses more rounds than a proof takes before sending anything', async () 
   const { contract } = fakeContract(sellers)
   const evidenceDir = await mkdtemp(join(tmpdir(), 'tokenizer-prover-'))
   try {
-    const options = { proxyBaseUrl: 'http://proxy.test', peers: sellers.map((s) => peer(s)), reader: network.reader, contract, generator, signer: null, simulateFrom: '0x000000000000000000000000000000000000dEaD', evidenceDir, fetchFn: network.fetchFn }
+    const options = { proxyBaseUrl: 'http://proxy.test', peers: sellers.map((s) => peer(s)), reader: network.reader, contract, generator, signer: null, simulateFrom: '0x000000000000000000000000000000000000dEaD', authorizeProver: async (prover: string) => proverAuth(prover), evidenceDir, fetchFn: network.fetchFn }
     await assert.rejects(runTokenizerProver({ ...options, rounds: 9 }), /at most 8 rounds/)
     assert.equal(network.requests(), 0)
     const eight = await runTokenizerProver({ ...options, rounds: 8 })

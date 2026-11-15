@@ -30,14 +30,14 @@ import { IERC8004Registry } from "./IERC8004Registry.sol";
 ///         - otherwise it records DIFF for the service on the results layer, like any other audit.
 ///
 ///         Credits: a proof that creates a new DIFF or a new flag for a staked agent earns the prover
-///         `creditsPerProof` through the results layer.
+///         `creditsPerProof` through the results layer. The prover is the sender, and the buyer that collected
+///         the suspect receipts (every suspect receipt names it) must have signed an EIP-712
+///         `ProverAuth(address prover)` naming it, so a copy of a pending proof sent from another address reverts.
 /// @dev Trust: the owner registers request shapes and, for services no audit has recorded yet, which
 ///      model a service name is sold as. A seller can still escape by reporting usage computed with the
 ///      model's own tokenizer. References sign their own usage, so `minReferences` colluding agents with a
 ///      live SAME for the model could prove a mismatch against an honest seller; the owner can clear such a
-///      flag, and the results layer's owner such a DIFF. The submitter is credited: a copy of a pending proof
-///      sent first takes the credit. That is accepted: the evidence is single-use and expires after
-///      `maxEvidenceAgeSeconds`, so a copy can't be replayed, and the seller's verdict is the same either way.
+///      flag, and the results layer's owner such a DIFF.
 interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     /// @notice A request to `path` whose body is `head + service + mid + content + tail`, with `content` = A
     ///         or A + B and `service` the advertised service the seller signed. E.g. path
@@ -131,6 +131,10 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     error SelfAudit();
     /// @notice The results layer does not (or no longer) approve this contract as an audit.
     error NotApprovedAudit();
+    /// @notice The buyer of the suspect receipts did not sign a `ProverAuth` naming the sender.
+    error NotAuthorizedProver();
+    /// @notice A suspect receipt names another buyer than the round's first.
+    error DifferentBuyer();
 
     function results() external view returns (IAntseedVerificationResults);
     function sellerPools() external view returns (IAntseedSellerPools);
@@ -182,6 +186,9 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     function serviceHashOf(string calldata serviceName) external pure returns (bytes32);
     /// @notice The EIP-191 digest a seller signs for `receipt` (for off-chain checks).
     function receiptDigest(AntseedResponseAuth.Receipt calldata receipt) external pure returns (bytes32);
+    /// @notice The EIP-712 digest (domain `AntseedTokenizerAudits`, version 1) a buyer signs to let `prover`
+    ///         prove with the receipts it collected: `ProverAuth(address prover)`.
+    function proverAuthDigest(address prover) external view returns (bytes32);
     /// @notice The prompt tokens a signed response body reports, read as the buyer reads usage: Chat Completions
     ///         `prompt_tokens`; Responses `input_tokens` (with `input_tokens_details`, whose cached tokens it
     ///         includes); else `input_tokens` plus cache creation and cache reads (`cache_read_input_tokens`, else
@@ -193,5 +200,7 @@ interface IAntseedTokenizerAudits is IAntseedPointsModifier {
     ///         call.
     /// @param modelHash The model the suspect service is sold as (its own results status, or the owner
     ///        mapping) and the references are live SAME for.
-    function proveTokenizerMismatch(bytes32 modelHash, Round[] calldata rounds) external;
+    /// @param buyerSignature The suspect receipts' buyer's signature of `proverAuthDigest(msg.sender)`.
+    function proveTokenizerMismatch(bytes32 modelHash, Round[] calldata rounds, bytes calldata buyerSignature)
+        external;
 }

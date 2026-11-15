@@ -6,7 +6,7 @@ import { createServer as createHttpServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { Contract, JsonRpcProvider, Wallet, keccak256, toUtf8Bytes } from 'ethers'
+import { Contract, JsonRpcProvider, Wallet, encryptKeystoreJsonSync, keccak256, toUtf8Bytes } from 'ethers'
 import { VerificationStorage, createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import {
   availablePort,
@@ -22,6 +22,7 @@ const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
 // Anvil's default account 1 (prover); a public test key.
 const PROVER_PRIVATE_KEY = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 const EPOCH = 5
+const KEYSTORE_PASSWORD = 'test-only'
 const SERVICE = 'example-model'
 // The shapes `DeployTokenizerAudits.standardShapes()` registers.
 const SHAPES = [
@@ -95,9 +96,13 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
     // ── buyer side: a stand-in proxy whose sellers sign real receipts ─
     const dataDir = join(directory, 'prover')
     await mkdir(dataDir, { recursive: true })
-    await writeFile(join(dataDir, 'identity.key'), `${PROVER_PRIVATE_KEY}\n`, { mode: 0o600 })
-    const storage = new VerificationStorage(join(dataDir, 'verification.db'))
+    // The buyer proxy's identity collects the receipts and authorizes the prover, a separate funded keystore.
     const buyer = new Wallet(Wallet.createRandom().privateKey)
+    await writeFile(join(dataDir, 'identity.key'), `${buyer.privateKey.slice(2)}\n`, { mode: 0o600 })
+    const prover = new Wallet(`0x${PROVER_PRIVATE_KEY}`)
+    const keystorePath = join(dataDir, 'prover.keystore.json')
+    await writeFile(keystorePath, encryptKeystoreJsonSync(prover, KEYSTORE_PASSWORD, { scrypt: { N: 1024 } }), { mode: 0o600 })
+    const storage = new VerificationStorage(join(dataDir, 'verification.db'))
     let probes = 0
     proxy = createHttpServer((req, res) => {
       const chunks: Buffer[] = []
@@ -155,12 +160,11 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
     const configPath = join(dataDir, 'config.json')
     await writeFile(configPath, JSON.stringify({
       payments: { preferredMethod: 'crypto', crypto: { chainId: 'base-local', rpcUrl, tokenizerAuditsAddress: audits } },
-      verifier: { evidenceDir: join(dataDir, 'verifier', 'evidence') },
+      verifier: { evidenceDir: join(dataDir, 'verifier', 'evidence'), keystore: keystorePath },
     }))
     const provider = new JsonRpcProvider(rpcUrl)
     const resultsContract = new Contract(results, RESULTS_ABI, provider)
     const auditsContract = new Contract(audits, AUDITS_ABI, provider)
-    const prover = new Wallet(`0x${PROVER_PRIVATE_KEY}`)
     const verdict = async (agentId: number) => Number(await resultsContract.getFunction('liveVerdict')(agentId, serviceHash))
     // Default recheck window throughout: a dry run must not hold back the live pass after it.
     const args = ['prove-tokenizer', '--generator', GENERATOR_MODEL]
@@ -226,7 +230,7 @@ function hex(text: string): string {
 async function runCli(dataDir: string, configPath: string, args: string[]): Promise<{ status: number; output: string }> {
   const child = spawn(process.execPath, [cliEntry, '--data-dir', dataDir, '--config', configPath, 'verifier', ...args], {
     cwd: repoRoot,
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', HOME: dirname(dataDir) },
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', HOME: dirname(dataDir), ANTSEED_KEYSTORE_PASSWORD: KEYSTORE_PASSWORD },
   })
   let output = ''
   child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })

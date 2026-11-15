@@ -5,7 +5,7 @@ import { loadConfig } from '../../../config/loader.js'
 import { loadBuyerProxySnapshot } from '../../../verifier/model-run.js'
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
 import { modelProbeGenerator, runTokenizerProver } from '../../../verifier/tokenizer-prover.js'
-import { createTokenizerAuditsClient } from '../../payment-utils.js'
+import { createTokenizerAuditsClient, loadCryptoContext } from '../../payment-utils.js'
 import { getGlobalOptions } from '../types.js'
 import { resolveAuditorSigner } from './auditor-identity.js'
 
@@ -65,6 +65,8 @@ export function registerVerifierProveTokenizerCommand(verifierCmd: Command): voi
       else console.log(chalk.dim('Dry run: proofs are simulated, not sent'))
 
       const proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+      // The buyer proxy's identity collected the receipts, so it names who may prove with them.
+      const { wallet: buyer } = await loadCryptoContext(globalOptions.dataDir)
       const reader = await openResponseAuthReader({ dataDir: globalOptions.dataDir })
       try {
         const summary = await runTokenizerProver({
@@ -75,6 +77,7 @@ export function registerVerifierProveTokenizerCommand(verifierCmd: Command): voi
           generator: modelProbeGenerator({ proxyBaseUrl: proxy.baseUrl, ...generator, fallbackModels: FALLBACK_GENERATORS }),
           signer: signer ? { wallet: signer.wallet, address: signer.address } : null,
           simulateFrom: DRY_RUN_PROVER,
+          authorizeProver: (prover) => contract.signProverAuth(buyer, prover),
           ...(options.rounds ? { rounds: positiveInteger(options.rounds, '--rounds') } : {}),
           ...(options.service?.length ? { services: options.service } : {}),
           ...(options.peer?.length ? { peerIds: options.peer } : {}),
