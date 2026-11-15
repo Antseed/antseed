@@ -1944,7 +1944,7 @@ export class BuyerPaymentManager {
     ) {
       await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
     }
-    const session = this.getActiveSession(sellerPeerId);
+    let session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
       return false;
@@ -2210,7 +2210,23 @@ export class BuyerPaymentManager {
     // use: it rejects the new one, can never submit the top-up, and the
     // channel strands work above the deposit. Sign exactly the confirmed
     // deposit first; the next prompt signs the rest.
-    const confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    let confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
+      // A top-up may have landed already, with the seller's catch-up prompt
+      // for it answered before this request crossed the old deposit: no prompt
+      // would come for the rest. Read the deposit first and cap at what is
+      // locked on-chain now; a top-up that fully landed leaves no cap.
+      const ceiling = this._getCeiling(sellerPeerId);
+      const outstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, ceiling);
+      if (outstanding === null) return false;
+      // A landed top-up was reconciled and stored during the read: sign onto
+      // that row, or the commit below writes the pending reserve back.
+      const current = this.getActiveSession(sellerPeerId);
+      if (current?.sessionId !== session.sessionId) return false;
+      session = current;
+      if (!this._pendingReserveAuth.has(sellerPeerId)) confirmedDeposit = 0n;
+      else if (ceiling - outstanding > confirmedDeposit) confirmedDeposit = ceiling - outstanding;
+    }
     if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
       debugLog(`[BuyerPayment] NeedAuth: signing the confirmed deposit ${confirmedDeposit} first (target ${effectiveAmount}) while a top-up is pending`);
       effectiveAmount = confirmedDeposit;
