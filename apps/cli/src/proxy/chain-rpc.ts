@@ -17,7 +17,7 @@
  *   so callers serve cached data instead of hammering.
  * - Requests are paced per endpoint so a burst never exceeds a few per second.
  */
-import { FetchRequest, Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
 import { recordRpcCall } from './rpc-sources.js'
 
 export interface RpcTransportResponse {
@@ -471,21 +471,26 @@ function retryAfter(value: string | null | undefined): number | null {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null
 }
 
+/**
+ * One POST, aborted once REQUEST_TIMEOUT_MS has passed in total. ethers' FetchRequest only times
+ * out a socket that goes quiet, so a response that kept trickling in never failed, and a write
+ * waiting on it held its signer's nonce lock for good.
+ */
 async function fetchTransport(url: string, body: string): Promise<RpcTransportResponse> {
-  const request = new FetchRequest(url)
-  request.timeout = REQUEST_TIMEOUT_MS
-  request.retryFunc = async () => false
-  request.setThrottleParams({ maxAttempts: 1 })
-  request.setHeader('content-type', 'application/json')
-  request.body = body
-  const response = await request.send()
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const text = await response.text()
   let parsed: unknown = null
   try {
-    parsed = response.bodyJson
+    parsed = JSON.parse(text)
   } catch {
     parsed = null
   }
-  return { status: response.statusCode, body: parsed, retryAfterMs: retryAfter(response.getHeader('retry-after')) }
+  return { status: response.status, body: parsed, retryAfterMs: retryAfter(response.headers.get('retry-after')) }
 }
 
 export interface ChainRpcTarget {

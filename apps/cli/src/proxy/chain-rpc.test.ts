@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import test from 'node:test'
 import { Contract, Interface, isError } from 'ethers'
 import { startFakeChainRpc } from './chain-rpc-test-support.js'
@@ -213,4 +214,29 @@ test('redactUrlsIn masks every http(s) URL inside a message and leaves the rest'
   const masked = redactUrlsIn(message)
   assert.equal(masked, 'server response 401 Unauthorized (request={  }, info={ "requestUrl": "https://lb.drpc.live/…", "responseStatus": "401" }) after https://fallback.example.test/… tried')
   assert.equal(redactUrlsIn('no answer from the chain'), 'no answer from the chain')
+})
+
+test('moves to the next endpoint when a response keeps trickling in past the deadline', { timeout: 30_000 }, async (t) => {
+  // Every response starts but never finishes: a byte arrives every 200 ms, so the socket never goes quiet.
+  const trickles: ReturnType<typeof setInterval>[] = []
+  const stalled = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    trickles.push(setInterval(() => res.write(' '), 200))
+  })
+  await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    trickles.forEach(clearInterval)
+    stalled.closeAllConnections()
+    stalled.close()
+  })
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const address = stalled.address()
+  assert.ok(address && typeof address === 'object')
+  const provider = new ChainRpcProvider([`http://127.0.0.1:${address.port}`, rpc.url], 8453)
+  t.after(() => provider.destroy())
+
+  const startedAt = Date.now()
+  assert.equal(await provider.send('eth_getCode', [addresses[0], 'latest']), '0x6080604052')
+  assert.ok(Date.now() - startedAt < 15_000, 'the stalled endpoint is given up at its 10 s deadline')
 })

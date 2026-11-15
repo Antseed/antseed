@@ -3,6 +3,7 @@ import {
   FallbackProvider,
   FetchRequest,
   getBigInt,
+  isError,
   JsonRpcProvider,
   makeError,
   NonceManager,
@@ -10,7 +11,10 @@ import {
   type AbstractProvider,
   type AbstractSigner,
   type CallExceptionError,
+  type FetchCancelSignal,
+  type GetUrlResponse,
   type InterfaceAbi,
+  type PerformActionRequest,
   type TransactionReceipt,
   type TransactionRequest,
   type TransactionResponse,
@@ -40,10 +44,115 @@ const MAX_RECENT_TIP_WEI = 100_000_000n;
  */
 const NONCE_CURSOR_TRUST_MS = 60_000;
 
+/**
+ * Send one RPC request with fetch, aborted once `req.timeout` has passed in total. ethers' Node
+ * transport only times out a socket that goes quiet, so a response that keeps trickling in never
+ * failed, and a write waiting on it held the signer's nonce lock, and every later write, forever.
+ */
+export async function fetchWithDeadline(req: FetchRequest, signal?: FetchCancelSignal): Promise<GetUrlResponse> {
+  const controller = new AbortController();
+  let cancelled = false;
+  signal?.addListener(() => {
+    cancelled = true;
+    controller.abort();
+  });
+  const timer = setTimeout(() => controller.abort(), req.timeout);
+  try {
+    const response = await fetch(req.url, {
+      method: req.method,
+      headers: req.headers,
+      ...(req.body ? { body: new Uint8Array(req.body) } : {}),
+      signal: controller.signal,
+    });
+    const body = new Uint8Array(await response.arrayBuffer());
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, name) => { headers[name.toLowerCase()] = value; });
+    return { statusCode: response.status, statusMessage: response.statusText, headers, body: body.length > 0 ? body : null };
+  } catch (err) {
+    if (cancelled) throw makeError('request cancelled', 'CANCELLED');
+    if (controller.signal.aborted) throw makeError('request timeout', 'TIMEOUT');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
   request.timeout = JSON_RPC_REQUEST_TIMEOUT_MS;
+  request.getUrlFunc = fetchWithDeadline;
   return new JsonRpcProvider(request, network, opts);
+}
+
+/** An answer from the chain itself, which another backend would give too, rather than a failed request. */
+function isChainAnswer(err: unknown): boolean {
+  return isError(err, 'CALL_EXCEPTION')
+    || isError(err, 'INSUFFICIENT_FUNDS')
+    || isError(err, 'NONCE_EXPIRED')
+    || isError(err, 'REPLACEMENT_UNDERPRICED');
+}
+
+/**
+ * Run `attempts` in order and settle with the first answer: the next attempt starts when the one
+ * before fails or has not answered within `stallMs`, and the slower ones keep running (each request
+ * ends at its own deadline). A chain answer (a revert) settles at once; when every attempt fails,
+ * the first failure is thrown.
+ */
+function firstAnswer<T>(attempts: Array<() => Promise<T>>, stallMs: number): Promise<T> {
+  if (attempts.length === 0) return Promise.reject(new Error('No RPC backend to ask'));
+  return new Promise<T>((resolve, reject) => {
+    let next = 0;
+    let running = 0;
+    let settled = false;
+    let firstError: unknown;
+    const start = (): void => {
+      if (settled || next >= attempts.length) return;
+      const attempt = attempts[next++]!;
+      running += 1;
+      const stall = setTimeout(start, stallMs);
+      attempt().then(
+        (result) => {
+          clearTimeout(stall);
+          if (settled) return;
+          settled = true;
+          resolve(result);
+        },
+        (err: unknown) => {
+          clearTimeout(stall);
+          running -= 1;
+          if (settled) return;
+          if (isChainAnswer(err)) {
+            settled = true;
+            reject(err);
+            return;
+          }
+          firstError ??= err;
+          if (next < attempts.length) {
+            start();
+          } else if (running === 0) {
+            settled = true;
+            reject(firstError);
+          }
+        },
+      );
+    };
+    start();
+  });
+}
+
+/**
+ * A FallbackProvider whose reads fail over. ethers' own starts the next backend when one stalls,
+ * but the promises it then waits on leave the new backend out, so each read still waited for the
+ * first backend to finish. Here a read goes to the backends in priority order (`firstAnswer`). A
+ * broadcast still goes to every backend at once, as before.
+ */
+export class StaggeredFallbackProvider extends FallbackProvider {
+  override async _perform<T = unknown>(req: PerformActionRequest): Promise<T> {
+    if (req.method === 'broadcastTransaction') return super._perform(req);
+    const configs = [...this.providerConfigs].sort((a, b) => a.priority - b.priority);
+    const stallMs = Math.min(...configs.map((config) => config.stallTimeout));
+    return firstAnswer(configs.map((config) => () => this._translatePerform(config.provider, req) as Promise<T>), stallMs);
+  }
 }
 
 function buildProvider(rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: number): AbstractProvider {
@@ -59,7 +168,7 @@ function buildProvider(rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: 
     stallTimeout: FALLBACK_STALL_TIMEOUT_MS,
     weight: 1,
   }));
-  return new FallbackProvider(configs, network, { quorum: 1 });
+  return new StaggeredFallbackProvider(configs, network, { quorum: 1 });
 }
 
 function revertError(receipt: TransactionReceipt): CallExceptionError {
@@ -312,20 +421,16 @@ export abstract class BaseEvmClient {
 
   /** Median over recent blocks of their RECENT_TIP_PERCENTILE tip (eth_feeHistory), or null when no RPC answers. */
   private async _readRecentTip(): Promise<bigint | null> {
-    for (const backend of this._backends()) {
-      if (!(backend instanceof JsonRpcProvider)) continue;
-      try {
-        const history = await backend.send('eth_feeHistory', [`0x${RECENT_TIP_BLOCKS.toString(16)}`, 'latest', [RECENT_TIP_PERCENTILE]]) as { reward?: string[][] };
-        const tips = (history.reward ?? [])
-          .map((rewards) => getBigInt(rewards[0] ?? 0))
-          .filter((tip) => tip > 0n)
-          .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-        return tips.length > 0 ? tips[tips.length >> 1]! : null;
-      } catch {
-        // RPC timeout, rate limit or no support: try the next backend.
-      }
-    }
-    return null;
+    const backends = this._backends().filter((backend) => backend instanceof JsonRpcProvider);
+    // An RPC timeout, rate limit or no support moves on to the next backend.
+    return firstAnswer(backends.map((backend) => async () => {
+      const history = await backend.send('eth_feeHistory', [`0x${RECENT_TIP_BLOCKS.toString(16)}`, 'latest', [RECENT_TIP_PERCENTILE]]) as { reward?: string[][] };
+      const tips = (history.reward ?? [])
+        .map((rewards) => getBigInt(rewards[0] ?? 0))
+        .filter((tip) => tip > 0n)
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      return tips.length > 0 ? tips[tips.length >> 1]! : null;
+    }), FALLBACK_STALL_TIMEOUT_MS).catch(() => null);
   }
 
   private _backends(): AbstractProvider[] {
@@ -337,17 +442,13 @@ export abstract class BaseEvmClient {
   /**
    * eth_maxPriorityFeePerGas straight from the RPC, or null when no RPC answers. A FallbackProvider
    * answers getPriorityFee through each backend's getFeeData(), which hides a failed read behind the
-   * same 1 gwei default, so its backends are asked one by one instead.
+   * same 1 gwei default, so its backends are asked directly instead.
    */
   private async _readPriorityFee(): Promise<bigint | null> {
-    for (const backend of this._backends()) {
-      try {
-        return getBigInt(await backend._perform({ method: 'getPriorityFee' }), '%response');
-      } catch {
-        // RPC timeout, rate limit or no support: try the next backend.
-      }
-    }
-    return null;
+    // An RPC timeout, rate limit or no support moves on to the next backend.
+    return firstAnswer(this._backends().map((backend) => async () => (
+      getBigInt(await backend._perform({ method: 'getPriorityFee' }), '%response')
+    )), FALLBACK_STALL_TIMEOUT_MS).catch(() => null);
   }
 
   /** Apply the gas buffer and fees, and broadcast on the signer's next nonce. */

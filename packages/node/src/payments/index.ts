@@ -229,7 +229,7 @@ export type { BuyerNegotiatorConfig, Handle402Result, NegotiationEmitter } from 
 
 // Seller payment manager
 export { SellerPaymentManager, DEFAULT_MIN_SETTLE_DELTA_STR } from './seller-payment-manager.js';
-export type { SellerPaymentConfig } from './seller-payment-manager.js';
+export type { SellerPaymentConfig, ReserveFailure } from './seller-payment-manager.js';
 
 // Pricing utilities
 export {
