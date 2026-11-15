@@ -1,4 +1,4 @@
-import { computeUsageCostUsdc, type ServicePricing } from '@antseed/buyer-core/pricing';
+import type { ServicePricing } from '@antseed/buyer-core/pricing';
 import type { WorkerPaymentProof } from '@antseed/buyer-core/worker-e2e';
 import { makeChannelsDomain, SPENDING_AUTH_TYPES } from '@antseed/protocol/signatures';
 import { decodeWorkerTail } from '@antseed/protocol/worker-attribution';
@@ -106,10 +106,8 @@ export function isChargeablePrice(price: ServicePricing | undefined): price is S
   return Boolean(price && (price.inputUsdPerMillion > 0 || price.outputUsdPerMillion > 0 || (price.cachedInputUsdPerMillion ?? 0) > 0));
 }
 
-/** USDC base units an answer costs at `price`: the buyer's own formula (computeUsageCostUsdc). */
-export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint }, price: ServicePricing): bigint {
-  return computeUsageCostUsdc(usage, price);
-}
+/** USDC base units an answer costs at a price: the buyer's own formula. */
+export { computeUsageCostUsdc as answerCostUsdc } from '@antseed/buyer-core/pricing';
 
 interface ChannelAccount {
   /** The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it). */

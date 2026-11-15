@@ -1,5 +1,5 @@
 import type { BuyerPeerView, BuyerSigner } from '@antseed/buyer-core';
-import type { SealedWorkerRequest, WorkerE2EClient, WorkerSealOptions, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
+import type { SealedWorkerRequest, WorkerE2EClient, WorkerSealOptions } from '@antseed/buyer-core/worker-e2e';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import { DEVICE_ATTESTATION_MAX_AGE_S, isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
@@ -7,7 +7,6 @@ import {
   isWorkerAttestation,
   MAX_WORKER_RECIPIENTS,
   sealRequest,
-  type UsageLike,
   verifyWorkerAttestation,
   verifyWorkerKeyCertificate,
   type WorkerAssignment,
@@ -71,11 +70,6 @@ function parseAssignment(raw: unknown): WorkerAssignment {
     throw new Error('Colony pool returned a malformed assignment');
   }
   return value as WorkerAssignment;
-}
-
-/** Token counts from an OpenAI-style (or Anthropic-style) usage object. */
-function workerUsage(usage: UsageLike | null): WorkerUsage {
-  return usageCounts(usage);
 }
 
 /**
@@ -153,7 +147,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         return a.inputTokens === c.inputTokens && a.cachedInputTokens === c.cachedInputTokens && a.outputTokens === c.outputTokens;
       },
       get usage() {
-        return workerUsage(sealed.opener.usage.authenticated);
+        return usageCounts(sealed.opener.usage.authenticated);
       },
     };
   }
