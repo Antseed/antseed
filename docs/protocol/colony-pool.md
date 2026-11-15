@@ -459,8 +459,9 @@ workers serve requests it never pays for.
 - **Headroom pays workers too.** A buyer may sign ahead of what it has
   counted (a seller prompt, a top-up). A verified worker answer that this
   signed headroom covers is credited from it: the buyer signs the auth again,
-  one base unit higher (at the same amount only when the reserve is full),
-  with the worker in its tail. What it can credit is the signed amount less
+  one base unit higher, with the worker in its tail. When the reserve is full
+  and the auth can't rise, the buyer signs nothing: the credit stays owed
+  until an auth can advance. What it can credit is the signed amount less
   every cost counted before, so a tail never adds up to more than the auth
   signs. If the pool already settled the headroom, the contract pays the
   worker from what that settlement held for a later tail (see the contract

@@ -75,10 +75,9 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
     return payout;
   });
   const workers = linked.filter((_, index) => payouts[index]!.toLowerCase() === ctx.address.toLowerCase());
-  const [usdcOwed, own, ...workerEarnings] = await Promise.all([
+  const [usdcOwed, [own, ...workerEarnings]] = await Promise.all([
     pool.usdcBalance(ctx.address),
-    accountAnts(ctx, address, ctx.address, epochs),
-    ...workers.map((worker) => accountAnts(ctx, address, worker, epochs)),
+    accountsAnts(ctx, address, [ctx.address, ...workers], epochs) as Promise<[AccountAnts, ...AccountAnts[]]>,
   ]);
   // Funding depends only on the pool and epoch: one read for every account's weighted epochs.
   const weighted = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.weighted))].sort((a, b) => a - b);
@@ -99,17 +98,27 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   };
 }
 
-/** What `account` has earned in ANTS on a pool over `epochs`: the epochs it has weight in, and what it can claim now. */
-async function accountAnts(ctx: AntsContext, pool: string, account: string, epochs: number[]): Promise<{ owed: bigint; epochs: number[]; weighted: number[] }> {
+interface AccountAnts { owed: bigint; epochs: number[]; weighted: number[] }
+
+/**
+ * What each of `accounts` has earned in ANTS on a pool over `epochs` (in
+ * `accounts` order): the epochs it has weight in, and what it can claim now.
+ * One batched read per phase covers every account.
+ */
+async function accountsAnts(ctx: AntsContext, pool: string, accounts: string[], epochs: number[]): Promise<AccountAnts[]> {
+  const pairs = accounts.flatMap((account) => epochs.map((epoch) => ({ account, epoch })));
   // Only an epoch the account has weight in can owe it ANTS, so the rest cost one batched read each.
-  const weights = await readEach(ctx, pool, 'epochWeight', epochs.map((epoch) => [epoch, account]));
-  const weighted = epochs.filter((_, index) => weights[index]! > 0n);
-  const owedEach = await readEach(ctx, pool, 'pendingAnts', weighted.map((epoch) => [account, [epoch]]));
-  return {
-    owed: owedEach.reduce((sum, owed) => sum + owed, 0n),
-    epochs: weighted.filter((_, index) => owedEach[index]! > 0n),
-    weighted,
-  };
+  const weights = await readEach(ctx, pool, 'epochWeight', pairs.map(({ account, epoch }) => [epoch, account]));
+  const weighted = pairs.filter((_, index) => weights[index]! > 0n);
+  const owed = await readEach(ctx, pool, 'pendingAnts', weighted.map(({ account, epoch }) => [account, [epoch]]));
+  const byAccount = new Map(accounts.map((account): [string, AccountAnts] => [account, { owed: 0n, epochs: [], weighted: [] }]));
+  weighted.forEach(({ account, epoch }, index) => {
+    const earned = byAccount.get(account)!;
+    earned.weighted.push(epoch);
+    earned.owed += owed[index]!;
+    if (owed[index]! > 0n) earned.epochs.push(epoch);
+  });
+  return accounts.map((account) => byAccount.get(account)!);
 }
 
 /**
