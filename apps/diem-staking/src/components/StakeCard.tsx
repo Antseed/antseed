@@ -12,6 +12,8 @@ import {
   useUserStats,
   useEpochClock,
   useUnstakeState,
+  useCatchUpState,
+  type CatchUpState,
   type UnstakeState,
 } from '../lib/hooks';
 import {
@@ -22,6 +24,7 @@ import {
   useClaimUnstakeBatch,
   useClaimUsdc,
   useClaimAnts,
+  useCatchUp,
 } from '../lib/actions';
 import {
   fmtDiem,
@@ -69,6 +72,8 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
 
   const pool = usePoolStats();
   const user = useUserStats();
+  const catchUp = useCatchUpState(user.stakedDiem);
+  const blocked = catchUp.state.status === 'needed';
 
   const stakeMaxAmount = useMemo(() => {
     if (!isConnected || user.walletDiem == null) return null;
@@ -155,8 +160,13 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
           <button className={tab === 'claim' ? 'on' : ''} onClick={() => onChangeTab('claim')}>Claim</button>
         </div>
 
+        {catchUp.state.status === 'needed' && (
+          <CatchUpNotice state={catchUp.state} onDone={catchUp.refetch} />
+        )}
+
         {tab === 'stake' && (
           <StakePanel
+            blocked={blocked}
             amt={amt}
             setAmt={setAmtFromUser}
             setQuick={quickSet}
@@ -175,6 +185,7 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
 
         {tab === 'unstake' && (
           <UnstakePanel
+            blocked={blocked}
             amt={amt}
             setAmt={setAmtFromUser}
             setQuick={quickSet}
@@ -189,6 +200,7 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
 
         {tab === 'claim' && (
           <ClaimPanel
+            blocked={blocked}
             isConnected={isConnected}
             pendingUsdc={user.pendingUsdc}
             pendingAnts={user.pendingAnts}
@@ -217,6 +229,7 @@ export function StakeCard({ diemPrice, apy }: StakeCardProps) {
 
 
 interface StakePanelProps {
+  blocked: boolean;
   amt: string;
   setAmt: (v: string) => void;
   setQuick: (v: string) => void;
@@ -277,6 +290,7 @@ function StakePanel(props: StakePanelProps) {
 
   const disabled =
     !props.isConnected ||
+    props.blocked ||
     amtInvalid ||
     parsedAmt === 0n ||
     insufficientBalance ||
@@ -376,6 +390,7 @@ function StakePanel(props: StakePanelProps) {
 
 
 interface UnstakePanelProps {
+  blocked: boolean;
   amt: string;
   setAmt: (v: string) => void;
   setQuick: (v: string) => void;
@@ -411,7 +426,7 @@ function UnstakePanel(props: UnstakePanelProps) {
   } catch {
   }
   const amountTooLarge = props.stakedDiem != null && parsedAmt > props.stakedDiem;
-  const disabled = !props.isConnected || parsedAmt === 0n || amountTooLarge || initiate.isPending;
+  const disabled = !props.isConnected || props.blocked || parsedAmt === 0n || amountTooLarge || initiate.isPending;
 
   return (
     <div className="panel-v2 unstake-panel-v2">
@@ -596,6 +611,7 @@ function UnstakeStateView({
 
 
 interface ClaimPanelProps {
+  blocked: boolean;
   isConnected: boolean;
   pendingUsdc: bigint | null;
   pendingAnts: bigint | null;
@@ -643,7 +659,7 @@ function ClaimPanel(props: ClaimPanelProps) {
         {props.isConnected ? (
           <button
             className="stake-cta brand-fill"
-            disabled={props.pendingUsdc == null || props.pendingUsdc === 0n || claimUsdc.isPending}
+            disabled={props.blocked || props.pendingUsdc == null || props.pendingUsdc === 0n || claimUsdc.isPending}
             onClick={() => claimUsdc.run()}
           >
             {claimUsdc.isPending
@@ -676,7 +692,7 @@ function ClaimPanel(props: ClaimPanelProps) {
           {props.isConnected ? (
             <button
               className="stake-cta brand-fill"
-              disabled={claimableEpochs === 0 || claimAnts.isPending}
+              disabled={props.blocked || claimableEpochs === 0 || claimAnts.isPending}
               onClick={() => claimAnts.run(props.claimableAntsEpochs)}
             >
               {claimAnts.isPending
@@ -721,6 +737,44 @@ function ClaimPanel(props: ClaimPanelProps) {
   );
 }
 
+
+// Shown above every tab: while the backlog is over the contract's limit, lock,
+// withdraw and both claims revert with BacklogTooLarge(), so their buttons stay
+// disabled until this transaction lands.
+function CatchUpNotice({
+  state,
+  onDone,
+}: {
+  state: Extract<CatchUpState, { status: 'needed' }>;
+  onDone: () => void;
+}) {
+  const catchUp = useCatchUp();
+  const remainingAfter = state.epochsBehind - state.epochsThisTx;
+  return (
+    <div className="claim-note catch-up-note">
+      <span>
+        {state.kind === 'user'
+          ? `Your locked position is ${state.epochsBehind} reward epochs behind. Bring it up to date before you lock, withdraw or claim; your USDC and $ANTS stay where they are.`
+          : `The Program is ${state.epochsBehind} reward epochs behind. Bring it up to date before you lock, withdraw or claim.`}
+        {remainingAfter > 0 ? ` This takes ${Math.ceil(state.epochsBehind / state.epochsThisTx)} transactions.` : ''}
+      </span>
+      <button
+        className="stake-cta"
+        disabled={catchUp.isPending}
+        onClick={async () => {
+          try {
+            await catchUp.run(state.kind, state.epochsThisTx);
+          } finally {
+            onDone();
+          }
+        }}
+      >
+        {catchUp.isPending ? 'Updating…' : `Update ${state.epochsThisTx} epochs →`}
+      </button>
+      {catchUp.error && <div style={{ color: '#c62828' }}>{errorText(catchUp.error)}</div>}
+    </div>
+  );
+}
 
 function ConnectCta({ label }: { label: string }) {
   return (

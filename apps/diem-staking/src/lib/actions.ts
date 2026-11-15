@@ -134,3 +134,27 @@ export function useClaimAnts() {
   );
   return { run, isPending: isPending || isSwitchingChain, error, reset };
 }
+
+/**
+ * Clear a reward-epoch backlog that blocks every write. `catchUpPoints`
+ * processes the caller's own epochs (and syncs the pool first);
+ * `syncRewardEpochs` only syncs the pool, for wallets with nothing locked.
+ */
+export function useCatchUp() {
+  const { writeContractAsync, isPending, error, reset } = useWriteContract();
+  const { ensureDiemNetwork, isSwitchingChain } = useDiemNetwork();
+  const run = useCallback(
+    async (kind: 'user' | 'pool', numEpochs: number) => {
+      await ensureDiemNetwork();
+      return writeContractAsync({
+        address: DIEM_STAKING_PROXY,
+        abi: DIEM_STAKING_PROXY_ABI,
+        functionName: kind === 'user' ? 'catchUpPoints' : 'syncRewardEpochs',
+        chainId: DIEM_CHAIN_ID,
+        args: [numEpochs],
+      });
+    },
+    [ensureDiemNetwork, writeContractAsync],
+  );
+  return { run, isPending: isPending || isSwitchingChain, error, reset };
+}

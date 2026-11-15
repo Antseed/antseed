@@ -417,3 +417,70 @@ export function useDiemAllowance(): { allowance: bigint | null; refetch: () => v
   });
   return { allowance: (data as bigint | undefined) ?? null, refetch: () => { void refetch(); } };
 }
+
+
+// Epochs a single catch-up transaction processes. The contract has no cap on
+// catchUpPoints; this keeps gas well inside a block for long backlogs, and the
+// notice reappears with the rest once the transaction lands.
+const MAX_CATCH_UP_EPOCHS_PER_TX = 48;
+
+export type CatchUpState =
+  | { status: 'none' }
+  | { status: 'needed'; kind: 'user' | 'pool'; epochsBehind: number; epochsThisTx: number };
+
+/**
+ * Every write except claimUnstakeBatch reverts with BacklogTooLarge() once the
+ * pool or the wallet is more than MAX_EPOCHS_PER_CAPTURE reward epochs behind.
+ * A wallet that stays locked without touching the contract for that long is
+ * stuck until it calls catchUpPoints; this reports when that is needed.
+ */
+export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpState; refetch: () => void } {
+  const { address } = useAccount();
+  const deployed = useProxyDeployed();
+  const enabled = deployed && !!address;
+
+  const { data, refetch } = useReadContracts({
+    allowFailure: true,
+    contracts: enabled
+      ? [
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'MAX_EPOCHS_PER_CAPTURE', chainId: DIEM_CHAIN_ID },
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'syncBacklog', chainId: DIEM_CHAIN_ID },
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'userPointsBacklog', args: [address!], chainId: DIEM_CHAIN_ID },
+        ]
+      : [],
+    query: { enabled, refetchInterval: POLL_MS },
+  });
+
+  const state = useMemo<CatchUpState>(() => {
+    const cap = data?.[0]?.result;
+    const pool = data?.[1]?.result;
+    const user = data?.[2]?.result;
+    if (cap == null || pool == null || user == null) return { status: 'none' };
+
+    const poolBehind = pool[2];
+    const userBehind = stakedDiem != null && stakedDiem > 0n ? user[2] : 0;
+
+    // catchUpPoints(n) first syncs up to n pool epochs, then moves the wallet
+    // up to n epochs, so n = both backlogs clears both in one call.
+    if (userBehind > cap) {
+      const epochsBehind = userBehind + poolBehind;
+      return {
+        status: 'needed',
+        kind: 'user',
+        epochsBehind,
+        epochsThisTx: Math.min(epochsBehind, MAX_CATCH_UP_EPOCHS_PER_TX),
+      };
+    }
+    if (poolBehind > cap) {
+      return {
+        status: 'needed',
+        kind: 'pool',
+        epochsBehind: poolBehind,
+        epochsThisTx: Math.min(poolBehind, MAX_CATCH_UP_EPOCHS_PER_TX),
+      };
+    }
+    return { status: 'none' };
+  }, [data, stakedDiem]);
+
+  return { state, refetch: () => { void refetch(); } };
+}
