@@ -706,6 +706,7 @@ export class BuyerPaymentManager {
       currentCumulative,
       maxSignable,
       'extendCurrentSpendingAuth',
+      targetCumulative,
     );
     maxSignable = reopened.maxSignable;
 
@@ -752,10 +753,11 @@ export class BuyerPaymentManager {
     if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // A SpendingAuth committed while this one was signed already signed past the target.
     if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
-    // Reopening takes everything signed so far as verified. The seller's 402
-    // asked for all it had served, so the requests recorded before now are
-    // paid: counting one on top later would pay for it twice.
-    if (reopened.verifiedCost !== (this._verifiedCost.get(sellerPeerId) ?? 0n)) this._requestLedgers.delete(sellerPeerId);
+    // Reopening counted these responses toward verified cost, each whole:
+    // counting one again later would count it twice. A response recorded
+    // while this was signed was not counted, and stays owed.
+    const ledger = this._requestLedgers.get(sellerPeerId);
+    for (const [countedId, record] of reopened.counted) if (ledger?.get(countedId) === record) ledger.delete(countedId);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
       sellerPeerId,
@@ -941,33 +943,45 @@ export class BuyerPaymentManager {
     currentCumulative: bigint,
     maxSignable: bigint,
     context: 'extendCurrentSpendingAuth' | 'handleNeedAuth',
+    targetCumulative?: bigint,
     verifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n,
-  ): { maxSignable: bigint; verifiedCost: bigint } {
-    // Overdraft-window unblock: when the buyer has already signed up to
-    // `verified + maxPerRequest` and the seller returned 402 because `spent`
-    // caught up, advance `verifiedCost` to the current signed cumulative so
-    // the window reopens. The buyer has already committed to pay
-    // `currentCumulative` via the signed SpendingAuth, so the seller can
-    // already claim that much on-chain — advancing verified to match doesn't
-    // expose new funds, it just reclaims overdraft headroom.
+  ): { maxSignable: bigint; verifiedCost: bigint; counted: Array<[string, DeliveredResponse]> } {
+    // A catch-up 402 on a used-up overdraft window (the buyer has signed up to
+    // `verified + maxPerRequest`) reopens it only for responses the buyer
+    // received and priced and has not paid for yet: its open ledger records,
+    // oldest first, each counted whole at the buyer's own price, until verified
+    // cost reaches the seller's target or, if higher, what is already signed.
+    // An attempt cut off is paid only through its NeedAuth. No tolerance applies
+    // here, since the 402 names a total, not a response. Records not reached
+    // stay owed. With nothing counted the window stays used up and nothing
+    // more is signed. The records counted are returned for the caller to
+    // settle in the ledger once it signs.
     //
-    // SECURITY: the trust anchor here is `currentCumulative`, NOT any
-    // seller-supplied target. A malicious seller could overstate required
-    // spend in a 402 / NeedAuth path in an attempt to drain the reserve. We
-    // defend by only advancing verifiedCost to the amount the buyer has
-    // already signed. Seller-provided values remain destination hints bounded
-    // by `verifiedCost + maxPerRequestUsdc` and are never used to mint new
-    // trust directly.
-    if (maxSignable > currentCumulative) return { maxSignable, verifiedCost };
+    // SECURITY: the trust anchor here is the buyer's own ledger. Everything
+    // added to verified cost comes from the buyer's own priced records; the
+    // seller's target only decides how far down the list the buyer goes. The
+    // last record counted may carry verified cost past that point by part of
+    // its price.
+    const counted: Array<[string, DeliveredResponse]> = [];
+    if (maxSignable > currentCumulative) return { maxSignable, verifiedCost, counted };
 
-    if (currentCumulative <= verifiedCost) return { maxSignable, verifiedCost };
+    if (currentCumulative <= verifiedCost) return { maxSignable, verifiedCost, counted };
 
-    const reopened = this._maxSignableForVerified(sellerPeerId, currentCumulative);
+    const cap = targetCumulative != null && targetCumulative > currentCumulative ? targetCumulative : currentCumulative;
+    let nextVerifiedCost = verifiedCost;
+    for (const [requestId, record] of this._requestLedgers.get(sellerPeerId) ?? []) {
+      if (nextVerifiedCost >= cap) break;
+      if (record.cutOff || record.costUsdc <= 0n) continue;
+      nextVerifiedCost += record.costUsdc;
+      counted.push([requestId, record]);
+    }
+    if (counted.length === 0) return { maxSignable, verifiedCost, counted };
+    const reopened = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     debugLog(
-      `[BuyerPayment] ${context}: will advance verifiedCost ${verifiedCost} → ${currentCumulative} ` +
-      `to unblock overdraft window for ${sellerPeerId.slice(0, 12)}...`,
+      `[BuyerPayment] ${context}: will advance verifiedCost ${verifiedCost} → ${nextVerifiedCost} ` +
+      `for received responses to reopen the overdraft window for ${sellerPeerId.slice(0, 12)}...`,
     );
-    return { maxSignable: reopened, verifiedCost: currentCumulative };
+    return { maxSignable: reopened, verifiedCost: nextVerifiedCost, counted };
   }
 
   private _needsCeilingAdvance(requestedAmount: bigint, maxSignable: bigint, ceiling: bigint): boolean {
@@ -1921,7 +1935,7 @@ export class BuyerPaymentManager {
     ) {
       await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
     }
-    const session = this.getActiveSession(sellerPeerId);
+    let session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
       return false;
@@ -2163,7 +2177,7 @@ export class BuyerPaymentManager {
     // A NeedAuth never reopens a used-up overdraft window: the seller could
     // repeat the frame and have the buyer sign one more window each time,
     // with no work to show for it. Only the buyer's own 402 retry reopens it
-    // (extendCurrentSpendingAuth).
+    // (extendCurrentSpendingAuth), and only for responses the buyer received.
     if (maxSignable <= currentCumulative && !needsTopUp) {
       countUnsigned();
       debugWarn(
@@ -2187,7 +2201,23 @@ export class BuyerPaymentManager {
     // use: it rejects the new one, can never submit the top-up, and the
     // channel strands work above the deposit. Sign exactly the confirmed
     // deposit first; the next prompt signs the rest.
-    const confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    let confirmedDeposit = this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount ?? 0n;
+    if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
+      // A top-up may have landed already, with the seller's catch-up prompt
+      // for it answered before this request crossed the old deposit: no prompt
+      // would come for the rest. Read the deposit first and cap at what is
+      // locked on-chain now; a top-up that fully landed leaves no cap.
+      const ceiling = this._getCeiling(sellerPeerId);
+      const outstanding = await this._outstandingTopUp(sellerPeerId, session.sessionId, ceiling);
+      if (outstanding === null) return false;
+      // A landed top-up was reconciled and stored during the read: sign onto
+      // that row, or the commit below writes the pending reserve back.
+      const current = this.getActiveSession(sellerPeerId);
+      if (current?.sessionId !== session.sessionId) return false;
+      session = current;
+      if (!this._pendingReserveAuth.has(sellerPeerId)) confirmedDeposit = 0n;
+      else if (ceiling - outstanding > confirmedDeposit) confirmedDeposit = ceiling - outstanding;
+    }
     if (confirmedDeposit > 0n && currentCumulative < confirmedDeposit && effectiveAmount > confirmedDeposit) {
       debugLog(`[BuyerPayment] NeedAuth: signing the confirmed deposit ${confirmedDeposit} first (target ${effectiveAmount}) while a top-up is pending`);
       effectiveAmount = confirmedDeposit;

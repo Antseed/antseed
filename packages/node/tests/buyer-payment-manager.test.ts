@@ -2105,6 +2105,89 @@ describe('BuyerPaymentManager', () => {
     expect(spendOnly()).toEqual(['250000', '254844']);
   });
 
+  /**
+   * A channel whose 250000 deposit a pending top-up raises: r1 and r2 are
+   * signed, and `crossOldDeposit` sends r3, whose cost crosses the deposit.
+   */
+  async function channelWithPendingTopUp(name: string) {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const sellerPeerId = fakePeerId(name);
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    const needAuth = async (requestId: string, cost: bigint, required: bigint, accepted: bigint) => {
+      manager.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: cost });
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId,
+        requestId,
+        requiredCumulativeAmount: required.toString(),
+        currentAcceptedCumulative: accepted.toString(),
+        deposit: '250000',
+        lastRequestCost: cost.toString(),
+      }, mux);
+    };
+    await needAuth('r1', 105_327n, 105_327n, 0n);
+    await manager.topUpReserve(sellerPeerId, mux);
+    await needAuth('r2', 49_638n, 154_965n, 105_327n);
+    const crossOldDeposit = async (): Promise<unknown[]> => {
+      mux.sentSpendingAuths.length = 0;
+      await needAuth('r3', 99_879n, 254_844n, 154_965n);
+      return mux.sentSpendingAuths
+        .map((a) => a as Record<string, unknown>)
+        .filter((a) => a.reserveMaxAmount == null)
+        .map((a) => a.cumulativeAmount);
+    };
+    return { sellerPeerId, channelId, crossOldDeposit };
+  }
+
+  it('handleNeedAuth signs up to the deposit on-chain when an earlier top-up landed and a later one is pending', async () => {
+    const { channelId, crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-landed-topup');
+    // The first top-up (to 500000) lands on-chain, and the seller's catch-up
+    // prompt for it came and went before the next request: nothing prompts
+    // again. A later top-up the buyer sent is still pending.
+    const deposits: string[] = [];
+    manager.setChannelDepositReader(async (id) => { deposits.push(id); return 500_000n; });
+
+    expect(await crossOldDeposit()).toEqual(['254844']);
+    expect(deposits).toContain(channelId);
+  });
+
+  it('handleNeedAuth signs the full amount when every pending top-up has landed, and keeps the landed deposit stored', async () => {
+    const { sellerPeerId, channelId, crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-fully-landed-topup');
+    // Every top-up the buyer sent is on-chain: the deposit is the ceiling.
+    const ceiling = manager.getReserveCeiling(sellerPeerId);
+    manager.setChannelDepositReader(async () => ceiling);
+    const reconcile = vi.spyOn(manager, 'reconcileReserveAmount');
+    // Hold back the next top-up, whose own write would hide what signing stored.
+    vi.spyOn(manager, 'topUpReserve').mockResolvedValue(channelId);
+
+    expect(await crossOldDeposit()).toEqual(['254844']);
+    // The landed top-up is reconciled before signing, not left pending...
+    expect(reconcile).toHaveBeenCalledWith(sellerPeerId, ceiling);
+    // ...and signing onto the channel keeps it: the stored deposit is the
+    // landed one, not the 250000 confirmed before, and a restart reads it.
+    expect(store.getChannel(channelId)!.confirmedReserveAmount).toBe(ceiling.toString());
+    expect(store.getChannel(channelId)!.reserveAuthPending).toBe(false);
+    const restarted = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 250_000n, maxPerRequestUsdc: 150_000n }),
+      store,
+    );
+    expect(restarted.getReserveCeiling(sellerPeerId)).toBeGreaterThanOrEqual(254_844n);
+  });
+
+  it('handleNeedAuth still signs only the confirmed deposit when the read shows the top-up pending', async () => {
+    const { crossOldDeposit } = await channelWithPendingTopUp('seller-needauth-cross-unlanded-topup');
+    manager.setChannelDepositReader(async () => 250_000n);
+
+    expect(await crossOldDeposit()).toEqual(['250000']);
+  });
+
   it('topUpReserve sends new ReserveAuth with increased ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-topup-rsv');
     await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -2593,7 +2676,7 @@ describe('BuyerPaymentManager', () => {
     expect(BigInt(spendEvents[0]!.amountUsdc)).toBe(manager.getCumulativeAmount(sellerPeerId) - before);
   });
 
-  it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window', async () => {
+  it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window only for a response the buyer received', async () => {
     const sellerPeerId = fakePeerId('seller-extend-stalled');
     const stalledConfig = makeConfig(tempDir, {
       maxPerRequestUsdc: 10_000n,
@@ -2625,16 +2708,24 @@ describe('BuyerPaymentManager', () => {
 
     mux.sentSpendingAuths.length = 0;
 
+    // Nothing received: the window stays used up and nothing more is signed.
+    expect(await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux)).toBe(channelId);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(10_000n);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+
+    // A response the buyer received and priced at 4_000, whose cost frame never arrived.
+    manager.recordDeliveredResponse(sellerPeerId, 'received-request', { costUsdc: 4_000n });
     const returnedChannelId = await manager.extendCurrentSpendingAuth(sellerPeerId, 10_000n, mux);
 
-    // verifiedCost advances to currentCumulative (10_000), unblocking the overdraft window so
-    // maxSignable becomes verified (10_000) + maxPerRequest (10_000) = 20_000, still under the
-    // 100_000 reserve ceiling. The new SpendingAuth is signed at 20_000.
+    // verifiedCost advances by that response at the buyer's own price (4_000), unblocking the
+    // overdraft window so maxSignable becomes verified (4_000) + maxPerRequest (10_000) =
+    // 14_000, still under the 100_000 reserve ceiling. The new SpendingAuth is signed at 14_000.
     expect(returnedChannelId).toBe(channelId);
-    expect(manager.getVerifiedCost(sellerPeerId)).toBe(10_000n);
-    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(4_000n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(14_000n);
     expect(mux.sentSpendingAuths).toHaveLength(1);
-    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('20000');
+    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe('14000');
   });
 
   it('extendCurrentSpendingAuth catches up to an explicit target in a single step within overdraft window', async () => {
@@ -2729,8 +2820,8 @@ describe('BuyerPaymentManager', () => {
     // The malicious 1_000_000 target is ignored beyond that bound.
     expect(BigInt(extended.cumulativeAmount)).toBe(15_000n);
     // And crucially: verifiedCost must NOT have been contaminated by the
-    // seller-supplied target — it only advances to the already-signed amount
-    // to reopen the overdraft window.
+    // seller-supplied target — it only advances for responses the buyer
+    // received, to reopen a used-up overdraft window.
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(5_000n);
   });
 
