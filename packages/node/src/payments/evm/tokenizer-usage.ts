@@ -1,5 +1,5 @@
 // The usage reader the tokenizer audit contract runs on-chain (`promptTokensOf` in
-// `packages/contracts/verification/AntseedTokenizerAudits.sol`), byte for byte, so a proof is checked off-chain
+// `packages/contracts/verification/AntseedTokenizerUsageReader.sol`), byte for byte, so a proof is checked off-chain
 // exactly as the contract will check it. A byte scanner, not JSON.parse: duplicate keys and whole-integer reads
 // mirror the Solidity. Change both sides together.
 
@@ -10,7 +10,8 @@
  * fresh only, and the cache creation and the cached input are added: the larger of
  * `prompt_tokens_details.cached_tokens` and the cache reads (`cache_read_input_tokens`, else
  * `prompt_cache_hit_tokens`). Other nested breakdowns (e.g. Responses' per-item usage) and text are ignored.
- * Null when the body has no single usage field.
+ * Null when the body has no single usage field, or when JSON.parse could read it differently: a member name with
+ * an escape where usage is read, or a usage value that is neither a whole number nor null (null is absent).
  */
 export function promptTokensOfBody(body: Uint8Array): number | null {
   const counts = new Map<string, number[]>();
@@ -23,6 +24,9 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
   let depth = 0;
   let inString = false;
   let escaped = false;
+  let watched = false;
+  let hadEscape = false;
+  let ambiguous = false;
   let inUsage = false;
   let inDetails: DetailsKey | null = null;
   const detailsSeen = new Map<DetailsKey, number>();
@@ -30,9 +34,16 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     if (inString) {
-      if (escaped) escaped = false;
-      else if (c === BACKSLASH) escaped = true;
-      else if (c === QUOTE) inString = false;
+      if (escaped) {
+        escaped = false;
+      } else if (c === BACKSLASH) {
+        escaped = true;
+        hadEscape = true;
+      } else if (c === QUOTE) {
+        inString = false;
+        // An escaped member name may decode to a key this reader looks for.
+        if (watched && hadEscape && body[skipSpace(body, i + 1)] === COLON) ambiguous = true;
+      }
       continue;
     }
     if (c === OPEN_BRACE || c === OPEN_BRACKET) {
@@ -60,9 +71,10 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
           i = objectAfter(body, i, details);
           continue;
         }
-        const key = numberKeyAt(body, i, USAGE_KEYS);
+        const key = keyValueAt(body, i, USAGE_KEYS);
         if (key) {
-          record(key.name, key.value);
+          if (key.kind === 'number') record(key.name, key.value);
+          if (key.kind === 'bad') ambiguous = true;
           next = key.end;
         }
       } else if (depth === 3 && inDetails === 'input_tokens_details') {
@@ -72,17 +84,23 @@ export function promptTokensOfBody(body: Uint8Array): number | null {
           next = quotedKeyEnd(body, i, 'cached_tokens');
         }
       } else if (depth === 3 && inDetails === 'prompt_tokens_details') {
-        const key = numberKeyAt(body, i, ['cached_tokens']);
+        const key = keyValueAt(body, i, ['cached_tokens']);
         if (key) {
-          record('prompt_tokens_details.cached_tokens', key.value);
+          if (key.kind === 'number') record('prompt_tokens_details.cached_tokens', key.value);
+          if (key.kind === 'bad') ambiguous = true;
           next = key.end;
         }
       }
-      if (next !== 0) i = next - 1;
-      else inString = true;
+      if (next !== 0) {
+        i = next - 1;
+      } else {
+        inString = true;
+        watched = depth === 1 || (depth === 2 && inUsage) || (depth === 3 && inDetails !== null);
+        hadEscape = false;
+      }
     }
   }
-  if (objects !== 1) return null;
+  if (objects !== 1 || ambiguous) return null;
   const values = (name: string) => counts.get(name) ?? [];
   const prompt = values('prompt_tokens');
   if (prompt.length === 1) return prompt[0]!;
@@ -129,23 +147,37 @@ function objectAfter(body: Uint8Array, offset: number, name: string): number {
   return body[at] === OPEN_BRACE ? at : 0;
 }
 
-/** One of `names` starting at `offset` when it is followed by a colon and a whole number. */
-function numberKeyAt(body: Uint8Array, offset: number, names: readonly string[]): { name: string; value: number; end: number } | null {
+/**
+ * One of `names` starting at `offset` as a member name, and its value: a whole number (1 to 15 digits ending the
+ * member; a decimal or exponent is no token count), null, or anything else ('bad').
+ */
+function keyValueAt(
+  body: Uint8Array,
+  offset: number,
+  names: readonly string[],
+): { name: string; kind: 'number' | 'null' | 'bad'; value: number; end: number } | null {
   for (const name of names) {
     const afterColon = colonAfterKey(body, offset, name);
     if (afterColon === 0) continue;
+    const end = quotedKeyEnd(body, offset, name);
     let at = skipSpace(body, afterColon);
-    let digits = 0;
+    let kind: 'number' | 'null' = 'number';
     let value = 0;
-    while (at < body.length && body[at]! >= 0x30 && body[at]! <= 0x39) {
-      if (++digits > MAX_TOKEN_DIGITS) return null;
-      value = value * 10 + (body[at]! - 0x30);
-      at++;
+    if (body[at] === 0x6e && body[at + 1] === 0x75 && body[at + 2] === 0x6c && body[at + 3] === 0x6c) {
+      kind = 'null';
+      at += 4;
+    } else {
+      let digits = 0;
+      while (at < body.length && body[at]! >= 0x30 && body[at]! <= 0x39) {
+        if (++digits > MAX_TOKEN_DIGITS) return { name, kind: 'bad', value: 0, end };
+        value = value * 10 + (body[at]! - 0x30);
+        at++;
+      }
+      if (digits === 0) return { name, kind: 'bad', value: 0, end };
     }
-    // A decimal or exponent is not a token count: the number must end the member.
     at = skipSpace(body, at);
-    if (digits === 0 || (body[at] !== COMMA && body[at] !== CLOSE_BRACE)) return null;
-    return { name, value, end: quotedKeyEnd(body, offset, name) };
+    if (body[at] !== COMMA && body[at] !== CLOSE_BRACE) return { name, kind: 'bad', value: 0, end };
+    return { name, kind, value, end };
   }
   return null;
 }

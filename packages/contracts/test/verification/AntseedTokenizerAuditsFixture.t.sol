@@ -6,6 +6,8 @@ import { Test } from "forge-std/Test.sol";
 import { IAntseedTokenizerAudits } from "../../interfaces/IAntseedTokenizerAudits.sol";
 import { IAntseedVerificationResults } from "../../interfaces/IAntseedVerificationResults.sol";
 import { AntseedTokenizerAudits } from "../../verification/AntseedTokenizerAudits.sol";
+import { AntseedTokenizerProbeGuard } from "../../verification/AntseedTokenizerProbeGuard.sol";
+import { AntseedTokenizerUsageReader } from "../../verification/AntseedTokenizerUsageReader.sol";
 import { AntseedVerificationResults } from "../../verification/AntseedVerificationResults.sol";
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { MockVerificationAudit } from "../mocks/MockVerificationAudit.sol";
@@ -13,6 +15,7 @@ import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmission
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
 import { DeployTokenizerAudits } from "../../script/DeployTokenizerAudits.s.sol";
 import { TokenizerProofFixture } from "../fixtures/tokenizer-proof/TokenizerProofFixture.sol";
+import { ResponseAuthHarness } from "../mocks/ResponseAuthHarness.sol";
 
 /// @dev Rounds signed by the TypeScript seller code and encoded by the prover's client prove on-chain.
 ///      Regenerate the fixture with `node packages/contracts/test/fixtures/tokenizer-proof/generate.mjs`.
@@ -24,6 +27,7 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
     MockVerificationAudit private kbf;
     MockVerificationSellerPools private pools;
     MockERC8004Registry private identityRegistry;
+    ResponseAuthHarness private responseAuth = new ResponseAuthHarness();
     uint256 private suspectAgent;
     bytes32 private serviceHash = keccak256(bytes(TokenizerProofFixture.SERVICE));
     bytes32 private modelHash = keccak256(bytes(TokenizerProofFixture.SERVICE));
@@ -35,7 +39,9 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
         pools = new MockVerificationSellerPools();
         gate.setCurrentEpoch(1);
         results = new AntseedVerificationResults(address(gate));
-        audits = new AntseedTokenizerAudits(address(results), address(pools), address(identityRegistry));
+        audits = new AntseedTokenizerAudits(
+            address(results), address(pools), address(identityRegistry), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
+        );
         kbf = new MockVerificationAudit(address(results));
         results.setAudit(address(audits), true);
         results.setAudit(address(kbf), true);
@@ -84,9 +90,9 @@ contract AntseedTokenizerAuditsFixtureTest is Test {
 
     function _assertSigned(IAntseedTokenizerAudits.ProbePair memory pair, address seller) private view {
         (uint8 v, bytes32 r, bytes32 s) = _split(pair.base.signature);
-        assertEq(ecrecover(audits.receiptDigest(pair.base), v, r, s), seller);
+        assertEq(ecrecover(responseAuth.digest(pair.base), v, r, s), seller);
         (v, r, s) = _split(pair.probed.signature);
-        assertEq(ecrecover(audits.receiptDigest(pair.probed), v, r, s), seller);
+        assertEq(ecrecover(responseAuth.digest(pair.probed), v, r, s), seller);
     }
 
     function _split(bytes memory signature) private pure returns (uint8 v, bytes32 r, bytes32 s) {

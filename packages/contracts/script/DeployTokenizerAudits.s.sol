@@ -6,9 +6,11 @@ import { console } from "forge-std/console.sol";
 
 import { IAntseedKbfAudits } from "../interfaces/IAntseedKbfAudits.sol";
 import { AntseedTokenizerAudits } from "../verification/AntseedTokenizerAudits.sol";
+import { AntseedTokenizerProbeGuard } from "../verification/AntseedTokenizerProbeGuard.sol";
+import { AntseedTokenizerUsageReader } from "../verification/AntseedTokenizerUsageReader.sol";
 
 /// @title DeployTokenizerAudits
-/// @notice Deploys `AntseedTokenizerAudits` next to an existing KBF audit, on the same results layer,
+/// @notice Deploys `AntseedTokenizerAudits` (with its `AntseedTokenizerUsageReader` and `AntseedTokenizerProbeGuard`) next to an existing KBF audit, on the same results layer,
 ///         seller pools and identity registry, and registers the standard request shapes: one per API
 ///         `antseed verifier prove-tokenizer` probes in (Chat Completions, Anthropic Messages, Responses).
 ///
@@ -75,7 +77,9 @@ contract DeployTokenizerAudits is Script {
         ShapeBytes[] memory shapes = standardShapes();
 
         vm.startBroadcast(config.owner);
-        audits = new AntseedTokenizerAudits(results, sellerPools, identityRegistry);
+        AntseedTokenizerUsageReader reader = new AntseedTokenizerUsageReader();
+        AntseedTokenizerProbeGuard guard = new AntseedTokenizerProbeGuard();
+        audits = new AntseedTokenizerAudits(results, sellerPools, identityRegistry, address(reader), address(guard));
         shapeIds = new bytes32[](shapes.length);
         for (uint256 i = 0; i < shapes.length; i++) {
             shapeIds[i] = audits.setShape(shapes[i].path, shapes[i].head, shapes[i].mid, shapes[i].tail, true);
@@ -86,6 +90,8 @@ contract DeployTokenizerAudits is Script {
         require(address(audits.results()) == results, "tokenizer: wrong results");
         require(address(audits.sellerPools()) == sellerPools, "tokenizer: wrong seller pools");
         require(address(audits.identityRegistry()) == identityRegistry, "tokenizer: wrong identity registry");
+        require(address(audits.usageReader()) == address(reader), "tokenizer: wrong usage reader");
+        require(address(audits.probeGuard()) == address(guard), "tokenizer: wrong probe guard");
 
         console.log("=== Tokenizer audits deployed (not yet an audit on the results layer) ===");
         console.log("Owner:              ", config.owner);
@@ -93,5 +99,7 @@ contract DeployTokenizerAudits is Script {
         console.log("VerificationResults:", results);
         console.log("SellerPools:        ", sellerPools);
         console.log("IdentityRegistry:   ", identityRegistry);
+        console.log("UsageReader:        ", address(reader));
+        console.log("ProbeGuard:         ", address(guard));
     }
 }

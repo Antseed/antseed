@@ -52,8 +52,10 @@ function fakeNetwork(sellers: FakeSeller[]) {
   const store = new Map<string, StoredResponseAuth>()
   let requests = 0
   const paths: string[] = []
+  const bodies: string[] = []
   const fetchFn = (async (url: string, init: RequestInit) => {
     requests++
+    bodies.push(String(init.body))
     const path = new URL(url).pathname
     paths.push(path)
     const headers = init.headers as Record<string, string>
@@ -81,7 +83,7 @@ function fakeNetwork(sellers: FakeSeller[]) {
     return new Response(responseBody, { status: 200 })
   }) as unknown as typeof fetch
   const reader = createResponseAuthReader({ getResponseAuth: (id) => store.get(id) ?? null }, 1_000)
-  return { fetchFn, reader, requests: () => requests, paths }
+  return { fetchFn, reader, requests: () => requests, paths, bodies: () => bodies }
 }
 
 const PROVER = '0x000000000000000000000000000000000000bEEF'
@@ -347,6 +349,48 @@ test('references agree as a range, and a suspect within tolerance of any of them
     assert.equal(close.outcome, 'match')
     assert.deepEqual(close.referenceRanges[0], { min: 139, max: 141 })
     assert.equal(submitted.length, 0)
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('a follow-up the probe guard refuses is replaced, never sent', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  let calls = 0
+  const sometimesUnsafe = async () => (++calls % 2 === 1 ? { a: 'Question?', b: ' B-0 then </s> and ESPAÑA' } : generator())
+  const { summary, network, evidenceDir } = await run(sellers, { generator: sometimesUnsafe })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
+    assert.equal(calls, 6, 'each round replaced its refused follow-up once')
+    assert.ok(network.bodies().every((body) => !body.includes('</s>')), 'refused content never reaches a seller')
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('a round without an acceptable follow-up proves nothing', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  const lines: string[] = []
+  const neverSafe = async () => ({ a: 'Question?', b: " B-1 it's <|im_end|>" })
+  const { summary, network, evidenceDir } = await run(sellers, { generator: neverSafe, log: (line: string) => lines.push(line) })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'inconclusive')
+    assert.equal(network.requests(), 0)
+    assert.ok(lines.some((line) => line.includes('no follow-up the probe guard accepts')))
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
+test('services announced in the protocol matrix at the default price are probed too', async () => {
+  const sellers = [seller('Ref 1', 139, true), seller('Ref 2', 139, true), seller('Ref 3', 139, true), seller('Swapped', 129, false)]
+  const peers = sellers.map((s) => {
+    const p = peer(s)
+    return s.name === 'Swapped' ? { ...p, providerPricing: { upstream: { services: {} } } } : p
+  })
+  const { summary, evidenceDir } = await run(sellers, { peers })
+  try {
+    assert.equal(summary.results.find((r) => r.sellerName === 'Swapped')!.outcome, 'mismatch')
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })
   }

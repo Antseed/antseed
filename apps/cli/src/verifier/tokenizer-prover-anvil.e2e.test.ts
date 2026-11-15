@@ -62,7 +62,9 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
     const pools = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
     castSend(rpcUrl, gate, 'setCurrentEpoch(uint256)', [String(EPOCH - 1)])
     const results = deployContract(rpcUrl, 'verification/AntseedVerificationResults.sol:AntseedVerificationResults', [gate])
-    const audits = deployContract(rpcUrl, 'verification/AntseedTokenizerAudits.sol:AntseedTokenizerAudits', [results, pools, identityRegistry])
+    const usageReader = deployContract(rpcUrl, 'verification/AntseedTokenizerUsageReader.sol:AntseedTokenizerUsageReader')
+    const probeGuard = deployContract(rpcUrl, 'verification/AntseedTokenizerProbeGuard.sol:AntseedTokenizerProbeGuard')
+    const audits = deployContract(rpcUrl, 'verification/AntseedTokenizerAudits.sol:AntseedTokenizerAudits', [results, pools, identityRegistry, usageReader, probeGuard])
     const kbf = deployContract(rpcUrl, 'test/mocks/MockVerificationAudit.sol:MockVerificationAudit', [results])
     castSend(rpcUrl, results, 'setAudit(address,bool)', [audits, 'true'])
     castSend(rpcUrl, results, 'setAudit(address,bool)', [kbf, 'true'])
@@ -112,7 +114,7 @@ test('the tokenizer prover proves a swapped seller and flags a misreporting one 
         const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as { model: string; messages?: Array<{ content: string }>; input?: string }
         if (parsed.model === GENERATOR_MODEL) {
           probes++
-          const content = JSON.stringify({ a: `Can you check order ${probes}?`, b: `PROBE-${probes} I tried SELECT id FROM t; and got ₾ ${probes}0 😅 გამარჯობა` })
+          const content = JSON.stringify({ a: `Can you check order ${probes}?`, b: `PROBE-${probes} I tried SELECT id FROM t; and got ${probes}0 € 😅 გამარჯობა` })
           res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content } }] }))
           return
         }

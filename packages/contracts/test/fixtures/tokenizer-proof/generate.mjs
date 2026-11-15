@@ -11,6 +11,7 @@ import { AbiCoder, Wallet, keccak256 } from 'ethers'
 import { createResponseAuthPayload } from '../../../../buyer-core/dist/response-auth.js'
 import { encodeHttpRequest, encodeHttpResponse } from '../../../../protocol/dist/request-codec.js'
 import { roundTuple, shapeRequestBody } from '../../../../node/dist/payments/evm/tokenizer-audits-client.js'
+import { isSafeProbe } from '../../../../node/dist/payments/evm/tokenizer-probe-guard.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // Throwaway test keys; never funded.
@@ -50,10 +51,13 @@ function signed(wallet, shape, content, promptTokens) {
 const pair = (wallet, shape, a, b, delta) => ({ shapeId: shape.shapeId, base: signed(wallet, shape, a, 20), probed: signed(wallet, shape, a + b, 20 + delta) })
 
 const rounds = [
-  ['Can you check this SQL for me?', ' SELECT id FROM orders WHERE total > 450; — my coworker wrote “μάλλον είναι η βάση” 😅 on 03/11/2024.'],
-  ['What should I pack for Tbilisi?', ' გამარჯობა! I land on the 14th with ₾ 300 and a `packing_list.yaml` I never finish 🧳.'],
-  ['Is this regex right?', ' `^[a-z0-9_-]{3,16}$` — Kenji said しょうがない and moved on, ticket #88213 still open 🙃.'],
-].map(([a, b]) => ({
+  ['Can you check this SQL for me?', ' SELECT id FROM orders WHERE total > 450; — my coworker wrote “아마 데이터베이스 문제” 😅 on 03/11/2024.'],
+  ['What should I pack for Tbilisi?', ' გამარჯობა! I land on the 14th with 300 € and a `packing_list.yaml` I never finish 😅.'],
+  ['Is this regex right?', ' It allows 3 to 16 lowercase letters — Kenji said しょうがない and moved on, ticket #88213 still open 🙃.'],
+].map(([a, b]) => {
+  if (!isSafeProbe(b)) throw new Error(`probe content the guard refuses: ${b}`)
+  return [a, b]
+}).map(([a, b]) => ({
   a, b,
   suspect: pair(suspect, MESSAGES, a, b, 129),
   references: [CHAT, RESPONSES, CHAT].map((shape, k) => pair(references[k], shape, a, b, 139)),

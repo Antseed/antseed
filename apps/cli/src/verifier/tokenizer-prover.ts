@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { AbstractSigner } from 'ethers'
 import {
+  isSafeProbe,
   isShapeRequest,
   jsonSafeContent,
   MAX_TOKENIZER_PROOF_ROUNDS,
@@ -130,12 +131,17 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 90_000
 export const INCONCLUSIVE_RECHECK_MS = 6 * 3_600_000
 const ZERO_HASH = /^0x0+$/
 
-/** Every chat service a peer sells, with the API protocols it speaks for it. */
+/**
+ * Every chat service a peer sells, with the API protocols it speaks for it: services with their own price, and
+ * services announced in the protocol matrix at the provider's default price.
+ */
 export function chatServices(peer: TokenizerPeer): Array<{ service: string; protocols: string[] }> {
   const protocolsByService = new Map<string, Set<string>>()
-  for (const [provider, pricing] of Object.entries(peer.providerPricing ?? {})) {
+  const providers = new Set([...Object.keys(peer.providerPricing ?? {}), ...Object.keys(peer.providerServiceApiProtocols ?? {})])
+  for (const provider of providers) {
     const declared = peer.providerServiceApiProtocols?.[provider]?.services ?? {}
-    for (const service of Object.keys(pricing.services ?? {})) {
+    const services = new Set([...Object.keys(peer.providerPricing?.[provider]?.services ?? {}), ...Object.keys(declared)])
+    for (const service of services) {
       const protocols = protocolsByService.get(service) ?? new Set<string>()
       for (const protocol of declared[service] ?? [DEFAULT_PROTOCOL]) protocols.add(protocol)
       protocolsByService.set(service, protocols)
@@ -196,16 +202,19 @@ export async function runTokenizerProver(options: TokenizerProverOptions): Promi
   // ── rounds: one fresh prompt, every seller of every planned model ──
   const rounds: ProbeRound[] = []
   for (let r = 0; r < roundCount && plan.length; r++) {
-    let generated: { a: string; b: string }
+    let probe: { a: string; b: string } | null
     try {
-      generated = await options.generator()
+      probe = await safeProbe(options.generator)
     } catch (error) {
       // Without every round nothing can be proved; the pass ends with inconclusive results.
       log(`  round ${r + 1}: ${asError(error).message}`)
       break
     }
-    const a = jsonSafeContent(generated.a).trim()
-    const b = ' ' + jsonSafeContent(generated.b).trim()
+    if (!probe) {
+      log(`  round ${r + 1}: no follow-up the probe guard accepts after ${PROBE_ATTEMPTS} tries`)
+      break
+    }
+    const { a, b } = probe
     const jobs = plan.flatMap((p) => p.members.map((m) => ({ modelHash: p.modelHash, member: m })))
     const pairs = new Map<string, TokenizerProbePair | string>()
     await mapConcurrently(jobs, options.concurrency ?? DEFAULT_CONCURRENCY, async ({ modelHash, member }) => {
@@ -364,14 +373,27 @@ function measuredReferences(round: ProbeRound, modelHash: string, members: Membe
  * agent whose services disagree still counts through the one that agrees with the others.
  */
 function agreeingReferences(measured: readonly MeasuredReference[], tolerance: number): Array<{ delta: number; pair: TokenizerProbePair }> {
-  let best: Array<{ delta: number; pair: TokenizerProbePair }> = []
+  // Services per agent in the window [start, end), kept as the window slides.
+  const counts = new Map<bigint, number>()
+  let bestStart = 0
+  let bestEnd = 0
+  let bestSize = 0
   for (let start = 0, end = 0; start < measured.length; start++) {
-    while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) end++
-    const byAgent = new Map<bigint, { delta: number; pair: TokenizerProbePair }>()
-    for (const { agentId, delta, pair } of measured.slice(start, end)) if (!byAgent.has(agentId)) byAgent.set(agentId, { delta, pair })
-    if (byAgent.size > best.length) best = [...byAgent.values()]
+    while (end < measured.length && measured[end]!.delta - measured[start]!.delta <= tolerance) {
+      const { agentId } = measured[end++]!
+      counts.set(agentId, (counts.get(agentId) ?? 0) + 1)
+    }
+    if (counts.size > bestSize) [bestStart, bestEnd, bestSize] = [start, end, counts.size]
+    const { agentId } = measured[start]!
+    const remaining = counts.get(agentId)! - 1
+    if (remaining > 0) counts.set(agentId, remaining)
+    else counts.delete(agentId)
   }
-  return best
+  const byAgent = new Map<bigint, { delta: number; pair: TokenizerProbePair }>()
+  for (const { agentId, delta, pair } of measured.slice(bestStart, bestEnd)) {
+    if (!byAgent.has(agentId)) byAgent.set(agentId, { delta, pair })
+  }
+  return [...byAgent.values()]
 }
 
 /** A member's signed pair and its delta in a round, read once per round; null without a signed pair or usage. */
@@ -425,13 +447,32 @@ async function signedRequest(options: TokenizerProverOptions, member: Member, bo
   return { payload, request: requestPreimage, response: responsePreimage }
 }
 
+/** Tries for a follow-up the probe guard accepts before a round gives up. */
+const PROBE_ATTEMPTS = 4
+
+/**
+ * Generated content made JSON-safe, with a follow-up B the on-chain probe guard accepts (`isSafeProbe`). B is
+ * what sellers' counts are compared on, so it is limited to text every honest engine counts alike; anything
+ * else stays in A, where it cancels out. Generated text that fails is replaced, never rewritten to fit.
+ */
+async function safeProbe(generator: ProbeGenerator): Promise<{ a: string; b: string } | null> {
+  for (let attempt = 0; attempt < PROBE_ATTEMPTS; attempt++) {
+    const generated = await generator()
+    const b = ' ' + jsonSafeContent(generated.b).trim()
+    if (isSafeProbe(b)) return { a: jsonSafeContent(generated.a).trim(), b }
+  }
+  return null
+}
+
 const PROBE_SCRIPTS = ['Georgian', 'Amharic', 'Tamil', 'Thai', 'Korean', 'Hebrew', 'Arabic', 'Hindi', 'Greek', 'Armenian', 'Japanese', 'Khmer']
 const PROBE_SNIPPETS = ['a SQL query', 'a bash command', 'a Python function', 'a JSON object', 'a stack trace line', 'a regex', 'a YAML block', 'a Rust match arm', 'a curl command', 'a CSS rule']
+/** Languages of the follow-up B: text in them usually passes the probe guard. */
+const FOLLOW_UP_LANGUAGES = ['English', 'English', 'English', 'Korean', 'Japanese']
 
 /**
  * A probe generator that asks a model on the network (through the buyer proxy) to write a realistic
- * message: a short question and a follow-up mixing code, a non-Latin script, emoji and numbers, which
- * different tokenizers split very differently.
+ * message: a question mixing code and a non-Latin script, which cancel out wherever they are counted, and a
+ * plain follow-up with emoji and numbers, the part sellers' counts are compared on.
  */
 export function modelProbeGenerator(input: {
   proxyBaseUrl: string
@@ -445,9 +486,10 @@ export function modelProbeGenerator(input: {
   return async () => {
     const script = PROBE_SCRIPTS[randomInt(PROBE_SCRIPTS.length)]!
     const snippet = PROBE_SNIPPETS[randomInt(PROBE_SNIPPETS.length)]!
+    const language = FOLLOW_UP_LANGUAGES[randomInt(FOLLOW_UP_LANGUAGES.length)]!
     const instruction = `Write a realistic message a person might send to an AI assistant, in two parts.
-Part "a": one short natural question (under 20 words), on a random everyday or technical topic of your choice.
-Part "b": a follow-up the same person adds, 60 to 100 words, that naturally includes: ${snippet} inline, a sentence or phrase in ${script}, two or three emoji, some numbers (an ID, a date, an amount with a currency symbol), and one unusual long word or proper name.
+Part "a": a short natural question (20 to 50 words), on a random everyday or technical topic of your choice, that naturally includes ${snippet} inline and a phrase in ${script}.
+Part "b": a follow-up the same person adds, 60 to 100 words of plain prose in ${language}, with two or three common face emoji, some numbers (an ID, a date, an amount in dollars or euros), and one unusual long word or proper name. No code, no brackets of any kind, no accented capital letters, and no contractions with an apostrophe (write do not, it is).
 It must read like a real person, not a test. Do not mention tokens or tests. Use no double quotes or backslashes.
 Return only JSON: {"a": "...", "b": "..."}. Variation seed: ${randomInt(1e9)}`
     let lastError = 'no answer'

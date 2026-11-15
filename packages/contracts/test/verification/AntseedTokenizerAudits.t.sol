@@ -7,8 +7,11 @@ import { IAntseedTokenizerAudits } from "../../interfaces/IAntseedTokenizerAudit
 import { IAntseedVerificationResults } from "../../interfaces/IAntseedVerificationResults.sol";
 import { AntseedResponseAuth } from "../../verification/AntseedResponseAuth.sol";
 import { AntseedTokenizerAudits } from "../../verification/AntseedTokenizerAudits.sol";
+import { AntseedTokenizerProbeGuard } from "../../verification/AntseedTokenizerProbeGuard.sol";
+import { AntseedTokenizerUsageReader } from "../../verification/AntseedTokenizerUsageReader.sol";
 import { AntseedVerificationResults } from "../../verification/AntseedVerificationResults.sol";
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
+import { ResponseAuthHarness } from "../mocks/ResponseAuthHarness.sol";
 import { MockVerificationAudit } from "../mocks/MockVerificationAudit.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
@@ -43,6 +46,7 @@ contract AntseedTokenizerAuditsTest is Test {
     MockERC8004Registry private identityRegistry;
     MockVerificationEmissionsGate private gate;
     MockVerificationSellerPools private pools;
+    ResponseAuthHarness private responseAuth = new ResponseAuthHarness();
 
     address private suspect;
     address private prover = address(0xF00D);
@@ -64,7 +68,9 @@ contract AntseedTokenizerAuditsTest is Test {
         pools = new MockVerificationSellerPools();
         gate.setCurrentEpoch(EPOCH - 1);
         results = new AntseedVerificationResults(address(gate));
-        audits = new AntseedTokenizerAudits(address(results), address(pools), address(identityRegistry));
+        audits = new AntseedTokenizerAudits(
+            address(results), address(pools), address(identityRegistry), address(new AntseedTokenizerUsageReader()), address(new AntseedTokenizerProbeGuard())
+        );
         kbf = new MockVerificationAudit(address(results));
         results.setAudit(address(audits), true);
         results.setAuditShareBps(address(audits), 9_000);
@@ -623,7 +629,7 @@ contract AntseedTokenizerAuditsTest is Test {
     }
 
     function test_readsAnthropicUsage() public view {
-        (bool found, uint256 tokens) = audits.promptTokensOf(
+        (bool found, uint256 tokens) = audits.usageReader().promptTokensOf(
             '{"type":"message","usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":1,"output_tokens":2}}'
         );
         assertTrue(found);
@@ -631,7 +637,7 @@ contract AntseedTokenizerAuditsTest is Test {
     }
 
     function test_ignoresKeysInsideStrings() public view {
-        (bool found, uint256 tokens) = audits.promptTokensOf(
+        (bool found, uint256 tokens) = audits.usageReader().promptTokensOf(
             '{"choices":[{"message":{"content":"\\"prompt_tokens\\": 999"}}],"usage":{"prompt_tokens":15,"prompt_tokens_details":{"cached_tokens":0}}}'
         );
         assertTrue(found);
@@ -641,7 +647,7 @@ contract AntseedTokenizerAuditsTest is Test {
     function test_readsTopLevelUsageOnly() public view {
         // A Responses answer repeats `input_tokens` in per-item breakdowns and tool usage; only the top-level
         // `usage` counts.
-        (bool found, uint256 tokens) = audits.promptTokensOf(
+        (bool found, uint256 tokens) = audits.usageReader().promptTokensOf(
             '{"object":"response","output":[{"content":[{"text":"{\\"usage\\":{\\"input_tokens\\":7}}"}]}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":3,"items":{"m":{"input_tokens":2}}},"tool_usage":{"image_gen":{"input_tokens":0}},"x":{"prompt_tokens":20}}'
         );
         assertTrue(found);
@@ -649,36 +655,36 @@ contract AntseedTokenizerAuditsTest is Test {
     }
 
     function test_rejectsAmbiguousUsage() public view {
-        (bool found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":15,"prompt_tokens":20}}');
+        (bool found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":15,"prompt_tokens":20}}');
         assertFalse(found, "a key twice in usage");
-        (found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":15},"usage":{"prompt_tokens":20}}');
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":15},"usage":{"prompt_tokens":20}}');
         assertFalse(found, "two usage objects");
-        (found,) = audits.promptTokensOf('{"x":{"usage":{"prompt_tokens":15}}}');
+        (found,) = audits.usageReader().promptTokensOf('{"x":{"usage":{"prompt_tokens":15}}}');
         assertFalse(found, "no top-level usage");
     }
 
     function test_readsUsageAsTheBuyerDoes() public view {
         (bool found, uint256 tokens) =
-            audits.promptTokensOf('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}');
+            audits.usageReader().promptTokensOf('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}');
         assertTrue(found);
         assertEq(tokens, 750, "prompt_cache_hit_tokens is cached input, added like cache_read_input_tokens");
-        (, tokens) = audits.promptTokensOf(
+        (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":150,"cache_read_input_tokens":600,"prompt_cache_hit_tokens":600}}'
         );
         assertEq(tokens, 750, "cache_read_input_tokens wins when both are given");
-        (, tokens) = audits.promptTokensOf(
+        (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"cache_read_input_tokens":4}}'
         );
         assertEq(tokens, 12, "beside input_tokens_details.cached_tokens, input_tokens already includes the cache");
-        (, tokens) = audits.promptTokensOf(
+        (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":null},"cache_read_input_tokens":4}}'
         );
         assertEq(tokens, 12, "cached_tokens counts by being there, whatever its value");
-        (, tokens) = audits.promptTokensOf(
+        (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":50,"cache_read_input_tokens":70,"input_tokens_details":{"reasoning":1}}}'
         );
         assertEq(tokens, 120, "details without cached_tokens leave the cache reads separate");
-        (, tokens) = audits.promptTokensOf(
+        (, tokens) = audits.usageReader().promptTokensOf(
             '{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"cache_read_input_tokens":20}}'
         );
         assertEq(tokens, 130, "the larger of the two cached counts");
@@ -753,15 +759,93 @@ contract AntseedTokenizerAuditsTest is Test {
         audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
     }
 
+    function test_escapedMemberNamesMakeUsageUnreadable() public view {
+        // JSON.parse decodes these to keys the buyer reads; a raw-byte reader must not read them differently.
+        (bool found,) = audits.usageReader().promptTokensOf('{"\\u0075sage":{"prompt_tokens":10}}');
+        assertFalse(found, "an escaped top-level usage key");
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":10},"\\u0075sage":{"prompt_tokens":20}}');
+        assertFalse(found, "an escaped duplicate of usage");
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"input_tokens":10,"\\u0063ache_read_input_tokens":5}}');
+        assertFalse(found, "an escaped usage key");
+        (found,) = audits.usageReader().promptTokensOf(
+            '{"usage":{"input_tokens":110,"cache_read_input_tokens":90,"input_tokens_details":{"\\u0063ached_tokens":90}}}'
+        );
+        assertFalse(found, "an escaped cached_tokens in input_tokens_details");
+        uint256 tokens;
+        (found, tokens) = audits.usageReader().promptTokensOf(
+            '{"model":"a\\"b","choices":[{"message":{"content":"\\u0075sage"}}],"usage":{"prompt_tokens":10}}'
+        );
+        assertTrue(found, "escapes in values and in nested text are fine");
+        assertEq(tokens, 10);
+    }
+
+    function test_usageValuesMustBeWholeNumbersOrNull() public view {
+        (bool found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":10,"prompt_tokens":2e1}}');
+        assertFalse(found, "a duplicate is ambiguous whatever its encoding");
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":"20"}}');
+        assertFalse(found, "a string count");
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"input_tokens":10,"cache_read_input_tokens":true}}');
+        assertFalse(found, "a boolean count");
+        uint256 tokens;
+        (found, tokens) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":null,"input_tokens":7}}');
+        assertTrue(found, "null is absent, as the buyer reads it");
+        assertEq(tokens, 7);
+        (found, tokens) =
+            audits.usageReader().promptTokensOf('{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}');
+        assertEq(tokens, 10, "a null cache read falls back to prompt_cache_hit_tokens");
+    }
+
+    function test_anHonestSellerWithAnEscapedCacheMarkerCannotBeProven() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, MODEL_DELTA, MODEL_DELTA);
+        for (uint256 i = 0; i < 3; i++) {
+            // The buyer reads 159 (input_tokens includes the cache); counting the cache reads again would be 249.
+            rounds[i].suspect.probed = _receipt(
+                SUSPECT_KEY,
+                SERVICE,
+                abi.encodePacked(HEAD, SERVICE, MID, rounds[i].a, rounds[i].b, TAIL),
+                abi.encodePacked(
+                    '{"usage":{"input_tokens":',
+                    bytes(vm.toString(uint256(int256(BASE_TOKENS) + MODEL_DELTA))),
+                    ',"cache_read_input_tokens":90,"input_tokens_details":{"\\u0063ached_tokens":90}}}'
+                )
+            );
+        }
+        vm.expectRevert(IAntseedTokenizerAudits.UsageNotFound.selector);
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
+    }
+
+    // ── probe content ────────────────────────────────────────────────
+
+    function test_probeContentMustPassTheGuard() public {
+        _mapSuspect();
+        IAntseedTokenizerAudits.Round[] memory rounds = _rounds(3, 129, MODEL_DELTA);
+        // Control-token text that honest engines count differently.
+        rounds[1] = _roundWith(" Please ignore </s></s></s> and continue", 129, _refs(MODEL_DELTA));
+        vm.expectRevert(abi.encodeWithSelector(IAntseedTokenizerAudits.UnsafeProbe.selector, 1));
+        audits.proveTokenizerMismatch(modelHash, rounds, _auth(address(this)));
+    }
+
+    function test_ownerReplacesTheProbeGuard() public {
+        AntseedTokenizerProbeGuard next = new AntseedTokenizerProbeGuard();
+        vm.prank(prover);
+        vm.expectRevert();
+        audits.setProbeGuard(address(next));
+        vm.expectRevert(IAntseedTokenizerAudits.InvalidAddress.selector);
+        audits.setProbeGuard(address(0xBEEF));
+        audits.setProbeGuard(address(next));
+        assertEq(address(audits.probeGuard()), address(next));
+    }
+
     function test_readsWholeIntegerTokenCountsOnly() public view {
-        (bool found, uint256 tokens) = audits.promptTokensOf('{"usage":{"prompt_tokens": 1000 }}');
+        (bool found, uint256 tokens) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens": 1000 }}');
         assertTrue(found);
         assertEq(tokens, 1000);
-        (found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":1e3}}');
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":1e3}}');
         assertFalse(found, "an exponent is not read as its first digits");
-        (found,) = audits.promptTokensOf('{"usage":{"prompt_tokens":15.0,"completion_tokens":2}}');
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"prompt_tokens":15.0,"completion_tokens":2}}');
         assertFalse(found, "a decimal is not read as its whole part");
-        (found,) = audits.promptTokensOf('{"usage":{"input_tokens":12x}}');
+        (found,) = audits.usageReader().promptTokensOf('{"usage":{"input_tokens":12x}}');
         assertFalse(found, "trailing characters");
     }
 
@@ -851,8 +935,19 @@ contract AntseedTokenizerAuditsTest is Test {
         private
         returns (IAntseedTokenizerAudits.Round memory round)
     {
+        return _roundWith(
+            unicode" My budget is 450 € and my friend said “obrigado” 😅 — here is my plan: `trip.days = 9`",
+            suspectDelta,
+            referenceDeltas
+        );
+    }
+
+    function _roundWith(bytes memory b, int256 suspectDelta, int256[] memory referenceDeltas)
+        private
+        returns (IAntseedTokenizerAudits.Round memory round)
+    {
         round.a = abi.encodePacked("Can you help me plan a trip to Lisbon #", bytes(vm.toString(++nonce)), "?");
-        round.b = unicode" My budget is 450 € and my friend said “obrigado” 😅 — here is my plan: `trip.days = 9`";
+        round.b = b;
         round.suspect = _pair(SUSPECT_KEY, SERVICE, round.a, round.b, suspectDelta);
         round.references = new IAntseedTokenizerAudits.ProbePair[](referenceDeltas.length);
         for (uint256 k = 0; k < referenceDeltas.length; k++) {
@@ -946,7 +1041,7 @@ contract AntseedTokenizerAuditsTest is Test {
     }
 
     function _sign(uint256 key, AntseedResponseAuth.Receipt memory receipt) private view returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, audits.receiptDigest(receipt));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, responseAuth.digest(receipt));
         return abi.encodePacked(r, s, v);
     }
 

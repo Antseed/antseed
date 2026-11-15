@@ -8,6 +8,8 @@ import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/Mes
 
 import { IAntseedSellerPools } from "../interfaces/IAntseedSellerPools.sol";
 import { IAntseedTokenizerAudits } from "../interfaces/IAntseedTokenizerAudits.sol";
+import { IAntseedTokenizerProbeGuard } from "../interfaces/IAntseedTokenizerProbeGuard.sol";
+import { IAntseedTokenizerUsageReader } from "../interfaces/IAntseedTokenizerUsageReader.sol";
 import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
 import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 import { AntseedResponseAuth } from "./AntseedResponseAuth.sol";
@@ -34,24 +36,10 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     uint256 public constant MAX_SHAPE_BYTES = 1024;
     uint256 public constant MAX_CONTENT_BYTES = 4096;
     uint256 private constant BPS = 10_000;
-    uint256 private constant MAX_TOKEN_DIGITS = 15;
     /// @dev How far a seller's clock may run ahead of the block's.
     uint256 private constant MAX_CLOCK_SKEW_SECONDS = 300;
 
-    bytes private constant USAGE = '"usage"';
-    bytes private constant PROMPT_TOKENS = '"prompt_tokens"';
-    bytes private constant INPUT_TOKENS = '"input_tokens"';
-    bytes private constant CACHE_READ_TOKENS = '"cache_read_input_tokens"';
-    bytes private constant CACHE_CREATION_TOKENS = '"cache_creation_input_tokens"';
-    bytes private constant CACHE_HIT_TOKENS = '"prompt_cache_hit_tokens"';
-    bytes private constant INPUT_TOKENS_DETAILS = '"input_tokens_details"';
-    bytes private constant PROMPT_TOKENS_DETAILS = '"prompt_tokens_details"';
-    bytes private constant CACHED_TOKENS = '"cached_tokens"';
-    /// @dev Which `*_tokens_details` object of `usage` the parser is inside.
-    uint256 private constant IN_INPUT_DETAILS = 1;
-    uint256 private constant IN_PROMPT_DETAILS = 2;
-    /// @dev EIP-712 domain `AntseedTokenizerAudits` version 1, built inline: OpenZeppelin's `EIP712` (with
-    ///      ERC-5267) does not fit under the contract size limit.
+    /// @dev EIP-712 domain `AntseedTokenizerAudits` version 1, built per call from the chain id and address.
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant DOMAIN_NAME_HASH = keccak256("AntseedTokenizerAudits");
@@ -61,6 +49,8 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
     IAntseedVerificationResults public immutable override results;
     IERC8004Registry public immutable override identityRegistry;
     IAntseedSellerPools public override sellerPools;
+    IAntseedTokenizerUsageReader public immutable override usageReader;
+    IAntseedTokenizerProbeGuard public override probeGuard;
 
     /// @inheritdoc IAntseedTokenizerAudits
     mapping(bytes32 serviceHash => bytes32 modelHash) public override serviceModel;
@@ -105,11 +95,21 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         bytes32 digests;
     }
 
-    constructor(address results_, address sellerPools_, address identityRegistry_) Ownable(msg.sender) {
-        if (results_.code.length == 0 || identityRegistry_.code.length == 0) revert InvalidAddress();
+    constructor(
+        address results_,
+        address sellerPools_,
+        address identityRegistry_,
+        address usageReader_,
+        address probeGuard_
+    ) Ownable(msg.sender) {
+        if (results_.code.length == 0 || identityRegistry_.code.length == 0 || usageReader_.code.length == 0) {
+            revert InvalidAddress();
+        }
         results = IAntseedVerificationResults(results_);
         identityRegistry = IERC8004Registry(identityRegistry_);
+        usageReader = IAntseedTokenizerUsageReader(usageReader_);
         _setSellerPools(sellerPools_);
+        _setProbeGuard(probeGuard_);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -118,6 +118,11 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
 
     function setSellerPools(address sellerPools_) external onlyOwner {
         _setSellerPools(sellerPools_);
+    }
+
+    /// @notice Replaces the guard that decides which probe content B a proof may measure.
+    function setProbeGuard(address probeGuard_) external onlyOwner {
+        _setProbeGuard(probeGuard_);
     }
 
     /// @notice Registers or (de)activates a request shape; its id is
@@ -362,35 +367,11 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         return keccak256(lowered);
     }
 
-    function receiptDigest(AntseedResponseAuth.Receipt calldata receipt) external pure override returns (bytes32) {
-        return AntseedResponseAuth.digest(receipt);
-    }
-
     /// @inheritdoc IAntseedTokenizerAudits
     function proverAuthDigest(address prover) public view override returns (bytes32) {
         bytes32 domain =
             keccak256(abi.encode(DOMAIN_TYPEHASH, DOMAIN_NAME_HASH, DOMAIN_VERSION_HASH, block.chainid, address(this)));
         return MessageHashUtils.toTypedDataHash(domain, keccak256(abi.encode(PROVER_AUTH_TYPEHASH, prover)));
-    }
-
-    /// @dev The buyer's own reading of usage (`extractUsage` in `packages/api-adapter`): `prompt_tokens` is the
-    ///      whole input; so is `input_tokens` when `input_tokens_details` has `cached_tokens` (a subset).
-    ///      Otherwise `input_tokens` is fresh only, and the cache creation and the cached input are added: the
-    ///      larger of `prompt_tokens_details.cached_tokens` and the cache reads (`cache_read_input_tokens`,
-    ///      else `prompt_cache_hit_tokens`).
-    function promptTokensOf(bytes calldata responseBody) public pure override returns (bool found, uint256 tokens) {
-        UsageKeys memory usage = _usageKeys(responseBody);
-        if (usage.objects != 1) return (false, 0);
-        if (usage.promptCount == 1) return (true, usage.prompt);
-        if (
-            usage.promptCount > 1 || usage.inputCount != 1 || usage.readCount > 1 || usage.creationCount > 1
-                || usage.hitCount > 1 || usage.inputDetailsCount > 1 || usage.promptDetailsCount > 1
-                || usage.inputCachedCount > 1 || usage.promptCachedCount > 1
-        ) return (false, 0);
-        if (usage.inputCachedCount == 1) return (true, usage.input);
-        uint256 separate = usage.readCount == 1 ? usage.cacheRead : usage.cacheHit;
-        uint256 cached = usage.promptCached > separate ? usage.promptCached : separate;
-        return (true, usage.input + usage.cacheCreation + cached);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -410,6 +391,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
             round.b.length == 0 || round.a.length + round.b.length > MAX_CONTENT_BYTES || !_isJsonStringSafe(round.a)
                 || !_isJsonStringSafe(round.b)
         ) revert InvalidContent();
+        if (!probeGuard.isSafeProbe(round.b)) revert UnsafeProbe(index);
         uint256 refCount = round.references.length;
         if (refCount < minReferences || refCount > MAX_REFERENCES) revert InvalidRounds();
 
@@ -531,7 +513,7 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         (uint16 status, uint256 start, uint256 length) = AntseedResponseAuth.responseBody(receipt.response);
         if (status != 200) revert NotOk();
         bool found;
-        (found, tokens) = promptTokensOf(receipt.response[start:start + length]);
+        (found, tokens) = usageReader.promptTokensOf(receipt.response[start:start + length]);
         if (!found) revert UsageNotFound();
     }
 
@@ -552,194 +534,6 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         for (uint256 i = 0; i < services.length; i++) {
             if (_flags[agentId][services[i]].validUntilEpoch > epoch) live++;
         }
-    }
-
-    /// @dev The top-level `usage` objects of a response, and inside them how many times each usage key
-    ///      appears with a number, and its first number. `inputCachedCount` counts `cached_tokens` keys in
-    ///      `input_tokens_details` whatever their value, as `extractUsage` only checks it is there.
-    struct UsageKeys {
-        uint256 objects;
-        uint256 promptCount;
-        uint256 prompt;
-        uint256 inputCount;
-        uint256 input;
-        uint256 readCount;
-        uint256 cacheRead;
-        uint256 creationCount;
-        uint256 cacheCreation;
-        uint256 hitCount;
-        uint256 cacheHit;
-        uint256 inputDetailsCount;
-        uint256 promptDetailsCount;
-        uint256 inputCachedCount;
-        uint256 promptCachedCount;
-        uint256 promptCached;
-    }
-
-    /// @dev One pass over the JSON `body`, tracking strings and nesting, that reads the usage keys directly
-    ///      inside the top-level `usage` object, and `cached_tokens` directly inside its `input_tokens_details`
-    ///      and `prompt_tokens_details`, only (other nested breakdowns, e.g. Responses' per-item usage, and text
-    ///      that looks like a key are ignored).
-    function _usageKeys(bytes calldata body) private pure returns (UsageKeys memory usage) {
-        uint256 length = body.length;
-        uint256 depth;
-        bool inString;
-        bool escaped;
-        bool inUsage;
-        uint256 inDetails;
-        for (uint256 i = 0; i < length; i++) {
-            bytes1 c;
-            assembly {
-                // `i < length`, so the read stays inside `body`.
-                c := and(calldataload(add(body.offset, i)), shl(248, 0xff))
-            }
-            if (inString) {
-                if (escaped) escaped = false;
-                else if (c == "\\") escaped = true;
-                else if (c == '"') inString = false;
-                continue;
-            }
-            if (c == "{" || c == "[") {
-                depth++;
-            } else if (c == "}" || c == "]") {
-                if (depth == 2 && inUsage) inUsage = false;
-                if (depth == 3) inDetails = 0;
-                if (depth != 0) depth--;
-            } else if (c == '"') {
-                uint256 next = depth == 1 ? _objectAfter(body, i, USAGE) : 0;
-                if (next != 0) {
-                    usage.objects++;
-                    inUsage = true;
-                    depth = 2;
-                    i = next;
-                    continue;
-                }
-                if (depth == 2 && inUsage) {
-                    inDetails = _detailsAt(body, i);
-                    if (inDetails != 0) {
-                        if (inDetails == IN_INPUT_DETAILS) usage.inputDetailsCount++;
-                        else usage.promptDetailsCount++;
-                        depth = 3;
-                        i = _objectAfter(body, i, inDetails == IN_INPUT_DETAILS ? INPUT_TOKENS_DETAILS : PROMPT_TOKENS_DETAILS);
-                        continue;
-                    }
-                    next = _readUsageKey(body, i, usage);
-                } else if (depth == 3 && inDetails != 0) {
-                    next = _readCachedTokens(body, i, inDetails, usage);
-                }
-                if (next != 0) i = next - 1;
-                else inString = true;
-            }
-        }
-    }
-
-    /// @dev If `key` (quotes included) starts at `offset` and its value is an object, the offset of that `{`;
-    ///      else 0.
-    function _objectAfter(bytes calldata body, uint256 offset, bytes memory key) private pure returns (uint256) {
-        uint256 end = _colonAfterKey(body, offset, key);
-        if (end == 0) return 0;
-        uint256 length = body.length;
-        while (end < length && _isAsciiSpace(body[end])) end++;
-        return end < length && body[end] == "{" ? end : 0;
-    }
-
-    /// @dev If `key` (quotes included) starts at `offset` followed by a colon, the offset after the colon; else 0.
-    function _colonAfterKey(bytes calldata body, uint256 offset, bytes memory key) private pure returns (uint256) {
-        uint256 end = offset + key.length;
-        if (end > body.length || keccak256(key) != AntseedResponseAuth.hashCalldata(body[offset:end])) return 0;
-        uint256 length = body.length;
-        while (end < length && _isAsciiSpace(body[end])) end++;
-        return end < length && body[end] == ":" ? end + 1 : 0;
-    }
-
-    /// @dev Which `*_tokens_details` object starts at `offset` (`IN_INPUT_DETAILS` or `IN_PROMPT_DETAILS`); 0 if none.
-    function _detailsAt(bytes calldata body, uint256 offset) private pure returns (uint256) {
-        if (_objectAfter(body, offset, INPUT_TOKENS_DETAILS) != 0) return IN_INPUT_DETAILS;
-        if (_objectAfter(body, offset, PROMPT_TOKENS_DETAILS) != 0) return IN_PROMPT_DETAILS;
-        return 0;
-    }
-
-    /// @dev Reads a `cached_tokens` key starting at `offset` inside a details object: in `input_tokens_details`
-    ///      any value counts (only its presence matters), in `prompt_tokens_details` a number. Returns the offset
-    ///      just after the key's closing quote; 0 otherwise.
-    function _readCachedTokens(bytes calldata body, uint256 offset, uint256 inDetails, UsageKeys memory usage)
-        private
-        pure
-        returns (uint256)
-    {
-        if (inDetails == IN_INPUT_DETAILS) {
-            if (_colonAfterKey(body, offset, CACHED_TOKENS) == 0) return 0;
-            usage.inputCachedCount++;
-            return offset + CACHED_TOKENS.length;
-        }
-        (bool ok, uint256 value, uint256 end) = _keyNumber(body, offset, CACHED_TOKENS);
-        if (!ok) return 0;
-        if (usage.promptCachedCount++ == 0) usage.promptCached = value;
-        return end;
-    }
-
-    /// @dev Reads the usage key starting at `offset`, if it is one followed by a number, and returns the
-    ///      offset just after the key's closing quote; 0 otherwise.
-    function _readUsageKey(bytes calldata body, uint256 offset, UsageKeys memory usage) private pure returns (uint256) {
-        bytes1 first = offset + 1 < body.length ? body[offset + 1] : bytes1(0);
-        bool ok;
-        uint256 value;
-        uint256 end;
-        if (first == "p") {
-            (ok, value, end) = _keyNumber(body, offset, PROMPT_TOKENS);
-            if (ok) {
-                if (usage.promptCount++ == 0) usage.prompt = value;
-            } else {
-                (ok, value, end) = _keyNumber(body, offset, CACHE_HIT_TOKENS);
-                if (ok && usage.hitCount++ == 0) usage.cacheHit = value;
-            }
-        } else if (first == "i") {
-            (ok, value, end) = _keyNumber(body, offset, INPUT_TOKENS);
-            if (ok && usage.inputCount++ == 0) usage.input = value;
-        } else if (first == "c") {
-            (ok, value, end) = _keyNumber(body, offset, CACHE_READ_TOKENS);
-            if (ok) {
-                if (usage.readCount++ == 0) usage.cacheRead = value;
-            } else {
-                (ok, value, end) = _keyNumber(body, offset, CACHE_CREATION_TOKENS);
-                if (ok && usage.creationCount++ == 0) usage.cacheCreation = value;
-            }
-        }
-        return ok ? end : 0;
-    }
-
-    /// @dev Whether `key` (quotes included) starts at `offset` and is followed by a colon and a number; the
-    ///      number and the offset after the key.
-    function _keyNumber(bytes calldata body, uint256 offset, bytes memory key)
-        private
-        pure
-        returns (bool ok, uint256 value, uint256 end)
-    {
-        end = offset + key.length;
-        if (end > body.length || keccak256(key) != AntseedResponseAuth.hashCalldata(body[offset:end])) {
-            return (false, 0, 0);
-        }
-        (ok, value) = _numberAfterColon(body, end);
-    }
-
-    /// @dev Optional whitespace, a colon, optional whitespace, 1 to 15 digits, then optional whitespace and the
-    ///      end of the member (`,` or `}`): a decimal or exponent is not a token count.
-    function _numberAfterColon(bytes calldata body, uint256 offset) private pure returns (bool, uint256) {
-        uint256 length = body.length;
-        while (offset < length && _isAsciiSpace(body[offset])) offset++;
-        if (offset >= length || body[offset] != ":") return (false, 0);
-        offset++;
-        while (offset < length && _isAsciiSpace(body[offset])) offset++;
-        uint256 value;
-        uint256 digits;
-        while (offset < length && body[offset] >= "0" && body[offset] <= "9") {
-            if (++digits > MAX_TOKEN_DIGITS) return (false, 0);
-            value = value * 10 + (uint8(body[offset]) - 48);
-            offset++;
-        }
-        while (offset < length && _isAsciiSpace(body[offset])) offset++;
-        if (digits == 0 || offset >= length || (body[offset] != "," && body[offset] != "}")) return (false, 0);
-        return (true, value);
     }
 
     function _receiptKey(address seller, string calldata requestId) private pure returns (bytes32) {
@@ -775,6 +569,12 @@ contract AntseedTokenizerAudits is IAntseedTokenizerAudits, Ownable2Step {
         if (sellerPools_.code.length == 0) revert InvalidAddress();
         sellerPools = IAntseedSellerPools(sellerPools_);
         emit SellerPoolsSet(sellerPools_);
+    }
+
+    function _setProbeGuard(address probeGuard_) private {
+        if (probeGuard_.code.length == 0) revert InvalidAddress();
+        probeGuard = IAntseedTokenizerProbeGuard(probeGuard_);
+        emit ProbeGuardSet(probeGuard_);
     }
 
     function _isJsonStringSafe(bytes calldata text) private pure returns (bool) {

@@ -70,6 +70,7 @@ export {
   pairTuple,
   roundTuple,
 } from './evm/tokenizer-audits-client.js';
+export { isSafeProbe, PROBE_GUARD_RANGES } from './evm/tokenizer-probe-guard.js';
 export type {
   TokenizerAuditsClientConfig,
   TokenizerShape,

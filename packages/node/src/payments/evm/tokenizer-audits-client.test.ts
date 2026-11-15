@@ -85,6 +85,28 @@ describe('promptTokensOfBody', () => {
     expect(read('{"usage":{"input_tokens":12x}}')).toBeNull();
   });
 
+  it('refuses usage JSON.parse could read differently: escaped member names', () => {
+    expect(read('{"\\u0075sage":{"prompt_tokens":10}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":10},"\\u0075sage":{"prompt_tokens":20}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":10,"\\u0063ache_read_input_tokens":5}}')).toBeNull();
+    // The buyer reads 110 (input_tokens includes the cache); the raw bytes alone would give 200.
+    const escapedSubset = '{"usage":{"input_tokens":110,"cache_read_input_tokens":90,"input_tokens_details":{"\\u0063ached_tokens":90}}}';
+    expect(extractUsage(JSON.parse(escapedSubset)).inputTokens).toBe(110);
+    expect(read(escapedSubset)).toBeNull();
+    expect(read('{"model":"a\\"b","choices":[{"message":{"content":"\\u0075sage"}}],"usage":{"prompt_tokens":10}}')).toBe(10);
+  });
+
+  it('refuses usage values other than whole numbers, and reads null as absent', () => {
+    expect(read('{"usage":{"prompt_tokens":10,"prompt_tokens":2e1}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":"20"}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":10,"cache_read_input_tokens":true}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":null,"input_tokens":7}}')).toBe(7);
+    expect(read('{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}')).toBe(10);
+    for (const body of ['{"usage":{"prompt_tokens":null,"input_tokens":7}}', '{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}']) {
+      expect(read(body)).toBe(extractUsage(JSON.parse(body)).inputTokens);
+    }
+  });
+
   it('refuses ambiguous or missing usage, as the contract does', () => {
     expect(read('{"usage":{"prompt_tokens":15,"prompt_tokens":20}}')).toBeNull();
     expect(read('{"usage":{"prompt_tokens":15},"usage":{"prompt_tokens":20}}')).toBeNull();
