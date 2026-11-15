@@ -1,5 +1,6 @@
 import {
   Contract,
+  encodeBase64,
   FallbackProvider,
   FetchRequest,
   getBigInt,
@@ -8,6 +9,7 @@ import {
   makeError,
   NonceManager,
   Network,
+  toUtf8Bytes,
   type AbstractProvider,
   type AbstractSigner,
   type CallExceptionError,
@@ -55,8 +57,7 @@ export function withUrlCredentials(url: string, headers: Record<string, string>)
   parsed.username = '';
   parsed.password = '';
   if (Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) return { url: parsed.href, headers };
-  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(credentials)));
-  return { url: parsed.href, headers: { ...headers, authorization: `Basic ${encoded}` } };
+  return { url: parsed.href, headers: { ...headers, authorization: `Basic ${encodeBase64(toUtf8Bytes(credentials))}` } };
 }
 
 /**
@@ -165,11 +166,45 @@ function firstAnswer<T>(attempts: Array<() => Promise<T>>, stallMs: number): Pro
  * broadcast still goes to every backend at once, as before.
  */
 export class StaggeredFallbackProvider extends FallbackProvider {
+  private _chainId?: Promise<bigint>;
+  private _backendChainIds?: Map<AbstractProvider, Promise<bigint>>;
+
   override async _perform<T = unknown>(req: PerformActionRequest): Promise<T> {
     if (req.method === 'broadcastTransaction') return super._perform(req);
     const configs = [...this.providerConfigs].sort((a, b) => a.priority - b.priority);
     const stallMs = Math.min(...configs.map((config) => config.stallTimeout));
-    return firstAnswer(configs.map((config) => () => this._translatePerform(config.provider, req) as Promise<T>), stallMs);
+    // ethers checks that every backend is on one chain before it reads. Here each backend is
+    // checked on its own, so a stalled one doesn't hold the others up: a backend on another
+    // chain (a misconfigured fallback) fails like one that is down.
+    const chainId = req.method === 'chainId' ? null : await this._expectedChainId();
+    return firstAnswer(configs.map((config) => async () => {
+      if (chainId !== null && await this._backendChainId(config.provider) !== chainId) {
+        throw makeError('RPC backend is on another chain', 'NETWORK_ERROR', { event: 'changed' });
+      }
+      return this._translatePerform(config.provider, req) as Promise<T>;
+    }), stallMs);
+  }
+
+  /** The chain this provider is on: its configured network, or the first backend that answers. */
+  private _expectedChainId(): Promise<bigint> {
+    if (!this._chainId) {
+      const chainId = this.getNetwork().then((network) => network.chainId);
+      chainId.catch(() => { if (this._chainId === chainId) this._chainId = undefined; });
+      this._chainId = chainId;
+    }
+    return this._chainId;
+  }
+
+  private _backendChainId(provider: AbstractProvider): Promise<bigint> {
+    this._backendChainIds ??= new Map();
+    let chainId = this._backendChainIds.get(provider);
+    if (!chainId) {
+      const read = provider.getNetwork().then((network) => network.chainId);
+      read.catch(() => { if (this._backendChainIds?.get(provider) === read) this._backendChainIds.delete(provider); });
+      this._backendChainIds.set(provider, read);
+      chainId = read;
+    }
+    return chainId;
   }
 }
 

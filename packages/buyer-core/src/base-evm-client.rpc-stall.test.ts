@@ -179,6 +179,37 @@ describe('StaggeredFallbackProvider', () => {
     expect(second).not.toHaveBeenCalled();
   });
 
+  describe('without a configured chain', () => {
+    const onChain = (chainId: number, balance: () => Promise<bigint>) => {
+      const chain = Network.from(chainId);
+      const provider = new JsonRpcProvider('http://127.0.0.1:1', chain, { staticNetwork: chain });
+      vi.spyOn(provider, 'getBalance').mockImplementation(balance);
+      return provider;
+    };
+    const unconfigured = (...providers: JsonRpcProvider[]) => new StaggeredFallbackProvider(
+      providers.map((provider, i) => ({ provider, priority: i + 1, stallTimeout: 50, weight: 1 })),
+      undefined,
+      { quorum: 1 },
+    );
+    const address = `0x${'aa'.repeat(20)}`;
+
+    it('refuses a read from a fallback on another chain', async () => {
+      const provider = unconfigured(
+        onChain(CHAIN_ID, async () => { throw new Error('rate limited'); }),
+        onChain(1, async () => 7n),
+      );
+      await expect(provider.getBalance(address)).rejects.toThrow('rate limited');
+    });
+
+    it('takes a read from a fallback on the same chain', async () => {
+      const provider = unconfigured(
+        onChain(CHAIN_ID, async () => { throw new Error('rate limited'); }),
+        onChain(CHAIN_ID, async () => 7n),
+      );
+      await expect(provider.getBalance(address)).resolves.toBe(7n);
+    });
+  });
+
   it('throws the first failure when every backend fails', async () => {
     const provider = staggered(
       backend(async () => { throw new Error('first'); }),
