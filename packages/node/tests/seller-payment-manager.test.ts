@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { SellerPaymentManager, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
+import { SellerPaymentManager, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type ReserveFailure, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -189,6 +189,25 @@ describe('SellerPaymentManager', () => {
     expect(session!.latestBuyerSig).toBe(payload.spendingAuthSig);
     expect(session!.latestSpendingAuthSig).toBeNull();
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
+  });
+
+  it('reports a reserve that fails on-chain through onReserveFailed', async () => {
+    const failures: ReserveFailure[] = [];
+    const reporting = new SellerPaymentManager(sellerIdentity, {
+      rpcUrl: 'http://127.0.0.1:8545',
+      channelsContractAddress: CONTRACT_ADDR,
+      chainId: CHAIN_ID,
+      dataDir: tempDir,
+      onReserveFailed: (failure) => failures.push(failure),
+    }, store, () => mux);
+    vi.spyOn(reporting.channelsClient, 'reserve').mockRejectedValue(new Error('request timeout'));
+    const channelId = makeChannelId(7);
+    const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });
+
+    expect(await reporting.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).toBe('rejected');
+
+    expect(failures).toEqual([{ buyerPeerId: buyerIdentity.peerId, channelId, error: expect.stringContaining('request timeout') }]);
+    expect(mux.sentAuthAcks).toEqual([]);
   });
 
   it('retries overlapping initial reserves after delegated account transaction backpressure', async () => {
