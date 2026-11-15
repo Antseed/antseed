@@ -14,7 +14,7 @@ export { BalanceManager } from './balance-manager.js';
 export type { UnifiedBalance } from './balance-manager.js';
 
 // Base EVM client
-export { BaseEvmClient } from './evm/base-evm-client.js';
+export { BaseEvmClient, withUrlCredentials } from './evm/base-evm-client.js';
 
 // Deposits client (buyer deposits + seller payouts)
 export { DepositsClient } from './evm/deposits-client.js';
@@ -229,7 +229,7 @@ export type { BuyerNegotiatorConfig, Handle402Result, NegotiationEmitter } from 
 
 // Seller payment manager
 export { SellerPaymentManager, DEFAULT_MIN_SETTLE_DELTA_STR } from './seller-payment-manager.js';
-export type { SellerPaymentConfig } from './seller-payment-manager.js';
+export type { SellerPaymentConfig, ReserveFailure } from './seller-payment-manager.js';
 
 // Pricing utilities
 export {
