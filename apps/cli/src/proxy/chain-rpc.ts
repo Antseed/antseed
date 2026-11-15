@@ -18,6 +18,7 @@
  * - Requests are paced per endpoint so a burst never exceeds a few per second.
  */
 import { Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { withUrlCredentials } from '@antseed/node/payments'
 import { recordRpcCall } from './rpc-sources.js'
 
 export interface RpcTransportResponse {
@@ -477,19 +478,13 @@ function retryAfter(value: string | null | undefined): number | null {
  * waiting on it held its signer's nonce lock for good.
  */
 async function fetchTransport(url: string, body: string): Promise<RpcTransportResponse> {
-  // fetch refuses a URL with credentials in it; send them as Basic auth, as Node's http module did.
-  const target = new URL(url)
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (target.username || target.password) {
-    const credentials = `${decodeURIComponent(target.username)}:${decodeURIComponent(target.password)}`
-    headers['authorization'] = `Basic ${Buffer.from(credentials).toString('base64')}`
-    target.username = ''
-    target.password = ''
-  }
-  const response = await fetch(target.href, {
+  const target = withUrlCredentials(url, { 'content-type': 'application/json' })
+  const response = await fetch(target.url, {
     method: 'POST',
-    headers,
+    headers: target.headers,
     body,
+    // Like ethers' own transport: an RPC POST is never redirected, so an HTTPS endpoint can't move it to plain HTTP.
+    redirect: 'error',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   const text = await response.text()

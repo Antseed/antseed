@@ -48,7 +48,7 @@ const NONCE_CURSOR_TRUST_MS = 60_000;
  * `url` without its user and password, sent instead as a Basic Authorization header (unless one is
  * set), as Node's http module did: fetch refuses a URL with credentials in it.
  */
-function withUrlCredentials(url: string, headers: Record<string, string>): { url: string; headers: Record<string, string> } {
+export function withUrlCredentials(url: string, headers: Record<string, string>): { url: string; headers: Record<string, string> } {
   const parsed = new URL(url);
   if (!parsed.username && !parsed.password) return { url, headers };
   const credentials = `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`;
@@ -78,6 +78,8 @@ export async function fetchWithDeadline(req: FetchRequest, signal?: FetchCancelS
       method: req.method,
       headers: requestHeaders,
       ...(req.body ? { body: new Uint8Array(req.body) } : {}),
+      // Like ethers' own transport: an RPC POST is never redirected, so an HTTPS endpoint can't move it to plain HTTP.
+      redirect: 'error',
       signal: controller.signal,
     });
     const body = new Uint8Array(await response.arrayBuffer());

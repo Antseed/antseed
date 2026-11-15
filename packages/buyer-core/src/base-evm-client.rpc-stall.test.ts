@@ -123,6 +123,31 @@ describe('fetchWithDeadline', () => {
   });
 });
 
+describe('fetchWithDeadline redirects', () => {
+  it('refuses to follow a redirect, so the RPC body is never resent elsewhere', async () => {
+    let redirected = 0;
+    const target = createServer((_req, res) => { redirected += 1; res.end('{}'); });
+    servers.push(target);
+    await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+    const targetAddress = target.address();
+    if (!targetAddress || typeof targetAddress === 'string') throw new Error('no port');
+    const redirecting = createServer((_req, res) => {
+      res.writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}/` });
+      res.end();
+    });
+    servers.push(redirecting);
+    await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
+    const address = redirecting.address();
+    if (!address || typeof address === 'string') throw new Error('no port');
+    const request = new FetchRequest(`http://127.0.0.1:${address.port}/`);
+    request.getUrlFunc = fetchWithDeadline;
+    request.body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: ['0x00'] });
+
+    await expect(request.send()).rejects.toThrow();
+    expect(redirected).toBe(0);
+  });
+});
+
 describe('StaggeredFallbackProvider', () => {
   const network = Network.from(CHAIN_ID);
   const backend = (blockNumber: () => Promise<number>) => {

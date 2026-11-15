@@ -258,3 +258,27 @@ test('sends credentials in an RPC URL as Basic auth', async (t) => {
   assert.equal(await provider.send('eth_blockNumber', []), '0x100')
   assert.deepEqual(seen, [`Basic ${Buffer.from('rpc-user:p@ss').toString('base64')}`])
 })
+
+test('never follows a redirect: the endpoint is skipped and the RPC body is not resent', async (t) => {
+  let redirected = 0
+  const target = createServer((_req, res) => { redirected += 1; res.end('{}') })
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve))
+  t.after(() => target.close())
+  const targetAddress = target.address()
+  assert.ok(targetAddress && typeof targetAddress === 'object')
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}/` })
+    res.end()
+  })
+  await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve))
+  t.after(() => redirecting.close())
+  const address = redirecting.address()
+  assert.ok(address && typeof address === 'object')
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([`http://127.0.0.1:${address.port}`, rpc.url], 8453)
+  t.after(() => provider.destroy())
+
+  assert.equal(await provider.send('eth_getCode', [addresses[0], 'latest']), '0x6080604052')
+  assert.equal(redirected, 0)
+})
