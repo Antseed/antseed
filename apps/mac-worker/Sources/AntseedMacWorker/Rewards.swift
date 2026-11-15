@@ -7,12 +7,14 @@ import Foundation
 struct ColonyRewards: Equatable, Sendable {
     /// USDC base units (6 decimals).
     var usdc: Decimal
-    /// ANTS base units (18 decimals) of epochs whose emissions the pool already holds.
+    /// ANTS base units (18 decimals) the pool can pay now: those of epochs whose emissions it already
+    /// holds, plus `outrightAnts`.
     var ants: Decimal
     /// Finished epochs with ANTS owed to the wallet.
     var antsEpochs: [Int]
-    /// Finished epochs the wallet has weight in whose emissions the pool hasn't pulled yet: claiming
-    /// first pulls them (claimEpochEmissions), so more ANTS may come than `ants` shows.
+    /// Finished epochs whose emissions the pool hasn't pulled yet and whose pull brings the wallet ANTS
+    /// (it has weight in them, or the pull credits it outright): claiming first pulls them
+    /// (claimEpochEmissions), so more ANTS may come than `ants` shows.
     var unpulledEpochs: [Int]
     /// Epochs whose ANTS are still the worker key's own after it linked a payout wallet (older than
     /// setPayout moves): counted in `ants`, and paid to the payout wallet with claimAntsFor.
@@ -20,12 +22,16 @@ struct ColonyRewards: Equatable, Sendable {
     /// Whether the pool can send ANTS yet (`antsTransferable()`): until ANTS transfers open, what it
     /// owes stays recorded there and only USDC can be claimed.
     var antsTransferable = true
+    /// ANTS the pool owes the wallet outright rather than by epoch (`antsOwed`: its operator fee, or the
+    /// emissions of an epoch nobody earned in): counted in `ants`, and claimed with claimOwedAnts.
+    var outrightAnts: Decimal = 0
 
     /// The payout wallet's rewards plus what the linked worker key still holds itself.
     func adding(worker: ColonyRewards) -> ColonyRewards {
         // Its USDC always moves with the link (and later credit goes to the payout), so only ANTS stay behind.
         var merged = self
-        merged.ants += worker.ants
+        // What the pool owes the key outright only the key itself can claim: it is not this wallet's.
+        merged.ants += worker.ants - worker.outrightAnts
         merged.workerAntsEpochs = worker.antsEpochs
         merged.unpulledEpochs = Array(Set(unpulledEpochs + worker.unpulledEpochs)).sorted()
         return merged
@@ -61,6 +67,10 @@ extension Chain {
         let epochs: [Int]
         /// The pool's `antsTransferable()`; true when the pool predates it.
         var antsTransferable = true
+        /// The account every pull credits the pool's operator fee to outright; nil while the fee is zero.
+        var operatorFeeRecipient: String?
+        /// The account a pull credits outright for an epoch nobody earned in.
+        var remainderRecipient: String?
     }
 
     func rewardsContext(pool: String) async throws -> RewardsContext {
@@ -74,7 +84,14 @@ extension Chain {
         }
         // A pool without the view (or a read that fails) is taken as able to send: its claims say otherwise.
         let transferable = (try? await ethCall(to: pool, data: Self.selector("antsTransferable()"))).map { abiDecimal($0.prefix(32)) != 0 } ?? true
-        return RewardsContext(emissions: emissions, epochs: Array(0..<Int(current)), antsTransferable: transferable)
+        let feeBps = abiDecimal(try await ethCall(to: pool, data: Self.selector("operatorFeeBps()")).prefix(32))
+        var feeRecipient: String?
+        if feeBps > 0 { feeRecipient = try await address(of: pool, "operatorFeeRecipient()") }
+        let remainder = try await address(of: pool, "remainderRecipient()")
+        return RewardsContext(
+            emissions: emissions, epochs: Array(0..<Int(current)), antsTransferable: transferable,
+            operatorFeeRecipient: feeRecipient, remainderRecipient: remainder
+        )
     }
 
     /// What `pool` owes `account`, over every finished epoch (pool ANTS never expire).
@@ -86,6 +103,7 @@ extension Chain {
         let account = try Self.addressWord(account)
 
         let usdc = abiDecimal(try await ethCall(to: pool, data: Self.selector("usdcBalance(address)") + account))
+        let outright = abiDecimal(try await ethCall(to: pool, data: Self.selector("antsOwed(address)") + account))
         let weights = try await reads(epochs) { epoch in
             Read(to: pool, data: Self.selector("epochWeight(uint256,address)") + Data(abiWord(UInt64(epoch))) + account)
         }
@@ -105,13 +123,32 @@ extension Chain {
         let pullable = try await reads(unfunded) { epoch in
             Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
         }
+        let earned = unfunded.filter { abiDecimal((pullable[$0] ?? Data()).prefix(32)) > 0 }
+        // A pull also credits the wallet outright, whatever its weight: every rewarded epoch when it takes
+        // the pool's operator fee, and a rewarded epoch nobody earned in when it is the remainder recipient.
+        let takesFee = try resolved.operatorFeeRecipient.map { try Self.addressWord($0) } == account
+        let takesRemainder = try resolved.remainderRecipient.map { try Self.addressWord($0) } == account
+        var credited: [Int] = []
+        if takesFee || takesRemainder {
+            let rewards = try await reads(epochs) { epoch in
+                Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
+            }
+            credited = epochs.filter { abiDecimal((rewards[$0] ?? Data()).prefix(32)) > 0 }
+            if !takesFee {
+                let totals = try await reads(credited) { epoch in
+                    Read(to: pool, data: Self.selector("epochTotalWeight(uint256)") + Data(abiWord(UInt64(epoch))))
+                }
+                credited = credited.filter { abiDecimal(totals[$0] ?? Data()) == 0 }
+            }
+        }
         let antsEpochs = weighted.filter { abiDecimal(owed[$0] ?? Data()) > 0 }
         return ColonyRewards(
             usdc: usdc,
-            ants: antsEpochs.reduce(Decimal(0)) { $0 + abiDecimal(owed[$1] ?? Data()) },
+            ants: antsEpochs.reduce(outright) { $0 + abiDecimal(owed[$1] ?? Data()) },
             antsEpochs: antsEpochs,
-            unpulledEpochs: unfunded.filter { abiDecimal((pullable[$0] ?? Data()).prefix(32)) > 0 },
-            antsTransferable: resolved.antsTransferable
+            unpulledEpochs: Array(Set(earned + credited)).sorted(),
+            antsTransferable: resolved.antsTransferable,
+            outrightAnts: outright
         )
     }
 

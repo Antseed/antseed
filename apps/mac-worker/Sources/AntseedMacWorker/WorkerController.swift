@@ -486,10 +486,15 @@ final class WorkerController: ObservableObject {
     private func startLocalAPI() {
         let port = localAPI.port
         Task {
+            // Switched off again before this ran, or while the listener came up: stay off.
+            guard localAPI.enabled else { return }
             do {
                 try await localServer.start(port: port)
+                guard localAPI.enabled else { return localServer.stop() }
                 localAPIError = nil
                 log("local endpoint on \(localAPI.baseURL)")
+            } catch is CancellationError {
+                // Stopped, or replaced by a later start, which reports for itself.
             } catch {
                 localAPIError = error.localizedDescription
             }

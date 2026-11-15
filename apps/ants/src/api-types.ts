@@ -457,7 +457,12 @@ export interface ColonyPoolsView {
     outrightAnts?: string;
     /** Finished epochs with ANTS owed. */
     antsEpochs: number[];
-    /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */
+    /**
+     * Finished epochs whose emissions the pool hasn't pulled yet and whose pull
+     * brings this wallet ANTS: those it earned in, and those that credit it
+     * outright (it takes the pool's operator fee, or is the remainder recipient
+     * of an epoch nobody earned in). Claiming pulls them first.
+     */
     unfundedEpochs: number[];
     /**
      * Macs linked to this wallet from this dashboard whose own ANTS (epochs

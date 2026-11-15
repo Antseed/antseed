@@ -84,7 +84,11 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   const weighted = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.weighted))].sort((a, b) => a - b);
   const funding = await readEach(ctx, address, 'epochAnts', weighted.map((epoch) => [epoch]));
   const unfunded = new Set(weighted.filter((_, index) => funding[index] === 0n));
-  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, [...unfunded]);
+  const [shared, credited] = await Promise.all([
+    withUpstreamReward(ctx, stack, address, [...unfunded]),
+    outrightPullEpochs(ctx, stack, address, epochs),
+  ]);
+  const unfundedEpochs = [...new Set([...shared, ...credited])].sort((a, b) => a - b);
   const pullable = new Set(unfundedEpochs);
   // A linked Mac stays in the claim while it has ANTS to claim now or after a pull of its epochs.
   const workerAnts = workers
@@ -134,6 +138,36 @@ async function withUpstreamReward(ctx: AntsContext, stack: ResolvedStack, pool: 
     target: stack.registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
   })));
   return epochs.filter((_, index) => pending[index]?.[0] !== 0n);
+}
+
+/**
+ * The finished epochs whose pull credits the connected wallet outright
+ * (`antsOwed`), whatever its weight in them: every epoch the emissions contract
+ * holds a seller reward for when the wallet takes the pool's operator fee, and
+ * those of them nobody has weight in when it is the remainder recipient.
+ * Asked over every finished epoch, so only a reward read as positive counts.
+ */
+async function outrightPullEpochs(ctx: AntsContext, stack: ResolvedStack, pool: string, epochs: number[]): Promise<number[]> {
+  const methods = ['operatorFeeBps', 'operatorFeeRecipient', 'remainderRecipient'];
+  const [feeBps, feeRecipient, remainderRecipient] = (await multicallRead(ctx.provider(), methods.map((method) => ({ target: pool, iface: EPOCH_READS, method, args: [] }))))
+    .map((result, index) => {
+      // Unreadable recipients fail the pool: they must never read as "not this wallet".
+      if (result?.[0] === undefined || result[0] === null) throw new Error(`Colony pool ${pool}: ${methods[index]} unavailable.`);
+      return result[0];
+    });
+  const isWallet = (recipient: unknown): boolean => typeof recipient === 'string' && recipient.toLowerCase() === ctx.address.toLowerCase();
+  const takesFee = typeof feeBps === 'bigint' && feeBps > 0n && isWallet(feeRecipient);
+  if ((!takesFee && !isWallet(remainderRecipient)) || epochs.length === 0) return [];
+  const pending = await multicallRead(ctx.provider(), epochs.map((epoch) => ({
+    target: stack.registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
+  })));
+  const rewarded = epochs.filter((_, index) => {
+    const seller = pending[index]?.[0];
+    return typeof seller === 'bigint' && seller > 0n;
+  });
+  if (takesFee) return rewarded;
+  const totals = await readEach(ctx, pool, 'epochTotalWeight', rewarded.map((epoch) => [epoch]));
+  return rewarded.filter((_, index) => totals[index] === 0n);
 }
 
 export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {

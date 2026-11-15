@@ -127,7 +127,9 @@ struct WorkerKeys {
         }
     }
 
-    static func loadOrCreate(in directory: URL) throws -> WorkerKeys {
+    /// `keychain`: keep the encryption and attestation key handles in the app's keychain rather than
+    /// in the key file. Tests pass false, so they never touch the keychain (not even to probe it).
+    static func loadOrCreate(in directory: URL, keychain: Bool = Keychain.available) throws -> WorkerKeys {
         let url = directory.appendingPathComponent("keys.json")
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -157,7 +159,7 @@ struct WorkerKeys {
             changed = true
         }
 
-        let appBound = Keychain.available
+        let appBound = keychain
         func handle(_ name: String, create: () throws -> Data) throws -> Data {
             if appBound {
                 if let data = try Keychain.load(name) { return data }

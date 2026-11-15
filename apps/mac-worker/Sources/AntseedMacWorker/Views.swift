@@ -56,8 +56,17 @@ struct Mascot: View {
     let status: WorkerStatus
     var size: CGFloat = 52
 
+    /// The mascot of each mood, loaded once.
+    private static let images: [String: NSImage] = {
+        var images: [String: NSImage] = [:]
+        for mood in ["happy", "idle", "oops", "think"] {
+            images[mood] = resourceImage("mascot/\(mood).png")
+        }
+        return images
+    }()
+
     var body: some View {
-        if let image = resourceImage("mascot/\(Self.mood(status)).png") {
+        if let image = Self.images[Self.mood(status)] {
             Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
                 .frame(width: size, height: size * 1.2)
         } else {

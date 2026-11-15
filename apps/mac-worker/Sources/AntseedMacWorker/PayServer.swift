@@ -40,6 +40,7 @@ final class PayServer {
     /// Answers `/engine/…` (the engine's dashboard and the stats it polls), or nil when no engine runs.
     private let engine: (String) async -> Response?
     private var listener: NWListener?
+    private var starting: Task<UInt16, Error>?
     private(set) var port: UInt16?
 
     /// `api` answers every `/api/…` request that passed the token check.
@@ -93,12 +94,23 @@ final class PayServer {
         }
     }
 
+    /// The port the server listens on, starting it on first use. Callers during the start share it,
+    /// so every URL handed out names the one listener; a failed start can be tried again.
     private func start() async throws -> UInt16 {
         if let port { return port }
+        if let starting { return try await starting.value }
+        let task = Task { @MainActor in
+            defer { self.starting = nil }
+            return try await self.listen()
+        }
+        starting = task
+        return try await task.value
+    }
+
+    private func listen() async throws -> UInt16 {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
-        self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor in self?.accept(connection) }
         }
@@ -112,6 +124,7 @@ final class PayServer {
                     continuation.resume(returning: listener.port?.rawValue ?? 0)
                 case .failed(let error):
                     resumed = true
+                    listener.cancel()
                     continuation.resume(throwing: PayServerError.failed(error.localizedDescription))
                 default:
                     break
@@ -119,6 +132,7 @@ final class PayServer {
             }
             listener.start(queue: .main)
         }
+        self.listener = listener
         self.port = port
         return port
     }

@@ -73,7 +73,7 @@ final class ColonyPayAPI {
             [
                 "usdc": ColonyRewards.integerString($0.usdc), "ants": ColonyRewards.integerString($0.ants),
                 "antsEpochs": $0.antsEpochs, "unpulledEpochs": $0.unpulledEpochs, "workerAntsEpochs": $0.workerAntsEpochs,
-                "antsTransferable": $0.antsTransferable,
+                "antsTransferable": $0.antsTransferable, "outrightAnts": ColonyRewards.integerString($0.outrightAnts),
             ] as [String: Any]
         } ?? NSNull()
         return ["pool": pool() ?? NSNull(), "worker": workerAddress, "payout": payouts.payout ?? NSNull(), "claim": claim]

@@ -6,7 +6,7 @@ import { getColony, signColonyLink, type ColonyState } from '../api';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
 import { formatColonyAnts, formatUsd, truncateAddress } from '../utils/format';
 import { ConnectWalletAction } from './ConnectWalletAction';
-import { colonyAntsToClaim, colonyAntsTransferable } from './colony-claim';
+import { colonyAntsToClaim, colonyClaimable } from './colony-claim';
 
 /** AntseedColonyPool: linking a worker's earnings to a wallet, and claiming them. */
 const COLONY_POOL_ABI = parseAbi([
@@ -14,6 +14,7 @@ const COLONY_POOL_ABI = parseAbi([
   'function claimUsdc()',
   'function claimAnts(uint256[] epochs)',
   'function claimAntsFor(address worker, uint256[] epochs)',
+  'function claimOwedAnts()',
   'function claimEpochEmissions(uint256[] epochs)',
   // Claims wait until ANTS transfers open; the wallet shows this by name.
   'error AntsNotTransferableYet()',
@@ -57,7 +58,7 @@ function usePoolTransaction({ expectedChainId, ensureCorrectNetwork }: Pick<Paym
   return useCallback(async (
     pool: string,
     call: { functionName: 'setPayout'; args: readonly [Address, Address, bigint, Hex] }
-      | { functionName: 'claimUsdc'; args?: undefined }
+      | { functionName: 'claimUsdc' | 'claimOwedAnts'; args?: undefined }
       | { functionName: 'claimAnts' | 'claimEpochEmissions'; args: readonly [readonly bigint[]] }
       | { functionName: 'claimAntsFor'; args: readonly [Address, readonly bigint[]] },
   ): Promise<Hex> => {
@@ -146,8 +147,8 @@ export function PayColonyLink({ config, colony, onDone }: PayColonyProps) {
 
 /**
  * Claims what the pool owes the payout wallet: its USDC, then ANTS for every
- * finished epoch, pulling the pool's emissions first for epochs it hasn't
- * pulled yet (as the ANTS dashboard's claim does). The Mac app works out the
+ * finished epoch and those it is owed outright, pulling the pool's emissions
+ * first for epochs it hasn't pulled yet (as the ANTS dashboard's claim does). The Mac app works out the
  * epochs; this page only sends the transactions.
  */
 export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProps & { reload: () => Promise<ColonyState | null> }) {
@@ -170,12 +171,8 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
 
   const payout = colony?.payout ?? null;
   const wrongWallet = Boolean(payout && payout.toLowerCase() !== address.toLowerCase());
-  const usdc = BigInt(colony?.claim?.usdc ?? '0');
-  const ants = BigInt(colony?.claim?.ants ?? '0');
   // Until ANTS transfers open, only the USDC can be claimed: the pool keeps the ANTS it owes.
-  const antsOpen = colonyAntsTransferable(colony);
-  const unpulled = antsOpen ? colony?.claim?.unpulledEpochs ?? [] : [];
-  const nothing = usdc === 0n && (!antsOpen || ants === 0n) && unpulled.length === 0;
+  const { usdc, ants, antsOpen, unpulled, nothing } = colonyClaimable(colony);
 
   const claim = async () => {
     if (!colony?.pool) return;
@@ -194,7 +191,7 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
         setStep('Pulling the pool’s ANTS for finished epochs…');
         try { last = await send(pool, { functionName: 'claimEpochEmissions', args: [epochs.map(BigInt)] }); } catch { /* claimed later */ }
       }
-      const { antsEpochs, workerAntsEpochs } = colonyAntsToClaim(unpulled.length > 0 ? await reload() : colony);
+      const { antsEpochs, workerAntsEpochs, outright } = colonyAntsToClaim(unpulled.length > 0 ? await reload() : colony);
       for (const epochs of batches(antsEpochs, MAX_EPOCHS_PER_CLAIM)) {
         setStep('Claiming ANTS…');
         last = await send(pool, { functionName: 'claimAnts', args: [epochs.map(BigInt)] });
@@ -203,6 +200,11 @@ export function PayColonyClaim({ config, colony, onDone, reload }: PayColonyProp
       for (const epochs of batches(workerAntsEpochs, MAX_EPOCHS_PER_CLAIM)) {
         setStep('Claiming this Mac’s earlier ANTS…');
         last = await send(pool, { functionName: 'claimAntsFor', args: [colony.worker as Address, epochs.map(BigInt)] });
+      }
+      // Not by epoch: the operator fee, or an epoch nobody earned in, which a pull above may just have credited.
+      if (outright) {
+        setStep('Claiming the ANTS the pool owes this wallet…');
+        last = await send(pool, { functionName: 'claimOwedAnts' });
       }
       if (!last) throw new Error('Nothing to claim yet.');
       onDone(last);

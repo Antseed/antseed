@@ -99,4 +99,69 @@ final class LocalAPITests: XCTestCase {
         XCTAssertEqual(bytesShort(2_889_828_920), "2.9 GB")
         XCTAssertEqual(bytesShort(512_000_000), "512 MB")
     }
+
+    /// A loopback port nothing listens on.
+    private func freePort() throws -> UInt16 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0 }
+        }
+        guard bound else { throw XCTSkip("no loopback port to bind") }
+        return UInt16(bigEndian: address.sin_port)
+    }
+
+    /// The status `GET /v1/models` gets with the key, or nil when nothing answers.
+    private func modelsStatus(_ port: UInt16) async -> Int? {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 5
+        return ((try? await URLSession.shared.data(for: request))?.1 as? HTTPURLResponse)?.statusCode
+    }
+
+    @MainActor private final class Switch { var on = true }
+
+    @MainActor
+    private func server(_ port: UInt16, _ enabled: Switch) -> LocalAPIServer {
+        let key = key
+        return LocalAPIServer(settings: { LocalAPISettings(enabled: enabled.on, port: port, key: key) }, target: { nil }, onStart: {}, onEnd: {})
+    }
+
+    @MainActor
+    func testAStartStoppedBeforeItIsReadyNeverServes() async throws {
+        let port = try freePort()
+        let server = server(port, Switch())
+        let starting = Task { @MainActor in try await server.start(port: port) }
+        while !server.isStarting { await Task.yield() }
+        server.stop()
+        do {
+            try await starting.value
+            XCTFail("a stopped start must not succeed")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        XCTAssertNil(server.port)
+        XCTAssertFalse(server.isStarting)
+        let status = await modelsStatus(port)
+        XCTAssertNil(status, "nothing listens")
+    }
+
+    @MainActor
+    func testRefusesAKeyHolderOnceSwitchedOff() async throws {
+        let port = try freePort()
+        let enabled = Switch()
+        let server = server(port, enabled)
+        try await server.start(port: port)
+        defer { server.stop() }
+        let on = await modelsStatus(port)
+        XCTAssertEqual(on, 503, "on, with no model loaded")
+        enabled.on = false
+        let off = await modelsStatus(port)
+        XCTAssertEqual(off, 403)
+    }
 }

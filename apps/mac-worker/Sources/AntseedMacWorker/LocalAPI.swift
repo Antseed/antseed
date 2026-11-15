@@ -102,7 +102,13 @@ final class LocalAPIServer {
     private let onStart: () -> Void
     private let onEnd: () -> Void
     private var listener: NWListener?
+    /// A listener still coming up, which `stop()` cancels so it never serves.
+    private var pending: NWListener?
+    /// Bumped by every start and stop: a start that was stopped or replaced while it waited sees it moved.
+    private var generation = 0
     private(set) var port: UInt16?
+    /// A start is waiting for its listener.
+    var isStarting: Bool { pending != nil }
 
     init(settings: @escaping () -> LocalAPISettings, target: @escaping () async throws -> Target?,
          onStart: @escaping () -> Void, onEnd: @escaping () -> Void) {
@@ -112,7 +118,8 @@ final class LocalAPIServer {
         self.onEnd = onEnd
     }
 
-    /// Listen on 127.0.0.1:`port`; throws why it can't (the port is taken).
+    /// Listen on 127.0.0.1:`port`; throws why it can't (the port is taken), or `CancellationError`
+    /// when `stop()` or another start came first.
     func start(port: UInt16) async throws {
         if self.port == port, listener != nil { return }
         stop()
@@ -123,6 +130,9 @@ final class LocalAPIServer {
         listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor in self?.accept(connection) }
         }
+        let started = generation
+        pending = listener
+        defer { if pending === listener { pending = nil } }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var resumed = false
             listener.stateUpdateHandler = { state in
@@ -135,17 +145,28 @@ final class LocalAPIServer {
                     resumed = true
                     listener.cancel()
                     continuation.resume(throwing: LocalAPIError.failed("Port \(port) is not available (\(error.localizedDescription))"))
+                case .cancelled:
+                    resumed = true
+                    continuation.resume(throwing: CancellationError())
                 default:
                     break
                 }
             }
             listener.start(queue: .main)
         }
+        // Stopped after it became ready but before this resumed: it must not start serving.
+        guard generation == started else {
+            listener.cancel()
+            throw CancellationError()
+        }
         self.listener = listener
         self.port = port
     }
 
     func stop() {
+        generation += 1
+        pending?.cancel()
+        pending = nil
         listener?.cancel()
         listener = nil
         port = nil
@@ -180,7 +201,10 @@ final class LocalAPIServer {
     }
 
     private func answer(_ request: PayServer.Request, port: UInt16, on connection: NWConnection) async {
-        switch Self.route(request, port: port, key: settings().key) {
+        let settings = settings()
+        // Off means off, also for a caller that still holds the key.
+        guard settings.enabled else { return reply(403, "The local endpoint is off", on: connection) }
+        switch Self.route(request, port: port, key: settings.key) {
         case .reject(let status, let message):
             reply(status, message, on: connection)
         case .models:

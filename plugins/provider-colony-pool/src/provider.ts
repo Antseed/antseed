@@ -199,7 +199,8 @@ export class ColonyPoolProvider implements Provider {
 
     return new Promise<SerializedHttpResponse>((resolve, reject) => {
       let start: { statusCode: number; headers: Record<string, string> } | null = null;
-      let streaming = false;
+      // The buyer's callbacks while the response streams to it (an SSE response to a streaming request).
+      let streamCallbacks: ProviderStreamCallbacks | null = null;
       const chunks: Uint8Array[] = [];
       const response = (): SerializedHttpResponse => ({
         requestId: req.requestId,
@@ -219,17 +220,15 @@ export class ColonyPoolProvider implements Provider {
           },
           onStart: (statusCode, headers) => {
             start = { statusCode, headers };
-            streaming = callbacks !== null && (headers['content-type'] ?? '').includes('text/event-stream');
-            if (streaming) {
-              callbacks!.onResponseStart({ ...response(), headers: { ...headers, [ANTSEED_STREAMING_RESPONSE_HEADER]: '1' } });
-            }
+            streamCallbacks = (headers['content-type'] ?? '').includes('text/event-stream') ? callbacks : null;
+            streamCallbacks?.onResponseStart({ ...response(), headers: { ...headers, [ANTSEED_STREAMING_RESPONSE_HEADER]: '1' } });
           },
           onChunk: (data) => {
             chunks.push(data);
-            if (streaming) void callbacks!.onResponseChunk({ requestId: req.requestId, data, done: false });
+            void streamCallbacks?.onResponseChunk({ requestId: req.requestId, data, done: false });
           },
           onEnd: () => {
-            if (streaming) void callbacks!.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+            void streamCallbacks?.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
             this.servedBy.set(req, { worker, dispatchId });
             resolve(response());
           },

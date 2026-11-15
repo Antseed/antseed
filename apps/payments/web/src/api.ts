@@ -323,6 +323,8 @@ export interface ColonyState {
     workerAntsEpochs?: number[];
     /** Whether the pool can send ANTS yet; false while ANTS transfers are closed (the ANTS stay owed in the pool). */
     antsTransferable?: boolean;
+    /** ANTS the pool owes the payout wallet outright rather than by epoch (its operator fee, or an epoch nobody earned in); claimOwedAnts sends them. Counted in `ants`. */
+    outrightAnts?: string;
   } | null;
 }
 

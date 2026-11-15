@@ -20,6 +20,7 @@ vi.mock('@antseed/node/payments', async (importOriginal) => ({
 const wallet = Wallet.createRandom();
 const pool = '0x00000000000000000000000000000000000000aa';
 const worker = '0x00000000000000000000000000000000000000bb';
+const operator = '0x00000000000000000000000000000000000000dd';
 
 function linkCode(overrides: Record<string, unknown> = {}): string {
   const payload = { chainId: 31337, pool, worker, payout: wallet.address, deadline: 2_000_000_000, signature: `0x${'11'.repeat(65)}`, ...overrides };
@@ -43,6 +44,11 @@ function fixture(pools: string[] = [pool], unfunded: number[] = [], empty: numbe
     antsOwed: vi.fn(async () => 0n),
     claimOwedAnts: vi.fn(async () => 'owed-hash'),
     antsTransferable: vi.fn(async () => true),
+    // Another account takes the operator fee and the remainder unless a test says otherwise.
+    operatorFeeBps: vi.fn(async () => 1_000n),
+    operatorFeeRecipient: vi.fn(async (): Promise<string> => operator),
+    remainderRecipient: vi.fn(async (): Promise<string> => operator),
+    epochTotalWeight: vi.fn(async (epoch: number) => (epoch === 4 || unfunded.includes(epoch) ? 10n : 0n)),
     payout: '0x0000000000000000000000000000000000000000',
     payoutOf: vi.fn(async (): Promise<string> => client.payout),
     setPayout: vi.fn(async (_signer: unknown, authorization: { payout: string }) => { client.payout = authorization.payout; return 'link-hash'; }),
@@ -121,6 +127,53 @@ describe('colony pool rewards', () => {
     await claimColonyPool(ctx, { pool, usdc: false, ants: true }, report);
     expect(client.claimEpochEmissions).toHaveBeenCalledTimes(1);
     expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [5]);
+  });
+
+  /** A wallet with no USDC and no weight in any epoch; the emissions contract holds a reward for `rewarded`. */
+  function withoutWeight(rewarded: number[]) {
+    const made = fixture();
+    let pulled = false;
+    made.client.usdcBalance.mockResolvedValue(0n);
+    made.client.epochWeight.mockResolvedValue(0n);
+    made.client.pendingEmissions.mockImplementation(async (_account: string, epochs: number[]) => (rewarded.includes(epochs[0]!) && !pulled ? 5n : 0n));
+    made.client.claimEpochEmissions.mockImplementation(async () => { pulled = true; return 'pull-hash'; });
+    // The pull credits the wallet outright.
+    made.client.antsOwed.mockImplementation(async () => (pulled ? 2n : 0n));
+    return made;
+  }
+
+  it('pulls the emissions that pay the operator fee for a wallet with no weight of its own, then claims it', async () => {
+    const { ctx, client } = withoutWeight([3]);
+    client.operatorFeeRecipient.mockResolvedValue(wallet.address);
+    expect((await colonyPools(ctx)).pools[0]!).toMatchObject({ usdcOwed: '0', antsOwed: '0', antsEpochs: [], unfundedEpochs: [3] });
+    await expect(claimColonyPool(ctx, { pool, usdc: true, ants: true }, report)).resolves.toEqual({ hashes: ['pull-hash', 'owed-hash'] });
+    expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [3]);
+    expect(client.claimOwedAnts).toHaveBeenCalledWith(wallet);
+    expect(client.claimAnts).not.toHaveBeenCalled();
+  });
+
+  it('takes no fee epochs for a fee recipient of a pool whose fee is zero', async () => {
+    const { ctx, client } = withoutWeight([3]);
+    client.operatorFeeRecipient.mockResolvedValue(wallet.address);
+    client.operatorFeeBps.mockResolvedValue(0n);
+    expect((await colonyPools(ctx)).pools[0]!.unfundedEpochs).toEqual([]);
+  });
+
+  it('pulls, for the remainder recipient, only the epochs nobody earned in, then claims their ANTS', async () => {
+    const { ctx, client } = withoutWeight([2, 3]);
+    client.remainderRecipient.mockResolvedValue(wallet.address);
+    // Workers earned in epoch 2: its ANTS are theirs. Nobody did in epoch 3.
+    client.epochTotalWeight.mockImplementation(async (epoch: number) => (epoch === 2 ? 10n : 0n));
+    expect((await colonyPools(ctx)).pools[0]!).toMatchObject({ antsOwed: '0', unfundedEpochs: [3] });
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['pull-hash', 'owed-hash'] });
+    expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [3]);
+    expect(client.claimOwedAnts).toHaveBeenCalledWith(wallet);
+  });
+
+  it('marks a pool unreadable when its fee or remainder recipient cannot be read', async () => {
+    const { ctx, client } = fixture();
+    client.remainderRecipient.mockImplementation(async () => undefined as unknown as string);
+    expect((await colonyPools(ctx)).pools[0]!).toMatchObject({ error: expect.stringMatching(/remainderRecipient unavailable/) });
   });
 
   it('claims USDC but keeps ANTS owed while ANTS transfers are closed', async () => {
