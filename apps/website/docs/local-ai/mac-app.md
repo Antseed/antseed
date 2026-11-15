@@ -20,25 +20,48 @@ Antseed Colony is a menu bar app that joins a [colony pool](/docs/local-ai) and 
 
 1. [Download Antseed Colony](https://github.com/Antseed/antseed/releases/download/colony-latest/Antseed-Colony.dmg) (`Antseed-Colony.dmg`, always the latest version). It is signed with Antseed's Developer ID and notarized by Apple.
 2. Open the DMG and drag **Antseed Colony** to **Applications**.
-3. Open **Antseed Colony**. It runs in the menu bar (the ant icon), not the Dock.
+3. Open **Antseed Colony**. It lives in the menu bar (the ant icon). Its window opens on the first launch; later, click the ant and choose **Open Antseed Colony** (or **Quit Antseed Colony**). Closing the window keeps it running and earning.
 
 On first launch the app creates its keys. Models run on the bundled [TensorFold](https://github.com/ashhart/TensorFold) engine.
 
 ## Join a pool
 
-Click the ant icon, enter the pool's address from its operator (`wss://…`) under **Pool address**, and choose **Join**. The app keeps the address for later launches; **Change pool** switches to another one.
+In the window, enter the pool's address from its operator (`wss://…`) under **Pool**, and choose **Join**. The app keeps the address for later launches; **Settings** (the gear) → **Pool** → **Change** switches to another one.
 
 ## Choose a model
 
 Once joined, the app lists the models the pool runs: each service it sells, the exact model pinned for it, and its download size. Pick one. The app downloads that pinned model, checks its files and starts serving it. Models whose weights take more than half your Mac's memory are marked **needs more memory** and can't be picked.
 
-The app keeps your choice for later launches. **Change model** switches to another of the pool's models; the app stops serving while the new one downloads. A pool that pins no models gets the built-in one, `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX).
+The app keeps your choice for later launches. **Settings** → **Model** → **Change** switches to another of the pool's models; the app stops serving while the new one downloads. A pool that pins no models gets the built-in one, `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX).
 
-The panel shows the app's status, today's estimated earnings, the model and what protects the prompts it serves. The switch at the top pauses sharing without leaving the pool.
+The window shows the app's status, today's estimated earnings, what the Mac runs (its model, its pool and your endpoint) and what protects the prompts it serves. The switch at the top pauses sharing without leaving the pool, and the gear opens **Settings**: the pool and model, your endpoint and **This Mac**.
+
+## See what it's doing
+
+Once the model is loaded, the **Activity** card shows it live while the window is open: the generation speed (tokens per second) while it answers, and whom it answers (the pool or you), how busy the Mac's GPU is, the memory the model holds, and the prompt and generated tokens since it started.
+
+**Open dashboard** opens the engine's own live page in your browser: its decode and prefill speed, the last five minutes of generation speed, memory, the requests running and waiting, and token totals. It shows numbers only, never a prompt, and the app serves it on this Mac only.
+
+## Use the model yourself
+
+The model the Mac shares can answer your own apps too. In **Settings**, under **Use it yourself**, choose **Turn on**: the app opens an endpoint on this Mac, `http://127.0.0.1:11435/v1`, and shows a key. Use **Copy URL** and **Copy key** to paste them into any app that speaks the OpenAI API (chat completions, completions, responses) or the Anthropic Messages API:
+
+```bash
+curl http://127.0.0.1:11435/v1/chat/completions \
+  -H "Authorization: Bearer $COLONY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.5-2b", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+- Your requests are yours: they go straight to the model on your Mac, never to the pool, cost nothing and earn nothing.
+- It answers only on this Mac (`127.0.0.1`) and only callers with the key. Anthropic-style apps can send the key as `x-api-key`. The setting and key are kept for later launches.
+- It serves the model the Mac runs for the pool, under that service's name, whatever model a request names.
+- While you use it, and for a minute after your last request, the Mac stops offering its model to the pool, so the pool sends its buyers to other Macs. Using it heavily means earning less. Pausing sharing keeps the endpoint working.
+- **Turn off** closes it. The port can be changed with `--local-port`.
 
 ## Keep it earning
 
-Under **This Mac** in the panel:
+Under **This Mac** in **Settings**:
 
 - **Open at login** (on from the first launch): the app starts again after a restart, so the Mac keeps earning.
 - **Keep awake while sharing** (on): the Mac doesn't go to sleep while it shares with its pool; the display still can. **Only when plugged in** (on) lets a laptop sleep as usual on battery.
@@ -63,19 +86,20 @@ open -a "Antseed Colony" --args --pool wss://pool.example.com:8790 --name studio
 | `--data-dir <path>` | Where the app keeps its keys and accounts (default `~/Library/Application Support/AntseedMacWorker`) |
 | `--link-payout <address>` | Sign a payout link for this wallet once joined, for a Mac with no one at the screen (the code is also written to the log) |
 | `--log <path>` | Append activity lines to this file |
+| `--local-port <port>` | The port of the endpoint for your own apps (default `11435`), when it is turned on |
 
 ## Link your wallet
 
 The app's key lives on your Mac; your earnings go to a wallet you choose. Everything happens from the app: the only step outside it is your wallet approving a transaction, on the Antseed payments page the app opens in your browser.
 
-1. Once the app has joined a pool, choose **Link wallet** under **Rewards** in the panel. Your browser opens the payments page, served by the app on your Mac.
+1. Once the app has joined a pool, choose **Link wallet** under **Rewards** in the window. Your browser opens the payments page, served by the app on your Mac.
 2. Connect your wallet (a browser extension such as MetaMask, or a mobile wallet through WalletConnect) and choose **Link this wallet**. The app signs the link for that wallet with the Mac's key, and you confirm one transaction that records it in the pool contract.
 
-Linking also moves what the Mac already earned to that wallet. The panel then shows the wallet under **Payout wallet**; **Change** links another one.
+Linking also moves what the Mac already earned to that wallet. The window then shows the wallet under **Payout wallet**; **Change** links another one.
 
 ## Claim
 
-The **Rewards** card in the panel shows what the pool owes your wallet: USDC, and ANTS for finished epochs. Choose **Claim**, connect the same wallet on the payments page, and confirm the transactions: USDC first, then ANTS. When the pool hasn't pulled its ANTS for some finished epochs yet, the claim pulls them first, as the panel notes. The pool's operator can pause new settlements, but never these claims. While ANTS transfers are still closed, the card says so and **Claim** takes only the USDC: the pool keeps the ANTS it owes you until transfers open.
+The **Rewards** card in the window shows what the pool owes your wallet: USDC, and ANTS for finished epochs. Choose **Claim**, connect the same wallet on the payments page, and confirm the transactions: USDC first, then ANTS. When the pool hasn't pulled its ANTS for some finished epochs yet, the claim pulls them first, as the card notes. The pool's operator can pause new settlements, but never these claims. While ANTS transfers are still closed, the card says so and **Claim** takes only the USDC: the pool keeps the ANTS it owes you until transfers open.
 
 The Antseed desktop app's **Rewards** and the ANTS dashboard (`antseed ants`) also show and claim a linked Mac's earnings.
 

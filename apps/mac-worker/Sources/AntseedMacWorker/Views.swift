@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// The menubar panel, in the Antseed desktop app's look: warm paper and an olive
+// The app's window, in the Antseed desktop app's look: warm paper and an olive
 // accent in light mode, deep navy and lime in dark, rounded cards, calm notices,
 // and the desktop's ant showing how the Mac is doing. Everything is drawn in
 // SwiftUI (no AppKit controls except text fields), so rendered snapshots match.
@@ -159,13 +159,13 @@ struct TextLink: View {
     }
 }
 
-/// A rounded card on the panel's background.
+/// A rounded card on the window's background.
 struct Card<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Theme.card))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border))
     }
@@ -203,7 +203,7 @@ extension SettingRow where Detail == EmptyView {
     }
 }
 
-/// A text field drawn in the panel's style; snapshots get a drawn stand-in (ImageRenderer can't draw AppKit fields).
+/// A text field drawn in the app's style; snapshots get a drawn stand-in (ImageRenderer can't draw AppKit fields).
 struct InputField: View {
     let placeholder: String
     @Binding var text: String
@@ -226,57 +226,86 @@ struct InputField: View {
     }
 }
 
-// MARK: the panel
+// MARK: the window
 
-/// The whole app: a menubar panel. Earnings history and claims live in the
-/// ANTS dashboard; this shows whether the Mac is working and what it earns.
-struct MenuPanel: View {
+/// The whole app: one window, opened from the menu bar's ant (Open Antseed Colony). It shows how
+/// the Mac is doing (earnings, rewards, live activity, what it runs); everything that configures it
+/// is behind Settings. Until a pool and a model are chosen, those steps show here instead.
+struct MainView: View {
     @ObservedObject var worker: WorkerController
     /// ImageRenderer cannot draw AppKit controls; snapshots get drawn stand-ins.
     var snapshot = false
-    /// The panel's laid-out height, which its window follows.
-    @State private var height: CGFloat = 0
+    /// Room above the content for the window's title bar buttons.
+    var topInset: CGFloat = 0
+    @State private var showingSettings = false
+
+    static let width: CGFloat = 760
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             header
-            EarningsCard(worker: worker)
-            // A payout link names the pool contract, so rewards show once the app has joined one.
-            if worker.poolSeller != nil {
-                RewardsCard(worker: worker, payouts: worker.payouts, snapshot: snapshot)
+            if worker.poolURL == nil {
+                Card { PoolRow(worker: worker, snapshot: snapshot) }
+            } else if worker.needsModelChoice {
+                Card { ModelRow(worker: worker, snapshot: snapshot) }
             }
-            Card {
-                ModelRow(worker: worker, snapshot: snapshot)
-                Divider().overlay(Theme.border)
-                PoolRow(worker: worker, snapshot: snapshot)
+            // Two rows of two boxes, each pair as tall as its taller box.
+            Grid(horizontalSpacing: 16, verticalSpacing: 16) {
+                GridRow {
+                    EarningsCard(worker: worker).cell
+                    ActivityCard(worker: worker, snapshot: snapshot).cell
+                }
+                GridRow {
+                    // A payout link names the pool contract, so rewards show once the app has joined one.
+                    Group {
+                        if worker.poolSeller != nil {
+                            RewardsCard(worker: worker, payouts: worker.payouts, snapshot: snapshot)
+                        } else {
+                            RewardsWaiting()
+                        }
+                    }
+                    .cell
+                    RunningCard(worker: worker) { openSettings() }.cell
+                }
             }
-            ThisMacCard(mac: worker.mac, updates: worker.updates)
-            ProtectionNotice(protection: worker.protection)
             footer
         }
-        .padding(14)
-        .frame(width: 320)
-        .background(Theme.background)
+        .padding(20)
+        .padding(.top, topInset)
+        .frame(width: Self.width)
         .fixedSize(horizontal: false, vertical: true)
-        .background(GeometryReader { geometry in
-            Color.clear.preference(key: PanelHeightKey.self, value: geometry.size.height)
-        })
-        .onPreferenceChange(PanelHeightKey.self) { height = $0 }
-        .background(FitWindowToContent(height: height))
+        .background(Theme.background)
+        .sheet(isPresented: $showingSettings) { SettingsView(worker: worker) { showingSettings = false } }
+        // Live numbers only while the window shows them.
+        .onAppear { if !snapshot { worker.watchActivity(true) } }
+        .onDisappear { if !snapshot { worker.watchActivity(false) } }
+    }
+
+    private func openSettings() {
+        if !snapshot { showingSettings = true }
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Mascot(status: worker.status, size: 46)
+        HStack(alignment: .center, spacing: 12) {
+            Mascot(status: worker.status, size: 52)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Antseed Colony").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("Antseed Colony").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.text)
                 HStack(spacing: 6) {
                     Circle().fill(statusColor).frame(width: 7, height: 7)
-                    Text(worker.status.label).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(2)
+                    Text(worker.status.label).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary).lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
+            Text(worker.sharing ? "Sharing" : "Paused").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textSecondary)
             ShareSwitch(isOn: $worker.sharing)
+            Image(systemName: "gearshape")
+                .font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Theme.surface))
+                .overlay(Circle().stroke(Theme.border))
+                .contentShape(Circle())
+                .clickable("Settings") { openSettings() }
+                .padding(.leading, 4)
         }
     }
 
@@ -290,13 +319,106 @@ struct MenuPanel: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            ProtectionNotice(protection: worker.protection)
+            Spacer(minLength: 12)
             Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
                 .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-            Spacer()
             TextLink(title: "Help") { if !snapshot { NSWorkspace.shared.open(URL(string: "https://antseed.com/docs/local-ai/mac")!) } }
-            TextLink(title: "Quit") { if !snapshot { NSApp.terminate(nil) } }
-                .padding(.leading, 10)
+        }
+    }
+}
+
+extension View {
+    /// A box in the window's grid: as wide as its column and as tall as its row.
+    var cell: some View { frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top) }
+}
+
+/// The rewards box before the Mac has joined a pool: what will show there.
+struct RewardsWaiting: View {
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Rewards").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("Join a pool to start earning").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("What the pool owes you in USDC and ANTS shows here, with your payout wallet and Claim.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
+            .padding(14)
+        }
+    }
+}
+
+/// What the Mac runs, at a glance: its model, its pool and the owner's endpoint. Changing any of
+/// them is in Settings.
+struct RunningCard: View {
+    @ObservedObject var worker: WorkerController
+    let openSettings: () -> Void
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Running").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Spacer()
+                    TextLink(title: "Settings", action: openSettings)
+                }
+                line("cpu", worker.choice.map { "\($0.displayName) · \($0.service)" } ?? "No model chosen yet")
+                line("point.3.connected.trianglepath.dotted", worker.poolURL.map { $0.host ?? $0.absoluteString } ?? "Not joined")
+                line("terminal", worker.localAPI.enabled ? "Your endpoint \(worker.localAPI.baseURL)" : "Your endpoint is off")
+            }
+            .padding(14)
+        }
+    }
+
+    private func line(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textMuted).frame(width: 16)
+            Text(text).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
+        }
+    }
+}
+
+/// Everything that configures the Mac: its pool and model, the owner's own endpoint, and how it
+/// starts and stays awake.
+struct SettingsView: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    let done: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Settings").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.text)
+                Spacer()
+                PillButton(title: "Done") { if !snapshot { done() } }
+            }
+            section("Pool and model") {
+                Card {
+                    PoolRow(worker: worker, snapshot: snapshot)
+                    Divider().overlay(Theme.border)
+                    ModelRow(worker: worker, snapshot: snapshot)
+                }
+            }
+            section("Use it yourself") {
+                Card { LocalEndpointRow(worker: worker, snapshot: snapshot) }
+            }
+            section("This Mac") {
+                ThisMacCard(mac: worker.mac, updates: worker.updates)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Theme.background)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.6).foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 4)
+            content()
         }
     }
 }
@@ -371,6 +493,131 @@ struct EarningsCard: View {
             Text(label).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
             Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(Theme.textSecondary)
         }
+    }
+}
+
+/// What the model is doing now: its speed while it generates, the GPU, memory and tokens, and
+/// a link to the engine's own live dashboard.
+struct ActivityCard: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+
+    var body: some View {
+        let activity = worker.activity
+        let engine = activity.engine
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Activity").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Spacer()
+                    if worker.modelReady {
+                        TextLink(title: "Open dashboard") { if !snapshot { worker.openDashboard() } }
+                    }
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if activity.busy, let rate = engine?.decodeTokensPerSecond, rate > 0 {
+                        Text("\(Int(rate.rounded()))").font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
+                            .foregroundStyle(Theme.text)
+                        Text("tokens/s").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    } else {
+                        Text(headline(activity)).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                    }
+                    Spacer(minLength: 6)
+                    Text(doing(activity)).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                }
+                HStack(spacing: 14) {
+                    stat("GPU", activity.gpu.map { "\($0.utilization)%" } ?? "–")
+                    stat("Model memory", engine.map { bytesShort($0.memoryActive) } ?? "–")
+                    stat("Tokens in", engine.map { tokensShort($0.promptTokensTotal) } ?? "–")
+                    stat("Tokens out", engine.map { tokensShort($0.generationTokensTotal) } ?? "–")
+                }
+                meter(activity.gpu?.utilization ?? 0)
+            }
+            .padding(14)
+        }
+    }
+
+    private func headline(_ activity: Activity) -> String {
+        guard worker.modelReady else { return "No model running" }
+        return activity.busy ? "Reading the prompt" : "Idle"
+    }
+
+    /// Who the model works for right now.
+    private func doing(_ activity: Activity) -> String {
+        guard worker.modelReady else {
+            if case .loadingModel = worker.status { return worker.status.label }
+            return "Starts once a model loads"
+        }
+        let running = activity.engine?.running ?? 0
+        if running == 0 { return worker.sharing ? "Waiting for requests" : "Sharing paused" }
+        if activity.localRunning > 0 { return activity.localRunning >= running ? "Answering you" : "Answering you and the pool" }
+        return "Answering the pool"
+    }
+
+    private func meter(_ percent: Int) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.surface)
+                Capsule().fill(Theme.accent).frame(width: geometry.size.width * CGFloat(percent) / 100)
+            }
+        }
+        .frame(height: 4)
+        .accessibilityLabel("GPU \(percent)% busy")
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(Theme.textSecondary)
+        }
+    }
+}
+
+/// The owner's own endpoint to the model: off until turned on, then its address and key to paste
+/// into any OpenAI- or Anthropic-compatible app on this Mac.
+struct LocalEndpointRow: View {
+    @ObservedObject var worker: WorkerController
+    var snapshot = false
+    @State private var copied: String?
+
+    var body: some View {
+        let settings = worker.localAPI
+        let on = settings.enabled && worker.localAPIError == nil
+        SettingRow(icon: "terminal", title: "Local endpoint for your apps",
+                   value: settings.enabled ? settings.baseURL : "Off",
+                   actionTitle: settings.enabled ? "Turn off" : "Turn on",
+                   action: { if !snapshot { worker.setLocalAPI(enabled: !settings.enabled) } }) {
+            if settings.enabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    if on {
+                        HStack(spacing: 8) {
+                            Text(settings.key).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textSecondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            TextLink(title: copied == "url" ? "Copied" : "Copy URL") { copy(settings.baseURL, "url") }
+                            TextLink(title: copied == "key" ? "Copied" : "Copy key") { copy(settings.key, "key") }
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.surface))
+                        Text(worker.modelReady
+                             ? "OpenAI and Anthropic APIs, on this Mac only. While you use it, and for a minute after, the pool sends its requests to other Macs."
+                             : "Answers once the model has loaded.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.textMuted).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = worker.localAPIError {
+                        Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func copy(_ text: String, _ which: String) {
+        guard !snapshot else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = which
+        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); if copied == which { copied = nil } }
     }
 }
 
@@ -536,34 +783,5 @@ struct RewardsCard: View {
 
     private func open(_ action: String) {
         if !snapshot { worker.openPayPage(action) }
-    }
-}
-
-// MARK: window sizing
-
-private struct PanelHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-/// A MenuBarExtra window keeps the height it opened with, so content that shrinks (the model list
-/// collapsing once one is picked) left a gap. This resizes the window to the panel, keeping its top
-/// edge under the menu bar.
-private struct FitWindowToContent: NSViewRepresentable {
-    let height: CGFloat
-
-    func makeNSView(context: Context) -> NSView { NSView() }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        let height = height
-        DispatchQueue.main.async {
-            guard let window = view.window, height > 0 else { return }
-            var frame = window.frame
-            let target = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: frame.width, height: height)).height
-            guard abs(frame.height - target) > 0.5 else { return }
-            frame.origin.y += frame.height - target
-            frame.size.height = target
-            window.setFrame(frame, display: true, animate: false)
-        }
     }
 }

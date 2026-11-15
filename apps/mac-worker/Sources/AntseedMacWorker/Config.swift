@@ -30,6 +30,8 @@ struct WorkerConfig {
     /// Sign a payout link for this wallet once joined (a Mac with no one at the
     /// screen); the code is also written to the log.
     var linkPayoutTo: String?
+    /// The port of the owner's local endpoint (LocalAPI), instead of the saved one.
+    var localPort: UInt16?
 
     /// Whether `modelId` is `repo@revision` with a full commit hash: an
     /// unpinned model could change under the service name the pool sells.
@@ -58,6 +60,7 @@ struct WorkerConfig {
             case "--name": config.name = value
             case "--log": config.logFile = URL(fileURLWithPath: value)
             case "--link-payout": config.linkPayoutTo = value
+            case "--local-port": config.localPort = UInt16(value)
             default: break
             }
         }

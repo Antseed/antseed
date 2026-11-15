@@ -37,16 +37,19 @@ final class PayServer {
     let token: String
     private let root: URL?
     private let api: (Request) async -> Response
+    /// Answers `/engine/…` (the engine's dashboard and the stats it polls), or nil when no engine runs.
+    private let engine: (String) async -> Response?
     private var listener: NWListener?
     private(set) var port: UInt16?
 
     /// `api` answers every `/api/…` request that passed the token check.
-    init(api: @escaping (Request) async -> Response) {
+    init(api: @escaping (Request) async -> Response, engine: @escaping (String) async -> Response? = { _ in nil }) {
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         token = Data(bytes).hex
         root = Self.pageDirectory()
         self.api = api
+        self.engine = engine
     }
 
     /// The bundled page, or the payments web build in the source tree during development.
@@ -69,6 +72,15 @@ final class PayServer {
         components.queryItems = [URLQueryItem(name: "page", value: "pay"), URLQueryItem(name: "action", value: action), URLQueryItem(name: "token", value: token)]
         return components.url!
     }
+
+    /// The engine's live dashboard (rates, memory, queue; never a prompt), starting the server on first use.
+    func dashboardURL() async throws -> URL {
+        URL(string: "http://127.0.0.1:\(try await start())\(Self.dashboardPath)")!
+    }
+
+    /// The dashboard polls the path beside its own (`/engine/stats`).
+    nonisolated static let dashboardPath = "/engine/dashboard"
+    nonisolated static let enginePaths: Set<String> = [dashboardPath, "/engine/stats"]
 
     enum PayServerError: Error, LocalizedError {
         case missingPage
@@ -143,7 +155,7 @@ final class PayServer {
     }
 
     /// An HTTP/1.1 request once its headers and body have arrived.
-    nonisolated static func parse(_ buffer: Data) -> Parsed {
+    nonisolated static func parse(_ buffer: Data, maxBytes: Int = maxRequestBytes) -> Parsed {
         guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
         guard let head = String(data: buffer[buffer.startIndex..<end.lowerBound], encoding: .utf8) else { return .malformed }
         var lines = head.components(separatedBy: "\r\n")
@@ -157,7 +169,7 @@ final class PayServer {
         // Digits only, within the size limit: a sign, garbage or an overflow is a bad request, never a length.
         let declared = headers["content-length"] ?? "0"
         guard !declared.isEmpty, declared.allSatisfy(\.isASCII), declared.allSatisfy(\.isNumber),
-              let length = Int(declared), length <= maxRequestBytes else { return .malformed }
+              let length = Int(declared), length <= maxBytes else { return .malformed }
         let body = buffer[end.upperBound...]
         guard body.count >= length else { return .incomplete }
         let target = String(start[1])
@@ -172,6 +184,9 @@ final class PayServer {
             return await api(request)
         }
         guard request.method == "GET" else { return .error(405, "Method not allowed") }
+        if Self.enginePaths.contains(request.path) {
+            return await engine(String(request.path.dropFirst("/engine".count))) ?? .error(503, "No model is running yet")
+        }
         return file(request.path)
     }
 
@@ -205,7 +220,7 @@ final class PayServer {
     }
 
     private func send(_ response: Response, on connection: NWConnection) {
-        let reason = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large"][response.status] ?? "Error"
+        let reason = [200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 503: "Service Unavailable"][response.status] ?? "Error"
         let head = [
             "HTTP/1.1 \(response.status) \(reason)",
             "Content-Type: \(response.contentType)",

@@ -9,7 +9,8 @@ import Security
 actor LocalModel {
     /// Prompt plus reply tokens the engine is started with.
     static let contextTokens = 8192
-    private static let servedName = "local-model"
+    /// The name the engine serves the model under.
+    static let servedName = "local-model"
 
     /// `repo@revision`, pinned (`WorkerConfig.isPinned`).
     let modelId: String
@@ -289,6 +290,9 @@ actor LocalModel {
             "--parallel", String(RequestGate.maxConcurrency),
             // Nothing from one buyer's prompt is kept for the next request.
             "--prompt-cache-gib", "0",
+            // Its live page of rates and memory (no prompts), which the app opens through its local server.
+            "--dashboard",
+            "--no-update-check",
         ]
         process.standardOutput = log
         process.standardError = log
@@ -317,6 +321,24 @@ actor LocalModel {
             stop()
             throw error
         }
+    }
+
+    /// The running engine's socket, starting the engine again if it stopped: for the owner's own
+    /// requests (LocalAPI) and the dashboard, which go to the engine as they are.
+    func engineSocket() async throws -> EngineSocket {
+        if server?.isRunning != true { try await startServer() }
+        guard let socket else { throw EngineError.failed("Model not loaded") }
+        return socket
+    }
+
+    /// The engine's live numbers, or nil when it isn't running or didn't answer.
+    func stats() async -> EngineStats? {
+        guard server?.isRunning == true, var socket else { return nil }
+        socket.timeout = 2
+        guard let reply = try? await socket.send("GET", "/stats") else { return nil }
+        defer { reply.close() }
+        guard reply.status == 200, let data = try? await reply.data(limit: 1 << 20) else { return nil }
+        return EngineStats(json: data)
     }
 
     private func countTokens(_ chat: [String: Any]) async throws -> Int {

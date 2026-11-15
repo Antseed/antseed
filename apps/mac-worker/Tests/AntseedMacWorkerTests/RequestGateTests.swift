@@ -16,6 +16,14 @@ final class RequestGateTests: XCTestCase {
         XCTAssertNil(gate.reserve("b"))
     }
 
+    func testOwnersOwnRequestsSendThePoolsElsewhere() {
+        let gate = RequestGate(maxConcurrency: 1)
+        gate.localActive = 1
+        XCTAssertEqual(gate.reserve("a"), "Worker busy: its owner is using the model")
+        gate.localActive = 0
+        XCTAssertNil(gate.reserve("a"))
+    }
+
     func testPendingChannelCheckHoldsItsSlot() async {
         let gate = RequestGate(maxConcurrency: 1)
         XCTAssertNil(gate.reserve("slow"))

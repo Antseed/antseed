@@ -37,6 +37,9 @@ final class RequestGate {
     let maxConcurrency: Int
     let checksPerHour: Int
     private(set) var active: Set<String> = []
+    /// The owner's own requests running now (LocalAPI): the Mac is theirs first, so the pool's
+    /// requests go to other Macs meanwhile instead of waiting behind them in the engine.
+    var localActive = 0
     private var checkTimes: [Date] = []
     /// Served buyer requests: binding hash → signed expiry, kept until then so a replay is refused.
     private var served: [Data: Date] = [:]
@@ -50,6 +53,7 @@ final class RequestGate {
     /// Requests waiting on a channel check hold their slot.
     func reserve(_ id: String) -> String? {
         if active.contains(id) { return "Duplicate request id" }
+        guard localActive == 0 else { return "Worker busy: its owner is using the model" }
         guard active.count < maxConcurrency else { return "Worker busy: \(maxConcurrency) request(s) at a time" }
         active.insert(id)
         return nil

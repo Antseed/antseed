@@ -83,6 +83,11 @@ final class WorkerController: ObservableObject {
     @Published private(set) var modelLoadError: String?
     /// The chosen model failed to load: the owner may try it again, or pick another.
     var modelLoadFailed: Bool { modelLoadError != nil }
+    /// The chosen model is loaded and its engine runs.
+    var modelReady: Bool { checkpoint != nil }
+    /// The owner has a model to pick before the Mac can serve: none chosen yet from the pool's, or
+    /// the chosen one failed to load.
+    var needsModelChoice: Bool { !poolModels.isEmpty && (choice == nil || modelLoadFailed) }
     /// The models the pool pins that this app can run, for the owner to pick from.
     @Published private(set) var poolModels: [ModelChoice] = []
     /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
@@ -93,6 +98,11 @@ final class WorkerController: ObservableObject {
     let payouts: WorkerPayoutController
     /// What keeps this Mac's owner out of the prompts it serves, re-checked on every attestation.
     @Published private(set) var protection: Protection.Report
+    /// What the engine and GPU are doing, refreshed while the window is open.
+    @Published private(set) var activity = Activity()
+    /// The owner's own endpoint to the model (LocalAPI), and why it couldn't start if it couldn't.
+    @Published private(set) var localAPI: LocalAPISettings
+    @Published private(set) var localAPIError: String?
     @Published var sharing = true {
         didSet { if oldValue != sharing { announceServices(); mac.refreshAwake() } }
     }
@@ -103,7 +113,7 @@ final class WorkerController: ObservableObject {
     private let debuggerDenied: Bool
     private var model: LocalModel?
     /// The checkpoint behind `choice` and the digest of its files, attested to the pool once loaded.
-    private var checkpoint: LocalModel.Checkpoint?
+    @Published private var checkpoint: LocalModel.Checkpoint?
     private let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
@@ -185,6 +195,9 @@ final class WorkerController: ObservableObject {
         self.debuggerDenied = denied
         self.protection = Protection.Report(identity: identity, sip: Protection.sipEnabled(), debuggerDenied: denied && !Protection.debuggerAttached(), keyAppBound: keys.appBound)
         self.payouts = WorkerPayoutController(config: config, keys: keys, log: { line in WorkerController.append(line, to: config.logFile) })
+        var localAPI = LocalAPISettings.load(in: config.dataDirectory)
+        if let port = config.localPort { localAPI.port = port }
+        self.localAPI = localAPI
     }
 
     /// Re-read SIP and debugger state. A signed build with SIP off stops serving.
@@ -216,6 +229,7 @@ final class WorkerController: ObservableObject {
         log("Antseed Colony \(config.name) · payout address \(address)")
         mac.start()
         startPolling()
+        if localAPI.enabled { startLocalAPI() }
         Task {
             // Without a model yet, it joins to learn which models the pool runs, and serves once one is picked.
             // A saved model that fails to load joins too, offering nothing: the pool's welcome lists the
@@ -294,9 +308,10 @@ final class WorkerController: ObservableObject {
         choose(choice)
     }
 
-    /// The services this Mac offers the pool now: its chosen one, once loaded, while sharing.
+    /// The services this Mac offers the pool now: its chosen one, once loaded, while sharing and
+    /// while its owner isn't using the model.
     private var offeredServices: [String] {
-        guard sharing, checkpoint != nil, let choice else { return [] }
+        guard sharing, !ownerUsing, checkpoint != nil, let choice else { return [] }
         return [choice.service]
     }
 
@@ -327,10 +342,12 @@ final class WorkerController: ObservableObject {
         chainId: { [weak self] in self?.trustedChainId },
         channels: { [weak self] in self?.trustedChannels }
     )
-    private lazy var payServer = PayServer { [weak self] request in
+    private lazy var payServer = PayServer(api: { [weak self] request in
         guard let self else { return .error(503, "Antseed Colony is quitting") }
         return await self.payAPI.handle(request)
-    }
+    }, engine: { [weak self] path in
+        await self?.engineDashboard(path)
+    })
     /// Why the rewards page could not open, if it couldn't.
     @Published private(set) var payPageError: String?
 
@@ -342,6 +359,139 @@ final class WorkerController: ObservableObject {
                 payPageError = nil
             } catch {
                 payPageError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Open the engine's live dashboard in the owner's browser.
+    func openDashboard() {
+        Task {
+            do {
+                NSWorkspace.shared.open(try await payServer.dashboardURL())
+                payPageError = nil
+            } catch {
+                payPageError = error.localizedDescription
+            }
+        }
+    }
+
+    /// The engine's dashboard page or the stats it polls, as the engine answers them.
+    private func engineDashboard(_ path: String) async -> PayServer.Response? {
+        guard checkpoint != nil, let model, var socket = try? await model.engineSocket() else { return nil }
+        socket.timeout = 5
+        guard let reply = try? await socket.send("GET", path) else { return nil }
+        defer { reply.close() }
+        guard let body = try? await reply.data(limit: 4 << 20) else { return nil }
+        return PayServer.Response(status: reply.status, contentType: reply.contentType ?? "application/octet-stream", body: body)
+    }
+
+    // MARK: activity
+
+    private var activityTask: Task<Void, Never>?
+
+    /// Refresh `activity` every two seconds while the window shows it.
+    func watchActivity(_ visible: Bool) {
+        activityTask?.cancel()
+        activityTask = nil
+        guard visible else { return }
+        activityTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let engine = self.checkpoint == nil ? nil : await self.model?.stats()
+                guard !Task.isCancelled else { return }
+                self.activity.engine = engine
+                self.activity.gpu = GPUSample.read()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    // MARK: the owner's own endpoint
+
+    private lazy var localServer = LocalAPIServer(
+        settings: { [weak self] in self?.localAPI ?? LocalAPISettings(key: "") },
+        target: { [weak self] in
+            guard let self, self.checkpoint != nil, let model = self.model, let service = self.choice?.service else { return nil }
+            return LocalAPIServer.Target(socket: try await model.engineSocket(), service: service)
+        },
+        onStart: { [weak self] in
+            guard let self else { return }
+            self.gate.localActive += 1
+            self.activity.localRequests += 1
+            self.activity.localRunning += 1
+            self.ownerStarted()
+        },
+        onEnd: { [weak self] in
+            guard let self else { return }
+            self.gate.localActive = max(0, self.gate.localActive - 1)
+            self.activity.localRunning = max(0, self.activity.localRunning - 1)
+            if self.gate.localActive == 0 { self.ownerIdle() }
+        }
+    )
+
+    /// How long after the owner's last request the Mac offers its model to the pool again: a burst
+    /// of the owner's requests withdraws it once, rather than once per request (each offer makes the
+    /// pool check the Mac again).
+    static let ownerIdleDelay: UInt64 = 60
+
+    /// The owner is using the model: the Mac stops offering it to the pool, so the pool assigns
+    /// buyers elsewhere instead of sending requests the Mac would turn away.
+    private var ownerUsing = false
+    private var reofferTask: Task<Void, Never>?
+
+    private func ownerStarted() {
+        reofferTask?.cancel()
+        reofferTask = nil
+        guard !ownerUsing else { return }
+        ownerUsing = true
+        if sharing, checkpoint != nil { log("you are using the model; the pool sends its requests to other Macs meanwhile") }
+        announceServices()
+    }
+
+    private func ownerIdle() {
+        reofferTask?.cancel()
+        reofferTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.ownerIdleDelay * 1_000_000_000)
+            guard let self, !Task.isCancelled, self.gate.localActive == 0, self.ownerUsing else { return }
+            self.ownerUsing = false
+            if self.sharing, self.checkpoint != nil { self.log("offering the model to the pool again") }
+            self.announceServices()
+        }
+    }
+
+    /// Turn the owner's local endpoint on or off (saved for later launches).
+    func setLocalAPI(enabled: Bool) {
+        var settings = localAPI
+        settings.enabled = enabled
+        saveLocalAPI(settings)
+        if enabled { startLocalAPI() } else { localServer.stop(); localAPIError = nil }
+    }
+
+    /// Replace the endpoint's key: callers with the old one are refused from now on.
+    func newLocalAPIKey() {
+        var settings = localAPI
+        settings.key = LocalAPISettings.newKey()
+        saveLocalAPI(settings)
+    }
+
+    private func saveLocalAPI(_ settings: LocalAPISettings) {
+        localAPI = settings
+        do {
+            try settings.save(in: config.dataDirectory)
+        } catch {
+            localAPIError = "Could not save the setting: \(error.localizedDescription)"
+        }
+    }
+
+    private func startLocalAPI() {
+        let port = localAPI.port
+        Task {
+            do {
+                try await localServer.start(port: port)
+                localAPIError = nil
+                log("local endpoint on \(localAPI.baseURL)")
+            } catch {
+                localAPIError = error.localizedDescription
             }
         }
     }

@@ -40,6 +40,8 @@ struct EngineSocket: Sendable {
     /// One reply: its status, then its body as data or as lines.
     final class Reply {
         private(set) var status = 0
+        /// The reply's Content-Type, if it sent one.
+        private(set) var contentType: String?
         private let connection: Connection
         private var buffer: [UInt8] = []
         private var start = 0
@@ -64,6 +66,11 @@ struct EngineSocket: Sendable {
                 guard data.count <= limit else { throw SocketError.failed("The engine's reply is too long") }
             }
             return data
+        }
+
+        /// The body's next bytes as they arrive, without chunked framing; nil at its end.
+        func nextChunk() async throws -> Data? {
+            try await nextBody().map { Data($0) }
         }
 
         /// The body's next line, without its line ending; nil at its end.
@@ -98,6 +105,7 @@ struct EngineSocket: Sendable {
                 let value = header[header.index(after: colon)...].trimmingCharacters(in: .whitespaces)
                 if name == "transfer-encoding" { chunked = value.lowercased().contains("chunked") }
                 if name == "content-length" { left = Int(value) }
+                if name == "content-type" { contentType = value }
             }
             if chunked { left = 0 }
         }

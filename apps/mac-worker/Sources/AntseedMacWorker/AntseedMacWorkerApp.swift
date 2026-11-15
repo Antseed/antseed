@@ -11,6 +11,11 @@ struct AntseedMacWorkerApp: App {
             let controller = try WorkerController(config: config)
             _worker = StateObject(wrappedValue: controller)
             controller.start()
+            // A first launch has nothing set up yet: open the window to join a pool. Later launches
+            // (at login) start quietly in the menu bar.
+            if controller.poolURL == nil {
+                DispatchQueue.main.async { MainWindow.shared.show(controller) }
+            }
             if let directory = config.snapshotDirectory {
                 Snapshots.start(worker: controller, into: directory)
             }
@@ -26,8 +31,13 @@ struct AntseedMacWorkerApp: App {
     }
 
     var body: some Scene {
+        // The menu bar's ant: open the window, or quit. Everything else is in the window.
         MenuBarExtra {
-            MenuPanel(worker: worker)
+            Button("Open Antseed Colony") { MainWindow.shared.show(worker) }
+                .keyboardShortcut("o")
+            Divider()
+            Button("Quit Antseed Colony") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
         } label: {
             if let mark = menuBarMark {
                 Image(nsImage: mark)
@@ -35,19 +45,21 @@ struct AntseedMacWorkerApp: App {
                 Image(systemName: worker.status == .serving ? "ant.fill" : "ant")
             }
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
     }
 }
 
-/// Renders the panel to PNG every few seconds (for docs and demos; no
+/// Renders the window to PNG every few seconds (for docs and demos; no
 /// screen-recording permission needed).
 @MainActor
 enum Snapshots {
     static func start(worker: WorkerController, into directory: URL) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        worker.watchActivity(true)
         Task { @MainActor in
             while true {
-                write(MenuPanel(worker: worker, snapshot: true), to: directory.appendingPathComponent("menu.png"))
+                write(MainView(worker: worker, snapshot: true), to: directory.appendingPathComponent("window.png"))
+                write(SettingsView(worker: worker, snapshot: true, done: {}), to: directory.appendingPathComponent("settings.png"))
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -56,7 +68,7 @@ enum Snapshots {
     private static func write(_ view: some View, to url: URL) {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .dark))
         renderer.scale = 2
-        // The panel's colours follow the appearance they are drawn in: render in dark, like the menubar.
+        // The window's colours follow the appearance they are drawn in: render in dark, like the menubar.
         var rendered: NSImage?
         (NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()).performAsCurrentDrawingAppearance { rendered = renderer.nsImage }
         guard let image = rendered, let tiff = image.tiffRepresentation,

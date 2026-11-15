@@ -2,7 +2,7 @@ import Foundation
 
 /// The API of the Antseed payments page this app serves (PayServer): the chain to connect the
 /// owner's wallet on, this Mac's pool and payout state, signing a link for the connected wallet,
-/// and the page's "done", which refreshes the panel. Connection state is read live through the
+/// and the page's "done", which refreshes the window. Connection state is read live through the
 /// injected accessors, so each request sees the pool the app is on at that moment.
 @MainActor
 final class ColonyPayAPI {

@@ -102,7 +102,7 @@ enum Protection {
         /// What pools and buyers that require attestation accept.
         var hardened: Bool { Self.promptsStayInApp && identity.teamId != nil && identity.hardenedRuntime && sip && debuggerDenied && keyAppBound }
 
-        /// One line for the menubar panel.
+        /// One line for the window.
         var summary: String {
             if hardened { return "Prompts protected: signed app, SIP on, key in the Secure Enclave" }
             if identity.teamId != nil && !sip { return "System Integrity Protection is off: not serving" }

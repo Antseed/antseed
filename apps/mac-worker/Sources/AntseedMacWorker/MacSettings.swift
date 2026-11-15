@@ -39,7 +39,7 @@ final class MacSettings: ObservableObject {
     }
 
     /// Turn starting at login on the first time the app runs (it's what keeps a Mac earning after a
-    /// restart), then follow the panel's switch. Re-checks power every minute.
+    /// restart), then follow the window's switch. Re-checks power every minute.
     func start() {
         if !defaults.bool(forKey: Keys.loginOffered) {
             defaults.set(true, forKey: Keys.loginOffered)
