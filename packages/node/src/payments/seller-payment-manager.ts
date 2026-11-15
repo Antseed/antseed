@@ -50,6 +50,15 @@ export interface SellerPaymentConfig {
    * Best effort: what it throws or rejects with is only logged.
    */
   onChannelEnded?: (channelId: string) => void | Promise<void>;
+  /** Called when a buyer's opening reserve() fails on-chain, so a host can say so outside debug logs. */
+  onReserveFailed?: (failure: ReserveFailure) => void;
+}
+
+/** A buyer's opening reserve() that failed: the buyer was not served on this channel. */
+export interface ReserveFailure {
+  buyerPeerId: string;
+  channelId: string;
+  error: string;
 }
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
@@ -775,7 +784,7 @@ export class SellerPaymentManager {
         }
 
         const reserveSalt = payload.reserveSalt ?? channelId;
-        await this._reserveWithBackpressureRetry(channelId, () => this._channelsClient.reserve(
+        await this._reserveWithBackpressureRetry(buyerPeerId, channelId, () => this._channelsClient.reserve(
           this._signer,
           buyerEvmAddr,
           reserveSalt,
@@ -1265,7 +1274,7 @@ export class SellerPaymentManager {
 
     // Counted before the reserve goes out, so a parallel create sees it.
     this._unacceptedOneOffs.set(channelId, buyerPeerId);
-    await this._reserveWithBackpressureRetry(channelId, () => this._channelsClient.reserve(
+    await this._reserveWithBackpressureRetry(buyerPeerId, channelId, () => this._channelsClient.reserve(
       this._signer,
       buyerEvmAddr,
       payload.reserveSalt!,
@@ -1505,6 +1514,7 @@ export class SellerPaymentManager {
    * queue has room, without holding unrelated buyers until a receipt is mined.
    */
   private async _reserveWithBackpressureRetry(
+    buyerPeerId: string,
     channelId: string,
     submit: () => Promise<string>,
   ): Promise<string> {
@@ -1518,6 +1528,7 @@ export class SellerPaymentManager {
       } catch (err) {
         const delayMs = RESERVE_BACKPRESSURE_RETRY_DELAYS_MS[attempt];
         if (!this._isRetryableTxSubmissionFailure(err) || delayMs === undefined) {
+          this._config.onReserveFailed?.({ buyerPeerId, channelId, error: this._formatError(err) });
           throw err;
         }
         debugWarn(
