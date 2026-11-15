@@ -1,3 +1,5 @@
+import { nextRotationOffset } from '../routing/rotation.js';
+
 export const MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER = 0.5;
 /** A service with a live on-chain DIFF verification verdict keeps 10% of its reputation. */
 export const DIFF_VERIFICATION_REPUTATION_MULTIPLIER = 0.1;
@@ -126,21 +128,10 @@ export function compareEffectiveModelReputation(
     || a.peerId.localeCompare(b.peerId);
 }
 
-const MAX_REPUTATION_POOLS = 4096;
 const reputationHeadRotation = new Map<string, number>();
 
 function reputationSortKey(score: number | null | undefined): number {
   return finiteScore(score) ?? -1;
-}
-
-function rememberReputationRotation(key: string, step: number): void {
-  if (reputationHeadRotation.has(key)) reputationHeadRotation.delete(key);
-  reputationHeadRotation.set(key, step);
-  while (reputationHeadRotation.size > MAX_REPUTATION_POOLS) {
-    const oldest = reputationHeadRotation.keys().next().value;
-    if (oldest === undefined) break;
-    reputationHeadRotation.delete(oldest);
-  }
 }
 
 function reputationPoolKey<T extends { peerId: string }>(
@@ -160,7 +151,7 @@ function reputationPoolKey<T extends { peerId: string }>(
 }
 
 /**
- * Rotate the leading run of equal reputation. Peer id order underneath stays put.
+ * Rotate the leading run of equal reputation, starting in peer id order.
  * `advance: false` peeks the next seller, which a route preview uses so it does
  * not spend the turn a live request should take. A model key is combined with
  * the tied seller ids, so one model does not share a counter across different
@@ -180,9 +171,7 @@ export function rotateEqualReputationHead<
   }
   if (group < 2) return ordered;
   const pool = reputationPoolKey(ordered, group, options?.key);
-  const step = ((reputationHeadRotation.get(pool) ?? 0) + 1) >>> 0;
-  if (options?.advance !== false) rememberReputationRotation(pool, step);
-  const offset = step % group;
+  const offset = nextRotationOffset(reputationHeadRotation, pool, group, options?.advance !== false, 0);
   if (offset === 0) return ordered;
   const head = ordered.slice(0, group);
   for (let index = 0; index < group; index += 1) {

@@ -92,6 +92,23 @@ describe('model reputation', () => {
     expect(picks).toEqual(['a', 'a', 'a', 'a']);
   });
 
+  it('keeps peer id order on the first request, then rotates the whole leading tie', () => {
+    const tied = ['c', 'a', 'b']
+      .map((peerId) => ({ peerId, effectiveReputationScore: 80 }))
+      .sort(compareEffectiveModelReputation);
+    const tail = { peerId: 'd', effectiveReputationScore: 70 };
+    const pick = (advance = true) => rotateEqualReputationHead([...tied, tail], {
+      key: 'first-request-order', advance,
+    }).map((offer) => offer.peerId);
+    expect(pick(false)).toEqual(['a', 'b', 'c', 'd']);
+    expect(pick(false)).toEqual(['a', 'b', 'c', 'd']);
+    expect(pick()).toEqual(['a', 'b', 'c', 'd']);
+    expect(pick(false)).toEqual(['b', 'c', 'a', 'd']);
+    expect(pick()).toEqual(['b', 'c', 'a', 'd']);
+    expect(pick()).toEqual(['c', 'a', 'b', 'd']);
+    expect(pick()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('returns an empty reputation list unchanged', () => {
     expect(rotateEqualReputationHead([])).toEqual([]);
   });

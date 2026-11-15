@@ -1,4 +1,4 @@
-import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
+import { nextRotationOffset, normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
 
 export interface TokenPricingUsdPerMillion {
   inputUsdPerMillion: number
@@ -210,18 +210,7 @@ function storedLatency(latencies: Map<string, number | undefined>, peerId: strin
 
 // One counter per tied seller set. A single counter phase-locks when two
 // pools are scored one after the other.
-const MAX_SCORE_POOLS = 4096
 const equalScoreRotation = new Map<string, number>()
-
-function rememberScoreRotation(key: string, step: number): void {
-  if (equalScoreRotation.has(key)) equalScoreRotation.delete(key)
-  equalScoreRotation.set(key, step)
-  while (equalScoreRotation.size > MAX_SCORE_POOLS) {
-    const oldest = equalScoreRotation.keys().next().value
-    if (oldest === undefined) break
-    equalScoreRotation.delete(oldest)
-  }
-}
 
 function rotateEqualScoreHead(
   scored: ScoredCandidate[],
@@ -248,9 +237,7 @@ function rotateEqualScoreHead(
   ids.sort()
   const sellers = ids.join('\n')
   const pool = rotationKey && rotationKey.length > 0 ? `key:${rotationKey}\n${sellers}` : `peers:${sellers}`
-  const step = ((equalScoreRotation.get(pool) ?? 0) + 1) >>> 0
-  rememberScoreRotation(pool, step)
-  const offset = step % group
+  const offset = nextRotationOffset(equalScoreRotation, pool, group, true)
   if (offset === 0) return scored
   const head = scored.slice(0, group)
   for (let index = 0; index < group; index += 1) {
