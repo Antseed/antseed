@@ -3,7 +3,8 @@ import { signData } from "../p2p/identity.js";
 import type { DHTNode } from "./dht-node.js";
 import { capabilityTopic, sellerTopics, topicToInfoHash } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance, TokenPricingUsdPerMillion } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
+import type { ProviderPricingMatrixEntry } from "@antseed/protocol/peer-pricing";
 import { METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
@@ -61,23 +62,14 @@ export interface AnnouncerConfig {
     /** Runtime availability predicate. Unavailable providers are omitted. */
     isAvailable?: () => boolean;
     /** Per-instance pricing. Takes precedence over the shared pricing Map. */
-    pricing?: {
-      defaults: TokenPricingUsdPerMillion;
-      services?: Record<string, TokenPricingUsdPerMillion>;
-    };
+    pricing?: ProviderPricingMatrixEntry;
   }>;
   displayName?: string;
   publicAddress?: string;
   /** External ownership claims to include in signed metadata for client verification. */
   verifications?: PeerVerifications;
   region: string;
-  pricing: Map<
-    string,
-    {
-      defaults: TokenPricingUsdPerMillion;
-      services?: Record<string, TokenPricingUsdPerMillion>;
-    }
-  >;
+  pricing: Map<string, ProviderPricingMatrixEntry>;
   offerings?: PeerOffering[];
   stakeAmountUSDC?: number;
   paymentsEnabled?: boolean;
