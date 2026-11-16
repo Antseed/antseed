@@ -287,7 +287,7 @@ A new identity costs nothing, so a client that runs out of free requests can res
 }
 ```
 
-A refused request gets HTTP 403 with `code: "free_tier_new_buyer_context"` or `"free_tier_moved_conversation"`, and doesn't count toward the buyer's limits. Start with `"log"` to see what `movedConversations` would refuse: the seller logs each match with `--verbose` and serves the request. Buyers staked into a tier are never checked. To match conversations, the seller keeps a short hash of each long message in memory, never the text; the first three messages and system prompts are skipped, since apps share them across users.
+On a free model, a refused request gets HTTP 403 with `code: "free_tier_new_buyer_context"` or `"free_tier_moved_conversation"`. On a priced model's free allowance, it is paid at the listed price instead. Either way it doesn't count toward the buyer's limits. Start with `"log"` to see what `movedConversations` would refuse: the seller logs each match with `--verbose` and serves the request. Buyers staked into a tier are never checked. To match conversations, the seller keeps a short hash of each long message in memory, never the text; the first three messages and system prompts are skipped, since apps share them across users.
 
 #### Staked tiers
 

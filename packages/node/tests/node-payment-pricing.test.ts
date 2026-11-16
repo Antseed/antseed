@@ -1871,7 +1871,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
   });
 
   describe('free allowance on a priced service', () => {
-    const send = async (covered: boolean) => {
+    const send = async (covered: boolean, screen: () => unknown = serveAll) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
       provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
@@ -1881,7 +1881,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       const handler = makeSellerRequestHandler({
         providers: [provider],
         sellerPaymentManager: makeSpmMock({ hasSession: () => false, getChannelByPeer: () => undefined, getPaymentRequirements: () => ({ minBudgetPerRequest: '1', suggestedAmount: '1' }) }),
-        sellerFreeTierLimiter: { appliesTo, screen: serveAll, consume, resolveStanding: async () => null } as any,
+        sellerFreeTierLimiter: { appliesTo, screen, consume, resolveStanding: async () => null } as any,
         sessionTracker: null,
         channelsClient: {} as any,
         announcer: null,
@@ -1921,6 +1921,26 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(provider.handleRequest).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(402);
       expect(response.headers['x-antseed-free-tier']).toBeUndefined();
+    });
+
+    it('charges a request screening refuses, without using the allowance', async () => {
+      const screen = vi.fn(() => ({
+        refusal: { reason: 'new_buyer_context', inputTokens: 40_000, maxInputTokens: 32_000, requests: 3 },
+        wouldRefuse: null,
+        served: () => {},
+      }));
+      const { provider, consume, response } = await send(true, screen);
+      expect(screen).toHaveBeenCalledWith(expect.objectContaining({ service: 'k3', paid: true }));
+      expect(consume).not.toHaveBeenCalled();
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+    });
+
+    it('records a covered request for conversation matching', async () => {
+      const served = vi.fn();
+      const { response } = await send(true, () => ({ refusal: null, wouldRefuse: null, served }));
+      expect(response.statusCode).toBe(200);
+      expect(served).toHaveBeenCalledOnce();
     });
   });
 
