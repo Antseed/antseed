@@ -117,6 +117,11 @@ take effect from the verifier release that includes them.
    The CLI always writes an empty `init_script` into the app compose, which buyers on verifier
    0.1.5 or later accept; earlier ones reject any `init_script`.
 
+   `tdx.small` (1 vCPU, 2 GiB) is the minimum and enough to start with. The seller's memory
+   follows the size and number of requests in flight, and the VM's memory also holds its OS and
+   container runtime, so a seller with steady traffic should run on `tdx.medium` (2 vCPUs, 4 GiB)
+   or larger. Give the app at least 20 GB of disk for its payment channels and metering history.
+
 Existing seller images keep passing on the measurement table. The lite OS path needs an updated
 seller image whose prover sends the GetQuote VM configuration and raw event log alongside the
 quote. Any change to the compose file (image, config, prices) changes the compose hash; buyers
@@ -211,6 +216,9 @@ its listed env variables and never replace its command. Its logs may go to Cloud
      --metadata='tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>,tee-restart-policy=Always,tee-env-ANTSEED_TEE_PEER_ID=<peer id>,tee-env-ANTSEED_GCP_STATE=gs://<bucket>/<seller name>'
    gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
    ```
+
+   `c3-standard-4` (4 vCPUs, 16 GiB) is the size to use: the seller's payment and metering
+   databases live in the VM's memory here, next to the requests it is serving.
 
 With `ANTSEED_GCP_STATE`, which it requires, the image restores the seller's payment and metering databases
 from objects under that prefix on boot, and saves them while they change: payment channels every

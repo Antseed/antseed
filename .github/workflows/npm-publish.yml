@@ -35,6 +35,10 @@ jobs:
     name: Build, test & publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # Whether this run publishes a CLI version npm didn't have, so the
+      # release job knows to wait for the registry to serve it.
+      cli-new: ${{ steps.cli-new.outputs.new }}
 
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +65,15 @@ jobs:
       # exact-pin dependents missing a bump, or local versions behind npm.
       - name: Publish plan
         run: node scripts/npm-publish-plan.mjs
+
+      - name: Is the CLI version new on npm
+        id: cli-new
+        run: |
+          node --input-type=module -e "
+            import { onNpm } from './scripts/npm-registry.mjs';
+            const { name, version } = JSON.parse((await import('node:fs')).readFileSync('apps/cli/package.json', 'utf8'));
+            console.log('new=' + !(await onNpm(name, version)));
+          " >> "$GITHUB_OUTPUT"
 
       - name: Bake comparable-prices URL
         env:
@@ -112,10 +125,12 @@ jobs:
     name: GitHub release
     needs: publish
     # Also after a failed publish: the CLI may be on npm already, and the
-    # script checks npm, so a run that published nothing makes no release.
+    # script checks npm, so a run that published nothing makes no release
+    # (after its wait, if the failure came after the CLI was found new).
     if: ${{ !inputs.dry_run && !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The script waits up to NPM_WAIT_MINUTES for npm to serve the new CLI.
+    timeout-minutes: 75
     permissions:
       contents: write
     steps:
@@ -134,6 +149,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # npm can take a long time to serve a version it just accepted. Wait
+          # only when this run published the CLI: a rerun or a run with no new
+          # CLI reads npm once.
+          NPM_WAIT_MINUTES: ${{ needs.publish.outputs.cli-new == 'true' && '60' || '0' }}
         run: |
           version=$(node scripts/github-release-notes.mjs "$RUNNER_TEMP/release-notes.md")
           if [ -z "$version" ]; then

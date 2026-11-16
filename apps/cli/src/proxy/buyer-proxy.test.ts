@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
+import { invokeProxy, makeProxyRequest, makeProxyResponse } from './proxy-test-support.js'
 import test, { type TestContext } from 'node:test'
 import localPlugin from '@antseed/router-local'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
@@ -25,6 +25,7 @@ import {
   type PeerInfo,
   type SerializedHttpResponse,
 } from '@antseed/node'
+import { parseRetailPrices } from '@antseed/node/retail-prices'
 
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
@@ -44,6 +45,7 @@ import {
   selectCandidatePeersForRouting,
   substituteRoutedModelAlias,
   sweepStaleStateTmpFiles,
+  type BuyerProxyConfig,
 } from './buyer-proxy.js'
 import { BuyerChannelChainView } from './channel-chain.js'
 import {
@@ -1935,77 +1937,6 @@ test('existing required CLI verification rejects a failed pin without payment/in
   assert.deepEqual(dispatches, [accepted.peerId, accepted.peerId])
 });
 
-function makeProxyRequest(options: {
-  method?: string
-  path?: string
-  headers?: Record<string, string>
-  body?: Record<string, unknown>
-  rawBody?: string
-}): Readable {
-  const body = options.rawBody ?? JSON.stringify(options.body ?? { model: 'gpt-4o', messages: [] })
-  const req = Readable.from([Buffer.from(body)]) as Readable & {
-    method: string
-    url: string
-    headers: Record<string, string>
-    complete: boolean
-  }
-  req.method = options.method ?? 'POST'
-  req.url = options.path ?? '/v1/chat/completions'
-  req.headers = {
-    'content-type': 'application/json',
-    ...(options.headers ?? {}),
-  }
-  req.complete = true
-  return req
-}
-
-function makeProxyResponse(): {
-  statusCode: number
-  headers: Record<string, string>
-  body: string
-  headersSent: boolean
-  writableEnded: boolean
-  writeHead: (statusCode: number, headers: Record<string, string>) => unknown
-  setHeader: (name: string, value: string) => unknown
-  write: (chunk: string | Buffer | Uint8Array) => unknown
-  end: (chunk?: string | Buffer | Uint8Array) => unknown
-  once: () => unknown
-} {
-  // Headers set before writeHead merge into it, as on a Node ServerResponse.
-  const pending: Record<string, string> = {}
-  return {
-    statusCode: 0,
-    headers: {},
-    body: '',
-    headersSent: false,
-    writableEnded: false,
-    writeHead(statusCode: number, headers: Record<string, string>) {
-      this.statusCode = statusCode
-      this.headers = { ...pending, ...headers }
-      this.headersSent = true
-      return this
-    },
-    setHeader(name: string, value: string) {
-      pending[name.toLowerCase()] = value
-      return this
-    },
-    write(chunk: string | Buffer | Uint8Array) {
-      this.body += Buffer.from(chunk).toString('utf8')
-      return true
-    },
-    end(chunk?: string | Buffer | Uint8Array) {
-      if (chunk !== undefined) {
-        this.body += Buffer.from(chunk).toString('utf8')
-      }
-      this.writableEnded = true
-      return this
-    },
-    once() {
-      return this
-    },
-  }
-}
-
 const TEST_ROUTER_MODELS = ['model-a', 'model-b', 'gpt-4o']
 
 function listModelsWith(models = TEST_ROUTER_MODELS): ModelRoutingClientApi['listModels'] {
@@ -2019,6 +1950,7 @@ function makeBuyerProxyWithPeers(
   now?: () => number,
   routingPreferences?: ModelRoutingPreferences,
   modelRoutingClient?: ModelRoutingClientApi,
+  options: Pick<BuyerProxyConfig, 'referencePrices'> = {},
 ): BuyerProxy {
   const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
@@ -2029,6 +1961,7 @@ function makeBuyerProxyWithPeers(
     } as any,
     ...(now ? { now } : {}),
     ...(routingPreferences ? { routingPreferences } : {}),
+    ...options,
   })
   ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) =>
     options?.forceRefresh ? refreshedPeers : initialPeers
@@ -2080,12 +2013,6 @@ async function failRepeatedly(
 
 function healthOf(proxy: BuyerProxy, peer: PeerInfo) {
   return (proxy as any)._peerHealth.get(peer.peerId)
-}
-
-async function invokeProxy(proxy: BuyerProxy, req: Readable): Promise<ReturnType<typeof makeProxyResponse>> {
-  const res = makeProxyResponse()
-  await (proxy as any)._handleRequest(req, res)
-  return res
 }
 
 test('BuyerProxy defaults to the configured 5 min background refresh interval', () => {
@@ -3304,6 +3231,24 @@ test('/models order and model-only dispatch use the same Price + Trust ranking',
   assert.deepEqual(peerOrder, [emberRoute.peerId, cobaltRelay.peerId])
   assert.equal(completionRes.statusCode, 200)
   assert.equal(selectedPeerId, emberRoute.peerId)
+})
+
+test('/v1/models lists the reference price the proxy holds, in the list and for one model', async () => {
+  const seller = makePeer('a', ['openai'])
+  seller.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0.9, outputUsdPerMillion: 2.7 } } }
+  seller.providerServiceApiProtocols = { openai: { services: { 'kimi-k3': ['openai-chat-completions'] } } }
+  let held: ReturnType<typeof parseRetailPrices> = null
+  const proxy = makeBuyerProxyWithPeers([seller], [seller], permissiveRouter(), undefined, undefined, undefined, { referencePrices: { current: () => held } })
+  const listed = async (path: string) => JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path }))).body)
+
+  // Before the price list is read the listing answers without it.
+  assert.equal('reference_price' in (await listed('/v1/models/kimi-k3')), false)
+
+  held = parseRetailPrices({ data: [{ id: 'moonshotai/kimi-k3', pricing: { prompt: '0.000003', completion: '0.000009' } }] })
+  const expected = { input_usd_per_million: 3, output_usd_per_million: 9 }
+  assert.deepEqual((await listed('/v1/models/kimi-k3')).reference_price, expected)
+  const all = (await listed('/v1/models')).data as Array<{ id: string; reference_price?: unknown }>
+  assert.deepEqual(all.find((model) => model.id === 'kimi-k3')?.reference_price, expected)
 })
 
 test('Price + Trust routing falls back after the preferred cheaper peer fails', async () => {
@@ -6971,6 +6916,30 @@ test('spreading stays on sellers with an open channel instead of reserving on ne
   }
   for (let i = 0; i < 20; i += 1) await invokeProxy(proxy, modelRequest())
   assert.deepEqual([...served], [pricier.peerId])
+})
+
+test('listing models reads the open channels once, not once per model', async () => {
+  const { cheap, pricier } = makeModelSellers()
+  const models = ['gpt-5', 'model-b', 'model-c', 'model-d']
+  for (const peer of [cheap, pricier]) {
+    const price = peer.providerPricing!.openai!.services!['gpt-5']!
+    peer.providerPricing!.openai!.services = Object.fromEntries(models.map((model) => [model, price]))
+    peer.providerServiceApiProtocols = { openai: { services: Object.fromEntries(models.map((model) => [model, ['openai-chat-completions']])) } }
+  }
+  let reads = 0
+  const proxy = new BuyerProxy({
+    port: 0, dataDir: '/tmp/antseed-test',
+    node: { router: permissiveRouter(), getActiveBuyerChannels: () => { reads += 1; return [{ peerId: pricier.peerId }] } } as any,
+    routingPreferences: priceAndTrustPreferences,
+  })
+  ;(proxy as any)._getPeers = async () => [cheap, pricier]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+
+  const listed = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))
+  assert.equal(listed.statusCode, 200)
+  const ids = (JSON.parse(listed.body).data as Array<{ id: string }>).map((model) => model.id).sort()
+  assert.deepEqual(ids, [...models].sort())
+  assert.equal(reads, 1)
 })
 
 test('a seller already holding as many of our requests as it advertises it can take is not chosen first', async () => {
