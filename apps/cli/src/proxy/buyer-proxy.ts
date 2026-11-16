@@ -4248,6 +4248,9 @@ export class BuyerProxy {
     // Only proxy known API paths — reject everything else with 404
     const normalizedPath = path.split('?')[0]?.trim().toLowerCase() ?? '/'
     const nativeVideo = nativeVideoRoute({ method, path })
+    // A data operation's path is the seller's own API (`/v1/data/flights/messages` is not a chat),
+    // and its body is the operation's input: never read for routing options or a conversation.
+    const isDataRequest = dataServiceRoute({ method, path }) !== null
     const isKnownApiPath = nativeVideo !== null ||
       normalizedPath.startsWith('/v1/messages') ||
       normalizedPath.startsWith('/v1/chat/completions') ||
@@ -4407,7 +4410,7 @@ export class BuyerProxy {
     // `routing` is reported only when a router serves the request.
     let routingOptions: RequestRoutingOptions = {}
     let invalidRouting: string | null = null
-    if (method === 'POST' && isCompletionRequestPath(path)) {
+    if (method === 'POST' && !isDataRequest && isCompletionRequestPath(path)) {
       const taken = takeRoutingOptions(serializedReq)
       if (taken.kind === 'options') {
         serializedReq = taken.request
@@ -4439,7 +4442,7 @@ export class BuyerProxy {
     // automatically selected routes become soft affinity, so later turns stay
     // on the same seller unless it is cooling, unavailable, or fails retryably.
     // Subagent sessions inherit their parent chat's route.
-    const isConversationRequest = method === 'POST' && isCompletionRequestPath(path)
+    const isConversationRequest = method === 'POST' && !isDataRequest && isCompletionRequestPath(path)
     const conversationBody = isConversationRequest
       ? parseRequestBodyObject(serializedReq.body, serializedReq.headers)
       : null

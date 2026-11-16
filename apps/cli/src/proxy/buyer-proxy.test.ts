@@ -3495,6 +3495,28 @@ test('a data request body is passed on byte for byte, whatever its `model`, `ser
   assert.equal(sent[1]!.contentType, 'application/x-www-form-urlencoded')
 })
 
+test('a data operation whose path ends like a chat path keeps its `routing` field and is no conversation', async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const sent: Array<{ path: string; body: Buffer; headers: Record<string, string> }> = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; path: string; headers: Record<string, string>; body: Uint8Array }) => {
+    sent.push({ path: request.path, body: Buffer.from(request.body), headers: request.headers })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"sent":true}') }
+  }
+
+  // `routing`, `model`, `service` and `messages` are the provider's own fields here, not Antseed's.
+  const raw = '{"routing":{"carrier":"LY"},  "model":"economy","service":"direct",\n"messages":[{"role":"user","content":"hi"}]}'
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/messages', rawBody: raw }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]!.path, '/v1/data/flights/messages')
+  assert.equal(sent[0]!.body.toString(), raw)
+  // Not read as a chat: no conversation session key is added and none is stored.
+  assert.equal(sent[0]!.headers['session_id'], undefined)
+  assert.deepEqual((proxy as any)._conversations.list(), [])
+})
+
 test('a data request with `stream: true` in its body is sent as one buffered request', async () => {
   const data = makeDataPeer('b')
   const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
