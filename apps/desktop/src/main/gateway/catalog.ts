@@ -36,16 +36,17 @@ function normalizeProtocol(value: string): string {
   return protocol === 'openai-completions' ? 'openai-chat-completions' : protocol;
 }
 
+/** The protocols one listed peer reports (`protocol`, then `protocols`), normalized. */
+function peerProtocols(peer: Record<string, unknown>): string[] {
+  return [
+    ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
+    ...strings(peer['protocols']),
+  ].map(normalizeProtocol);
+}
+
 /** Every protocol the gateway reports for an entry: `supported_protocols`, then the peers' own. */
 export function entryProtocols(entry: GatewayModelEntry, peers = records(entry['peers'])): string[] {
-  const reported = [
-    ...strings(entry['supported_protocols']),
-    ...peers.flatMap((peer) => [
-      ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
-      ...strings(peer['protocols']),
-    ]),
-  ];
-  return [...new Set(reported.map(normalizeProtocol))];
+  return [...new Set([...strings(entry['supported_protocols']).map(normalizeProtocol), ...peers.flatMap(peerProtocols)])];
 }
 
 /** Whether the entry lists `peerId` among the sellers of its model. */
@@ -56,10 +57,7 @@ export function entryListsSeller(entry: GatewayModelEntry, peerId: string): bool
 
 /** The chat protocols one listed peer speaks natively for the entry. */
 function peerChatProtocols(peer: Record<string, unknown>): ChatServiceProtocol[] {
-  const spoken = new Set([
-    ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
-    ...strings(peer['protocols']),
-  ].map(normalizeProtocol));
+  const spoken = new Set(peerProtocols(peer));
   return PROTOCOL_PREFERENCE.filter((protocol) => spoken.has(protocol));
 }
 
