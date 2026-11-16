@@ -181,6 +181,10 @@ export function normalizeMock(mock, id) {
   const usage = mock.usage ?? 'fixed';
   if (!MOCK_USAGE_MODES.has(usage)) throw new Error(`seller ${id} mock.usage must be one of ${[...MOCK_USAGE_MODES].join(', ')}`);
   const normalized = { latencyMs, usage, fault500Rate: rate(mock.fault500Rate, `seller ${id} mock.fault500Rate`), disconnectRate: rate(mock.disconnectRate, `seller ${id} mock.disconnectRate`) };
+  if (mock.cachedPromptTokens !== undefined) {
+    if (!Number.isInteger(mock.cachedPromptTokens) || mock.cachedPromptTokens < 0) throw new Error(`seller ${id} mock.cachedPromptTokens must be a non-negative integer`);
+    if (mock.cachedPromptTokens > 0) normalized.cachedPromptTokens = mock.cachedPromptTokens;
+  }
   if (usage === 'load') {
     normalized.latencyRangeMs = range(mock.latencyRangeMs ?? LOAD_MOCK_DEFAULTS.latencyRangeMs, `seller ${id} mock.latencyRangeMs`, 60_000);
     normalized.outTokens = range(mock.outTokens ?? LOAD_MOCK_DEFAULTS.outTokens, `seller ${id} mock.outTokens`, 100_000);
