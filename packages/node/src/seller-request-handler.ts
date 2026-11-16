@@ -78,7 +78,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -1148,10 +1148,12 @@ export class SellerRequestHandler {
           const upstreamBody = response.body ?? new Uint8Array(0);
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          const upstreamStatusCode = statusCode;
+          let maskedAs: 'account' | 'self-health' | null = null;
           if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
-            debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
+            maskedAs = 'account';
           } else if (!streamedResponseStarted && statusCode === 429) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
@@ -1159,6 +1161,14 @@ export class SellerRequestHandler {
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
             response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
             statusCode = response.statusCode;
+            maskedAs ??= 'self-health';
+          }
+          if (maskedAs) {
+            // The buyer gets a generic 503; the seller's log keeps what the upstream said.
+            this._deps.emit('provider:error-masked', {
+              provider: provider.name, service: requestedModel, reason: maskedAs, statusCode,
+              upstreamStatusCode, detail: describeUpstreamError(upstreamStatusCode, upstreamError),
+            });
           }
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;

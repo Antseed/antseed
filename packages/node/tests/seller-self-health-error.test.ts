@@ -3,6 +3,7 @@ import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler, assertSameNameUpstreamsAgree } from '../src/seller-request-handler.js';
+import { describeUpstreamError } from '../src/health/self-health-error.js';
 import { MessageType } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/index.js';
@@ -108,6 +109,44 @@ describe('seller self health error', () => {
     const error = JSON.parse(new TextDecoder().decode(response.body)).error;
     expect(error).toMatchObject({ code: 'seller_self_health_failing', upstream_status: 503 });
     expect(error.upstream_type).toBe('upstream_unavailable');
+  });
+
+  it('reports the upstream error behind an unavailable answer to the seller, with tokens redacted', async () => {
+    const provider = makeProvider('p', 401);
+    provider.handleRequest = vi.fn(async (req) => ({
+      requestId: req.requestId, statusCode: 401, headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { code: 'token_expired', message: 'Token sk-abcdefghijklmnopqrstuvwxyz0123 has expired' } })),
+    }));
+    const events: Array<[string, unknown]> = [];
+    await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
+    const masked = events.find(([event]) => event === 'provider:error-masked')?.[1] as { detail: string };
+    expect(masked).toMatchObject({ provider: 'p', service: 'test-model', reason: 'account', statusCode: 503, upstreamStatusCode: 401 });
+    expect(masked.detail).toBe('HTTP 401 token_expired: Token [redacted] has expired');
+  });
+
+  it('reports the upstream error behind a self health error to the seller', async () => {
+    const provider = makeProvider('p', 502);
+    provider.serviceHealth = { 'test-model': failing };
+    const events: Array<[string, unknown]> = [];
+    await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
+    expect(events.find(([event]) => event === 'provider:error-masked')?.[1]).toMatchObject({
+      reason: 'self-health', statusCode: 503, upstreamStatusCode: 502, detail: 'HTTP 502: upstream overloaded',
+    });
+  });
+
+  it('reports nothing when the upstream error reaches the buyer as it is', async () => {
+    const events: Array<[string, unknown]> = [];
+    await serve([makeProvider('p', 502)], (event, payload) => { events.push([event, payload]); return true; });
+    expect(events.some(([event]) => event === 'provider:error-masked')).toBe(false);
+  });
+
+  it('keeps the upstream message out of the report in content-free mode', async () => {
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      expect(describeUpstreamError(403, JSON.stringify({ error: { type: 'permission_error', message: 'secret detail' } }))).toBe('HTTP 403 permission_error');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('passes a buyer validation error through', async () => {
