@@ -597,6 +597,15 @@ export class MeteringStorage {
     return this.evaluateFreeTierRequest(input, null);
   }
 
+  /** Free requests, staked or not, recorded for `buyerAddress` under `scope` since `sinceMs`. */
+  countFreeTierAddressRequests(input: { buyerAddress: string; scope?: string; sinceMs: number }): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS request_count FROM free_tier_usage
+      WHERE scope = ? AND buyer_address = ? AND timestamp >= ?
+    `).get(input.scope ?? '', input.buyerAddress.toLowerCase(), input.sinceMs) as { request_count: number };
+    return row.request_count;
+  }
+
   private evaluateFreeTierRequest(input: FreeTierUsageInput, service: string | null): FreeTierConsumption {
     const nowMs = input.nowMs ?? Date.now();
     const windowStart = nowMs - input.windowMs;

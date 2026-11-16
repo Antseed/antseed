@@ -249,6 +249,19 @@ export interface SellerFreeTierCLIConfig {
    * required: they are the allowance the tier multipliers apply to.
    */
   stakersOnly?: boolean;
+  /**
+   * Largest estimated input, in tokens, served free during a buyer address's
+   * first `newBuyerRequests` free requests in the window. Requires
+   * `maxRequestsPerAddress`. Buyers staked into a tier are not limited.
+   */
+  newBuyerMaxInputTokens?: number;
+  /** Free requests a buyer address counts as new for `newBuyerMaxInputTokens`. Default: 3. */
+  newBuyerRequests?: number;
+  /**
+   * Large free requests that carry on a conversation another buyer address
+   * started: `refuse` them, or only `log` them. Default: not checked.
+   */
+  movedConversations?: 'refuse' | 'log';
 }
 
 export interface SellerFreeTierStakeTierCLIConfig {

@@ -265,6 +265,30 @@ antseed config seller set freeTier.maxRequestsPerIp 300
 
 Remove `seller.freeTier` to make free services unlimited again.
 
+#### Large free requests
+
+A new identity costs nothing, so a client that runs out of free requests can resend a long conversation from a fresh address. Two optional settings in a free-tier program limit that:
+
+| Key | Default | Description |
+|---|---|---|
+| `newBuyerMaxInputTokens` | none | Largest estimated input, in tokens, served free during an address's first `newBuyerRequests` free requests in the window. Requires `maxRequestsPerAddress`. |
+| `newBuyerRequests` | `3` | How many free requests an address counts as new for `newBuyerMaxInputTokens`. |
+| `movedConversations` | none | `refuse` or `log` a free request of at least 32,000 estimated input tokens when at least 5 of its long messages, adding up to 32,000 tokens, were first sent by another address in the last 48 hours. |
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "newBuyerMaxInputTokens": 32000,
+      "movedConversations": "refuse"
+    }
+  }
+}
+```
+
+A refused request gets HTTP 403 with `code: "free_tier_new_buyer_context"` or `"free_tier_moved_conversation"`, and doesn't count toward the buyer's limits. Start with `"log"` to see what `movedConversations` would refuse: the seller logs each match with `--verbose` and serves the request. Buyers staked into a tier are never checked. To match conversations, the seller keeps a short hash of each long message in memory, never the text; the first three messages and system prompts are skipped, since apps share them across users.
+
 #### Staked tiers
 
 Buyers who lock ANTS in your seller pool get a larger free allowance. Their stake raises your pool weight, which multiplies the points your paid usage earns, so staked free users pay you back through your paid services. Staked tiers are on by default whenever `seller.freeTier` is set:

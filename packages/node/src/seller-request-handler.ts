@@ -11,10 +11,16 @@ import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
-import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import type { FreeTierDecision, FreeTierScreen, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+
+function describeFreeTierScreenRefusal(refusal: FreeTierScreenRefusal): string {
+  return refusal.reason === 'new_buyer_context'
+    ? `new buyer context inputTokens~${refusal.inputTokens} > ${refusal.maxInputTokens}`
+    : `moved conversation from ${refusal.owner} (${refusal.messages} messages, ~${refusal.tokens} tokens)`;
+}
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
@@ -558,16 +564,29 @@ export class SellerRequestHandler {
       }
       const isServedFree = isFreeService || coveredByAllowance;
       if (isFreeTierRequest && freeTierLimiter?.appliesTo(freeTierService)) {
-        let decision: FreeTierDecision;
+        // Null when screening refused the request before it was counted.
+        let decision: FreeTierDecision | null = null;
+        let screen: FreeTierScreen | null = null;
         try {
           // No header means the buyer has no codes any more: '' forgets the remembered ones.
           const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          decision = freeTierLimiter.consume({
+          // Free requests skip token estimation and parsing; screening does them only when a check needs them.
+          screen = freeTierLimiter.screen({
             buyerPeerId,
             service: freeTierService,
-            remoteIp: conn.remoteAddress ?? null,
             standing,
+            inputTokens: () => estimateTokensFromBytesSampled(request.body),
+            body: () => tryParseJsonObject(request.body),
           });
+          if (!screen.refusal) {
+            decision = freeTierLimiter.consume({
+              buyerPeerId,
+              service: freeTierService,
+              remoteIp: conn.remoteAddress ?? null,
+              standing,
+            });
+            if (decision.allowed) screen.served();
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           debugWarn(`[SellerHandler] Free-tier accounting failed for ${buyerPeerId.slice(0, 12)}...: ${message}`);
@@ -583,6 +602,27 @@ export class SellerRequestHandler {
               },
             })),
           });
+          return;
+        }
+        const ip = conn.remoteAddress ?? 'unknown';
+        if (screen?.wouldRefuse) {
+          debugLog(`[SellerHandler] Free tier would refuse ${freeTierService} for ${buyerPeerId.slice(0, 12)}... ip=${ip} (log only): ${describeFreeTierScreenRefusal(screen.wouldRefuse)}`);
+        }
+        if (!decision) {
+          const refusal = screen!.refusal!;
+          debugLog(`[SellerHandler] Free tier refused ${freeTierService} for ${buyerPeerId.slice(0, 12)}... ip=${ip}: ${describeFreeTierScreenRefusal(refusal)}`);
+          const message = refusal.reason === 'new_buyer_context'
+            ? `This seller serves a new buyer's first ${refusal.requests} free requests up to ${refusal.maxInputTokens} input tokens; `
+              + `this one has about ${refusal.inputTokens}. Start with a shorter conversation, or use a paid model.`
+            : 'This conversation was started from another buyer identity, so this seller does not serve it free here. '
+              + 'Continue it from that identity, or use a paid model.';
+          this._sendJsonError(
+            mux,
+            request.requestId,
+            403,
+            refusal.reason === 'new_buyer_context' ? 'free_tier_new_buyer_context' : 'free_tier_moved_conversation',
+            message,
+          );
           return;
         }
         if (!decision.allowed) {

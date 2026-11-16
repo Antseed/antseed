@@ -358,8 +358,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
-export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, FREE_TIER_MOVED_CONVERSATIONS_MODES, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision, FreeTierMovedConversationsMode } from './payments/seller-free-tier-limiter.js';
 export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
