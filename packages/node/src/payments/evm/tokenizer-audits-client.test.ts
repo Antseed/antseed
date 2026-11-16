@@ -1,0 +1,184 @@
+import { describe, it, expect } from 'vitest';
+import { AbiCoder, Wallet, getAddress } from 'ethers';
+import { createResponseAuthPayload } from '@antseed/buyer-core';
+import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
+import { extractUsage } from '@antseed/api-adapter';
+import {
+  isShapeRequest,
+  jsonSafeContent,
+  pairDelta,
+  promptTokensOfBody,
+  receiptPromptTokens,
+  receiptTuple,
+  roundTuple,
+  shapeRequestBody,
+  tokenizerServiceHash,
+  type SignedReceipt,
+} from './tokenizer-audits-client.js';
+
+const seller = new Wallet('0x' + '11'.repeat(32));
+const buyer = new Wallet('0x' + '22'.repeat(32));
+const SHAPE = { path: '/v1/chat/completions', head: '{"model":"', mid: '","messages":[{"role":"user","content":"', tail: '"}],"max_tokens":64}' };
+const encoder = new TextEncoder();
+
+function signed(requestId: string, requestBody: string, responseBody: string, statusCode = 200, path = SHAPE.path): SignedReceipt {
+  const request = { requestId, method: 'POST', path, headers: { 'content-type': 'application/json' }, body: encoder.encode(requestBody) };
+  const response = { requestId, statusCode, headers: { 'content-type': 'application/json' }, body: encoder.encode(responseBody) };
+  const payload = createResponseAuthPayload({
+    request, response, buyerPeerId: buyer.address, sellerPeerId: seller.address, advertisedService: 'example-model',
+    provider: 'openai', responseStartedAt: 1, responseCompletedAt: 2,
+  }, seller);
+  return { payload, request: encodeHttpRequest(request), response: encodeHttpResponse(response) };
+}
+
+const usage = (tokens: number) => JSON.stringify({ usage: { prompt_tokens: tokens, completion_tokens: 2 } });
+
+describe('promptTokensOfBody', () => {
+  const read = (body: string) => promptTokensOfBody(encoder.encode(body));
+
+  it('reads OpenAI prompt_tokens, with or without spaces', () => {
+    expect(read('{"usage":{"prompt_tokens":15,"completion_tokens":3}}')).toBe(15);
+    expect(read('{"usage": {"prompt_tokens" :  67, "total_tokens": 70}}')).toBe(67);
+  });
+
+  it('adds Anthropic cache tokens to input_tokens', () => {
+    expect(read('{"usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}')).toBe(16);
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4}}}')).toBe(12);
+  });
+
+  it('ignores usage keys quoted inside answer text', () => {
+    expect(read('{"choices":[{"message":{"content":"\\"prompt_tokens\\": 999"}}],"usage":{"prompt_tokens":15}}')).toBe(15);
+  });
+
+  it('reads only the top-level usage object, as a Responses answer needs', () => {
+    expect(read('{"object":"response","output":[{"content":[{"text":"{\\"usage\\":{\\"input_tokens\\":7}}"}]}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":3,"items":{"m":{"input_tokens":2}}},"tool_usage":{"image_gen":{"input_tokens":0}},"x":{"prompt_tokens":20}}')).toBe(12);
+  });
+
+  it('reads cache tokens as the buyer does (extractUsage)', () => {
+    expect(read('{"usage":{"input_tokens":150,"output_tokens":75,"prompt_cache_hit_tokens":600}}')).toBe(750);
+    expect(read('{"usage":{"input_tokens":150,"cache_read_input_tokens":600,"prompt_cache_hit_tokens":600}}')).toBe(750);
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"cache_read_input_tokens":4}}')).toBe(12);
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":null},"cache_read_input_tokens":4}}')).toBe(12);
+    expect(read('{"usage":{"input_tokens":50,"cache_read_input_tokens":70,"input_tokens_details":{"reasoning":1}}}')).toBe(120);
+    expect(read('{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"cache_read_input_tokens":20}}')).toBe(130);
+  });
+
+  it('agrees with the buyer (extractUsage) on every usage shape it reads', () => {
+    const shapes = [
+      { prompt_tokens: 67, prompt_tokens_details: { cached_tokens: 10 } },
+      { input_tokens: 12, input_tokens_details: { cached_tokens: 4 }, output_tokens: 3 },
+      { input_tokens: 200, cache_read_input_tokens: 800 },
+      { input_tokens: 150, prompt_cache_hit_tokens: 600 },
+      { input_tokens: 150, cache_creation_input_tokens: 50, cache_read_input_tokens: 600 },
+      { input_tokens: 50, cache_read_input_tokens: 70, input_tokens_details: {} },
+      { input_tokens: 100, prompt_tokens_details: { cached_tokens: 30 }, cache_read_input_tokens: 20 },
+    ];
+    for (const usage of shapes) {
+      expect(read(JSON.stringify({ usage }))).toBe(extractUsage({ usage }).inputTokens);
+    }
+  });
+
+  it('reads whole integer token counts only, as the contract does', () => {
+    expect(read('{"usage":{"prompt_tokens": 1000 }}')).toBe(1000);
+    expect(read('{"usage":{"prompt_tokens":1e3}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":15.0,"completion_tokens":2}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":12x}}')).toBeNull();
+  });
+
+  it('refuses usage JSON.parse could read differently: escaped member names', () => {
+    expect(read('{"\\u0075sage":{"prompt_tokens":10}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":10},"\\u0075sage":{"prompt_tokens":20}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":10,"\\u0063ache_read_input_tokens":5}}')).toBeNull();
+    // The buyer reads 110 (input_tokens includes the cache); the raw bytes alone would give 200.
+    const escapedSubset = '{"usage":{"input_tokens":110,"cache_read_input_tokens":90,"input_tokens_details":{"\\u0063ached_tokens":90}}}';
+    expect(extractUsage(JSON.parse(escapedSubset)).inputTokens).toBe(110);
+    expect(read(escapedSubset)).toBeNull();
+    expect(read('{"model":"a\\"b","choices":[{"message":{"content":"\\u0075sage"}}],"usage":{"prompt_tokens":10}}')).toBe(10);
+  });
+
+  it('refuses usage values other than whole numbers, and reads null as absent', () => {
+    expect(read('{"usage":{"prompt_tokens":10,"prompt_tokens":2e1}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":"20"}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":10,"cache_read_input_tokens":true}}')).toBeNull();
+    expect(read('{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":"4"}}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":null,"input_tokens":7}}')).toBe(7);
+    expect(read('{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}')).toBe(10);
+    for (const body of ['{"usage":{"prompt_tokens":null,"input_tokens":7}}', '{"usage":{"input_tokens":7,"cache_read_input_tokens":null,"prompt_cache_hit_tokens":3}}']) {
+      expect(read(body)).toBe(extractUsage(JSON.parse(body)).inputTokens);
+    }
+  });
+
+  it('refuses a repeated usage member whatever its values, since JSON.parse keeps the last', () => {
+    // The buyer reads 10 here; a reader that only counted numeric values would read 15.
+    const lastWins = '{"usage":{"input_tokens":10,"prompt_tokens":15,"prompt_tokens":null}}';
+    expect(extractUsage(JSON.parse(lastWins)).inputTokens).toBe(10);
+    for (const body of [
+      '{"usage":{"input_tokens":10,"prompt_tokens":15,"prompt_tokens":null}}',
+      '{"usage":{"prompt_tokens":null,"prompt_tokens":15}}',
+      '{"usage":{"prompt_tokens":15,"cache_read_input_tokens":1,"cache_read_input_tokens":null}}',
+      '{"usage":{"prompt_tokens":15},"usage":null}',
+      '{"usage":"none","usage":{"prompt_tokens":15}}',
+      '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4},"input_tokens_details":null}}',
+      '{"usage":{"input_tokens":12,"cache_read_input_tokens":4,"input_tokens_details":{"cached_tokens":4,"cached_tokens":null}}}',
+      '{"usage":{"input_tokens":100,"prompt_tokens_details":{"cached_tokens":30},"prompt_tokens_details":7}}',
+    ]) {
+      expect(read(body), body).toBeNull();
+    }
+  });
+
+  it('refuses ambiguous or missing usage, as the contract does', () => {
+    expect(read('{"usage":{"prompt_tokens":15,"prompt_tokens":20}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":15},"usage":{"prompt_tokens":20}}')).toBeNull();
+    expect(read('{"x":{"usage":{"prompt_tokens":15}}}')).toBeNull();
+    expect(read('{"usage":{"completion_tokens":15}}')).toBeNull();
+    expect(read('{"usage":{"prompt_tokens":1234567890123456}}')).toBeNull();
+  });
+});
+
+describe('request shapes', () => {
+  it('builds the shape body and recognizes it in a signed receipt', () => {
+    const a = 'Plan a trip to Lisbon?';
+    const b = ' Budget 450 € 😅';
+    const body = shapeRequestBody(SHAPE, 'example-model', a + b);
+    expect(JSON.parse(body)).toEqual({ model: 'example-model', messages: [{ role: 'user', content: a + b }], max_tokens: 64 });
+    const base = signed('a', shapeRequestBody(SHAPE, 'example-model', a), usage(20));
+    const probed = signed('b', body, usage(149));
+    expect(isShapeRequest(base, SHAPE, a)).toBe(true);
+    expect(isShapeRequest(probed, SHAPE, a + b)).toBe(true);
+    expect(isShapeRequest(probed, SHAPE, a)).toBe(false);
+    expect(pairDelta({ shapeId: '0x', base, probed })).toBe(129);
+  });
+
+  it('needs the shape path as well as its body', () => {
+    const elsewhere = signed('a', shapeRequestBody(SHAPE, 'example-model', 'x'), usage(15), 200, '/v1/responses');
+    expect(isShapeRequest(elsewhere, SHAPE, 'x')).toBe(false);
+  });
+
+  it('keeps generated text inside the JSON string', () => {
+    const text = jsonSafeContent('He said "hi"\nthen C:\\path and "x');
+    expect(text).not.toMatch(/["\\\n]/);
+    expect(JSON.parse(shapeRequestBody(SHAPE, 'm', text)).messages[0].content).toBe(text);
+  });
+
+  it('reads no tokens from a failed response', () => {
+    expect(receiptPromptTokens(signed('a', shapeRequestBody(SHAPE, 'example-model', 'x'), usage(15), 500))).toBeNull();
+  });
+
+  it('encodes rounds as the contract tuple', () => {
+    const pair = { shapeId: '0x' + 'ab'.repeat(32), base: signed('a', shapeRequestBody(SHAPE, 'example-model', 'x'), usage(15)), probed: signed('b', shapeRequestBody(SHAPE, 'example-model', 'xy'), usage(16)) };
+    expect(receiptTuple(pair.base)[4]).toBe(getAddress(seller.address));
+    const RECEIPT = 'tuple(uint32,string,string,address,address,string,string,uint16,uint64,uint64,bytes,bytes,bytes)';
+    const PAIR = `tuple(bytes32,${RECEIPT},${RECEIPT})`;
+    const encoded = AbiCoder.defaultAbiCoder().encode(
+      [`tuple(bytes,bytes,${PAIR},${PAIR}[])`],
+      [roundTuple({ a: 'x', b: 'y', suspect: pair, references: [pair, pair, pair] })],
+    );
+    expect(encoded.length).toBeGreaterThan(2);
+  });
+});
+
+describe('tokenizerServiceHash', () => {
+  it('trims and lowercases like the results layer', () => {
+    expect(tokenizerServiceHash('  Example-Model ')).toBe(tokenizerServiceHash('example-model'));
+  });
+});

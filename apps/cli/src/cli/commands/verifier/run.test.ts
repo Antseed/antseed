@@ -42,12 +42,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, assignment, models, overview, reference, status, submit, watch, rewards, and check workflows', () => {
+test('verifier exposes run, assignment, models, overview, reference, status, submit, watch, rewards, check and prove-tokenizer workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
+    ['assignment', 'check', 'models', 'overview', 'profile', 'prove-tokenizer', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 
@@ -57,6 +57,15 @@ test('verifier submit and rewards expose the auditor controls', () => {
     .options.map((option) => option.long)
   assert.deepEqual(options('submit'), ['--run-id', '--no-publish-ipfs', '--dry-run', '--publish-only', '--auditor', '--yes', '--rpc-url', '--keystore', '--skip-version-check'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
+})
+
+test('verifier prove-tokenizer sends proofs unless --dry-run', () => {
+  const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
+  const prove = verifier.commands.find((entry) => entry.name() === 'prove-tokenizer')!
+  assert.deepEqual(prove.options.map((option) => option.long), [
+    '--dry-run', '--contract', '--rpc-url', '--keystore', '--rounds', '--generator', '--service', '--peer',
+    '--concurrency', '--recheck-hours',
+  ])
 })
 
 test('verifier reference exposes only the explicit build workflow', () => {

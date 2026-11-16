@@ -6,9 +6,11 @@ import {
   SET_OPERATOR_TYPES,
   FREE_USAGE_OPEN_TYPES,
   FREE_USAGE_AUTH_TYPES,
+  PROVER_AUTH_TYPES,
   makeChannelsDomain,
   makeDepositsDomain,
   makeFreeUsageDomain,
+  makeTokenizerAuditsDomain,
   signSpendingAuth,
   computeMetadataHash,
   ZERO_METADATA_HASH,
@@ -57,18 +59,29 @@ function collectUnique(sources: string[], pattern: RegExp, toEntry: (m: RegExpMa
 const CONTRACT_SOURCES = readContractSources(CONTRACTS_DIR);
 
 /** Primary type name -> EIP-712 type string, from `bytes32 ... constant X_TYPEHASH = keccak256("...")`. */
-const SOLIDITY_TYPE_STRINGS = collectUnique(
+const ALL_SOLIDITY_TYPE_STRINGS = collectUnique(
   CONTRACT_SOURCES,
   /bytes32\s+(?:public\s+|internal\s+|private\s+)?constant\s+\w+_TYPEHASH\s*=\s*keccak256\(\s*"([^"]+)"\s*\)/g,
   (m) => [m[1]!.slice(0, m[1]!.indexOf('(')), m[1]!],
 );
+/** The domain type of contracts that build their domain inline: domain metadata, not an authorization type. */
+const SOLIDITY_DOMAIN_TYPE = ALL_SOLIDITY_TYPE_STRINGS.get('EIP712Domain');
+const SOLIDITY_TYPE_STRINGS = new Map([...ALL_SOLIDITY_TYPE_STRINGS].filter(([name]) => name !== 'EIP712Domain'));
 
-/** Domain name -> version, from `EIP712("name", "version")` constructor calls. */
+/**
+ * Domain name -> version, from `EIP712("name", "version")` constructor calls and from inline domains
+ * (`DOMAIN_NAME_HASH = keccak256("name")` with `DOMAIN_VERSION_HASH = keccak256("version")` in one contract).
+ */
 const SOLIDITY_DOMAINS = collectUnique(
   CONTRACT_SOURCES,
   /EIP712\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/g,
   (m) => [m[1]!, m[2]!],
 );
+for (const source of CONTRACT_SOURCES) {
+  const name = source.match(/DOMAIN_NAME_HASH\s*=\s*keccak256\(\s*"([^"]+)"\s*\)/)?.[1];
+  const version = source.match(/DOMAIN_VERSION_HASH\s*=\s*keccak256\(\s*"([^"]+)"\s*\)/)?.[1];
+  if (name && version) SOLIDITY_DOMAINS.set(name, version);
+}
 
 const TS_TYPES: Record<string, Record<string, TypedDataField[]>> = {
   SpendingAuth: SPENDING_AUTH_TYPES,
@@ -76,12 +89,14 @@ const TS_TYPES: Record<string, Record<string, TypedDataField[]>> = {
   SetOperator: SET_OPERATOR_TYPES,
   FreeUsageOpen: FREE_USAGE_OPEN_TYPES,
   FreeUsageAuth: FREE_USAGE_AUTH_TYPES,
+  ProverAuth: PROVER_AUTH_TYPES,
 };
 
 const TS_DOMAINS = [
   makeChannelsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
   makeDepositsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
   makeFreeUsageDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
+  makeTokenizerAuditsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707'),
 ];
 
 describe('EIP-712 Contract Compatibility', () => {
@@ -100,6 +115,10 @@ describe('EIP-712 Contract Compatibility', () => {
 
   it.each(TS_DOMAINS.map((d) => [d.name, d.version]))('%s domain version %s matches the Solidity constructor', (name, version) => {
     expect(version).toBe(SOLIDITY_DOMAINS.get(name as string));
+  });
+
+  it('an inline domain uses the standard EIP712Domain type, as TS domains do', () => {
+    expect(SOLIDITY_DOMAIN_TYPE).toBe('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)');
   });
 
   it('TS SpendingAuth type string has exactly the right field order and types', () => {

@@ -323,29 +323,33 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   /**
-   * Claims KBF rewards on the results contract, one transaction per epoch as the contract takes
-   * them: `results.claimAuditorReward(kbf, epoch)`. Returns the transaction hashes in order.
+   * Claims an audit's rewards on the results contract (KBF unless `audit` names another audit on the same
+   * results layer, e.g. tokenizer audits), one transaction per epoch as the contract takes them:
+   * `results.claimAuditorReward(audit, epoch)`. Returns the transaction hashes in order.
    */
-  async claimAuditorRewards(signer: AbstractSigner, epochs: readonly (number | bigint)[]): Promise<string[]> {
+  async claimAuditorRewards(
+    signer: AbstractSigner,
+    epochs: readonly (number | bigint)[],
+    audit: string = this._contractAddress,
+  ): Promise<string[]> {
     const writer = new ResultsWriter(this._config, await this.resultsAddress()).withProvider(this._provider);
-    const audit = getAddress(this._contractAddress);
     const hashes: string[] = [];
-    for (const epoch of epochs) hashes.push(await writer.claimAuditorReward(signer, audit, BigInt(epoch)));
+    for (const epoch of epochs) hashes.push(await writer.claimAuditorReward(signer, getAddress(audit), BigInt(epoch)));
     return hashes;
   }
 
-  /** Claimable KBF reward of a finalized epoch: `results.pendingAuditorReward(kbf, auditor, epoch)`. */
-  async pendingAuditorReward(auditor: string, epoch: number | bigint): Promise<bigint> {
+  /** Claimable reward of a finalized epoch: `results.pendingAuditorReward(audit, auditor, epoch)` (KBF by default). */
+  async pendingAuditorReward(auditor: string, epoch: number | bigint, audit: string = this._contractAddress): Promise<bigint> {
     const results = await this._results();
-    return BigInt(await results.getFunction('pendingAuditorReward')(this._contractAddress, getAddress(auditor), BigInt(epoch)));
+    return BigInt(await results.getFunction('pendingAuditorReward')(getAddress(audit), getAddress(auditor), BigInt(epoch)));
   }
 
-  /** KBF credits the auditor earned in `epoch`, and the epoch's KBF total, from the results contract. */
-  async auditCredits(auditor: string, epoch: number | bigint): Promise<AuditorCredits> {
+  /** Credits the auditor earned in `epoch` for an audit (KBF by default), and the epoch's total for it. */
+  async auditCredits(auditor: string, epoch: number | bigint, audit: string = this._contractAddress): Promise<AuditorCredits> {
     const results = await this._results();
     const [auditorCredits, total] = await Promise.all([
-      results.getFunction('auditorEpochCredits')(this._contractAddress, BigInt(epoch), getAddress(auditor)),
-      results.getFunction('epochCredits')(this._contractAddress, BigInt(epoch)),
+      results.getFunction('auditorEpochCredits')(getAddress(audit), BigInt(epoch), getAddress(auditor)),
+      results.getFunction('epochCredits')(getAddress(audit), BigInt(epoch)),
     ]);
     return { auditor: BigInt(auditorCredits), total: BigInt(total) };
   }
@@ -371,13 +375,15 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   /**
-   * KBF reward settings on the results contract: the first epoch whose audits earn credits
-   * (`VERIFICATION_REWARDS_OFF` while rewards are off), KBF's share of the bucket for `epoch`
+   * An audit's reward settings on the results contract (KBF by default): the first epoch whose audits earn
+   * credits (`VERIFICATION_REWARDS_OFF` while rewards are off), the audit's share of the bucket for `epoch`
    * (default: the latest setting) and the most of that share one auditor can receive, both in bps.
    */
-  async rewardSettings(epoch?: number | bigint): Promise<{ rewardsStartEpoch: bigint; shareBps: number; maxAuditorShareBps: number }> {
+  async rewardSettings(
+    epoch?: number | bigint,
+    audit: string = this._contractAddress,
+  ): Promise<{ rewardsStartEpoch: bigint; shareBps: number; maxAuditorShareBps: number }> {
     const results = await this._results();
-    const audit = this._contractAddress;
     const [start, share, cap] = await Promise.all([
       results.getFunction('rewardsStartEpoch')(audit),
       epoch === undefined

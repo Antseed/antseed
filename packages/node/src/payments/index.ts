@@ -55,6 +55,36 @@ export {
   validateAuditorProfile,
 } from './evm/verifier-client.js';
 export {
+  TokenizerAuditsClient,
+  TOKENIZER_AUDITS_ABI,
+  MAX_TOKENIZER_PROOF_ROUNDS,
+  MAX_TOKENIZER_PROOF_REFERENCES,
+  MAX_TOKENIZER_PROBE_BYTES,
+  tokenizerServiceHash,
+  jsonSafeContent,
+  shapeRequestBody,
+  isShapeRequest,
+  promptTokensOfBody,
+  receiptPromptTokens,
+  pairDelta,
+  receiptTuple,
+  pairTuple,
+  roundTuple,
+} from './evm/tokenizer-audits-client.js';
+export { isSafeProbe, PROBE_GUARD_RANGES } from './evm/tokenizer-probe-guard.js';
+export type {
+  TokenizerAuditsClientConfig,
+  TokenizerShape,
+  TokenizerParameters,
+  SignedReceipt,
+  TokenizerProbePair,
+  TokenizerRound,
+  ReceiptTuple,
+  PairTuple,
+  RoundTuple,
+  ResolvedService,
+} from './evm/tokenizer-audits-client.js';
+export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
   queryInBlockChunks,
   resolveScanFromBlock,

@@ -17,6 +17,10 @@ test('describes whether KBF rewards are on, the share and the cap', () => {
   )
   assert.match(
     describeRewardSettings({ rewardsStartEpoch: 30n, shareBps: 6_000, maxAuditorShareBps: 2_000 }),
-    /from epoch 30; KBF share 60%/,
+    /KBF earns credits from epoch 30; KBF share 60%/,
+  )
+  assert.match(
+    describeRewardSettings({ rewardsStartEpoch: 31n, shareBps: 1_000, maxAuditorShareBps: 2_000 }, 'Tokenizer'),
+    /Tokenizer earns credits from epoch 31; Tokenizer share 10%/,
   )
 })

@@ -38,6 +38,7 @@ export const contractFields = {
   sellerPoolsRewards: 'sellerPoolsRewardsAddress',
   legacyEmissionsEscrow: 'legacyEmissionsEscrowAddress',
   verificationPointsPolicy: 'verificationPointsPolicyAddress',
+  tokenizerAudits: 'tokenizerAuditsAddress',
 };
 
 async function readDeployment(network) {

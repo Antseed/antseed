@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Command } from 'commander'
-import { parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, watchStepArgs, type WatchStep } from './watch.js'
+import { parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, watchStepArgs, watchSteps, type WatchStep } from './watch.js'
 
 const GLOBALS = { config: '/cfg/config.json', dataDir: '/data', verbose: false }
 
@@ -9,9 +9,10 @@ test('watch runs then submits every tick, keeps going after a failed step, and s
   const controller = new AbortController()
   const steps: string[] = []
   const sleeps: number[] = []
-  const codes: Record<WatchStep, number[]> = { run: [1, 0, 0], submit: [0, 1, 0] }
+  const codes: Record<WatchStep, number[]> = { run: [1, 0, 0], submit: [0, 1, 0], 'prove-tokenizer': [] }
   const logs: string[] = []
   const { ticks } = await runWatchLoop({
+    steps: ['run', 'submit'],
     intervalMs: 600_000,
     once: false,
     signal: controller.signal,
@@ -34,6 +35,7 @@ test('watch runs then submits every tick, keeps going after a failed step, and s
 test('watch --once runs one tick without sleeping', async () => {
   const steps: string[] = []
   const { ticks, failed } = await runWatchLoop({
+    steps: ['run', 'submit'],
     intervalMs: 60_000,
     once: true,
     signal: new AbortController().signal,
@@ -49,6 +51,7 @@ test('watch --once runs one tick without sleeping', async () => {
 test('watch --once reports a failed submit, so the command exits non-zero', async () => {
   const logs: string[] = []
   const { failed } = await runWatchLoop({
+    steps: ['run', 'submit'],
     intervalMs: 60_000,
     once: true,
     signal: new AbortController().signal,
@@ -63,8 +66,9 @@ test('watch --once reports a failed submit, so the command exits non-zero', asyn
 
 test('a continuous watch reports only the last tick\'s failures', async () => {
   const controller = new AbortController()
-  const codes: Record<WatchStep, number[]> = { run: [0, 0], submit: [1, 0] }
+  const codes: Record<WatchStep, number[]> = { run: [0, 0], submit: [1, 0], 'prove-tokenizer': [] }
   const { ticks, failed } = await runWatchLoop({
+    steps: ['run', 'submit'],
     intervalMs: 60_000,
     once: false,
     signal: controller.signal,
@@ -80,6 +84,7 @@ test('an abort during run skips that tick\'s submit', async () => {
   const controller = new AbortController()
   const steps: string[] = []
   await runWatchLoop({
+    steps: ['run', 'submit'],
     intervalMs: 60_000,
     once: false,
     signal: controller.signal,
@@ -116,6 +121,15 @@ test('each step forwards the global options and only its own flags', () => {
   assert.deepEqual(watchStepArgs('submit', GLOBALS, { interval: '10' }), [
     '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'submit', '--yes',
   ])
+  assert.deepEqual(watchStepArgs('prove-tokenizer', GLOBALS, options), [
+    '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'prove-tokenizer',
+    '--keystore', '~/ks', '--rpc-url', 'http://rpc',
+  ])
+})
+
+test('every tick proves tokenizer mismatches after the submit, unless turned off', () => {
+  assert.deepEqual(watchSteps({}), ['run', 'submit', 'prove-tokenizer'])
+  assert.deepEqual(watchSteps({ tokenizer: false }), ['run', 'submit'])
 })
 
 test('a keystore given to watch decides the auditor the run step plans for', async () => {
@@ -140,7 +154,7 @@ test('watch registers its options', () => {
   registerVerifierWatchCommand(verifier)
   const watch = verifier.commands.find((command) => command.name() === 'watch')!
   assert.deepEqual(watch.options.map((option) => option.long), [
-    '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--skip-version-check',
+    '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--no-tokenizer', '--skip-version-check',
     // run's tuning options, without watch-side defaults, so run's own defaults apply
     '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm',
   ])

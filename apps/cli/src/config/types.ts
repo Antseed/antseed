@@ -479,6 +479,8 @@ export interface PaymentsCLIConfig {
     verificationResultsAddress?: string;
     /** Deployment block of the KBF audits contract; floor for verifier event scans */
     verificationDeployBlock?: number;
+    /** Deployed AntseedTokenizerAudits contract address (permissionless tokenizer-delta proofs) */
+    tokenizerAuditsAddress?: string;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;
     legacyEmissionsV1ContractAddress?: string;

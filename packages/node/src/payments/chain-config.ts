@@ -90,6 +90,8 @@ export interface ChainConfig {
   verificationResultsAddress?: string;
   /** Block when the KBF audits contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;
+  /** `AntseedTokenizerAudits`: permissionless tokenizer proofs (`antseed verifier prove-tokenizer`). */
+  tokenizerAuditsAddress?: string;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
   /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
