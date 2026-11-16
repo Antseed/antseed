@@ -486,6 +486,84 @@ contract AntseedColonyPoolTest is Test {
         _assertSolvent();
     }
 
+    /// Headroom held and used up over and over, all in one epoch, leaves
+    /// nothing behind: closing costs the same however often that happened.
+    function test_closeCostDoesNotGrowWithUsedUpHolds() public {
+        // The first close also pays for the accounts and contracts every close reads.
+        _closeGasAfterHoldCycles(bytes32(uint256(66)), 1);
+        uint256 few = _closeGasAfterHoldCycles(bytes32(uint256(67)), 5);
+        uint256 many = _closeGasAfterHoldCycles(bytes32(uint256(68)), 400);
+        assertApproxEqAbs(many, few, 5_000, "close cost grew with used-up holds");
+        _assertSolvent();
+    }
+
+    /// Hold 2 USDC and attribute them all to a worker, `cycles` times, then
+    /// hold once more and close: the gas that close used.
+    function _closeGasAfterHoldCycles(bytes32 salt, uint256 cycles) internal returns (uint256 used) {
+        bytes32 ch = _reserve(salt, 1000e6);
+        uint128 cumulative;
+        uint128 attributed;
+        for (uint256 i = 0; i < cycles; i++) {
+            cumulative += 2e6;
+            _settle(ch, cumulative, _e1(workerA, attributed));
+            cumulative += 1;
+            attributed += 2e6 + 1;
+            _settle(ch, cumulative, _e1(workerA, attributed));
+            (uint256 heldGross,) = pool.heldUnattributed(ch);
+            assertEq(heldGross, 0, "the hold was used up");
+        }
+        cumulative += 10e6;
+        _settle(ch, cumulative, _e1(workerA, attributed));
+        bytes memory metadata = _meta(cumulative, _e1(workerA, attributed));
+        bytes memory sig = _signSpend(ch, cumulative, metadata);
+        vm.prank(operator);
+        uint256 before = gasleft();
+        pool.close(ch, cumulative, metadata, sig);
+        used = before - gasleft();
+        assertEq(_paid(ch, workerA), attributed);
+    }
+
+    /// A channel holds from at most MAX_HELD_CHUNKS reward epochs: holding from
+    /// one more gives the oldest epoch's hold to the remainder, with its weight.
+    function test_holdingFromOneEpochTooManyReleasesTheOldest() public {
+        uint256 max = pool.MAX_HELD_CHUNKS();
+        bytes32 ch = _reserve(bytes32(uint256(69)), 1000e6);
+        uint256 e0 = emissions.currentEpoch();
+        uint128 cumulative;
+        uint256 firstNet;
+        uint256 total;
+        for (uint256 i = 0; i < max; i++) {
+            cumulative += 10e6;
+            uint256 net = _settle(ch, cumulative, new Entry[](0));
+            if (i == 0) firstNet = net;
+            total += net;
+            vm.warp(block.timestamp + EPOCH_DURATION);
+        }
+        assertEq(pool.usdcBalance(remainderSink), 0, "all still held");
+        assertEq(pool.totalUsdcHeld(), total);
+
+        cumulative += 10e6;
+        total += _settle(ch, cumulative, new Entry[](0));
+        assertEq(pool.usdcBalance(remainderSink), firstNet, "the oldest epoch's hold is the remainder's");
+        assertEq(pool.epochHeldWeight(e0), 0);
+        assertEq(pool.epochWeight(e0, remainderSink), firstNet);
+        (uint256 heldGross, uint256 heldNet) = pool.heldUnattributed(ch);
+        assertEq(heldGross, max * 10e6);
+        assertEq(heldNet, total - firstNet);
+        assertEq(pool.totalUsdcHeld(), total - firstNet);
+
+        // A tail is paid from what is still held, oldest first, and close releases the rest.
+        cumulative += 1;
+        bytes memory metadata = _meta(cumulative, _e1(workerA, 15e6));
+        bytes memory sig = _signSpend(ch, cumulative, metadata);
+        vm.prank(operator);
+        total += pool.close(ch, cumulative, metadata, sig);
+        assertEq(_paid(ch, workerA), 15e6);
+        assertEq(pool.totalUsdcHeld(), 0);
+        assertEq(pool.usdcBalance(workerA) + pool.usdcBalance(remainderSink), total);
+        _assertSolvent();
+    }
+
     function test_releaseHeld_onlyOnceTheChannelIsNoLongerActive() public {
         bytes32 ch = _reserve(bytes32(uint256(64)), 1000e6);
         uint256 net = _settle(ch, 100e6, new Entry[](0));
@@ -517,6 +595,11 @@ contract AntseedColonyPoolTest is Test {
         antseedRegistry.setChannels(address(replacement));
         pool.releaseHeld(ch);
         assertEq(pool.totalUsdcHeld(), net, "the current contract has nothing held for it");
+        (uint256 heldNow,) = pool.heldUnattributed(ch);
+        assertEq(heldNow, 0);
+        (uint256 heldGross, uint256 heldNet) = pool.heldUnattributedFrom(address(channels), ch);
+        assertEq(heldGross, 100e6);
+        assertEq(heldNet, net);
         pool.releaseHeldFrom(address(channels), ch);
         assertEq(pool.usdcBalance(remainderSink), net);
         assertEq(pool.totalUsdcHeld(), 0);

@@ -456,6 +456,35 @@ describe('ChannelStore', () => {
     store = new ChannelStore(tempDir);
   });
 
+  it('keeps an ended-channel notice, its Channels contract and its wait until it is removed', () => {
+    const first = '0x' + '01'.repeat(32);
+    const second = '0x' + '02'.repeat(32);
+    const channels = '0x' + 'dd'.repeat(20);
+    expect(store.addEndedChannelNotice(first, channels)).toEqual({ sessionId: first, channelsAddress: channels, failures: 0 });
+    expect(store.addEndedChannelNotice(second, null)).toEqual({ sessionId: second, channelsAddress: null, failures: 0 });
+
+    const now = Date.now();
+    store.deferEndedChannelNotice(first, 2, now + 60_000);
+    // Adding it again keeps what is stored.
+    expect(store.addEndedChannelNotice(first, null)).toEqual({ sessionId: first, channelsAddress: channels, failures: 2 });
+    expect(store.getDueEndedChannelNotices(now, 10).map((notice) => notice.sessionId)).toEqual([second]);
+    // Once both are due, the one that never waited comes first.
+    expect(store.getDueEndedChannelNotices(now + 60_000, 10).map((notice) => notice.sessionId)).toEqual([second, first]);
+    expect(store.getDueEndedChannelNotices(now + 60_000, 1)).toHaveLength(1);
+
+    store.removeEndedChannelNotice(second);
+    expect(store.countEndedChannelNotices()).toBe(1);
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getDueEndedChannelNotices(now + 60_000, 10)).toEqual([{ sessionId: first, channelsAddress: channels, failures: 2 }]);
+  });
+
+  it('keeps the Channels contract a seller channel was reserved on', () => {
+    const channelsAddress = '0x' + 'dd'.repeat(20);
+    store.upsertChannel(makeChannel({ role: CHANNEL_ROLE.SELLER, channelsAddress }));
+    expect(store.getChannel('0x' + 'aa'.repeat(32))!.channelsAddress).toBe(channelsAddress);
+  });
+
   describe('getBuyerServiceUsageTotals', () => {
     const buyerAddr = '0x' + 'cc'.repeat(20);
 

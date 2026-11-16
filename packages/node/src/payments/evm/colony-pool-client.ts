@@ -14,6 +14,7 @@ export const COLONY_POOL_ABI = [
   'function claimAntsFor(address worker, uint256[] epochs) external',
   'function claimOwedAnts() external',
   'function releaseHeld(bytes32 channelId) external',
+  'function releaseHeldFrom(address channelsContract, bytes32 channelId) external',
   'function payoutDigest(address worker, address payout, uint256 deadline) external view returns (bytes32)',
   'function claimEpochEmissions(uint256[] epochs) external',
   'function setPayout(address worker, address payout, uint256 deadline, bytes signature) external',
@@ -21,6 +22,7 @@ export const COLONY_POOL_ABI = [
   'function pendingAnts(address account, uint256[] epochs) external view returns (uint256)',
   'function antsOwed(address account) external view returns (uint256)',
   'function heldUnattributed(bytes32 channelId) external view returns (uint256 gross, uint256 net)',
+  'function heldUnattributedFrom(address channelsContract, bytes32 channelId) external view returns (uint256 gross, uint256 net)',
   'function epochAnts(uint256 epoch) external view returns (uint256)',
   'function epochWeight(uint256 epoch, address account) external view returns (uint256)',
   'function epochTotalWeight(uint256 epoch) external view returns (uint256)',
@@ -102,6 +104,12 @@ export class ColonyPoolClient extends BaseEvmClient {
     return { gross, net };
   }
 
+  /** `heldUnattributed` for a channel of the AntseedChannels contract at `channelsAddress`, which the registry may have replaced. */
+  async heldUnattributedFrom(channelsAddress: string, channelId: string): Promise<{ gross: bigint; net: bigint }> {
+    const [gross, net] = await this.read().getFunction('heldUnattributedFrom')(channelsAddress, channelId) as [bigint, bigint];
+    return { gross, net };
+  }
+
   async epochAnts(epoch: number): Promise<bigint> {
     return this.read().getFunction('epochAnts')(epoch);
   }
@@ -165,6 +173,11 @@ export class ColonyPoolClient extends BaseEvmClient {
    */
   async releaseHeld(signer: AbstractSigner, channelId: string): Promise<string> {
     return this._execWrite(signer, COLONY_POOL_ABI, 'releaseHeld', channelId);
+  }
+
+  /** `releaseHeld` for a channel of the AntseedChannels contract at `channelsAddress`, which the registry may have replaced. */
+  async releaseHeldFrom(signer: AbstractSigner, channelsAddress: string, channelId: string): Promise<string> {
+    return this._execWrite(signer, COLONY_POOL_ABI, 'releaseHeldFrom', channelsAddress, channelId);
   }
 
   /**

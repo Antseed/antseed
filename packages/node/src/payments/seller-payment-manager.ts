@@ -22,7 +22,7 @@ import {
 } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
-import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store.js';
+import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type EndedChannelNotice, type StoredChannel } from './channel-store.js';
 import { classifyOnChainChannel, matchesChannelParties } from './channel-session-state.js';
 
 export interface SellerPaymentConfig {
@@ -47,10 +47,12 @@ export interface SellerPaymentConfig {
   /**
    * Called when this seller stops tracking a channel it did not just close
    * itself: the buyer withdrew it, or it was found ended or gone on-chain.
-   * A call that throws or rejects is made again on later timeout checks, also
-   * after a restart, until one succeeds, so it must be safe to repeat.
+   * `channelsAddress` is the AntseedChannels contract the channel was reserved
+   * on, which the registry may have replaced since. A call that throws or
+   * rejects is made again on later timeout checks, also after a restart, until
+   * one succeeds, so it must be safe to repeat.
    */
-  onChannelEnded?: (channelId: string) => void | Promise<void>;
+  onChannelEnded?: (channelId: string, channelsAddress: string) => void | Promise<void>;
   /** Called when a buyer's opening reserve() fails on-chain, so a host can say so outside debug logs. */
   onReserveFailed?: (failure: ReserveFailure) => void;
 }
@@ -141,7 +143,7 @@ const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 /** Wait before a failed channel-ended call is made again: doubles per failure up to the maximum. */
 export const CHANNEL_ENDED_RETRY_MIN_MS = 60_000;
 export const CHANNEL_ENDED_RETRY_MAX_MS = 60 * 60_000;
-const CHANNEL_ENDED_RETRY_BATCH = 20;
+export const CHANNEL_ENDED_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
 
@@ -319,7 +321,6 @@ export class SellerPaymentManager {
   private readonly _timedOutCloseAttempts = new Map<string, number>();
   /** Channel-ended calls in flight, and for those that failed since start: failures and when to try again. */
   private readonly _channelEndedInFlight = new Set<string>();
-  private readonly _channelEndedRetry = new Map<string, { failures: number; notBefore: number }>();
 
   constructor(
     identity: Identity,
@@ -504,26 +505,28 @@ export class SellerPaymentManager {
 
   private _notifyChannelEnded(channelId: string): void {
     if (!this._config.onChannelEnded) return;
-    this._channelStore.addEndedChannelNotice(channelId);
-    this._deliverChannelEnded(channelId);
+    const channelsAddress = this._channelStore.getChannel(channelId)?.channelsAddress ?? null;
+    this._deliverChannelEnded(this._channelStore.addEndedChannelNotice(channelId, channelsAddress));
   }
 
   /** Call the listener for a stored notice; the notice stays, to be tried again, until a call succeeds. */
-  private _deliverChannelEnded(channelId: string): void {
+  private _deliverChannelEnded(notice: EndedChannelNotice): void {
     const onChannelEnded = this._config.onChannelEnded;
+    const channelId = notice.sessionId;
     if (!onChannelEnded || this._channelEndedInFlight.has(channelId)) return;
     this._channelEndedInFlight.add(channelId);
     void (async () => {
       try {
         // Never inside the caller's own channel bookkeeping.
         await Promise.resolve();
-        await onChannelEnded(channelId);
+        // A channel stored before its contract was recorded: the one in use now.
+        const channelsAddress = notice.channelsAddress ?? (await this._resolvedAddresses!).channels;
+        await onChannelEnded(channelId, channelsAddress);
         this._channelStore.removeEndedChannelNotice(channelId);
-        this._channelEndedRetry.delete(channelId);
       } catch (err) {
-        const failures = (this._channelEndedRetry.get(channelId)?.failures ?? 0) + 1;
+        const failures = notice.failures + 1;
         const delayMs = Math.min(CHANNEL_ENDED_RETRY_MIN_MS * 2 ** (failures - 1), CHANNEL_ENDED_RETRY_MAX_MS);
-        this._channelEndedRetry.set(channelId, { failures, notBefore: Date.now() + delayMs });
+        this._channelStore.deferEndedChannelNotice(channelId, failures, Date.now() + delayMs);
         debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}... (attempt ${failures}, next in ${Math.round(delayMs / 1000)}s): ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         this._channelEndedInFlight.delete(channelId);
@@ -531,17 +534,23 @@ export class SellerPaymentManager {
     })();
   }
 
-  /** Make the channel-ended calls that failed, or that a restart interrupted, again once they are due. */
+  /**
+   * Make the channel-ended calls that failed, or that a restart interrupted,
+   * again once they are due: a batch per pass, read past the calls still
+   * running so they never keep later notices waiting.
+   */
   private _retryChannelEnded(): void {
     if (!this._config.onChannelEnded) return;
-    const now = Date.now();
+    const due = this._channelStore.getDueEndedChannelNotices(
+      Date.now(),
+      CHANNEL_ENDED_RETRY_BATCH + this._channelEndedInFlight.size,
+    );
     let started = 0;
-    for (const channelId of this._channelStore.getEndedChannelNotices()) {
+    for (const notice of due) {
       if (started >= CHANNEL_ENDED_RETRY_BATCH) break;
-      if (this._channelEndedInFlight.has(channelId)) continue;
-      if ((this._channelEndedRetry.get(channelId)?.notBefore ?? 0) > now) continue;
+      if (this._channelEndedInFlight.has(notice.sessionId)) continue;
       started += 1;
-      this._deliverChannelEnded(channelId);
+      this._deliverChannelEnded(notice);
     }
   }
 
@@ -838,12 +847,13 @@ export class SellerPaymentManager {
 
         // Store new session (sessionId field stores channelId for backward compat)
         const now = Date.now();
-        const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+        const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
         const session: StoredChannel = {
           sessionId: channelId,
           peerId: buyerPeerId,
           role: CHANNEL_ROLE.SELLER,
           sellerEvmAddr,
+          channelsAddress,
           buyerEvmAddr,
           nonce: 0,
           authMax: '0',
@@ -1326,7 +1336,7 @@ export class SellerPaymentManager {
       payload.spendingAuthSig,
     ));
     const now = Date.now();
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+    const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
     if (batch) {
       // Record the reserve before the top-up: if anything below fails, the
       // channel still holds the buyer's funds and must stay known so the
@@ -1338,6 +1348,7 @@ export class SellerPaymentManager {
         channelKind: CHANNEL_KIND.ONE_OFF,
         oneOffRequestId: requestId,
         sellerEvmAddr,
+        channelsAddress,
         buyerEvmAddr,
         nonce: 0,
         authMax: '0',
@@ -1384,6 +1395,7 @@ export class SellerPaymentManager {
       channelKind: CHANNEL_KIND.ONE_OFF,
       oneOffRequestId: requestId,
       sellerEvmAddr,
+      channelsAddress,
       buyerEvmAddr,
       nonce: 0,
       authMax: latestAuth.cumulativeAmount.toString(),
@@ -2023,7 +2035,7 @@ export class SellerPaymentManager {
   ): Promise<boolean> {
     const channelId = payload.channelId;
     const onChainState = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+    const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
 
     if (!onChainState.exists || onChainState.status !== 'active') return false;
     if (!matchesChannelParties(onChainState.channel, buyerEvmAddr, sellerEvmAddr)) return false;
@@ -2064,6 +2076,7 @@ export class SellerPaymentManager {
       peerId: buyerPeerId,
       role: CHANNEL_ROLE.SELLER,
       sellerEvmAddr,
+      channelsAddress,
       buyerEvmAddr,
       nonce: 0,
       authMax: payload.cumulativeAmount,

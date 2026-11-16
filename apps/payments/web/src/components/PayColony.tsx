@@ -117,6 +117,13 @@ export function PayColonyLink({ config, colony, onDone }: PayColonyProps) {
     }
   };
 
+  const linkLabel = (): string => {
+    if (isSwitchingChain) return `Switching to ${targetChainName}…`;
+    if (wrongChain) return `Switch to ${targetChainName}`;
+    if (running) return 'Confirm in your wallet…';
+    return 'Link this wallet';
+  };
+
   return (
     <div className="pc-pay">
       <div className="pc-pay-wallet">
@@ -133,10 +140,7 @@ export function PayColonyLink({ config, colony, onDone }: PayColonyProps) {
         disabled={running || isSwitchingChain || !colony?.pool || alreadyLinked}
       >
         {running && <span className="pc-pay-spinner" aria-hidden="true" />}
-        {isSwitchingChain ? `Switching to ${targetChainName}…`
-          : wrongChain ? `Switch to ${targetChainName}`
-            : running ? 'Confirm in your wallet…'
-              : 'Link this wallet'}
+        {linkLabel()}
       </button>
       <p className="pc-pay-fineprint">
         You&apos;ll confirm one transaction. What this Mac already earned moves to this wallet too.

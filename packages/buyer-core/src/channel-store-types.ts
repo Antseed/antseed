@@ -71,6 +71,8 @@ export interface StoredChannel {
    * channel pays for (JSON), so a restarted buyer can still sign its delivery.
    */
   oneOffVideoJob?: string | null;
+  /** Seller side: the AntseedChannels contract the channel was reserved on. */
+  channelsAddress?: string | null;
   createdAt: number;
   updatedAt: number;
 }

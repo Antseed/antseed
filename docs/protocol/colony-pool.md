@@ -748,8 +748,15 @@ pause of its own, `AntseedChannels` has one):
    `releaseHeld(channelId)` (`releaseHeldFrom(channelsContract, channelId)` for
    a Channels contract the registry has since replaced). The pool's seller
    node does this itself when it finds one of its channels ended on-chain
-   without a `close`. `heldUnattributed(channelId)` reads it, and
-   `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
+   without a `close`, against the Channels contract the channel was reserved
+   on. `heldUnattributed(channelId)` reads it
+   (`heldUnattributedFrom(channelsContract, channelId)` for a replaced
+   Channels contract), and `totalUsdcHeld` keeps it out of `sweepOrphanUsdc`.
+   A channel holds from at most `MAX_HELD_CHUNKS` (16) reward epochs at a
+   time, one entry per epoch that is deleted once used up: holding from one
+   more epoch gives the oldest epoch's hold to `remainderRecipient`, so the
+   cost of a settlement, a `close` or a release never grows with how long a
+   channel stayed open or how often it held and used up headroom.
 7. Add each fresh credit to its account's weight for the current emissions
    epoch. Held USDC weighs in the epoch it settled in from the start
    (`epochHeldWeight`, counted in `epochTotalWeight`, claimable by nobody), so

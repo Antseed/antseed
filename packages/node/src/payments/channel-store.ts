@@ -55,6 +55,25 @@ export interface BuyerServiceUsageTotal {
   requestCount: number;
 }
 
+/** A channel that ended, for its listener to handle (see `SellerPaymentConfig.onChannelEnded`). */
+export interface EndedChannelNotice {
+  sessionId: string;
+  /** The AntseedChannels contract the channel was on, or null when that was not recorded. */
+  channelsAddress: string | null;
+  /** Attempts to handle it that failed so far. */
+  failures: number;
+}
+
+interface EndedNoticeRow {
+  session_id: string;
+  channels_address: string | null;
+  failures: number;
+}
+
+function rowToEndedNotice(row: EndedNoticeRow): EndedChannelNotice {
+  return { sessionId: row.session_id, channelsAddress: row.channels_address, failures: row.failures };
+}
+
 export class ChannelStore {
   private _db: Database.Database;
 
@@ -87,8 +106,11 @@ export class ChannelStore {
     getTimedOut: Database.Statement;
     getUnsettledByStatus: Database.Statement;
     addEndedNotice: Database.Statement;
+    getEndedNotice: Database.Statement;
     removeEndedNotice: Database.Statement;
-    getEndedNotices: Database.Statement;
+    deferEndedNotice: Database.Statement;
+    getDueEndedNotices: Database.Statement;
+    countEndedNotices: Database.Statement;
     insertReceipt: Database.Statement;
     getReceipts: Database.Statement;
     updateReceiptAck: Database.Statement;
@@ -228,10 +250,19 @@ export class ChannelStore {
         'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND settled_at IS NULL ORDER BY updated_at LIMIT ?',
       ),
       addEndedNotice: this._db.prepare(
-        'INSERT OR IGNORE INTO ended_channel_notices (session_id, created_at) VALUES (?, ?)',
+        'INSERT OR IGNORE INTO ended_channel_notices (session_id, channels_address, created_at) VALUES (?, ?, ?)',
+      ),
+      getEndedNotice: this._db.prepare(
+        'SELECT session_id, channels_address, failures FROM ended_channel_notices WHERE session_id = ?',
       ),
       removeEndedNotice: this._db.prepare('DELETE FROM ended_channel_notices WHERE session_id = ?'),
-      getEndedNotices: this._db.prepare('SELECT session_id FROM ended_channel_notices ORDER BY created_at LIMIT ?'),
+      deferEndedNotice: this._db.prepare(
+        'UPDATE ended_channel_notices SET failures = ?, not_before = ? WHERE session_id = ?',
+      ),
+      getDueEndedNotices: this._db.prepare(
+        'SELECT session_id, channels_address, failures FROM ended_channel_notices WHERE not_before <= ? ORDER BY not_before, created_at LIMIT ?',
+      ),
+      countEndedNotices: this._db.prepare('SELECT COUNT(*) AS count FROM ended_channel_notices'),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
           session_id, running_total, request_count, response_hash,
@@ -325,6 +356,7 @@ export class ChannelStore {
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
         oneOffVideoJob: channel.oneOffVideoJob,
+        channelsAddress: channel.channelsAddress,
       }),
       oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,
@@ -551,18 +583,33 @@ export class ChannelStore {
 
   // ── Ended-channel notices ─────────────────────────────────────
 
-  /** Remember that `sessionId` ended and its listener has not handled that yet. */
-  addEndedChannelNotice(sessionId: string): void {
-    this._stmts.addEndedNotice.run(sessionId, Date.now());
+  /**
+   * Remember that `sessionId`, a channel of the AntseedChannels contract at
+   * `channelsAddress` (null when unknown), ended and its listener has not
+   * handled that yet. Returns the stored notice: the one already there, if any.
+   */
+  addEndedChannelNotice(sessionId: string, channelsAddress: string | null): EndedChannelNotice {
+    this._stmts.addEndedNotice.run(sessionId, channelsAddress, Date.now());
+    return rowToEndedNotice(this._stmts.getEndedNotice.get(sessionId) as EndedNoticeRow);
   }
 
   removeEndedChannelNotice(sessionId: string): void {
     this._stmts.removeEndedNotice.run(sessionId);
   }
 
-  /** Ended channels still to be handled, oldest first. */
-  getEndedChannelNotices(limit = 100): string[] {
-    return (this._stmts.getEndedNotices.all(limit) as Array<{ session_id: string }>).map((row) => row.session_id);
+  /** Record a notice's failed attempts so far, and not to try it again before `notBefore`. */
+  deferEndedChannelNotice(sessionId: string, failures: number, notBefore: number): void {
+    this._stmts.deferEndedNotice.run(failures, notBefore, sessionId);
+  }
+
+  /** Up to `limit` notices to try at `now`, the one due longest first. */
+  getDueEndedChannelNotices(now: number, limit: number): EndedChannelNotice[] {
+    return (this._stmts.getDueEndedNotices.all(now, limit) as EndedNoticeRow[]).map(rowToEndedNotice);
+  }
+
+  /** Ended channels still to be handled, due or not. */
+  countEndedChannelNotices(): number {
+    return (this._stmts.countEndedNotices.get() as { count: number }).count;
   }
 
   // ── Receipt CRUD ──────────────────────────────────────────────

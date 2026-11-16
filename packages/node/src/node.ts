@@ -1948,11 +1948,13 @@ export class AntseedNode extends EventEmitter {
    * A colony pool contract holds what a channel settled without a worker
    * attribution until the channel ends, and its own close releases that to
    * the remainder recipient. A channel that ended another way (the buyer
-   * withdrew it) is released here. A failure rejects, so the payment manager
-   * keeps the channel's notice and calls this again; a release already made
-   * reads as nothing held.
+   * withdrew it) is released here, under the Channels contract it was on:
+   * the pool keeps holdings per Channels contract, and the registry may point
+   * at another by now. A failure rejects, so the payment manager keeps the
+   * channel's notice and calls this again; a release already made reads as
+   * nothing held.
    */
-  private async _releaseColonyPoolHeld(channelId: string): Promise<void> {
+  private async _releaseColonyPoolHeld(channelId: string, channelsAddress: string): Promise<void> {
     const pool = this._config.sellerContract?.sellerContract;
     const payments = this._config.payments;
     if (!pool || !payments?.rpcUrl || !this._identity) return;
@@ -1963,8 +1965,8 @@ export class AntseedNode extends EventEmitter {
       contractAddress: pool,
       ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
     });
-    if ((await client.heldUnattributed(channelId)).gross === 0n) return;
-    const hash = await client.releaseHeld(this._identity.wallet, channelId);
+    if ((await client.heldUnattributedFrom(channelsAddress, channelId)).gross === 0n) return;
+    const hash = await client.releaseHeldFrom(this._identity.wallet, channelsAddress, channelId);
     debugLog(`[Node] Released what colony pool channel ${channelId.slice(0, 18)}... held unattributed (tx ${hash.slice(0, 12)}...)`);
   }
 
@@ -2856,7 +2858,7 @@ export class AntseedNode extends EventEmitter {
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
-        onChannelEnded: (channelId) => this._releaseColonyPoolHeld(channelId),
+        onChannelEnded: (channelId, channelsAddress) => this._releaseColonyPoolHeld(channelId, channelsAddress),
         onReserveFailed: (failure) => this.emit('payment:reserve-failed', failure),
       };
       this._sellerPaymentManager = new SellerPaymentManager(

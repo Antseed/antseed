@@ -102,6 +102,11 @@ contract AntseedColonyPool is AntseedSellerDelegation {
 
     /// @notice Maximum epochs per `claimEpochEmissions` / `claimAnts` call.
     uint256 public constant MAX_EPOCHS_PER_CLAIM = 32;
+    /// @notice Reward epochs one channel holds unattributed settlements from at
+    ///         a time: holding from one more releases the oldest to
+    ///         `remainderRecipient`, so settling, closing and releasing a
+    ///         channel cost a bounded amount however long it stays open.
+    uint256 public constant MAX_HELD_CHUNKS = 16;
 
     /// @notice Epoch of a credit made while no emissions epoch could be read
     ///         (it adds no ANTS weight); appears as the epoch of `UsdcCredited`.
@@ -132,11 +137,14 @@ contract AntseedColonyPool is AntseedSellerDelegation {
         uint256 epoch;
     }
 
-    /// @dev What a channel settled unattributed, oldest first: `head` skips
-    ///      used-up chunks and `units` is the gross still held.
+    /// @dev What a channel settled unattributed, a queue oldest first: chunks
+    ///      `head` to `tail - 1` are held (at most `MAX_HELD_CHUNKS`, one per
+    ///      reward epoch), a used-up chunk is deleted as `head` passes it, and
+    ///      `units` is the gross still held.
     struct Held {
-        HeldChunk[] chunks;
+        mapping(uint256 => HeldChunk) chunks;
         uint256 head;
+        uint256 tail;
         uint256 units;
     }
 
@@ -159,7 +167,8 @@ contract AntseedColonyPool is AntseedSellerDelegation {
     ///      active: a buyer may sign headroom first and attribute it to a worker
     ///      only after that headroom settled, and later tails are paid from it.
     ///      `close` (or `releaseHeld`, once the channel is no longer active)
-    ///      gives what is left to `remainderRecipient`.
+    ///      gives what is left to `remainderRecipient`, as does holding from
+    ///      more than `MAX_HELD_CHUNKS` reward epochs for the oldest of them.
     mapping(bytes32 => Held) internal _held;
     /// @notice Net USDC held for channels' later tails (never swept as orphaned).
     uint256 public totalUsdcHeld;
@@ -524,9 +533,17 @@ contract AntseedColonyPool is AntseedSellerDelegation {
     /// @notice What `channelId` settled unattributed and still holds for later
     ///         tails (channel units, and the net USDC they paid).
     function heldUnattributed(bytes32 channelId) external view returns (uint256 gross, uint256 net) {
-        Held storage held = _held[_channelKey(channelId)];
-        for (uint256 i = held.head; i < held.chunks.length; i++) net += held.chunks[i].net;
-        return (held.units, net);
+        return _heldUnattributed(_channelKey(channelId));
+    }
+
+    /// @notice `heldUnattributed` for a channel of `channelsContract`, which may
+    ///         be a Channels contract the registry has since replaced.
+    function heldUnattributedFrom(address channelsContract, bytes32 channelId)
+        external
+        view
+        returns (uint256 gross, uint256 net)
+    {
+        return _heldUnattributed(_keyOf(channelsContract, channelId));
     }
 
     /// @notice What this pool settled on `channelId` (current channels contract)
@@ -627,13 +644,20 @@ contract AntseedColonyPool is AntseedSellerDelegation {
     ///      reserving their weight in the epoch they settled in.
     function _hold(bytes32 channelId, bytes32 key, uint256 gross, uint256 net, uint256 epoch) internal {
         Held storage held = _held[key];
-        uint256 len = held.chunks.length;
-        if (len > held.head && held.chunks[len - 1].epoch == epoch) {
-            HeldChunk storage newest = held.chunks[len - 1];
+        uint256 tail = held.tail;
+        if (tail > held.head && held.chunks[tail - 1].epoch == epoch) {
+            HeldChunk storage newest = held.chunks[tail - 1];
             newest.gross += gross.toUint128();
             newest.net += net.toUint128();
         } else {
-            held.chunks.push(HeldChunk({ gross: gross.toUint128(), net: net.toUint128(), epoch: epoch }));
+            // Full: the oldest epoch's hold waited longest for a tail, and goes to the remainder.
+            if (tail - held.head == MAX_HELD_CHUNKS) {
+                uint256 released = _releaseChunk(held, channelId, held.head);
+                held.head += 1;
+                if (released > 0) emit HeldReleased(channelId, released);
+            }
+            held.chunks[tail] = HeldChunk({ gross: gross.toUint128(), net: net.toUint128(), epoch: epoch });
+            held.tail = tail + 1;
         }
         held.units += gross;
         totalUsdcHeld += net;
@@ -649,17 +673,23 @@ contract AntseedColonyPool is AntseedSellerDelegation {
     function _drawHeld(bytes32 channelId, bytes32 key, address account, uint256 units) internal {
         Held storage held = _held[key];
         uint256 head = held.head;
+        uint256 tail = held.tail;
         held.units -= units;
-        while (units > 0 && head < held.chunks.length) {
+        while (units > 0 && head < tail) {
             HeldChunk storage chunk = held.chunks[head];
             uint256 take = units < chunk.gross ? units : chunk.gross;
-            // A chunk taken whole gives all its net, so no rounding dust stays behind.
-            uint256 amount = take == chunk.gross ? chunk.net : (uint256(chunk.net) * take) / chunk.gross;
-            chunk.gross -= uint128(take);
-            chunk.net -= uint128(amount);
             units -= take;
-            _creditHeld(account, channelId, amount, chunk.epoch);
-            if (chunk.gross == 0) head++;
+            if (take == chunk.gross) {
+                // A chunk taken whole gives all its net, so no rounding dust stays behind.
+                _creditHeld(account, channelId, chunk.net, chunk.epoch);
+                delete held.chunks[head];
+                head++;
+            } else {
+                uint256 amount = (uint256(chunk.net) * take) / chunk.gross;
+                chunk.gross -= uint128(take);
+                chunk.net -= uint128(amount);
+                _creditHeld(account, channelId, amount, chunk.epoch);
+            }
         }
         held.head = head;
     }
@@ -667,14 +697,27 @@ contract AntseedColonyPool is AntseedSellerDelegation {
     /// @dev Give what a channel still holds to the remainder: it can no longer get a tail.
     function _releaseHeld(bytes32 channelId, bytes32 key) internal {
         Held storage held = _held[key];
+        uint256 tail = held.tail;
         uint256 released;
-        for (uint256 i = held.head; i < held.chunks.length; i++) {
-            uint256 amount = held.chunks[i].net;
-            released += amount;
-            _creditHeld(remainderRecipient, channelId, amount, held.chunks[i].epoch);
-        }
-        delete _held[key];
+        for (uint256 i = held.head; i < tail; i++) released += _releaseChunk(held, channelId, i);
+        held.head = tail;
         if (released > 0) emit HeldReleased(channelId, released);
+    }
+
+    /// @dev Give held chunk `index` to the remainder and delete it; the caller moves `head` past it.
+    function _releaseChunk(Held storage held, bytes32 channelId, uint256 index) internal returns (uint256 amount) {
+        HeldChunk storage chunk = held.chunks[index];
+        amount = chunk.net;
+        held.units -= chunk.gross;
+        _creditHeld(remainderRecipient, channelId, amount, chunk.epoch);
+        delete held.chunks[index];
+    }
+
+    function _heldUnattributed(bytes32 key) internal view returns (uint256 gross, uint256 net) {
+        Held storage held = _held[key];
+        uint256 tail = held.tail;
+        for (uint256 i = held.head; i < tail; i++) net += held.chunks[i].net;
+        return (held.units, net);
     }
 
     /// @dev Credit held USDC: its weight, reserved in the epoch it settled in, moves to `account`.

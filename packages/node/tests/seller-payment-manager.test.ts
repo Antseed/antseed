@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { SellerPaymentManager, CHANNEL_ENDED_RETRY_MAX_MS, CHANNEL_ENDED_RETRY_MIN_MS, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type ReserveFailure, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
+import { SellerPaymentManager, CHANNEL_ENDED_RETRY_BATCH, CHANNEL_ENDED_RETRY_MAX_MS, CHANNEL_ENDED_RETRY_MIN_MS, RESERVE_VISIBILITY_GRACE_MS, TIMED_OUT_CLOSE_RETRY_INTERVAL_MS, type ReserveFailure, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -188,6 +188,7 @@ describe('SellerPaymentManager', () => {
     expect(session!.status).toBe(CHANNEL_STATUS.ACTIVE);
     expect(session!.latestBuyerSig).toBe(payload.spendingAuthSig);
     expect(session!.latestSpendingAuthSig).toBeNull();
+    expect(session!.channelsAddress).toBe(CONTRACT_ADDR);
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
   });
 
@@ -2465,7 +2466,7 @@ describe('SellerPaymentManager', () => {
       vi.setSystemTime(Date.now() + TIMED_OUT_CLOSE_RETRY_INTERVAL_MS);
       await withListener.checkTimeouts();
 
-      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId));
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId, CONTRACT_ADDR));
       expect(onChannelEnded).toHaveBeenCalledOnce();
     });
 
@@ -2875,7 +2876,7 @@ describe('SellerPaymentManager', () => {
 
       await mgr.validateHydratedChannels();
 
-      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId));
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId, CONTRACT_ADDR));
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
 
@@ -2892,7 +2893,9 @@ describe('SellerPaymentManager', () => {
 
         await mgr.validateHydratedChannels();
         await vi.waitFor(() => expect(failing).toHaveBeenCalledOnce());
-        await vi.waitFor(() => expect(store.getEndedChannelNotices()).toEqual([channelId]));
+        const waiting = (): number => store.getDueEndedChannelNotices(Date.now(), 10).length;
+        await vi.waitFor(() => expect(waiting()).toBe(0));
+        expect(store.countEndedChannelNotices()).toBe(1);
 
         // Not due yet: nothing is called.
         await mgr.checkTimeouts();
@@ -2901,14 +2904,19 @@ describe('SellerPaymentManager', () => {
         vi.setSystemTime(Date.now() + CHANNEL_ENDED_RETRY_MIN_MS);
         await mgr.checkTimeouts();
         await vi.waitFor(() => expect(failing).toHaveBeenCalledTimes(2));
-        expect(store.getEndedChannelNotices()).toEqual([channelId]);
+        await vi.waitFor(() => expect(waiting()).toBe(0));
+        expect(store.countEndedChannelNotices()).toBe(1);
 
-        // A restarted seller reads the stored notice and tries at once.
+        // A restarted seller reads the stored notice and keeps its wait, twice as long now.
         const succeeding = vi.fn(async () => {});
         const restarted = makeFreshManager({ onChannelEnded: succeeding });
+        vi.setSystemTime(Date.now() + CHANNEL_ENDED_RETRY_MIN_MS);
         await restarted.checkTimeouts();
-        await vi.waitFor(() => expect(succeeding).toHaveBeenCalledWith(channelId));
-        await vi.waitFor(() => expect(store.getEndedChannelNotices()).toEqual([]));
+        expect(succeeding).not.toHaveBeenCalled();
+        vi.setSystemTime(Date.now() + CHANNEL_ENDED_RETRY_MIN_MS);
+        await restarted.checkTimeouts();
+        await vi.waitFor(() => expect(succeeding).toHaveBeenCalledWith(channelId, CONTRACT_ADDR));
+        await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(0));
 
         vi.setSystemTime(Date.now() + CHANNEL_ENDED_RETRY_MAX_MS);
         await restarted.checkTimeouts();
@@ -2916,6 +2924,69 @@ describe('SellerPaymentManager', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('reaches the notices behind more failing ones than one pass starts', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        // More failing notices than the old 100-row read, then two that can succeed.
+        const failingCount = 6 * CHANNEL_ENDED_RETRY_BATCH;
+        const failingIds = new Set<string>();
+        for (let i = 0; i < failingCount; i++) {
+          const id = makeChannelId(1000 + i);
+          failingIds.add(id);
+          store.addEndedChannelNotice(id, CONTRACT_ADDR);
+          vi.setSystemTime(Date.now() + 1);
+        }
+        const laterIds = [makeChannelId(5000), makeChannelId(5001)];
+        for (const id of laterIds) store.addEndedChannelNotice(id, CONTRACT_ADDR);
+
+        const delivered: string[] = [];
+        let running = 0;
+        let mostRunning = 0;
+        const onChannelEnded = vi.fn(async (channelId: string) => {
+          running += 1;
+          mostRunning = Math.max(mostRunning, running);
+          await Promise.resolve();
+          running -= 1;
+          if (failingIds.has(channelId)) throw new Error('rpc down');
+          delivered.push(channelId);
+        });
+        const mgr = makeFreshManager({ onChannelEnded });
+
+        // Each pass starts one batch; the failed ones wait, so the next pass reads past them.
+        for (let pass = 0; pass < 7; pass++) {
+          const callsBefore = onChannelEnded.mock.calls.length;
+          await mgr.checkTimeouts();
+          await vi.waitFor(() => expect(running).toBe(0));
+          expect(onChannelEnded.mock.calls.length - callsBefore).toBeLessThanOrEqual(CHANNEL_ENDED_RETRY_BATCH);
+        }
+
+        expect(mostRunning).toBeLessThanOrEqual(CHANNEL_ENDED_RETRY_BATCH);
+        expect(delivered.sort()).toEqual([...laterIds].sort());
+        expect(onChannelEnded).toHaveBeenCalledTimes(failingCount + laterIds.length);
+        await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(failingCount));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reports the Channels contract a channel was reserved on, also once the seller runs on another', async () => {
+      const channelId = makeChannelId(35);
+      const replaced = '0x' + 'ab'.repeat(20);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { channelsAddress: replaced });
+      const onChannelEnded = vi.fn();
+
+      // This seller now resolves CONTRACT_ADDR: the registry moved on after the reserve.
+      const mgr = makeFreshManager({ onChannelEnded });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }),
+      );
+
+      await mgr.validateHydratedChannels();
+
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId, replaced));
+      await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(0));
     });
 
     it('keeps channel and reconciles when active on-chain with higher settled', async () => {
