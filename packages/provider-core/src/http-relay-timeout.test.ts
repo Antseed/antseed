@@ -138,6 +138,42 @@ describe('HttpRelay response-body deadlines', () => {
     });
   });
 
+  it('does not count the time a buyer takes to accept a chunk against the upstream deadline', async () => {
+    let finish: (() => void) | undefined;
+    await withUpstream((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"first":true}\n\n');
+      if (req.url === '/finishes') finish = () => res.end('data: {"second":true}\n\n');
+    }, async (baseUrl, track) => {
+      const run = async (path: string) => {
+        const chunks: SerializedHttpResponseChunk[] = [];
+        let accepted = 0;
+        const relay = new HttpRelay(config(baseUrl), {
+          onResponse: () => undefined,
+          onResponseChunk: (chunk) => {
+            chunks.push(chunk);
+            if (chunk.done || accepted++ > 0) return undefined;
+            // A buyer that takes three deadlines to accept the first chunk.
+            return delay(TIMEOUT_MS * 3).then(() => finish?.());
+          },
+        });
+        const completed = await completesWithin(track(relay.handleRequest(request(path, path))));
+        return { completed, text: chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('') };
+      };
+
+      const finished = await run('/finishes');
+      expect(finished.completed).toBe(true);
+      expect(finished.text).toContain('"second":true');
+      expect(finished.text).not.toContain('timed out');
+
+      // The deadline starts again once the buyer has the chunk.
+      const stalled = await run('/stall');
+      expect(stalled.completed).toBe(true);
+      expect(stalled.text).toContain(`event: error\ndata: Upstream request timed out after ${TIMEOUT_MS}ms`);
+    });
+  });
+
   it('fails over a stalled buffered body before delivering anything to the buyer', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;

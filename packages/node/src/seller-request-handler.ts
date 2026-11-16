@@ -22,8 +22,9 @@ const FREE_TIER_EXHAUSTED_MESSAGES = {
   stake: 'This seller staked free tier has been exhausted for your stake.',
   stake_required: 'This model is free only for buyers staked on this seller.',
 } as const;
-import { ProxyMux } from './proxy/proxy-mux.js';
+import { ByteBudget, DEFAULT_MAX_UPLOAD_BODY_BYTES, ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
+import { ConnectionState } from './types/connection.js';
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -44,7 +45,7 @@ import {
   type PaymentRequiredPayload,
 } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
-import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
+import { createResponseAuthPayload, createStreamingResponseHash, hashRequest } from './verification/response-auth.js';
 import { ANTSEED_STREAMING_RESPONSE_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
@@ -65,7 +66,7 @@ import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
-import { SERVICE_REQUIRED, billedRequestBody, type BilledRequestBody } from './requested-service.js';
+import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -206,6 +207,8 @@ export interface SellerRequestHandlerDeps {
   /** Providers are announced by ID, not plugin name (NodeConfig.announceProviderIds). */
   announceProviderIds?: boolean;
   maxUploadBodyBytes?: number;
+  /** Most request body bytes held at once across all buyers. Default: 256 MiB; never below one largest request. */
+  maxInFlightRequestBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
   resourceOwnershipStore?: ResourceOwnershipStore | null;
@@ -220,6 +223,12 @@ interface SellerBillingContext {
   requestFacts: BillingRequestFacts;
 }
 
+/**
+ * Most request body bytes a seller holds at once, uploads still arriving included.
+ * A request is held in memory until its response is sent, so this bounds what a
+ * burst of large requests can make the seller allocate.
+ */
+export const DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES = 256 * 1024 * 1024;
 /** Debounce interval for metadata refresh after load changes. */
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
@@ -263,9 +272,15 @@ export class SellerRequestHandler {
   /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
   private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Request bodies in memory on every connection: uploads still arriving and requests being served. */
+  private readonly _inFlightRequestBytes: ByteBudget;
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
+    this._inFlightRequestBytes = new ByteBudget(Math.max(
+      deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
+      deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+    ));
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
@@ -300,6 +315,7 @@ export class SellerRequestHandler {
   ): { mux: ProxyMux } {
     const mux = new ProxyMux(conn, {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
+      sharedUploadBudget: this._inFlightRequestBytes,
     });
 
     /** A request's buyer-limit reservation, finished with the tokens it used however the request ends. */
@@ -307,7 +323,7 @@ export class SellerRequestHandler {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
-      const wireBody = request.body;
+      let wireBody = request.body;
       // Delegations are for this seller only: no route may pass them on to a provider or prover.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
@@ -957,9 +973,24 @@ export class SellerRequestHandler {
             return;
           }
 
+          // The connection ended or the session was dropped while this request
+          // waited: don't start work that cannot reach the buyer or be billed.
+          const connectionEnded = conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+          if (spmAuthorized && (connectionEnded || !spm.hasSession(buyerPeerId))) {
+            sendSessionExpired('the admission checks');
+            return;
+          }
         }
       }
 
+      const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
+      // When the provider is handed a body the seller wrote, the buyer's is only needed for the hash
+      // response auth signs: it is hashed here, so both bodies are not held while the request is served.
+      let wireRequestHash: string | undefined;
+      if (wireBody !== request.body) {
+        if (buyerSupportsResponseAuth) wireRequestHash = hashRequest({ ...request, headers: wireHeaders, body: wireBody });
+        wireBody = new Uint8Array(0);
+      }
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
         headers: wireHeaders,
@@ -998,8 +1029,12 @@ export class SellerRequestHandler {
       let unitCostUsdc = 0n;
       // Hold the channel open for the whole billable span — provider call,
       // spend recording, and NeedAuth — so a buyer-requested close can't land
-      // between serving the request and claiming its cost.
-      const isBillable = !isServedFree && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
+      // between serving the request and claiming its cost. The channel is fixed
+      // here: a buyer that disconnects before the answer ends still owes for it.
+      const billedChannelId = !isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)
+        ? spm.getChannelByPeer(buyerPeerId)?.sessionId ?? null
+        : null;
+      const isBillable = billedChannelId !== null;
       if (isBillable && spm!.hasClosingChannel(buyerPeerId)) {
         // A close takes seconds on-chain (a disconnect, an exhausted channel).
         // Let it finish, then ask for a new channel: the buyer opens one and
@@ -1062,6 +1097,8 @@ export class SellerRequestHandler {
               }
               if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
               mux.sendProxyChunk(chunk);
+              // A provider that awaits this stops reading its upstream while the buyer is behind.
+              return mux.whenWritable();
             },
           }, isDownload);
           if (!streamedResponseStarted) {
@@ -1226,7 +1263,7 @@ export class SellerRequestHandler {
 
         // Record spend and send NeedAuth with cost data after every request.
         // The buyer validates the cost independently and responds with SpendingAuth.
-        if (!isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)) {
+        if (spm && isBillable) {
           const usage = responseUsage;
           const tokenCostUsdc = computeCostUsdc(
             usage.freshInputTokens,
@@ -1235,7 +1272,9 @@ export class SellerRequestHandler {
             usage.cachedInputTokens,
           );
           const costUsdc = tokenCostUsdc + unitCostUsdc;
-          const session = spm.getChannelByPeer(buyerPeerId);
+          // Only the channel that admitted this request, never one that replaced it.
+          const current = spm.getChannelByPeer(buyerPeerId);
+          const session = current?.sessionId === billedChannelId ? current : null;
           if (session && spm.connectionsClosed) {
             // The node is stopping and its connections are closed: this
             // response never reached the buyer, so it is not billed.
@@ -1277,8 +1316,6 @@ export class SellerRequestHandler {
           this._closeFailedVideoJob(videoRoute, responseForAuth, buyerPeerId);
         }
 
-        const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
-
         if (responseForAuth && buyerSupportsResponseAuth) {
           const channelId = oneOffChannelId ?? spm?.getChannelByPeer(buyerPeerId)?.sessionId ?? null;
           this._sendResponseAuthBestEffort(
@@ -1292,6 +1329,7 @@ export class SellerRequestHandler {
               responseStartedAt,
               responseCompletedAt: Date.now(),
               channelId,
+              requestHash: wireRequestHash,
             },
           );
         }
@@ -1304,11 +1342,21 @@ export class SellerRequestHandler {
       }
     };
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+      // The body stays in memory until the response is sent, so it counts until then.
+      const bodyBytes = request.body.length;
+      if (!this._inFlightRequestBytes.tryReserve(bodyBytes)) {
+        this._sendJsonError(
+          mux, request.requestId, 503, 'seller_busy',
+          'Seller is at its limit for request bytes in flight; retry shortly', { 'retry-after': '1' },
+        );
+        return;
+      }
       const usageHold: BuyerUsageHold = { reservation: null, estimate: 0, tokens: 0 };
       try {
         await handleProxyRequest(request, usageHold);
       } finally {
         usageHold.reservation?.finish(usageHold.tokens);
+        this._inFlightRequestBytes.release(bodyBytes);
       }
     });
 
@@ -1805,16 +1853,12 @@ export class SellerRequestHandler {
     if (isZeroTokenPricing(pricing)) {
       return { cost: 0n, inputTokens: 0, maxOutputTokens: 0 };
     }
-    if (!this._isJsonRequest(request)) {
-      return null;
-    }
-    const body = tryParseJsonObject(request.body);
-    if (!body) {
+    const maxOutputTokens = this._requestedMaxOutputTokens(request);
+    if (maxOutputTokens === null) {
       return null;
     }
 
     const inputTokens = estimateTokensFromBytesSampled(request.body);
-    const maxOutputTokens = this._extractMaxOutputTokens(body);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -1835,39 +1879,20 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
-    return estimateTokensFromBytesSampled(request.body) + ((body && this._extractMaxOutputTokens(body)) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return estimateTokensFromBytesSampled(request.body) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
   }
 
-  private _extractMaxOutputTokens(body: Record<string, unknown>): number {
-    const candidates = [
-      body["max_tokens"],
-      body["max_completion_tokens"],
-      body["max_output_tokens"],
-      body["maxTokens"],
-      body["maxCompletionTokens"],
-      body["maxOutputTokens"],
-    ];
-
-    for (const value of candidates) {
-      const parsed = this._parsePositiveInteger(value);
-      if (parsed !== null) return parsed;
-    }
-    return 0;
-  }
-
-  private _parsePositiveInteger(value: unknown): number | null {
-    let numeric: number;
-    if (typeof value === 'number') {
-      numeric = value;
-    } else if (typeof value === 'string') {
-      numeric = Number(value);
-    } else {
-      return null;
-    }
-
-    if (!Number.isFinite(numeric) || numeric <= 0) return null;
-    return Math.floor(numeric);
+  /**
+   * The most output tokens a JSON request asks for (0 when it names no limit), or null when its body
+   * is not a JSON object. A body the seller wrote was read for this as it was written; any other is
+   * parsed here.
+   */
+  private _requestedMaxOutputTokens(request: SerializedHttpRequest): number | null {
+    if (!this._isJsonRequest(request)) return null;
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.maxOutputTokens !== undefined) return billed.maxOutputTokens;
+    const body = tryParseJsonObject(request.body);
+    return body ? requestedMaxOutputTokens(body) : null;
   }
 
   private async _executeRequest(
@@ -2001,11 +2026,14 @@ export class SellerRequestHandler {
       responseStartedAt: number;
       responseCompletedAt: number;
       channelId: string | null;
+      /** The request's hash, when its body was hashed already and is no longer held. */
+      requestHash?: string;
     },
   ): void {
     try {
       const payload = createResponseAuthPayload({
         request,
+        ...(context.requestHash ? { requestHash: context.requestHash } : {}),
         response,
         buyerPeerId: context.buyerPeerId,
         sellerPeerId: this._deps.identity.peerId,

@@ -1014,6 +1014,36 @@ test('loadConfig preserves seller maxUploadBodyBytes setting', async () => {
   );
 });
 
+test('loadConfig preserves seller maxInFlightRequestBytes setting', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        maxInFlightRequestBytes: 536870912,
+      },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.seller.maxInFlightRequestBytes, 536870912);
+    }
+  );
+});
+
+test('loadConfig rejects invalid seller maxInFlightRequestBytes setting', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        maxInFlightRequestBytes: 123,
+      },
+    }),
+    async (configPath) => {
+      await assert.rejects(
+        async () => loadConfig(configPath),
+        /seller\.maxInFlightRequestBytes/
+      );
+    }
+  );
+});
+
 test('loadConfig rejects invalid seller maxUploadBodyBytes setting', async () => {
   await withTempConfig(
     JSON.stringify({

@@ -50,9 +50,7 @@ export class BaseProvider implements Provider {
       onResponse: (response: SerializedHttpResponse) => {
         this._resolvePending(response.requestId, response);
       },
-      onResponseChunk: (chunk: SerializedHttpResponseChunk) => {
-        this._handlePendingChunk(chunk);
-      },
+      onResponseChunk: (chunk: SerializedHttpResponseChunk) => this._handlePendingChunk(chunk),
     });
   }
 
@@ -73,20 +71,23 @@ export class BaseProvider implements Provider {
     entry.resolve(this._stripStreamingHeader(response));
   }
 
-  private _handlePendingChunk(chunk: SerializedHttpResponseChunk): void {
+  /** Returns the stream callback's promise, if any, for the relay to wait on before it reads more. */
+  private _handlePendingChunk(chunk: SerializedHttpResponseChunk): void | Promise<void> {
     const entry = this._pending.get(chunk.requestId);
     if (!entry) return;
 
-    this._invokeStreamCallback(chunk.requestId, chunk.done ? 'response-end' : 'response-chunk', () => {
-      entry.streamCallbacks?.onResponseChunk(chunk);
-    });
+    const delivered = this._invokeStreamCallback(
+      chunk.requestId,
+      chunk.done ? 'response-end' : 'response-chunk',
+      () => entry.streamCallbacks?.onResponseChunk(chunk),
+    );
 
     if (chunk.data.length > 0) {
       entry.streamChunks.push(chunk.data);
     }
 
     if (!chunk.done) {
-      return;
+      return delivered;
     }
 
     if (!entry.responseStart) {
@@ -115,10 +116,8 @@ export class BaseProvider implements Provider {
     };
   }
 
-  private _invokeStreamCallback(requestId: string, phase: string, callback: () => void): void {
-    try {
-      callback();
-    } catch (err) {
+  private _invokeStreamCallback(requestId: string, phase: string, callback: () => void | Promise<void>): void | Promise<void> {
+    const skipped = (err: unknown): void => {
       // Stream callbacks usually send frames back to the buyer. If the buyer has
       // already disconnected, that send can throw (for example, "Cannot send in
       // state closed"). Do not let a downstream delivery failure bubble into the
@@ -127,6 +126,12 @@ export class BaseProvider implements Provider {
       console.warn(
         `[BaseProvider] stream callback skipped phase=${phase} reqId=${requestId.slice(0, 8)}: ${err instanceof Error ? err.message : err}`,
       );
+    };
+    try {
+      const result = callback();
+      if (result) return result.catch(skipped);
+    } catch (err) {
+      skipped(err);
     }
   }
 
