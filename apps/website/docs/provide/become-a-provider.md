@@ -35,9 +35,9 @@ These figures are for the seller alone. If the same machine also runs your model
 On Linux, start a production seller with these variables in its environment. Without them glibc keeps the memory of freed request buffers, so the seller's memory stays at the highest point traffic ever pushed it to. The [TEE seller image](/docs/provide/tee) sets them itself.
 
 ```bash
-MALLOC_ARENA_MAX=2
-MALLOC_MMAP_THRESHOLD_=131072
-MALLOC_TRIM_THRESHOLD_=131072
+export MALLOC_ARENA_MAX=2
+export MALLOC_MMAP_THRESHOLD_=131072
+export MALLOC_TRIM_THRESHOLD_=131072
 ```
 
 A TEE seller needs more memory than this. See [Server requirements for a TEE seller](/docs/provide/tee#server-requirements).
