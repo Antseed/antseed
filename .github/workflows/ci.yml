@@ -104,8 +104,12 @@ jobs:
       - *build-tier2
       - *build-tier3-server
 
+      # The channel stores are SQLite files in the temp directory, and every commit is an fsync:
+      # on the runner's disk that is most of the suite's time. /dev/shm is memory.
       - name: Test
         run: pnpm --filter '@antseed/node' run test
+        env:
+          TMPDIR: /dev/shm
 
   test-cli:
     name: Test (CLI)
