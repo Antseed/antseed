@@ -662,6 +662,45 @@ describe('SellerPaymentManager', () => {
     expect(manager.getCumulativeSpend(channelId) >= manager.getAcceptedCumulative(channelId)).toBe(false);
   });
 
+  it('closes on disconnect at the auth parked behind a mining top-up, not at the old ceiling', async () => {
+    const channelId = makeChannelId(96);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 900_000n, reserveMaxAmount: '1000000',
+    }), mux);
+
+    let releaseTopUp!: () => void;
+    const topUpBlocker = new Promise<void>((resolve) => { releaseTopUp = resolve; });
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
+      await topUpBlocker;
+      return '0xtopup-hash';
+    });
+    const topUpPromise = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '03'.repeat(32),
+    }), mux);
+    while (topUpSpy.mock.calls.length === 0) await new Promise<void>((r) => setImmediate(r));
+
+    // The buyer signed for work above the old ceiling; the seller parks the
+    // auth until the top-up lands. Then the buyer disconnects.
+    const parked = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 1_500_000n, reserveMaxAmount: '1000000',
+    }), mux);
+    await new Promise<void>((r) => setImmediate(r));
+    manager.onBuyerDisconnect(buyerIdentity.peerId);
+    await new Promise<void>((r) => setImmediate(r));
+
+    releaseTopUp();
+    await Promise.all([topUpPromise, parked]);
+    await vi.waitFor(() => {
+      expect(manager.channelsClient.close).toHaveBeenCalledOnce();
+    });
+
+    expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
+    expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+  });
+
   it('keeps an auth waiting through a top-up that lands while the one covering it is queued behind', async () => {
     const channelId = makeChannelId(98);
     await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {

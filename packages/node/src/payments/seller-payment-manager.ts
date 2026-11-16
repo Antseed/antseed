@@ -248,6 +248,8 @@ export class SellerPaymentManager {
   private readonly _topUpRestoreDeferred = new Set<string>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  /** SpendingAuths parked above the ceiling until a mining top-up lands, per channel. */
+  private readonly _overCeilingAuths = new Map<string, Set<Promise<unknown>>>();
   /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
   private _connectionsClosed = false;
   private readonly _topUpsWanted = new Set<string>();
@@ -651,18 +653,56 @@ export class SellerPaymentManager {
       }
       return outcome;
     };
-    let result = await runLocked(true);
+    const first = await runLocked(true);
+    if (first !== 'awaiting-top-up') return first;
     // Only a top-up that is mining covers this auth: wait for it with the
     // lock released, so this buyer's other auths and requests keep moving,
     // then judge the auth again against the new ceiling. The one that lands
     // can be a lower one, with the top-up this auth needs queued behind it:
     // keep waiting, within the same budget.
     const deadline = Date.now() + OVER_CEILING_AUTH_WAIT_MS;
-    while (result === 'awaiting-top-up') {
-      await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
-      result = await runLocked(Date.now() < deadline);
+    const parked = (async () => {
+      let result: SpendingAuthOutcome = first;
+      while (result === 'awaiting-top-up') {
+        await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
+        result = await runLocked(Date.now() < deadline);
+      }
+      return result;
+    })();
+    // A close must not settle below an auth the buyer already signed: it
+    // waits for the parked ones (see _waitForOverCeilingAuths).
+    const channelKey = payload.channelId;
+    let set = this._overCeilingAuths.get(channelKey);
+    if (!set) this._overCeilingAuths.set(channelKey, set = new Set());
+    set.add(parked);
+    try {
+      return await parked;
+    } finally {
+      set.delete(parked);
+      if (set.size === 0 && this._overCeilingAuths.get(channelKey) === set) this._overCeilingAuths.delete(channelKey);
     }
-    return result;
+  }
+
+  /**
+   * Wait (up to `timeoutMs`) for the SpendingAuths parked above the ceiling
+   * of a channel until a mining top-up lands. A close on buyer disconnect
+   * runs while a top-up is mining; settling before those auths are accepted
+   * would close at the old ceiling and leave delivered work unpaid.
+   */
+  private async _waitForOverCeilingAuths(channelId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const parked = this._overCeilingAuths.get(channelId);
+      const remaining = deadline - Date.now();
+      if (!parked || parked.size === 0 || remaining <= 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); });
+      try {
+        await Promise.race([Promise.allSettled([...parked]), timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
   }
 
   /**
@@ -2158,6 +2198,10 @@ export class SellerPaymentManager {
     }
 
     const channelId = session.sessionId;
+    if (!settleOnly && this._overCeilingAuths.has(channelId)) {
+      await this._waitForOverCeilingAuths(channelId, OVER_CEILING_AUTH_WAIT_MS);
+      if (this._channelStore.getChannel(channelId)?.status !== CHANNEL_STATUS.ACTIVE) return;
+    }
     const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
     const { amount, metadata, sig } = this._getSettleParams(channelId);
 
