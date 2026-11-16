@@ -46,6 +46,7 @@ import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata
 import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
+import { normalizePeerId } from "./discovery/verification-utils.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
@@ -383,6 +384,11 @@ export interface NodeConfig {
   /** Maximum upload body size (bytes) a seller will accept per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
   /**
+   * Seller only: buyer peer IDs (40 hex chars, with or without 0x) whose requests are refused with
+   * 403 `buyer_blocked`. Change it at runtime with `setBlockedBuyers`.
+   */
+  blockedBuyers?: string[];
+  /**
    * Most request body bytes a seller holds at once across all buyers, uploads still
    * arriving included; past it a request gets a retryable 503. Never below
    * `maxUploadBodyBytes`. Default: 256 MiB.
@@ -551,6 +557,7 @@ export class AntseedNode extends EventEmitter {
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
+  private _blockedBuyers = new Set<string>();
   /** How each service served buyers lately, announced in the seller's metadata. */
   private readonly _servicePerformance = new ServicePerformanceTracker();
   private _receiptGenerator: ReceiptGenerator | null = null;
@@ -641,6 +648,15 @@ export class AntseedNode extends EventEmitter {
   constructor(config: NodeConfig) {
     super();
     this._config = config;
+    this.setBlockedBuyers(config.blockedBuyers ?? []);
+  }
+
+  /**
+   * Replace the buyer peer IDs this seller refuses. Requests from them get 403 `buyer_blocked` (the free
+   * `/v1/models` listing stays open) and emit `request:blocked`. Takes effect on the next request.
+   */
+  setBlockedBuyers(peerIds: string[]): void {
+    this._blockedBuyers = new Set(peerIds.map(normalizePeerId).filter(Boolean));
   }
 
   get peerId(): string | null {
@@ -2367,6 +2383,7 @@ export class AntseedNode extends EventEmitter {
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       maxInFlightRequestBytes: this._config.maxInFlightRequestBytes,
       resourceOwnershipStore: this._resourceOwnership,
+      isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(normalizePeerId(buyerPeerId)),
       servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
