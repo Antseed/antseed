@@ -495,8 +495,12 @@ export class HttpRelay {
 
     const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      let paused = false;
+      const timeout = setTimeout(() => {
+        if (!paused) controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const refreshTimeout = () => {
+        paused = false;
         if (!controller.signal.aborted) timeout.refresh();
       };
       try {
@@ -512,6 +516,9 @@ export class HttpRelay {
         refreshTimeout();
         return {
           response, headers, url, signal: controller.signal, refreshTimeout,
+          pauseTimeout: () => {
+            paused = true;
+          },
           dispose: () => {
             clearTimeout(timeout);
             controller.abort();
@@ -620,6 +627,8 @@ export class HttpRelay {
             done: false,
           });
           if (delivered) {
+            // The upstream is not what is slow here: its deadline starts again once the buyer has the chunk.
+            attempt.pauseTimeout();
             await delivered;
             attempt.refreshTimeout();
           }
@@ -667,6 +676,8 @@ interface UpstreamAttempt {
   signal: AbortSignal;
   /** Activity resets the body timeout without capping a healthy stream's duration. */
   refreshTimeout: () => void;
+  /** Stop the body timeout until the next `refreshTimeout`, while nothing is being read from the upstream. */
+  pauseTimeout: () => void;
   /** Clear the deadline and abort any unread response body before discarding it. */
   dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
