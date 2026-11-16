@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
+import { SellerFreeTierLimiter } from '../src/payments/seller-free-tier-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
@@ -13,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const ATTEST_ID = 'antseed-verifier';
+/** A free-tier screen that serves every request. */
+const serveAll = () => ({ refusal: null, wouldRefuse: null, served: () => {} });
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
 describe('completed-request seller payments', () => {
@@ -1636,7 +1639,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo, consume, resolveStanding } as any,
+      sellerFreeTierLimiter: { appliesTo, screen: serveAll, consume, resolveStanding } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1684,6 +1687,61 @@ describe('SellerRequestHandler payment pricing selection', () => {
     });
   });
 
+  it('refuses free requests screened out before counting them', async () => {
+    const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const limiter = new SellerFreeTierLimiter({
+      maxRequestsPerAddress: 100,
+      stakeTiers: [],
+      newBuyerMaxInputTokens: 40_000,
+      newBuyerRequests: 1,
+      movedConversations: 'refuse',
+    });
+    const consume = vi.spyOn(limiter, 'consume');
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: null,
+      sellerFreeTierLimiter: limiter,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+    // Six long turns after the opening ones: about 42,000 tokens.
+    const history = {
+      model: 'local-test',
+      messages: Array.from({ length: 9 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: `t${index}:${'x'.repeat(28_000)}` })),
+    };
+    const send = async (buyer: string, requestId: string, body: unknown) => {
+      const sentFrames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(sentFrames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+      await mux.handleFrame({
+        type: MessageType.HttpRequest,
+        messageId: 1,
+        payload: encodeHttpRequest({
+          requestId,
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: new TextEncoder().encode(JSON.stringify(body)),
+        }),
+      });
+      const response = decodeHttpResponse(decodeFrame(sentFrames[0]!)!.message.payload);
+      return { status: response.statusCode, body: JSON.parse(new TextDecoder().decode(response.body)) };
+    };
+
+    // A new buyer's first request is over the new-buyer limit; after one small request it is not.
+    expect(await send('b'.repeat(40), 'large-first', history)).toMatchObject({ status: 403, body: { error: { code: 'free_tier_new_buyer_context' } } });
+    expect((await send('b'.repeat(40), 'small', { model: 'local-test', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    expect((await send('b'.repeat(40), 'large', history)).status).toBe(200);
+    // The same history from another buyer that has made its first request is a moved conversation.
+    expect((await send('c'.repeat(40), 'small-other', { model: 'local-test', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    expect(await send('c'.repeat(40), 'moved', history)).toMatchObject({ status: 403, body: { error: { code: 'free_tier_moved_conversation' } } });
+
+    expect(provider.handleRequest).toHaveBeenCalledTimes(3);
+    expect(consume).toHaveBeenCalledTimes(3);
+  });
+
   it('refuses a buyer without stake on a stakers-only model with the program to stake for', async () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn();
@@ -1693,7 +1751,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo: () => true, consume, resolveStanding: async () => null } as any,
+      sellerFreeTierLimiter: { appliesTo: () => true, screen: serveAll, consume, resolveStanding: async () => null } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1741,7 +1799,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo: () => false, consume, resolveStanding } as any,
+      sellerFreeTierLimiter: { appliesTo: () => false, screen: serveAll, consume, resolveStanding } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1780,7 +1838,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       providers: [provider],
       sellerPaymentManager: makeSpmMock(),
       // The seller-wide program never applies to a priced service.
-      sellerFreeTierLimiter: { appliesTo: (_service: string, options?: { paid?: boolean }) => !options?.paid, consume } as any,
+      sellerFreeTierLimiter: { appliesTo: (_service: string, options?: { paid?: boolean }) => !options?.paid, screen: serveAll, consume } as any,
       sessionTracker: null,
       channelsClient: {} as any,
       announcer: null,
@@ -1813,9 +1871,9 @@ describe('SellerRequestHandler payment pricing selection', () => {
   });
 
   describe('free allowance on a priced service', () => {
-    const send = async (covered: boolean) => {
+    const send = async (covered: boolean, screen: () => unknown = serveAll) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
-      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
       const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
       const sendPaymentRequired = vi.fn();
@@ -1823,7 +1881,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       const handler = makeSellerRequestHandler({
         providers: [provider],
         sellerPaymentManager: makeSpmMock({ hasSession: () => false, getChannelByPeer: () => undefined, getPaymentRequirements: () => ({ minBudgetPerRequest: '1', suggestedAmount: '1' }) }),
-        sellerFreeTierLimiter: { appliesTo, consume, resolveStanding: async () => null } as any,
+        sellerFreeTierLimiter: { appliesTo, screen, consume, resolveStanding: async () => null } as any,
         sessionTracker: null,
         channelsClient: {} as any,
         announcer: null,
@@ -1854,6 +1912,8 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['x-antseed-free-tier']).toBe('covered');
       expect(sendNeedAuth).not.toHaveBeenCalled();
+      // The buyer pays nothing for it, and the body's price says the same.
+      expect(JSON.parse(new TextDecoder().decode(response.body)).usage.estimated_cost).toBe(0);
     });
 
     it('asks for payment, not a 429, once the allowance does not cover the buyer', async () => {
@@ -1861,6 +1921,26 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(provider.handleRequest).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(402);
       expect(response.headers['x-antseed-free-tier']).toBeUndefined();
+    });
+
+    it('charges a request screening refuses, without using the allowance', async () => {
+      const screen = vi.fn(() => ({
+        refusal: { reason: 'new_buyer_context', inputTokens: 40_000, maxInputTokens: 32_000, requests: 3 },
+        wouldRefuse: null,
+        served: () => {},
+      }));
+      const { provider, consume, response } = await send(true, screen);
+      expect(screen).toHaveBeenCalledWith(expect.objectContaining({ service: 'k3', paid: true }));
+      expect(consume).not.toHaveBeenCalled();
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+    });
+
+    it('records a covered request for conversation matching', async () => {
+      const served = vi.fn();
+      const { response } = await send(true, () => ({ refusal: null, wouldRefuse: null, served }));
+      expect(response.statusCode).toBe(200);
+      expect(served).toHaveBeenCalledOnce();
     });
   });
 
@@ -2993,6 +3073,27 @@ describe('data service seller payments', () => {
     expect(new TextDecoder().decode(response.body)).toBe('{"flights":[{"id":"LY1"}]}');
     expect(response.headers['content-encoding']).toBeUndefined();
     expect(response.headers['content-length']).toBeUndefined();
+  });
+
+  it("passes a data answer's cost fields on byte for byte, and filters its headers like any answer", async () => {
+    const harness = setup();
+    // Shaped like an inference answer whose upstream cost a seller removes; for a data API these are its own fields.
+    const body = '{ "choices": [], "provider": "Example API",\n  "usage": {"cost": 0.42, "estimated_cost": 1, "is_byok": false} }';
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 200,
+      headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '7', 'set-cookie': 'session=upstream', 'x-antseed-example': 'kept' },
+      body: new TextEncoder().encode(body),
+    }));
+    const response = await harness.send('cost');
+    expect(response.statusCode).toBe(200);
+    expect(new TextDecoder().decode(response.body)).toBe(body);
+    expect(response.headers).toMatchObject({ 'content-type': 'application/json', 'x-antseed-example': 'kept', 'x-antseed-data-response': 'provider' });
+    expect(response.headers['x-ratelimit-remaining']).toBeUndefined();
+    expect(response.headers['set-cookie']).toBeUndefined();
+    // The description is the provider's own document too.
+    const description = await harness.send('describe', { method: 'GET', path: '/v1/data/flights/openapi.json', headers: {}, body: new Uint8Array() });
+    expect(new TextDecoder().decode(description.body)).toBe(body);
+    expect(description.headers['set-cookie']).toBeUndefined();
   });
 
   it('sends a chat request that names no provider to the chat provider, never to a data-only one', async () => {

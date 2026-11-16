@@ -14,6 +14,11 @@
  * their authors from outside the organization (read with `gh api`, so it needs
  * GH_TOKEN; people who can push to the repository and bots are left out).
  *
+ * The registry can take a long time to serve a version it just accepted, so
+ * with NPM_WAIT_MINUTES set (the workflow sets it when the run publishes a new
+ * CLI version) it waits that long for the CLI, then a little longer for each
+ * package released with it, and fails if the CLI still isn't served.
+ *
  * Usage: node scripts/github-release-notes.mjs <notes.md>
  * Prints the CLI version, or nothing when that version is not on npm yet.
  */
@@ -21,6 +26,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { root, readPackage, publishablePackages } from './publishable-packages.mjs';
+import { waitForNpm } from './npm-registry.mjs';
 
 const [notesPath] = process.argv.slice(2);
 if (!notesPath) {
@@ -30,15 +36,22 @@ if (!notesPath) {
 
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 
-async function onNpm(name, version) {
-  const res = await fetch(`https://registry.npmjs.org/${name.replace('/', '%2f')}/${version}`);
-  if (res.status === 404) return false;
-  if (!res.ok) throw new Error(`npm registry answered ${res.status} for ${name}@${version}`);
-  return true;
-}
+const waitMinutes = Number(process.env.NPM_WAIT_MINUTES ?? 0);
+// A package published with the CLI is served about when the CLI is; don't wait
+// the whole budget for one that failed to publish.
+const PACKAGE_WAIT_MS = 10 * 60_000;
+const onWait = (spec) => (left) => console.error(`${spec} is not served by npm yet; checking again (${Math.ceil(left / 60_000)} min left)`);
 
 const cli = readPackage('apps/cli');
-if (!(await onNpm(cli.name, cli.version))) process.exit(0);
+const cliSpec = `${cli.name}@${cli.version}`;
+const deadline = Date.now() + waitMinutes * 60_000;
+if (!(await waitForNpm(cli.name, cli.version, { deadline, onWait: onWait(cliSpec) }))) {
+  if (waitMinutes <= 0) process.exit(0);
+  console.error(`${cliSpec} was published but npm still doesn't serve it after ${waitMinutes} min; rerun this job once it does.`);
+  process.exit(1);
+}
+const packageDeadline = Math.min(deadline, Date.now() + PACKAGE_WAIT_MS);
+const onNpm = (name, version) => waitForNpm(name, version, { deadline: packageDeadline, onWait: onWait(`${name}@${version}`) });
 
 // The commit that set the previous CLI version: what changed after it is what
 // this release ships (the CLI is bumped on every release, since it pins the

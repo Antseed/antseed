@@ -22,7 +22,7 @@ Free requests are not paid, but your node records them on-chain so buyers earn u
 
 | Trigger | What happens |
 |---|---|
-| Buyer disconnects | The channel is closed right away and the full amount owed is settled. |
+| Buyer disconnects | The channel is closed at the latest amount the buyer signed: right away, or, if a request is still being served, once it has been billed, so a buyer that comes back can pay for it and keep the channel. |
 | Channel idle | After `ANTSEED_SETTLEMENT_IDLE_MS` without activity (default 10 minutes), the node settles what is owed, skipping amounts below `payments.minSettleDelta` (default $0.002) so gas doesn't exceed the payment. |
 | Budget running low | The node tops up the channel, settling the current total in the same transaction. |
 

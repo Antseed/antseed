@@ -232,6 +232,7 @@ export {
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   inferServiceProtocol,
   resolveServiceProtocol,
   type BuildNetworkServiceOffersOptions,
@@ -308,6 +309,7 @@ export {
   isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { exposedResponseHeaders, isExposedResponseHeader } from './utils/response-headers.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {
   signSpendingAuth,
@@ -361,8 +363,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
-export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, FREE_TIER_MOVED_CONVERSATIONS_MODES, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision, FreeTierMovedConversationsMode } from './payments/seller-free-tier-limiter.js';
 export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
@@ -404,7 +406,7 @@ export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
 export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
-export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
+export type { SellerPaymentConfig, ReserveFailure } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
@@ -458,6 +460,7 @@ export {
   rankModelRoutes,
   scoreModelRoute,
   type ModelRouteCandidate,
+  type ModelRouteRankingOptions,
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';

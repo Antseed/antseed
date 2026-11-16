@@ -6,6 +6,9 @@ import type { Address } from 'viem';
 import { DIEM_TOKEN, DIEM_STAKING_PROXY, isAddressSet } from './addresses';
 import { DIEM_STAKING_PROXY_ABI, DIEM_TOKEN_ABI } from './abi';
 import { computeEpochClock, type EpochClock } from './epoch';
+import { planCatchUp, type CatchUpState } from './catch-up';
+
+export type { CatchUpState } from './catch-up';
 import { DIEM_CHAIN_ID } from './network';
 
 // First Staked event on the deployed proxy: tx
@@ -416,4 +419,39 @@ export function useDiemAllowance(): { allowance: bigint | null; refetch: () => v
     query: { enabled, refetchInterval: POLL_MS },
   });
   return { allowance: (data as bigint | undefined) ?? null, refetch: () => { void refetch(); } };
+}
+
+
+/** Reads both reward-epoch backlogs and plans the catch-up (see catch-up.ts). */
+export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpState; refetch: () => Promise<unknown> } {
+  const { address } = useAccount();
+  const deployed = useProxyDeployed();
+  const enabled = deployed && !!address;
+
+  const { data, refetch } = useReadContracts({
+    allowFailure: true,
+    contracts: enabled
+      ? [
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'MAX_EPOCHS_PER_CAPTURE', chainId: DIEM_CHAIN_ID },
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'syncBacklog', chainId: DIEM_CHAIN_ID },
+          { address: DIEM_STAKING_PROXY, abi: DIEM_STAKING_PROXY_ABI, functionName: 'userPointsBacklog', args: [address!], chainId: DIEM_CHAIN_ID },
+        ]
+      : [],
+    query: { enabled, refetchInterval: POLL_MS },
+  });
+
+  const state = useMemo<CatchUpState>(() => {
+    const cap = data?.[0]?.result;
+    const pool = data?.[1]?.result;
+    const user = data?.[2]?.result;
+    if (cap == null || pool == null || user == null) return { status: 'none' };
+    return planCatchUp({
+      cap,
+      poolBehind: pool[2],
+      userBehind: user[2],
+      hasStake: stakedDiem != null && stakedDiem > 0n,
+    });
+  }, [data, stakedDiem]);
+
+  return { state, refetch };
 }

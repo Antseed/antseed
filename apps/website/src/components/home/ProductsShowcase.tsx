@@ -1,20 +1,20 @@
 import {Button, Reveal, SectionHeader} from '../ui';
 import {DropTrail} from '../DropTrail';
 import {LazyMount} from '../LazyMount';
-import {HeroDemo} from '../HeroDemo';
 import {DownloadCta} from '../HomeHero';
 import {GatewayConsoleDemo} from './GatewayConsoleDemo';
+import {DesktopScreens} from './DesktopScreens';
 import home from '../../pages/index.module.css';
 import styles from './ProductsShowcase.module.css';
 
 /**
  * PRODUCTS — the two ways to use Antseed, one after the other: the gateway
  * (the one we lead with) on an ink card with the live console demo, then
- * Antseed Desktop app with the homepage's Antseed Desktop demo.
+ * Antseed Desktop with real screens from the app (DesktopScreens).
  *
- * Both demos are decorative and script-heavy, so they mount only as they
- * near the viewport (LazyMount); until then a box of the same aspect ratio
- * holds their space. The copy, bullets and CTAs are plain HTML.
+ * The console demo is decorative and script-heavy, so it mounts only as it
+ * nears the viewport (LazyMount); until then a box of the same aspect ratio
+ * holds its space. The copy, bullets and CTAs are plain HTML.
  */
 
 function Check() {
@@ -32,10 +32,10 @@ const GATEWAY_POINTS = [
   'Track balances and usage from one console',
 ];
 
-const VPN_POINTS = [
-  'Connect your coding tools and personal agents',
-  'Choose models and track your usage',
-  'Get started without deploying a server',
+const DESKTOP_POINTS = [
+  'Start on a free model, no deposit needed',
+  'Use it from Claude Code, Codex, OpenCode and more',
+  'Choose Anonymous or Private mode',
 ];
 
 export function ProductsShowcase() {
@@ -84,18 +84,16 @@ export function ProductsShowcase() {
 
         <Reveal className={`${styles.card} ${styles.vpnCard}`}>
           <div className={styles.vpnVisual}>
-            <LazyMount className={styles.vpnSlot}>
-              <HeroDemo compact />
-            </LazyMount>
+            <DesktopScreens />
           </div>
           <div className={styles.copy}>
             <p className={styles.kicker}>Desktop app to work locally</p>
             <h3 className={styles.cardTitle}>Antseed Desktop</h3>
             <p className={styles.cardLead}>
-              Access the same market through a desktop app that connects to the tools you already use.
+              Ask anything, on any model, at the best available prices. Then bring the same models to the agents and apps you already use.
             </p>
             <ul className={styles.points}>
-              {VPN_POINTS.map((p) => (
+              {DESKTOP_POINTS.map((p) => (
                 <li key={p}><Check />{p}</li>
               ))}
             </ul>
