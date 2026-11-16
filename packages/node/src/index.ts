@@ -401,7 +401,7 @@ export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
 export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
-export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
+export type { SellerPaymentConfig, ReserveFailure } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
@@ -453,6 +453,7 @@ export {
   rankModelRoutes,
   scoreModelRoute,
   type ModelRouteCandidate,
+  type ModelRouteRankingOptions,
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';
