@@ -31,5 +31,14 @@ final class ModelChoiceTests: XCTestCase {
     func testFitsWhenTheWeightsTakeAtMostHalfTheMemory() {
         XCTAssertTrue(ModelSize.fits(8 << 30, memory: 16 << 30))
         XCTAssertFalse(ModelSize.fits(9 << 30, memory: 16 << 30))
+        XCTAssertTrue(ModelSize.fits(24 << 30, memory: 48 << 30))
+        XCTAssertFalse(ModelSize.fits(25 << 30, memory: 48 << 30))
+    }
+
+    func testALargeMacFitsAllButTheReserve() {
+        XCTAssertTrue(ModelSize.fits(40 << 30, memory: 64 << 30))
+        XCTAssertFalse(ModelSize.fits(41 << 30, memory: 64 << 30))
+        XCTAssertTrue(ModelSize.fits(104 << 30, memory: 128 << 30))
+        XCTAssertFalse(ModelSize.fits(105 << 30, memory: 128 << 30))
     }
 }

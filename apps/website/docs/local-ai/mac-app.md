@@ -30,7 +30,7 @@ In the window, enter the pool's address from its operator (`wss://…`) under **
 
 ## Choose a model
 
-Once joined, the app lists the models the pool runs: each service it sells, the exact model pinned for it, and its download size. Pick one. The app downloads that pinned model, checks its files and starts serving it. Models whose weights take more than half your Mac's memory are marked **needs more memory** and can't be picked.
+Once joined, the app lists the models the pool runs: each service it sells, the exact model pinned for it, and its download size. Pick one. The app downloads that pinned model, checks its files and starts serving it. Models whose weights take more than half your Mac's memory are marked **needs more memory** and can't be picked. A Mac with more than 48 GB can go further: it runs any model that leaves 24 GB free (up to 104 GB of weights on a 128 GB Mac).
 
 The app keeps your choice for later launches. **Settings** → **Model** → **Change** switches to another of the pool's models; the app stops serving while the new one downloads. A pool that pins no models gets the built-in one, `qwen3.5-2b` on Qwen3.5-2B (4-bit MLX).
 

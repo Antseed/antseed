@@ -56,9 +56,13 @@ enum ModelSize {
         return siblings.reduce(UInt64(0)) { $0 + UInt64(($1["size"] as? NSNumber)?.uint64Value ?? 0) }
     }
 
-    /// Weights take at most half the Mac's memory, leaving room for the context cache and everything else.
+    /// What the weights leave free on a Mac with memory to spare, for the context cache and everything else.
+    static let reserve: UInt64 = 24 << 30
+
+    /// Weights take at most half the Mac's memory, or all of it but `reserve` when that is more
+    /// (above 48 GB): a 128 GB Mac runs up to 104 GB of weights, a 16 GB one up to 8 GB.
     static func fits(_ bytes: UInt64, memory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
-        bytes <= memory / 2
+        bytes <= max(memory / 2, memory - min(memory, reserve))
     }
 
     static func label(_ bytes: UInt64) -> String {

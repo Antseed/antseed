@@ -261,9 +261,9 @@ seal under its response key.
   Antseed Colony joins without a model the first time, offers the pins
   pinned to a full commit to its owner (with each checkpoint's download size
   from the Hugging Face API, and refusing ones whose weights exceed half the
-  Mac's memory), downloads the one picked and joins again with it; it keeps
-  the choice in `model.json` in its data directory. A pool without pins gets
-  the app's built-in model.
+  Mac's memory, or all of it but 24 GB when that is more), downloads the one
+  picked and joins again with it; it keeps the choice in `model.json` in its
+  data directory. A pool without pins gets the app's built-in model.
 - Both the report and the attestation are the worker's own, so they catch
   misconfiguration, a wrong revision and upstream drift, not a modified
   worker; only a test whose answers depend on the weights catches that. The
