@@ -53,6 +53,14 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
 
   // Most wallets run no Mac: keep the page as it is until one does.
   if (pools.length === 0 && !linking) {
+    // The last answer listed none, and the refresh since failed: this wallet may have Macs by now.
+    if (page.error) {
+      return (
+        <p className="notice-line" role="status">
+          <span>Mac earnings could not be refreshed. <button className="link-button" onClick={page.refresh}>Retry</button></span>
+        </p>
+      );
+    }
     return <p className="hint">Running Antseed Colony? <button className="link-button" onClick={() => setLinking(true)}>Link a Mac</button> to receive its earnings here.</p>;
   }
 

@@ -27,7 +27,7 @@ final class InteropTests: XCTestCase {
     }
 
     func testOpensARequestSealedByTheBuyerAndVerifiesItsBinding() throws {
-        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BAjVyDkO+qJaxnFq8NrU9fzcrwBBghT0B+xUnO2k8/6AlQntkf9juqLuER6WTbYdaF1r4mhrEkjsnEh//tIkTw4=","wk":"aSQvlJxD3As1Kihan5e1jIsCui6Y+jht4CNljFzEhUTuEmMga8TB6AGrBTx9E/NB"}],"ct":"Fp+XkPpBMxyZGCDFAfz6c/yp0koRM1ggtfrx6i0ln6VC1Zp+faN3SiCztEUQfnl8juVcbk6zmF33rNUxlnI4Bv+mHm6GqzGTPZq+hnTGOacD6VGVcR4nyyzO7kpPigV7WqLWLiNpJuXrljkn","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0xa9532a7fc6c26d595a96b0af4ab7bb43074697f81e1fd4144f7c3c7cac612de60c9b697792c438f13ec43e6391f33b3067881aaaf90b5cc513178cee997ead5d1c"}}"#
+        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":3,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BPQkh7pyUxv3QVK83Q4KAyvKRpaUtRgn6fP/okQNz6sAW2h9oosHvoLZuhZHgpgJpp+VosytNOGDvc1dm7qnFsA=","wk":"eUKFGQo95l9JWaVPgBwgiK1887YmlUv6tuGWbRTpTG7qpDbiw+FWiF5f0HAqI87Y"}],"ct":"sjt09i7KQOxQPEhQU1Koj2zYsABtsCafzKWK9YfCnK5x3Jg/u/qLnUAZklY7dHrT+CW16CQ76zgJS8TgAkTbudKxIdkY32OkvGXhjLQBGDPPchK+tnCvy3UKTEGQjomhmcX9P7NPayzUq+Ha","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0xac8e502271d1970675990d0fd234d63105fb29671038b4688468197a48f052102b214bb3a0bd8c7fc7fab05e9701207171d2a5967efae07c3d056a56374a035d1b"}}"#
         let worker = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))
         let opened = try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: key)
@@ -52,7 +52,7 @@ final class InteropTests: XCTestCase {
 
     func testEachRecipientOpensARequestSealedForTwoWorkers() throws {
         // sealRequest({ recipients: [w1, w2], buyer }) in @antseed/node/worker-e2e.
-        let body = Data(#"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BPKSzhiPbWneXPKRQczUNF513h5WtZxEIZ9zoSMwjbzcKpdo2hZnMEVEbtXelJCumsKZ23QJV3L3fO9fhf7KR6o=","wk":"zer10Fm6CtUH+6LqyXp49321jex5esI0+g4at4VH2+uQfZXcjjIdrFZaqu8GZJxW"},{"worker":"0x90F79bf6EB2c4f870365E785982E1f101E93b906","epk":"BL8SXqnX9HuRKo2n50vqLfUCfh0q+r4tZp3VVkXudlShoeHd77CEhlzlTwBtGqJ2NOa2e6CN5naySwK3VN9F7uQ=","wk":"D0d6pilMutSPbPsGObfnP9Ui1c0T/vay8QFmrA4EFmmNUsnHo5aXkvwxyRpy2P1j"}],"ct":"UUdfO2v/5ZvI4b+p8ZtnC9Jfs4uwRi4Gk446hfLUTVs3uIVWlxILHVO7pZ1Ous7YmxXFPVSJbho4BLPu4/sutA6c/NWAmlmJ4DlORncgcKp2f9j4H2bw7SQt6s/9UGKOoSR1Gd6vtrR8PEQd","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0xda2bc80102a16b71751eefab271c249f20f8ab283080729eb237eb83a354fb5304c75391e40bd24b76efad30ffb4a8448fa003b9a1a0d1267d0989b660aa7b921b"}}"#.utf8)
+        let body = Data(#"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":3,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BICh5Jgr/pAgDPGInQXnxRc0F0L/dWuurJA53yaN5NmXHEdkn/UtWpcvLbU9MCHwQxXn/Qkryjk5Npwq2+QrDDs=","wk":"qjeMp0Pqos3encqibzGS8JKG+jAR93znG100N85/VOH15X4vWSRrszKsWb61P5oK"},{"worker":"0x90F79bf6EB2c4f870365E785982E1f101E93b906","epk":"BP1peFokuN9LgpGgg9Ejw2ovI4XIGnDkOhIcsF3OuOhNDcwibfBUFMp5cIaFOUpT8dAJYd878rDWfsCG3XW8JTQ=","wk":"MqWFcmPczitoXlFOL3unk2+HJxBwmBGypPNqpxdOv0Vl83lIfh0ZAq6oVjRlsTee"}],"ct":"1dWaylsSxIMKPhn6MSwGO8r+a+BFqU1h8iWVhJcmylzo815cdIIJBWv8tEjoj4Ire5LS1Ou9Tx5bVTl/WhiIo5Ru55KyAniisSyEKrzlS/IimZgXTpXhSLnivGUFryhT0l5+Kqn06XByFUhg","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0x19940421401d79a2842711c90277ce01906ca966ff4f3d28c5967e322244786243cf11260c2b60379391b59645dc9f2cf7cd034a5bd16a4983dcce10f775f2a81c"}}"#.utf8)
         let w1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         let w2 = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
         let k1 = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))
@@ -94,9 +94,9 @@ final class InteropTests: XCTestCase {
     }
 
     func testResponseKeyFromSaltMatchesNode() {
-        // responseKey(base, salt) in @antseed/node/worker-e2e: HKDF-SHA256(base, salt, "antseed-worker-e2e/v2|resp-key").
+        // responseKey(base, salt) in @antseed/node/worker-e2e: HKDF-SHA256(base, salt, "antseed-worker-e2e/v3|resp-key").
         let key = ResponseSealer.responseKey(base: SymmetricKey(data: Data(repeating: 0x11, count: 32)), salt: Data(repeating: 0x22, count: 16))
-        XCTAssertEqual(key.withUnsafeBytes { Data($0) }.hex, "2d11af63a7112054fe4acaeb5d08f935522baff5d227392ccf160ac7f08c0986")
+        XCTAssertEqual(key.withUnsafeBytes { Data($0) }.hex, "b7da4356e6d473751b91b59ac1f256a2f1bf9fb943d3c429463a5ac538d7c386")
     }
 
     func testAttestedModelsSignAsInNode() {

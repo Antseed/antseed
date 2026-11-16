@@ -1948,7 +1948,9 @@ export class AntseedNode extends EventEmitter {
    * A colony pool contract holds what a channel settled without a worker
    * attribution until the channel ends, and its own close releases that to
    * the remainder recipient. A channel that ended another way (the buyer
-   * withdrew it) is released here.
+   * withdrew it) is released here. A failure rejects, so the payment manager
+   * keeps the channel's notice and calls this again; a release already made
+   * reads as nothing held.
    */
   private async _releaseColonyPoolHeld(channelId: string): Promise<void> {
     const pool = this._config.sellerContract?.sellerContract;

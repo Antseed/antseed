@@ -108,12 +108,12 @@ replaces the request body with:
   "stream": true,
   "max_tokens": 1024,
   "antseed_e2e": {
-    "v": 2,
+    "v": 3,
     "recipients": [
       { "worker": "0x…", "epk": "<base64 uncompressed P-256 ephemeral public key>", "wk": "<base64 wrapped content key>" },
       { "worker": "0x…", "epk": "…", "wk": "…" }
     ],
-    "ct": "<base64 ChaCha20-Poly1305 ciphertext of the original JSON body>",
+    "ct": "<base64 AES-256-GCM ciphertext of the original JSON body>",
     "buyer": "0x…",
     "channel": "0x…",
     "exp": <unix seconds>,
@@ -133,14 +133,14 @@ by commas, in envelope order:
 
 ```
 contentKey = 32 random bytes
-ct         = ChaCha20-Poly1305(contentKey, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|req|" ‖ list ‖ "|" ‖ model)
+ct         = AES-256-GCM(contentKey, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v3|req|" ‖ list ‖ "|" ‖ model)
 
 for each recipient i (worker key Wᵢ, fresh ephemeral key eᵢ):
   sharedᵢ  = ECDH-P256(eᵢ, Wᵢ)   (the x-coordinate, 32 bytes)
-  okmᵢ     = HKDF-SHA256(ikm = sharedᵢ, salt = epkᵢ ‖ Wᵢ, info = "antseed-worker-e2e/v2", length = 64)
+  okmᵢ     = HKDF-SHA256(ikm = sharedᵢ, salt = epkᵢ ‖ Wᵢ, info = "antseed-worker-e2e/v3", length = 64)
   wrapKeyᵢ = okmᵢ[0:32]
   respKeyᵢ = okmᵢ[32:64]
-  wkᵢ      = ChaCha20-Poly1305(wrapKeyᵢ, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|wrap|" ‖ list ‖ "|" ‖ model, contentKey)
+  wkᵢ      = AES-256-GCM(wrapKeyᵢ, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v3|wrap|" ‖ list ‖ "|" ‖ model, contentKey)
 ```
 
 A worker finds its own entry, unwraps `contentKey` with its own ECDH secret,
@@ -150,7 +150,7 @@ and opens `ct`. It rejects the request unless it is named in `recipients`
 adding a recipient makes the request fail to open).
 
 `sig` is the buyer's EIP-191 signature over
-`keccak256("antseed-worker-e2e/v2" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ exp ‖ keccak256(ct))`
+`keccak256("antseed-worker-e2e/v3" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ exp ‖ keccak256(ct))`
 (addresses as 20 bytes in envelope order, `channel` as 32 bytes, `exp` as a
 big-endian uint64; buyers set it 10 minutes ahead). It proves the
 request came from a buyer of this pool, for exactly this set of workers, so an
@@ -173,7 +173,7 @@ Each recipient answers under its own key. The worker picks a random 16-byte
 `salt` and seals with
 
 ```
-responseKey = HKDF-SHA256(ikm = respKeyᵢ, salt = salt, info = "antseed-worker-e2e/v2|resp-key", length = 32)
+responseKey = HKDF-SHA256(ikm = respKeyᵢ, salt = salt, info = "antseed-worker-e2e/v3|resp-key", length = 32)
 ```
 
 so a replayed request (same `epkᵢ`, same `respKeyᵢ`) never reuses a key and
@@ -183,11 +183,11 @@ under another recipient's key.
 Non-streaming: the worker answers
 
 ```json
-{ "antseed_e2e": { "v": 2, "worker": "0x…", "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
+{ "antseed_e2e": { "v": 3, "worker": "0x…", "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
 ```
 
 where `worker` is the answering worker and `ct` is the upstream body sealed
-with `responseKey`, nonce 0, AAD `"antseed-worker-e2e/v2|resp|0|end"`.
+with `responseKey`, nonce 0, AAD `"antseed-worker-e2e/v3|resp|0|end"`.
 
 Streaming: each upstream SSE event `data: X` becomes
 
@@ -196,9 +196,9 @@ data: {"antseed_e2e":{"seq":n,"ct":"<base64>"}}
 ```
 
 sealed with `responseKey`, nonce = `seq` as a 96-bit big-endian counter starting
-at 0, AAD `"antseed-worker-e2e/v2|resp|<seq>"`. The `seq` 0 event also carries
+at 0, AAD `"antseed-worker-e2e/v3|resp|<seq>"`. The `seq` 0 event also carries
 `"worker"` and `"salt"`. The last event sets
-`"end":true` and uses AAD `"antseed-worker-e2e/v2|resp|<seq>|end"`, so a
+`"end":true` and uses AAD `"antseed-worker-e2e/v3|resp|<seq>|end"`, so a
 truncated stream fails to verify.
 
 The buyer opens the answer with the response key of the worker it names, and

@@ -28,9 +28,9 @@ export {
   WORKER_UNAVAILABLE_CODE,
 } from '@antseed/buyer-core/worker-e2e';
 import { isWorkerPayment, type WorkerPayment } from './worker-payment.js';
-export const WORKER_E2E_VERSION = 2;
+export const WORKER_E2E_VERSION = 3;
 
-const INFO = 'antseed-worker-e2e/v2';
+const INFO = 'antseed-worker-e2e/v3';
 /** Most workers one request is encrypted for (the pool fails over within them). */
 export const MAX_WORKER_RECIPIENTS = 3;
 /** How far ahead of the reader's clock an attestation may be dated (clock skew between a Mac and the pool or buyer). */
@@ -38,6 +38,11 @@ const ATTESTATION_CLOCK_SKEW_S = 300;
 /** A worker's key certificate stops taking new buyers this long before it expires (buyers reassign, pools stop routing). */
 export const WORKER_CERTIFICATE_USABILITY_MARGIN_S = 300;
 const TAG_BYTES = 16;
+/**
+ * AES-256-GCM, not ChaCha20-Poly1305: the desktop app runs the buyer under
+ * Electron's BoringSSL, which has no `chacha20-poly1305` in `createCipheriv`.
+ */
+const AEAD = 'aes-256-gcm';
 const P256_PUBLIC_HEX = /^04[0-9a-f]{128}$/;
 const ZERO_CHANNEL = `0x${'00'.repeat(32)}`;
 
@@ -304,16 +309,16 @@ function nonceFor(seq: number): Buffer {
 }
 
 function seal(key: Buffer, seq: number, aad: string, plaintext: Uint8Array): Buffer {
-  const cipher = createCipheriv('chacha20-poly1305', key, nonceFor(seq), { authTagLength: TAG_BYTES });
-  cipher.setAAD(Buffer.from(aad), { plaintextLength: plaintext.length });
+  const cipher = createCipheriv(AEAD, key, nonceFor(seq), { authTagLength: TAG_BYTES });
+  cipher.setAAD(Buffer.from(aad));
   return Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
 }
 
 function open(key: Buffer, seq: number, aad: string, sealed: Uint8Array): Buffer {
   if (sealed.length < TAG_BYTES) throw new Error('Ciphertext too short');
   const body = sealed.subarray(0, sealed.length - TAG_BYTES);
-  const decipher = createDecipheriv('chacha20-poly1305', key, nonceFor(seq), { authTagLength: TAG_BYTES });
-  decipher.setAAD(Buffer.from(aad), { plaintextLength: body.length });
+  const decipher = createDecipheriv(AEAD, key, nonceFor(seq), { authTagLength: TAG_BYTES });
+  decipher.setAAD(Buffer.from(aad));
   decipher.setAuthTag(sealed.subarray(sealed.length - TAG_BYTES));
   return Buffer.concat([decipher.update(body), decipher.final()]);
 }

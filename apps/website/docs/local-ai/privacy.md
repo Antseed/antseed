@@ -12,7 +12,7 @@ A request to a colony pool passes through two parties: the pool seller, which ro
 ## The pool operator sees ciphertext
 
 - The buyer asks the pool for its top-ranked workers and checks each one's key certificate, signed by the worker's own address, before using it.
-- It encrypts the request for those workers only (P-256 key agreement per worker, ChaCha20-Poly1305). The pool sees the model name, whether the answer streams and the token limit, and nothing else.
+- It encrypts the request for those workers only (P-256 key agreement per worker, AES-256-GCM). The pool sees the model name, whether the answer streams and the token limit, and nothing else.
 - The worker encrypts its answer under a key only that buyer and that worker share, with an authenticated end marker. The buyer refuses an answer that doesn't open, was cut short, or reports different token usage in the clear than inside the seal, and pays only for one that verifies.
 - A pool refuses plaintext requests, and buyers never send a pool request in plaintext.
 

@@ -54,6 +54,18 @@ enum WorkerStatus: Equatable {
     }
 }
 
+/// How a model load ended.
+enum ModelLoad: Equatable {
+    case loaded
+    case failed
+    /// A newer pick replaced it; that pick's own load decides what happens next.
+    case superseded
+
+    /// Whether the Mac joins the pool again now. A load that failed joins too, offering nothing:
+    /// the pool's welcome lists the models the owner can switch to, beside Retry.
+    var rejoins: Bool { self != .superseded }
+}
+
 /// Runs the worker: keeps a connection to the pool, serves its encrypted
 /// requests with the local model, and tracks what this Mac earned.
 @MainActor
@@ -240,24 +252,24 @@ final class WorkerController: ObservableObject {
     }
 
     /// The model load in progress, if any: a newer pick cancels it and waits for it to stop.
-    private var loadTask: Task<Bool, Never>?
+    private var loadTask: Task<ModelLoad, Never>?
 
-    /// Download (first time), hash and start the chosen checkpoint. False when it failed to load,
-    /// or a newer pick replaced it. Loads run one at a time: a newer one cancels the one before and
-    /// waits until its download or engine stopped, so the superseded load can't stop the new engine.
-    private func load(_ choice: ModelChoice) async -> Bool {
+    /// Download (first time), hash and start the chosen checkpoint. Loads run one at a time: a
+    /// newer one cancels the one before and waits until its download or engine stopped, so the
+    /// superseded load can't stop the new engine.
+    private func load(_ choice: ModelChoice) async -> ModelLoad {
         let previous = loadTask
         previous?.cancel()
-        let task = Task { [weak self] () -> Bool in
+        let task = Task { [weak self] () -> ModelLoad in
             _ = await previous?.value
-            guard let self, !Task.isCancelled else { return false }
+            guard let self, !Task.isCancelled else { return .superseded }
             return await self.loadNow(choice)
         }
         loadTask = task
         return await task.value
     }
 
-    private func loadNow(_ choice: ModelChoice) async -> Bool {
+    private func loadNow(_ choice: ModelChoice) async -> ModelLoad {
         let local = LocalModel(modelId: choice.model, engine: config.engineURL, directory: config.dataDirectory)
         model = local
         checkpoint = nil
@@ -271,22 +283,22 @@ final class WorkerController: ObservableObject {
             guard model === local, !Task.isCancelled else {
                 // Another pick replaced it meanwhile: stop the engine this load started.
                 await local.stop()
-                return false
+                return .superseded
             }
             checkpoint = loaded
             log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
-            return true
+            return .loaded
         } catch {
-            if model === local, !Task.isCancelled {
-                let message = "Model failed to load: \(error.localizedDescription)"
-                modelLoadError = message
-                status = .failed(message)
-            }
-            return false
+            guard model === local, !Task.isCancelled else { return .superseded }
+            let message = "Model failed to load: \(error.localizedDescription)"
+            modelLoadError = message
+            status = .failed(message)
+            return .failed
         }
     }
 
-    /// Run `offer` from now on (saved for later launches): load it, then rejoin the pool with it.
+    /// Run `offer` from now on (saved for later launches): load it, then rejoin the pool with it,
+    /// or with nothing to offer when it failed to load.
     func choose(_ offer: ModelChoice) {
         guard offer != choice || checkpoint == nil else { return }
         do {
@@ -299,7 +311,7 @@ final class WorkerController: ObservableObject {
         choice = offer
         // Stop serving the old model while the new one loads.
         disconnect()
-        Task { if await load(offer) { rejoin() } }
+        Task { if await load(offer).rejoins { rejoin() } }
     }
 
     /// Load the chosen model again after it failed to (a download or engine start that broke off).

@@ -43,6 +43,15 @@ describe('Mac earnings card', () => {
     expect(render()).toContain('Link a Mac');
   });
 
+  it('says a refresh failed, with Retry, when the last answer listed no Macs', () => {
+    state.data = { pools: [] };
+    state.error = 'RPC unavailable';
+    const html = render();
+    expect(html).toContain('Mac earnings could not be refreshed');
+    expect(html).toContain('Retry');
+    expect(html).not.toContain('Link a Mac');
+  });
+
   it('shows an unreadable pool with Retry and, for a linked one, Forget, without hiding readable pools', () => {
     const broken = '0x00000000000000000000000000000000000000cc';
     state.data = { pools: [

@@ -25,6 +25,14 @@ final class WorkerStatusTests: XCTestCase {
         XCTAssertEqual(WorkerStatus.welcomed(choice: choice, loaded: false, loadError: nil, sharing: true, rejected: [], current: .loadingModel(0.4)), .loadingModel(0.4))
     }
 
+    /// Picking a model leaves the pool while it loads: a load that fails must join again, or the
+    /// Mac stays off the pool with no list of models to switch to.
+    func testAFailedModelLoadRejoinsThePoolAndASupersededOneLeavesItToTheNewerPick() {
+        XCTAssertTrue(ModelLoad.loaded.rejoins)
+        XCTAssertTrue(ModelLoad.failed.rejoins)
+        XCTAssertFalse(ModelLoad.superseded.rejoins)
+    }
+
     func testPanelShowsCentsOnceThereAreSomeAndFourDecimalsBelow() {
         XCTAssertEqual(usdShort(0), "$0.00")
         XCTAssertEqual(usdShort(9_527), "$0.0095")

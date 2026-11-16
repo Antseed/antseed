@@ -47,7 +47,8 @@ export interface SellerPaymentConfig {
   /**
    * Called when this seller stops tracking a channel it did not just close
    * itself: the buyer withdrew it, or it was found ended or gone on-chain.
-   * Best effort: what it throws or rejects with is only logged.
+   * A call that throws or rejects is made again on later timeout checks, also
+   * after a restart, until one succeeds, so it must be safe to repeat.
    */
   onChannelEnded?: (channelId: string) => void | Promise<void>;
   /** Called when a buyer's opening reserve() fails on-chain, so a host can say so outside debug logs. */
@@ -137,6 +138,10 @@ const ONE_OFF_UNDECIDED_RETRY_SECONDS = 5;
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 /** Most timed-out channels retried in one pass. */
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
+/** Wait before a failed channel-ended call is made again: doubles per failure up to the maximum. */
+export const CHANNEL_ENDED_RETRY_MIN_MS = 60_000;
+export const CHANNEL_ENDED_RETRY_MAX_MS = 60 * 60_000;
+const CHANNEL_ENDED_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
 
@@ -312,6 +317,9 @@ export class SellerPaymentManager {
   private _lastTimedOutCloseRetryAt = 0;
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
+  /** Channel-ended calls in flight, and for those that failed since start: failures and when to try again. */
+  private readonly _channelEndedInFlight = new Set<string>();
+  private readonly _channelEndedRetry = new Map<string, { failures: number; notBefore: number }>();
 
   constructor(
     identity: Identity,
@@ -495,11 +503,46 @@ export class SellerPaymentManager {
   }
 
   private _notifyChannelEnded(channelId: string): void {
+    if (!this._config.onChannelEnded) return;
+    this._channelStore.addEndedChannelNotice(channelId);
+    this._deliverChannelEnded(channelId);
+  }
+
+  /** Call the listener for a stored notice; the notice stays, to be tried again, until a call succeeds. */
+  private _deliverChannelEnded(channelId: string): void {
     const onChannelEnded = this._config.onChannelEnded;
-    if (!onChannelEnded) return;
-    void Promise.resolve().then(() => onChannelEnded(channelId)).catch((err: unknown) => {
-      debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (!onChannelEnded || this._channelEndedInFlight.has(channelId)) return;
+    this._channelEndedInFlight.add(channelId);
+    void (async () => {
+      try {
+        // Never inside the caller's own channel bookkeeping.
+        await Promise.resolve();
+        await onChannelEnded(channelId);
+        this._channelStore.removeEndedChannelNotice(channelId);
+        this._channelEndedRetry.delete(channelId);
+      } catch (err) {
+        const failures = (this._channelEndedRetry.get(channelId)?.failures ?? 0) + 1;
+        const delayMs = Math.min(CHANNEL_ENDED_RETRY_MIN_MS * 2 ** (failures - 1), CHANNEL_ENDED_RETRY_MAX_MS);
+        this._channelEndedRetry.set(channelId, { failures, notBefore: Date.now() + delayMs });
+        debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}... (attempt ${failures}, next in ${Math.round(delayMs / 1000)}s): ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        this._channelEndedInFlight.delete(channelId);
+      }
+    })();
+  }
+
+  /** Make the channel-ended calls that failed, or that a restart interrupted, again once they are due. */
+  private _retryChannelEnded(): void {
+    if (!this._config.onChannelEnded) return;
+    const now = Date.now();
+    let started = 0;
+    for (const channelId of this._channelStore.getEndedChannelNotices()) {
+      if (started >= CHANNEL_ENDED_RETRY_BATCH) break;
+      if (this._channelEndedInFlight.has(channelId)) continue;
+      if ((this._channelEndedRetry.get(channelId)?.notBefore ?? 0) > now) continue;
+      started += 1;
+      this._deliverChannelEnded(channelId);
+    }
   }
 
   /** Remove connectivity only if it still belongs to the channel being cleaned up. */
@@ -2359,6 +2402,7 @@ export class SellerPaymentManager {
    * Called periodically and on startup for recovery.
    */
   async checkTimeouts(): Promise<void> {
+    this._retryChannelEnded();
     await this._checkOneOffChannels();
     const nowSecs = Math.floor(Date.now() / 1000);
     const activeChannels = this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER);

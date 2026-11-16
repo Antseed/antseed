@@ -83,12 +83,7 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   // Funding depends only on the pool and epoch: one read for every account's weighted epochs.
   const weighted = [...new Set([own, ...workerEarnings].flatMap((earned) => earned.weighted))].sort((a, b) => a - b);
   const funding = await readEach(ctx, address, 'epochAnts', weighted.map((epoch) => [epoch]));
-  const unfunded = new Set(weighted.filter((_, index) => funding[index] === 0n));
-  const [shared, credited] = await Promise.all([
-    withUpstreamReward(ctx, stack, address, [...unfunded]),
-    outrightPullEpochs(ctx, stack, address, epochs),
-  ]);
-  const unfundedEpochs = [...new Set([...shared, ...credited])].sort((a, b) => a - b);
+  const unfundedEpochs = await pullableEpochs(ctx, stack, address, weighted.filter((_, index) => funding[index] === 0n), epochs);
   const pullable = new Set(unfundedEpochs);
   // A linked Mac stays in the claim while it has ANTS to claim now or after a pull of its epochs.
   const workerAnts = workers
@@ -128,26 +123,30 @@ async function accountsAnts(ctx: AntsContext, pool: string, accounts: string[], 
 }
 
 /**
- * The unfunded epochs a pull could fund: an epoch the emissions contract shows
- * no seller reward for would only spend gas. One whose reward can't be read
- * (or is locked) is kept, so the pull can say why.
+ * The seller reward the emissions contract holds for the pool in each of
+ * `epochs`, in one batched read; an epoch whose reward can't be read has no entry.
  */
-async function withUpstreamReward(ctx: AntsContext, stack: ResolvedStack, pool: string, epochs: number[]): Promise<number[]> {
-  if (epochs.length === 0) return epochs;
+async function upstreamRewards(ctx: AntsContext, stack: ResolvedStack, pool: string, epochs: number[]): Promise<Map<number, bigint>> {
   const pending = await multicallRead(ctx.provider(), epochs.map((epoch) => ({
     target: stack.registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
   })));
-  return epochs.filter((_, index) => pending[index]?.[0] !== 0n);
+  const rewards = new Map<number, bigint>();
+  epochs.forEach((epoch, index) => {
+    const seller: unknown = pending[index]?.[0];
+    if (typeof seller === 'bigint') rewards.set(epoch, seller);
+  });
+  return rewards;
 }
 
-/**
- * The finished epochs whose pull credits the connected wallet outright
- * (`antsOwed`), whatever its weight in them: every epoch the emissions contract
- * holds a seller reward for when the wallet takes the pool's operator fee, and
- * those of them nobody has weight in when it is the remainder recipient.
- * Asked over every finished epoch, so only a reward read as positive counts.
- */
-async function outrightPullEpochs(ctx: AntsContext, stack: ResolvedStack, pool: string, epochs: number[]): Promise<number[]> {
+/** What a pull of the pool's emissions credits the connected wallet outright (`antsOwed`), whatever its weight. */
+interface OutrightRoles {
+  /** The operator fee of every rewarded epoch. */
+  fee: boolean;
+  /** The reward of every epoch nobody has weight in. */
+  remainder: boolean;
+}
+
+async function outrightRoles(ctx: AntsContext, pool: string): Promise<OutrightRoles> {
   const methods = ['operatorFeeBps', 'operatorFeeRecipient', 'remainderRecipient'];
   const [feeBps, feeRecipient, remainderRecipient] = (await multicallRead(ctx.provider(), methods.map((method) => ({ target: pool, iface: EPOCH_READS, method, args: [] }))))
     .map((result, index) => {
@@ -156,18 +155,31 @@ async function outrightPullEpochs(ctx: AntsContext, stack: ResolvedStack, pool: 
       return result[0];
     });
   const isWallet = (recipient: unknown): boolean => typeof recipient === 'string' && recipient.toLowerCase() === ctx.address.toLowerCase();
-  const takesFee = typeof feeBps === 'bigint' && feeBps > 0n && isWallet(feeRecipient);
-  if ((!takesFee && !isWallet(remainderRecipient)) || epochs.length === 0) return [];
-  const pending = await multicallRead(ctx.provider(), epochs.map((epoch) => ({
-    target: stack.registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
-  })));
-  const rewarded = epochs.filter((_, index) => {
-    const seller = pending[index]?.[0];
-    return typeof seller === 'bigint' && seller > 0n;
-  });
-  if (takesFee) return rewarded;
-  const totals = await readEach(ctx, pool, 'epochTotalWeight', rewarded.map((epoch) => [epoch]));
-  return rewarded.filter((_, index) => totals[index] === 0n);
+  return { fee: typeof feeBps === 'bigint' && feeBps > 0n && isWallet(feeRecipient), remainder: isWallet(remainderRecipient) };
+}
+
+/**
+ * The epochs a pull is worth making for, out of the `unfunded` ones somebody
+ * read here has weight in and all the finished `epochs`:
+ * - an unfunded epoch, unless the emissions contract shows no seller reward for
+ *   it (the pull would only spend gas). One whose reward can't be read (or is
+ *   locked) is kept, so the pull can say why.
+ * - an epoch whose pull credits the wallet outright: every rewarded one when it
+ *   takes the operator fee, and those of them nobody has weight in when it is
+ *   the remainder recipient. Asked over every finished epoch, so only a reward
+ *   read as positive counts.
+ */
+async function pullableEpochs(ctx: AntsContext, stack: ResolvedStack, pool: string, unfunded: number[], epochs: number[]): Promise<number[]> {
+  const roles = await outrightRoles(ctx, pool);
+  const outright = roles.fee || roles.remainder ? epochs : [];
+  const rewards = await upstreamRewards(ctx, stack, pool, [...new Set([...unfunded, ...outright])]);
+  const shared = unfunded.filter((epoch) => rewards.get(epoch) !== 0n);
+  let credited = outright.filter((epoch) => (rewards.get(epoch) ?? 0n) > 0n);
+  if (!roles.fee) {
+    const totals = await readEach(ctx, pool, 'epochTotalWeight', credited.map((epoch) => [epoch]));
+    credited = credited.filter((_, index) => totals[index] === 0n);
+  }
+  return [...new Set([...shared, ...credited])].sort((a, b) => a - b);
 }
 
 export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {

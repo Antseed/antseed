@@ -86,6 +86,9 @@ export class ChannelStore {
     listAll: Database.Statement;
     getTimedOut: Database.Statement;
     getUnsettledByStatus: Database.Statement;
+    addEndedNotice: Database.Statement;
+    removeEndedNotice: Database.Statement;
+    getEndedNotices: Database.Statement;
     insertReceipt: Database.Statement;
     getReceipts: Database.Statement;
     updateReceiptAck: Database.Statement;
@@ -224,6 +227,11 @@ export class ChannelStore {
       getUnsettledByStatus: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND settled_at IS NULL ORDER BY updated_at LIMIT ?',
       ),
+      addEndedNotice: this._db.prepare(
+        'INSERT OR IGNORE INTO ended_channel_notices (session_id, created_at) VALUES (?, ?)',
+      ),
+      removeEndedNotice: this._db.prepare('DELETE FROM ended_channel_notices WHERE session_id = ?'),
+      getEndedNotices: this._db.prepare('SELECT session_id FROM ended_channel_notices ORDER BY created_at LIMIT ?'),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
           session_id, running_total, request_count, response_hash,
@@ -539,6 +547,22 @@ export class ChannelStore {
   getUnsettledChannelsByStatus(role: ChannelRole, status: ChannelStatus, limit = 100): StoredChannel[] {
     const rows = this._stmts.getUnsettledByStatus.all(role, status, limit) as ChannelRow[];
     return rows.map(rowToChannel);
+  }
+
+  // ── Ended-channel notices ─────────────────────────────────────
+
+  /** Remember that `sessionId` ended and its listener has not handled that yet. */
+  addEndedChannelNotice(sessionId: string): void {
+    this._stmts.addEndedNotice.run(sessionId, Date.now());
+  }
+
+  removeEndedChannelNotice(sessionId: string): void {
+    this._stmts.removeEndedNotice.run(sessionId);
+  }
+
+  /** Ended channels still to be handled, oldest first. */
+  getEndedChannelNotices(limit = 100): string[] {
+    return (this._stmts.getEndedNotices.all(limit) as Array<{ session_id: string }>).map((row) => row.session_id);
   }
 
   // ── Receipt CRUD ──────────────────────────────────────────────

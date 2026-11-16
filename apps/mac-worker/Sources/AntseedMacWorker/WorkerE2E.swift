@@ -4,8 +4,8 @@ import Foundation
 /// Worker side of the buyer ↔ worker end-to-end encryption
 /// (docs/protocol/colony-pool.md). Byte-compatible with @antseed/node/worker-e2e.
 enum WorkerE2E {
-    static let info = "antseed-worker-e2e/v2"
-    static let version = 2
+    static let info = "antseed-worker-e2e/v3"
+    static let version = 3
     /// Most workers one request is encrypted for.
     static let maxRecipients = 3
 
@@ -30,24 +30,24 @@ enum WorkerE2E {
         "antseed-worker-key/v2\npool:\(pool.lowercased())\nkey:\(keyHex.lowercased())\nexpires:\(expires)\nattestation-key:\(attestationKeyHex.lowercased())"
     }
 
-    static func nonce(_ seq: Int) -> ChaChaPoly.Nonce {
+    static func nonce(_ seq: Int) -> AES.GCM.Nonce {
         var bytes = [UInt8](repeating: 0, count: 12)
         var value = UInt64(seq).bigEndian
         withUnsafeBytes(of: &value) { raw in
             for i in 0..<8 { bytes[4 + i] = raw[i] }
         }
-        return try! ChaChaPoly.Nonce(data: bytes)
+        return try! AES.GCM.Nonce(data: bytes)
     }
 
     static func seal(_ key: SymmetricKey, seq: Int, aad: String, _ plaintext: Data) throws -> Data {
-        let box = try ChaChaPoly.seal(plaintext, using: key, nonce: nonce(seq), authenticating: Data(aad.utf8))
+        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce(seq), authenticating: Data(aad.utf8))
         return box.ciphertext + box.tag
     }
 
     static func open(_ key: SymmetricKey, seq: Int, aad: String, _ sealed: Data) throws -> Data {
         guard sealed.count >= 16 else { throw Failure.malformed }
-        let box = try ChaChaPoly.SealedBox(nonce: nonce(seq), ciphertext: sealed.dropLast(16), tag: sealed.suffix(16))
-        return try ChaChaPoly.open(box, using: key, authenticating: Data(aad.utf8))
+        let box = try AES.GCM.SealedBox(nonce: nonce(seq), ciphertext: sealed.dropLast(16), tag: sealed.suffix(16))
+        return try AES.GCM.open(box, using: key, authenticating: Data(aad.utf8))
     }
 
     static func responseAAD(_ seq: Int, end: Bool) -> String {

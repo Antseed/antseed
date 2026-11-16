@@ -152,6 +152,15 @@ describe('colony pool rewards', () => {
     expect(client.claimAnts).not.toHaveBeenCalled();
   });
 
+  it('reads each epoch\'s upstream reward once for a fee wallet that also earned in unfunded epochs', async () => {
+    const { ctx, client } = fixture([pool], [2, 3]);
+    client.operatorFeeRecipient.mockResolvedValue(wallet.address);
+    const view = await colonyPools(ctx);
+    expect(view.pools[0]!.unfundedEpochs).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(multicall.calls.filter((method) => method === 'pendingEmissions')).toHaveLength(1);
+    expect(client.pendingEmissions).toHaveBeenCalledTimes(6);
+  });
+
   it('takes no fee epochs for a fee recipient of a pool whose fee is zero', async () => {
     const { ctx, client } = withoutWeight([3]);
     client.operatorFeeRecipient.mockResolvedValue(wallet.address);

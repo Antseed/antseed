@@ -102,8 +102,11 @@ extension Chain {
         let epochs = resolved.epochs
         let account = try Self.addressWord(account)
 
-        let usdc = abiDecimal(try await ethCall(to: pool, data: Self.selector("usdcBalance(address)") + account))
-        let outright = abiDecimal(try await ethCall(to: pool, data: Self.selector("antsOwed(address)") + account))
+        let balances = try await batchEthCall([
+            Read(to: pool, data: Self.selector("usdcBalance(address)") + account),
+            Read(to: pool, data: Self.selector("antsOwed(address)") + account),
+        ])
+        let (usdc, outright) = (abiDecimal(balances[0]), abiDecimal(balances[1]))
         let weights = try await reads(epochs) { epoch in
             Read(to: pool, data: Self.selector("epochWeight(uint256,address)") + Data(abiWord(UInt64(epoch))) + account)
         }
@@ -118,28 +121,25 @@ extension Chain {
         }
         let (owed, funded) = try await (owedRead, fundedRead)
         let unfunded = weighted.filter { abiDecimal(funded[$0] ?? Data()) == 0 }
-        // Only an epoch the emissions contract would pay the pool for is worth a pull.
-        let poolWord = try Self.addressWord(pool)
-        let pullable = try await reads(unfunded) { epoch in
-            Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
-        }
-        let earned = unfunded.filter { abiDecimal((pullable[$0] ?? Data()).prefix(32)) > 0 }
         // A pull also credits the wallet outright, whatever its weight: every rewarded epoch when it takes
         // the pool's operator fee, and a rewarded epoch nobody earned in when it is the remainder recipient.
         let takesFee = try resolved.operatorFeeRecipient.map { try Self.addressWord($0) } == account
         let takesRemainder = try resolved.remainderRecipient.map { try Self.addressWord($0) } == account
-        var credited: [Int] = []
-        if takesFee || takesRemainder {
-            let rewards = try await reads(epochs) { epoch in
-                Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
+        let outrightEpochs = takesFee || takesRemainder ? epochs : []
+        // Only an epoch the emissions contract would pay the pool for is worth a pull: one read of
+        // its reward per epoch answers that for both the earned and the outright epochs.
+        let poolWord = try Self.addressWord(pool)
+        let rewards = try await reads(Array(Set(unfunded + outrightEpochs)).sorted()) { epoch in
+            Read(to: emissions, data: Self.selector("pendingEmissions(address,uint256[])") + poolWord + oneEpoch(epoch))
+        }
+        let rewarded: (Int) -> Bool = { abiDecimal((rewards[$0] ?? Data()).prefix(32)) > 0 }
+        let earned = unfunded.filter(rewarded)
+        var credited = outrightEpochs.filter(rewarded)
+        if !takesFee {
+            let totals = try await reads(credited) { epoch in
+                Read(to: pool, data: Self.selector("epochTotalWeight(uint256)") + Data(abiWord(UInt64(epoch))))
             }
-            credited = epochs.filter { abiDecimal((rewards[$0] ?? Data()).prefix(32)) > 0 }
-            if !takesFee {
-                let totals = try await reads(credited) { epoch in
-                    Read(to: pool, data: Self.selector("epochTotalWeight(uint256)") + Data(abiWord(UInt64(epoch))))
-                }
-                credited = credited.filter { abiDecimal(totals[$0] ?? Data()) == 0 }
-            }
+            credited = credited.filter { abiDecimal(totals[$0] ?? Data()) == 0 }
         }
         let antsEpochs = weighted.filter { abiDecimal(owed[$0] ?? Data()) > 0 }
         return ColonyRewards(
