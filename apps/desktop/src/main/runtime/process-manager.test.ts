@@ -17,6 +17,11 @@ test('packaged desktop CLI runs remain offline-only', () => {
   assert.equal(env['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'], '1');
 });
 
+test('CLI children attribute their usage to the Desktop client id', () => {
+  assert.equal(buildCliChildEnv({}, false)['ANTSEED_CLIENT_KIND'], 'desktop');
+  assert.equal(buildCliChildEnv({ ANTSEED_CLIENT_KIND: 'cli' }, true)['ANTSEED_CLIENT_KIND'], 'desktop');
+});
+
 test('CLI children are told the desktop hosts them, and are off when desktop telemetry cannot run', () => {
   setDesktopTelemetryChoiceInConfig(true);
   setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: false });

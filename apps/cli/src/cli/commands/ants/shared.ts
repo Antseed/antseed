@@ -15,7 +15,7 @@ export interface AntsCommandContext {
 }
 
 /** Build the ANTS service context from the CLI config and the node identity wallet, or for an explicit external account without a signer. */
-export async function loadAntsContext(command: Command, options: { address?: string } = {}): Promise<AntsCommandContext> {
+export async function loadAntsContext(command: Command, options: { address?: string; selectRpc?: boolean } = {}): Promise<AntsCommandContext> {
   const global = getGlobalOptions(command);
   const config = await loadConfig(global.config);
   const chain = requireCryptoConfig(config) as unknown as AntsChainConfig;
@@ -23,7 +23,7 @@ export async function loadAntsContext(command: Command, options: { address?: str
   const wallet = identity?.wallet;
   const address = options.address ?? wallet!.address;
   const ctx = new AntsContext({ chain, address, signer: wallet });
-  await ctx.selectRpc();
+  if (options.selectRpc !== false) await ctx.selectRpc();
   return { ctx, chain: ctx.chain, dataDir: global.dataDir, configPath: global.config };
 }
 
