@@ -66,7 +66,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     trackFreeUsageRequestService: vi.fn(),
     prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn(), trackVideoRetrieve: vi.fn(() => true), videoJobDuration: vi.fn(() => undefined), videoDeliveryUnsaved: vi.fn(() => false), recordVideoDelivered: vi.fn(), recordVideoFailed: vi.fn(), getActiveSession: vi.fn(() => null), getResponseAuthChannelId: vi.fn(() => null) },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -364,6 +364,18 @@ describe('BuyerRequestHandler payment demand on a route chosen as free', () => {
       expect(handle402).toHaveBeenCalledOnce();
       expect(sendProxyRequest).toHaveBeenCalledTimes(2);
     }
+  });
+
+  it('still negotiates a payment demand on a retrieve of a paid video job', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+    const retrieve: SerializedHttpRequest = {
+      ...makeRequest({ 'x-antseed-service': 'video-model' }),
+      path: '/api/v1/video/retrieve',
+      body: Buffer.from(JSON.stringify({ model: 'video-model', queue_id: 'job' })),
+    };
+    expect((await handler.sendRequest(makePeer(), retrieve)).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
   });
 });
 

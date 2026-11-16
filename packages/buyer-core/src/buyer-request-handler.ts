@@ -225,11 +225,11 @@ export class BuyerRequestHandler {
     // the seller's per-request gate so both sides classify the request the same way.
     const videoRoute = nativeVideoRoute(req);
     if (videoRoute && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
-    const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
+    // Free by its announced price. A video retrieve is also free to send, but its job is paid.
+    const isFreeByPrice = requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
-      : false);
-    // Free by its announced price (a video retrieve is free to send, but its job is paid).
-    const isFreeRoute = isFreeService && videoRoute?.action !== 'retrieve';
+      : false;
+    const isFreeService = videoRoute?.action === 'retrieve' || isFreeByPrice;
     // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
     if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
@@ -557,7 +557,7 @@ export class BuyerRequestHandler {
     // The buyer chose this route as free, so it never pays on it: a payment
     // demand contradicts the seller's own announcement. Nothing is negotiated,
     // opened or signed.
-    if (negotiator && isFreeRoute && startsPaymentNegotiation(response)) {
+    if (negotiator && isFreeByPrice && startsPaymentNegotiation(response)) {
       debugWarn(
         `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
         'which it announces as free: refusing instead of negotiating',
