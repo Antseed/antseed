@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { sanitizeConfig, DEFAULT_SOURCE_CONFIG } from '../lib/config.mjs';
 import { MOCK_USAGE, NO_USAGE_MARKER, startMock, summarizeDeliveries, usageCost } from '../lib/mock.mjs';
+import { createPrng } from '../lib/prng.mjs';
 import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 import { classifyScenarioError } from '../lib/report.mjs';
 import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, runAll, runLoad, SELLER_PATTERNS, stressRun, stressTopology } from '../lib/stress.mjs';
@@ -241,6 +242,21 @@ describe('stress load and gates', () => {
       assert.equal(run.client.streamed.count, 4);
       for (const record of run.results) assert.ok(record.ttfbMs >= 0 && record.ttfbMs <= record.ms);
       assert.ok(run.client.okPerSecond > 0);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it('streams a share of its images and checks each stream carries its final images', async () => {
+    const mock = await startMock({ models: ['m', 'img'], usage: 'load', latencyRangeMs: [0, 0], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, img: { imageUsd: 0.04 } } });
+    try {
+      const run = await runLoad({ proxyUrl: mock.url, model: 'm', imageModel: 'img', random: createPrng(5), load: { concurrency: 2, requests: 12, streamRatio: 0, imageRatio: 1, imageStreamRatio: 0.5, minInTokens: 1, maxInTokens: 2 } });
+      const streamed = run.results.filter((record) => record.stream);
+      assert.ok(streamed.length > 0 && streamed.length < run.results.length, `streamed ${streamed.length} of ${run.results.length}`);
+      for (const record of run.results) assert.equal(record.error, undefined, JSON.stringify(record));
+      for (const record of streamed) assert.ok(record.partials >= 0 && record.partials <= 3);
+      const ledger = mock.deliveries().byTag;
+      for (const record of streamed) assert.equal(ledger[record.tag]?.stream, true, record.tag);
     } finally {
       await mock.stop();
     }
