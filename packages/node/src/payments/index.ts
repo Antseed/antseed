@@ -29,8 +29,8 @@ export { FreeUsageClient } from './evm/free-usage-client.js';
 export type { FreeUsageClientConfig, FreeUsageChannelInfo, FreeUsageAgentStats } from './evm/free-usage-client.js';
 
 // Identity client (ERC-8004 IdentityRegistry)
-export { IdentityClient } from './evm/identity-client.js';
-export type { IdentityClientConfig } from './evm/identity-client.js';
+export { IdentityClient, DEFAULT_AGENT_LOOKBACK_BLOCKS, DEFAULT_AGENT_LOG_CHUNK_BLOCKS, MIN_AGENT_LOG_CHUNK_BLOCKS } from './evm/identity-client.js';
+export type { IdentityClientConfig, FindOwnedAgentIdsOptions } from './evm/identity-client.js';
 
 // Staking client (seller staking, token rate, slashing)
 export { StakingClient } from './evm/staking-client.js';

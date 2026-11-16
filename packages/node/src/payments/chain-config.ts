@@ -50,6 +50,12 @@ export interface ChainConfig {
   stakingContractAddress?: string;
   usdcContractAddress: string;
   identityRegistryAddress?: string;
+  /**
+   * First block with code at `identityRegistryAddress`. Floor for the
+   * Transfer-log scan that recovers a wallet's agent ID (the registry is not
+   * enumerable). Only describes the built-in registry address.
+   */
+  identityRegistryDeployBlock?: number;
   emissionsContractAddress?: string;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
@@ -122,6 +128,8 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
       'https://base-public.nodies.app',
       'https://mainnet.base.org',
     ],
+    // ERC-8004 IdentityRegistry is external (not in the deployment ledger); first block with its code.
+    identityRegistryDeployBlock: 41_663_783,
     networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
     // Uniswap v3: the deep USDC/WETH 0.05% pool.
@@ -136,6 +144,7 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],
     chainId: 'base-sepolia',
     rpcUrl: 'https://sepolia.base.org',
+    identityRegistryDeployBlock: 36_304_145,
     // depositRelayAddress: TODO — set after AntseedDepositRelay sepolia deployment
   },
   'base-local': {
@@ -147,6 +156,7 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     // 8=Emissions (V1), 9=DepositRelay. staking/emissions keep naming those legacy contracts.
     usdcContractAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
     identityRegistryAddress: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
+    identityRegistryDeployBlock: 0,
     registryContractAddress: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
     stakingContractAddress: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
     depositsContractAddress: '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707',

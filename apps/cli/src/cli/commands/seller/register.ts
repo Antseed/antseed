@@ -13,6 +13,7 @@ import {
   createLegacyStakingClient,
   createStakingClient,
 } from '../../payment-utils.js';
+import { ensureRegisteredAgentId, recoveryProgressText } from './agent-id.js';
 
 export function registerSellerRegisterCommand(sellerCmd: Command): void {
   sellerCmd
@@ -31,19 +32,24 @@ export function registerSellerRegisterCommand(sellerCmd: Command): void {
         const stack = await resolveCliContractStack(config);
         const identityClient = createIdentityClient(config);
         console.log(chalk.dim(`Wallet: ${address}`));
-        const alreadyRegistered = await identityClient.isRegistered(address);
-        let agentId = options.agentId as number | undefined;
-        if (!alreadyRegistered) {
-          spinner.text = 'Registering peer identity...';
-          agentId = await identityClient.register(wallet, options.metadata as string || undefined);
-          spinner.succeed(chalk.green('Peer identity registered'));
-        } else if (stack.mode === 'legacy') {
-          agentId = agentId || await createStakingClient(config).getAgentId(address);
-        } else {
-          const sellerRegistry = createSellerRegistryClient(config);
-          agentId = agentId || await sellerRegistry.getAgentId(address);
-          if (!agentId && stack.addresses.legacyStakingContractAddress) agentId = await createLegacyStakingClient(config).getAgentId(address);
-        }
+        const { agentId, minted } = await ensureRegisteredAgentId({
+          identity: identityClient,
+          lookupBoundAgentId: async () => {
+            if (stack.mode === 'legacy') return createStakingClient(config).getAgentId(address);
+            const bound = await createSellerRegistryClient(config).getAgentId(address);
+            if (bound || !stack.addresses.legacyStakingContractAddress) return bound;
+            return createLegacyStakingClient(config).getAgentId(address);
+          },
+          log: (line) => console.log(chalk.dim(line)),
+          onMinting: () => { spinner.text = 'Registering peer identity...'; },
+          onRecovering: (progress) => { spinner.text = recoveryProgressText(progress); },
+        }, wallet, address, {
+          agentId: options.agentId as number | undefined,
+          metadata: options.metadata as string,
+          requireAgentId: stack.mode === 'recognized-usage',
+        });
+        const alreadyRegistered = !minted;
+        if (minted) spinner.succeed(chalk.green('Peer identity registered'));
 
         if (stack.mode === 'recognized-usage') {
           if (!agentId) throw new Error('Could not determine agent ID. Pass --agent-id <id>.');
@@ -60,7 +66,7 @@ export function registerSellerRegisterCommand(sellerCmd: Command): void {
           spinner.succeed(chalk.yellow('Already registered'));
         }
 
-        if (agentId) console.log(chalk.dim(`Agent ID: ${agentId}`));
+        if (agentId && !minted) console.log(chalk.dim(`Agent ID: ${agentId}`));
       } catch (err) {
         const guidance = err instanceof SellerRegistrationVerificationError ? ' Re-run: antseed seller register' : '';
         spinner.fail(chalk.red(`Registration failed: ${(err as Error).message}${guidance}`));
