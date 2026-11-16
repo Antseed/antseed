@@ -3,6 +3,26 @@ import type { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client
 
 export type RewardTransactionRecorder = (hash: string, kind: 'claim' | 'accounting') => Promise<void>;
 
+/**
+ * Epochs from `fromEpoch` up to the last claimable one before `currentEpoch`
+ * (an epoch is claimable once it ends) with a non-zero payable reward, in
+ * epoch order. Reads `readPending` 32 epochs at a time.
+ */
+export async function scanEpochRewards(
+  fromEpoch: number,
+  currentEpoch: number,
+  readPending: (epoch: number) => Promise<bigint>,
+): Promise<Array<{ epoch: number; amount: bigint }>> {
+  const from = Math.max(0, fromEpoch);
+  const found: Array<{ epoch: number; amount: bigint }> = [];
+  for (let start = from; start < currentEpoch; start += 32) {
+    const epochs = Array.from({ length: Math.min(32, currentEpoch - start) }, (_, i) => start + i);
+    const amounts = await Promise.all(epochs.map(readPending));
+    epochs.forEach((epoch, i) => { if (amounts[i]! > 0n) found.push({ epoch, amount: amounts[i]! }); });
+  }
+  return found;
+}
+
 export async function pendingEpochRewards(
   epochs: number[],
   readPending: (epochs: number[]) => Promise<bigint>,

@@ -37,6 +37,8 @@ export const contractFields = {
   usageRewards: 'usageRewardsAddress',
   sellerPoolsRewards: 'sellerPoolsRewardsAddress',
   legacyEmissionsEscrow: 'legacyEmissionsEscrowAddress',
+  referrals: 'referralsAddress',
+  clientRewards: 'clientRewardsAddress',
   verificationPointsPolicy: 'verificationPointsPolicyAddress',
 };
 
