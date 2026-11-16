@@ -94,7 +94,7 @@ would omit that real deposit; keep the scan starting at 0.
 
 The broader claim that V2 never paid directly is false: transaction traces
 show 17 direct seller payouts to `0x1f228613116E2d08014DfdCC198377C8dedf18C9`
-(DiemStakingProxy), the only address enabled in the unlock-policy history.
+(the staking proxy), the only address enabled in the unlock-policy history.
 For example, see [this direct proxy payout](https://basescan.org/tx/0x4c928c2e6c54c86e0a7cc07f5746b14c8e80dfcbacc9f131f7ad48625441561d).
 That is separate from withdrawals from the seller rewards pool.
 

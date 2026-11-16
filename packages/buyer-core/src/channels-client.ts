@@ -44,7 +44,7 @@ const CHANNELS_ABI = [
 ] as const;
 
 /// @dev Probe ABI for the seller-facade passthrough. Present on
-///      AntseedSellerDelegation (and derivatives like DiemStakingProxy); absent
+///      AntseedSellerDelegation (and derivatives such as staking proxies); absent
 ///      on plain AntseedChannels. Used at init to discover the underlying
 ///      channels contract when the configured address is a seller facade.
 const SELLER_FACADE_PROBE_ABI = [
@@ -60,7 +60,7 @@ export class ChannelsClient extends BaseEvmClient {
   /**
    * The underlying AntseedChannels address used for reads + event filters.
    * When the configured `contractAddress` is a seller facade (e.g.
-   * DiemStakingProxy), this resolves to the real channels contract via the
+   * staking proxy), this resolves to the real channels contract via the
    * facade's `channelsAddress()` view. Otherwise it equals `_contractAddress`.
    * Probed lazily on first read.
    */

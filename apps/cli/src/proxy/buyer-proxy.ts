@@ -1199,7 +1199,7 @@ export function parsePersistedPeers(
     }
     // Carry sellerContract through the persistence layer so the buyer's
     // SellerAddressResolver can return the facade address for facade-fronted
-    // peers (e.g. DiemStakingProxy). Without this, the resolver falls back to
+    // peers (e.g. a staking proxy). Without this, the resolver falls back to
     // peerIdToAddress(peerId), the buyer signs channelId derived from the peer
     // wallet, and `reserve()` reverts on-chain with InvalidSignature() because
     // the contract derives channelId from msg.sender (the facade).

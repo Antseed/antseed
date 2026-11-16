@@ -19,11 +19,11 @@ import { advanceTimeTo, impersonatedSend } from './runtime/anvil.mjs';
 const VERIFICATION_MINTER_ID = '0xd8018a5ea0ce31650e6d51e87c96f1d258a180b37e42ce66e7adf1c8ac666b57';
 // --fork-test rehearsal fixtures (Base mainnet only).
 export const BASE_MAINNET_FORK_BLOCK = 50_571_469;
-export const BASE_MAINNET_DIEM_PROXY = '0x1f228613116E2d08014DfdCC198377C8dedf18C9';
-// An account with DIEM staked on the proxy at the fork block; impersonated to
+export const BASE_MAINNET_STAKING_PROXY = '0x1f228613116E2d08014DfdCC198377C8dedf18C9';
+// An account with tokens staked on the proxy at the fork block; impersonated to
 // fund the pre-cutover reward epoch so Cutover.s.sol exercises its
 // "already funded" path exactly as it will on mainnet.
-export const BASE_MAINNET_DIEM_STAKER = '0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a';
+export const BASE_MAINNET_PROXY_STAKER = '0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a';
 const M001_TESTNET = 'base-sepolia';
 const M001_ANVIL_FORK = 'base-mainnet';
 
@@ -53,13 +53,13 @@ const CONTRACT_ALIASES = { emissions: 'usageAccounting', staking: 'sellerRegistr
 
 const DEPLOY_SIGNERS = ['deployer'];
 const CUTOVER_SIGNERS = ['registryOwner', 'channelsOwner', 'deployer'];
-const CUTOVER_PROXY_SIGNERS = ['diemStaker', 'sellerRewardsPoolOwner'];
+const CUTOVER_PROXY_SIGNERS = ['proxyStaker', 'sellerRewardsPoolOwner'];
 
 const SIGNER_ENV = {
   deployer: 'DEPLOYER',
   registryOwner: 'REGISTRY_OWNER',
   channelsOwner: 'CHANNELS_OWNER',
-  diemStaker: 'DIEM_STAKER',
+  proxyStaker: 'PROXY_STAKER',
   sellerRewardsPoolOwner: 'SELLER_REWARDS_POOL_OWNER',
 };
 
@@ -328,7 +328,7 @@ function idleMessage(observation) {
 }
 
 function cutoverSigners(context) {
-  const usesProxy = context.network === 'base-mainnet' || Boolean(process.env.DIEM_STAKING_PROXY);
+  const usesProxy = context.network === 'base-mainnet' || Boolean(process.env.STAKING_PROXY);
   return usesProxy ? [...CUTOVER_SIGNERS, ...CUTOVER_PROXY_SIGNERS] : CUTOVER_SIGNERS;
 }
 
@@ -347,7 +347,7 @@ function ownedContracts(role, context, observation) {
 }
 
 function expectedSigner(role, context, observation) {
-  if (role === 'diemStaker') return process.env.DIEM_STAKER ?? BASE_MAINNET_DIEM_STAKER;
+  if (role === 'proxyStaker') return process.env.PROXY_STAKER ?? BASE_MAINNET_PROXY_STAKER;
   return call(context.rpcUrl, ownedContracts(role, context, observation)[0][0], 'owner()(address)');
 }
 
@@ -378,15 +378,15 @@ function verifyRoles(context, observation, env) {
     ], env);
     verifyHistoricalPeriod(env);
   }
-  const roles = deploying ? DEPLOY_SIGNERS : [...CUTOVER_SIGNERS, ...(env.DIEM_STAKING_PROXY ? ['sellerRewardsPoolOwner'] : [])];
+  const roles = deploying ? DEPLOY_SIGNERS : [...CUTOVER_SIGNERS, ...(env.STAKING_PROXY ? ['sellerRewardsPoolOwner'] : [])];
   for (const role of roles) {
     assertSignerOwners(context.rpcUrl, env, SIGNER_ENV,
       ownedContracts(role, context, observation).map(([contract, label]) => [role, contract, label]));
   }
-  if (!deploying && env.DIEM_STAKING_PROXY) {
-    requireEnvironment(['DIEM_STAKER'], env);
-    const staked = BigInt(call(context.rpcUrl, env.DIEM_STAKING_PROXY, 'staked(address)(uint256)', [env.DIEM_STAKER]).split(/\s/)[0]);
-    if (staked === 0n) throw new Error(`diemStaker (${env.DIEM_STAKER}) has no DIEM staked on the proxy`);
+  if (!deploying && env.STAKING_PROXY) {
+    requireEnvironment(['PROXY_STAKER'], env);
+    const staked = BigInt(call(context.rpcUrl, env.STAKING_PROXY, 'staked(address)(uint256)', [env.PROXY_STAKER]).split(/\s/)[0]);
+    if (staked === 0n) throw new Error(`proxyStaker (${env.PROXY_STAKER}) has no tokens staked on the proxy`);
   }
 }
 
@@ -402,7 +402,7 @@ function migrationEnvironment(context, observation, signerAddresses = {}, extra 
     EXPECTED_CHANNELS: context.expected.channels,
     EXPECTED_LEGACY_EMISSIONS: context.expected.legacyEmissions,
     EXPECTED_LEGACY_STAKING: context.expected.legacyStaking,
-    ...(context.network === 'base-mainnet' ? { DIEM_STAKING_PROXY: BASE_MAINNET_DIEM_PROXY } : {}),
+    ...(context.network === 'base-mainnet' ? { STAKING_PROXY: BASE_MAINNET_STAKING_PROXY } : {}),
     ...extra,
   };
   if (checkpoint) {
@@ -605,8 +605,8 @@ export function deployForkVerifierStub(rpcUrl) {
 
 /** Unlocks the impersonated staker so Cutover.s.sol can claim as it on the fork. */
 export function prepareForkStaker(context) {
-  cast(context.rpcUrl, ['rpc', 'anvil_impersonateAccount', BASE_MAINNET_DIEM_STAKER]);
-  cast(context.rpcUrl, ['rpc', 'anvil_setBalance', BASE_MAINNET_DIEM_STAKER, '0x3635C9ADC5DEA00000']);
+  cast(context.rpcUrl, ['rpc', 'anvil_impersonateAccount', BASE_MAINNET_PROXY_STAKER]);
+  cast(context.rpcUrl, ['rpc', 'anvil_setBalance', BASE_MAINNET_PROXY_STAKER, '0x3635C9ADC5DEA00000']);
 }
 
 async function rehearseM001({ rpcUrl, outputRoot, network, runMigration: drive }) {
@@ -619,7 +619,7 @@ async function rehearseM001({ rpcUrl, outputRoot, network, runMigration: drive }
     HISTORICAL_PERIOD_START_BLOCK: process.env.HISTORICAL_PERIOD_START_BLOCK ?? '1',
     HISTORICAL_PERIOD_END_BLOCK: process.env.HISTORICAL_PERIOD_END_BLOCK ?? String(BASE_MAINNET_FORK_BLOCK),
     VERIFICATION_WALLET: ANVIL_ACCOUNT_1,
-    DIEM_STAKING_PROXY: BASE_MAINNET_DIEM_PROXY,
+    STAKING_PROXY: BASE_MAINNET_STAKING_PROXY,
     ANTSEED_DEPLOY_CONFIRM: network,
   };
   // Every role is an Anvil-unlocked account; the fork test signs nothing.
@@ -628,7 +628,7 @@ async function rehearseM001({ rpcUrl, outputRoot, network, runMigration: drive }
     registryOwner: `unlocked:${ANVIL_ACCOUNT_0}`,
     channelsOwner: `unlocked:${ANVIL_ACCOUNT_1}`,
     sellerRewardsPoolOwner: `unlocked:${ANVIL_ACCOUNT_1}`,
-    diemStaker: `unlocked:${BASE_MAINNET_DIEM_STAKER}`,
+    proxyStaker: `unlocked:${BASE_MAINNET_PROXY_STAKER}`,
   };
   const overrides = { environment, signers };
 

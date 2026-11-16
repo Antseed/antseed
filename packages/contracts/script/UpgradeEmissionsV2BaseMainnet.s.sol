@@ -28,7 +28,7 @@ interface IANTSTokenAdmin {
  *
  * Optional env:
  *   SELLER_UNLOCK_POLICY   Existing unlock policy. If unset, this script deploys one.
- *   DIEM_PROXY_SELLER      Optional seller/proxy address to make immediately claimable.
+ *   PROXY_SELLER           Optional seller/proxy address to make immediately claimable.
  *   WHITELIST_REWARDS_POOL Defaults to false. Enable later when seller claims should be transferable.
  *
  * Usage:
@@ -75,10 +75,10 @@ contract UpgradeEmissionsV2BaseMainnet is Script {
             policyAddress = address(policy);
             console.log("SellerUnlockPolicy:   ", policyAddress);
 
-            address diemProxySeller = vm.envOr("DIEM_PROXY_SELLER", address(0));
-            if (diemProxySeller != address(0)) {
-                policy.setSellerEligibility(diemProxySeller, true);
-                console.log("Diem proxy seller:    ", diemProxySeller);
+            address proxySeller = vm.envOr("PROXY_SELLER", address(0));
+            if (proxySeller != address(0)) {
+                policy.setSellerEligibility(proxySeller, true);
+                console.log("Proxy seller:         ", proxySeller);
             }
         } else {
             console.log("SellerUnlockPolicy:   ", policyAddress);

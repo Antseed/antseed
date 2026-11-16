@@ -114,7 +114,7 @@ abstract contract AntseedSellerDelegation is Ownable, ReentrancyGuard {
     // The four forwarders below intentionally carry `onlyOperator` but *not*
     // `nonReentrant`. AntseedChannels applies its own reentrancy guard on
     // every lifecycle entry point, so the delegation layer would only add a
-    // redundant lock here. Derived contracts (e.g. DiemStakingProxy) that
+    // redundant lock here. Derived contracts (e.g. a staking proxy) that
     // need to wrap the super call with additional state updates — like
     // USDC-delta capture after `settle` — should apply a single
     // `nonReentrant` on the override so the override's extra work runs under

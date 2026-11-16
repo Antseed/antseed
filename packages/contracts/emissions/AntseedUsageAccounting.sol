@@ -214,7 +214,7 @@ contract AntseedUsageAccounting is IAntseedUsageAccounting, Ownable2Step, Pausab
     //                    SELLER DELEGATION ADAPTER
     // ═══════════════════════════════════════════════════════════════════
 
-    // Already-deployed seller delegation contracts (e.g. DiemStakingProxy)
+    // Already-deployed seller delegation contracts (e.g. a staking proxy)
     // resolve registry.emissions() live and call the legacy IAntseedEmissions
     // selectors on it. These adapters keep that surface answering: seller
     // emission amounts come from the AntseedUsageRewards agent bucket, keyed

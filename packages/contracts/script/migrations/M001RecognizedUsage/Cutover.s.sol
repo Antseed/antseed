@@ -36,7 +36,7 @@ interface ISellerRewardsPoolAdmin {
     function setRegistry(address _registry) external;
 }
 
-interface IDiemStakingProxyFlip {
+interface IStakingProxyFlip {
     function staked(address account) external view returns (uint256);
     function firstRewardEpoch() external view returns (uint32);
     function syncedRewardEpoch() external view returns (uint32);
@@ -57,7 +57,7 @@ interface IDiemStakingProxyFlip {
  *         deploy has finalized (the gate's effectiveEpoch has started).
  *
  *         Two phases, two signers:
- *           1. STAKER: syncs the DiemStakingProxy's reward epochs and
+ *           1. STAKER: syncs the staking proxy's reward epochs and
  *              claims every pre-effective epoch whose pot is not yet funded.
  *              registry.emissions() still resolves to legacy EmissionsV2 at
  *              this point, so each claim funds the proxy's epoch pot with its
@@ -99,9 +99,9 @@ interface IDiemStakingProxyFlip {
  *                                broadcast #1 (read-only check).
  *
  * Optional env:
- *   DIEM_STAKING_PROXY           Deployed DiemStakingProxy. Unset skips the
+ *   STAKING_PROXY                Deployed staking proxy. Unset skips the
  *                                claim phase (testnets without a proxy).
- *   DIEM_STAKER                  Address with DIEM staked on the proxy (signs
+ *   PROXY_STAKER                 Address with tokens staked on the proxy (signs
  *                                the claims). Required when the proxy is set.
  *   SELLER_REWARDS_POOL_OWNER    Owner address of the deployed
  *                                AntseedSellerRewardsPool (auto-discovered via
@@ -126,7 +126,7 @@ contract M001CutoverRecognizedUsage is Script {
         IAntseedRegistryFlipAdmin registry = IAntseedRegistryFlipAdmin(vm.envAddress("ANTSEED_REGISTRY"));
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address sellerRegistry = vm.envAddress("SELLER_REGISTRY");
-        address proxyAddress = vm.envOr("DIEM_STAKING_PROXY", address(0));
+        address proxyAddress = vm.envOr("STAKING_PROXY", address(0));
         address expectedLegacyEmissions = vm.envAddress("EXPECTED_LEGACY_EMISSIONS");
         address expectedLegacyStaking = vm.envAddress("EXPECTED_LEGACY_STAKING");
         address verificationWallet = vm.envAddress("VERIFICATION_WALLET");
@@ -180,10 +180,10 @@ contract M001CutoverRecognizedUsage is Script {
 
         if (!emissionsDone) {
             if (proxyAddress != address(0)) {
-                _fundProxyRewardEpochs(IDiemStakingProxyFlip(proxyAddress), uint32(effectiveEpoch - 1));
+                _fundProxyRewardEpochs(IStakingProxyFlip(proxyAddress), uint32(effectiveEpoch - 1));
             } else {
                 console.log("");
-                console.log("WARNING: DIEM_STAKING_PROXY unset - skipping the pre-flip claim.");
+                console.log("WARNING: STAKING_PROXY unset - skipping the pre-flip claim.");
                 console.log("Any deployed delegation proxy with unfunded pre-effective epochs");
                 console.log("will permanently freeze them at a zero pot after this flip.");
             }
@@ -196,7 +196,7 @@ contract M001CutoverRecognizedUsage is Script {
             console.log("");
             console.log("registry.emissions() already flipped - resuming to finish setStaking().");
             if (proxyAddress != address(0)) {
-                _verifyProxyPotsFunded(IDiemStakingProxyFlip(proxyAddress), uint32(effectiveEpoch - 1));
+                _verifyProxyPotsFunded(IStakingProxyFlip(proxyAddress), uint32(effectiveEpoch - 1));
             }
         }
 
@@ -214,7 +214,7 @@ contract M001CutoverRecognizedUsage is Script {
         console.log("Registry staking is now:  ", sellerRegistry);
         console.log("");
         console.log("Immediately after:");
-        console.log("- Resume the DiemStakingProxy operator.");
+        console.log("- Resume the staking proxy operator.");
         console.log("- Create + seed an ANTS seller pool for the proxy's agent id");
         console.log("  (usage of pool-less agents is not accounted).");
     }
@@ -261,13 +261,13 @@ contract M001CutoverRecognizedUsage is Script {
     ///      funded with its real ANTS amount before the flip freezes the
     ///      legacy path out. Reverts (in simulation, before anything is sent)
     ///      if an epoch with points cannot be funded by this staker.
-    function _fundProxyRewardEpochs(IDiemStakingProxyFlip proxy, uint32 cutoverEpoch) internal {
-        address staker = vm.envAddress("DIEM_STAKER");
+    function _fundProxyRewardEpochs(IStakingProxyFlip proxy, uint32 cutoverEpoch) internal {
+        address staker = vm.envAddress("PROXY_STAKER");
 
         console.log("");
-        console.log("DiemStakingProxy:       ", address(proxy));
+        console.log("Staking proxy:          ", address(proxy));
         console.log("Staker:                 ", staker);
-        console.log("Staker DIEM staked:     ", proxy.staked(staker));
+        console.log("Staker proxy stake:     ", proxy.staked(staker));
 
         vm.startBroadcast(staker);
 
@@ -319,7 +319,7 @@ contract M001CutoverRecognizedUsage is Script {
     ///      (fund it from another staker, then rerun); on the resume path it
     ///      means a pot slipped through before the earlier flip and needs
     ///      manual recovery.
-    function _verifyProxyPotsFunded(IDiemStakingProxyFlip proxy, uint32 cutoverEpoch) internal view {
+    function _verifyProxyPotsFunded(IStakingProxyFlip proxy, uint32 cutoverEpoch) internal view {
         uint32 firstEpoch = proxy.firstRewardEpoch();
         for (uint32 epoch = firstEpoch; epoch <= cutoverEpoch; epoch++) {
             (, uint256 totalPoints,, bool funded) = proxy.rewardEpochs(epoch);

@@ -311,7 +311,7 @@ async function readOnChainChannelState(config: AntseedConfig, rows: DaemonChanne
     const crypto = requireCryptoConfig(config)
     const channelsClient = createChannelsClient(config)
     // Channels with a delegated seller live behind the seller's facade
-    // contract (the row's `seller` is the contract, e.g. DiemStakingProxy) —
+    // contract (the row's `seller` is the contract, e.g. a staking proxy) —
     // ChannelsClient probes `channelsAddress()` on it to find the underlying
     // channels deployment.
     const facadeClients = new Map<string, ChannelsClient>()
