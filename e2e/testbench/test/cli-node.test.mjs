@@ -50,6 +50,12 @@ describe('CLI config writer', () => {
     assert.equal(buyerConfig().buyer.maxPricing, undefined);
   });
 
+  it('refreshes buyer peers every minute unless the topology sets the interval', () => {
+    assert.equal(assertCliConfig(buyerConfig(), 'buyer').buyer.peerRefreshIntervalMs, 60_000);
+    assert.equal(assertCliConfig(buyerConfig({ peerRefreshIntervalMs: undefined }), 'buyer').buyer.peerRefreshIntervalMs, 60_000);
+    assert.equal(assertCliConfig(buyerConfig({ peerRefreshIntervalMs: 1_800_000 }), 'buyer').buyer.peerRefreshIntervalMs, 1_800_000);
+  });
+
   it('refuses default ports and anything that leaves the private network', () => {
     const change = (config, section, patch) => ({ ...config, [section]: { ...config[section], ...patch } });
     const seller = sellerConfig();

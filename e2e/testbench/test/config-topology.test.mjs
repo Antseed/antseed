@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
+import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, repriceProviders, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
 import { pathToFileURL } from 'node:url';
 import { scenarioFile, scenarioFiles } from '../lib/scenarios.mjs';
 import { assertScenarioSupported, assertUpstreamReusable, buyerRoutingPreferences, chooseMode, chooseTarget, MAX_SELLERS, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from '../lib/topology.mjs';
@@ -31,6 +31,31 @@ const realConfig = () => ({
   buyer: { proxyPort: 8377, routingPreferences: { minTrustScore: 50, preferLowLatency: true, allowedPeerIds: ['ffff'] }, maxPricing: { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } } },
   payments: { crypto: { chainId: 'base-mainnet', rpcUrl: 'https://mainnet.base.org', depositsAddress: '0xabc' }, systemProxy: true },
   verifier: { enabled: true },
+});
+
+describe('repriceProviders', () => {
+  const providers = {
+    mock: { plugin: 'openai', defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { m: { categories: ['chat'] }, n: { pricing: { inputUsdPerMillion: 1 } } } },
+  };
+
+  it('replaces the default or a service price, leaving the input and everything else as they were', () => {
+    const raised = repriceProviders(providers, { provider: 'mock', defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } });
+    assert.deepEqual(raised.mock.defaults, { inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+    assert.deepEqual(raised.mock.services, providers.mock.services);
+    assert.deepEqual(providers.mock.defaults, { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, 'the input is not changed');
+    const service = repriceProviders(providers, { provider: 'mock', services: { n: { outputUsdPerMillion: 2 } } });
+    assert.deepEqual(service.mock.services.n.pricing, { outputUsdPerMillion: 2 }, 'a service price is replaced, not merged');
+    assert.deepEqual([service.mock.defaults, service.mock.services.m], [providers.mock.defaults, providers.mock.services.m]);
+  });
+
+  it('refuses an unknown provider or service, a bad price or nothing to change', () => {
+    assert.throws(() => repriceProviders(providers, { provider: 'other', defaults: {} }), /Unknown provider "other"; the seller has mock/);
+    assert.throws(() => repriceProviders(providers, { provider: 'mock', services: { x: {} } }), /no service x/);
+    assert.throws(() => repriceProviders(providers, { provider: 'mock', defaults: { inputUsdPerMillion: -1 } }), /mock.defaults.inputUsdPerMillion must be a non-negative number/);
+    assert.throws(() => repriceProviders(providers, { provider: 'mock', defaults: { inputUsdPerMillion: '3' } }), /non-negative number/);
+    assert.throws(() => repriceProviders(providers, { provider: 'mock', defaults: [] }), /must be an object/);
+    assert.throws(() => repriceProviders(providers, { provider: 'mock' }), /Give defaults or services/);
+  });
 });
 
 describe('sanitizeConfig', () => {
@@ -173,6 +198,8 @@ describe('topology', () => {
     assert.throws(() => normalizeTopology({ sellers: Array.from({ length: MAX_SELLERS + 1 }, (_, i) => ({ id: `s${i}` })) }, source), /At most/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'Bad Id' }] }, source), /Invalid seller id/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'a', mock: { latencyMs: -1 } }] }, source), /latencyMs/);
+    assert.throws(() => normalizeTopology({ buyer: { peerRefreshIntervalMs: 500 } }, source), /peerRefreshIntervalMs must be 1000-3600000/);
+    assert.throws(() => normalizeTopology({ buyer: { peerRefreshIntervalMs: '60000' } }, source), /peerRefreshIntervalMs/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'a', providers: { p: { plugin: 'openai', apiKey: 'sk', services: { m: {} } } } }] }, source), /inline secret/);
   });
 
@@ -194,13 +221,13 @@ describe('topology', () => {
       'buyer.maxReserveMicros': { buyer: { maxReserveUsdc: '0.25' } },
       'buyer.maxPricing': { buyer: { maxPricing: { defaults: { inputUsdPerMillion: 1 } } } },
       'buyer.env': { buyer: { env: { ANTSEED_DEBUG: '1' } } },
+      'buyer.peerRefreshIntervalMs': { buyer: { peerRefreshIntervalMs: 1_800_000 } },
       'payments.settlementIdleMs': { payments: { settlementIdleMs: 5000 } },
       'payments.minBudgetPerRequestMicros': { payments: { minBudgetPerRequestUsdc: '0.01' } },
       'chain.topUpThresholdBps': { chain: { topUpThresholdBps: 5000 } },
       'chain.blockTimeSec': { chain: { blockTimeSec: 3 } },
       'sellers.0.mock.latencyMs': { sellers: [{ id: 'seller', mock: { latencyMs: 250 } }] },
       'sellers.0.mock.fault500Rate': { sellers: [{ id: 'seller', mock: { fault500Rate: 0.1 } }] },
-      'sellers.0.mock.cachedPromptTokens': { sellers: [{ id: 'seller', mock: { cachedPromptTokens: 1000 } }] },
       'sellers.0.env': { sellers: [{ id: 'seller', env: { ANTSEED_DEBUG: '1' } }] },
     };
     for (const [path, topology] of Object.entries(variants)) {
