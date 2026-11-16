@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react';
-import { GiftIcon, Globe02Icon, SparklesIcon, UserGroupIcon } from '@hugeicons/core-free-icons';
-import { VprMark } from './VprLogo';
+import { BrandIcon, Logo, type BrandKey } from '@antseed/ui';
+import { HomeField } from './vpr/HomeField';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
+import { findChatModel } from '../../modules/chat/models';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import styles from './SetupScreen.module.scss';
 
@@ -38,20 +38,26 @@ function longTailMessages(counts: {
 /** How long each long-tail message shows before the next takes over. */
 const LONG_TAIL_ROTATE_MS = 3_000;
 
-/** One live discovery tally: an icon, a number (or a dash while unknown),
- *  and what it counts. */
-function StatTile({ icon, value, label }: { icon: IconSvgElement; value: number; label: string }) {
+/** Marquee logos: recognizable labs whose model families are served on the
+ *  network. Hard-coded — this plays before discovery has found anything. */
+const MARQUEE_BRANDS: BrandKey[] = [
+  'openai', 'anthropic', 'deepseek', 'qwen', 'gemini', 'mistral', 'llama', 'grok',
+];
+
+/** One compact live tally for the bottom strip. */
+function StatItem({ value, label }: { value: number; label: string }) {
   return (
-    <div className={`${styles.statTile} ${value > 0 ? styles.statLive : ''}`}>
-      <HugeiconsIcon icon={icon} size={18} strokeWidth={1.8} className={styles.statIcon} />
-      {/* key remounts the number on change so the pop animation replays. */}
-      <span className={styles.statValue} key={value}>{value > 0 ? value : '–'}</span>
-      <span className={styles.statLabel}>{label}</span>
-    </div>
+    <span className={`${styles.statItem}${value > 0 ? ` ${styles.statItemLive}` : ''}`}>
+      <span className={styles.statValue} key={value}>{value > 0 ? value.toLocaleString('en-US') : '–'}</span> {label}
+    </span>
   );
 }
 
-export function SetupScreen() {
+/**
+ * First-run setup, or with `startingGateway` the loader any launch shows while
+ * the local gateway comes up: the same screen, saying only that.
+ */
+export function SetupScreen({ startingGateway = false }: { startingGateway?: boolean } = {}) {
   const snap = useUiSelector((state) => {
     // Live discovery tallies from the dashboard poll — these move while the
     // service catalog is still loading, so the wait shows real progress. A
@@ -76,25 +82,25 @@ export function SetupScreen() {
       }
     }
     return {
+      // Catalog reference for the preview's Models scene (rows derived below).
       appSetupComplete: state.appSetupComplete,
       appSetupStep: state.appSetupStep,
-      chatServiceCount: state.chatServiceOptions.length,
+      chatServiceCount: state.chatModels.length,
       networkAlert: state.networkAlert,
       dhtNodeCount: state.dhtNodeCount,
       peerCount: state.lastPeers.length,
       metadataPeerCount,
       modelCount: models.size,
       freeModelCount: freeModels.size,
-      routeModelLabel: state.vprRouteSelection.model?.label ?? null,
-      defaultProvisional: state.vprDefaultModelProvisional,
+      routeModelLabel: findChatModel(state.chatModels, state.chatSelectedModelId)?.label ?? null,
+      routeModelFree: findChatModel(state.chatModels, state.chatSelectedModelId)?.free === true,
     };
   }, shallowEqual);
 
   const hasServices = snap.chatServiceCount > 0;
-  // The whole point of first-run setup: a model the user can chat with for
-  // free, confirmed by routing (a trusted free seller backs the default —
-  // the provisional flag has cleared). Only then does the screen call it done.
-  const freeReady = hasServices && snap.routeModelLabel !== null && !snap.defaultProvisional;
+  // The whole point of first-run setup: the gateway lists a model the user
+  // can chat with. Only then does the screen call it done.
+  const freeReady = hasServices && snap.routeModelLabel !== null;
 
   // The long tail of first-run setup: discovery counts are all real, but the
   // catalog is still loading and/or no free route has cleared the on-chain
@@ -121,7 +127,9 @@ export function SetupScreen() {
   // from how far discovery has actually come — each phase hands off to the
   // next as its number becomes real.
   let activity: string;
-  if (!snap.appSetupComplete) {
+  if (startingGateway) {
+    activity = 'Starting Antseed on this computer…';
+  } else if (!snap.appSetupComplete) {
     activity = snap.appSetupStep || 'Installing the router plugin…';
   } else if (snap.dhtNodeCount === 0) {
     activity = 'Connecting to the peer-to-peer network…';
@@ -138,34 +146,32 @@ export function SetupScreen() {
 
   return (
     <>
-      {/* Frameless window: keep the top strip draggable but visually empty —
-          the setup screen carries its branding in the body. */}
+      {/* Frameless window: an invisible top strip keeps it draggable. */}
       <div className={styles.dragStrip} />
       <div className={styles.container}>
-        <div className={styles.content}>
-          <div className={styles.brand}>
-            <VprMark size={64} color="var(--accent-green)" />
-            <span className={styles.brandName}>VPR</span>
-          </div>
-          <h1 className={styles.title}>Finding models on the AntSeed Network</h1>
-          <p className={styles.subtitle}>
-            Your VPR is joining the AntSeed network and looking for
-            the latest AI models.
-          </p>
+        <HomeField night={false} />
+        <div className={styles.card}>
+          <Logo height={24} className={styles.logo} />
+          <h1 className={styles.heading}>Ask anything, on any model</h1>
+          <p className={styles.tagline}>At the best available prices, with the privacy you want.</p>
 
-          <div className={styles.statRow}>
-            <StatTile icon={Globe02Icon} value={snap.dhtNodeCount} label="nodes" />
-            <StatTile icon={UserGroupIcon} value={snap.peerCount} label="sellers" />
-            <StatTile icon={SparklesIcon} value={snap.modelCount} label="models" />
-            <StatTile icon={GiftIcon} value={snap.freeModelCount} label="free" />
+          {/* Logo marquee: the families of models on the network, drifting by
+              while discovery runs — the wait has something alive to look at. */}
+          <div className={styles.marquee} aria-hidden="true">
+            <div className={styles.marqueeTrack}>
+              {[...MARQUEE_BRANDS, ...MARQUEE_BRANDS].map((brand, index) => (
+                <span key={`${brand}-${index}`} className={styles.marqueeLogo}>
+                  <BrandIcon name={brand} brand={brand} size={22} />
+                </span>
+              ))}
+            </div>
           </div>
 
-          {freeReady ? (
+          {freeReady && !startingGateway ? (
             <div className={styles.ready}>
               <span className={styles.readyDot} />
-              {snap.routeModelLabel
-                ? `Free model ready - ${snap.routeModelLabel}`
-                : 'Free model ready'}
+              {/* Only a model that is free is announced as one: paid sellers can be found first. */}
+              {`${snap.routeModelFree ? 'Free model' : 'Model'} ready${snap.routeModelLabel ? ` - ${snap.routeModelLabel}` : ''}`}
             </div>
           ) : (
             // key swaps replay the entrance animation, so phase changes read
@@ -179,21 +185,33 @@ export function SetupScreen() {
               <span>{activity}</span>
             </div>
           )}
+          {/* The raw discovery tallies, small — proof of progress, not the pitch. */}
+          {startingGateway ? null : <p className={styles.statStrip}>
+            <StatItem value={snap.dhtNodeCount} label="nodes" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.peerCount} label="sellers" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.modelCount} label="models" />
+            <span className={styles.statSep} aria-hidden="true">·</span>
+            <StatItem value={snap.freeModelCount} label="free" />
+          </p>}
+          <p className={styles.firstRunNote}>
+            {startingGateway ? 'Usually takes a few seconds.' : 'Setting up — only on first run, takes 2 minutes max.'}
+          </p>
 
           {/* networkAlert carries a startup grace period, so this only appears
               once the network — not slow bootstrap — is the problem. */}
           {!hasServices && snap.networkAlert !== 'none' && (
             <p className={styles.networkHint} role="alert">
-              {snap.networkAlert === 'no-internet'
-                ? 'No internet connection detected. Connect to the internet to finish setup.'
-                : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
+              <span className={styles.networkDot} aria-hidden="true" />
+              <span>
+                {snap.networkAlert === 'no-internet'
+                  ? 'No internet connection detected. Connect to the internet to finish setup.'
+                  : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
+              </span>
             </p>
           )}
         </div>
-
-        <p className={styles.firstRunNote}>
-          This only happens the first time and can take up to 2 minutes.
-        </p>
       </div>
     </>
   );

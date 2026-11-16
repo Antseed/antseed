@@ -1,8 +1,9 @@
 import {useEffect, useState} from 'react';
 import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
+import {isMobileGetStartedVisitor} from './useMobileGetStarted';
 
 /**
- * Resolves the AntSeed Desktop download URL for the visitor's OS + arch.
+ * Resolves the Antseed Desktop download URL for the visitor's OS + arch.
  *
  * Download CTAs point at our download proxy (a Cloudflare Worker on
  * download.antseed.com, see apps/download-proxy) instead of GitHub release
@@ -35,9 +36,9 @@ import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
  */
 
 export const DOWNLOAD_BASE_URL = 'https://download.antseed.com';
-export const RELEASES_URL = 'https://github.com/AntSeed/antseed/releases/latest';
+export const RELEASES_URL = 'https://github.com/Antseed/antseed/releases/latest';
 /** Full releases list — every platform, arch, and past version. */
-export const ALL_VERSIONS_URL = 'https://github.com/AntSeed/antseed/releases';
+export const ALL_VERSIONS_URL = 'https://github.com/Antseed/antseed/releases';
 
 export type DesktopPlatform = 'mac' | 'win' | 'linux' | 'unknown';
 export type DesktopArch = 'arm64' | 'x64';
@@ -66,6 +67,10 @@ export function downloadUrlFor(platform: DesktopPlatform, arch: DesktopArch): st
 
 function detectPlatform(): DesktopPlatform {
   if (typeof navigator === 'undefined') return 'unknown';
+  // Phones in "Desktop site" mode spoof a desktop UA (Samsung Internet
+  // reports X11/Linux) — never resolve an installer for a device that can't
+  // run one; 'unknown' falls back to the releases page.
+  if (isMobileGetStartedVisitor()) return 'unknown';
   const ua = navigator.userAgent;
   if (/Windows/.test(ua)) return 'win';
   if (/Macintosh|Mac OS X/.test(ua)) return 'mac';

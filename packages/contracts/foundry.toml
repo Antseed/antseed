@@ -12,7 +12,24 @@ solc_version = "0.8.24"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
+# Reproducible builds: the default "ipfs" bytecode hash embeds a metadata digest
+# that varies with absolute source paths, so the same commit can produce
+# different runtime code on different machines. Pinning it to "none" lets
+# `pnpm contracts:check` compare a local build against the code actually
+# deployed on chain.
+#
+# NOTE: this changes the runtime bytecode of EVERY contract in this package.
+# Contracts deployed before this setting (the legacy baseline) will not match a
+# local build; only contracts recorded with `deployedInRelease: true` are
+# compared. Explorer verification still succeeds: Etherscan/Basescan compile
+# with the submitted settings, so the metadata-free output matches exactly.
+bytecode_hash = "none"
+cbor_metadata = false
 ffi = false
+# Routine `forge test` must not rewrite gas snapshots: a dirty tree blocks
+# contract deployments, which require a clean working tree. Regenerate
+# deliberately with `pnpm contracts:snapshot`, and let `contracts:check` compare.
+gas_snapshot_emit = false
 
 # Lean defaults — keep `forge test` fast for routine runs.
 [profile.default.fuzz]
@@ -23,6 +40,10 @@ runs = 128
 depth = 64
 fail_on_revert = false
 call_override = false
+
+# Regenerates committed gas snapshots. Used by `pnpm contracts:snapshot`.
+[profile.snapshot]
+gas_snapshot_emit = true
 
 # Heavy campaign for deep custody/invariant exploration.
 # Run with: FOUNDRY_PROFILE=deep-fuzz forge test

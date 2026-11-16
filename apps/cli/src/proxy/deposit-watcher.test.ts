@@ -6,11 +6,13 @@ import test from 'node:test'
 import { loadOrCreateIdentity } from '@antseed/node'
 import type { SweepRequestPayload } from '@antseed/node'
 import {
+  DEPOSIT_WATCH_ACTIVE_TTL_MS,
   DepositWatcher,
   type DepositWatchEvent,
   type DepositWatcherDeps,
   type DepositWatcherDepositsReader,
   type DepositWatcherRelayReader,
+  supersedesSweepReceipt,
 } from './deposit-watcher.js'
 
 const RELAY_ADDRESS = '0x' + '11'.repeat(20)
@@ -113,9 +115,9 @@ test('deposit watcher sweeps incoming USDC and reports received → sweeping →
 test('deposit watcher clamps the sweep to credit-limit headroom', async (t) => {
   const chain: FakeChain = {
     walletBalance: 10_000_000n, // 10 USDC in the wallet…
-    depositsAvailable: 6_000_000n,
+    depositsAvailable: 4_000_000n,
     depositsReserved: 0n,
-    creditLimit: 8_000_000n, // …but only 2 USDC of headroom left
+    creditLimit: 8_000_000n, // …but only 4 USDC (half the limit) of headroom left
     authorizationUsed: false,
   }
   const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
@@ -125,8 +127,99 @@ test('deposit watcher clamps the sweep to credit-limit headroom', async (t) => {
   await waitFor(() => events.some((e) => e.phase === 'credited'))
 
   assert.equal(dispatched.length, 1)
-  // headroom (2 USDC) + fee, leaving the rest in the wallet for later.
-  assert.equal(dispatched[0]!.amount, (2_000_000n + FEE).toString())
+  // headroom (4 USDC) + fee, leaving the rest in the wallet for later.
+  assert.equal(dispatched[0]!.amount, (4_000_000n + FEE).toString())
+})
+
+test('deposit watcher waits for half the credit limit to free up before a clamped top-up', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 6_000_000n,
+    depositsReserved: 0n,
+    creditLimit: 8_000_000n, // 2 USDC of headroom: a sliver, not a top-up
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
+})
+
+test('deposit watcher refills the headroom it has when reserved credits leave nothing to spend', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 0n, // nothing left to open a new session with…
+    depositsReserved: 5_000_000n, // …because the rest is reserved in open channels
+    creditLimit: 8_000_000n, // 3 USDC of headroom: below half the limit, but needed now
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'credited'))
+
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0]!.amount, (3_000_000n + FEE).toString())
+})
+
+test('deposit watcher still waits for $1 of headroom when reserved credits leave nothing to spend', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 0n,
+    depositsReserved: 49_990_000n,
+    creditLimit: 50_000_000n, // $0.01 of headroom: a fee for nothing
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
+})
+
+test('deposit watcher refills when available credits cannot cover the configured session reserve', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 10_000_000n,
+    depositsAvailable: 1_500_000n, // $1.50: above $1, below the $2 this buyer reserves per session
+    depositsReserved: 5_000_000n,
+    creditLimit: 8_000_000n, // $1.50 of headroom, below half the limit
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain, { sessionReserveBaseUnits: 2_000_000n })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'credited'))
+
+  assert.equal(dispatched[0]!.amount, (1_500_000n + FEE).toString())
+})
+
+test('deposit watcher holds dust below the deposit floor on a funded account', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 500_000n, // $0.50 — would credit $0.45 after the fee
+    depositsAvailable: 5_000_000n,
+    depositsReserved: 0n,
+    creditLimit: 50_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
+
+  assert.equal(dispatched.length, 0)
+  const deferred = events.find((e) => e.phase === 'deferred')!
+  assert.equal(deferred.reason, 'below-minimum')
+  assert.equal(deferred.minRequiredBaseUnits, (1_000_000n + FEE).toString())
 })
 
 test('deposit watcher defers when the deposits balance is at its credit limit', async (t) => {
@@ -145,6 +238,7 @@ test('deposit watcher defers when the deposits balance is at its credit limit', 
 
   assert.equal(dispatched.length, 0)
   assert.deepEqual(events.map((e) => e.phase), ['received', 'deferred'])
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
 })
 
 test('deposit watcher waits below the 1 USDC first-deposit floor', async (t) => {
@@ -159,12 +253,37 @@ test('deposit watcher waits below the 1 USDC first-deposit floor', async (t) => 
   t.after(async () => { watcher.stop(); await cleanup() })
 
   watcher.promote()
-  await waitFor(() => events.some((e) => e.phase === 'received'))
-  // Give the sweep attempt a moment to (not) dispatch.
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
 
   assert.equal(dispatched.length, 0)
-  assert.deepEqual(events.map((e) => e.phase), ['received'])
+  assert.deepEqual(events.map((e) => e.phase), ['received', 'deferred'])
+  const deferred = events.find((e) => e.phase === 'deferred')!
+  assert.equal(deferred.reason, 'below-minimum')
+  assert.equal(deferred.amountBaseUnits, '500000')
+  // First deposit needs the 1 USDC floor plus the relay fee.
+  assert.equal(deferred.minRequiredBaseUnits, (1_000_000n + FEE).toString())
+})
+
+test('deposit watcher reads the first-deposit floor from the contract and reports it once', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 1_000_000n, // exactly $1.00 — short of a $2 floor + fee
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain, {
+    depositsClient: { ...makeDepositsReader(chain), getMinBuyerDeposit: async () => 2_000_000n },
+  })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  await watcher.sweepNow()
+  await watcher.sweepNow() // the 60s retry must not repeat an unchanged deferral
+
+  assert.equal(dispatched.length, 0)
+  const deferred = events.filter((e) => e.phase === 'deferred')
+  assert.equal(deferred.length, 1)
+  assert.equal(deferred[0]!.minRequiredBaseUnits, (2_000_000n + FEE).toString())
 })
 
 test('deposit watcher fails fast when no relayer accepts, and reports the error', async (t) => {
@@ -185,6 +304,42 @@ test('deposit watcher fails fast when no relayer accepts, and reports the error'
 
   const error = events.find((e) => e.phase === 'error')!
   assert.match(error.error ?? '', /No deposit relayer accepted/)
+})
+
+test('deposit watcher gives up on a sweep at once when the relayer that took it reports it could not submit it', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 5_000_000n,
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, cleanup } = await makeWatcher(chain, {
+    dispatch: async () => ({ offered: 1, accepted: true }),
+    getReceipt: async (authNonce) => ({ version: 1, authNonce, status: 'rejected', reason: 'submission failed' }),
+  })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  const started = Date.now()
+  watcher.promote()
+  await waitFor(() => events.some((e) => e.phase === 'error'))
+
+  assert.ok(Date.now() - started < 5_000, 'did not wait out the confirmation window')
+  assert.match(events.find((e) => e.phase === 'error')!.error ?? '', /could not submit/)
+  assert.equal(chain.walletBalance, 5_000_000n)
+})
+
+test('a late refusal from another relayer does not replace the accepting relayer\'s receipt', () => {
+  const nonce = '0x' + 'aa'.repeat(32)
+  const submitted = { peerId: 'b', payload: { version: 1 as const, authNonce: nonce, status: 'submitted' as const } }
+  const lateRefusal = { peerId: 'a', payload: { version: 1 as const, authNonce: nonce, status: 'rejected' as const, reason: 'simulation failed' } }
+  const ownFailure = { peerId: 'b', payload: { version: 1 as const, authNonce: nonce, status: 'rejected' as const, reason: 'submission failed' } }
+  assert.equal(supersedesSweepReceipt(null, submitted), true)
+  assert.equal(supersedesSweepReceipt(submitted, lateRefusal), false)
+  assert.equal(supersedesSweepReceipt(submitted, ownFailure), true)
+  assert.equal(supersedesSweepReceipt(lateRefusal, submitted), true)
+  // Another sweep's receipt always replaces it.
+  assert.equal(supersedesSweepReceipt(submitted, { ...lateRefusal, payload: { ...lateRefusal.payload, authNonce: '0x' + 'bb'.repeat(32) } }), true)
 })
 
 test('deposit watcher status exposes mode transitions and the last event', async (t) => {
@@ -208,4 +363,63 @@ test('deposit watcher status exposes mode transitions and the last event', async
   watcher.stop()
   assert.equal(watcher.status().mode, 'off')
   assert.equal(watcher.status().address.length, 42)
+})
+
+test('a gateway active watch lapses to background without a heartbeat, and a heartbeat keeps it active', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 0n,
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  // The identity is created before the clock is faked (key derivation is async I/O).
+  const { watcher, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000_000 })
+
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS - 1)
+  assert.equal(watcher.status().mode, 'active')
+  // A console heartbeat every ~60 s re-arms the window.
+  for (let i = 0; i < 10; i++) {
+    t.mock.timers.tick(60_000)
+    watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  }
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS - 1)
+  assert.equal(watcher.status().mode, 'active')
+  t.mock.timers.tick(1)
+  assert.equal(watcher.status().mode, 'background')
+
+  // Without a TTL (desktop, `antseed deposit`) active never lapses.
+  watcher.promote()
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS * 3)
+  assert.equal(watcher.status().mode, 'active')
+})
+
+test('a gateway heartbeat and a desktop hold keep each other\'s active watch alive', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 0n,
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000_000 })
+
+  // The desktop's indefinite hold outlives a console heartbeat's TTL.
+  watcher.promote()
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS * 2)
+  assert.equal(watcher.status().mode, 'active')
+
+  // The desktop closing its flow does not end the console's watch...
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  watcher.demote()
+  assert.equal(watcher.status().mode, 'active')
+  // ...which lapses once its heartbeats stop.
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  assert.equal(watcher.status().mode, 'background')
 })

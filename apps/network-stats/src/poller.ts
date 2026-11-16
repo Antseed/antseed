@@ -1,7 +1,7 @@
 /**
  * NetworkPoller
  *
- * Connects to the AntSeed network as an anonymous buyer, discovers peers,
+ * Connects to the Antseed network as an anonymous buyer, discovers peers,
  * and returns raw PeerMetadata for each discovered peer.
  */
 

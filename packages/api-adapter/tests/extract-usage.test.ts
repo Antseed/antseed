@@ -301,6 +301,20 @@ describe('image/provider fact extraction', () => {
     });
   });
 
+  it('reads multipart text fields as UTF-8, emoji and CJK included', () => {
+    const boundary = '----antseedBoundary123';
+    const prompt = 'make the sky warmer 🌅 让天空更温暖 €™';
+    const body = new TextEncoder().encode([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="prompt"',
+      '',
+      prompt,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'));
+    expect(extractRequestBodyFields({ 'content-type': `multipart/form-data; boundary=${boundary}` }, body)).toEqual({ prompt });
+  });
+
   it('falls back to JSON parsing for non-multipart content types', () => {
     const fields = extractRequestBodyFields(
       { 'content-type': 'application/json' },

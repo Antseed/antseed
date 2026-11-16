@@ -1,33 +1,20 @@
-/* Conversation-list panel for the VPR shell. Extracted from the old
+/* Conversation-list panel for the app shell. Extracted from the old
    Sidebar's chat section — conversations only, no nav or runtime UI. */
 
 .panel {
-  grid-row: 1;
-  width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
-  padding-top: 16px;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg-secondary);
-  /* Matches the view-host slide so entering chat mode reads as one motion. */
-  animation: panel-slide-in var(--motion-duration) var(--motion-ease);
-}
-
-@keyframes panel-slide-in {
-  from {
-    transform: translateX(-16px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
+  margin-top: 16px;
+  /* Room between the last chat and the balance card below. */
+  margin-bottom: 12px;
+  /* The sidebar is a window-drag region, which swallows clicks. The rows are
+     divs, so the global no-drag rule for buttons doesn't cover them. */
+  -webkit-app-region: no-drag;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .panel,
   .runningDot {
     animation: none;
   }
@@ -37,7 +24,7 @@
   }
 }
 
-/* ── Header: "Conversations <count>" + new-chat / search actions ──── */
+/* ── Header: "Recent" + search ──────────────────────────────────── */
 
 .header {
   flex: 0 0 auto;
@@ -45,45 +32,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 16px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 600;
+  padding: 0 4px 6px 10px;
   color: var(--text-muted);
-  letter-spacing: 0.3px;
-}
-
-.headerText {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* The count is a quiet badge so it reads as metadata, not an action
-   target — the icons to its right carry the affordance. */
-.count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.headerActions {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .iconBtn {
@@ -127,8 +79,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding-top: 4px;
-  padding-bottom: 2px;
+  padding-bottom: 8px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -154,23 +105,59 @@
 
 .empty {
   color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 2px 10px;
+}
+
+.actionError {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 10px 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.actionErrorDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: rgb(var(--warning-rgb));
+}
+
+.actionErrorText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.actionErrorDismiss {
+  flex: none;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
   font-size: 14px;
-  text-align: center;
-  padding: 40px 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.actionErrorDismiss:hover {
+  color: var(--text-primary);
 }
 
 /* ── Conversation rows ─────────────────────────────────────────────── */
 
 .convItem {
-  padding: 8px;
+  padding: 7px 10px;
   cursor: pointer;
   transition: background 0.1s;
   display: grid;
-  gap: 2px;
   min-width: 0;
-  border-radius: var(--radius-sm);
-  margin: 0 8px;
-  padding-block: 7px;
+  border-radius: 8px;
   position: relative;
 
   &:hover {
@@ -182,7 +169,7 @@
   }
 
   &.active {
-    background: var(--bg-hover);
+    background: var(--surface-chip);
   }
 }
 
@@ -195,15 +182,19 @@
 }
 
 .convTitle {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 400;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   flex: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 16px;
+  line-height: 18px;
+}
+
+.active .convTitle {
+  color: var(--text-primary);
 }
 
 .runningDot {
@@ -266,109 +257,6 @@
   &:hover {
     background: none;
     color: var(--text-primary);
-  }
-}
-
-.meta {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.avatar {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: #fff;
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1;
-  overflow: hidden;
-}
-
-.avatarIcon {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-}
-
-.avatarImage {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-.peerName {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cost {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-
-.time {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-/* Active payment-channel strip inside a row */
-
-.sessionStrip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-top: 2px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  background: rgba(var(--accent-green-rgb, 74, 222, 128), 0.08);
-  border: 1px solid rgba(var(--accent-green-rgb, 74, 222, 128), 0.2);
-}
-
-.sessionInfo {
-  font-size: 10px;
-  color: var(--accent-green, #4ade80);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.sessionCloseBtn {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: rgba(var(--danger-rgb), 0.08);
-  border: 1px solid rgba(var(--danger-rgb), 0.2);
-  border-radius: 3px;
-  cursor: pointer;
-  line-height: 14px;
-
-  &:hover {
-    background: rgba(var(--danger-rgb), 0.15);
-    color: var(--danger);
   }
 }
 
@@ -611,4 +499,103 @@
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
+}
+
+/* ── Sections: Pinned, project folders, Chats, Archived ────────────── */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+
+  & + & {
+    margin-top: 6px;
+  }
+}
+
+.sectionHeader {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--accent-green-rgb, 74, 222, 128), 0.35);
+  }
+}
+
+.sectionHeaderArchived {
+  margin-top: 4px;
+}
+
+.sectionChevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--text-faint, var(--text-muted));
+  transition: transform 0.15s ease;
+}
+
+.sectionChevronOpen {
+  transform: rotate(90deg);
+}
+
+.sectionIcon {
+  flex: 0 0 auto;
+}
+
+.sectionLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionCount {
+  flex: 0 0 auto;
+  color: var(--text-faint, var(--text-muted));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Codex-style branch mark: the chat's workspace is a git checkout. */
+.branchIcon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  color: #8b5cf6;
+}
+
+.convItem:hover .branchIcon {
+  display: none;
+}
+
+.archivedItem .convTitle {
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sectionChevron {
+    transition: none;
+  }
 }

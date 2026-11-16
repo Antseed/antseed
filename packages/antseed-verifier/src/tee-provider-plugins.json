@@ -1,0 +1,7 @@
+{
+  "openai": { "defaultUrl": "https://api.openai.com", "baseUrl": true, "fallbacks": true },
+  "anthropic": { "defaultUrl": "https://api.anthropic.com", "baseUrl": false },
+  "typesafe": { "defaultUrl": "https://api.typesafe.ai", "baseUrl": true },
+  "venice-video": { "defaultUrl": "https://api.venice.ai", "baseUrl": true },
+  "alibaba-video": { "defaultUrl": "https://dashscope-intl.aliyuncs.com", "baseUrl": true }
+}

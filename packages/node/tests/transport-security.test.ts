@@ -285,6 +285,9 @@ describe('transport security', () => {
       await waitForOpen(outbound);
       expect(outbound.isEncryptedTransport).toBe(true);
       expect(inbound.isEncryptedTransport).toBe(true);
+      // Both ends name the same session, which a TEE seller binds into its attestation quote.
+      expect(outbound.channelBinding).toMatch(/^[0-9a-f]{64}$/);
+      expect(inbound.channelBinding).toBe(outbound.channelBinding);
 
       const secret = 'super-secret prompt payload 0xDEADBEEF';
       const inboundMessage = waitForMessage(inbound);
@@ -319,6 +322,8 @@ describe('transport security', () => {
       await waitForOpen(outbound);
       expect(outbound.isEncryptedTransport).toBe(false);
       expect(inbound.isEncryptedTransport).toBe(false);
+      expect(outbound.channelBinding).toBeNull();
+      expect(inbound.channelBinding).toBeNull();
 
       const inboundMessage = waitForMessage(inbound);
       outbound.send(new TextEncoder().encode('legacy plaintext'));

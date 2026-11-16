@@ -2,7 +2,8 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import { getGlobalOptions } from '../types.js';
 import { loadOrCreateIdentity } from '@antseed/node';
-import { openChannelStore } from '../../payment-utils.js';
+import { openChannelStore, reconcileLocalBuyerChannels } from '../../payment-utils.js';
+import { loadConfig } from '../../../config/loader.js';
 
 function formatUsdc(baseUnits: string | number | bigint): string {
   const n = BigInt(baseUnits);
@@ -17,18 +18,20 @@ function formatUsdc(baseUnits: string | number | bigint): string {
 export function registerBuyerMeteringCommand(buyerCmd: Command): void {
   buyerCmd
     .command('metering')
-    .description('Show payment channel and usage stats from local database')
+    .description('Show payment channel and usage stats, after checking active channels on-chain')
     .option('--peer <peerId>', 'show stats for a specific peer')
     .option('--json', 'output as JSON', false)
     .action(async (options) => {
       const globalOpts = getGlobalOptions(buyerCmd);
 
       try {
+        const config = await loadConfig(globalOpts.config);
         const identity = await loadOrCreateIdentity(globalOpts.dataDir);
         const buyerAddress = identity.wallet.address;
         const store = openChannelStore(globalOpts.dataDir);
 
         try {
+          await reconcileLocalBuyerChannels(store, config, globalOpts.dataDir);
           const activeChannels = store.getActiveChannelsByBuyer('buyer', buyerAddress);
           // The displayed peerId is truncated (peerId.slice(0,16) + '...'), so
           // accept either an exact peerId or a prefix the user copied from the table.

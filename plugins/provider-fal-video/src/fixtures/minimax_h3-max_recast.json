@@ -1,0 +1,114 @@
+{
+  "paths": {
+    "/minimax/h3-max/recast": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/H3MaxRecastInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "H3MaxRecastInput": {
+        "x-fal-order-properties": [
+          "video_url",
+          "reference_image_urls",
+          "prompt",
+          "resolution",
+          "seed",
+          "enhance_realism",
+          "enable_safety_checker"
+        ],
+        "properties": {
+          "video_url": {
+            "title": "Video URL",
+            "examples": [
+              "https://v3b.fal.media/files/b/0aac8cc6/lOHY4Mitfg5x1UDerR3RB_dw9Hs7ChHU-Fqwzz0W9cq_video.mp4"
+            ],
+            "type": "string",
+            "description": "The source video, 5 to 30 seconds long, with no single shot longer than 15 seconds."
+          },
+          "enhance_realism": {
+            "default": false,
+            "title": "Enhance Realism",
+            "examples": [
+              true
+            ],
+            "type": "boolean",
+            "description": "More natural skin textures and better blending of the new people into the scene. Off unless set."
+          },
+          "enable_safety_checker": {
+            "default": true,
+            "title": "Enable Safety Checker",
+            "description": "Authorized callers may set false to request relaxed screening.",
+            "type": "boolean"
+          },
+          "reference_image_urls": {
+            "title": "Reference Image URLs",
+            "description": "One photo per new person. By default they replace the main people in the video from left to right, each in every shot they appear in.",
+            "type": "array",
+            "maxItems": 4,
+            "examples": [
+              [
+                "https://v3b.fal.media/files/b/0aac8d26/HVno2j68vj7tkAwGo3Qii_Nolan%203.jpg"
+              ]
+            ],
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Random seed. Leave empty for a random one."
+          },
+          "resolution": {
+            "default": "1080P",
+            "enum": [
+              "768P",
+              "1080P"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt",
+            "description": "Optional: who becomes whom, or what else to keep or change."
+          }
+        },
+        "title": "RecastInput",
+        "required": [
+          "video_url",
+          "reference_image_urls"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
+  }
+}

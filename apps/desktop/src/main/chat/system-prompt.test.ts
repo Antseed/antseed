@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 
 import { VPR_SYSTEM_PROMPT, buildVprSystemPrompt } from './system-prompt.js';
 
-test('prompt has VPR identity, not pi', () => {
+test('prompt has the Antseed Desktop identity, not pi', () => {
   const prompt = buildVprSystemPrompt(undefined);
-  assert.ok(prompt.includes('VPR'));
+  assert.ok(prompt.includes('Antseed Desktop'));
   assert.ok(!prompt.includes('operating inside pi'));
 });
 

@@ -2,16 +2,13 @@ import { lazy } from 'react';
 import type { ComponentType, LazyExoticComponent } from 'react';
 import type { IconSvgElement } from '@hugeicons/react';
 import {
-  BotIcon,
-  BubbleChatIcon,
+  Home01Icon,
   ConnectIcon,
-  DiscoverCircleIcon,
-  HelpCircleIcon,
-  PreferenceHorizontalIcon,
-  SquarePowerIcon,
-  UserIcon,
+  DashboardSquare01Icon,
+  Settings01Icon,
 } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../types';
+import { AntIcon } from './vpr/AntIcon';
 
 // ViewHost only mounts the active view (plus the outgoing one during the
 // slide transition), so views don't receive an `active` flag — mounted means
@@ -70,9 +67,9 @@ function createViewEntry(
   };
 }
 
-// Legacy dev routes have no slide relationship to the VPR screens; parking
+// Legacy dev routes have no slide relationship to the app's screens; parking
 // them past the end keeps any transition involving them sliding "forward".
-const LEGACY_SLIDE_INDEX = 13;
+const LEGACY_SLIDE_INDEX = 10;
 
 export const VIEW_REGISTRY = {
   home: createViewEntry(
@@ -81,48 +78,35 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 0,
       preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'VPR', icon: SquarePowerIcon },
+      nav: { slot: 'main', label: 'Home', icon: Home01Icon },
     },
-  ),
-  explore: createViewEntry(
-    async () => (await import('./views/VprExploreView')).VprExploreView as ComponentType<RoutedViewProps>,
-    {
-      receivesOnSelectView: true,
-      slideIndex: 2,
-      preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'Models', icon: DiscoverCircleIcon },
-    },
-  ),
-  model: createViewEntry(
-    async () => (await import('./views/VprModelView')).VprModelView as ComponentType<RoutedViewProps>,
-    // Idle preload: the model page is one tap away from the Models list, and
-    // lazy-importing its chunk on that tap stalls the slide-in noticeably.
-    { receivesOnSelectView: true, slideIndex: 2.5, preloadPriority: 'idle' },
   ),
   tools: createViewEntry(
     async () => (await import('./views/VprToolsView')).VprToolsView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 3,
+      slideIndex: 2,
       preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'Apps', icon: ConnectIcon },
+      nav: { slot: 'main', label: 'Agents & apps', icon: ConnectIcon },
     },
   ),
-  tunnels: createViewEntry(
-    async () => (await import('./views/VprTunnelsView')).VprTunnelsView as ComponentType<RoutedViewProps>,
+  rewards: createViewEntry(
+    async () => (await import('./views/VprRewardsView')).VprRewardsView as ComponentType<RoutedViewProps>,
+    {
+      receivesOnSelectView: true,
+      slideIndex: 3,
+      preloadPriority: 'idle',
+      nav: { slot: 'main', label: 'Rewards', icon: AntIcon },
+    },
+  ),
+  gateway: createViewEntry(
+    async () => (await import('./views/GatewayView')).GatewayView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
       slideIndex: 4,
       preloadPriority: 'idle',
-      nav: { slot: 'main', label: 'Agents', icon: BotIcon },
+      nav: { slot: 'bottom', label: 'Gateway', icon: DashboardSquare01Icon },
     },
-  ),
-  chats: createViewEntry(
-    async () => (await import('./views/VprChatsView')).VprChatsView as ComponentType<RoutedViewProps>,
-    // Drill-in page (no nav item) reached from the Recent chats cards on
-    // Home and Apps — the fractional index keeps it sliding in from the
-    // right of both without renumbering the rail tabs.
-    { receivesOnSelectView: true, slideIndex: 3.5, preloadPriority: 'none' },
   ),
   preferences: createViewEntry(
     async () => (await import('./views/VprPreferencesView')).VprPreferencesView as ComponentType<RoutedViewProps>,
@@ -130,29 +114,12 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 5,
       preloadPriority: 'idle',
-      nav: { slot: 'main', label: 'Prefs', icon: PreferenceHorizontalIcon },
-    },
-  ),
-  credits: createViewEntry(
-    async () => (await import('./views/VprCreditsView')).VprCreditsView as ComponentType<RoutedViewProps>,
-    {
-      receivesOnSelectView: true,
-      slideIndex: 7,
-      preloadPriority: 'eager',
-      nav: { slot: 'bottom', label: 'Profile', icon: UserIcon },
+      nav: { slot: 'bottom', label: 'Settings', icon: Settings01Icon },
     },
   ),
   deposit: createViewEntry(
     async () => (await import('./views/VprDepositView')).VprDepositView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: 8, preloadPriority: 'idle' },
-  ),
-  activity: createViewEntry(
-    async () => (await import('./views/VprActivityView')).VprActivityView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: 9, preloadPriority: 'idle' },
-  ),
-  rewards: createViewEntry(
-    async () => (await import('./views/VprRewardsView')).VprRewardsView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: 10, preloadPriority: 'idle' },
+    { receivesOnSelectView: true, slideIndex: 6, preloadPriority: 'idle' },
   ),
   chat: createViewEntry(
     async () => (await import('./views/ChatView')).ChatView as ComponentType<RoutedViewProps>,
@@ -160,21 +127,15 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 1,
       preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'Chat', icon: BubbleChatIcon },
     },
   ),
   help: createViewEntry(
     async () => (await import('./views/VprHelpView')).VprHelpView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 6,
+      slideIndex: 7,
       preloadPriority: 'idle',
-      nav: { slot: 'main', label: 'Help', icon: HelpCircleIcon },
     },
-  ),
-  peers: createViewEntry(
-    async () => (await import('./views/PeersView')).PeersView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: LEGACY_SLIDE_INDEX, preloadPriority: 'none' },
   ),
   connection: createViewEntry(
     async () => (await import('./views/ConnectionView')).ConnectionView as ComponentType<RoutedViewProps>,

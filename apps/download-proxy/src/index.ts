@@ -1,5 +1,5 @@
 /**
- * AntSeed download proxy — a Cloudflare Worker on download.antseed.com.
+ * Antseed download proxy — a Cloudflare Worker on download.antseed.com.
  *
  * Serves the desktop installers from GitHub Releases through our own domain
  * so we can observe what a plain link to GitHub never reveals: whether a
@@ -26,10 +26,14 @@ import {trackedStream} from './stream';
 import {
   deliverEvent,
   endEvent,
+  parseGaIds,
+  segmentEvent,
+  segmentRole,
   startEvent,
   unresolvedEvent,
   type DownloadContext,
   type DownloadEvent,
+  type GaIds,
 } from './events';
 
 export interface Env {
@@ -48,8 +52,14 @@ const PASSTHROUGH_HEADERS = [
   'accept-ranges',
 ];
 
-function emit(env: Env, ctx: ExecutionContext, event: DownloadEvent): void {
-  ctx.waitUntil(deliverEvent(event, env.GA4_MEASUREMENT_ID, env.GA4_API_SECRET));
+function emit(env: Env, ctx: ExecutionContext, event: DownloadEvent, ids?: GaIds): void {
+  ctx.waitUntil(
+    deliverEvent(event, {
+      measurementId: env.GA4_MEASUREMENT_ID,
+      apiSecret: env.GA4_API_SECRET,
+      ids,
+    }),
+  );
 }
 
 export default {
@@ -71,6 +81,9 @@ export default {
     if (!target) {
       return Response.redirect(releasesUrl, 302);
     }
+    // GA attribution ids appended by the website's click handler — joins the
+    // proxy's server-side events to the visitor's GA session (see events.ts).
+    const gaIds = parseGaIds(url.searchParams);
 
     const release = await getLatestRelease(env.GITHUB_REPO, env.GITHUB_TOKEN, ctx);
     const asset = release ? matchAsset(release.assets, target) : null;
@@ -79,6 +92,7 @@ export default {
         env,
         ctx,
         unresolvedEvent(target, release?.tag ?? null, release ? 'no_matching_asset' : 'release_lookup_failed'),
+        gaIds,
       );
       return Response.redirect(releasesUrl, 302);
     }
@@ -90,7 +104,7 @@ export default {
       redirect: 'follow',
     });
     if (origin.status !== 200 && origin.status !== 206) {
-      emit(env, ctx, unresolvedEvent(target, release?.tag ?? null, `origin_status_${origin.status}`));
+      emit(env, ctx, unresolvedEvent(target, release?.tag ?? null, `origin_status_${origin.status}`), gaIds);
       return Response.redirect(releasesUrl, 302);
     }
 
@@ -124,12 +138,28 @@ export default {
       botCategory: (request.cf?.verifiedBotCategory as string | undefined) || null,
     };
 
-    emit(env, ctx, startEvent(downloadCtx));
+    // One download can arrive as many Range requests (download managers,
+    // resumes). Only the segment covering byte 0 starts it and only the one
+    // delivering the last byte ends it; middle segments are logged, not
+    // reported, so GA counts downloads rather than requests.
+    const role = segmentRole(origin.status, origin.headers.get('content-range'));
+    if (role.first) {
+      emit(env, ctx, startEvent(downloadCtx), gaIds);
+    }
     const {readable, done} = trackedStream(origin.body, contentLength);
     ctx.waitUntil(
-      done.then(result =>
-        deliverEvent(endEvent(downloadCtx, result), env.GA4_MEASUREMENT_ID, env.GA4_API_SECRET),
-      ),
+      done.then(result => {
+        if (!role.final) {
+          const segment = segmentEvent(downloadCtx, result);
+          console.log(JSON.stringify({event: segment.name, ...segment.params, attributed: gaIds.clientId ? 1 : 0}));
+          return;
+        }
+        return deliverEvent(endEvent(downloadCtx, result), {
+          measurementId: env.GA4_MEASUREMENT_ID,
+          apiSecret: env.GA4_API_SECRET,
+          ids: gaIds,
+        });
+      }),
     );
     return new Response(readable, {status: origin.status, headers});
   },

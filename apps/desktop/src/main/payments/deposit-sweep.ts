@@ -8,19 +8,24 @@
  * daemon's watcher over the proxy control plane and forwards its status
  * events to the renderer.
  */
-import { DepositsClient } from '@antseed/node';
 import { LOCALHOST_URL } from '../constants.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getMainWindow } from '../ui/window.js';
 import { closeCheckoutWindows } from './checkout-window.js';
 import { focusMainWindow } from './portal.js';
-import { invalidateCreditsCache, loadCachedCryptoConfig } from './credits.js';
+import { invalidateCreditsCache } from './credits.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
+import { classifyDepositFailure } from '../telemetry/classify.js';
 
 type DepositWatchStatus = {
   phase: 'deferred' | 'received' | 'sweeping' | 'credited' | 'error';
   amountBaseUnits?: string;
   txHash?: string;
   error?: string;
+  /** Why a 'deferred' sweep is waiting (absent from older daemons). */
+  reason?: 'below-minimum' | 'credit-limit';
+  /** below-minimum: the wallet balance a sweep needs, relay fee included. */
+  minRequiredBaseUnits?: string;
 };
 
 /** Wire shape of the daemon's watcher status (see apps/cli deposit-watcher). */
@@ -50,16 +55,6 @@ let lastForwardedSeq = 0;
 // The daemon can start seconds after the deposit view opens (process-manager
 // races) — remember the requested mode and re-send it once it answers.
 let pendingDaemonMode: 'active' | 'background' | null = null;
-
-export function makeDepositsClient(cc: NonNullable<Awaited<ReturnType<typeof loadCachedCryptoConfig>>>): DepositsClient {
-  return new DepositsClient({
-    rpcUrl: cc.rpcUrl,
-    ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
-    contractAddress: cc.depositsAddress,
-    usdcAddress: cc.usdcAddress,
-    ...(cc.chainId ? { evmChainId: cc.chainId } : {}),
-  });
-}
 
 function sendDepositWatchStatus(status: DepositWatchStatus): void {
   // Funds arriving at the hot wallet means an in-flight checkout (Fun card /
@@ -119,6 +114,7 @@ async function pollDaemonWatch(): Promise<void> {
     if (pendingDaemonMode) {
       pendingDaemonMode = null;
       sendDepositWatchStatus({ phase: 'error', error: watcherAbsenceBanner(current.reason) });
+      void getTelemetryService()?.recordDepositFailed(classifyDepositFailure('', current.reason));
     }
     return;
   }
@@ -145,12 +141,21 @@ async function pollDaemonWatch(): Promise<void> {
   const event = status?.lastEvent;
   if (!event || event.seq <= lastForwardedSeq) return;
   lastForwardedSeq = event.seq;
-  if (event.phase === 'credited') invalidateCreditsCache();
+  if (event.phase === 'credited') {
+    invalidateCreditsCache();
+    // Anonymous funnel telemetry: only coarse buckets leave the device —
+    // never the exact amount, wallet address, or tx hash.
+    void getTelemetryService()?.recordDepositCredited(event.amountBaseUnits ?? '0');
+  } else if (event.phase === 'error') {
+    void getTelemetryService()?.recordDepositFailed(classifyDepositFailure(event.error ?? ''));
+  }
   sendDepositWatchStatus({
     phase: event.phase,
     ...(event.amountBaseUnits ? { amountBaseUnits: event.amountBaseUnits } : {}),
     ...(event.txHash ? { txHash: event.txHash } : {}),
     ...(event.error ? { error: event.error } : {}),
+    ...(event.reason ? { reason: event.reason } : {}),
+    ...(event.minRequiredBaseUnits ? { minRequiredBaseUnits: event.minRequiredBaseUnits } : {}),
   });
 }
 

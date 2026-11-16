@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SERVICES_PER_PROVIDER } from '@antseed/node';
-import { isImageModelId, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
+import { isImageModelId, isSpeechModelId, parseFallbackUpstreamsJson, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
+
+describe('isSpeechModelId', () => {
+  it('matches OpenAI and Venice text-to-speech models only', () => {
+    for (const model of ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts', 'tts-kokoro', 'tts-elevenlabs-turbo-v2-5', 'venice/tts-minimax-speech-02-hd']) {
+      expect(isSpeechModelId(model)).toBe(true);
+    }
+    for (const model of ['gpt-4o', 'gpt-4o-mini', 'whisper-1', 'gpt-4o-transcribe', 'stts-model']) {
+      expect(isSpeechModelId(model)).toBe(false);
+    }
+  });
+});
+
+describe('isImageModelId: flux-3', () => {
+  it('matches the flux-3 image model but not the flux-3 video models', () => {
+    expect(isImageModelId('flux-3-image')).toBe(true);
+    expect(isImageModelId('flux-3-image-to-video')).toBe(false);
+    expect(isImageModelId('flux-3-text-to-video')).toBe(false);
+  });
+});
+
+describe('parseServiceCapabilitiesJson speech', () => {
+  it('keeps and validates speech options', () => {
+    expect(parseServiceCapabilitiesJson(JSON.stringify({ 'tts-kokoro': { speech: { voices: ['af_sky'], customVoices: false } } })))
+      .toEqual({ 'tts-kokoro': { speech: { voices: ['af_sky'], customVoices: false } } });
+    expect(() => parseServiceCapabilitiesJson(JSON.stringify({ 'tts-kokoro': { speech: { voices: [] } } }))).toThrow(/speech.voices/);
+  });
+});
 
 describe('isImageModelId', () => {
   it.each([
@@ -43,6 +70,11 @@ describe('isImageModelId', () => {
 });
 
 describe('parseServiceUnitBillingModelsJson', () => {
+  it('accepts completed requests in the existing priceUsd component format', () => {
+    const models = { route: { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    expect(parseServiceUnitBillingModelsJson(JSON.stringify(models))).toEqual(models);
+  });
+
   it('rejects unknown service API protocol keys', () => {
     expect(() => parseServiceUnitBillingModelsJson(JSON.stringify({
       'gpt-image-1': {
@@ -52,6 +84,17 @@ describe('parseServiceUnitBillingModelsJson', () => {
         },
       },
     }))).toThrow(/known service API protocol/);
+  });
+
+  it('rejects units that are not registered for the protocol', () => {
+    expect(() => parseServiceUnitBillingModelsJson(JSON.stringify({
+      'gpt-image-1': {
+        'openai-images': {
+          version: 1,
+          components: [{ unit: 'video_seconds', priceUsd: 0.1 }],
+        },
+      },
+    }))).toThrow(/video_seconds is not supported for openai-images/);
   });
 
   it('accepts known service API protocol keys', () => {
@@ -164,5 +207,44 @@ describe('parseServiceCapabilitiesJson', () => {
     expect(() => parseServiceCapabilitiesJson(JSON.stringify({
       'gpt-5.5': { reasoning: 'yes' },
     }))).toThrow(/must be a boolean/);
+  });
+});
+
+describe('parseFallbackUpstreamsJson', () => {
+  it('parses upstreams and lowercases service aliases but not paths', () => {
+    expect(parseFallbackUpstreamsJson(JSON.stringify([
+      {
+        baseUrl: 'https://openrouter.ai/api',
+        apiKey: ' or-key ',
+        services: ['Kimi-K3.1-Pro'],
+        serviceAliasMap: { 'Kimi-K3.1-Pro': 'moonshotai/kimi-k3.1-pro' },
+        pathRewrite: { '/v1/Chat': '/v2/Chat' },
+      },
+      { baseUrl: 'https://mirror.example.com' },
+    ]))).toEqual([
+      {
+        baseUrl: 'https://openrouter.ai/api',
+        apiKey: 'or-key',
+        services: ['Kimi-K3.1-Pro'],
+        serviceAliasMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+        pathRewrite: { '/v1/Chat': '/v2/Chat' },
+      },
+      { baseUrl: 'https://mirror.example.com' },
+    ]);
+  });
+
+  it('returns undefined for missing or empty input', () => {
+    expect(parseFallbackUpstreamsJson(undefined)).toBeUndefined();
+    expect(parseFallbackUpstreamsJson('[]')).toBeUndefined();
+  });
+
+  it.each([
+    ['{}', 'must be an array'],
+    ['[{"baseUrl":"ftp://x"}]', '[0].baseUrl must be an http(s) URL'],
+    ['[{"baseUrl":"https://x.example","apiKey":""}]', '[0].apiKey must be a non-empty string'],
+    ['[{"baseUrl":"https://x.example","services":[]}]', '[0].services must be a non-empty array'],
+    ['[{"baseUrl":"https://x.example","serviceAliasMap":{"a":1}}]', '[0].serviceAliasMap must be an object of non-empty strings'],
+  ])('rejects %s', (raw, message) => {
+    expect(() => parseFallbackUpstreamsJson(raw)).toThrow(message);
   });
 });

@@ -1,0 +1,362 @@
+import { randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import Database from 'better-sqlite3'
+
+/**
+ * Opaque tag a trusted local front end (the API-key gateway) attaches to a
+ * request so the signed spend for it can be reported back. The buyer never
+ * interprets the tag; it strips it before routing and echoes it on each
+ * spend event the request produces.
+ */
+export const SPEND_ATTRIBUTION_HEADER = 'x-antseed-attribution-tag'
+
+/** The feed's database file in the buyer's data dir. */
+export const SPEND_ATTRIBUTION_DB_FILE = 'attributed-spend.db'
+
+const TAG_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
+/** Most events kept, acknowledged or not; the oldest go first. */
+const MAX_STORED_EVENTS = 100_000
+const MAX_EVENTS_PER_PAGE = 1000
+/** How long a request's tag is kept for spend signed after the response. */
+const TAG_RETENTION_MS = 60 * 60 * 1000
+/** Spend without a request id is shared among the tags that had spend on that seller this recently. */
+const UNTAGGED_SPEND_WINDOW_MS = 5 * 60 * 1000
+/** Acknowledged events are kept this long (a second reader may still want them). */
+const ACKED_RETENTION_MS = 60 * 60 * 1000
+/** Unacknowledged events are kept this long, for a gateway that is down. */
+const UNACKED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const PRUNE_INTERVAL_MS = 60 * 1000
+
+export interface AttributedSpendEvent {
+  seq: number
+  tag: string
+  requestId: string | null
+  /** Buyer identity whose wallet signed the spend. */
+  buyerIdentity: string
+  sellerPeerId: string
+  /** USDC base units newly authorized by this signature. */
+  amountUsdc: string
+  inputTokens: string
+  cachedInputTokens: string
+  outputTokens: string
+  outputImages: string
+  at: number
+  /** `routing`: the spend paid a routing service for a ranking, not a seller for inference. */
+  purpose?: SpendPurpose
+}
+
+/** What a request's spend paid for; inference when unset. */
+export type SpendPurpose = 'routing'
+
+/**
+ * The buyer refuses a video priced above the gateway's `x-antseed-max-video-usdc`
+ * before it starts, and reports the price it accepted. A gateway applies a
+ * key's caps to video creates only through a buyer that says so.
+ */
+export const VIDEO_BUDGET_CAPABILITY = 'video-budget'
+
+export interface AttributedSpendPage {
+  /**
+   * Identifies the event sequence. A feed backed by a file keeps it (and its
+   * sequence numbers) across buyer restarts; an in-memory feed gets a new
+   * one per boot, and its sequence numbers restart with it.
+   */
+  bootId: string
+  /** Lowest sequence number still buffered. A cursor below it lost events. */
+  oldestSeq: number
+  /** Pass back as `after` on the next poll. */
+  cursor: number
+  events: AttributedSpendEvent[]
+  /** What this buyer supports for the gateway (absent on older buyers). */
+  capabilities?: string[]
+}
+
+export interface SpendAttributionFeedOptions {
+  /**
+   * SQLite file that keeps events (and request tags) across restarts until
+   * a poll acknowledges them. Without one, the feed lives in a temporary
+   * database and is lost with the process.
+   */
+  path?: string
+  onLog?: (message: string) => void
+}
+
+export function parseSpendAttributionTag(value: string | undefined): string | null {
+  const tag = value?.trim() ?? ''
+  return TAG_PATTERN.test(tag) ? tag : null
+}
+
+/**
+ * Event feed of signed spend for gateway-tagged requests. Events are stored
+ * in SQLite (a file in the buyer's data dir, so a buyer restart before the
+ * gateway polls loses nothing) until an authenticated poll acknowledges
+ * them (see `page`). Acknowledged events are pruned after
+ * an hour, unacknowledged ones after 7 days. Request tags are retained for an
+ * hour so late spend keeps its attribution.
+ */
+export class SpendAttributionFeed {
+  readonly bootId: string
+  private readonly _db: Database.Database
+  private readonly _track: Database.Statement
+  private readonly _lookup: Database.Statement
+  private readonly _pruneTags: Database.Statement
+  private readonly _trackPurpose: Database.Statement
+  private readonly _clearPurpose: Database.Statement
+  private readonly _prunePurposes: Database.Statement
+  private readonly _insert: Database.Statement
+  private readonly _select: Database.Statement
+  private readonly _oldest: Database.Statement
+  private readonly _ack: Database.Statement
+  private readonly _pruneEvents: Database.Statement
+  /** Each tag's recent spend on a seller (per identity), for spend signed without a request id. */
+  private readonly _recentTagsBySeller = new Map<string, Map<string, RecentTagSpend>>()
+  /** The last tag with spend on each seller (per identity), for spend signed after the window. */
+  private readonly _lastTagBySeller = new Map<string, string>()
+  private _lastPruneAt: number | null = null
+
+  constructor(private readonly _now: () => number = () => Date.now(), options: SpendAttributionFeedOptions = {}) {
+    this._db = openFeedDatabase(options)
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS request_tags (request_id TEXT PRIMARY KEY, tag TEXT NOT NULL, tracked_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS request_tags_time ON request_tags(tracked_at);
+      CREATE TABLE IF NOT EXISTS feed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS spend_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        tag TEXT NOT NULL,
+        request_id TEXT,
+        buyer_identity TEXT NOT NULL,
+        seller_peer_id TEXT NOT NULL,
+        amount_usdc TEXT NOT NULL,
+        input_tokens TEXT NOT NULL,
+        cached_input_tokens TEXT NOT NULL,
+        output_tokens TEXT NOT NULL,
+        output_images TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS spend_events_time ON spend_events(at);
+    `)
+    // Added after the first release. Routing purchases get their own table rather than a request_tags
+    // column, so an older buyer (one rolled back to) can still write request_tags by position.
+    this._db.exec('CREATE TABLE IF NOT EXISTS request_purposes (request_id TEXT PRIMARY KEY, purpose TEXT NOT NULL, tracked_at INTEGER NOT NULL)')
+    addColumnIfMissing(this._db, 'spend_events', 'purpose TEXT')
+    this._db.prepare("INSERT OR IGNORE INTO feed_meta VALUES ('feed_id', ?), ('acked_seq', '0')").run(randomUUID())
+    this.bootId = (this._db.prepare("SELECT value FROM feed_meta WHERE key = 'feed_id'").get() as { value: string }).value
+    this._track = this._db.prepare('INSERT OR REPLACE INTO request_tags (request_id, tag, tracked_at) VALUES (?, ?, ?)')
+    this._trackPurpose = this._db.prepare('INSERT OR REPLACE INTO request_purposes (request_id, purpose, tracked_at) VALUES (?, ?, ?)')
+    this._clearPurpose = this._db.prepare('DELETE FROM request_purposes WHERE request_id = ?')
+    this._pruneTags = this._db.prepare('DELETE FROM request_tags WHERE tracked_at < ?')
+    this._prunePurposes = this._db.prepare('DELETE FROM request_purposes WHERE tracked_at < ?')
+    this._lookup = this._db.prepare(`
+      SELECT t.tag, p.purpose FROM request_tags t LEFT JOIN request_purposes p ON p.request_id = t.request_id
+      WHERE t.request_id = ? AND t.tracked_at >= ?
+    `)
+    this._insert = this._db.prepare(`
+      INSERT INTO spend_events (tag, request_id, buyer_identity, seller_peer_id, amount_usdc, input_tokens, cached_input_tokens, output_tokens, output_images, at, purpose)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    this._select = this._db.prepare('SELECT * FROM spend_events WHERE seq > ? ORDER BY seq LIMIT ?')
+    // The next seq when the table is empty: sqlite_sequence remembers the last one handed out.
+    this._oldest = this._db.prepare(`
+      SELECT COALESCE((SELECT MIN(seq) FROM spend_events), (SELECT seq FROM sqlite_sequence WHERE name = 'spend_events') + 1, 1) AS seq
+    `)
+    this._ack = this._db.prepare(`
+      UPDATE feed_meta SET value = CAST(MAX(CAST(value AS INTEGER), ?) AS TEXT) WHERE key = 'acked_seq'
+        AND ? <= COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'spend_events'), 0)
+    `)
+    this._pruneEvents = this._db.prepare(`
+      DELETE FROM spend_events WHERE (seq <= (SELECT CAST(value AS INTEGER) FROM feed_meta WHERE key = 'acked_seq') AND at < ?)
+        OR at < ? OR seq <= COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'spend_events'), 0) - ?
+    `)
+    this._prune(this._now())
+  }
+
+  /** `purpose` marks a request whose spend buys something other than inference (a router's ranking). */
+  track(requestId: string, tag: string, purpose: SpendPurpose | null = null): void {
+    if (!this._db.open) return
+    const now = this._now()
+    this._prune(now)
+    this._track.run(requestId, tag, now)
+    if (purpose) this._trackPurpose.run(requestId, purpose, now)
+    else this._clearPurpose.run(requestId)
+  }
+
+  close(): void {
+    if (this._db.open) this._db.close()
+  }
+
+  record(event: {
+    requestId: string | null
+    buyerIdentity?: string
+    sellerPeerId: string
+    amountUsdc: string
+    inputTokens: string
+    cachedInputTokens: string
+    outputTokens: string
+    outputImages: string
+  }): void {
+    if (!this._db.open) return
+    const now = this._now()
+    const sellerKey = `${event.buyerIdentity ?? 'default'}:${event.sellerPeerId}`
+    const recentTags = this._recentTagsBySeller.get(sellerKey) ?? new Map<string, RecentTagSpend>()
+    for (const [recentTag, recent] of recentTags) if (recent.at < now - UNTAGGED_SPEND_WINDOW_MS) recentTags.delete(recentTag)
+    this._recentTagsBySeller.set(sellerKey, recentTags)
+    this._prune(now)
+    if (event.requestId) {
+      const tracked = this._lookup.get(event.requestId, now - TAG_RETENTION_MS) as { tag: string; purpose: SpendPurpose | null } | undefined
+      if (!tracked) return
+      const recent = recentTags.get(tracked.tag)
+      recentTags.set(tracked.tag, { at: now, amount: (recent?.amount ?? 0n) + parseAmount(event.amountUsdc) })
+      this._lastTagBySeller.set(sellerKey, tracked.tag)
+      this._insertEvent(tracked.tag, event, event.amountUsdc, now, tracked.purpose)
+      return
+    }
+    // Signed without a request id (a seller's catch-up prompt for work already
+    // served, often while other requests wait): it pays for the requests that
+    // used this seller lately, all paid from this identity's wallet. Dropping it
+    // would leave that spend out of every total, so it is shared among them by
+    // what each spent; after the window it goes to the seller's last tag.
+    const shares = shareUntaggedSpend(parseAmount(event.amountUsdc), recentTags, this._lastTagBySeller.get(sellerKey))
+    shares.forEach(([tag, amount], index) => {
+      const recent = recentTags.get(tag)
+      if (recent) recent.at = now
+      // Token counts are not split: they stay with the first share.
+      const counts = index === 0 ? event : { ...event, inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+      this._insertEvent(tag, counts, amount.toString(), now, null)
+    })
+  }
+
+  private _insertEvent(
+    tag: string,
+    event: { requestId: string | null; buyerIdentity?: string; sellerPeerId: string; inputTokens: string; cachedInputTokens: string; outputTokens: string; outputImages: string },
+    amountUsdc: string,
+    now: number,
+    purpose: SpendPurpose | null,
+  ): void {
+    this._insert.run(
+      tag, event.requestId, event.buyerIdentity ?? 'default', event.sellerPeerId, amountUsdc,
+      event.inputTokens, event.cachedInputTokens, event.outputTokens, event.outputImages, now, purpose,
+    )
+  }
+
+  /**
+   * Events after `after`. With `ack` (an authenticated gateway poll), `after`
+   * also acknowledges every event up to it: the gateway only advances its
+   * cursor past events it has recorded.
+   */
+  page(after: number, options: { ack?: boolean } = {}): AttributedSpendPage {
+    const cursorIn = Number.isSafeInteger(after) ? Math.max(after, 0) : 0
+    const capabilities = [VIDEO_BUDGET_CAPABILITY]
+    if (!this._db.open) return { bootId: this.bootId, oldestSeq: cursorIn + 1, cursor: cursorIn, events: [], capabilities }
+    if (options.ack && cursorIn > 0) this._ack.run(cursorIn, cursorIn)
+    const rows = this._select.all(cursorIn, MAX_EVENTS_PER_PAGE) as SpendEventRow[]
+    const events = rows.map(toEvent)
+    const last = events[events.length - 1]
+    return {
+      bootId: this.bootId,
+      oldestSeq: (this._oldest.get() as { seq: number }).seq,
+      cursor: last ? last.seq : cursorIn,
+      events,
+      capabilities,
+    }
+  }
+
+  private _prune(now: number): void {
+    if (this._lastPruneAt !== null && now - this._lastPruneAt < PRUNE_INTERVAL_MS) return
+    this._lastPruneAt = now
+    this._pruneTags.run(now - TAG_RETENTION_MS)
+    this._prunePurposes.run(now - TAG_RETENTION_MS)
+    this._pruneEvents.run(now - ACKED_RETENTION_MS, now - UNACKED_RETENTION_MS, MAX_STORED_EVENTS)
+  }
+}
+
+interface RecentTagSpend {
+  /** When the tag last had spend on the seller. */
+  at: number
+  /** Its spend signed with a request id within the window, USDC base units. */
+  amount: bigint
+}
+
+function parseAmount(value: string): bigint {
+  try {
+    const amount = BigInt(value)
+    return amount > 0n ? amount : 0n
+  } catch {
+    return 0n
+  }
+}
+
+/**
+ * Splits spend signed without a request id among the seller's recent tags, in
+ * proportion to their recent spend (evenly when none had any), so the shares
+ * add up to `amount` exactly. With no recent tag it all goes to `fallbackTag`;
+ * with neither there is no one to attribute it to.
+ */
+export function shareUntaggedSpend(amount: bigint, recentTags: ReadonlyMap<string, RecentTagSpend>, fallbackTag: string | undefined): Array<[string, bigint]> {
+  if (amount <= 0n) return []
+  // Most recent first, so the first share (which carries the token counts) and the remainder go there.
+  const tags = [...recentTags.entries()].sort((a, b) => b[1].at - a[1].at)
+  if (tags.length === 0) return fallbackTag ? [[fallbackTag, amount]] : []
+  const total = tags.reduce((sum, [, recent]) => sum + recent.amount, 0n)
+  const weights = tags.map(([tag, recent]) => [tag, total > 0n ? recent.amount : 1n] as const)
+  const weightTotal = total > 0n ? total : BigInt(tags.length)
+  const shares: Array<[string, bigint]> = weights.map(([tag, weight]) => [tag, (amount * weight) / weightTotal])
+  const remainder = amount - shares.reduce((sum, [, share]) => sum + share, 0n)
+  shares[0]![1] += remainder
+  return shares.filter(([, share]) => share > 0n)
+}
+
+interface SpendEventRow {
+  seq: number
+  tag: string
+  request_id: string | null
+  buyer_identity: string
+  seller_peer_id: string
+  amount_usdc: string
+  input_tokens: string
+  cached_input_tokens: string
+  output_tokens: string
+  output_images: string
+  at: number
+  purpose: SpendPurpose | null
+}
+
+function toEvent(row: SpendEventRow): AttributedSpendEvent {
+  return {
+    seq: row.seq,
+    tag: row.tag,
+    requestId: row.request_id,
+    buyerIdentity: row.buyer_identity,
+    sellerPeerId: row.seller_peer_id,
+    amountUsdc: row.amount_usdc,
+    inputTokens: row.input_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    outputTokens: row.output_tokens,
+    outputImages: row.output_images,
+    at: row.at,
+    ...(row.purpose ? { purpose: row.purpose } : {}),
+  }
+}
+
+function addColumnIfMissing(db: Database.Database, table: string, column: string): void {
+  const name = column.split(' ')[0]
+  const columns = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as Array<{ name: string }>
+  if (!columns.some((existing) => existing.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
+}
+
+/** The feed's database file, or a temporary one when it has none or the file cannot be opened. */
+function openFeedDatabase(options: SpendAttributionFeedOptions): Database.Database {
+  if (options.path) {
+    try {
+      mkdirSync(dirname(options.path), { recursive: true })
+      const db = new Database(options.path)
+      db.pragma('journal_mode = WAL')
+      db.pragma('synchronous = NORMAL')
+      db.pragma('busy_timeout = 2000')
+      return db
+    } catch (error) {
+      options.onLog?.(`spend attribution: cannot open ${options.path} (${error instanceof Error ? error.message : String(error)}); spend events will not survive a restart`)
+    }
+  }
+  return new Database('')
+}

@@ -2,8 +2,10 @@ import { readFile } from 'node:fs/promises';
 import { net } from 'electron';
 import { DEFAULT_BUYER_STATE_PATH } from '../constants.js';
 import { resolveBuyerProxyPort } from './active-config.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 import { readPeerHealth, type RawPeerHealth } from './peer-health.js';
 import { computePeerSignature } from './peer-signature.js';
+import { deriveNetworkLifecycleObservation } from './network-lifecycle.js';
 
 export { readPeerHealth } from './peer-health.js';
 export type { RawPeerHealth } from './peer-health.js';
@@ -91,6 +93,7 @@ type NetworkHealthProbe = {
   proxyReachable: boolean;
   /** null = proxy running but status endpoint unavailable (older CLI). */
   dhtNodeCount: number | null;
+  peerCount: number | null;
   consecutiveEmptyDiscoveries: number;
   proxyUptimeMs: number | null;
   internetOnline: boolean;
@@ -120,6 +123,7 @@ async function refreshNetworkHealth(): Promise<void> {
           lastHealthProbe = {
             proxyReachable: true,
             dhtNodeCount: Number(payload['dhtNodeCount']) || 0,
+            peerCount: Number(payload['peerCount']) || 0,
             consecutiveEmptyDiscoveries: Number(payload['consecutiveEmptyDiscoveries']) || 0,
             proxyUptimeMs: Number.isFinite(Number(payload['uptimeMs'])) ? Number(payload['uptimeMs']) : null,
             internetOnline,
@@ -127,12 +131,12 @@ async function refreshNetworkHealth(): Promise<void> {
           return;
         }
         // Older CLI without the status endpoint: reachable, DHT state unknown.
-        lastHealthProbe = { proxyReachable: true, dhtNodeCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
+        lastHealthProbe = { proxyReachable: true, dhtNodeCount: null, peerCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
       } finally {
         clearTimeout(timer);
       }
     } catch {
-      lastHealthProbe = { proxyReachable: false, dhtNodeCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
+      lastHealthProbe = { proxyReachable: false, dhtNodeCount: null, peerCount: null, consecutiveEmptyDiscoveries: 0, proxyUptimeMs: null, internetOnline };
     }
   })().finally(() => {
     healthProbeInFlight = null;
@@ -309,6 +313,26 @@ export async function refreshPeerCache(): Promise<void> {
   }
 
   emitIfChanged();
+
+  const onlinePeers = Array.from(peerCache.values()).filter((peer) => peer.online);
+  const observation = deriveNetworkLifecycleObservation(
+    lastHealthProbe,
+    onlinePeers.length,
+    new Set(onlinePeers.flatMap((peer) => peer.services)).size,
+  );
+  if (observation.runtimeStarted) {
+    const telemetry = getTelemetryService();
+    void telemetry?.recordNetworkRuntimeStarted();
+    if (observation.dhtRoutingNodeCount !== null) {
+      void telemetry?.recordDhtStarted(observation.dhtRoutingNodeCount);
+    }
+    if (observation.discoveredPeerCount > 0) {
+      void telemetry?.recordPeersDiscovered(
+        observation.discoveredPeerCount,
+        observation.discoveredServiceCount,
+      );
+    }
+  }
 }
 
 export function getNetworkSnapshot(): DashboardNetworkResult {
@@ -353,22 +377,3 @@ export function getNetworkSnapshot(): DashboardNetworkResult {
   };
 }
 
-/**
- * Mark a peer as recently active and online (e.g. after a chat response).
- */
-export function touchPeer(peerId: string): boolean {
-  const peer = peerCache.get(peerId);
-  if (peer) {
-    const now = Date.now();
-    peer.lastSeen = now;
-    peer.lastReachedAt = now;
-    peer.online = true;
-    return true;
-  }
-  return false;
-}
-
-/** Look up a peer by ID from the in-memory cache. */
-export function lookupPeer(peerId: string): DashboardNetworkPeer | null {
-  return peerCache.get(peerId) ?? null;
-}

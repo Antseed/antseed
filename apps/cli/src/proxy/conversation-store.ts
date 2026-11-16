@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isRoutingSelection, type RoutingSelection, type RoutingServiceTarget } from '@antseed/node'
 import { isCursorEnvironmentSnippet, sanitizeStoredSnippet } from './conversation-identity.js'
 
 /**
@@ -13,7 +14,10 @@ import { isCursorEnvironmentSnippet, sanitizeStoredSnippet } from './conversatio
  * mirroring how buyer.state.json is handled. No database involved.
  */
 
+export type ConversationRouterSelection = Extract<RoutingSelection, { kind: 'router' }> & { service: RoutingServiceTarget }
+
 export type StoredConversation = {
+  routingSelection: ConversationRouterSelection | null
   /** `${tool}:${sessionKey}` — unique per tool chat. */
   id: string
   tool: string
@@ -33,6 +37,8 @@ export type StoredConversation = {
   peerSource: 'auto' | 'user'
   /** Model that served the most recent request (`<peerId>@<service>`), for display. */
   lastModel: string | null
+  /** Routing service (`<peerId>@<serviceId>`) that chose the most recent turn's model; null when no router was used. */
+  lastRouter: string | null
   /** USDC base units authorized for this chat's requests (bigint as string).
       Subagent traffic rolls up into the parent chat, same as everything else
       here. This is what the chat has cost, not what has settled on-chain. */
@@ -55,6 +61,8 @@ const MAX_CONVERSATIONS = 50
 /** Conversations idle longer than this are pruned. */
 const MAX_IDLE_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_LABEL_CHARS = 120
+const LEGACY_DROID_TITLE_MAX_INPUT_TOKENS = 1_500n
+const LEGACY_DROID_CHAT_MIN_INPUT_TOKENS = 5_000n
 
 export function conversationId(tool: string, sessionKey: string): string {
   return `${tool}:${sessionKey}`
@@ -89,7 +97,11 @@ function sanitizeRecord(value: unknown): StoredConversation | null {
     label: typeof record.label === 'string' && record.label.length > 0 ? record.label : null,
     pinnedModel: typeof record.pinnedModel === 'string' && record.pinnedModel.length > 0 ? record.pinnedModel : null,
     peerSource: record.peerSource === 'user' ? 'user' : 'auto',
+    routingSelection: record.peerSource !== 'user' && isRoutingSelection(record.routingSelection)
+      && record.routingSelection.kind === 'router' && record.routingSelection.service
+      ? structuredClone(record.routingSelection) as ConversationRouterSelection : null,
     lastModel: typeof record.lastModel === 'string' && record.lastModel.length > 0 ? record.lastModel : null,
+    lastRouter: typeof record.lastRouter === 'string' && record.lastRouter.length > 0 ? record.lastRouter : null,
     spentUsdc: sanitizeCounter(record.spentUsdc),
     inputTokens: sanitizeCounter(record.inputTokens),
     cachedInputTokens: sanitizeCounter(record.cachedInputTokens),
@@ -98,6 +110,30 @@ function sanitizeRecord(value: unknown): StoredConversation | null {
     createdAt: typeof record.createdAt === 'number' ? record.createdAt : Date.now(),
     lastActiveAt: typeof record.lastActiveAt === 'number' ? record.lastActiveAt : Date.now(),
   }
+}
+
+/** Droid used to send its title helper under a separate synthetic session,
+    leaving two persisted rows with the same snippet. Its body-derived helper
+    key is reused across launches, so the two records may have distant creation
+    times even though both are reactivated together.
+    New requests are filtered before storage; this only heals those legacy
+    pairs, using the captured helper/full-prompt average token sizes to avoid merging
+    genuine chats that happen to start with the same text. */
+function removeLegacyDroidTitleDuplicates(records: StoredConversation[]): StoredConversation[] {
+  const duplicateIds = new Set<string>()
+  for (const candidate of records) {
+    if (candidate.tool !== 'droid' || !candidate.snippet || candidate.label) continue
+    const candidateRequests = BigInt(Math.max(candidate.requestCount, 1))
+    if (BigInt(candidate.inputTokens) > LEGACY_DROID_TITLE_MAX_INPUT_TOKENS * candidateRequests) continue
+    const matchingChat = records.some((record) => (
+      record.id !== candidate.id
+      && record.tool === 'droid'
+      && record.snippet === candidate.snippet
+      && BigInt(record.inputTokens) >= LEGACY_DROID_CHAT_MIN_INPUT_TOKENS * BigInt(Math.max(record.requestCount, 1))
+    ))
+    if (matchingChat) duplicateIds.add(candidate.id)
+  }
+  return duplicateIds.size === 0 ? records : records.filter((record) => !duplicateIds.has(record.id))
 }
 
 export class ConversationStore {
@@ -121,10 +157,10 @@ export class ConversationStore {
     }
     try {
       const parsed = JSON.parse(raw) as { conversations?: unknown[] }
-      const records = (parsed.conversations ?? [])
+      const records = removeLegacyDroidTitleDuplicates((parsed.conversations ?? [])
         .map(sanitizeRecord)
         .filter((record): record is StoredConversation => record !== null)
-        .sort((a, b) => a.lastActiveAt - b.lastActiveAt) // map order tracks recency
+        .sort((a, b) => a.lastActiveAt - b.lastActiveAt)) // map order tracks recency
       for (const record of records) {
         this._byId.set(record.id, record)
       }
@@ -194,7 +230,9 @@ export class ConversationStore {
         label: null,
         pinnedModel: input.lastModel ?? null,
         peerSource: 'auto',
+        routingSelection: null,
         lastModel: input.lastModel ?? null,
+        lastRouter: null,
         spentUsdc: '0',
         inputTokens: '0',
         cachedInputTokens: '0',
@@ -270,12 +308,23 @@ export class ConversationStore {
     return this._byId.get(conversationId(tool, sessionKey))?.pinnedModel ?? null
   }
 
-  recordRoutedModel(id: string, routedModel: string): StoredConversation | null {
+  /** `pinAtRouting`: the chat's pin when the request was routed. If it has
+      changed since (switched mid-flight), the newer pin is kept. */
+  /** Record which routing service chose this turn's model, or null for a turn with no router. */
+  setLastRouter(id: string, router: string | null): void {
+    const existing = this._byId.get(id)
+    if (!existing || existing.lastRouter === router) return
+    this._byId.set(id, { ...existing, lastRouter: router })
+    void this._persist()
+  }
+
+  recordRoutedModel(id: string, routedModel: string, pinAtRouting?: string | null): StoredConversation | null {
     const existing = this._byId.get(id)
     if (!existing) return null
     const record = {
       ...existing,
-      pinnedModel: existing.peerSource === 'user' && existing.pinnedModel
+      pinnedModel: (existing.peerSource === 'user' && existing.pinnedModel)
+        || (pinAtRouting !== undefined && existing.pinnedModel !== pinAtRouting)
         ? existing.pinnedModel
         : routedModel,
       lastModel: routedModel,
@@ -304,6 +353,21 @@ export class ConversationStore {
       ...existing,
       pinnedModel: pinnedModel || null,
       peerSource: pinnedModel ? peerSource : 'auto' as const,
+      routingSelection: pinnedModel && peerSource === 'user' ? null : existing.routingSelection,
+    }
+    this._byId.set(id, record)
+    void this._persist()
+    return record
+  }
+
+  setRoutingSelection(id: string, selection: ConversationRouterSelection | null): StoredConversation | null {
+    if (selection !== null && (!isRoutingSelection(selection) || selection.kind !== 'router' || !selection.service)) {
+      throw new Error('Conversation routing requires a router and an exact routing-service target')
+    }
+    const existing = this._byId.get(id)
+    if (!existing) return null
+    const record: StoredConversation = {
+      ...existing, routingSelection: structuredClone(selection), pinnedModel: null, peerSource: 'auto',
     }
     this._byId.set(id, record)
     void this._persist()

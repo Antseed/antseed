@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { parseAbi } from 'viem';
+import { DEPOSITS_ABI } from '@antseed/wallet-config/abis';
 import type { PaymentConfig } from '../types';
 import { signOperatorAuth } from '../api';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
-
-const DEPOSITS_OPERATOR_ABI = parseAbi([
-  'function setOperator(address buyer, address operator, uint256 nonce, bytes buyerSig) external',
-  'function transferOperator(address buyer, address newOperator) external',
-]);
 
 export interface UseSetOperatorResult {
   run: () => Promise<void>;
@@ -51,7 +46,7 @@ export function useSetOperator(config: PaymentConfig | null, onSuccess?: () => v
       }
       writeContract({
         address: config.depositsContractAddress as `0x${string}`,
-        abi: DEPOSITS_OPERATOR_ABI,
+        abi: DEPOSITS_ABI,
         functionName: 'setOperator',
         chainId: expectedChainId,
         args: [
@@ -118,7 +113,7 @@ export function useTransferOperator(config: PaymentConfig | null, onSuccess?: ()
       await ensureCorrectNetwork();
       writeContract({
         address: config.depositsContractAddress as `0x${string}`,
-        abi: DEPOSITS_OPERATOR_ABI,
+        abi: DEPOSITS_ABI,
         functionName: 'transferOperator',
         chainId: expectedChainId,
         args: [buyerAddress as `0x${string}`, newOperator as `0x${string}`],

@@ -13,6 +13,8 @@ export type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 import type {
   ProviderPricingMatrixEntry,
@@ -20,9 +22,15 @@ import type {
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
 } from '@antseed/protocol/peer-pricing';
 
+import type { TrustBreakdown } from '../reputation/trust-score.js';
+
 export interface PeerVerificationResults {
+  /** Buyer-collected public history for verified identities (GitHub portfolio, domain registration). */
+  identityHistory?: import('../reputation/identity-history.js').IdentityHistoryEvidence;
   /** True when every announced external claim verified successfully. */
   verified: boolean;
   /** Buyer-local time when the latest verification pass completed. */
@@ -66,6 +74,10 @@ export interface PeerInfo {
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   /** Provider/service model capability hints announced by seller. */
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Provider/service self health check results announced by seller (metadata v13+). */
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** Provider/service performance the seller measured on its buyer traffic (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   /** Deterministic fallback default input price (USD per 1M tokens). */
   defaultInputUsdPerMillion?: number;
   /** Deterministic fallback default output price (USD per 1M tokens). */
@@ -76,37 +88,62 @@ export interface PeerInfo {
   maxConcurrency?: number;
   /** Current number of requests the peer is handling. */
   currentLoad?: number;
-  /**
-   * On-chain ERC-8004 agent ID from `AntseedStaking.getAgentId`.
-   * Read by the buyer directly from the chain.
-   */
+  /** On-chain ERC-8004 agent ID, resolved through the seller registry. */
   onChainAgentId?: number;
-  /**
-   * On-chain seller stake in micro-USDC from `AntseedStaking.getStake`.
-   * Read by the buyer directly from the chain.
-   */
-  onChainStakeUsdcMicros?: number;
-  /** Buyer-computed displayed on-chain score (0-100). */
+  /** Buyer-computed trust score (0-100). See `computeTrustScore`. */
   onChainReputationScore?: number;
-  /** Raw on-chain trust: credited settled USDC volume. */
-  onChainTrustScore?: number;
-  /** Sybil-risk heuristic in [0, 1]. */
+  /** Parts that make up `onChainReputationScore`. */
+  trust?: TrustBreakdown;
+  /** Local sybil-risk heuristic in [0, 1]. Display-only; not part of the trust score. */
   onChainSybilRisk?: number;
   /** Sybil signals that fired for this peer. */
   onChainSybilFlags?: string[];
-  /** Settled channel count; buyer overwrites metadata with chain reads when available. */
+  /** Lifetime settled channel count from `AntseedChannels`. */
   onChainChannelCount?: number;
-  /** Ghost count; buyer overwrites metadata with chain reads when available. */
+  /** Lifetime ghost (timed-out, unsettled) channel count from `AntseedChannels`. */
   onChainGhostCount?: number;
-  /** Cumulative settled volume in micro-USDC. */
+  /** Lifetime settled volume in micro-USDC from `AntseedChannels`. */
   onChainTotalVolumeUsdcMicros?: number;
   /** Unix seconds of the most recent settlement. */
   onChainLastSettledAtSec?: number;
-  /** Unix seconds when the seller first staked. */
+  /** Unix seconds when the seller first staked on the legacy USDC staking contract, when known. */
   onChainStakedAtSec?: number;
+  /** Current recognized-usage epoch at the time of the read. */
+  onChainUsageEpoch?: number;
+  /** Seller pool's share of all pools' recognized-usage points in the previous epoch, in basis points. */
+  onChainUsageShareBps?: number;
+  /** Recognized usage points (micro-USDC) credited to the seller in the previous epoch. */
+  onChainUsageLastEpochUsdcMicros?: number;
+  /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
+  onChainPoolStakeAnts?: number;
+  /** Seller pool's share of total network staking power this epoch, in basis points. */
+  onChainPoolPowerShareBps?: number;
+  /** True when `AntseedWashTradingRegistry.isProvenWashTrader` is set for the seller. */
+  onChainWashFlagged?: boolean;
+  /** Proven wash share of the seller's volume, in basis points. */
+  onChainWashShareBps?: number;
+  /**
+   * Advertised services with a live DIFF verdict on `AntseedVerificationResults`, as
+   * trimmed lowercase service names. Each one keeps 10% of its effective
+   * reputation (see `effectiveModelReputationScore`). Absent when unread.
+   */
+  onChainDiffServices?: string[];
+  /**
+   * Advertised services with a live SAME verdict, as trimmed lowercase service
+   * names. Display only: reputation does not use them. Absent when unread.
+   */
+  onChainSameServices?: string[];
+  /**
+   * The seller agent's on-chain verification status (every service with a live verdict) and
+   * the points multiplier the verification policy gives it, in bps (null when the rates are
+   * unread). A multiplier below 10,000 cuts the trust score by the same factor.
+   */
+  onChainVerificationStatus?: { sameCount: number; diffCount: number; pointsMultiplierBps: number | null };
+  /** Unix ms of the verification read behind `onChainDiffServices` and `onChainSameServices`. */
+  onChainVerificationFetchedAt?: number;
   /**
    * Unix ms when the buyer last refreshed on-chain stats for this peer.
-   * Used to throttle repeat `getAgentStats` calls across discovery cycles.
+   * Used to throttle repeat chain reads across discovery cycles.
    */
   onChainStatsFetchedAt?: number;
   /** Full peer metadata, if available (set after metadata resolution). */

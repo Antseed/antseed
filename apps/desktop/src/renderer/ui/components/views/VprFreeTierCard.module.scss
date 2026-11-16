@@ -1,0 +1,116 @@
+.claimButton {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.claimButton:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.claimButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- About ---------- */
+
+.aboutCard {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
+}
+
+.aboutTitle {
+  color: var(--text-primary);
+  font-size: 14.5px;
+  font-weight: 550;
+  line-height: 16px;
+}
+
+.aboutText {
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 16px;
+}
+
+/* ---------- Staked free tier ---------- */
+
+.inlineLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.stakerList {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 2px;
+  padding: 0;
+  list-style: none;
+}
+
+.stakerRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.stakerAddress {
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.stakerName {
+  flex: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.stakerRow .inlineLink {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.codeRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.codeInput {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 18px;
+  outline: none;
+}
+
+.codeInput:focus {
+  border-color: var(--border-strong);
+}

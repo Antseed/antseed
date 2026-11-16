@@ -31,10 +31,10 @@ export interface CAInstallResult {
 /**
  * Whether the OS trust store already trusts *this* CA.
  * - `trusted`: the current ca.crt's fingerprint is present in the trust store.
- * - `stale`:   an AntSeed CA is trusted, but with a different fingerprint — the
+ * - `stale`:   an Antseed CA is trusted, but with a different fingerprint — the
  *              cause of CERT_SIGNATURE_FAILURE (leaf signed by the current key,
  *              verified against the old key). Re-trusting must purge it first.
- * - `absent`:  no AntSeed CA is trusted (or the cert hasn't been generated).
+ * - `absent`:  no Antseed CA is trusted (or the cert hasn't been generated).
  */
 export type CATrustState = 'trusted' | 'stale' | 'absent'
 
@@ -45,7 +45,7 @@ function normalizeFingerprint(value: string): string {
 
 /**
  * Classify trust from the current CA fingerprint and the fingerprints of every
- * AntSeed CA the OS currently trusts. Pure so it can be unit-tested without a
+ * Antseed CA the OS currently trusts. Pure so it can be unit-tested without a
  * real keychain.
  */
 export function classifyCATrust(currentFingerprint: string, installedFingerprints: readonly string[]): CATrustState {
@@ -141,7 +141,7 @@ export class CAManager {
     ]
   }
 
-  /** SHA-1 fingerprints of every AntSeed CA the OS trust store currently holds. */
+  /** SHA-1 fingerprints of every Antseed CA the OS trust store currently holds. */
   private listInstalledFingerprints(): string[] {
     const platform = process.platform
     if (platform === 'darwin') {
@@ -187,7 +187,7 @@ export class CAManager {
   }
 
   /**
-   * SHA-1 hashes of AntSeed CAs in one macOS keychain whose fingerprint differs
+   * SHA-1 hashes of Antseed CAs in one macOS keychain whose fingerprint differs
    * from the current ca.crt. These are the certs that cause
    * CERT_SIGNATURE_FAILURE: trusted under the same subject name, but the proxy
    * now signs leaves with a different key.
@@ -308,7 +308,7 @@ export class CAManager {
           target: 'login-keychain',
           warning: [
             `The certificate is trusted for your user account, but system-wide trust was skipped because ${adminFailure.reason}.`,
-            'If a connected app can\'t reach AntSeed, connect it again and approve the administrator prompt.',
+            'If a connected app can\'t reach Antseed, connect it again and approve the administrator prompt.',
           ].join(' '),
           detail: adminFailure.detail,
         }

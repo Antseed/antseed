@@ -1,0 +1,103 @@
+name: Bug report
+description: Something does not work as it should. Also use this for typos and docs errors.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problems and funds at risk do not go here.** If the bug could let someone steal, lose or lock funds, or is any other security problem, [report it privately](https://github.com/Antseed/antseed/security/advisories/new). Do not file it as a public issue.
+
+        You may open a pull request for this bug straight away. It needs a test that fails before your fix. If the fix changes code on the [money paths](https://github.com/Antseed/antseed/blob/main/CONTRIBUTING.md#money-paths) (payments, keys, prices, contracts), that test is mandatory.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the problem. Include any error message you saw.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact steps or commands that make the problem happen. For a typo or docs error, give the file or page.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the closest one.
+      options:
+        - CLI
+        - Desktop app
+        - Seller node
+        - Buyer proxy and routing
+        - Gateway
+        - Payments and channels (no funds at risk)
+        - ANTS and DIEM staking apps
+        - Agent services (ant-agent)
+        - Plugins and providers
+        - Website or docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The package and version, or the desktop app version. `antseed --version` prints the CLI version. Write n/a for website or docs bugs.
+      placeholder: "@antseed/cli@0.1.230"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Write n/a for website or docs bugs.
+      placeholder: macOS 15, Ubuntu 24.04, Windows 11
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Optional. Remove API keys, private keys and tokens before you paste.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Do you already have a fix?
+      description: Optional. If you do, say so and link your branch or pull request (never for a security problem).
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the [existing issues](https://github.com/Antseed/antseed/issues?q=is%3Aissue) and did not find this bug.
+          required: true
+        - label: This report does not describe a way to steal, lose or lock funds, or any other security problem.
+          required: true

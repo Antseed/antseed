@@ -6,7 +6,7 @@
  * One-command real-chain OpenAI-compatible image generation flow:
  *   build required packages -> start fresh Anvil -> deploy contracts ->
  *   fund/register/stake/deposit -> start seller + buyer proxy ->
- *   call the Images API through AntSeed -> save the generated image ->
+ *   call the Images API through Antseed -> save the generated image ->
  *   verify settlement and print a summary.
  *
  * Required:

@@ -1,7 +1,7 @@
 {
   "name": "@antseed/protocol",
-  "version": "0.1.4",
-  "description": "AntSeed wire protocol: message types, frame/HTTP/payment codecs, and EIP-712 payment signatures. Portable — no Node-only dependencies",
+  "version": "0.1.19",
+  "description": "Antseed wire protocol: message types, frame/HTTP/payment codecs, and EIP-712 payment signatures. Portable — no Node-only dependencies",
   "type": "module",
   "files": [
     "dist"
@@ -61,6 +61,14 @@
       "import": "./dist/billing.js",
       "types": "./dist/billing.d.ts"
     },
+    "./routing": {
+      "import": "./dist/routing.js",
+      "types": "./dist/routing.d.ts"
+    },
+    "./irp": {
+      "import": "./dist/irp.js",
+      "types": "./dist/irp.d.ts"
+    },
     "./capability": {
       "import": "./dist/capability.js",
       "types": "./dist/capability.d.ts"
@@ -76,6 +84,10 @@
     "./connection-state": {
       "import": "./dist/connection-state.js",
       "types": "./dist/connection-state.d.ts"
+    },
+    "./model-identity": {
+      "import": "./dist/model-identity.js",
+      "types": "./dist/model-identity.d.ts"
     }
   },
   "scripts": {

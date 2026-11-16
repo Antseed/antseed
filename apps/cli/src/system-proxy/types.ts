@@ -60,7 +60,8 @@ export interface SystemProxyForwardRule {
  */
 export interface SystemProxyConfigPatch {
   readonly configPath: string
-  readonly providerKey: string
+  /** Absent for formats without a provider entry (claude-desktop). */
+  readonly providerKey?: string
   readonly [key: string]: unknown
 }
 

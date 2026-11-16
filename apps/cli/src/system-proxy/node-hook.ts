@@ -12,7 +12,7 @@ export async function writeNodeProxyHook(dataDir: string, port: number): Promise
 
   // CJS — --require only supports CommonJS
   const content = `'use strict';
-// AntSeed System Proxy hook - auto-generated
+// Antseed System Proxy hook - auto-generated
 try {
   const { setGlobalDispatcher, ProxyAgent } = require('undici');
   const fs = require('node:fs');

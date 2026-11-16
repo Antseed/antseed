@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type RequestListener } from 'node:http';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { createDefaultConfig } from '../../../config/defaults.js';
 import { resolveEffectiveBuyerConfig } from '../../../config/effective.js';
@@ -7,7 +8,10 @@ import {
   buildBuyerRuntimeOverridesFromFlags,
   buildBuyerBootstrapEntries,
   buildRouterRuntimeEnvFromBuyerConfig,
+  buyerToolHintLines,
+  ignoreBrokenPipes,
   isCompatibleBuyerProxy,
+  isSupervisedProcess,
   resolveBuyerRouterName,
 } from './start.js';
 
@@ -106,6 +110,11 @@ test('buyer start bootstrap entries respect explicit configured nodes', () => {
   assert.deepEqual(entries.slice(1), ['10.0.0.2:6881']);
 });
 
+test('buyer start bootstrap entries leave the official nodes out when noOfficialBootstrap is set', () => {
+  assert.deepEqual(buildBuyerBootstrapEntries([], undefined, true), []);
+  assert.deepEqual(buildBuyerBootstrapEntries(['127.0.0.1:40000'], undefined, true), ['127.0.0.1:40000']);
+});
+
 test('buyer start defaults router name to local', () => {
   assert.equal(resolveBuyerRouterName({}), 'local');
   assert.equal(resolveBuyerRouterName({ router: 'claude-code' }), 'claude-code');
@@ -120,11 +129,53 @@ test('buyer start recognizes legacy proxies that only return no_peer_pinned', as
   });
 });
 
-test('buyer start recognizes current proxies by AntSeed response header', async () => {
+test('buyer start recognizes current proxies by Antseed response header', async () => {
   await withProbeServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': 'test' });
     res.end(JSON.stringify({ object: 'list', data: [] }));
   }, async (port) => {
     assert.equal(await isCompatibleBuyerProxy(port), true);
   });
+});
+
+test('buyer restart is only offered with the explicit ANTSEED_SUPERVISED=1 opt-in', () => {
+  assert.equal(isSupervisedProcess({}), false);
+  // A desktop terminal running as a systemd user unit hands INVOCATION_ID to its shells: not a supervisor.
+  assert.equal(isSupervisedProcess({ INVOCATION_ID: '0123456789abcdef0123456789abcdef' }), false);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: '1' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: ' 1 ' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: 'true' }), false);
+});
+
+test('a broken output pipe does not crash the buyer; other stream errors still throw', () => {
+  const stream = new PassThrough();
+  ignoreBrokenPipes([stream]);
+  stream.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  assert.throws(() => stream.emit('error', Object.assign(new Error('boom'), { code: 'EIO' })), /boom/);
+});
+
+test('buyerToolHintLines prints OPENAI_BASE_URL with /v1 and ANTHROPIC_BASE_URL without it', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:8377', []), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:8377',
+    '  export OPENAI_BASE_URL=http://localhost:8377/v1',
+  ]);
+});
+
+test('buyerToolHintLines keeps a custom --port', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:18377', []), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:18377',
+    '  export OPENAI_BASE_URL=http://localhost:18377/v1',
+  ]);
+});
+
+test('buyerToolHintLines gives plugin tool hints the base URL their variable expects', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:8377', [
+    { name: 'Claude Code', envVar: 'ANTHROPIC_BASE_URL' },
+    { name: 'Aider', envVar: 'OPENAI_API_BASE' },
+    { name: 'Codex', envVar: 'OPENAI_BASE_URL' },
+  ]), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:8377   # Claude Code',
+    '  export OPENAI_API_BASE=http://localhost:8377/v1   # Aider',
+    '  export OPENAI_BASE_URL=http://localhost:8377/v1   # Codex',
+  ]);
 });

@@ -2,13 +2,17 @@ export {
   captureUnitBillingContext,
   computeFinalUnitBilling,
   evaluateUnitBilling,
+  isUnitBilledProtocol,
   extractUnitResponseUsage,
   isFreeUnitBillingModel,
   usdToMicroUsdc,
   unitUsageFromReport,
+  validateUnitBillingModelForProtocolV1,
   validateUnitBillingModelV1,
   validateUnitBillingUsage,
   validateUnitBillingUsageReportV1,
   type CapturedUnitBillingContext,
   type FinalUnitBillingResult,
 } from "./unit.js";
+
+export { isPricedProviderService } from "./priced-service.js";

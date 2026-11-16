@@ -87,7 +87,7 @@ describe('PeerLookup', () => {
 
   it('findAll queries the wildcard first, then subnet topics in order', async () => {
     // The wildcard runs alone first to warm the local DHT routing table
-    // with nodes that already know about AntSeed traffic; subsequent
+    // with nodes that already know about Antseed traffic; subsequent
     // per-subnet lookups converge much faster against that hot cache.
     // If this ordering regresses, sequential subnet lookups go back to
     // converging slowly on a cold routing table.

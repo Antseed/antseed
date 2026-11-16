@@ -16,6 +16,9 @@ import {
   ANTSEED_UPLOAD_CHUNK_HEADER,
   ANTSEED_UPLOAD_THRESHOLD_BYTES,
   ANTSEED_UPLOAD_CHUNK_SIZE,
+  VIDEO_DOWNLOAD_STREAM_HEADER,
+  VIDEO_DOWNLOAD_STREAM_VERSION,
+  VIDEO_DOWNLOAD_CHUNK_BYTES,
 } from '@antseed/protocol/http';
 import { debugLog } from './debug.js';
 import type {
@@ -28,7 +31,7 @@ type ResponseHandler = (
   response: SerializedHttpResponse,
   metadata: { streamingStart: boolean }
 ) => void;
-type ChunkHandler = (chunk: SerializedHttpResponseChunk) => void;
+type ChunkHandler = (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 type RequestHandler = (request: SerializedHttpRequest) => void | Promise<void>;
 
 /** Per-request upload size cap, total budget, and stall timeout. */
@@ -45,6 +48,11 @@ export interface ProxyMuxUploadLimits {
   maxTotalPendingUploadBytes?: number;
   /** Max ms between the header frame and HttpRequestEnd. Default: 120_000 ms. */
   uploadTimeoutMs?: number;
+  /**
+   * A budget every in-progress upload also reserves from, so one cap can cover
+   * all of a seller's connections. An upload that would pass it gets a 503.
+   */
+  sharedUploadBudget?: ByteBudget;
 }
 
 // Codex-style /v1/responses requests can include large repository context.
@@ -54,6 +62,31 @@ export interface ProxyMuxUploadLimits {
 export const DEFAULT_MAX_UPLOAD_BODY_BYTES = 64  * 1024 * 1024; // 64 MiB
 const DEFAULT_MAX_TOTAL_PENDING_BYTES      = 256 * 1024 * 1024; // 256 MiB
 const DEFAULT_UPLOAD_TIMEOUT_MS            = 120_000;            // 2 min
+
+/**
+ * A cap on bytes held at once, shared by everything that reserves from it.
+ * Reserve before taking the bytes and release the same amount when done.
+ */
+export class ByteBudget {
+  private _used = 0;
+
+  constructor(readonly maxBytes: number) {}
+
+  /** Reserves `bytes`, or returns false and reserves nothing when that would pass the cap. */
+  tryReserve(bytes: number): boolean {
+    if (this._used + bytes > this.maxBytes) return false;
+    this._used += bytes;
+    return true;
+  }
+
+  release(bytes: number): void {
+    this._used = Math.max(0, this._used - bytes);
+  }
+
+  get usedBytes(): number {
+    return this._used;
+  }
+}
 
 interface PendingUpload {
   headerReq: SerializedHttpRequest;
@@ -74,6 +107,10 @@ export class ProxyMux {
   // Buyer side: pending requests awaiting responses
   private readonly _responseHandlers = new Map<string, ResponseHandler>();
   private readonly _chunkHandlers = new Map<string, ChunkHandler>();
+  private readonly _downloads = new Set<string>();
+  private readonly _consumingDownloads = new Set<string>();
+  private readonly _downloadControllers = new Map<string, AbortController>();
+  private readonly _downloadAcks = new Map<string, { messageId: number; resolve: () => void }>();
 
   // Seller side: handler for incoming proxy requests
   private _requestHandler: RequestHandler | null = null;
@@ -86,6 +123,7 @@ export class ProxyMux {
   private readonly _uploadThresholdBytes: number;
   private readonly _maxTotalPendingUploadBytes: number;
   private readonly _uploadTimeoutMs: number;
+  private readonly _sharedUploadBudget: ByteBudget | null;
 
   constructor(connection: BuyerConnection, uploadLimits?: ProxyMuxUploadLimits) {
     this._connection = connection;
@@ -93,6 +131,7 @@ export class ProxyMux {
     this._uploadThresholdBytes     = uploadLimits?.uploadThresholdBytes     ?? ANTSEED_UPLOAD_THRESHOLD_BYTES;
     this._maxTotalPendingUploadBytes = uploadLimits?.maxTotalPendingUploadBytes ?? DEFAULT_MAX_TOTAL_PENDING_BYTES;
     this._uploadTimeoutMs          = uploadLimits?.uploadTimeoutMs          ?? DEFAULT_UPLOAD_TIMEOUT_MS;
+    this._sharedUploadBudget       = uploadLimits?.sharedUploadBudget       ?? null;
   }
 
   /** Buyer side: send a proxy request and register response/chunk handlers. */
@@ -107,6 +146,7 @@ export class ProxyMux {
     );
     this._responseHandlers.set(request.requestId, onResponse);
     this._chunkHandlers.set(request.requestId, onChunk);
+    if (request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION) this._downloads.add(request.requestId);
 
     if (useChunkedUpload) {
       this._sendChunkedRequest(request);
@@ -159,6 +199,53 @@ export class ProxyMux {
     debugLog(`[ProxyMux] cancel request reqId=${requestId.slice(0, 8)}`);
     this._responseHandlers.delete(requestId);
     this._chunkHandlers.delete(requestId);
+    if (this._downloads.delete(requestId)) {
+      this._safeSendFrame(encodeFrame({
+        type: MessageType.HttpRequestCancel,
+        messageId: this._nextMessageId(),
+        payload: encodeHttpResponseChunk({ requestId, data: new Uint8Array(0), done: false }),
+      }), 'cancel', requestId);
+    }
+  }
+
+  downloadSignal(requestId: string): AbortSignal | undefined {
+    return this._downloadControllers.get(requestId)?.signal;
+  }
+
+  finishDownload(requestId: string): void {
+    this._downloadControllers.get(requestId)?.abort();
+    this._downloadControllers.delete(requestId);
+    this._downloadAcks.delete(requestId);
+  }
+
+  async sendDownloadChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
+    const signal = this.downloadSignal(chunk.requestId);
+    if (!signal || signal.aborted) throw new Error('Download cancelled');
+    if (chunk.data.length > VIDEO_DOWNLOAD_CHUNK_BYTES || chunk.done) throw new Error('Invalid download chunk');
+    if (this._downloadAcks.has(chunk.requestId)) throw new Error('Previous download chunk not acknowledged');
+    const messageId = this._nextMessageId();
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
+        this._downloadAcks.delete(chunk.requestId);
+      };
+      const abort = () => { cleanup(); reject(new Error('Download cancelled')); };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Download consumer timed out')); }, 30_000);
+      signal.addEventListener('abort', abort, { once: true });
+      this._downloadAcks.set(chunk.requestId, { messageId, resolve: () => { cleanup(); resolve(); } });
+      try {
+        this._connection.send(encodeFrame({ type: MessageType.HttpResponseChunk, messageId, payload: encodeHttpResponseChunk(chunk) }));
+      } catch (error) { cleanup(); reject(error); }
+    });
+  }
+
+  sendProxyError(requestId: string): void {
+    this._safeSendFrame(encodeFrame({
+      type: MessageType.HttpResponseError,
+      messageId: this._nextMessageId(),
+      payload: encodeHttpResponse({ requestId, statusCode: 502, headers: {}, body: new Uint8Array(0) }),
+    }), 'response-error', requestId);
   }
 
   /** Seller side: register a handler for incoming proxy requests. */
@@ -202,6 +289,13 @@ export class ProxyMux {
         case MessageType.HttpRequest: {
           // Seller side: incoming request from buyer
           const request = decodeHttpRequest(frame.payload);
+          if (request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION) {
+            // Venice downloads are a small JSON POST naming the job.
+            const validBody = request.method === 'POST' && request.body.length <= 4096;
+            if (!validBody || request.headers[ANTSEED_UPLOAD_CHUNK_HEADER]) throw new Error('Invalid download request');
+            if (this._downloadControllers.has(request.requestId)) throw new Error('Duplicate download request');
+            this._downloadControllers.set(request.requestId, new AbortController());
+          }
           debugLog(
             `[ProxyMux] recv request reqId=${request.requestId.slice(0, 8)} chunked=${request.headers[ANTSEED_UPLOAD_CHUNK_HEADER] === 'chunked' ? "true" : "false"} bodyBytes=${request.body?.length ?? 0} bodyType=${typeof request.body}`,
           );
@@ -212,7 +306,7 @@ export class ProxyMux {
             const existing = this._pendingUploads.get(request.requestId);
             if (existing) {
               clearTimeout(existing.timer);
-              this._totalPendingUploadBytes -= existing.byteCount;
+              this._releasePending(existing.byteCount);
               for (const c of existing.chunks) c.fill(0);
             }
             const timer = setTimeout(
@@ -226,7 +320,8 @@ export class ProxyMux {
               timer,
             });
           } else if (this._requestHandler) {
-            await this._requestHandler(request);
+            try { await this._requestHandler(request); }
+            finally { this.finishDownload(request.requestId); }
           }
           break;
         }
@@ -244,15 +339,10 @@ export class ProxyMux {
             this._abortUpload(chunk.requestId, 413, 'Upload body exceeds per-request limit');
             break;
           }
-          // Global budget guard
-          if (this._totalPendingUploadBytes + chunk.data.length > this._maxTotalPendingUploadBytes) {
-            this._abortUpload(chunk.requestId, 413, 'Server upload capacity exceeded');
-            break;
-          }
+          if (!this._acceptPending(chunk.requestId, chunk.data.length)) break;
 
           entry.chunks.push(chunk.data);
           entry.byteCount += chunk.data.length;
-          this._totalPendingUploadBytes += chunk.data.length;
           break;
         }
         case MessageType.HttpRequestEnd: {
@@ -271,19 +361,15 @@ export class ProxyMux {
               this._abortUpload(chunk.requestId, 413, 'Upload body exceeds per-request limit');
               break;
             }
-            if (this._totalPendingUploadBytes + finalLen > this._maxTotalPendingUploadBytes) {
-              this._abortUpload(chunk.requestId, 413, 'Server upload capacity exceeded');
-              break;
-            }
+            if (!this._acceptPending(chunk.requestId, finalLen)) break;
             entry.chunks.push(chunk.data);
             entry.byteCount += finalLen;
-            this._totalPendingUploadBytes += finalLen;
           }
 
           // Clean up tracking state
           clearTimeout(entry.timer);
           this._pendingUploads.delete(chunk.requestId);
-          this._totalPendingUploadBytes -= entry.byteCount;
+          this._releasePending(entry.byteCount);
 
           if (this._requestHandler) {
             const body = _concatChunks(entry.chunks);
@@ -306,6 +392,7 @@ export class ProxyMux {
           if (handler) {
             const streamingStart = response.headers[ANTSEED_STREAMING_RESPONSE_HEADER] === '1';
             if (!streamingStart) {
+              this._downloads.delete(response.requestId);
               this._responseHandlers.delete(response.requestId);
               this._chunkHandlers.delete(response.requestId);
             }
@@ -321,19 +408,38 @@ export class ProxyMux {
           );
           const chunkHandler = this._chunkHandlers.get(chunk.requestId);
           if (chunkHandler) {
-            chunkHandler(chunk);
+            if (this._downloads.has(chunk.requestId)) {
+              if (chunk.done || chunk.data.length > VIDEO_DOWNLOAD_CHUNK_BYTES || this._consumingDownloads.has(chunk.requestId)) {
+                this.cancelProxyRequest(chunk.requestId);
+                throw new Error('Invalid download flow control');
+              }
+              this._consumingDownloads.add(chunk.requestId);
+              try {
+                await chunkHandler(chunk);
+                if (this._downloads.has(chunk.requestId)) this._connection.send(encodeFrame({
+                  type: MessageType.HttpResponseAck,
+                  messageId: frame.messageId,
+                  payload: encodeHttpResponseChunk({ ...chunk, data: new Uint8Array(0) }),
+                }));
+              } finally { this._consumingDownloads.delete(chunk.requestId); }
+            } else { await chunkHandler(chunk); }
           }
           break;
         }
         case MessageType.HttpResponseEnd: {
           // Buyer side: final chunk (done=true) from seller
           const endChunk = decodeHttpResponseChunk(frame.payload);
+          if (this._downloads.has(endChunk.requestId) && (endChunk.data.length || this._consumingDownloads.has(endChunk.requestId))) {
+            this.cancelProxyRequest(endChunk.requestId);
+            throw new Error('Invalid download end');
+          }
           debugLog(
             `[ProxyMux] recv response end reqId=${endChunk.requestId.slice(0, 8)} bytes=${endChunk.data.length}`,
           );
           const endHandler = this._chunkHandlers.get(endChunk.requestId);
           if (endHandler) {
-            endHandler(endChunk);
+            await endHandler(endChunk);
+            this._downloads.delete(endChunk.requestId);
             this._responseHandlers.delete(endChunk.requestId);
             this._chunkHandlers.delete(endChunk.requestId);
           }
@@ -346,8 +452,20 @@ export class ProxyMux {
           if (errorHandler) {
             this._responseHandlers.delete(errorResponse.requestId);
             this._chunkHandlers.delete(errorResponse.requestId);
+            this._downloads.delete(errorResponse.requestId);
             errorHandler(errorResponse, { streamingStart: false });
           }
+          break;
+        }
+        case MessageType.HttpResponseAck: {
+          const chunk = decodeHttpResponseChunk(frame.payload);
+          const pending = this._downloadAcks.get(chunk.requestId);
+          if (pending?.messageId === frame.messageId) pending.resolve();
+          break;
+        }
+        case MessageType.HttpRequestCancel: {
+          const chunk = decodeHttpResponseChunk(frame.payload);
+          this.finishDownload(chunk.requestId);
           break;
         }
         default:
@@ -381,12 +499,44 @@ export class ProxyMux {
    * Zeros all buffered chunk data before discarding.
    */
   abortPendingUploads(): void {
+    for (const requestId of this._downloadControllers.keys()) this.finishDownload(requestId);
     for (const entry of this._pendingUploads.values()) {
       clearTimeout(entry.timer);
       for (const c of entry.chunks) c.fill(0);
     }
     this._pendingUploads.clear();
-    this._totalPendingUploadBytes = 0;
+    this._releasePending(this._totalPendingUploadBytes);
+  }
+
+  /**
+   * Seller side: for a response sent chunk by chunk. Undefined when the buyer is
+   * keeping up, else a promise to wait on before sending more.
+   */
+  whenWritable(): Promise<void> | undefined {
+    return this._connection.whenWritable?.();
+  }
+
+  /**
+   * Counts `bytes` more of an in-progress upload against this connection's budget
+   * and the shared one. When either is full the upload is aborted with an error
+   * response and false is returned.
+   */
+  private _acceptPending(requestId: string, bytes: number): boolean {
+    if (this._totalPendingUploadBytes + bytes > this._maxTotalPendingUploadBytes) {
+      this._abortUpload(requestId, 413, 'Server upload capacity exceeded');
+      return false;
+    }
+    if (this._sharedUploadBudget && !this._sharedUploadBudget.tryReserve(bytes)) {
+      this._abortUpload(requestId, 503, 'Seller is at its limit for request bytes in flight; retry shortly');
+      return false;
+    }
+    this._totalPendingUploadBytes += bytes;
+    return true;
+  }
+
+  private _releasePending(bytes: number): void {
+    this._totalPendingUploadBytes -= bytes;
+    this._sharedUploadBudget?.release(bytes);
   }
 
   /**
@@ -398,7 +548,7 @@ export class ProxyMux {
     if (!entry) return;
 
     clearTimeout(entry.timer);
-    this._totalPendingUploadBytes -= entry.byteCount;
+    this._releasePending(entry.byteCount);
     for (const c of entry.chunks) c.fill(0);
     this._pendingUploads.delete(requestId);
 
@@ -408,12 +558,13 @@ export class ProxyMux {
       headers: {
         'content-type': 'text/plain',
         ...(statusCode === 413 ? { 'x-antseed-max-upload-body-bytes': String(this._maxUploadBodyBytes) } : {}),
+        ...(statusCode === 503 ? { 'retry-after': '1' } : {}),
       },
       body: new TextEncoder().encode(reason),
     });
   }
 
-  private _safeSendFrame(frame: Uint8Array, kind: 'response' | 'response-chunk' | 'response-end', requestId: string): void {
+  private _safeSendFrame(frame: Uint8Array, kind: 'response' | 'response-chunk' | 'response-end' | 'response-error' | 'cancel', requestId: string): void {
     try {
       this._connection.send(frame);
     } catch (err) {

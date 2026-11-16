@@ -4,7 +4,7 @@ import Table from 'cli-table3';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getGlobalOptions } from '../types.js';
-import { createDepositsClient, loadCryptoContext, formatUsdc, openChannelStore } from '../../payment-utils.js';
+import { createDepositsClient, loadCryptoContext, formatUsdc, openChannelStore, reconcileLocalBuyerChannels } from '../../payment-utils.js';
 import { loadConfig } from '../../../config/loader.js';
 import { getNodeStatus } from '../../../status/node-status.js';
 
@@ -52,6 +52,7 @@ export function registerBuyerStatusCommand(buyerCmd: Command): void {
         try {
           const store = openChannelStore(globalOpts.dataDir);
           try {
+            await reconcileLocalBuyerChannels(store, config, globalOpts.dataDir);
             activeChannels = store.getActiveChannelsByBuyer('buyer', identity.address).length;
           } finally {
             store.close();

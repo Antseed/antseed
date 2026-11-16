@@ -1,6 +1,6 @@
 # @antseed/ant-agent
 
-Ant agent runtime for AntSeed. Lets seed runners monetize their knowledge by wrapping any provider with a persona, guardrails, on-demand knowledge modules, and custom tools.
+Ant agent runtime for Antseed. Lets seed runners monetize their knowledge by wrapping any provider with a persona, guardrails, on-demand knowledge modules, and custom tools.
 
 An ant agent is a **read-only, knowledge-augmented AI service**. It doesn't act on the user's behalf — it answers questions using curated expertise that the creator packages and maintains.
 

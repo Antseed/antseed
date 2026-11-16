@@ -1,0 +1,68 @@
+{
+  "paths": {
+    "/fal-ai/kling-video/ai-avatar/v2/pro": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KlingVideoAiAvatarV2ProInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "KlingVideoAiAvatarV2ProInput": {
+        "properties": {
+          "prompt": {
+            "default": ".",
+            "description": "The prompt to use for the video generation.",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "audio_url": {
+            "examples": [
+              "https://v3.fal.media/files/rabbit/9_0ZG_geiWjZOmn9yscO6_output.mp3"
+            ],
+            "type": "string",
+            "description": "The URL of the audio file.",
+            "title": "Audio Url",
+            "_fal_ui_field": "audio"
+          },
+          "enable_safety_checker": {
+            "default": true,
+            "description": "Disabling safety checks requires account authorization; unauthorized requests are always checked.",
+            "type": "boolean",
+            "title": "Enable Safety Checker"
+          },
+          "image_url": {
+            "examples": [
+              "https://storage.googleapis.com/falserverless/example_inputs/kling_ai_avatar_input.jpg"
+            ],
+            "type": "string",
+            "description": "The URL of the image to use as your avatar",
+            "title": "Image Url",
+            "_fal_ui_field": "image"
+          }
+        },
+        "type": "object",
+        "required": [
+          "image_url",
+          "audio_url"
+        ],
+        "title": "AIAvatarInput",
+        "x-fal-order-properties": [
+          "enable_safety_checker",
+          "image_url",
+          "audio_url",
+          "prompt"
+        ]
+      }
+    }
+  }
+}

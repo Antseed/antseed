@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { test } from 'vitest';
-import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from './BrandIcon.js';
+import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '@antseed/ui';
 
 test('model family wins over the transport provider slug', () => {
   // Sellers advertise models over a protocol whose provider slug ("openai",
@@ -32,6 +32,17 @@ test('vendor slugs still resolve their own models', () => {
 test('unknown identifiers fall back to the generic mark', () => {
   assert.equal(resolveBrandKey('acme', 'mystery-model'), 'generic');
   assert.equal(resolveBrandKey(), 'generic');
+});
+
+test('Droid resolves the Factory mark and stays theme-aware', () => {
+  assert.equal(resolveBrandKey('droid', 'Droid'), 'droid');
+  assert.equal(resolveBrandKey('factory'), 'droid');
+  // Standalone-word match only — "android" must not become a Droid mark.
+  assert.equal(resolveBrandKey('android-model'), 'generic');
+  assert.equal(isThemeAwareAppBrand('droid'), true);
+  const markup = renderToStaticMarkup(BrandIcon({ brand: 'droid', size: 24 }));
+  assert.match(markup, /viewBox="0 0 508 508"/);
+  assert.match(markup, /fill="currentColor"/);
 });
 
 test('MiniMax renders the official waveform and brand gradient', () => {
@@ -88,4 +99,9 @@ test('tunnel providers resolve their bundled brand marks', () => {
   assert.equal(resolveBrandKey('ngrok'), 'ngrok');
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'cloudflare' })), /cloudflare\.svg/);
   assert.match(renderToStaticMarkup(BrandIcon({ name: 'ngrok' })), /ngrok\.svg/);
+});
+
+test('Prime Agent gets its own app icon, not a model family', () => {
+  assert.equal(resolveBrandKey('prime-agent', 'Prime Agent'), 'prime-agent');
+  assert.equal(resolveBrandKey('prime-intellect', 'INTELLECT-3'), 'generic');
 });

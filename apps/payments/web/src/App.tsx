@@ -4,7 +4,7 @@ import { getBalance, getConfig } from './api';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { PayPage, type PayPageAction, type PayPagePopup } from './views/PayPage';
 
-const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'close-channel']);
+const PAY_ACTIONS = new Set<PayPageAction>(['deposit', 'withdraw', 'authorize', 'claim', 'close-channel', 'share-free-tier']);
 
 /**
  * The portal dashboard is retired — every view lives in the desktop app (or

@@ -11,7 +11,7 @@ variable, not guaranteed, and may be zero.
 
 ## Stack
 
-- Vite + React 18 + TypeScript (strict)
+- Vite + React 19 + TypeScript (strict)
 - `wagmi` + `viem` for all chain I/O
 - RainbowKit for wallet connection
 - `@tanstack/react-query` for caching + polling
@@ -101,7 +101,7 @@ For ABI consumers migrating from the earlier proxy surface:
 
 `index.html` uses DIEM Provider Capacity Program specific metadata:
 
-- `<title>`, `og:title`, and `twitter:title`: `DIEM Provider Capacity Program | AntSeed`.
+- `<title>`, `og:title`, and `twitter:title`: `DIEM Provider Capacity Program | Antseed`.
 - `description`, `og:description`, and `twitter:description` describe DIEM locking,
   variable USDC allocations, and variable $ANTS incentives without APY/yield phrasing.
 - `canonical` is `https://diemantseed.com/`.
@@ -111,7 +111,7 @@ Everything else — keywords, `og:type`, `og:image` / `twitter:image`,
 
 Static assets copied from the website:
 
-- **Favicon**: `public/logo.svg` — same AntSeed ant as antseed.com. Copied
+- **Favicon**: `public/logo.svg` — same Antseed ant as antseed.com. Copied
   verbatim from `apps/website/static/logo.svg`; keep the two in sync.
 - **Fonts**: same Google Fonts stylesheet (Space Grotesk + JetBrains Mono).
 - **`og:image` / `twitter:image`**: `https://antseed.com/og-image.jpg` — the

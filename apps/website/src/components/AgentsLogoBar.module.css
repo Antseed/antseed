@@ -1,0 +1,28 @@
+.item {
+  gap: 10px;
+}
+
+.mark {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+/* homepage marquee sets img height:100%; pin these so the marks match */
+.mark img,
+.mark svg {
+  width: 22px !important;
+  height: 22px !important;
+  display: block;
+}
+
+.name {
+  font-family: var(--as-font-app);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}

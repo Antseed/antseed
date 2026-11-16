@@ -1,0 +1,50 @@
+@use './chip';
+
+.actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+.iconButton {
+  flex: 0 0 auto;
+  width: chip.$chip-height;
+  height: chip.$chip-height;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.keysButton {
+  @include chip.chip-text;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+}
+
+.keysButton:hover {
+  @include chip.chip-hover;
+}
+
+.iconButton:hover,
+.iconButton:focus-visible {
+  background: transparent;
+  color: var(--text-primary);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.keysButton:focus-visible,
+.iconButton:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 2px;
+}

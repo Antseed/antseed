@@ -62,4 +62,18 @@ contract MockERC8004Registry is IERC8004Registry {
         _balances[to]++;
         emit Transferred(agentId, from, to);
     }
+
+    function setOwner(uint256 agentId, address owner) external {
+        require(agentId != 0, "Invalid token ID");
+        require(owner != address(0), "Invalid owner");
+
+        address previousOwner = _owners[agentId];
+        if (previousOwner != address(0)) {
+            _balances[previousOwner]--;
+        }
+
+        _owners[agentId] = owner;
+        _balances[owner]++;
+        emit Transferred(agentId, previousOwner, owner);
+    }
 }

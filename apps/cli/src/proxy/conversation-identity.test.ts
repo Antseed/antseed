@@ -5,6 +5,7 @@ import {
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
+  withUpstreamSessionHeader,
 } from './conversation-identity.js'
 
 const CURSOR_ENVIRONMENT = `<user_info>
@@ -315,6 +316,19 @@ test('snippet: pure title request yields null, never a label', () => {
   }), null)
 })
 
+test('claude desktop title housekeeping is recognized and never labels a chat', () => {
+  // Claude Desktop fires this from a session id of its own; without the
+  // prefix it becomes a phantom chat row per new Claude conversation.
+  const body = {
+    messages: [{
+      role: 'user',
+      content: 'You are coming up with a succinct title for an agent chat session based on the messages so far.',
+    }],
+  }
+  assert.equal(isTitleGenerationRequest(body), true)
+  assert.equal(extractFirstUserSnippet(body), null)
+})
+
 test('snippet: injected project-doc blobs never label a chat', () => {
   // Codex sends AGENTS.md/CLAUDE.md contents as a user message ahead of the
   // real prompt; the doc must be skipped in favor of the genuine turn.
@@ -389,6 +403,34 @@ test('title turns are recognised so they cannot define a chat model', () => {
   assert.equal(isTitleGenerationRequest({
     messages: [{ role: 'user', content: 'You write concise thread titles for a coding chat.' }],
   }), true)
+  // Factory/Droid puts the real first user message in the user role. Its
+  // title-specific system text follows a shared provider preamble, so the
+  // marker is not at the start of the instruction block.
+  const droidTitleRequest = {
+    messages: [
+      {
+        role: 'system',
+        content: `Shared provider compatibility preamble.
+You are a helper that generates concise session titles for a session picker.
+Input: one user message from the start of a session.`,
+      },
+      { role: 'user', content: 'wowow' },
+    ],
+  }
+  assert.equal(isTitleGenerationRequest(droidTitleRequest), true)
+
+  assert.equal(isTitleGenerationRequest({
+    instructions: `Shared provider compatibility preamble.
+You are a helper that generates concise session titles for a session picker.`,
+    input: 'wowow',
+  }), true)
+  assert.equal(isTitleGenerationRequest({
+    input: [{
+      type: 'message',
+      role: 'developer',
+      content: 'You are a helper that generates concise session titles for a session picker.',
+    }],
+  }), true)
 })
 
 test('real turns are not mistaken for title turns', () => {
@@ -397,10 +439,44 @@ test('real turns are not mistaken for title turns', () => {
   // (it is in the history once titling ran) is still a real turn.
   assert.equal(isTitleGenerationRequest({
     messages: [
+      { role: 'system', content: 'You are a helpful coding assistant.' },
       { role: 'user', content: 'fix the failing tests' },
       { role: 'user', content: 'Generate a title for this conversation:' },
     ],
   }), false)
+  // Broad title phrasing in instructions is not enough; instruction-role
+  // detection deliberately uses only exact known housekeeping markers.
+  assert.equal(isTitleGenerationRequest({
+    instructions: 'Generate a title for this session',
+    input: 'wowow',
+  }), false)
+  assert.equal(isTitleGenerationRequest({
+    messages: [
+      { role: 'system', content: 'Generate a title for this session' },
+      { role: 'user', content: 'wowow' },
+    ],
+  }), false)
   assert.equal(isTitleGenerationRequest(null), false)
   assert.equal(isTitleGenerationRequest({ model: 'x' }), false)
+})
+
+test('upstream session header: the conversation key under session_id, whatever the client called it', () => {
+  const sessionOf = (headers: Record<string, string>, body: Record<string, unknown> | null) => {
+    const identity = extractConversationIdentity(headers, body)
+    assert.ok(identity)
+    return withUpstreamSessionHeader(headers, identity)['session_id']
+  }
+  // A dash header, as Codex sends it and as a reverse proxy keeps it.
+  assert.equal(sessionOf({ 'session-id': 'codex-1' }, null), 'codex-1')
+  assert.equal(sessionOf({ 'x-session-id': 'oc-1' }, null), 'oc-1')
+  // Only the body says it: OpenAI prompt_cache_key, Claude Code metadata.
+  assert.equal(sessionOf({}, { prompt_cache_key: 'pi-1', input: 'hi' }), 'pi-1')
+  assert.equal(sessionOf({}, { metadata: { user_id: JSON.stringify({ session_id: 'cc-1' }) } }), 'cc-1')
+})
+
+test('upstream session header: a client session_id is kept as sent', () => {
+  const headers = { Session_id: 'client', 'x-session-id': 'other' }
+  const identity = extractConversationIdentity(headers, null)
+  assert.ok(identity)
+  assert.equal(withUpstreamSessionHeader(headers, identity), headers)
 })

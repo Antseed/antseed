@@ -2,6 +2,7 @@ export { decodeResponseAuth, encodeResponseAuth } from './codec.js';
 export { VerificationMux } from './verification-mux.js';
 export {
   createResponseAuthPayload,
+  encodeResponseAuthSigningPayload,
   hashRequest,
   hashResponse,
   verifyResponseAuth,

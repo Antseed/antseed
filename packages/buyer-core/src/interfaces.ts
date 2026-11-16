@@ -14,6 +14,8 @@ import type {
   ProviderServiceCategoryMatrixEntry,
   ProviderServiceApiProtocolMatrixEntry,
   ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
   ProviderServiceUnitBillingModelMatrixEntry,
   ResponseAuthPayload,
   SerializedHttpRequest,
@@ -23,11 +25,19 @@ import type {
 /** Minimum transport surface the muxes need: raw frame bytes out. */
 export interface FrameSender {
   send(data: Uint8Array): void;
+  /**
+   * For a sender that produces data in a loop: undefined when it may send more,
+   * else a promise that resolves once the peer has read enough of what it was
+   * sent. Never rejects. A transport without it never asks a sender to wait.
+   */
+  whenWritable?(): Promise<void> | undefined;
 }
 
 /** Connection surface used by the buyer request/payment machinery. */
 export interface BuyerConnection extends FrameSender {
   readonly state: ConnectionState;
+  /** Session hash of an encrypted TCP connection (see RequestExecutionOptions.channelBinding). */
+  readonly channelBinding?: string | null;
   on(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
   off(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
 }
@@ -59,6 +69,10 @@ export interface BuyerPeerView {
   providerServiceApiProtocols?: Record<string, ProviderServiceApiProtocolMatrixEntry>;
   providerServiceUnitBillingModels?: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
   providerServiceCapabilities?: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  /** Seller self health check results per provider/service (metadata v13+). */
+  providerServiceHealth?: Record<string, ProviderServiceHealthMatrixEntry>;
+  /** How each service served buyers lately, measured by the seller (metadata v14+). */
+  providerServicePerformance?: Record<string, ProviderServicePerformanceMatrixEntry>;
   defaultInputUsdPerMillion?: number;
   defaultOutputUsdPerMillion?: number;
   defaultCachedInputUsdPerMillion?: number;
@@ -69,11 +83,23 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   receivedAt: number;
   verified: boolean;
   verificationError: string | null;
+  requestPreimage?: Uint8Array | null;
+  responsePreimage?: Uint8Array | null;
+}
+
+/**
+ * Who a receipt is for, from the buyer's own request: the peer it sent the
+ * request to and the service it asked for. A receipt's own peer and service
+ * fields are whatever the seller wrote, so only these can be trusted.
+ */
+export interface ResponseAuthContext {
+  sellerPeerId: string;
+  requestedService: string;
 }
 
 /** Sink for seller-signed per-response receipts (sqlite on node, optional elsewhere). */
 export interface ResponseAuthSink {
-  insertResponseAuth(record: StoredResponseAuth): void;
+  insertResponseAuth(record: StoredResponseAuth, context?: ResponseAuthContext): void;
 }
 
 export interface ResponseAuthSampleInput {

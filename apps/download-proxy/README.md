@@ -28,8 +28,8 @@ GA4 event) and "user actually received the installer".
 
 "Latest" is resolved from the GitHub API and cached at the edge for 5
 minutes, so a fresh release is picked up within minutes with one API call per
-burst. Range requests are forwarded (resumed downloads work) and flagged
-`partial=1` in telemetry.
+burst. Range requests are forwarded (resumed and segmented downloads work);
+events from a 206 response are flagged `partial=1` in telemetry.
 
 ## Telemetry
 
@@ -40,14 +40,33 @@ GA4 credentials are configured, sent to GA4 via the Measurement Protocol —
 the same property that records the website's `download_vpr` clicks, so the
 full funnel reads in one place.
 
-Funnel note: count completions with `partial=0`; `partial=1` completions are
-resumed byte ranges. The transfer runs through workerd's native pipe (a JS
+One download, one set of events. Download managers fetch an installer as
+several concurrent byte ranges and browsers resume a paused download with a
+new `Range` request; the worker reports per *download*, not per request:
+the request covering byte 0 emits `download_started`, and only the request
+delivering the file's last byte emits `download_completed` / `download_aborted`
+(a plain 200 is both). Middle segments appear in the console log only, as
+`download_segment_completed` / `download_segment_aborted`. `partial=1` on a
+reported event therefore means "this client used ranges" — useful for
+spotting download managers — without inflating the count.
+
+The transfer runs through workerd's native pipe (a JS
 per-chunk pump would exceed the Workers CPU limit on installer-sized files),
 so per-chunk byte counting isn't possible: `download_completed` implies the
 full `total_bytes` were delivered (enforced by `FixedLengthStream`), while
-`download_aborted` delivered an unknown prefix and carries only `duration_ms`. Each proxy event uses a random Measurement Protocol
-`client_id`, so GA4 sees them as standalone hits (fine for counting; joining
-to the website session would require passing the GA client id on the URL).
+`download_aborted` delivered an unknown prefix and carries only `duration_ms`.
+
+Session attribution: the website's click handler appends the visitor's GA
+ids to proxy links (`?cid=<_ga client id>&sid=<session id>`), and the worker
+sends events under that `client_id`/`session_id` — so downloads land inside
+the visitor's GA4 session and inherit source/campaign/landing-page. Ids are
+strictly validated (digits-and-dot shapes only) and dropped otherwise.
+Direct or shared links — and visitors whose browser blocked GA, so no
+`_ga` cookie existed to copy — still count, under a random client_id. Every
+event carries `attributed` (1/0) in both the console line and the GA4 params;
+`attributed=0` downloads can never have a matching `download_vpr` click, which
+is why the proxy's `download_started` is the reliable top of the download
+funnel and the click event is best read for page/section breakdowns only.
 
 ## Deploy
 

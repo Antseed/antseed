@@ -81,6 +81,23 @@ export function encodeHttpRequest(req: SerializedHttpRequest): Uint8Array {
 }
 
 /**
+ * Encode every HTTP request field before the body bytes, using the supplied
+ * body length. Callers hash this prefix and then the body, without building
+ * the whole encoding.
+ */
+export function encodeHttpRequestPrefix(
+  req: Omit<SerializedHttpRequest, 'body'>,
+  bodyLength: number,
+): Uint8Array {
+  if (!Number.isInteger(bodyLength) || bodyLength < 0 || bodyLength > 0xffff_ffff) {
+    throw new RangeError('HTTP request body length must fit in uint32');
+  }
+  const encoded = encodeHttpRequest({ ...req, body: new Uint8Array(0) });
+  new DataView(encoded.buffer).setUint32(encoded.length - 4, bodyLength);
+  return encoded;
+}
+
+/**
  * Decode binary data into a SerializedHttpRequest.
  */
 export function decodeHttpRequest(data: Uint8Array): SerializedHttpRequest {
@@ -191,6 +208,22 @@ export function encodeHttpResponse(resp: SerializedHttpResponse): Uint8Array {
   buf.set(resp.body, offset);
 
   return buf;
+}
+
+/**
+ * Encode every HTTP response field before the body bytes, using the supplied
+ * body length. Streaming callers hash this prefix and then append body chunks.
+ */
+export function encodeHttpResponsePrefix(
+  resp: Omit<SerializedHttpResponse, 'body'>,
+  bodyLength: number,
+): Uint8Array {
+  if (!Number.isInteger(bodyLength) || bodyLength < 0 || bodyLength > 0xffff_ffff) {
+    throw new RangeError('HTTP response body length must fit in uint32');
+  }
+  const encoded = encodeHttpResponse({ ...resp, body: new Uint8Array(0) });
+  new DataView(encoded.buffer).setUint32(encoded.length - 4, bodyLength);
+  return encoded;
 }
 
 /**

@@ -140,11 +140,12 @@ contract AntseedChannels is EIP712, Pausable, Ownable, ReentrancyGuard {
      * @notice Open a payment channel. Seller calls this.
      *         USDC is pulled from buyer's Deposits balance into this contract.
      *
-     * @param buyer        The buyer's address (signs SpendingAuth off-chain)
+     * @param buyer        The buyer's address (signs ReserveAuth off-chain)
      * @param salt         Random salt for deterministic channel ID
      * @param maxAmount    USDC amount to lock
      * @param deadline     Channel deadline (for timeout protection)
-     * @param buyerSig     Buyer's SpendingAuth signature (cumAmount=0) as reserve proof
+     * @param buyerSig     Buyer's EIP-712 ReserveAuth signature over
+     *                     (bytes32 channelId, uint128 maxAmount, uint256 deadline)
      */
     function reserve(
         address buyer,
@@ -216,6 +217,7 @@ contract AntseedChannels is EIP712, Pausable, Ownable, ReentrancyGuard {
         Channel storage channel = channels[channelId];
         if (channel.status != ChannelStatus.Active) revert ChannelNotActive();
         if (msg.sender != channel.seller) revert NotAuthorized();
+        if (channel.closeRequestedAt != 0) revert CloseAlreadyRequested();
         if (block.timestamp > deadline) revert ChannelExpired();
         if (newMaxAmount <= channel.deposit) revert TopUpAmountTooLow();
 

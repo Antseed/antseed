@@ -10,8 +10,9 @@ import {
   platformFromUrl,
   sectionOf,
   visibleLabel,
+  withGaAttribution,
 } from '../lib/analytics';
-import {MOBILE_GET_STARTED_QUERY} from '../lib/useMobileGetStarted';
+import {isMobileGetStartedVisitor} from '../lib/useMobileGetStarted';
 import {
   RELEASES_URL,
   resolveLatestDesktopDownload,
@@ -94,11 +95,11 @@ function useClickTracking() {
       };
 
       if (isDownloadUrl(absolute)) {
-        // On phone viewports the VPR CTAs keep their download href but
-        // reroute to /get-started on tap (useMobileGetStarted, which runs
-        // after this capture listener) — count those as funnel entries, not
-        // download conversions.
-        if (window.matchMedia(MOBILE_GET_STARTED_QUERY).matches) {
+        // On phones (including "Desktop site" mode) Antseed Desktop CTAs keep their
+        // download href but reroute to /get-started on tap
+        // (useMobileGetStarted, which runs after this capture listener) —
+        // count those as funnel entries, not download conversions.
+        if (isMobileGetStartedVisitor()) {
           track('get_started', common);
           return;
         }
@@ -111,7 +112,18 @@ function useClickTracking() {
           e.preventDefault();
           anchor.classList.add('downloadResolving');
           anchor.setAttribute('aria-busy', 'true');
-          resolveLatestDesktopDownload().then(url => window.location.assign(url ?? RELEASES_URL));
+          resolveLatestDesktopDownload().then(url =>
+            window.location.assign(url ? withGaAttribution(url) : RELEASES_URL),
+          );
+        } else {
+          // Attach the visitor's GA ids to proxy links just-in-time, so the
+          // server-side download events join this GA session and inherit
+          // source/campaign attribution. Rewriting href during the capture
+          // phase affects the navigation this same click performs.
+          const attributed = withGaAttribution(absolute);
+          if (attributed !== absolute) {
+            anchor.setAttribute('href', attributed);
+          }
         }
         // Conversion event. Marked as the key event in GA4.
         track('download_vpr', {

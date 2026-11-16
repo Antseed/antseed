@@ -1,10 +1,10 @@
 ---
 slug: seller-pools-reputation-tokenomics
-title: "Seller Pools: The Trust Layer for AntSeed"
+title: "Tokenomics: The Trust Layer for Antseed"
 authors: [antseed]
 tags: [protocol, tokenomics, reputation, seller-pools, ANTS, decentralized-ai, P2P AI]
-description: How AntSeed seller pools turn buyer-authorized settlement history, locked ANTS support, and verification work into a stronger reputation layer for an open AI services market.
-keywords: [AntSeed seller pools, ANTS tokenomics, decentralized AI, P2P AI, reputation, ERC-8004, lANTS, payment channels, model verification, AI marketplace]
+description: How Antseed seller pools turn buyer-authorized settlement history, locked ANTS support, and verification work into a stronger reputation layer for an open AI services market.
+keywords: [Antseed seller pools, ANTS tokenomics, decentralized AI, P2P AI, reputation, ERC-8004, lANTS, payment channels, model verification, AI marketplace]
 image: /og-image.jpg
 date: 2026-06-20
 ---
@@ -16,13 +16,13 @@ import {
   SellerPoolsWeeklyRoutingChart,
 } from '@site/src/components/blog/SellerPoolsTokenomicsCharts';
 
-# Seller Pools: The Trust Layer for AntSeed
+# Seller Pools: The Trust Layer for Antseed
 
-Seller pools are how AntSeed starts turning real usage into trust: payment-backed settlement creates the record, locked ANTS adds durable support behind seller identities, and verification helps the network separate proven service from empty claims.
+Seller pools are how Antseed starts turning real usage into trust: payment-backed settlement creates the record, locked ANTS adds durable support behind seller identities, and verification helps the network separate proven service from empty claims.
 
 ## Building the Reputation Layer for an Open AI Market
 
-AntSeed is being built for a simple but difficult idea: anyone should be able to buy and sell AI services in an open market.
+Antseed is being built for a simple but difficult idea: anyone should be able to buy and sell AI services in an open market.
 
 That openness is what makes the network powerful. A developer can run a model. A team can offer a specialized agent. A provider can sell private, TEE-backed inference. A router can help buyers find the right service. Buyers can choose between many sellers instead of depending on one centralized platform.
 
@@ -38,7 +38,7 @@ This is not the full tokenomics system. It is the first layer.
 
 We are also working on the second layer, focused on **liquid inference**: a broader market structure for routing, liquidity, and inference capacity. But before that layer can work well, the network needs a strong foundation for reputation. That foundation starts here.
 
-We are building this while AntSeed is already serving close to **1,000 active users**. That has been both exciting and humbling. We are moving fast, and when you move fast, you can make mistakes. Our commitment is to fix them quickly, keep improving in public, and keep listening to the people actually using the network. The support and usage from the community has honestly been overwhelming, and it is pushing us to make the system better every week.
+We are building this while Antseed is already serving close to **1,000 active users**. That has been both exciting and humbling. We are moving fast, and when you move fast, you can make mistakes. Our commitment is to fix them quickly, keep improving in public, and keep listening to the people actually using the network. The support and usage from the community has honestly been overwhelming, and it is pushing us to make the system better every week.
 
 <!-- truncate -->
 
@@ -46,7 +46,7 @@ We are building this while AntSeed is already serving close to **1,000 active us
 
 Seller pools introduce a simple loop for ANTS:
 
-1. **Real usage creates reputation.** When buyers pay sellers through AntSeed channels, that settled USDC volume becomes recognized usage.
+1. **Real usage creates reputation.** When buyers pay sellers through Antseed channels, that settled USDC volume becomes recognized usage.
 2. **Good sellers can attract long-term support.** ANTS holders can lock tokens behind a seller identity, creating a public signal that the service has durable backing.
 3. **Rewards follow useful participation.** Sellers, buyers, stakers, and verifiers can earn from the weekly emissions budget, but only inside capped ranges.
 4. **Unused rewards do not quietly become extra yield.** If a dynamic reward bucket is not fully earned, up to 30% of the extra budget gets burned.
@@ -62,7 +62,7 @@ Reputation is the core asset in an open AI services market.
 
 Anyone can run a provider. Anyone can advertise a model name, a price, a latency target, or a capability tag. That is the point of an open network. But an open market also needs a way to separate sellers with real, buyer-authorized settlement history from sellers who only claim they can deliver.
 
-AntSeed already records payment-backed usage through channel settlement:
+Antseed already records payment-backed usage through channel settlement:
 
 - Buyers sign cumulative payment authorizations, called `SpendingAuth`
 - Sellers settle against those authorizations
@@ -93,7 +93,7 @@ They miss two important questions:
 
 If rewards only follow volume, the system can invite fake volume. If rewards only follow stake, the system can reward capital even when no useful service is being delivered.
 
-AntSeed needs both:
+Antseed needs both:
 
 - **Recognized usage** — buyer-authorized, settled payment flow that creates usage points
 - **Locked stake** — ANTS committed behind an ERC-8004 seller identity for a defined period
@@ -143,7 +143,7 @@ We also expect lANTS to play a role in the second ANTS utility phase focused on 
 
 ## Recognized Usage
 
-Every paid AntSeed channel already produces buyer-authorized settlement data.
+Every paid Antseed channel already produces buyer-authorized settlement data.
 
 Here is the basic flow:
 
@@ -229,7 +229,7 @@ In plain terms: **some buckets are always present**, while others only expand wh
 The fixed parts are easy to understand:
 
 - **Contributors:** 15%
-- **AntSeed Foundation:** 15%
+- **Antseed Foundation:** 15%
 - **Verification:** 10%
 
 The dynamic parts depend on what is actually happening in the network:
@@ -246,15 +246,15 @@ The **dynamic ranges** are what make this model different from a fixed emissions
 | Sellers / Operators | 5-10% | Dynamic direct usage rewards for serving recognized usage |
 | Buyers | 5-10% | Dynamic direct usage rewards for creating recognized demand |
 | Verification | 10% | Rewards for network validation: behavioral fingerprinting, TEE and capability checks, anti-abuse work, dispute signals, and verifier infrastructure |
-| AntSeed Foundation | 15% | Long-term ecosystem needs and remainder amounts above the burn cap |
+| Antseed Foundation | 15% | Long-term ecosystem needs and remainder amounts above the burn cap |
 | Contributors | 15% | Contributor support |
-| Remainder | Variable | Unused dynamic reward budget routes through burn first, then the AntSeed Foundation |
+| Remainder | Variable | Unused dynamic reward budget routes through burn first, then the Antseed Foundation |
 
 The projection uses a conservative stake model. It does not assume the 500M stake target is reached early. Instead, it limits modeled active stake based on projected circulating supply and a gradual participation curve.
 
 For usage, the projection starts near the current level of about **$15k settled USDC per weekly epoch** and reaches the **$1M per-epoch target** around year two.
 
-When a dynamic budget is not fully earned, the unused part is not redistributed as extra rewards. It routes through the remainder path: burn first, then the AntSeed Foundation.
+When a dynamic budget is not fully earned, the unused part is not redistributed as extra rewards. It routes through the remainder path: burn first, then the Antseed Foundation.
 
 <SellerPoolsBurnChart />
 
@@ -270,7 +270,7 @@ The flow is:
 2. Buyer and seller/operator budgets each grow inside a 5-10% range as recognized settled USDC volume grows toward the $1M per-epoch target
 3. Claimable rewards go to lANTS positions, sellers/operators, or buyers based on weighted usage
 4. Unused dynamic reward budget is settled as a remainder
-5. Remainders burn first, up to 30% of weekly emission, then route to the AntSeed Foundation
+5. Remainders burn first, up to 30% of weekly emission, then route to the Antseed Foundation
 
 That dynamic-budget remainder is only one burn path. The charts project burn from emission routing and early-withdraw penalties only; fee-driven buy-and-burn is a separate mechanism and **is not projected here**.
 
@@ -310,7 +310,7 @@ That creates a direct loop:
 
 ### Flow 2: Existing Locked Seller Rewards
 
-AntSeed currently tracks earlier seller ANTS rewards, but those locked rewards are not being used in the new seller-pools protocol.
+Antseed currently tracks earlier seller ANTS rewards, but those locked rewards are not being used in the new seller-pools protocol.
 
 They are a separate matter from this launch. More information about those tokens will be announced separately, so this post should not be read as changing their status or moving them into the new pool structure.
 
@@ -335,9 +335,9 @@ The key distinction is important:
 
 It may also become an important primitive for the second token utility phase around **liquid inference**, where durable provider support and routing liquidity are expected to connect more directly.
 
-## The Three Layers of AntSeed Reputation
+## The Three Layers of Antseed Reputation
 
-AntSeed reputation has three layers.
+Antseed reputation has three layers.
 
 ### Layer 1: What Happened?
 
@@ -410,7 +410,7 @@ Over time, good sellers should attract both usage and stake. Bad sellers should 
 
 ANTS does not represent:
 
-- Ownership in AntSeed
+- Ownership in Antseed
 - A claim on protocol revenue
 - A right to distributions
 
@@ -459,7 +459,7 @@ Seller pools are designed to:
 
 Open AI markets do not need a central ranking committee. They need public accounting, committed stake, independent verification, and routing rules that anyone can inspect.
 
-Seller pools are how AntSeed starts putting those pieces together.
+Seller pools are how Antseed starts putting those pieces together.
 
 We are still early. We are building while the network is already being used at meaningful scale. We will learn, we will adjust, and when we get things wrong, we will fix them quickly.
 
