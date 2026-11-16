@@ -2312,7 +2312,8 @@ export class AntseedNode extends EventEmitter {
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
-            // Every price the seller bills by: a default it charges but does not announce is a cost buyers cannot see.
+            // Announce every default price, the cached-input one included: a default the seller bills by but does not
+            // announce is a cost buyers cannot see. (A cached-input price of 0 reads back as none on the wire.)
             defaults: { ...p.pricing.defaults },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
