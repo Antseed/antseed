@@ -6,12 +6,19 @@
 // keyboards; whichever surface (desktop dialog or Telegram) decides first
 // wins via PiChatEngine.resolveToolApproval.
 
+import { randomBytes, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
-import { randomBytes } from 'node:crypto';
 import { onChatEvents } from '../chat/event-bus.js';
+import { resolveAttachmentPath, saveAttachment } from '../chat/attachments/store.js';
+import {
+  prepareChatAttachments,
+  type PreparedChatAttachment,
+  type RawChatAttachment,
+} from '../chat/attachments/prepare.js';
 import type { ChatStreamStopReason } from '../chat/stream-stop.js';
 import type { ToolApprovalRequest } from '../chat/permissions.js';
-import type { PiChatEngine } from '../chat/engine-types.js';
+import type { PiChatEngine } from '../chat/engine.js';
 import {
   createTelegramBotClient,
   splitTelegramMessage,
@@ -20,7 +27,15 @@ import {
   type TgCallbackQuery,
   type TgMessage,
   type TgReplyMarkup,
+  type TgUploadFile,
 } from './bot-api.js';
+import {
+  classifyIncomingMedia,
+  extractImageFileBlocks,
+  extractImageFileBlocksFromUiMessage,
+  type DownloadableTgMedia,
+  type ImageFileBlock,
+} from './media.js';
 import { markdownToTelegramHtml } from './markdown.js';
 import {
   clearTelegramSettings,
@@ -75,6 +90,14 @@ const POLL_BACKOFF_MIN_MS = 1_000;
 const POLL_BACKOFF_MAX_MS = 30_000;
 /** Telegram hard message limit; drafts share it. */
 const TG_TEXT_LIMIT = 4096;
+/** Telegram rejects sendPhoto uploads above ~10 MB; larger images go as documents. */
+const TG_PHOTO_LIMIT_BYTES = 10 * 1024 * 1024;
+/** Telegram caps media captions at 1024 chars. */
+const TG_CAPTION_LIMIT = 1024;
+/** Mime types Telegram renders inline as photos; anything else goes as a document. */
+const TG_PHOTO_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+/** Bot API refuses getFile downloads past this size. */
+const TG_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 
 const WELCOME_TEXT = [
   'Connected to Antseed Desktop. Messages here run on the agent on your computer.',
@@ -82,7 +105,10 @@ const WELCOME_TEXT = [
   '',
   '/new — start a fresh conversation',
   '/model — choose which model answers',
+  '/image <prompt> — generate an image',
   '/stop — cancel the reply in progress',
+  '',
+  'You can also send photos and documents — the agent reads them like the app\'s paper-clip attachments.',
 ].join('\n');
 
 /** Inline keyboards get unwieldy past this. Sized for the app's dropdown:
@@ -92,6 +118,7 @@ const MODEL_PICK_LIMIT = 24;
 const BOT_COMMANDS = [
   { command: 'new', description: 'Start a fresh conversation' },
   { command: 'model', description: 'Choose which model answers' },
+  { command: 'image', description: 'Generate an image from a prompt' },
   { command: 'stop', description: 'Cancel the reply in progress' },
 ];
 
@@ -292,6 +319,30 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     }
   };
 
+  const sendImageToOwner = async (conversationId: string, block: ImageFileBlock, caption?: string): Promise<boolean> => {
+    if (!client || settings?.ownerChatId == null) return false;
+    const chatId = settings.ownerChatId;
+    try {
+      const filePath = await resolveAttachmentPath(conversationId, block.attachmentId);
+      if (!filePath) {
+        log(`Image attachment ${block.attachmentId} not found for conversation ${conversationId}.`);
+        return false;
+      }
+      const bytes = await readFile(filePath);
+      const file = { bytes, fileName: block.fileName, contentType: block.mimeType } satisfies TgUploadFile;
+      const options = caption ? { caption: caption.slice(0, TG_CAPTION_LIMIT) } : {};
+      if (TG_PHOTO_MIME_TYPES.has(block.mimeType) && bytes.length <= TG_PHOTO_LIMIT_BYTES) {
+        await client.sendPhoto(chatId, file, options);
+      } else {
+        await client.sendDocument(chatId, file, options);
+      }
+      return true;
+    } catch (err) {
+      log(`Image send failed: ${asErrorMessage(err)}`);
+      return false;
+    }
+  };
+
   // ── Chat engine events ──────────────────────────────────────────────
 
   const handleToolApprovalRequested = (payload: ToolApprovalRequest): void => {
@@ -364,8 +415,20 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     if (channel === 'chat:ai-done') {
       turn.finalized = true;
       clearTurn(turn);
-      const finalText = extractTextFromUiMessage(payload) || turn.buffer;
-      void sendToOwner(finalText.trim().length > 0 ? finalText : 'Done (no text reply).');
+      const finalText = (extractTextFromUiMessage(payload) || turn.buffer).trim();
+      const images = extractImageFileBlocksFromUiMessage(payload);
+      // Text first, then images, in order. An image-only reply skips the
+      // "Done (no text reply)." placeholder — the photo is the reply.
+      void (async () => {
+        if (finalText.length > 0) {
+          await sendToOwner(finalText);
+        } else if (images.length === 0) {
+          await sendToOwner('Done (no text reply).');
+        }
+        for (const image of images) {
+          await sendImageToOwner(turn.conversationId, image);
+        }
+      })();
       return;
     }
 
@@ -469,7 +532,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     remember: (conversationId) => { bridgeConversationIds.add(conversationId); },
   });
 
-  const runUserText = async (chatId: number, text: string): Promise<void> => {
+  const runUserText = async (chatId: number, text: string, media?: DownloadableTgMedia): Promise<void> => {
     draftCounter += 1;
     const turn: ActiveTurn = {
       conversationId: '',
@@ -481,7 +544,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       draftTimer: null,
       draftInFlight: false,
       finalized: false,
-      statusText: 'Thinking…',
+      statusText: media ? 'Reading attachment…' : 'Thinking…',
       keepAliveTimer: null,
     };
     // Taken before the chat and its model are looked up, so a second message
@@ -504,27 +567,180 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       return;
     }
     turn.conversationId = conversationId;
+    let attachments: PreparedChatAttachment[] | undefined;
+    if (media) {
+      pushDraft(turn);
+      try {
+        attachments = await prepareIncomingAttachment(conversationId, media);
+      } catch (err) {
+        if (turnSlot.owns(turn)) void sendToOwner(`Couldn't use ${media.fileName}: ${asErrorMessage(err)}`);
+        clearTurn(turn);
+        return;
+      }
+      if (!turnSlot.owns(turn)) {
+        clearTurn(turn);
+        return;
+      }
+      const failed = attachments.filter((attachment) => attachment.status === 'error');
+      if (failed.length === attachments.length) {
+        void sendToOwner(`Couldn't use ${media.fileName}: ${failed[0]?.error ?? 'unknown error'}`);
+        clearTurn(turn);
+        return;
+      }
+      for (const failure of failed) {
+        void sendToOwner(`Skipped ${failure.name}: ${failure.error ?? 'unsupported file'}.`);
+      }
+    }
     // Show "Thinking…" right away, and keep the ephemeral draft alive while
     // the agent works without producing text (long tool calls, retries).
     pushDraft(turn);
     turn.keepAliveTimer = setInterval(() => { pushDraft(turn); }, 4_000);
     try {
-      const result = await engine.sendMessageStream(conversationId, text);
+      const result = await engine.sendMessageStream(conversationId, text, { ...(attachments ? { attachments } : {}) });
       // Success and stream errors are reported through bus events; this
       // fallback only covers early returns that never started a stream
       // (e.g. gateway unreachable).
-      if (!result.ok && !turn.finalized) {
+      if (!result.ok && !turn.finalized && turnSlot.owns(turn)) {
         turn.finalized = true;
         void sendToOwner(describeStreamError(result.error ?? 'Unknown error', result.stopReason));
       }
     } catch (err) {
-      if (!turn.finalized) {
+      if (!turn.finalized && turnSlot.owns(turn)) {
         turn.finalized = true;
         void sendToOwner(`Something went wrong: ${asErrorMessage(err)}`);
       }
     } finally {
       clearTurn(turn);
     }
+  };
+
+  // Image generation picks its own model from the gateway's policy-filtered list.
+  const resolveImageRoute = async (): Promise<{ model: string; label: string } | null> => {
+    try {
+      const entry = (await engine.listImageModels())[0];
+      if (entry) return { model: entry.id, label: entry.label || entry.id };
+    } catch {
+      // Discovery unavailable — reported below as "no image models".
+    }
+    return null;
+  };
+
+  const runImagePrompt = async (chatId: number, prompt: string): Promise<void> => {
+    draftCounter += 1;
+    const turn: ActiveTurn = {
+      conversationId: '',
+      cancelled: false,
+      chatId,
+      draftId: draftCounter,
+      buffer: '',
+      lastDraftAt: 0,
+      draftTimer: null,
+      draftInFlight: false,
+      finalized: false,
+      statusText: '🎨 Preparing an image…',
+      keepAliveTimer: null,
+    };
+    if (!turnSlot.reserve(turn)) {
+      void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
+      return;
+    }
+    try {
+      const conversationId = await ensureConversation(() => turnSlot.owns(turn));
+      if (!conversationId || !turnSlot.owns(turn)) return;
+      const route = await resolveImageRoute();
+      if (!turnSlot.owns(turn)) return;
+      if (!route) {
+        void sendToOwner('No image models discovered on the network yet — try again in a moment.');
+        return;
+      }
+      turn.conversationId = conversationId;
+      // Image generations legitimately take minutes; keep an ephemeral draft alive.
+      turn.statusText = `🎨 Generating an image with ${route.label}…`;
+      pushDraft(turn);
+      turn.keepAliveTimer = setInterval(() => { pushDraft(turn); }, 4_000);
+      const result = await engine.generateImage({ conversationId, prompt, model: route.model });
+      if (!turnSlot.owns(turn)) return;
+      if (!result.ok) {
+        const error = result.error ?? 'Unknown error';
+        void sendToOwner(error === 'Request aborted' ? 'Stopped.' : `Image generation failed: ${error}`);
+        return;
+      }
+      const images = extractImageFileBlocks(result.assistant?.content);
+      if (images.length === 0) {
+        void sendToOwner('The image was generated but its file could not be found.');
+        return;
+      }
+      let sentAny = false;
+      for (const image of images) {
+        if (!turnSlot.owns(turn)) return;
+        if (await sendImageToOwner(conversationId, image, prompt)) sentAny = true;
+      }
+      if (!sentAny) void sendToOwner('The image was generated but sending it to Telegram failed.');
+    } catch (err) {
+      if (turnSlot.owns(turn)) void sendToOwner(`Image generation failed: ${asErrorMessage(err)}`);
+    } finally {
+      clearTurn(turn);
+    }
+  };
+
+  // ── Inbound media ─────────────────────────────────────────────────
+
+  /** Downloads an inbound Telegram attachment's bytes, or a friendly error string. */
+  const fetchTelegramFileBytes = async (
+    media: DownloadableTgMedia,
+  ): Promise<{ bytes: Buffer } | { error: string }> => {
+    if (!client) return { error: 'The bot is not connected.' };
+    if ((media.approxBytes ?? 0) > TG_DOWNLOAD_LIMIT_BYTES) {
+      return { error: 'That file is too large for Telegram bots to download (20 MB max).' };
+    }
+    try {
+      const file = await client.getFile(media.fileId);
+      if (!file.file_path) {
+        return { error: 'Telegram would not let me download that file (it may exceed 20 MB).' };
+      }
+      const bytes = await client.downloadFile(file.file_path);
+      if (bytes.length === 0) return { error: 'That file arrived empty.' };
+      if (bytes.length > TG_DOWNLOAD_LIMIT_BYTES) {
+        return { error: 'That file is too large for Telegram bots to download (20 MB max).' };
+      }
+      return { bytes };
+    } catch (err) {
+      log(`Media download failed: ${asErrorMessage(err)}`);
+      return { error: `Could not download that file: ${asErrorMessage(err)}` };
+    }
+  };
+
+  /** Downloads + prepares one inbound attachment against the conversation's store. */
+  const prepareIncomingAttachment = async (
+    conversationId: string,
+    media: DownloadableTgMedia,
+  ): Promise<PreparedChatAttachment[]> => {
+    const downloaded = await fetchTelegramFileBytes(media);
+    if ('error' in downloaded) {
+      return [{
+        id: media.fileId,
+        name: media.fileName,
+        mimeType: media.mimeType,
+        size: media.approxBytes ?? 0,
+        kind: 'error',
+        status: 'error',
+        error: downloaded.error,
+      }];
+    }
+    const raw: RawChatAttachment = {
+      id: randomUUID(),
+      name: media.fileName,
+      mimeType: media.mimeType,
+      size: downloaded.bytes.length,
+      base64: downloaded.bytes.toString('base64'),
+    };
+    return prepareChatAttachments([raw], {
+      storage: async (rawMeta, buffer) => {
+        const attachmentId = randomUUID();
+        await saveAttachment(conversationId, attachmentId, rawMeta.name, buffer);
+        return attachmentId;
+      },
+    });
   };
 
   const handlePairingAttempt = async (message: TgMessage): Promise<void> => {
@@ -552,8 +768,18 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
 
   const handleOwnerMessage = async (message: TgMessage): Promise<void> => {
     const text = message.text?.trim() ?? '';
-    if (text.length === 0) {
+    const media = classifyIncomingMedia(message);
+    if (text.length === 0 && !media) {
       void sendToOwner('Only text messages are supported for now.');
+      return;
+    }
+    if (media?.kind === 'unsupported') {
+      void sendToOwner(`${media.label} aren't supported yet — send text, a photo, or a document instead.`);
+      return;
+    }
+    if (media?.kind === 'photo' || media?.kind === 'document') {
+      // Deliberately not awaited, same as text turns.
+      void runUserText(message.chat.id, message.caption?.trim() ?? '', media);
       return;
     }
     if (text.startsWith('/start')) {
@@ -577,20 +803,27 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       await showModelPicker();
       return;
     }
+    if (text === '/image' || text.startsWith('/image ')) {
+      const prompt = text.slice('/image'.length).trim();
+      if (prompt.length === 0) {
+        void sendToOwner('Usage: /image <prompt> — e.g. /image a crazy ant carrying a seed');
+        return;
+      }
+      // Deliberately not awaited, same as text turns: the poll loop stays
+      // free for /stop while the generation runs.
+      void runImagePrompt(message.chat.id, prompt);
+      return;
+    }
     if (text === '/stop') {
-      const turn = turnSlot.current;
+      const turn = turnSlot.cancel();
       if (!turn) {
         void sendToOwner('Nothing is running.');
         return;
       }
-      // Still being set up: nothing was sent, so it just doesn't go.
-      if (!turn.conversationId) {
-        turnSlot.cancel();
-        clearTurn(turn);
-        void sendToOwner('Stopped.');
-        return;
-      }
-      await engine.abort(turn.conversationId).catch(() => {});
+      clearTurn(turn);
+      // Cancels downloads still being prepared as well as text and image requests.
+      if (turn.conversationId) await engine.abort(turn.conversationId).catch(() => {});
+      void sendToOwner('Stopped.');
       return;
     }
     // Deliberately not awaited: replies stream in the background while the

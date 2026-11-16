@@ -24,12 +24,39 @@ export type TgChat = {
   title?: string;
 };
 
+export type TgPhotoSize = {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+};
+
+export type TgDocument = {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+};
+
+export type TgVoice = {
+  file_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+};
+
 export type TgMessage = {
   message_id: number;
   from?: TgUser;
   chat: TgChat;
   date: number;
   text?: string;
+  /** Caption on media messages (photos, documents, voice notes). */
+  caption?: string;
+  /** Present on photo messages; ordered smallest → largest. */
+  photo?: TgPhotoSize[];
+  document?: TgDocument;
+  voice?: TgVoice;
 };
 
 export type TgCallbackQuery = {
@@ -60,6 +87,12 @@ export class TelegramApiError extends Error {
   }
 }
 
+export type TgFile = {
+  file_id: string;
+  /** Relative path under https://api.telegram.org/file/bot<token>/ — absent for files >20 MB. */
+  file_path?: string;
+};
+
 type TgResponse<T> = {
   ok: boolean;
   result?: T;
@@ -67,6 +100,24 @@ type TgResponse<T> = {
   description?: string;
   parameters?: { retry_after?: number };
 };
+
+async function parseTgResponse<T>(method: string, response: Response): Promise<T> {
+  let body: TgResponse<T>;
+  try {
+    body = await response.json() as TgResponse<T>;
+  } catch {
+    throw new TelegramApiError(method, response.status, 'Invalid response from Telegram');
+  }
+  if (!body.ok || body.result === undefined) {
+    throw new TelegramApiError(
+      method,
+      body.error_code ?? response.status,
+      body.description ?? 'Unknown error',
+      body.parameters?.retry_after ?? null,
+    );
+  }
+  return body.result;
+}
 
 async function tgCall<T>(
   token: string,
@@ -88,21 +139,41 @@ async function tgCall<T>(
     clearTimeout(timer);
   }
 
-  let body: TgResponse<T>;
+  return parseTgResponse(method, response);
+}
+
+/** File payload for the multipart upload methods (sendPhoto / sendDocument). */
+export type TgUploadFile = {
+  bytes: Uint8Array;
+  fileName: string;
+  contentType: string;
+};
+
+async function tgUpload<T>(
+  token: string,
+  method: string,
+  fileField: string,
+  file: TgUploadFile,
+  params: Record<string, string>,
+  timeoutMs = 120_000,
+): Promise<T> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(params)) form.append(key, value);
+  form.append(fileField, new Blob([file.bytes], { type: file.contentType }), file.fileName);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
   try {
-    body = await response.json() as TgResponse<T>;
-  } catch {
-    throw new TelegramApiError(method, response.status, 'Invalid response from Telegram');
+    // No explicit content-type: fetch derives the multipart boundary.
+    response = await fetch(`${TELEGRAM_API_BASE}/bot${token}/${method}`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
   }
-  if (!body.ok || body.result === undefined) {
-    throw new TelegramApiError(
-      method,
-      body.error_code ?? response.status,
-      body.description ?? 'Unknown error',
-      body.parameters?.retry_after ?? null,
-    );
-  }
-  return body.result;
+  return parseTgResponse(method, response);
 }
 
 export type TelegramBotClient = {
@@ -125,6 +196,14 @@ export type TelegramBotClient = {
    * cosmetic and must never fail a turn.
    */
   sendMessageDraft(chatId: number, draftId: number, text: string): Promise<void>;
+  /** Uploads an image as a photo (Telegram caps photos at ~10 MB). */
+  sendPhoto(chatId: number, file: TgUploadFile, options?: { caption?: string }): Promise<TgMessage>;
+  /** Uploads a file as a document — the fallback for oversized or exotic images. */
+  sendDocument(chatId: number, file: TgUploadFile, options?: { caption?: string }): Promise<TgMessage>;
+  /** Resolves a media file_id to a downloadable path. */
+  getFile(fileId: string): Promise<TgFile>;
+  /** Downloads media bytes for a path returned by getFile (bots: ≤20 MB). */
+  downloadFile(filePath: string): Promise<Buffer>;
   editMessageText(chatId: number, messageId: number, text: string): Promise<void>;
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
   setMyCommands(commands: Array<{ command: string; description: string }>): Promise<void>;
@@ -183,6 +262,34 @@ export function createTelegramBotClient(token: string): TelegramBotClient {
         draft_id: draftId,
         text,
       }, 10_000);
+    },
+
+    sendPhoto: (chatId, file, options) => tgUpload<TgMessage>(token, 'sendPhoto', 'photo', file, {
+      chat_id: String(chatId),
+      ...(options?.caption ? { caption: options.caption } : {}),
+    }),
+
+    sendDocument: (chatId, file, options) => tgUpload<TgMessage>(token, 'sendDocument', 'document', file, {
+      chat_id: String(chatId),
+      ...(options?.caption ? { caption: options.caption } : {}),
+    }),
+
+    getFile: (fileId) => tgCall<TgFile>(token, 'getFile', { file_id: fileId }),
+
+    downloadFile: async (filePath) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60_000);
+      try {
+        const response = await fetch(`${TELEGRAM_API_BASE}/file/bot${token}/${filePath}`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new TelegramApiError('downloadFile', response.status, `HTTP ${String(response.status)}`);
+        }
+        return Buffer.from(await response.arrayBuffer());
+      } finally {
+        clearTimeout(timer);
+      }
     },
 
     editMessageText: async (chatId, messageId, text) => {
