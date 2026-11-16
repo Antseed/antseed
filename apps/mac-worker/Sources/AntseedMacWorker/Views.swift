@@ -246,6 +246,8 @@ struct MainView: View {
     var snapshot = false
     /// Room above the content for the window's title bar buttons.
     var topInset: CGFloat = 0
+    /// Told the content's height whenever it changes, for the window to follow.
+    var onHeight: (CGFloat) -> Void = { _ in }
     @State private var showingSettings = false
 
     static let width: CGFloat = 760
@@ -283,6 +285,10 @@ struct MainView: View {
         .padding(.top, topInset)
         .frame(width: Self.width)
         .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: ContentHeight.self, value: geometry.size.height)
+        })
+        .onPreferenceChange(ContentHeight.self) { onHeight($0) }
         .background(Theme.background)
         .sheet(isPresented: $showingSettings) { SettingsView(worker: worker) { showingSettings = false } }
         // Live numbers only while the window shows them.
@@ -292,6 +298,11 @@ struct MainView: View {
 
     private func openSettings() {
         if !snapshot { showingSettings = true }
+    }
+
+    private struct ContentHeight: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
     }
 
     private var header: some View {

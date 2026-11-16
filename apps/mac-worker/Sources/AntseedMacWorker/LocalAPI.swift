@@ -255,7 +255,13 @@ final class LocalAPIServer {
             connection.cancel()
         } catch {
             // Nothing sent yet: say why; otherwise the cut-off reply is all there is.
-            if started.value { connection.cancel() } else { reply(502, "The model could not answer: \(error.localizedDescription)", on: connection) }
+            if started.value {
+                connection.cancel()
+            } else if case LocalModel.EngineError.promptTooLong = error {
+                reply(400, error.localizedDescription, on: connection)
+            } else {
+                reply(502, "The model could not answer: \(error.localizedDescription)", on: connection)
+            }
         }
     }
 

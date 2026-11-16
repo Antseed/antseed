@@ -8,7 +8,7 @@ import Security
 /// a key made fresh for each launch.
 actor LocalModel {
     /// Prompt plus reply tokens the engine is started with.
-    static let contextTokens = 8192
+    static let contextTokens = 32_768
     /// The name the engine serves the model under.
     static let servedName = "local-model"
 
@@ -42,11 +42,16 @@ actor LocalModel {
     enum EngineError: Error, LocalizedError {
         case missing(URL)
         case failed(String)
+        /// The buyer's prompt doesn't fit, which is no fault of the engine. Worded as OpenAI words
+        /// it, so agents that compact their history on a context overflow recognize it.
+        case promptTooLong(tokens: Int, limit: Int)
 
         var errorDescription: String? {
             switch self {
             case .missing(let url): "TensorFold engine not found at \(url.path)"
             case .failed(let reason): reason
+            case .promptTooLong(let tokens, let limit):
+                "This model's maximum context length is \(limit) tokens. However, your messages resulted in \(tokens) tokens."
             }
         }
     }
@@ -158,10 +163,10 @@ actor LocalModel {
         // Checked after tokenizing and before prefill, the costly part.
         let promptTokens = try await countTokens(chat)
         if let maxPromptTokens, promptTokens > maxPromptTokens {
-            throw EngineError.failed("Prompt too long (\(promptTokens) tokens, at most \(maxPromptTokens))")
+            throw EngineError.promptTooLong(tokens: promptTokens, limit: maxPromptTokens)
         }
         let room = Self.contextTokens - promptTokens
-        guard room > 0 else { throw EngineError.failed("Prompt too long (\(promptTokens) tokens, at most \(Self.contextTokens - 1))") }
+        guard room > 0 else { throw EngineError.promptTooLong(tokens: promptTokens, limit: Self.contextTokens - 1) }
         try Task.checkCancellation()
 
         var body = chat

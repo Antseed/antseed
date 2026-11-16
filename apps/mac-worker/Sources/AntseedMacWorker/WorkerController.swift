@@ -929,6 +929,11 @@ final class WorkerController: ObservableObject {
             let calls = result.toolCalls.isEmpty ? "" : " · \(result.toolCalls.count) tool call(s)"
             log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out\(calls) · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
             requestStats()
+        } catch let error as LocalModel.EngineError {
+            guard case .promptTooLong = error else { return fail(id, error.localizedDescription) }
+            // Checked before prefill and before any output: the buyer's request, not this worker, is at
+            // fault. Answered, never billed; a failure here benched the Mac and sank the next requests too.
+            await refuse(id, status: 400, error.localizedDescription, code: "context_length_exceeded", sealer: opened.sealer, connection: connection)
         } catch {
             fail(id, Task.isCancelled ? "cancelled" : error.localizedDescription)
         }
@@ -979,8 +984,10 @@ final class WorkerController: ObservableObject {
 
     /// Answers a request the worker can't serve as asked (a part or role the model
     /// can't read) with a sealed OpenAI error, before any inference.
-    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer, connection: URLSessionWebSocketTask?) async {
-        let error: [String: Any] = ["error": ["message": message, "type": "invalid_request_error"]]
+    private func refuse(_ id: String, status: Int, _ message: String, code: String? = nil, sealer: ResponseSealer, connection: URLSessionWebSocketTask?) async {
+        var detail: [String: Any] = ["message": message, "type": "invalid_request_error"]
+        if let code { detail["code"] = code }
+        let error: [String: Any] = ["error": detail]
         guard let body = try? jsonString(error), let sealed = try? sealer.sealBody(Data(body.utf8), usage: nil) else {
             return fail(id, message)
         }

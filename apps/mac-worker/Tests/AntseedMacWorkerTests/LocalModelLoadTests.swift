@@ -43,4 +43,11 @@ final class LocalModelLoadTests: XCTestCase {
         }
         XCTAssertTrue(stopped, "the download is stopped")
     }
+
+    /// Agents compact their history when an error reads as a context overflow; OpenAI's wording is
+    /// the one they all match.
+    func testAPromptThatDoesNotFitReadsAsAContextOverflow() {
+        let error = LocalModel.EngineError.promptTooLong(tokens: 40_000, limit: LocalModel.contextTokens - 1)
+        XCTAssertEqual(error.localizedDescription, "This model's maximum context length is 32767 tokens. However, your messages resulted in 40000 tokens.")
+    }
 }
