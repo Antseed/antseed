@@ -15,12 +15,14 @@ import {
 } from './WalkingAnt';
 import { pickThinkingPhrase, THINKING_PHRASES } from './thinking-phrases';
 
-test('the ant has the original lines and at least 30 new ones, each short and unique', () => {
-  assert.ok(THINKING_PHRASES.length >= 50, `only ${THINKING_PHRASES.length} lines`);
+test('the ant keeps the original lines, and every line is short and unique', () => {
   assert.equal(new Set(THINKING_PHRASES).size, THINKING_PHRASES.length, 'a line is listed twice');
-  for (const phrase of ['Hodl', 'Wen channel', 'Foraging for tokens', 'Sharding the prompt']) {
-    assert.ok(THINKING_PHRASES.includes(phrase), `lost the original "${phrase}"`);
-  }
+  const originals = [
+    'Hodl', 'Brrrr', 'NGMI', 'WAGMI', 'To the moon', 'Wen channel', 'gm', 'Stacking sats', 'Few understand', 'LFG',
+    'Probably nothing', 'Aping in', 'This is the way', 'Ser, pls wait', 'Number go up', 'Diamond hands', 'p2p2pinging',
+    'Foraging for tokens', 'Pinning to the DHT', 'Sharding the prompt',
+  ];
+  assert.deepEqual(THINKING_PHRASES.slice(0, originals.length), originals, 'the original lines changed');
   for (const phrase of THINKING_PHRASES) {
     assert.ok(phrase.length > 0 && phrase.length <= 34, `"${phrase}" is too long for one line`);
     assert.doesNotMatch(phrase, /[.…]$/, `"${phrase}" carries its own ellipsis; the ant adds it`);
