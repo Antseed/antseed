@@ -1028,6 +1028,25 @@ test('loadConfig preserves seller maxInFlightRequestBytes setting', async () => 
   );
 });
 
+test('loadConfig preserves seller blockedBuyers and rejects malformed ones', async () => {
+  const blockedBuyers = ['22'.repeat(20), `0x${'AB'.repeat(20)}`];
+  await withTempConfig(
+    JSON.stringify({ seller: { blockedBuyers } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.blockedBuyers, blockedBuyers);
+    }
+  );
+  for (const invalid of ['22'.repeat(20), ['not-a-peer-id'], ['22'.repeat(19)], [42]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { blockedBuyers: invalid } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.blockedBuyers must be a list of buyer peer IDs/);
+      }
+    );
+  }
+});
+
 test('loadConfig rejects invalid seller maxInFlightRequestBytes setting', async () => {
   await withTempConfig(
     JSON.stringify({
