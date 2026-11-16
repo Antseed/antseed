@@ -767,7 +767,7 @@ function CatchUpNotice({
           try {
             await catchUp.run(state.kind, state.epochsThisTx);
           } catch {
-            // The error shows below the button.
+            // useCatchUp keeps every failure in catchUp.error, shown below.
           } finally {
             // Keep the button disabled until the backlog is read again, so the
             // same batch is never offered twice.

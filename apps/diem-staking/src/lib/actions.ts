@@ -9,6 +9,7 @@ import { parseEther, maxUint256 } from 'viem';
 import { DIEM_TOKEN, DIEM_STAKING_PROXY } from './addresses';
 import { DIEM_STAKING_PROXY_ABI, DIEM_TOKEN_ABI } from './abi';
 import { DIEM_CHAIN_ID, useDiemNetwork } from './network';
+import { submitCatchUp, type CatchUpKind } from './catch-up';
 
 export function useApproveDiem() {
   const { writeContractAsync, isPending, error, reset } = useWriteContract();
@@ -136,44 +137,46 @@ export function useClaimAnts() {
 }
 
 /**
- * Clear a reward-epoch backlog that blocks every write. `catchUpPoints`
- * processes the caller's own epochs (and syncs the pool first);
- * `syncRewardEpochs` only syncs the pool, for wallets with nothing locked.
- * Resolves only once the transaction is mined successfully, so the caller can
- * refetch the backlog and offer the next batch without a duplicate submit.
+ * Clear a reward-epoch backlog that blocks every write (see catch-up.ts).
+ * `run` resolves only once the transaction is mined successfully and throws on
+ * every failure; the last failure is kept in `error` for display.
  */
 export function useCatchUp() {
-  const { writeContractAsync, isPending, error, reset } = useWriteContract();
+  const { writeContractAsync, isPending } = useWriteContract();
   const { ensureDiemNetwork, isSwitchingChain } = useDiemNetwork();
   const publicClient = usePublicClient({ chainId: DIEM_CHAIN_ID });
   const [isConfirming, setIsConfirming] = useState(false);
-  const [receiptError, setReceiptError] = useState<Error | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const run = useCallback(
-    async (kind: 'user' | 'pool', numEpochs: number) => {
-      setReceiptError(null);
-      await ensureDiemNetwork();
-      const hash = await writeContractAsync({
-        address: DIEM_STAKING_PROXY,
-        abi: DIEM_STAKING_PROXY_ABI,
-        functionName: kind === 'user' ? 'catchUpPoints' : 'syncRewardEpochs',
-        chainId: DIEM_CHAIN_ID,
-        args: [numEpochs],
-      });
-      if (!publicClient) throw new Error('No Base RPC client available');
-      setIsConfirming(true);
+    async (kind: CatchUpKind, numEpochs: number) => {
+      setError(null);
       try {
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        if (receipt.status !== 'success') {
-          const err = new Error('Update transaction reverted');
-          setReceiptError(err);
-          throw err;
-        }
-        return hash;
-      } finally {
-        setIsConfirming(false);
+        return await submitCatchUp(
+          {
+            ensureNetwork: ensureDiemNetwork,
+            submit: (k, n) =>
+              writeContractAsync({
+                address: DIEM_STAKING_PROXY,
+                abi: DIEM_STAKING_PROXY_ABI,
+                functionName: k === 'user' ? 'catchUpPoints' : 'syncRewardEpochs',
+                chainId: DIEM_CHAIN_ID,
+                args: [n],
+              }),
+            waitForReceipt: (hash) => {
+              if (!publicClient) throw new Error('No Base RPC client available');
+              return publicClient.waitForTransactionReceipt({ hash });
+            },
+            onConfirming: setIsConfirming,
+          },
+          kind,
+          numEpochs,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
       }
     },
     [ensureDiemNetwork, publicClient, writeContractAsync],
   );
-  return { run, isPending: isPending || isSwitchingChain || isConfirming, error: error ?? receiptError, reset };
+  return { run, isPending: isPending || isSwitchingChain || isConfirming, error };
 }

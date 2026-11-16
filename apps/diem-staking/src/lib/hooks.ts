@@ -6,6 +6,9 @@ import type { Address } from 'viem';
 import { DIEM_TOKEN, DIEM_STAKING_PROXY, isAddressSet } from './addresses';
 import { DIEM_STAKING_PROXY_ABI, DIEM_TOKEN_ABI } from './abi';
 import { computeEpochClock, type EpochClock } from './epoch';
+import { planCatchUp, type CatchUpState } from './catch-up';
+
+export type { CatchUpState } from './catch-up';
 import { DIEM_CHAIN_ID } from './network';
 
 // First Staked event on the deployed proxy: tx
@@ -419,21 +422,7 @@ export function useDiemAllowance(): { allowance: bigint | null; refetch: () => v
 }
 
 
-// Epochs a single catch-up transaction processes. The contract has no cap on
-// catchUpPoints; this keeps gas well inside a block for long backlogs, and the
-// notice reappears with the rest once the transaction lands.
-const MAX_CATCH_UP_EPOCHS_PER_TX = 48;
-
-export type CatchUpState =
-  | { status: 'none' }
-  | { status: 'needed'; kind: 'user' | 'pool'; epochsBehind: number; epochsThisTx: number };
-
-/**
- * Every write except claimUnstakeBatch reverts with BacklogTooLarge() once the
- * pool or the wallet is more than MAX_EPOCHS_PER_CAPTURE reward epochs behind.
- * A wallet that stays locked without touching the contract for that long is
- * stuck until it calls catchUpPoints; this reports when that is needed.
- */
+/** Reads both reward-epoch backlogs and plans the catch-up (see catch-up.ts). */
 export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpState; refetch: () => Promise<unknown> } {
   const { address } = useAccount();
   const deployed = useProxyDeployed();
@@ -456,32 +445,12 @@ export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpStat
     const pool = data?.[1]?.result;
     const user = data?.[2]?.result;
     if (cap == null || pool == null || user == null) return { status: 'none' };
-
-    const poolBehind = pool[2];
-    const hasStake = stakedDiem != null && stakedDiem > 0n;
-
-    // updateRewards syncs the pool first and then captures the wallet's points
-    // up to the new synced epoch, so a wallet with a stake is limited by the
-    // sum of both backlogs. catchUpPoints(n) also syncs up to n pool epochs
-    // before moving the wallet up to n epochs, so n = the sum clears both.
-    if (hasStake && user[2] + poolBehind > cap) {
-      const epochsBehind = user[2] + poolBehind;
-      return {
-        status: 'needed',
-        kind: 'user',
-        epochsBehind,
-        epochsThisTx: Math.min(epochsBehind, MAX_CATCH_UP_EPOCHS_PER_TX),
-      };
-    }
-    if (poolBehind > cap) {
-      return {
-        status: 'needed',
-        kind: 'pool',
-        epochsBehind: poolBehind,
-        epochsThisTx: Math.min(poolBehind, MAX_CATCH_UP_EPOCHS_PER_TX),
-      };
-    }
-    return { status: 'none' };
+    return planCatchUp({
+      cap,
+      poolBehind: pool[2],
+      userBehind: user[2],
+      hasStake: stakedDiem != null && stakedDiem > 0n,
+    });
   }, [data, stakedDiem]);
 
   return { state, refetch };
