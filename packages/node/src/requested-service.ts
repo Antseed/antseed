@@ -45,7 +45,13 @@ export interface ServiceRefusal {
 
 /** The one service a request body names and the body the seller wrote for it, or why it names none. */
 export type BilledRequestBody =
-  | { service: string; contentType: string; body: Uint8Array }
+  | {
+    service: string;
+    contentType: string;
+    body: Uint8Array;
+    /** For a JSON body: the most output tokens it asks for (`requestedMaxOutputTokens`), read here so no one parses the body for it again. */
+    maxOutputTokens?: number;
+  }
   | { service: null; refusal: ServiceRefusal };
 
 type Refused = Extract<BilledRequestBody, { service: null }>;
@@ -141,7 +147,25 @@ function billedJson(bytes: Uint8Array): BilledRequestBody {
   }
   // A string is never longer than its UTF-8 bytes, so a text over the limit is refused before it is encoded.
   if (text.length > bytes.length + MAX_WRITTEN_GROWTH_BYTES) return TOO_LARGE;
-  return written(service, 'application/json', new TextEncoder().encode(text), bytes.length);
+  const billed = written(service, 'application/json', new TextEncoder().encode(text), bytes.length);
+  return billed.service === null ? billed : { ...billed, maxOutputTokens: requestedMaxOutputTokens(body) };
+}
+
+/** The most output tokens a JSON request body asks for, by any of the names the APIs sellers serve give it; 0 when it names no limit. */
+export function requestedMaxOutputTokens(body: Record<string, unknown>): number {
+  const candidates = [
+    body['max_tokens'],
+    body['max_completion_tokens'],
+    body['max_output_tokens'],
+    body['maxTokens'],
+    body['maxCompletionTokens'],
+    body['maxOutputTokens'],
+  ];
+  for (const value of candidates) {
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+  }
+  return 0;
 }
 
 const TOO_LARGE = refuse('request_too_large', 'Request body grows too much once written for the provider.');
