@@ -64,6 +64,18 @@ describe('HttpRelay', () => {
     expect((opts.headers as Record<string, string>)['x-api-key']).toBe('sk-test-key');
   });
 
+  it('hands fetch a body it does not rewrite without copying it first', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } }));
+    const relay = new HttpRelay(makeConfig(), { onResponse: () => undefined });
+    const body = new TextEncoder().encode('not json');
+
+    await relay.handleRequest(makeRequest({ headers: { 'content-type': 'text/plain' }, body }));
+
+    const sent = (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as Buffer;
+    expect(sent.buffer).toBe(body.buffer);
+    expect(Buffer.from(sent).toString()).toBe('not json');
+  });
+
   it('rejects disallowed service', async () => {
     const responses: SerializedHttpResponse[] = [];
     const callbacks: RelayCallbacks = {
@@ -880,6 +892,26 @@ describe('HttpRelay', () => {
       ]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('kimi-k3.1-pro: primary upstream primary.example.com failed (HTTP 429); trying fallback backup.example.com'));
       expect(relay.getActiveCount()).toBe(0);
+    });
+
+    it('reads the request body as JSON once per upstream it is written for', async () => {
+      const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+      try {
+        const request = kimiRequest();
+        const decodes = () => decode.mock.calls.filter(([input]) => input === request.body).length;
+        fetchMock.mockResolvedValueOnce(ok());
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => undefined });
+
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(1);
+
+        decode.mockClear();
+        fetchMock.mockResolvedValueOnce(fail(503)).mockResolvedValueOnce(ok());
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(2);
+      } finally {
+        decode.mockRestore();
+      }
     });
 
     it('fails over on network errors', async () => {
