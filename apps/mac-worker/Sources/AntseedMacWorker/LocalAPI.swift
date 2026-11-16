@@ -64,7 +64,7 @@ final class LocalAPIServer {
     }
 
     /// What to do with `request`: nil-free, so every request gets an answer.
-    nonisolated static func route(_ request: PayServer.Request, port: UInt16, key: String) -> Route {
+    nonisolated static func route(_ request: HTTPRequest, port: UInt16, key: String) -> Route {
         let host = request.headers["host"] ?? ""
         guard host == "127.0.0.1:\(port)" || host == "localhost:\(port)" else { return .reject(status: 403, message: "Forbidden") }
         let bearer = request.headers["authorization"].flatMap { $0.hasPrefix("Bearer ") ? String($0.dropFirst(7)) : nil }
@@ -189,7 +189,7 @@ final class LocalAPIServer {
                 var buffer = buffer
                 if let data { buffer.append(data) }
                 if buffer.count > Self.maxRequestBytes + 65_536 { return self.reply(413, "Request too large", on: connection) }
-                switch PayServer.parse(buffer, maxBytes: Self.maxRequestBytes) {
+                switch HTTPRequest.parse(buffer, maxBytes: Self.maxRequestBytes) {
                 case .request(let request): return await self.answer(request, port: port, on: connection)
                 case .malformed: return self.reply(400, "Bad request", on: connection)
                 case .incomplete: break
@@ -200,7 +200,7 @@ final class LocalAPIServer {
         }
     }
 
-    private func answer(_ request: PayServer.Request, port: UInt16, on connection: NWConnection) async {
+    private func answer(_ request: HTTPRequest, port: UInt16, on connection: NWConnection) async {
         let settings = settings()
         // Off means off, also for a caller that still holds the key.
         guard settings.enabled else { return reply(403, "The local endpoint is off", on: connection) }

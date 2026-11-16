@@ -14,13 +14,6 @@ import Security
 /// site can read or forge (browsers don't let pages set it cross-origin).
 @MainActor
 final class PayServer {
-    struct Request: Equatable {
-        let method: String
-        let path: String
-        let headers: [String: String]
-        let body: Data
-    }
-
     struct Response {
         var status: Int
         var contentType: String
@@ -36,7 +29,7 @@ final class PayServer {
 
     let token: String
     private let root: URL?
-    private let api: (Request) async -> Response
+    private let api: (HTTPRequest) async -> Response
     /// Answers `/engine/…` (the engine's dashboard and the stats it polls), or nil when no engine runs.
     private let engine: (String) async -> Response?
     private var listener: NWListener?
@@ -44,7 +37,7 @@ final class PayServer {
     private(set) var port: UInt16?
 
     /// `api` answers every `/api/…` request that passed the token check.
-    init(api: @escaping (Request) async -> Response, engine: @escaping (String) async -> Response? = { _ in nil }) {
+    init(api: @escaping (HTTPRequest) async -> Response, engine: @escaping (String) async -> Response? = { _ in nil }) {
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         token = Data(bytes).hex
@@ -149,7 +142,7 @@ final class PayServer {
                 var buffer = buffer
                 if let data { buffer.append(data) }
                 if buffer.count > Self.maxRequestBytes { return self.send(.error(413, "Request too large"), on: connection) }
-                switch Self.parse(buffer) {
+                switch HTTPRequest.parse(buffer, maxBytes: Self.maxRequestBytes) {
                 case .request(let request): return self.send(await self.respond(to: request), on: connection)
                 case .malformed: return self.send(.error(400, "Bad request"), on: connection)
                 case .incomplete: break
@@ -162,36 +155,7 @@ final class PayServer {
 
     nonisolated static let maxRequestBytes = 1_048_576
 
-    enum Parsed: Equatable {
-        case incomplete
-        case malformed
-        case request(Request)
-    }
-
-    /// An HTTP/1.1 request once its headers and body have arrived.
-    nonisolated static func parse(_ buffer: Data, maxBytes: Int = maxRequestBytes) -> Parsed {
-        guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
-        guard let head = String(data: buffer[buffer.startIndex..<end.lowerBound], encoding: .utf8) else { return .malformed }
-        var lines = head.components(separatedBy: "\r\n")
-        let start = lines.removeFirst().split(separator: " ")
-        guard start.count >= 2 else { return .malformed }
-        var headers: [String: String] = [:]
-        for line in lines {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        }
-        // Digits only, within the size limit: a sign, garbage or an overflow is a bad request, never a length.
-        let declared = headers["content-length"] ?? "0"
-        guard !declared.isEmpty, declared.allSatisfy(\.isASCII), declared.allSatisfy(\.isNumber),
-              let length = Int(declared), length <= maxBytes else { return .malformed }
-        let body = buffer[end.upperBound...]
-        guard body.count >= length else { return .incomplete }
-        let target = String(start[1])
-        let path = target.split(separator: "?", maxSplits: 1).first.map(String.init) ?? target
-        return .request(Request(method: String(start[0]), path: path, headers: headers, body: Data(body.prefix(length))))
-    }
-
-    private func respond(to request: Request) async -> Response {
+    private func respond(to request: HTTPRequest) async -> Response {
         guard let port, request.headers["host"] == "127.0.0.1:\(port)" else { return .error(403, "Forbidden") }
         if request.path.hasPrefix("/api/") {
             guard request.headers["authorization"] == "Bearer \(token)" else { return .error(401, "Reopen this page from Antseed Colony") }

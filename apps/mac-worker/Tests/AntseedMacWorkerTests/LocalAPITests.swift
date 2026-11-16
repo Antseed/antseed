@@ -4,13 +4,13 @@ import XCTest
 final class LocalAPITests: XCTestCase {
     private let key = "sk-colony-abc"
 
-    private func request(_ method: String, _ path: String, headers: [String: String] = [:], body: String = "") -> PayServer.Request {
+    private func request(_ method: String, _ path: String, headers: [String: String] = [:], body: String = "") -> HTTPRequest {
         var all = ["host": "127.0.0.1:11435", "authorization": "Bearer \(key)"]
         all.merge(headers) { _, new in new }
-        return PayServer.Request(method: method, path: path, headers: all.filter { !$0.value.isEmpty }, body: Data(body.utf8))
+        return HTTPRequest(method: method, path: path, headers: all.filter { !$0.value.isEmpty }, body: Data(body.utf8))
     }
 
-    private func route(_ request: PayServer.Request) -> LocalAPIServer.Route {
+    private func route(_ request: HTTPRequest) -> LocalAPIServer.Route {
         LocalAPIServer.route(request, port: 11435, key: key)
     }
 

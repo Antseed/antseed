@@ -145,7 +145,7 @@ final class RewardsTests: XCTestCase {
         let pool = pool
         let payouts = WorkerPayoutController(config: config, keys: keys, log: { _ in }, session: session())
         let api = ColonyPayAPI(config: config, payouts: payouts, workerAddress: keys.ethereum.address, pool: { pool }, chainId: { 31337 }, channels: { nil })
-        let read = PayServer.Request(method: "GET", path: "/api/colony", headers: [:], body: Data())
+        let read = HTTPRequest(method: "GET", path: "/api/colony", headers: [:], body: Data())
         func state() async throws -> [String: Any] {
             let body = await api.handle(read).body
             return try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])

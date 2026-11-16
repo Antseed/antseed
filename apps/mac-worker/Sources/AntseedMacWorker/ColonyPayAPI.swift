@@ -29,7 +29,7 @@ final class ColonyPayAPI {
         self.channels = channels
     }
 
-    func handle(_ request: PayServer.Request) async -> PayServer.Response {
+    func handle(_ request: HTTPRequest) async -> PayServer.Response {
         switch (request.method, request.path) {
         case ("GET", "/api/config"):
             return .json(200, await payConfig())
