@@ -505,13 +505,22 @@ export class SellerPaymentManager {
    * submitted, not the one they asked for — persist that, not `amount`.
    */
   private _submitClose(channelId: string, amount: bigint, submit: () => Promise<string>): Promise<CloseResult> {
+    return this._registerClose(channelId, () => submit().then(
+      (txHash: string) => ({ closed: true as const, amount, txHash }),
+      (error: unknown) => ({ closed: false as const, error }),
+    ));
+  }
+
+  /**
+   * Run `start` as the channel's one close operation, or join the one in
+   * flight. While it is registered, the channel counts as closing: requests
+   * wait for it and a retained channel is not reactivated.
+   */
+  private _registerClose(channelId: string, start: () => Promise<CloseResult>): Promise<CloseResult> {
     const existing = this._closingChannels.get(channelId);
     if (existing) return existing;
 
-    const operation: Promise<CloseResult> = submit().then(
-      (txHash: string) => ({ closed: true as const, amount, txHash }),
-      (error: unknown) => ({ closed: false as const, error }),
-    );
+    const operation = start();
     this._closingChannels.set(channelId, operation);
     void operation.finally(() => {
       if (this._closingChannels.get(channelId) === operation) {
@@ -680,6 +689,24 @@ export class SellerPaymentManager {
     } finally {
       set.delete(parked);
       if (set.size === 0 && this._overCeilingAuths.get(channelKey) === set) this._overCeilingAuths.delete(channelKey);
+    }
+  }
+
+  /**
+   * Close a channel whose buyer has SpendingAuths parked behind a mining
+   * top-up: wait for them to be judged, then close at the latest accepted
+   * auth. Runs as the registered close operation, so no new request is
+   * admitted on the channel while it waits.
+   */
+  private async _closeAfterParkedAuths(channelId: string, retries: number): Promise<CloseResult> {
+    await this._waitForOverCeilingAuths(channelId, OVER_CEILING_AUTH_WAIT_MS);
+    const { amount, metadata, sig } = this._getSettleParams(channelId);
+    debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} after parked auths (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+    try {
+      const txHash = await this._channelsClient.close(this._signer, channelId, amount, metadata, sig);
+      return { closed: true, amount, txHash };
+    } catch (error) {
+      return { closed: false, error };
     }
   }
 
@@ -2198,10 +2225,6 @@ export class SellerPaymentManager {
     }
 
     const channelId = session.sessionId;
-    if (!settleOnly && this._overCeilingAuths.has(channelId)) {
-      await this._waitForOverCeilingAuths(channelId, OVER_CEILING_AUTH_WAIT_MS);
-      if (this._channelStore.getChannel(channelId)?.status !== CHANNEL_STATUS.ACTIVE) return;
-    }
     const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
     const { amount, metadata, sig } = this._getSettleParams(channelId);
 
@@ -2217,12 +2240,19 @@ export class SellerPaymentManager {
         debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
         this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
       } else {
-        debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
-        const closeResult = await this._submitClose(
-          channelId,
-          amount,
-          () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
-        );
+        // Auths parked behind a mining top-up are part of what the buyer
+        // signed: close only once they are judged (_closeAfterParkedAuths).
+        const hasParkedAuths = this._overCeilingAuths.has(channelId);
+        if (!hasParkedAuths) {
+          debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+        }
+        const closeResult = await (hasParkedAuths
+          ? this._registerClose(channelId, () => this._closeAfterParkedAuths(channelId, retries))
+          : this._submitClose(
+            channelId,
+            amount,
+            () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
+          ));
         if (closeResult.closed) {
           this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
           this._closeRetryCount.delete(channelId);
