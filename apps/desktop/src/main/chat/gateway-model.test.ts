@@ -230,3 +230,10 @@ test('a seller that only advertises the TEE verifier, unchecked, doesn\'t make a
   assert.equal(toChatModel({ id: 'm', peers: [advertised, { ...advertised, peerId: 'b', teeScope: 'seller-node' }] }).tee, true);
   assert.equal(toChatModel({ id: 'm', peers: [{ peerId: 'c', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }] }).tee, false);
 });
+
+test('an Auto chat asks the gateway to prefer its expected seller; a chat without one sends no preference', () => {
+  const preferring = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, preferredPeerId: 'ab12' });
+  assert.equal(preferring.headers?.['x-antseed-prefer-peer'], 'ab12');
+  const plain = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, preferredPeerId: null });
+  assert.equal(plain.headers?.['x-antseed-prefer-peer'], undefined);
+});
