@@ -46,6 +46,7 @@ import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata
 import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
+import { normalizePeerId } from "./discovery/verification-utils.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
@@ -655,7 +656,7 @@ export class AntseedNode extends EventEmitter {
    * `/v1/models` listing stays open) and emit `request:blocked`. Takes effect on the next request.
    */
   setBlockedBuyers(peerIds: string[]): void {
-    this._blockedBuyers = new Set(peerIds.map((id) => id.trim().toLowerCase().replace(/^0x/, '')).filter(Boolean));
+    this._blockedBuyers = new Set(peerIds.map(normalizePeerId).filter(Boolean));
   }
 
   get peerId(): string | null {
@@ -2382,7 +2383,7 @@ export class AntseedNode extends EventEmitter {
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       maxInFlightRequestBytes: this._config.maxInFlightRequestBytes,
       resourceOwnershipStore: this._resourceOwnership,
-      isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(buyerPeerId.toLowerCase().replace(/^0x/, '')),
+      isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(normalizePeerId(buyerPeerId)),
       servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
