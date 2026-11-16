@@ -126,6 +126,8 @@ Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. W
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".
 
+Buyers send images only to services that list `image` in `inputs` or carry the `multimodal` tag. Before you claim either, run `antseed seller verify-tags`: it shows each such service an image of a random 4-character code and checks that the model reads it back.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `contextWindow` | number | Total context window in tokens |

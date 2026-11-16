@@ -5,6 +5,7 @@ import { registerSellerStatusCommand } from './status.js';
 import { registerSellerRegisterCommand } from './register.js';
 import { registerSellerStakeCommand } from './stake.js';
 import { registerSellerDoctorCommand } from './doctor.js';
+import { registerSellerVerifyTagsCommand } from './verify-tags.js';
 import { registerSellerPoolCommand } from './pool.js';
 import { registerSellerRewardsCommand } from './rewards.js';
 import { registerSellerAlertsCommand } from './alerts.js';
@@ -26,6 +27,7 @@ export function registerSellerCommands(program: Command): void {
   registerSellerForwardCommand(sellerCmd);
   registerSellerRewardsCommand(sellerCmd);
   registerSellerDoctorCommand(sellerCmd);
+  registerSellerVerifyTagsCommand(sellerCmd);
   registerSellerAlertsCommand(sellerCmd);
   registerSellerDashboardCommand(sellerCmd);
   registerSellerMonitorCommands(sellerCmd);
