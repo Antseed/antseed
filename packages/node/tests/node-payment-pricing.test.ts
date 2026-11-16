@@ -2913,6 +2913,25 @@ describe('data service seller payments', () => {
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
 
+  it("answers a failed description with a fixed message, and only logs the provider's exception", async () => {
+    const detail = 'upstream key sk-example-private-detail rejected';
+    const harness = setup();
+    vi.mocked(harness.provider.handleRequest).mockRejectedValue(new Error(detail));
+    vi.stubEnv('ANTSEED_DEBUG', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const response = await harness.send('describe', { method: 'GET', path: '/v1/data/flights/openapi.json', headers: {}, body: new Uint8Array() });
+      expect(response.statusCode).toBe(503);
+      const text = new TextDecoder().decode(response.body);
+      expect(text).not.toContain('sk-example-private-detail');
+      expect(JSON.parse(text)).toMatchObject({ error: { code: 'data_description_unavailable', message: 'The seller could not complete the request upstream' } });
+      expect(warn.mock.calls.map(call => call.join(' ')).some(line => line.includes(detail))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('answers a description request for a service this seller does not offer with 404', async () => {
     const harness = setup();
     const response = await harness.send('missing', { method: 'GET', path: '/v1/data/hotels/openapi.json', headers: {}, body: new Uint8Array() });

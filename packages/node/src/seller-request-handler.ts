@@ -1701,7 +1701,11 @@ export class SellerRequestHandler {
       const response = exposedDataResponse(await provider.handleRequest(request));
       return { ...response, requestId: request.requestId, headers: markDataProviderResponse(response.headers) };
     } catch (error) {
-      return failure(503, 'data_description_unavailable', `Data service description failed: ${error instanceof Error ? error.message : String(error)}`);
+      // The exception can quote the upstream (its account, its answer): it is logged here, as a
+      // provider exception on a paid request is, and the buyer only learns the request failed.
+      const message = error instanceof Error ? error.message : String(error);
+      debugWarn(`[SellerHandler] Data description exception: provider="${provider.name}" service="${route.service}" buyer=${buyerPeerId.slice(0, 12)}... ${message}`);
+      return failure(503, 'data_description_unavailable', PROVIDER_FAILURE_MESSAGE);
     }
   }
 
