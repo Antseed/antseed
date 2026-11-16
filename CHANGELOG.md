@@ -34,6 +34,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Model verification (`@antseed/fingerprints`, `@antseed/model-verifier`, CLI): each KBF evaluation's `verifier.version` is the installed `@antseed/fingerprints` version, read from its `package.json`. Before, every evaluation said `0.1.0`, whatever version produced it.
 - Ant agents (`@antseed/ant-agent`, CLI): an OpenAI Chat Completions request whose system message gives its content as an array of text parts no longer reaches the model as `[object Object]`. The buyer's text is wrapped as client context after the agent's prompt, as for a string, and `cache_control` on the buyer's last cached part is kept.
 - Claude Code provider (`@antseed/provider-claude-code`): applies each service's `pricing` and `upstreamModel` from the seller config. Before, every service was advertised at the provider's default price, and a service whose ID differed from its `upstreamModel` was sent upstream under its own ID.
 - Seller setup help (CLI, `@antseed/provider-openai`): `antseed seller setup` tells an `openai-responses` seller to sign in to Codex on the machine instead of exporting `OPENAI_API_KEY`, which that plugin never reads; it uses the Codex auth file. The `OPENAI_PATH_REWRITE_JSON` setting's description now shows a whole-path example (`{"/v1/chat/completions":"/v4/chat/completions"}`): rewrites match exact request paths, so the old prefix example `{"/v1":"/v4"}` rewrote nothing.
