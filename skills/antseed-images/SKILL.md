@@ -1,17 +1,23 @@
 ---
 name: antseed-images
-description: Generate images from text prompts, or edit and combine existing images, through the user's local Antseed buyer proxy. Use when the user asks to create, generate, make, edit, restyle, or combine an image with Antseed, with or without a specific image model.
+description: Generate images from text prompts, or edit and combine existing images, through the user's Antseed gateway. Use when the user asks to create, generate, make, edit, restyle, or combine an image with Antseed, with or without a specific image model.
 ---
 
 # Antseed Images
 
-Generate an image, or edit one or more images the user has, through the user's local Antseed buyer proxy using network-wide model discovery and automatic peer routing.
+Generate an image, or edit one or more images the user has, through the user's Antseed gateway using network-wide model discovery and automatic peer routing.
 
 ## Prerequisites
 
-- Antseed Desktop or `antseed buyer start` must be running.
+- Antseed Desktop, another Antseed gateway, or the user's own `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
-- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop sets it to its gateway, with the key in `$ANTSEED_API_KEY`; `pnpm testbench` sets it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
+- Gateway: the commands set `proxy_url` from `$ANTSEED_PROXY_URL`, and send the key in `$ANTSEED_API_KEY`. Antseed Desktop sets both in its own chat and writes its gateway into the copies it adds to an agent; `pnpm testbench` sets `$ANTSEED_PROXY_URL` to its buyer. Run the `proxy_url=` line as written, and always go through `$proxy_url`; never hard-code an address or port.
+- When a command stops with "No Antseed gateway found", stop and ask the user which gateway to use. Offer:
+  1. Antseed Desktop: in **Agents & apps**, add the skills to this agent, or copy the address and key with **Copy setup prompt**.
+  2. Another gateway, such as their team's: its URL and an API key for it.
+  3. Their own CLI buyer at `http://127.0.0.1:8377`, only if they say they run `antseed buyer start` themselves. It takes no key and skips a gateway's limits and usage.
+
+  Export the answer as `ANTSEED_PROXY_URL` and `ANTSEED_API_KEY`. Never set `ANTSEED_PROXY_URL` yourself without the user's answer.
 
 ## Parameters
 
@@ -21,14 +27,14 @@ Use these values for the request:
 - `prompt` — the user's image description, or for an edit, what to change
 - `images` — optional input image paths for an edit, base image first
 - `output` — optional destination path
-- `proxy_url` — optional buyer URL; default `$ANTSEED_PROXY_URL`, then `http://127.0.0.1:8377`
+- `proxy_url` — optional gateway URL the user gave; default `$ANTSEED_PROXY_URL`
 
 ## Discover the Image Model
 
 Always fetch the current image catalog before generating:
 
 ```bash
-proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:?No Antseed gateway found. Ask the user which gateway to use and do not pick one yourself.}}"
 curl --fail-with-body \
   -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=images"

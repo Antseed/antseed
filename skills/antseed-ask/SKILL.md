@@ -10,8 +10,13 @@ Send one prompt to a text model on the Antseed network through the user's gatewa
 ## Prerequisites
 
 - Antseed Desktop (or an Antseed gateway) is running.
-- Gateway URL: `$ANTSEED_PROXY_URL` when it is set, otherwise `http://127.0.0.1:8377`. API key: `$ANTSEED_API_KEY`, otherwise `antseed-desktop`. Always go through `$proxy_url`; never hard-code a port.
-- If `$ANTSEED_PROXY_URL` is not set and the commands below still default to the local buyer port (8377), this copy was not installed by Antseed Desktop. Stop and ask the user for the gateway URL and key (Antseed Desktop: **Agents & apps → Use with any other tool**), then export them as `ANTSEED_PROXY_URL` and `ANTSEED_API_KEY`. Calling the local buyer directly skips the gateway's policy, limits and usage, so do that only if the user runs the CLI buyer and says so.
+- Gateway: the commands set `proxy_url` from `$ANTSEED_PROXY_URL`, and send the key in `$ANTSEED_API_KEY`. Antseed Desktop sets both in its own chat and writes its gateway into the copies it adds to an agent. Run the `proxy_url=` line as written, and always go through `$proxy_url`; never hard-code an address or port.
+- When a command stops with "No Antseed gateway found", stop and ask the user which gateway to use. Offer:
+  1. Antseed Desktop: in **Agents & apps**, add the skills to this agent, or copy the address and key with **Copy setup prompt**.
+  2. Another gateway, such as their team's: its URL and an API key for it.
+  3. Their own CLI buyer at `http://127.0.0.1:8377`, only if they say they run `antseed buyer start` themselves. It takes no key and skips a gateway's limits and usage.
+
+  Export the answer as `ANTSEED_PROXY_URL` and `ANTSEED_API_KEY`. Never set `ANTSEED_PROXY_URL` yourself without the user's answer.
 - `curl` and `jq`.
 - Paid models need a funded balance; the catalog marks free offers.
 
@@ -24,7 +29,7 @@ Send one prompt to a text model on the Antseed network through the user's gatewa
 ## Pick the model
 
 ```bash
-proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:?No Antseed gateway found. Ask the user which gateway to use and do not pick one yourself.}}"
 curl --fail-with-body \
   -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=text" | jq '[.data[] | {id, name, aliases}]'

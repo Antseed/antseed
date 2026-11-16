@@ -1,6 +1,6 @@
 ---
 name: antseed-videos
-description: Directs video creation and video editing through the user's local Antseed buyer proxy in approved stages — idea and model, prompts plus first and last frames (or the source video and new character), then settings and price — with prompts tuned to the chosen model and frames made with a strong image model. Uses plain curl and jq (plus ffprobe for edits). Use when the user asks Antseed to create, generate, animate, or make a video, supplies start or end images for one, or uploads a video to change (swap a character, restyle, edit).
+description: Directs video creation and video editing through the user's Antseed gateway in approved stages — idea and model, prompts plus first and last frames (or the source video and new character), then settings and price — with prompts tuned to the chosen model and frames made with a strong image model. Uses plain curl and jq (plus ffprobe for edits). Use when the user asks Antseed to create, generate, animate, or make a video, supplies start or end images for one, or uploads a video to change (swap a character, restyle, edit).
 ---
 
 # Antseed Videos
@@ -9,7 +9,14 @@ Act as the user's video director. Do not rush to generate: shape the idea, pick 
 
 ## Prerequisites
 
-- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set (Antseed Desktop points it at its gateway and sets `$ANTSEED_API_KEY`), otherwise `http://127.0.0.1:8377`.
+- Antseed Desktop, another Antseed gateway, or the user's own `antseed buyer start` is running.
+- Gateway: the commands set `proxy_url` from `$ANTSEED_PROXY_URL`, and send the key in `$ANTSEED_API_KEY`. Antseed Desktop sets both in its own chat and writes its gateway into the copies it adds to an agent. Run the `proxy_url=` line as written, and always go through `$proxy_url`; never hard-code an address or port.
+- When a command stops with "No Antseed gateway found", stop and ask the user which gateway to use. Offer:
+  1. Antseed Desktop: in **Agents & apps**, add the skills to this agent, or copy the address and key with **Copy setup prompt**.
+  2. Another gateway, such as their team's: its URL and an API key for it.
+  3. Their own CLI buyer at `http://127.0.0.1:8377`, only if they say they run `antseed buyer start` themselves. It takes no key and skips a gateway's limits and usage.
+
+  Export the answer as `ANTSEED_PROXY_URL` and `ANTSEED_API_KEY`. Never set `ANTSEED_PROXY_URL` yourself without the user's answer.
 - The buyer has deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The buyer refuses any single video above $5.00.
 - `curl` and `jq`. Frames are made with the `antseed-images` skill. Video edits also need `ffprobe` (part of `ffmpeg`).
 

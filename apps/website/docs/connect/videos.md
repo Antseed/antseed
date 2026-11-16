@@ -12,7 +12,7 @@ It works with any video model sellers offer on the network, through both `venice
 
 ## Before you start
 
-- **A running buyer.** Antseed Desktop, or `antseed buyer start` from the CLI. The skill talks to the [local buyer proxy](/docs/api) at `http://127.0.0.1:8377`, or at `ANTSEED_PROXY_URL` when it is set.
+- **A running buyer.** Antseed Desktop, or `antseed buyer start` from the CLI. The skill talks to the gateway in `ANTSEED_PROXY_URL`, with the key in `ANTSEED_API_KEY`; Antseed Desktop sets them for the copies it adds to an agent. Without them the skill stops and asks which one to use. To use the CLI's [local buyer proxy](/docs/api), set `ANTSEED_PROXY_URL=http://127.0.0.1:8377`.
 - **Deposited USDC.** Fund the buyer by card where available, from an exchange withdrawal or from another wallet. See [Payments](/docs/payments).
 - **`curl` and `jq`.** The skill makes every request with plain `curl` and builds JSON with `jq`. `ffmpeg` is used to join [multi-clip videos](#longer-videos), and `ffprobe` (part of `ffmpeg`) to read a source video for an [edit](#edit-a-video).
 
