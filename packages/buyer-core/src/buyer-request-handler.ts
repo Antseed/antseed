@@ -228,6 +228,8 @@ export class BuyerRequestHandler {
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
+    // Free by its announced price (a video retrieve is free to send, but its job is paid).
+    const isFreeRoute = isFreeService && videoRoute?.action !== 'retrieve';
     // A free video costs nothing: say so, so a caller does not hold its whole budget for it.
     if (videoRoute?.action === 'create' && isFreeService) videoPriceUsdc = 0n;
     if (negotiator && requestedService) {
@@ -550,6 +552,17 @@ export class BuyerRequestHandler {
         `[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... requires payment but payments are not running on this buyer — returning buyer-fault error`,
       );
       return buyerPaymentsInactiveResponse(response, peer.peerId);
+    }
+
+    // The buyer chose this route as free, so it never pays on it: a payment
+    // demand contradicts the seller's own announcement. Nothing is negotiated,
+    // opened or signed.
+    if (negotiator && isFreeRoute && startsPaymentNegotiation(response)) {
+      debugWarn(
+        `[BuyerRequest] ${peer.peerId.slice(0, 12)}... asked for payment for ${requestedService ?? 'a request'}, ` +
+        'which it announces as free: refusing instead of negotiating',
+      );
+      return adaptPeerResponse(freeRoutePaymentRefusedResponse(response));
     }
 
     if (negotiator && startsPaymentNegotiation(response)) {
@@ -961,6 +974,20 @@ function catchUpIncompleteResponse(response: SerializedHttpResponse): Serialized
       error: 'payment_negotiation_failed',
       reason: 'catch_up_incomplete',
       message: 'The seller is still waiting for payment of earlier requests on this channel. Retry the request.',
+    })),
+  };
+}
+
+/** Replaces a seller's payment demand on a route it announces as free. */
+function freeRoutePaymentRefusedResponse(response: SerializedHttpResponse): SerializedHttpResponse {
+  return {
+    ...response,
+    statusCode: 409,
+    headers: { ...response.headers, 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: 'payment_negotiation_failed',
+      reason: 'price_mismatch',
+      message: 'The seller asked for payment for a service it announces as free. Nothing was paid.',
     })),
   };
 }

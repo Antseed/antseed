@@ -33,6 +33,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Website: a short Privacy Policy page at `/privacy-policy`, linked from the footer next to the Terms of Service. It says Antseed stores none of your prompts, chats, files or keys, what leaves your device and to whom, and the only data Antseed collects: website analytics and product telemetry, which is off unless you turn it on.
 
 ### Fixed
+- Buyers (`@antseed/buyer-core`, CLI, desktop, browser SDK): a buyer that picks a seller's service because it is announced as free no longer pays when that seller asks for payment anyway. The request is answered `409 payment_negotiation_failed` (`price_mismatch`) and nothing is signed and no channel is opened, so the CLI proxy tries another seller. Paid services, including image services with zero token prices and a per-image price, are paid as before.
 - Sellers: when an upstream error reaches the buyer only as a generic 503 ("… is unavailable on this seller right now", or a self health error), the seller log now says what the upstream answered: its HTTP status, error code and message, with token-like strings redacted. It is printed without debug logging on. In content-free mode (`ANTSEED_CONTENT_FREE_LOGS=1`) the line keeps the status and code only.
 
 - Model verification (`@antseed/fingerprints`, `@antseed/model-verifier`, CLI): each KBF evaluation's `verifier.version` is the installed `@antseed/fingerprints` version, read from its `package.json`. Before, every evaluation said `0.1.0`, whatever version produced it.
