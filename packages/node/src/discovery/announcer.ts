@@ -3,7 +3,7 @@ import { signData } from "../p2p/identity.js";
 import type { DHTNode } from "./dht-node.js";
 import { capabilityTopic, sellerTopics, topicToInfoHash } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance, TokenPricingUsdPerMillion } from "./peer-metadata.js";
 import { METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
@@ -62,8 +62,8 @@ export interface AnnouncerConfig {
     isAvailable?: () => boolean;
     /** Per-instance pricing. Takes precedence over the shared pricing Map. */
     pricing?: {
-      defaults: { inputUsdPerMillion: number; outputUsdPerMillion: number };
-      services?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>;
+      defaults: TokenPricingUsdPerMillion;
+      services?: Record<string, TokenPricingUsdPerMillion>;
     };
   }>;
   displayName?: string;
@@ -74,8 +74,8 @@ export interface AnnouncerConfig {
   pricing: Map<
     string,
     {
-      defaults: { inputUsdPerMillion: number; outputUsdPerMillion: number };
-      services?: Record<string, { inputUsdPerMillion: number; outputUsdPerMillion: number }>;
+      defaults: TokenPricingUsdPerMillion;
+      services?: Record<string, TokenPricingUsdPerMillion>;
     }
   >;
   offerings?: PeerOffering[];
