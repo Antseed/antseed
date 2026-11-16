@@ -4881,7 +4881,7 @@ export class BuyerProxy {
     // fails to arrive, and another seller cannot tell. It moves to another seller only
     // after a refusal that comes before the operation runs.
     const dataCall = dataServiceRoute(request)
-    const dataCallMayRepeat = dataCall?.action === 'call' && !SAFE_DATA_METHODS.has(request.method.toUpperCase())
+    const dataCallUnsafeToRetry = dataCall?.action === 'call' && !SAFE_DATA_METHODS.has(request.method.toUpperCase())
     let serializedReq = request
     const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
@@ -5224,7 +5224,7 @@ export class BuyerProxy {
               // this one usually takes; the last seller gets the full timeout. A
               // probe of a seller with no recent data waits no longer than the
               // seller it stands in for would.
-              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo && !dataCallMayRepeat
+              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo && !dataCallUnsafeToRetry
                 ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
                 : null,
               teeBinding,
@@ -5262,7 +5262,7 @@ export class BuyerProxy {
           // another: only a seller that does not serve it, or a payment the buyer could
           // not make (both before the operation runs), lets another seller take it. A 429
           // may come from the seller's API after a partial run, so it is returned too.
-          if (dataCallMayRepeat && !result.modelNotFound && !isBuyerFault(result)) return result
+          if (dataCallUnsafeToRetry && !result.modelNotFound && !isBuyerFault(result)) return result
           lastRetry = result
           if (!isBuyerFault(result) && !result.modelNotFound && result.statusCode !== 402) {
             const failure = classifyFailedAttempt(result)
