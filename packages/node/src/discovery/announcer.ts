@@ -35,7 +35,7 @@ import {
 
 export interface SellerContractConfig {
   /**
-   * On-chain seller contract that fronts this peer (e.g. a staking proxy).
+   * On-chain seller contract that fronts this peer (e.g. DiemStakingProxy).
    * Buyers verify the peer→contract binding by calling
    * `sellerContract.isOperator(peerAddress)`. The peer's identity wallet must
    * be an authorized operator on the contract.
@@ -92,7 +92,7 @@ export interface AnnouncerConfig {
   /** Optional health monitor — if supplied, announce outcomes are recorded. */
   healthMonitor?: DHTHealthMonitor;
   /**
-   * Optional on-chain seller contract (e.g. a staking proxy). When set, the
+   * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * announcer publishes it in metadata; buyers verify the binding via
    * `sellerContract.isOperator(peerAddress)`.
    */
@@ -349,7 +349,7 @@ export class PeerAnnouncer {
     if (this.config.paymentsEnabled) {
       if (includeOnChainReputation && this.config.channelsClient && this.config.stakingClient) {
         try {
-          // When the peer is fronted by a seller contract (e.g. a staking proxy),
+          // When the peer is fronted by a seller contract (e.g. DiemStakingProxy),
           // the on-chain seller is the proxy — stake and channel stats live under
           // that address, not the peer's wallet.
           const rawSellerAddress = this.config.sellerContract?.sellerContract

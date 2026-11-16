@@ -160,13 +160,13 @@ test('M001 rehearsal retains its fixtures, epoch advancement, activation, and no
   assert.equal(driven[0].environment.SP1_VERIFIER_HASH, `0x${'0'.repeat(63)}1`);
   assert.equal(driven[0].environment.WASH_TRADING_REGISTRY, undefined);
   assert.deepEqual(Object.keys(driven[0].signers), [
-    'deployer', 'registryOwner', 'channelsOwner', 'sellerRewardsPoolOwner', 'proxyStaker',
+    'deployer', 'registryOwner', 'channelsOwner', 'sellerRewardsPoolOwner', 'diemStaker',
   ]);
   assert.ok(Object.values(driven[0].signers).every((signer) => signer.startsWith('unlocked:')));
   assert.equal(calls.filter((args) => args.includes('transferOwnership(address)')).length, 5);
   assert.ok(calls.some((args) => args[1] === 'anvil_setNextBlockTimestamp' && args[2] === '2001'));
   assert.ok(calls.some((args) => args[1] === 'anvil_impersonateAccount'
-    && `unlocked:${args[2]}` === driven[0].signers.proxyStaker));
+    && `unlocked:${args[2]}` === driven[0].signers.diemStaker));
 });
 
 for (const failPrerequisite of [false, true]) {
@@ -1103,7 +1103,7 @@ test('M001 signer discovery and validation share ownership targets without dropp
     SP1_VERIFIER_HASH: `0x${'1'.repeat(64)}`, WASH_TRADING_SELLER_PROGRAM_VKEY: `0x${'2'.repeat(64)}`,
     HISTORICAL_PERIOD_START_BLOCK: '1', HISTORICAL_PERIOD_END_BLOCK: '100',
     DEPLOYER: ADDRESS.registry, REGISTRY_OWNER: ADDRESS.registry, CHANNELS_OWNER: ADDRESS.registry,
-    STAKING_PROXY: ADDRESS.channels, PROXY_STAKER: ADDRESS.registry, SELLER_REWARDS_POOL_OWNER: ADDRESS.registry,
+    DIEM_STAKING_PROXY: ADDRESS.channels, DIEM_STAKER: ADDRESS.registry, SELLER_REWARDS_POOL_OWNER: ADDRESS.registry,
   };
   const ready = { state: 'ready' };
   assert.equal(migration.expectedSigner('deployer', fixture.context, ready), ADDRESS.registry);
@@ -1124,7 +1124,7 @@ test('M001 signer discovery and validation share ownership targets without dropp
       new RegExp(`${role} .*is not the ${label} owner`));
     delete fixture.owners[contract];
   }
-  delete environment.STAKING_PROXY;
+  delete environment.DIEM_STAKING_PROXY;
   fixture.owners[ADDRESS.sellerRewardsPool] = ADDRESS.ants;
   migration.verifyRoles(fixture.context, deployed, environment);
   delete fixture.owners[ADDRESS.sellerRewardsPool];
@@ -1141,11 +1141,11 @@ test('M001 signer discovery and validation share ownership targets without dropp
 test('M001 environment keeps overrides and checkpoint addresses in their original precedence', async (testContext) => {
   const fixture = await m001Fixture(testContext);
   const signerAddresses = { deployer: ADDRESS.registry };
-  const extra = { DEPLOYER: ADDRESS.ants, ANTSEED_REGISTRY: ADDRESS.channels, STAKING_PROXY: ADDRESS.ants };
+  const extra = { DEPLOYER: ADDRESS.ants, ANTSEED_REGISTRY: ADDRESS.channels, DIEM_STAKING_PROXY: ADDRESS.ants };
   const ready = migration.environment(fixture.context, { state: 'ready' }, signerAddresses, extra);
   assert.equal(ready.DEPLOYER, extra.DEPLOYER);
   assert.equal(ready.ANTSEED_REGISTRY, extra.ANTSEED_REGISTRY);
-  assert.equal(ready.STAKING_PROXY, extra.STAKING_PROXY);
+  assert.equal(ready.DIEM_STAKING_PROXY, extra.DIEM_STAKING_PROXY);
   await fixture.deploy('broadcast');
   const observed = await migration.observe(fixture.context);
   const deployed = migration.environment(fixture.context, observed, signerAddresses, {

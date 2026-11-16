@@ -438,7 +438,7 @@ export interface NodeConfig {
   /** Optional explicit config.json path for runtime config reloads. */
   configPath?: string;
   /**
-   * Optional on-chain seller contract (e.g. a staking proxy). When set, the
+   * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * announcer publishes it in metadata; buyers verify the binding by calling
    * `sellerContract.isOperator(peerAddress)`.
    */

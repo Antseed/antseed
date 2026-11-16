@@ -713,7 +713,7 @@ export interface PeerMetadata {
   /** Protocol capabilities supported by this peer. */
   capabilities?: string[];
   /**
-   * On-chain seller contract that fronts this peer (e.g. a staking proxy).
+   * On-chain seller contract that fronts this peer (e.g. a DiemStakingProxy).
    * Buyers resolve `seller = sellerContract` for channel flows and verify the
    * binding by calling `sellerContract.isOperator(peerAddress)` on-chain.
    * Stored as 40 lowercase hex chars (no `0x` prefix) matching `peerId` format.

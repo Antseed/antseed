@@ -43,7 +43,7 @@ interface IAntseedLegacyEmissionsAdmin {
  *         the legacy stack (claims paid from the escrow pot) until
  *         M001 Cutover runs in the next epoch. That split lets the
  *         in-flight epoch finalize and be claimed from legacy V2 (with its
- *         real pot) BEFORE the pointer flip, so the deployed staking proxy
+ *         real pot) BEFORE the pointer flip, so the deployed DiemStakingProxy
  *         can never freeze the cutover epoch at a zero pot.
  *
  * Signer: this script never reads a private key. It broadcasts as DEPLOYER
@@ -247,7 +247,7 @@ contract M001DeployRecognizedUsage is Script {
         console.log("UsageRewards:       ", address(usageRewards));
 
         // Seller delegation adapter: already-deployed delegation contracts
-        // (e.g. a staking proxy) call the legacy pendingEmissions /
+        // (e.g. DiemStakingProxy) call the legacy pendingEmissions /
         // claimSellerEmissions selectors on registry.emissions(). The
         // accounting contract adapts those to agent usage rewards, and the
         // rewards controller lets it initiate owner-destined claims.

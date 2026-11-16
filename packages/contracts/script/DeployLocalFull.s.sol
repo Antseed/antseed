@@ -42,7 +42,7 @@ interface ILocalLegacyEmissionsAdmin {
  *              mainnet address the gate hardcodes
  *           3. this script's run(): M001 Deploy.s.sol's broadcast, adapted as listed below
  *           4. a warp past the gate's effective epoch boundary
- *           5. script/migrations/M001RecognizedUsage/Cutover.s.sol, unchanged (no staking proxy, as on testnets)
+ *           5. script/migrations/M001RecognizedUsage/Cutover.s.sol, unchanged (no DIEM proxy, as on testnets)
  *           6. script/DeployFreeUsage.s.sol, unchanged
  *           7. script/migrations/M003VerificationRegistry/Deploy.s.sol, unchanged
  *           8. this script's wireVerification(): M003's manual owner steps 1 and 3

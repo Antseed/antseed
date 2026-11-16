@@ -16,7 +16,7 @@ See the [full contract inventory](../../../README.md#m001-deployed-stack).
 
 The deployment key `0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a` held all five
 M001 signer roles at the phase-1 preflight. Recheck owners before cutover and
-after any ownership handoff. Staking on the proxy is not proxy operator authorization:
+after any ownership handoff. DIEM staking is not proxy operator authorization:
 starter initialization requires an operator and is a separate transaction.
 
 The phase-1 runner's RPC `codehash` read failed after all transactions and
@@ -133,7 +133,7 @@ owner key.
 
 `Cutover.s.sol` itself:
 
-1. (staker key) syncs the staking proxy reward epochs and claims every
+1. (staker key) syncs the DiemStakingProxy reward epochs and claims every
    pre-effective epoch whose pot is not yet funded, so each pot is stored with
    its real ANTS amount before the pointer moves.
 2. (pool owner key) pins `AntseedSellerRewardsPool` to a dedicated registry
@@ -148,11 +148,11 @@ Roles are never defaulted from one another. Required for the cutover:
 | `registryOwner` | `AntseedRegistry.owner()` |
 | `channelsOwner` | `AntseedChannels.owner()` (signs pause/unpause via `cast`) |
 | `deployer` | owner of the gate and points-policy registry from broadcast 1 (read-only check) |
-| `proxyStaker` | address with tokens staked on the proxy (mainnet, or when `STAKING_PROXY` is set) |
+| `diemStaker` | address with DIEM staked on the proxy (mainnet, or when `DIEM_STAKING_PROXY` is set) |
 | `sellerRewardsPoolOwner` | `AntseedSellerRewardsPool.owner()` (same condition) |
 
 For the recorded mainnet deployment, the same keystore can supply all five
-roles while ownership and proxy stake remain unchanged:
+roles while ownership and DIEM stake remain unchanged:
 
 ```bash
 pnpm contracts:deploy -- M001 --network base-mainnet --broadcast \
@@ -160,7 +160,7 @@ pnpm contracts:deploy -- M001 --network base-mainnet --broadcast \
   --signer registryOwner=account:antseed-deployer \
   --signer channelsOwner=account:antseed-deployer \
   --signer sellerRewardsPoolOwner=account:antseed-deployer \
-  --signer proxyStaker=account:antseed-deployer
+  --signer diemStaker=account:antseed-deployer
 ```
 
 `USAGE_ACCOUNTING`, `SELLER_REGISTRY`, and the `EXPECTED_*` legacy addresses

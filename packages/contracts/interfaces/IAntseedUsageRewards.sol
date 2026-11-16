@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /// @notice Seller-facing surface of AntseedUsageRewards used by the
 ///         registry-emissions adapter to serve deployed seller delegation
-///         contracts (e.g. a staking proxy).
+///         contracts (e.g. DiemStakingProxy).
 interface IAntseedUsageRewards {
     function agentEpochClaimed(uint256 agentId, uint256 epoch) external view returns (bool);
     function pendingAgentReward(uint256 agentId, uint256 epoch) external view returns (uint256 amount);

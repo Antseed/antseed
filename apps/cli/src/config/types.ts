@@ -450,7 +450,7 @@ export interface PaymentsCLIConfig {
   /** Validity in seconds of the auths the node signs. Default: the node's (900 for a ReserveAuth). */
   defaultAuthDurationSecs?: number;
   /**
-   * Optional on-chain seller contract (e.g. a staking proxy). When set, the
+   * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via
    * `sellerContract.isOperator(peerAddress)` on-chain. The peer identity wallet
    * must be an authorized operator on the contract.

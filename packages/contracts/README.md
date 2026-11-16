@@ -522,7 +522,7 @@ pnpm contracts:deploy -- M001 --network base-mainnet --broadcast \
   --signer registryOwner=account:antseed-owner \
   --signer channelsOwner=account:antseed-ops \
   --signer sellerRewardsPoolOwner=account:antseed-ops \
-  --signer proxyStaker=account:antseed-ops
+  --signer diemStaker=account:antseed-ops
 ```
 
 Start comfortably before **boundary minus 60 seconds**, complete the initial
@@ -556,7 +556,7 @@ not blindly unpause Channels or start a new deployment.
 
 For Base Sepolia, use `--network base-sepolia` and its configured wallets/RPC.
 Cutover requires `deployer`, `registryOwner`, and `channelsOwner`; the two
-legacy-proxy roles are also required when `STAKING_PROXY` is configured.
+legacy-proxy roles are also required when `DIEM_STAKING_PROXY` is configured.
 Non-fork deployment phases require `BASESCAN_API_KEY` for explorer verification.
 
 A dry run writes `deployments/<network>/pending/<release>.plan.json` and a
@@ -625,7 +625,7 @@ location for inspection; remove that directory manually when no longer needed.
 The same broadcast deploys `AntseedPositionInit`, an immutable starter-position
 faucet for eligible legacy sellers. Fund it conservatively and have sellers call
 `initPosition()` before the first rewarded epoch if their usage must count from
-that epoch. For a seller contract such as a staking proxy, an authorized operator
+that epoch. For a seller contract such as the DIEM proxy, an authorized operator
 can call `initPosition(seller)`: the seller must return true from
 `isOperator(msg.sender)`. Eligibility and the one-time grant are checked against
 the seller, and the stake supports its agent pool, but the calling operator owns

@@ -298,8 +298,8 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
         ...common, REGISTRY_OWNER: LOCAL_DEPLOYER, USAGE_ACCOUNTING: chain.usageAccountingAddress, SELLER_REGISTRY: chain.sellerRegistryAddress,
         EXPECTED_LEGACY_EMISSIONS: chain.emissionsContractAddress, EXPECTED_LEGACY_STAKING: chain.stakingContractAddress,
         VERIFICATION_WALLET: LOCAL_VERIFICATION_WALLET, WASH_TRADING_POINTS_POLICY: extra.washTradingPointsPolicy,
-        // The testnet path: no staking proxy to fund before the flip.
-        STAKING_PROXY: '0x0000000000000000000000000000000000000000',
+        // The testnet path: no DIEM staking proxy to fund before the flip.
+        DIEM_STAKING_PROXY: '0x0000000000000000000000000000000000000000',
       });
       await script('DeployFreeUsage.s.sol', 'script/DeployFreeUsage.s.sol', common);
       await expectNonce(FULL_NONCES.verificationResultsAddress, 'DeployFreeUsage.s.sol');

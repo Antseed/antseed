@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import {
   ANVIL_ACCOUNT_0,
   ANVIL_ACCOUNT_1,
-  BASE_MAINNET_STAKING_PROXY,
-  BASE_MAINNET_PROXY_STAKER,
+  BASE_MAINNET_DIEM_PROXY,
+  BASE_MAINNET_DIEM_STAKER,
   BASE_MAINNET_FORK_BLOCK,
   deployForkVerifierStub,
   migration,
@@ -83,7 +83,7 @@ function forkEnvironment(verifier) {
     HISTORICAL_PERIOD_START_BLOCK: process.env.HISTORICAL_PERIOD_START_BLOCK ?? '1',
     HISTORICAL_PERIOD_END_BLOCK: process.env.HISTORICAL_PERIOD_END_BLOCK ?? String(BASE_MAINNET_FORK_BLOCK),
     VERIFICATION_WALLET: ANVIL_ACCOUNT_1,
-    STAKING_PROXY: BASE_MAINNET_STAKING_PROXY,
+    DIEM_STAKING_PROXY: BASE_MAINNET_DIEM_PROXY,
     ANTSEED_DEPLOY_CONFIRM: 'base-mainnet',
   };
 }
@@ -94,7 +94,7 @@ function forkSigners() {
     registryOwner: `unlocked:${ANVIL_ACCOUNT_0}`,
     channelsOwner: `unlocked:${ANVIL_ACCOUNT_1}`,
     sellerRewardsPoolOwner: `unlocked:${ANVIL_ACCOUNT_1}`,
-    proxyStaker: `unlocked:${BASE_MAINNET_PROXY_STAKER}`,
+    diemStaker: `unlocked:${BASE_MAINNET_DIEM_STAKER}`,
   };
 }
 

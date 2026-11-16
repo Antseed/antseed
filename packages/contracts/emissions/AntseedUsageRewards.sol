@@ -54,7 +54,7 @@ contract AntseedUsageRewards is Ownable2Step, Pausable, ReentrancyGuard {
     ///         behalf via `claimAgentRewardFor`. Rewards still pay the agent
     ///         owner, so the forwarder can only trigger a claim, never divert
     ///         it. Used by the registry-emissions adapter that serves
-    ///         deployed seller delegation contracts (e.g. a staking proxy).
+    ///         deployed seller delegation contracts (e.g. DiemStakingProxy).
     address public claimForwarder;
 
     // ─── Claim State ─────────────────────────────────────────────────

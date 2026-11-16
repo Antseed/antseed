@@ -178,7 +178,7 @@ export class SellerPaymentManager {
   private readonly _channelStore: ChannelStore;
   /** Lazily resolved: real AntseedChannels address (for EIP-712 domain +
    *  on-chain seller address detection). If the configured
-   *  `channelsContractAddress` is a seller facade (e.g. a staking proxy),
+   *  `channelsContractAddress` is a seller facade (e.g. DiemStakingProxy),
    *  this resolves to the underlying channels contract via the facade's
    *  `channelsAddress()` view. Otherwise equals the configured address. */
   private _resolvedAddresses: Promise<{

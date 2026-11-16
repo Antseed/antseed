@@ -74,7 +74,7 @@ contract MockSellerAgentLookup {
 
 
 // Test-only wrapper around the real delegation base class. The deployed
-// A staking proxy inherits this same (unchanged) code, so exposing the
+// DiemStakingProxy inherits this same (unchanged) code, so exposing the
 // internal helpers here hits the exact call path the live proxy uses against
 // registry.emissions().
 contract SellerDelegationHarness is AntseedSellerDelegation {
@@ -499,7 +499,7 @@ contract AntseedEmissionsGateTest is Test {
         returns (SellerDelegationHarness delegation, uint256 agentId)
     {
         // The delegation contract is the on-chain seller, exactly like the
-        // deployed staking proxy: it owns the agent and earns the usage.
+        // deployed DiemStakingProxy: it owns the agent and earns the usage.
         delegation = new SellerDelegationHarness(address(realRegistry), operator);
         agentId = _setupUsagePoolNoWarp(address(delegation));
 
