@@ -598,6 +598,19 @@ export class HttpRelay {
     return result;
   }
 
+  /**
+   * Delivers a chunk that closes a stream and waits for it to be taken. A delivery that rejects
+   * is dropped: the stream is ending either way, and there is no one left to tell.
+   */
+  private async _deliverClosingChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
+    const delivered = this._callbacks.onResponseChunk?.(chunk);
+    try {
+      await delivered;
+    } catch {
+      // The buyer is gone.
+    }
+  }
+
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
     const { response: fetchResponse, url } = attempt;
     const isSSE = isStreamingAttempt(attempt);
@@ -642,7 +655,7 @@ export class HttpRelay {
         }
       } catch (err) {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
-        this._callbacks.onResponseChunk?.({
+        await this._deliverClosingChunk({
           requestId: request.requestId,
           // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
@@ -658,7 +671,7 @@ export class HttpRelay {
         console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
-      this._callbacks.onResponseChunk?.({
+      await this._deliverClosingChunk({
         requestId: request.requestId,
         data: new Uint8Array(0),
         done: true,
