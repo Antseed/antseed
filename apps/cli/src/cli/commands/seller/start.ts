@@ -896,6 +896,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxUploadBodyBytes !== undefined) {
         console.log(chalk.dim(`  max upload body bytes: ${maxUploadBodyBytes}`))
       }
+      const maxInFlightRequestBytes = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_IN_FLIGHT_REQUEST_BYTES'])
+        ?? effectiveSellerConfig.maxInFlightRequestBytes
+      if (maxInFlightRequestBytes !== undefined) {
+        console.log(chalk.dim(`  max request bytes in flight: ${maxInFlightRequestBytes}`))
+      }
       const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
         ?? effectiveSellerConfig.maxInboundConnections
       if (maxInboundConnections !== undefined) {
@@ -977,6 +982,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           signalingPort: options.signalingPort as number | undefined,
         }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
+        ...(maxInFlightRequestBytes !== undefined ? { maxInFlightRequestBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
         ...(announceProviderIds ? { announceProviderIds } : {}),
