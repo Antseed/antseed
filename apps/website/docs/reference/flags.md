@@ -94,6 +94,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_SETTLEMENT_IDLE_MS` | seller | Idle time before the seller settles a channel, in milliseconds (default 600000) |
 | `ANTSEED_MAX_UPLOAD_BODY_BYTES` | seller | Largest accepted request body; overrides `seller.maxUploadBodyBytes` |
 | `ANTSEED_MAX_IN_FLIGHT_REQUEST_BYTES` | seller | Most request body bytes held at once across all buyers; overrides `seller.maxInFlightRequestBytes` |
+| `ANTSEED_BLOCKED_BUYERS` | seller | Comma-separated buyer peer IDs the seller refuses with `403 buyer_blocked`; replaces `seller.blockedBuyers` |
 | `ANTSEED_MAX_INBOUND_CONNECTIONS` | seller | Buyer connections held open at once; overrides `seller.maxInboundConnections` |
 | `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` | seller | Idle time before a buyer connection with no paid channel open is closed, in milliseconds; `0` keeps them. Overrides `seller.inboundIdleTimeoutMs` |
 | `ANTSEED_VERIFIER_SDKS` | seller | Comma-separated verifier SDK ids the seller supports, first is the default (same as `seller start --verifiers`) |

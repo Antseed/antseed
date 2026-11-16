@@ -52,8 +52,8 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | Field | Description |
 |---|---|
 | `plugin` | Plugin name (`openai`, `anthropic`, `local-llm`, …) or an npm package name. Required. |
-| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video`, `fal-video` and `alibaba-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
-| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
+| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `openai-responses`, `local-llm`, `typesafe`, `venice-video`, `fal-video`, `fal-image`, `alibaba-video` and `irp-router` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
+| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the `anthropic` plugin and to the same plugins as `baseUrl`, except `openai-responses`, which signs in with the Codex auth file. |
 | `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
 | `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
@@ -212,6 +212,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
 | `seller.maxInFlightRequestBytes` | 256 MiB | Most request body bytes held at once across all buyers, uploads still arriving included. A request is kept in memory until its response is sent; past the limit a request gets a `503` the buyer retries. Never below `seller.maxUploadBodyBytes`. `ANTSEED_MAX_IN_FLIGHT_REQUEST_BYTES` overrides it. |
+| `seller.blockedBuyers` | none | Buyer peer IDs (40 hex characters, with or without `0x`) this seller refuses. Their requests get `403` with `code: "buyer_blocked"` before any provider, billing or free-tier check runs; the free `/v1/models` listing stays open to them. `ANTSEED_BLOCKED_BUYERS` (comma-separated) replaces it. |
 | `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
 | `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
 | `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel open. A buyer with only a free usage session open is kept for 2 hours when that is longer. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |

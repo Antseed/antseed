@@ -86,8 +86,9 @@ export interface SellerProviderConfig {
    * Name of the environment variable holding this provider's API key.
    * Allows multiple providers on the same peer to use different credentials.
    * Example: `"ZAI_API_KEY"` reads `process.env.ZAI_API_KEY` and injects it
-   * as `OPENAI_API_KEY` into the plugin config. When omitted, the plugin's
-   * default env var (`OPENAI_API_KEY`) is used.
+   * as the plugin's API key setting (`OPENAI_API_KEY`, or the plugin's own
+   * prefix such as `ANTHROPIC_API_KEY`). When omitted, the plugin's default
+   * env var is used.
    */
   apiKeyEnv?: string;
   /**
@@ -295,6 +296,8 @@ export interface SellerCLIConfig {
   maxUploadBodyBytes?: number;
   /** Most request body bytes held at once across all buyers; past it a request gets a retryable 503. Default: 256 MiB. */
   maxInFlightRequestBytes?: number;
+  /** Buyer peer IDs (40 hex characters, with or without 0x) this seller refuses with 403 `buyer_blocked`. */
+  blockedBuyers?: string[];
   /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
   maxInboundConnections?: number;
   /**
