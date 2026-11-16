@@ -113,6 +113,7 @@ describe('Multi-provider: single node with two provider plugins', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

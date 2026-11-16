@@ -75,6 +75,7 @@ describe('OpenAI SDK integration: Responses API over buyer proxy', () => {
     const provider = new MockOpenAIChatProvider();
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

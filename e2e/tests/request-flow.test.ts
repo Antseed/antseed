@@ -51,6 +51,7 @@ describe('Request flow: buyer sends request to seller via P2P', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,
