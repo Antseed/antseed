@@ -8,11 +8,13 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
-import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
+import { FREE_TIER_MOVED_CONVERSATIONS_MODES, MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 import { sellerAlertsErrors } from './seller-alerts.js';
+
+const BUYER_PEER_ID_PATTERN = /^(0x)?[0-9a-fA-F]{40}$/;
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -433,6 +435,21 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (
+    config.seller.maxInFlightRequestBytes !== undefined &&
+    (!Number.isInteger(config.seller.maxInFlightRequestBytes) || config.seller.maxInFlightRequestBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
+  ) {
+    errors.push('seller.maxInFlightRequestBytes must be an integer >= 1048576');
+  }
+
+  const blockedBuyers: unknown = config.seller.blockedBuyers;
+  if (
+    blockedBuyers !== undefined &&
+    (!Array.isArray(blockedBuyers) || blockedBuyers.some((id) => typeof id !== 'string' || !BUYER_PEER_ID_PATTERN.test(id.trim())))
+  ) {
+    errors.push('seller.blockedBuyers must be a list of buyer peer IDs (40 hex characters, with or without 0x)');
+  }
+
+  if (
     config.seller.maxInboundConnections !== undefined &&
     (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
   ) {
@@ -704,6 +721,18 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
     errors.push(`${path}.stakersOnly must be a boolean`);
   } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
     errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  for (const key of ['newBuyerMaxInputTokens', 'newBuyerRequests'] as const) {
+    const value = freeTier[key];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (freeTier.newBuyerMaxInputTokens !== undefined && freeTier.maxRequestsPerAddress === undefined) {
+    errors.push(`${path}.newBuyerMaxInputTokens requires maxRequestsPerAddress`);
+  }
+  if (freeTier.movedConversations !== undefined && !FREE_TIER_MOVED_CONVERSATIONS_MODES.includes(freeTier.movedConversations)) {
+    errors.push(`${path}.movedConversations must be one of: ${FREE_TIER_MOVED_CONVERSATIONS_MODES.join(', ')}`);
   }
   if (errors.length > errorsBefore) return;
   // Otherwise valid limits can still be too long to advertise in peer metadata.
