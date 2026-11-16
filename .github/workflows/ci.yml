@@ -30,14 +30,33 @@ jobs:
           version: 9.15.4
 
       - &setup-node
+        id: node
         uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          cache: 'pnpm'
+
+      # The installed node_modules (node-linker=hoisted: real directories, native modules already
+      # built) for this lockfile, Node version and runner, restored whole. On a hit nothing is
+      # installed: an install on top of it would only check it again. Only the Typecheck job saves
+      # it; on a miss every job installs as before. The key covers every input of the install that
+      # the lockfile does not: package.json fields such as bin, scripts and onlyBuiltDependencies,
+      # .npmrc, the patches and the node postinstall script.
+      - &restore-node-modules
+        id: node-modules
+        uses: actions/cache/restore@v4
+        with:
+          path: &node-modules-paths |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+            plugins/*/node_modules
+            e2e/node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node-${{ steps.node.outputs.node-version }}-pnpm-9.15.4-${{ hashFiles('pnpm-lock.yaml', '.npmrc', '**/package.json', '!**/node_modules/**', 'patches/**', 'packages/node/scripts/patch-ethers.js') }}
 
       - &install
         name: Install dependencies
-        run: pnpm install
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
 
       # Build in dependency order so each tier's tests can resolve imports
       - &build-tier0
@@ -78,6 +97,7 @@ jobs:
       - *checkout
       - *setup-pnpm
       - *setup-node
+      - *restore-node-modules
       - *install
       - *build-tier0
       - *build-tier1
@@ -95,6 +115,7 @@ jobs:
       - *checkout
       - *setup-pnpm
       - *setup-node
+      - *restore-node-modules
       - *install
       - *build-tier0
       - *build-tier1
@@ -113,6 +134,7 @@ jobs:
       - *checkout
       - *setup-pnpm
       - *setup-node
+      - *restore-node-modules
       - *install
       - *build-tier0
       - *build-tier1
@@ -153,6 +175,7 @@ jobs:
           mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
+      - *restore-node-modules
       - *install
       - *build-tier0
 
@@ -203,6 +226,7 @@ jobs:
       - *setup-pnpm
       - *setup-node
       - *install-foundry
+      - *restore-node-modules
       - *install
 
       # The real CLI seller and buyer run here, so build up to the CLI.
@@ -230,8 +254,9 @@ jobs:
             ${{ runner.temp }}/antseed-stress/runs/*/*.json
           retention-days: 7
 
-  # The scenarios are split over three runners, balanced by time; the unit tests of the testbench
-  # run in the shard with the shortest scenarios. Every scenario is listed in exactly one shard.
+  # The scenarios are split over four runners, balanced by their time with compiled contracts
+  # restored (about a minute each); the unit tests of the testbench run in the shard with the
+  # shortest scenarios. Every scenario is listed in exactly one shard.
   testbench:
     name: Testbench (local chain, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -242,17 +267,20 @@ jobs:
         include:
           - shard: 1
             scenarios: chat-basic routing-smoke
+            unit-tests: true
           - shard: 2
-            scenarios: issue-1200-spendingauth-catchup stress-smoke
+            scenarios: issue-1200-spendingauth-catchup
           - shard: 3
             scenarios: payment-flow
-            unit-tests: true
+          - shard: 4
+            scenarios: stress-smoke
 
     steps:
       - *checkout
       - *setup-pnpm
       - *setup-node
       - *install-foundry
+      - *restore-node-modules
       - *install
       - *build-tier0
       - *build-tier1
@@ -322,7 +350,18 @@ jobs:
       - *checkout
       - *setup-pnpm
       - *setup-node
+      - *restore-node-modules
       - *install
+
+      # The one job that saves node_modules: right after a fresh install, before anything builds
+      # or writes into it. Typecheck is the shortest job, so the upload delays no result.
+      - name: Save node_modules
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: *node-modules-paths
+          key: ${{ steps.node-modules.outputs.cache-primary-key }}
+
       - *build-tier0
       - *build-tier1
       - *build-tier2
@@ -348,6 +387,9 @@ jobs:
       # store between runs so lockfile churn only fetches what changed.
       # Pinned SHA — DeterminateSystems/magic-nix-cache-action @main as of 2026-08-31
       - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+        with:
+          # FlakeHub is not set up for this repository; left on, every run logs an error for it.
+          use-flakehub: false
 
       # Fails when the pnpmDeps fixed-output hash in flake.nix is stale —
       # after touching pnpm-lock.yaml, regenerate with
