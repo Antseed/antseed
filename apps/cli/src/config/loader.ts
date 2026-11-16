@@ -495,6 +495,7 @@ function mergeSellerConfig(
       providers: mergeSellerProviders(defaults.providers, undefined),
       publicAddress: defaults.publicAddress,
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
+      ...(typeof defaults.maxInFlightRequestBytes === 'number' ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes } : {}),
       ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
       ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
       ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
@@ -525,6 +526,11 @@ function mergeSellerConfig(
       ? { maxUploadBodyBytes: value['maxUploadBodyBytes'] }
       : typeof defaults.maxUploadBodyBytes === 'number'
         ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes }
+        : {}),
+    ...(typeof value['maxInFlightRequestBytes'] === 'number'
+      ? { maxInFlightRequestBytes: value['maxInFlightRequestBytes'] }
+      : typeof defaults.maxInFlightRequestBytes === 'number'
+        ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes }
         : {}),
     ...(typeof value['maxInboundConnections'] === 'number'
       ? { maxInboundConnections: value['maxInboundConnections'] }

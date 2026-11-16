@@ -104,7 +104,8 @@ interface ResolvedUpstream {
 
 export interface RelayCallbacks {
   onResponse: (response: SerializedHttpResponse) => void;
-  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void;
+  /** A returned promise is awaited before the relay reads more of the upstream stream. */
+  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
@@ -497,8 +498,12 @@ export class HttpRelay {
 
     const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      let paused = false;
+      const timeout = setTimeout(() => {
+        if (!paused) controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const refreshTimeout = () => {
+        paused = false;
         if (!controller.signal.aborted) timeout.refresh();
       };
       try {
@@ -515,6 +520,9 @@ export class HttpRelay {
         refreshTimeout();
         return {
           response, headers, url, signal: controller.signal, refreshTimeout,
+          pauseTimeout: () => {
+            paused = true;
+          },
           dispose: () => {
             clearTimeout(timeout);
             controller.abort();
@@ -590,6 +598,19 @@ export class HttpRelay {
     return result;
   }
 
+  /**
+   * Delivers a chunk that closes a stream and waits for it to be taken. A delivery that rejects
+   * is dropped: the stream is ending either way, and there is no one left to tell.
+   */
+  private async _deliverClosingChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
+    const delivered = this._callbacks.onResponseChunk?.(chunk);
+    try {
+      await delivered;
+    } catch {
+      // The buyer is gone.
+    }
+  }
+
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
     const { response: fetchResponse, url } = attempt;
     const isSSE = isStreamingAttempt(attempt);
@@ -619,15 +640,22 @@ export class HttpRelay {
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
           if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
-          this._callbacks.onResponseChunk?.({
+          // Waiting here leaves the rest of the stream with the upstream instead of in memory.
+          const delivered = this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
             done: false,
           });
+          if (delivered) {
+            // The upstream is not what is slow here: its deadline starts again once the buyer has the chunk.
+            attempt.pauseTimeout();
+            await delivered;
+            attempt.refreshTimeout();
+          }
         }
       } catch (err) {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
-        this._callbacks.onResponseChunk?.({
+        await this._deliverClosingChunk({
           requestId: request.requestId,
           // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
@@ -643,7 +671,7 @@ export class HttpRelay {
         console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
-      this._callbacks.onResponseChunk?.({
+      await this._deliverClosingChunk({
         requestId: request.requestId,
         data: new Uint8Array(0),
         done: true,
@@ -668,6 +696,8 @@ interface UpstreamAttempt {
   signal: AbortSignal;
   /** Activity resets the body timeout without capping a healthy stream's duration. */
   refreshTimeout: () => void;
+  /** Stop the body timeout until the next `refreshTimeout`, while nothing is being read from the upstream. */
+  pauseTimeout: () => void;
   /** Clear the deadline and abort any unread response body before discarding it. */
   dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
