@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createStreamingAdapter } from '../src/stream-transform.js';
-import { createChatStreamParser } from '../src/utils.js';
+import { createChatStreamParser, parseSseBuffer } from '../src/utils.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -33,10 +33,9 @@ function anthropicToolInputs(frames: string[]): Array<{ id: string; input: unkno
 
   const blocks = new Map<number, { id: string; json: string; stopped?: boolean }>();
   const results: Array<{ id: string; input: unknown }> = [];
-  for (const event of sse.split('\n\n')) {
-    const line = event.split('\n').find((candidate) => candidate.startsWith('data: '));
-    if (!line) continue;
-    const data = JSON.parse(line.slice(6));
+  for (const event of parseSseBuffer(sse).events) {
+    if (!event.data || event.data === '[DONE]') continue;
+    const data = JSON.parse(event.data);
     if (data.type === 'content_block_start' && data.content_block.type === 'tool_use') {
       if (blocks.has(data.index)) throw new Error(`block ${data.index} started twice`);
       blocks.set(data.index, { id: data.content_block.id, json: '' });
