@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { keccak256 } from 'ethers';
 import { randomBytes } from 'node:crypto';
-import { createIncrementalKeccak256, keccak256Hex, keccakReady } from './keccak.js';
+import { createIncrementalKeccak256, keccak256Hex, keccak256HexOfParts, keccakReady } from './keccak.js';
 
 const hex = (bytes: Uint8Array): string => `0x${Buffer.from(bytes).toString('hex')}`;
 
@@ -14,6 +14,16 @@ describe('keccak256Hex', () => {
     expect(beforeReady).toBe(expected);
     expect(keccak256Hex(data)).toBe(expected);
     expect(keccak256Hex(new Uint8Array())).toBe(keccak256(new Uint8Array()));
+  });
+
+  it('hashes parts as the bytes they join to, before and after the WASM hasher is ready', async () => {
+    const parts = [randomBytes(37), new Uint8Array(), randomBytes(200_000)];
+    const expected = keccak256(Buffer.concat(parts));
+    const beforeReady = keccak256HexOfParts(parts);
+    await keccakReady;
+    expect(beforeReady).toBe(expected);
+    expect(keccak256HexOfParts(parts)).toBe(expected);
+    expect(keccak256HexOfParts([])).toBe(keccak256(new Uint8Array()));
   });
 
   it('keeps interleaved incremental hashes separate', async () => {

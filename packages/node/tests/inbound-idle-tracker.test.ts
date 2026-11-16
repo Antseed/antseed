@@ -3,10 +3,11 @@ import { InboundIdleTracker } from '../src/p2p/inbound-idle-tracker.js';
 
 const IDLE_MS = 30 * 60_000;
 
-function setup(holding: Set<string> = new Set()) {
+/** `holds` maps a buyer to how long its open session keeps an idle connection. */
+function setup(holds: Record<string, number> = {}, idleTimeoutMs = IDLE_MS) {
   let now = 0;
   const closed: string[] = [];
-  const tracker = new InboundIdleTracker({ idleTimeoutMs: IDLE_MS, holdsSession: (peerId) => holding.has(peerId), now: () => now });
+  const tracker = new InboundIdleTracker({ idleTimeoutMs, sessionHoldMs: (peerId) => holds[peerId] ?? 0, now: () => now });
   const conn = (peerId: string) => ({ close: () => { closed.push(peerId); } });
   return { tracker, closed, conn, advance: (ms: number) => { now += ms; } };
 }
@@ -25,13 +26,34 @@ describe('InboundIdleTracker', () => {
     expect(tracker.size).toBe(1);
   });
 
-  it('keeps a connection whose buyer holds a channel or free usage session', () => {
-    const { tracker, closed, conn, advance } = setup(new Set(['paying']));
+  it('keeps a connection whose buyer holds a paid channel', () => {
+    const { tracker, closed, conn, advance } = setup({ paying: Infinity });
     tracker.track('paying', conn('paying'));
-    advance(IDLE_MS * 10);
+    advance(IDLE_MS * 1000);
 
     expect(tracker.sweep()).toEqual([]);
     expect(closed).toEqual([]);
+  });
+
+  it('keeps a connection with only a free usage session for that session\'s time, then closes it', () => {
+    const { tracker, closed, conn, advance } = setup({ free: IDLE_MS * 4 });
+    tracker.track('free', conn('free'));
+    advance(IDLE_MS * 4 - 1);
+    expect(tracker.sweep()).toEqual([]);
+
+    advance(1);
+    expect(tracker.sweep()).toEqual(['free']);
+    expect(closed).toEqual(['free']);
+  });
+
+  it('never closes a session\'s connection before the idle timeout the seller set', () => {
+    const { tracker, conn, advance } = setup({ free: IDLE_MS }, IDLE_MS * 3);
+    tracker.track('free', conn('free'));
+    advance(IDLE_MS * 2);
+    expect(tracker.sweep()).toEqual([]);
+
+    advance(IDLE_MS);
+    expect(tracker.sweep()).toEqual(['free']);
   });
 
   it('keeps a connection while a request is in flight, and counts idle time from when it finishes', () => {

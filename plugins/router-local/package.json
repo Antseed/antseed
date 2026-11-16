@@ -1,6 +1,6 @@
 {
   "name": "@antseed/router-local",
-  "version": "0.1.52",
+  "version": "0.1.53",
   "description": "Antseed local router plugin — Claude Code, Aider, Continue.dev",
   "type": "module",
   "files": [
@@ -26,7 +26,7 @@
     "@antseed/node": ">=0.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0",
     "@antseed/node": "workspace:*"
   }
