@@ -9,6 +9,7 @@ import {
   DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER,
   DEFAULT_REFERENCE_PROBE_STEP,
 } from './reference-sizing.js'
+import { DIFF_HOLD_EPOCHS } from './diff-hold.js'
 import { VERIFIER_COMPAT, readCompat, verifierRuleOverrides, verifierRulesFingerprint, verifierRulesHash } from './verifier-compat.js'
 
 /**
@@ -21,6 +22,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   1: '0x6f6ad26fc799721018d248d22fba70ba99db7a80e9d7fdfaab6c281f242816c3',
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
+  4: '0x95841803ea7e3a09688e90b8de6893f735fac3ac38202b23c94f0ef661b72ff0',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -79,6 +81,15 @@ test('config that changes the audit rules is named; the pinned values and unset 
   const overrides = verifierRuleOverrides({ closeCallExtensions: 1, referenceSelfTestRuns: 5, referenceLayoutFilterPasses: 1 })
   assert.equal(overrides.length, 3)
   assert.match(overrides[1]!, /referenceSelfTestRuns is 5/)
+})
+
+test('a DIFF hold set away from the pinned one is named; the default is not', () => {
+  assert.deepEqual(verifierRuleOverrides({ diffHoldEpochs: DIFF_HOLD_EPOCHS }), [])
+  assert.deepEqual(verifierRuleOverrides({ diffHoldEpochs: 0 }), ['verifier.diffHoldEpochs is 0; these rules use 1'])
+  // A DIFF from epoch 10 holds epoch 11 only; a SAME never holds.
+  const { window } = verifierRulesFingerprint() as { window: { diffHoldEpochs: number; diffHold: boolean[][] } }
+  assert.equal(window.diffHoldEpochs, 1)
+  assert.deepEqual(window.diffHold, [[false, false], [true, false], [false, false], [false, false]])
 })
 
 test('question set sizing set away from the pinned rules is named; the defaults are not', () => {

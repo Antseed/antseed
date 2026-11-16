@@ -37,6 +37,7 @@ import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
 import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
+import { DIFF_HOLD_EPOCHS, diffHoldReason } from './diff-hold.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
@@ -87,6 +88,7 @@ const CLOSE_CALL_EXTENSIONS = 2
 export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): string[] {
   const pinned = [
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
+    ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
     ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
@@ -211,6 +213,12 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       confirmationWindowSeconds: CONFIRMATION_WINDOW_SECONDS,
       minimumRealResultsPercent: MINIMUM_REAL_RESULTS_PERCENT,
       confirmationRecheckSpacingSeconds: CONFIRMATION_RECHECK_SPACING_SECONDS,
+      // Which epochs after a DIFF recorded in epoch 10 hold the seller (and that a SAME holds nobody).
+      diffHoldEpochs: DIFF_HOLD_EPOCHS,
+      diffHold: [10n, 11n, 12n, 13n].map((epoch) => [
+        diffHoldReason({ verdict: verifierVerdict('DIFF'), epoch: 10n }, epoch, DIFF_HOLD_EPOCHS) !== null,
+        diffHoldReason({ verdict: verifierVerdict('SAME'), epoch: 10n }, epoch, DIFF_HOLD_EPOCHS) !== null,
+      ]),
     },
     samples,
   }

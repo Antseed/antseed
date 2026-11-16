@@ -31,6 +31,7 @@ import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../ve
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
 import { retireEpochQuestionSet } from '../../../verifier/probe-bank.js'
 import { asError, normalized } from '../../../verifier/utils.js'
+import { DIFF_HOLD_EPOCHS, diffHolds } from '../../../verifier/diff-hold.js'
 import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
@@ -297,6 +298,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         // Never a third opinion: a seller judged by another auditor this epoch is not reported on again,
         // except to confirm a DIFF this auditor is the confirmer of (third-opinion.ts).
         thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address, myConfirmations, revoked }),
+        // A seller whose DIFF was recorded in the last `verifier.diffHoldEpochs` epochs gets no result
+        // that could clear it (diff-hold.ts); `verifier run` does not audit it either.
+        diffHold: diffHolds({
+          epoch: window.epoch,
+          holdEpochs: config.verifier?.diffHoldEpochs ?? DIFF_HOLD_EPOCHS,
+          reader: { serviceStatusByHash: (agentId, service) => verifierClient.serviceStatusByHash(agentId, service) },
+        }).filter,
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,

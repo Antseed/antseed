@@ -176,7 +176,8 @@ seller):
 - **Results expire on their own.** Each verdict is recorded with the epoch it stops
   counting in, chosen by the audit that recorded it. A KBF verdict counts for the epoch it
   was given in and the next one (about two weeks; the KBF owner can set up to four), so
-  sellers must keep being checked. A seller that fixes its model recovers at the next audit.
+  sellers must keep being checked. A seller that fixes its model recovers at the next audit,
+  but after a DIFF that audit is two epochs later: see the next point.
 - **For reputation, a DIFF only affects that one service.** A seller's other verified
   models keep their reputation. Rewards work per seller instead: see
   [How results affect rewards](#how-results-affect-rewards).
@@ -184,7 +185,9 @@ seller):
   replaces a live DIFF once it has its own required reports (one each) and at least
   `diffReplacementReports` of them. That floor is 1 by default (and on Base mainnet); the owner
   can raise it, e.g. to 2 so one auditor alone cannot lift a DIFF. If the owner clears a wrong
-  result, reports made before the clear stop counting.
+  result, reports made before the clear stop counting. The auditors' CLI adds a hold the
+  contract doesn't enforce: a seller isn't audited in the epoch after its DIFF was recorded,
+  so the DIFF stands through that epoch. See [After a DIFF](/docs/verify/audits#after-a-diff).
 - Auditors cannot audit sellers they own.
 
 ## How buyers use results

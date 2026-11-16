@@ -277,6 +277,11 @@ export async function prepareModelAudits(input: {
    */
   thirdOpinion?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<Array<string | null>>
   /**
+   * The DIFF hold (`diff-hold.ts`): one reason or null per candidate; a result for a service whose
+   * recent DIFF must stand is left out and listed among the excluded sellers with that reason.
+   */
+  diffHold?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<Array<string | null>>
+  /**
    * The model's audit window this epoch (`audit-window.ts`), or null when it has none (confirmations).
    * An open window's results are not submitted yet; in a closed one, a close call still waiting for
    * its extra questions is submitted as UNDETERMINED, and a seller outside the window (one that came
@@ -460,8 +465,9 @@ export async function prepareModelAudits(input: {
       }
       if (accepted.length === 0) continue
     }
-    if (input.thirdOpinion) {
-      const reasons = await input.thirdOpinion(modelHash(referenceModel), candidatesOf())
+    for (const excludes of [input.diffHold, input.thirdOpinion]) {
+      if (!excludes) continue
+      const reasons = await excludes(modelHash(referenceModel), candidatesOf())
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const reason = reasons[index]
         if (!reason) continue
@@ -469,8 +475,9 @@ export async function prepareModelAudits(input: {
         allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
         accepted.splice(index, 1)
       }
-      if (accepted.length === 0) continue
+      if (accepted.length === 0) break
     }
+    if (accepted.length === 0) continue
     accepted.sort((left, right) => compareResults(
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
     ))

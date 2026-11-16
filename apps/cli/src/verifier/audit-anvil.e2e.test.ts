@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { once } from 'node:events'
+import { createServer as createHttpServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -8,11 +9,13 @@ import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { Interface, Wallet, getAddress } from 'ethers'
-import { VERIFIER_VERDICT, VerifierClient, modelHash } from '@antseed/node/payments'
+import { Interface, Wallet, getAddress, hexlify, randomBytes } from 'ethers'
+import { VerificationStorage } from '@antseed/node'
+import { VERIFIER_VERDICT, VerifierClient, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import {
   FIXTURE_CONFIG,
   freshReferenceFixture,
+  peerIdOf,
   referenceFixture,
   writeCalibratedEpochSet,
   writeSignedAuditRun,
@@ -25,7 +28,7 @@ import {
 import { roundRobinAssignmentFor, auditorRotationForModel } from './audit-assignment.js'
 import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
 import { chainNow } from './chain-clock.js'
-import { openAuditWindow } from './audit-window.js'
+import { openAuditWindow, readAuditWindow, windowIncludesSeller } from './audit-window.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -1284,6 +1287,179 @@ test('submit sends nothing while the auditor has a transaction pending, and send
  * Deploys the audits contracts in `AUDIT_EPOCH` on a local chain, approves `auditors` (before the
  * epoch starts when the chain was started before it) and registers seller agents 1..`sellerAgents`.
  */
+test('a DIFF from the last epoch holds its seller: run does not plan it and submit sends nothing that clears it; the epoch after, it is audited again', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-diff-hold-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  // The fixture runs are dated on 2026-10-07 (epoch AUDIT_EPOCH under GENESIS). The DIFF is recorded the
+  // day before, in epoch 5, and each later epoch is moved onto 2026-10-07 by moving genesis back a day,
+  // so the CLI's fixture runs fall in it while the chain's clock only moves forward.
+  const firstGenesis = GENESIS - EPOCH_DURATION
+  const anvil = startAnvil(port, { timestamp: firstGenesis + AUDIT_EPOCH * EPOCH_DURATION - 120 })
+  // OpenRouter stand-in for the reference price; nothing else is asked of it.
+  const referenceServer = createHttpServer((request, response) => {
+    response.setHeader('content-type', 'application/json')
+    if (request.url === '/api/v1/models') {
+      response.end(JSON.stringify({ data: [{ id: 'anthropic/claude-opus-5.5', pricing: { prompt: '0.000005', completion: '0.000025' } }] }))
+      return
+    }
+    response.statusCode = 404
+    response.end('{}')
+  })
+  await new Promise<void>((resolveListen) => referenceServer.listen(0, '127.0.0.1', resolveListen))
+  const referencePort = (referenceServer.address() as { port: number }).port
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    const auditorB = new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`)
+    const chain = deployAuditChain(rpcUrl, [auditorA, auditorB], 2, { genesis: firstGenesis, duration: EPOCH_DURATION })
+    const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const model = 'claude-opus-5.5'
+    const honest = randomWallet()
+    const cheating = randomWallet()
+
+    // Epoch 5: A audits the model (agent 1 SAME, agent 2 DIFF) and B confirms agent 2's DIFF.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const report = async (wallet: Wallet, results: Array<[bigint, 'SAME' | 'DIFF']>) => {
+      await client.submitModelAudit(wallet.connect(client.provider), {
+        expectedEpoch: BigInt(AUDIT_EPOCH),
+        modelHash: modelHash(model),
+        evidenceHash: hexlify(randomBytes(32)),
+        evidenceUri: '',
+        results: sortServiceResults(results.map(([agentId, verdict]) => ({
+          agentId, serviceHash: serviceHash(model), verdict: VERIFIER_VERDICT[verdict],
+        }))),
+      })
+    }
+    await report(auditorA, [[1n, 'SAME'], [2n, 'DIFF']])
+    await report(auditorB, [[2n, 'DIFF']])
+    const recorded = await client.serviceStatus(2n, model)
+    assert.equal(recorded.verdict, VERIFIER_VERDICT.DIFF)
+    assert.equal(recorded.epoch, BigInt(AUDIT_EPOCH))
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+
+    // Epoch 6, on 2026-10-07.
+    const enterEpoch = async (epoch: number) => {
+      const genesis = GENESIS - (epoch - AUDIT_EPOCH) * EPOCH_DURATION
+      castSend(rpcUrl, chain.gateAddress, 'setSchedule(uint256,uint256)', [String(genesis), String(EPOCH_DURATION)])
+      castSend(rpcUrl, chain.gateAddress, 'setCurrentEpoch(uint256)', [String(epoch)])
+      const now = await chainNow(client.provider)
+      const target = GENESIS + AUDIT_EPOCH * EPOCH_DURATION + 180
+      if (now < target) await rpc(rpcUrl, 'evm_increaseTime', [target - now])
+      await rpc(rpcUrl, 'evm_mine', [])
+    }
+    await enterEpoch(AUDIT_EPOCH + 1)
+
+    // The buyer the run reads its peers from: both sellers offer the model below the reference price.
+    const peerEntry = (seller: Wallet, agentId: number) => ({
+      peerId: peerIdOf(seller),
+      providers: ['anthropic'],
+      lastSeen: Date.now(),
+      capabilities: ['verification.response-auth.v1'],
+      onChainAgentId: agentId,
+      providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { [model]: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
+    })
+    const dataDirFor = async (name: string, wallet: Wallet, verifier: Record<string, unknown> = {}) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${wallet.privateKey.slice(2)}\n`, { mode: 0o600 })
+      await writeFile(join(dataDir, 'buyer.state.json'), JSON.stringify({
+        state: 'connected',
+        pid: process.pid,
+        port: await availablePort(),
+        discoveredPeers: [peerEntry(honest, 1), peerEntry(cheating, 2)],
+        settings: { minPeerReputation: 0, maxPricing: { inputUsdPerMillion: 100, outputUsdPerMillion: 100 } },
+      }))
+      // The buyer's ResponseAuth store, which a run opens before it plans.
+      new VerificationStorage(join(dataDir, 'verification.db')).close()
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto: chain.crypto },
+        verifier: {
+          evidenceDir, banksDir, auditor: wallet.address, testModels: [model], ...FIXTURE_CONFIG,
+          referenceEndpoint: { baseUrl: `http://127.0.0.1:${referencePort}/api/v1`, sourceId: 'openrouter', trust: 'trusted' },
+          ...verifier,
+        },
+      }))
+      return { dataDir, configPath, evidenceDir, banksDir }
+    }
+    // Plans the run and stops before any request: `--no-enroll` leaves the model without a question set.
+    // Not `runCli`: the run asks this process's reference server for the price, so the test must keep serving.
+    const plan = (dirs: { dataDir: string; configPath: string }) => runCliAsync(dirs.dataDir, dirs.configPath, null, [
+      'run', model, '--no-enroll', '--ignore-pre-run-checks', '--skip-version-check', '--max-rounds', '1',
+    ], { env: { HOME: directory } })
+    const a = await dataDirFor('auditor-a', auditorA)
+    const heldLine = new RegExp(`${model}: agent 2 \\(${model}, peer ${peerIdOf(cheating).slice(0, 12)}…\\) held: its DIFF from epoch 5 stands until epoch 7`)
+
+    const planned = await plan(a)
+    assert.match(planned.output, heldLine, planned.output)
+    assert.match(planned.output, /auditing 1 seller\(s\) planned for this run; 1 held after a recent DIFF, not audited this epoch/, planned.output)
+    assert.match(planned.output, new RegExp(`${model}: 1 eligible target\\(s\\), 0 skipped`), planned.output)
+    assert.doesNotMatch(planned.output, /agent 1 .* held/)
+    // The model's audit window, opened by this run, leaves the held seller out too.
+    const window = await readAuditWindow(a.evidenceDir, String(AUDIT_EPOCH + 1), model)
+    assert.ok(window, planned.output)
+    assert.equal(windowIncludesSeller(window, peerIdOf(honest)), true)
+    assert.equal(windowIncludesSeller(window, peerIdOf(cheating)), false)
+
+    // With the hold off, both sellers are planned: the setting is what holds agent 2.
+    const off = await dataDirFor('auditor-a-no-hold', auditorA, { diffHoldEpochs: 0 })
+    const plannedWithoutHold = await plan(off)
+    assert.doesNotMatch(plannedWithoutHold.output, / held: /, plannedWithoutHold.output)
+    assert.match(plannedWithoutHold.output, /auditing 2 seller\(s\) planned for this run\./, plannedWithoutHold.output)
+    assert.match(plannedWithoutHold.output, /verifier\.diffHoldEpochs is 0; these rules use 1/, 'a hold set away from the rules is named')
+
+    // A result for agent 2 that a run made anyway (here a SAME, from a data dir without that window) is
+    // left out at submit by the hold itself; agent 1's is sent.
+    const submitter = await dataDirFor('auditor-a-submit', auditorA)
+    const epochRun = (dirs: typeof a, runId: string, epoch: number, audits: FixtureAudit[]) => writeSignedAuditRun({
+      evidenceDir: dirs.evidenceDir, banksDir: dirs.banksDir, runId, epoch: String(epoch), auditor: auditorA, audits,
+    })
+    const audit = (agentId: string, seller: Wallet): FixtureAudit => ({
+      agentId, seller, model, service: model, verdict: 'SAME', reference: referenceFixture(model),
+    })
+    await epochRun(submitter, 'a-epoch-6', AUDIT_EPOCH + 1, [audit('1', honest), audit('2', cheating)])
+    const submitted = runCli(submitter.dataDir, submitter.configPath, rpcUrl, [
+      'submit', '--run-id', 'a-epoch-6', '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ], { env: { HOME: directory } })
+    assert.equal(submitted.status, 0, submitted.output)
+    assert.match(submitted.output, /\(2\): excluded: its DIFF from epoch 5 stands until epoch 7, so the seller is not audited or cleared before then/, submitted.output)
+    const sent = await client.queryModelAudits({ model: modelHash(model) }, 0)
+    assert.equal(sent.at(-1)?.resultCount, 1, 'only agent 1 was sent')
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 }, 'the DIFF still counts in epoch 6')
+    assert.equal((await client.serviceStatus(2n, model)).epoch, BigInt(AUDIT_EPOCH))
+
+    // Epoch 7: the hold is over, so agent 2 is planned again and its SAME is recorded.
+    await enterEpoch(AUDIT_EPOCH + 2)
+    const replanned = await plan(a)
+    assert.doesNotMatch(replanned.output, / held: /, replanned.output)
+    assert.match(replanned.output, /auditing 2 seller\(s\) planned for this run\./, replanned.output)
+    await epochRun(submitter, 'a-epoch-7', AUDIT_EPOCH + 2, [audit('2', cheating)])
+    const cleared = runCli(submitter.dataDir, submitter.configPath, rpcUrl, [
+      'submit', '--run-id', 'a-epoch-7', '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ], { env: { HOME: directory } })
+    assert.equal(cleared.status, 0, cleared.output)
+    const after = await client.serviceStatus(2n, model)
+    assert.equal(after.verdict, VERIFIER_VERDICT.SAME)
+    assert.equal(after.epoch, BigInt(AUDIT_EPOCH + 2))
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 1, diffCount: 0 })
+  } finally {
+    referenceServer.close()
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 function deployAuditChain(
   rpcUrl: string,
   auditors: readonly Wallet[],
@@ -1314,7 +1490,7 @@ function deployAuditChain(
     verificationDeployBlock: 0,
     identityRegistryAddress,
   }
-  return { verificationAddress, crypto }
+  return { verificationAddress, gateAddress, crypto }
 }
 
 /** One auditor's data directory and config on the local chain, auditing `models`. */
@@ -1335,6 +1511,24 @@ async function auditorDataDir(directory: string, name: string, wallet: Wallet, c
   return { dataDir, configPath, writeRun }
 }
 
+function cliArgs(
+  dataDir: string,
+  configPath: string,
+  rpcUrl: string | null,
+  args: string[],
+  options: RunCliOptions,
+): string[] {
+  return [
+    ...(options.importPath ? ['--import', options.importPath] : []),
+    cliEntry,
+    '--data-dir', dataDir,
+    '--config', configPath,
+    'verifier',
+    ...args,
+    ...(rpcUrl ? ['--rpc-url', rpcUrl] : []),
+  ]
+}
+
 function runCli(
   dataDir: string,
   configPath: string,
@@ -1343,15 +1537,7 @@ function runCli(
   args: string[],
   options: RunCliOptions = {},
 ): CommandResult {
-  const result = spawnSync(process.execPath, [
-    ...(options.importPath ? ['--import', options.importPath] : []),
-    cliEntry,
-    '--data-dir', dataDir,
-    '--config', configPath,
-    'verifier',
-    ...args,
-    ...(rpcUrl ? ['--rpc-url', rpcUrl] : []),
-  ], {
+  const result = spawnSync(process.execPath, cliArgs(dataDir, configPath, rpcUrl, args, options), {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...options.env },
@@ -1361,6 +1547,26 @@ function runCli(
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     stdout: result.stdout ?? '',
   }
+}
+
+/** `runCli` without blocking this process, for a command that calls a server the test itself runs. */
+async function runCliAsync(
+  dataDir: string,
+  configPath: string,
+  rpcUrl: string | null,
+  args: string[],
+  options: RunCliOptions = {},
+): Promise<CommandResult> {
+  const child = spawn(process.execPath, cliArgs(dataDir, configPath, rpcUrl, args, options), {
+    cwd: repoRoot,
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...options.env },
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+  const [code] = await once(child, 'close') as [number | null]
+  return { status: code ?? 1, output: `${stdout}${stderr}`, stdout }
 }
 
 async function rpc(rpcUrl: string, method: string, params: unknown[] = []): Promise<unknown> {

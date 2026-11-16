@@ -201,6 +201,12 @@ export const VerifierConfigSchema = strictObject({
    */
   closeCallExtensions: z.number().int().min(0).max(2).optional(),
   /**
+   * Epochs after a recorded DIFF in which the seller's service is not audited, so nothing can clear
+   * the DIFF before then (`diff-hold.ts`). 1 (default): a DIFF from epoch N stands through N+1 and the
+   * seller is audited again in N+2. 0 audits it again in the next epoch. Every auditor must use the same value.
+   */
+  diffHoldEpochs: z.number().int().min(0).max(4).optional(),
+  /**
    * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
    * Accepted and ignored so configs written for earlier releases still load.
    */

@@ -91,6 +91,18 @@ Every seller your buyer has found that offers the model. A seller is skipped whe
 | `price_above_reference` | It charges more than the model's upstream price |
 | `policy_rejected` | Its price for the model couldn't be read, or your buyer would refuse it (for example cached input priced above input) |
 
+### After a DIFF
+
+A seller whose service got a recorded `DIFF` isn't audited in the next epoch (`verifier.diffHoldEpochs`, default 1). A `DIFF` recorded in epoch N stands through N+1, and the seller is audited again in N+2. The contract lets a single `SAME` replace a recorded `DIFF`, so without this hold a seller could switch back to the genuine model for one audit and lose its `DIFF` straight away.
+
+`verifier run` lists each held seller and the epoch it's audited again:
+
+```
+glm-5.3: agent 12 (glm-5.3, peer <peerId>…) held: its DIFF from epoch 30 stands until epoch 32, so the seller is not audited or cleared before then
+```
+
+`verifier submit` leaves out any result it still has for a held service, with the same reason. The hold reads the service's recorded verdict, whatever model it was recorded under, so a seller can't lift it by offering another model under the same service name. It ends early only when the owner clears the result.
+
 ### Your buyer's price cap
 
 Audit requests go through your running buyer, which refuses sellers above its own `buyer.maxPricing`. Before sending anything, `verifier run` checks that the running buyer's caps are at or above every audited model's reference price. They don't have to match it. If one is lower, the run stops:
@@ -139,7 +151,7 @@ If the npm registry can't be reached, `verifier run` warns and continues, and `v
 
 Releases that raise the compat number are published at the end of an epoch, so every auditor moves to the new rules at the same epoch start. A CI test pins a hash of the audit rules for each compat number: the model list, the split, the thresholds, the domain table, the prompt variants, the calibration and layout filter settings, and sample verdicts, parsed replies and scored answers. A change to those without a bump fails the build. A change to the audit code that none of the samples reaches still needs a manual bump.
 
-Seven local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.referenceSelfTestRuns` (3), `verifier.referenceLayoutFilterPasses` (2), and the question set sizing `verifier.referenceMinimumProbeCount` (100), `verifier.referenceMaximumProbeCount` (500), `verifier.referenceProbeStep` (10) and `verifier.referenceMinimumStatisticalPower` (0.9). Remove them from your config, or pass `--skip-version-check` for a test.
+Eight local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.diffHoldEpochs` (1), `verifier.referenceSelfTestRuns` (3), `verifier.referenceLayoutFilterPasses` (2), and the question set sizing `verifier.referenceMinimumProbeCount` (100), `verifier.referenceMaximumProbeCount` (500), `verifier.referenceProbeStep` (10) and `verifier.referenceMinimumStatisticalPower` (0.9). Remove them from your config, or pass `--skip-version-check` for a test.
 
 ### Price limit
 
@@ -344,4 +356,5 @@ All keys live in the `verifier` block of the config file. The most used:
 | `auditor` | data-dir identity | Your approved auditor address |
 | `logQueryChunkBlocks` | 1000 | Most blocks one `eth_getLogs` request spans. The contract's events are kept in `<data dir>/verifier/chain-cache/`, so only the first read of a data dir scans the whole history (about 2,200 requests of 1,000 blocks in November 2026); later ones read only new blocks. A keyed RPC that accepts wider ranges makes that first read cheaper. A cache read from another chain (a fork of the same contract, or a restarted fork) is noticed by its block hash and read again; deleting `verifier/chain-cache/` and `verifier/auditor-set.json` is always safe and costs one first read |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |
+| `diffHoldEpochs` | 1 | Epochs after a recorded `DIFF` in which the seller isn't audited. See [After a DIFF](#after-a-diff). Every auditor uses the same value |
 | `models.<model>.pricing` | | The model's upstream price, if not taken from OpenRouter |

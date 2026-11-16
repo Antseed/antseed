@@ -7,6 +7,7 @@ import test from 'node:test'
 import { Wallet } from 'ethers'
 import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
+import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
   modelAuditLedgerPath,
   modelAuditUpstreams,
@@ -52,6 +53,7 @@ async function withRun(
     beforePrepare?: (banksDir: string) => Promise<void>
     maxResultsPerSubmission?: number
     alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
+    diffHold?: Parameters<typeof prepareModelAudits>[0]['diffHold']
     auditWindow?: Parameters<typeof prepareModelAudits>[0]['auditWindow']
   } = {},
 ): Promise<void> {
@@ -71,6 +73,7 @@ async function withRun(
       config: FIXTURE_CONFIG,
       ...(options.maxResultsPerSubmission ? { maxResultsPerSubmission: options.maxResultsPerSubmission } : {}),
       ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
+      ...(options.diffHold ? { diffHold: options.diffHold } : {}),
       ...(options.auditWindow ? { auditWindow: options.auditWindow } : {}),
     })
     await body({ evidenceDir, prepared })
@@ -237,6 +240,34 @@ test('results already on-chain are left out before the evidence is built', async
       return candidates.map((candidate) => model === modelHash('model-b') || candidate.verdict !== VERIFIER_VERDICT.DIFF)
     },
   })
+})
+
+test('a seller held after a recent DIFF is left out with its reason, and a model with only held sellers is not prepared', async () => {
+  // Agent 2's service had a DIFF last epoch: its SAME and UNDETERMINED would clear it, so neither is sent.
+  const holds = diffHolds({
+    epoch: 7n,
+    holdEpochs: DIFF_HOLD_EPOCHS,
+    reader: {
+      serviceStatusByHash: async (agentId) => (agentId === 2n
+        ? { verdict: VERIFIER_VERDICT.DIFF, epoch: 6n }
+        : { verdict: VERIFIER_VERDICT.SAME, epoch: 6n }),
+    },
+  })
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-b', 'UNDETERMINED'),
+  ], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a'], 'model-b had only the held seller')
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => result.agentId), [1n])
+    assert.deepEqual(entry.evidence.results.map((result) => result.agentId), ['1'], 'the evidence lists exactly the results sent')
+    const held = prepared.excluded.filter((excluded) => excluded.agentId === '2')
+    assert.deepEqual(held.map((excluded) => [excluded.model, excluded.reason]), [
+      ['model-a', 'its DIFF from epoch 6 stands until epoch 8, so the seller is not audited or cleared before then'],
+      ['model-b', 'its DIFF from epoch 6 stands until epoch 8, so the seller is not audited or cleared before then'],
+    ])
+  }, { diffHold: holds.filter })
 })
 
 test('parts are cut from the results left to send', async () => {

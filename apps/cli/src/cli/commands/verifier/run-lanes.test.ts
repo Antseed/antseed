@@ -129,6 +129,8 @@ interface Scenario {
   assigned: boolean
   /** A KBF audits contract is configured even without confirmations. */
   clientAvailable: boolean
+  /** Seller agents whose service has a recorded DIFF, with the epoch it was recorded in (`serviceStatusByHash`). */
+  recordedDiffs: Map<number, bigint>
   /** `approvedAuditor` on the contract; counted in `approvalReads`. */
   approved: () => Promise<boolean>
   approvalReads: number
@@ -151,6 +153,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     confirmations: [],
     assigned: false,
     clientAvailable: false,
+    recordedDiffs: new Map(),
     approved: async () => true,
     approvalReads: 0,
     voided: [],
@@ -180,6 +183,11 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
         approvedAuditor: async () => {
           scenario.approvalReads += 1
           return scenario.approved()
+        },
+        // VERIFIER_VERDICT: 2 is DIFF, 0 no verdict.
+        serviceStatusByHash: async (agentId: bigint) => {
+          const epoch = scenario.recordedDiffs.get(Number(agentId))
+          return epoch === undefined ? { verdict: 0, epoch: 0n } : { verdict: 2, epoch }
         },
       }
     },
@@ -1090,6 +1098,28 @@ test('assigned mode: an approval that cannot be read never stops a run', LANE_TI
   await scenario.run()
   assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
   assert.ok(scenario.log.includes('audited model-b aa'), scenario.log.join('\n'))
+}))
+
+test('a seller whose DIFF was recorded last epoch is held: not audited, while the other seller is', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.clientAvailable = true
+  scenario.snapshots = [snapshot([
+    { ...seller('aa'.repeat(20), ['model-a']), onChainAgentId: 5 } as PeerInfo,
+    { ...seller('bb'.repeat(20), ['model-a']), onChainAgentId: 6 } as PeerInfo,
+  ])]
+  scenario.recordedDiffs.set(5, BigInt(EPOCH) - 1n)
+  // A DIFF recorded this epoch is the third-opinion rule's, not the hold's.
+  scenario.recordedDiffs.set(6, BigInt(EPOCH))
+  await scenario.run()
+  assert.ok(scenario.log.includes('audited model-a bb'), scenario.log.join('\n'))
+  assert.ok(!scenario.log.some((line) => line.endsWith('model-a aa')), scenario.log.join('\n'))
+}))
+
+test('a seller is audited again two epochs after its DIFF, once the hold is over', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.clientAvailable = true
+  scenario.snapshots = [snapshot([{ ...seller('aa'.repeat(20), ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+  scenario.recordedDiffs.set(5, BigInt(EPOCH) - 2n)
+  await scenario.run()
+  assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
 }))
 
 test('--all never asks for the approval: an unapproved auditor can try an audit', LANE_TIMEOUT, () => withScenario(async (scenario) => {

@@ -58,6 +58,7 @@ import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
+import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import {
@@ -715,6 +716,14 @@ export interface VerifierRoundOutcome {
   failed?: boolean
 }
 
+/** A seller the DIFF hold (`diff-hold.ts`) keeps out of this run's plan. */
+interface HeldSeller {
+  peerId: string
+  agentId: string
+  service: string
+  reason: string
+}
+
 /** The part of a model's plan that the run status counts. */
 type StatusPlan = { targets: readonly unknown[]; skipped: readonly ModelVerificationSkip[] }
 
@@ -833,6 +842,23 @@ export async function runVerifierRound(
               + 'a seller another auditor already judged would be paid for and its result left out at submit. `verifier watch` tries again at its next tick.',
             )
           }
+        }
+      }
+      // The DIFF hold (diff-hold.ts): a seller whose DIFF was recorded in the last `verifier.diffHoldEpochs`
+      // epochs is not audited, so nothing clears the DIFF before then. Read for the planned sellers only.
+      const holdEpochs = config.verifier?.diffHoldEpochs ?? DIFF_HOLD_EPOCHS
+      let holds: DiffHolds | null = null
+      if (epochWindow.source === 'onchain' && holdEpochs > 0) {
+        try {
+          const holdClient = createVerifierClient(config)
+          holds = diffHolds({
+            epoch: BigInt(epochWindow.epoch),
+            holdEpochs,
+            reader: { serviceStatusByHash: (agentId, service) => holdClient.serviceStatusByHash(agentId, service) },
+          })
+        } catch (error) {
+          // No KBF audits contract configured: nothing this run audits can be submitted, so nothing can clear a DIFF.
+          console.warn(chalk.yellow(`Could not read recent DIFFs: ${asError(error).message}`))
         }
       }
       const judgedByOthers = new Map<string, number>()
@@ -1205,9 +1231,50 @@ export async function runVerifierRound(
           // A closed audit window audits nobody new (`auditsPeer`), so no seller is counted above: without a
           // confirmation to audit, the model is finished for the epoch, not a model nobody advertises.
           const windowClosed = auditWindows.get(model)?.state === 'closed'
-          return { model, skipped, targets, doneCount, windowClosed }
+          return { model, skipped, targets, doneCount, windowClosed, held: [] as HeldSeller[] }
         }
-        const plannedModels = runModels.map((model) => planModel(model, selectedPeers))
+        type PlannedModel = ReturnType<typeof planModel>
+        // Takes the sellers the DIFF hold covers out of a model's plan. A held confirmation stays waiting,
+        // with the hold as its reason. A failed read fails the plan: auditing the seller could clear its DIFF.
+        const applyDiffHolds = async (planned: PlannedModel): Promise<PlannedModel> => {
+          if (!holds || planned.targets.length === 0) return planned
+          let reasons: Array<string | null>
+          try {
+            reasons = await holds.reasonsFor(planned.targets.map((target) => ({
+              agentId: target.peer.onChainAgentId == null ? null : BigInt(target.peer.onChainAgentId),
+              serviceHash: serviceHash(target.service),
+            })))
+          } catch (error) {
+            throw new Error(
+              `could not read whether ${planned.model}'s sellers have a recent DIFF (${asError(error).message}), so they were not audited: `
+              + 'an audit could clear a DIFF that must stand. `verifier watch` tries again at its next tick.',
+            )
+          }
+          const targets: PlannedModel['targets'] = []
+          const held: HeldSeller[] = []
+          for (const [index, target] of planned.targets.entries()) {
+            const reason = reasons[index]
+            if (!reason) {
+              targets.push(target)
+              continue
+            }
+            held.push({ peerId: target.peer.peerId, agentId: String(target.peer.onChainAgentId), service: target.service, reason })
+            const confirmation = confirmationFor(planned.model, target.peer)
+            if (confirmation) {
+              const key = confirmationPlanKey(planned.model, String(target.peer.onChainAgentId))
+              auditedConfirmations.delete(key)
+              confirmationSkipReasons.set(key, [...confirmationSkipReasons.get(key) ?? [], `held: ${reason}`])
+            }
+          }
+          return { ...planned, targets, held }
+        }
+        const plannedModels: PlannedModel[] = []
+        for (const model of runModels) plannedModels.push(await applyDiffHolds(planModel(model, selectedPeers)))
+        for (const { model, held } of plannedModels) {
+          for (const entry of held) {
+            console.log(chalk.yellow(`${model}: agent ${entry.agentId} (${entry.service}, peer ${entry.peerId.slice(0, 12)}…) held: ${entry.reason}`))
+          }
+        }
         if (options.fresh) {
           // A closed window was submitted, and with it this epoch's questions for the model: auditing its
           // sellers again on them would test answers a seller can look up. It is audited next epoch.
@@ -1245,8 +1312,9 @@ export async function runVerifierRound(
           }
         }
         // A model whose sellers are all finished this epoch, or whose audit window is closed, has nothing left to run.
-        const hasWorkLeft = (entry: { targets: unknown[]; skipped: unknown[]; doneCount: number; windowClosed: boolean }): boolean => (
-          entry.targets.length + entry.skipped.length > 0 || (entry.doneCount === 0 && !entry.windowClosed)
+        // Held sellers count as finished: a model whose sellers are all held builds no questions.
+        const hasWorkLeft = (entry: { targets: unknown[]; skipped: unknown[]; doneCount: number; windowClosed: boolean; held: unknown[] }): boolean => (
+          entry.targets.length + entry.skipped.length > 0 || (entry.doneCount + entry.held.length === 0 && !entry.windowClosed)
         )
         const preparedModels = plannedModels
           .filter(hasWorkLeft)
@@ -1263,7 +1331,8 @@ export async function runVerifierRound(
             return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - await clock() }
           }
         }
-        if (selectedPeerId && preparedModels.every((entry) => entry.targets.length + entry.skipped.length === 0)) {
+        const heldCount = plannedModels.reduce((total, entry) => total + entry.held.length, 0)
+        if (selectedPeerId && heldCount === 0 && preparedModels.every((entry) => entry.targets.length + entry.skipped.length === 0)) {
           throw new Error(`peer ${selectedPeerId} does not currently advertise any selected verifier model`)
         }
         // Problems on the auditor's side stop the run here, before any request is paid for.
@@ -1813,7 +1882,7 @@ export async function runVerifierRound(
         }
         const planLane = async (model: string, before: StatusPlan, laneProxy: typeof proxy) => {
           const peers = selectedPeerId ? [selectVerifierPeer(laneProxy.peers, selectedPeerId)] : laneProxy.peers
-          const planned = planModel(model, peers)
+          const planned = await applyDiffHolds(planModel(model, peers))
           await replaceStatusPlan(before, planned)
           runProgress!.updatePlan(model, planned.targets.length + planned.skipped.length, planned.skipped.length)
           return planned
@@ -2359,12 +2428,14 @@ export async function keepCompatibleResumeCandidates(input: {
 export function printEpochPlan(
   epoch: string,
   state: EpochState,
-  planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingExtension?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number }>,
+  planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingExtension?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number; held?: readonly unknown[] }>,
   resumeCandidates: ReadonlyMap<string, ResumeCandidate>,
 ): void {
+  const held = planned.reduce((total, model) => total + (model.held?.length ?? 0), 0)
+  const heldNote = held > 0 ? `; ${held} held after a recent DIFF, not audited this epoch` : ''
   if (state.manifests.length === 0) {
     const sellers = planned.reduce((total, model) => total + model.targets.length, 0)
-    console.log(chalk.dim(`Epoch ${epoch}: no earlier run this epoch; auditing ${sellers} seller(s) planned for this run.`))
+    console.log(chalk.dim(`Epoch ${epoch}: no earlier run this epoch; auditing ${sellers} seller(s) planned for this run${heldNote}.`))
     return
   }
   let done = 0
@@ -2386,7 +2457,7 @@ export function printEpochPlan(
   console.log(chalk.cyan(
     `Epoch ${epoch} plan (from ${state.manifests.length} earlier run(s)): ${done} finished, `
     + `${retryAuditor} retry (our side), ${retrySeller} retry (seller or unclear, last try this epoch), `
-    + `${closeCalls} close call(s) to finish, ${fresh} new. Running ${audits} audit(s) and ${closeCalls} follow-up(s)`
+    + `${closeCalls} close call(s) to finish, ${fresh} new${heldNote}. Running ${audits} audit(s) and ${closeCalls} follow-up(s)`
     + (resumeCandidates.size > 0 ? `; ${resumeCandidates.size} retry(s) keep their answered questions.` : '.'),
   ))
   console.log(chalk.dim('  Use --fresh to ignore the earlier runs.'))
