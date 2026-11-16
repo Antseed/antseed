@@ -508,6 +508,7 @@ function mergeSellerConfig(
       publicAddress: defaults.publicAddress,
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
       ...(typeof defaults.maxInFlightRequestBytes === 'number' ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes } : {}),
+      ...(defaults.blockedBuyers ? { blockedBuyers: [...defaults.blockedBuyers] } : {}),
       ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
       ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
       ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
@@ -543,6 +544,12 @@ function mergeSellerConfig(
       ? { maxInFlightRequestBytes: value['maxInFlightRequestBytes'] }
       : typeof defaults.maxInFlightRequestBytes === 'number'
         ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes }
+        : {}),
+    // Kept as given so validation reports a malformed list instead of dropping it.
+    ...(value['blockedBuyers'] !== undefined
+      ? { blockedBuyers: value['blockedBuyers'] as string[] }
+      : defaults.blockedBuyers
+        ? { blockedBuyers: [...defaults.blockedBuyers] }
         : {}),
     ...(typeof value['maxInboundConnections'] === 'number'
       ? { maxInboundConnections: value['maxInboundConnections'] }

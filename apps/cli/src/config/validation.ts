@@ -14,6 +14,8 @@ import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 import { sellerAlertsErrors } from './seller-alerts.js';
 
+const BUYER_PEER_ID_PATTERN = /^(0x)?[0-9a-fA-F]{40}$/;
+
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
 const MAX_DOMAIN_VERIFICATION_CLAIMS = 5;
@@ -437,6 +439,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     (!Number.isInteger(config.seller.maxInFlightRequestBytes) || config.seller.maxInFlightRequestBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
   ) {
     errors.push('seller.maxInFlightRequestBytes must be an integer >= 1048576');
+  }
+
+  const blockedBuyers: unknown = config.seller.blockedBuyers;
+  if (
+    blockedBuyers !== undefined &&
+    (!Array.isArray(blockedBuyers) || blockedBuyers.some((id) => typeof id !== 'string' || !BUYER_PEER_ID_PATTERN.test(id.trim())))
+  ) {
+    errors.push('seller.blockedBuyers must be a list of buyer peer IDs (40 hex characters, with or without 0x)');
   }
 
   if (
