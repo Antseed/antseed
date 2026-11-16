@@ -3439,6 +3439,29 @@ test('a data request reads a `<peerId>@<service>` pin from its path and sends th
   assert.deepEqual(sent, [{ peerId: pinned.peerId, path: '/v1/data/flights/search' }])
 })
 
+test("a data request's pin comes from its path, never from a `<peerId>@<service>` in its body", async () => {
+  const bodyNamed = makeDataPeer('a', 95)
+  const pinned = makeDataPeer('b', 10)
+  const proxy = makeBuyerProxyWithPeers([bodyNamed, pinned], [bodyNamed, pinned], permissiveRouter())
+  const sent: Array<{ peerId: string; path: string; body: string }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string; body: Uint8Array }) => {
+    sent.push({ peerId: peer.peerId, path: request.path, body: Buffer.from(request.body).toString() })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const raw = JSON.stringify({ model: `${bodyNamed.peerId}@flights`, from: 'TLV' })
+  const viaPath = await invokeProxy(proxy, makeProxyRequest({ path: `/v1/data/${pinned.peerId}@flights/search`, rawBody: raw }))
+  // With no pin in its path, the body's `<peerId>@<service>` still pins nothing.
+  const unpinned = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', rawBody: raw, headers: { 'x-antseed-pin-peer': pinned.peerId } }))
+
+  assert.equal(viaPath.statusCode, 200)
+  assert.equal(unpinned.statusCode, 200)
+  assert.deepEqual(sent, [
+    { peerId: pinned.peerId, path: '/v1/data/flights/search', body: raw },
+    { peerId: pinned.peerId, path: '/v1/data/flights/search', body: raw },
+  ])
+})
+
 test('a data request honours the x-antseed-pin-peer header and never forwards it', async () => {
   const preferred = makeDataPeer('a', 95)
   const pinned = makeDataPeer('b', 10)

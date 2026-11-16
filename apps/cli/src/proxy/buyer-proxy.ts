@@ -4885,21 +4885,21 @@ export class BuyerProxy {
     let serializedReq = request
     const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
-    // A data request carries its `<peerId>@<service>` pin in the path, and its body is left alone.
-    const dataPin = dataServiceRoute(serializedReq) ? rewritePeerPinnedDataService(serializedReq) : null
-    const {
-      body: servicePinBody,
-      headers: servicePinHeaders,
-      pinnedPeerId: bodyPinnedPeer,
-    } = dataPin
-      ? { body: serializedReq.body, headers: serializedReq.headers, pinnedPeerId: dataPin.pinnedPeerId }
-      : rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
-    if (dataPin) {
+    let bodyPinnedPeer: string | null
+    if (dataCall) {
+      // A data request carries its `<peerId>@<service>` pin in the path, and its body is left alone.
+      const dataPin = rewritePeerPinnedDataService(serializedReq, dataCall)
       serializedReq = dataPin.request
-    } else if (servicePinBody !== serializedReq.body) {
-      serializedReq = { ...serializedReq, body: servicePinBody, headers: servicePinHeaders }
+      bodyPinnedPeer = dataPin.pinnedPeerId
+    } else {
+      const servicePin = rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
+      bodyPinnedPeer = servicePin.pinnedPeerId
+      if (servicePin.body !== serializedReq.body) {
+        serializedReq = { ...serializedReq, body: servicePin.body, headers: servicePin.headers }
+      }
     }
-    if (bodyPinnedPeer && (dataPin || servicePinBody !== request.body)) {
+    // Logged only when the pin changed the request (its path, or its body).
+    if (bodyPinnedPeer && serializedReq !== request) {
       log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
     }
 
