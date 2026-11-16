@@ -145,7 +145,7 @@ export function setupBuyerSellerStack(options: BuyerSellerStackOptions): BuyerSe
 
   const negotiator = new BuyerPaymentNegotiator(buyerIdentity, buyer, new DepositsClient({
     rpcUrl: common.rpcUrl, contractAddress: '0x' + 'dd'.repeat(20), usdcAddress: '0x' + 'ee'.repeat(20), evmChainId: 31337,
-  } as any), seller.channelsClient, buyerStore, {}, { emit: vi.fn() });
+  }), seller.channelsClient, buyerStore, {}, { emit: vi.fn() });
   const buyerPayment = negotiator.getOrCreatePaymentMux(sellerIdentity.peerId, buyerSide);
   const sentAuths: SpendingAuthPayload[] = [];
   const originalSend = buyerPayment.sendSpendingAuth.bind(buyerPayment);
@@ -158,7 +158,7 @@ export function setupBuyerSellerStack(options: BuyerSellerStackOptions): BuyerSe
     negotiator,
     verificationStorage: null,
     verificationSampler: null,
-    getConnection: async () => buyerSide as any,
+    getConnection: async () => buyerSide,
     getMux: () => buyerProxy,
     getVerificationMux: () => buyerVerification,
     registerPaymentMux: () => {},
