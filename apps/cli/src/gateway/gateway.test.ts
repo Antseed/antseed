@@ -635,6 +635,29 @@ test('gateway passes speech requests to the buyer, returns the audio as it is an
   }
 })
 
+test('gateway passes data service calls to the buyer with their own path and body, and books the spend', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 5_000 })
+  const { key, secret } = store.createKey({ label: 'Data', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    // The body's `model` and `routing` are the seller's API fields; the path, case and query go on as sent.
+    const raw = '{"model":"economy","routing":{"carrier":"LY"},"from":"TLV"}'
+    const call = await request(gateway.port, '/v1/data/Flights/search/New%20York/?Cabin=Y', { method: 'POST', key: secret, body: raw })
+    assert.equal(call.status, 200)
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(key.id).total, 5_000)
+    // The free description is reachable through the gateway too (this fake buyer charges every request, so it is not polled).
+    const description = await request(gateway.port, '/v1/data/flights/openapi.json', { method: 'GET', key: secret })
+    assert.equal(description.status, 200)
+    assert.deepEqual(buyer.captured.map(({ url }) => url), ['/v1/data/Flights/search/New%20York/?Cabin=Y', '/v1/data/flights/openapi.json'])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway passes native video jobs to the buyer and books their spend to the key', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 250_000 })

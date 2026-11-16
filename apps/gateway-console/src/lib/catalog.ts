@@ -25,7 +25,7 @@ export const EMPTY_CATALOG_FILTER: CatalogFilter = { search: '', types: [], tags
 
 export const CATALOG_TYPE_LABELS: Record<CatalogType, string> = { ...MODEL_TYPE_LABELS, router: 'Router' }
 
-const TYPE_ORDER: readonly CatalogType[] = ['text', 'image', 'video', 'speech', 'decision', 'router']
+const TYPE_ORDER: readonly CatalogType[] = ['text', 'image', 'video', 'speech', 'data', 'decision', 'router']
 
 /** The vendor family of a model (Anthropic, OpenAI, Qwen…) by its brand mark; null when it has none. */
 export type FamilyOf = (entry: { provider: string; label: string }) => string | null

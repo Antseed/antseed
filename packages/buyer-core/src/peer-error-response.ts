@@ -259,6 +259,8 @@ export function adaptPeerFaultErrorResponse(
     ...response.headers,
     [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'peer',
   };
+  // A data operation's error body belongs to the seller's own API: pass it on as sent.
+  if (requestProtocol === 'openapi-data') return { ...response, headers };
   if (response.statusCode === 429 && details.id === FREE_TIER_EXHAUSTED_ERROR_ID) {
     // Rewritten from the seller's numbers only, so clients can show the
     // message and link to this seller's pool without trusting seller prose.

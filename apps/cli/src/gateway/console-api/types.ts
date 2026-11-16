@@ -815,6 +815,8 @@ export interface Peer {
     voices?: string[]
     /** Speech services: USD per million characters of `input`. Absent when not advertised. */
     usdPerMillionCharacters?: number
+    /** Data services: USD per completed request. Absent when not advertised. */
+    usdPerRequest?: number
     /** The live model-check verdict for this service; absent when there is none. */
     modelCheck?: ModelCheckView
   }>
@@ -859,7 +861,7 @@ export interface Peer {
   requests24h: number
 }
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech' | 'data'
 
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
@@ -923,6 +925,8 @@ export interface NetworkModelOffer {
   usdPerImage: { min: number; max: number } | null
   /** Speech models: USD per million characters of `input`; absent when not advertised. */
   usdPerMillionCharacters?: number
+  /** Data services: USD per completed request; absent when not advertised. */
+  usdPerRequest?: number
   contextLength: number | null
   free: boolean
   /**

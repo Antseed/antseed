@@ -62,11 +62,11 @@ import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
-import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
+import { dataServiceRoute, markDataProviderResponse, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type DataServiceRoute, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { announcedProviderId } from './discovery/provider-id.js';
-import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
+import { isDataOnlyService, isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
   detectRequestServiceApiProtocol,
@@ -74,9 +74,10 @@ import {
 } from '@antseed/api-adapter';
 import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
 import { exposedResponseHeaders } from './utils/response-headers.js';
+import { exposedDataResponse } from './utils/data-response.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { usageForBilling } from '@antseed/buyer-core';
-import { isCanonicalRequestPath } from './proxy/request-path.js';
+import { isCanonicalRequestPath, isUnambiguousDataRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
@@ -167,6 +168,7 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  */
 /** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+const INVALID_DATA_PATH_MESSAGE = 'A data request path must be unambiguous: no dot segments, encoded slashes or dots, malformed escapes or empty segments before the end.';
 
 /**
  * The service a request is priced and billed as, or why it names none: as read from the body, with
@@ -363,6 +365,17 @@ export class SellerRequestHandler {
         return;
       }
 
+      // A data service's description is free: answered before any payment step.
+      const dataRoute = dataServiceRoute(request);
+      if (dataRoute && !isUnambiguousDataRequestPath(request.path)) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', INVALID_DATA_PATH_MESSAGE);
+        return;
+      }
+      if (dataRoute?.action === 'describe') {
+        mux.sendProxyResponse(await this._handleDataDescription(request, buyerPeerId, dataRoute));
+        return;
+      }
+
       if (pathOnly.startsWith(ANTSEED_ATTEST_PATH + '/')) {
         let verifierId: string;
         try {
@@ -434,8 +447,9 @@ export class SellerRequestHandler {
         return;
       }
 
-      // Everything below bills and routes by this path as written.
-      if (!isCanonicalRequestPath(request.path)) {
+      // Everything below bills and routes by this path as written. A data operation's path was
+      // checked above: it is the seller's own API, whose parameters may be encoded.
+      if (!dataRoute && !isCanonicalRequestPath(request.path)) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', 'The request path must be in normal form: no dot segments, empty segments or percent escapes.');
         return;
       }
@@ -519,8 +533,11 @@ export class SellerRequestHandler {
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
       const isVideoRetrieve = videoRoute?.action === 'retrieve';
-      const isFreeService = isVideoRetrieve || isZeroTokenPricing(requestPricing)
-        && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
+      // A data operation never charges tokens: its billing model alone says whether it is free,
+      // even when the same service sells chat at token prices.
+      const isFreeService = isVideoRetrieve || (dataRoute && unitBillingModel
+        ? isFreeUnitBillingModel(unitBillingModel)
+        : isZeroTokenPricing(requestPricing) && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel)));
       // A video retrieve is paid by its job's create, never by the free tier:
       // status polls and downloads must not use up or report free usage.
       const isFreeTierRequest = isFreeService && !isVideoRetrieve;
@@ -1146,17 +1163,25 @@ export class SellerRequestHandler {
           // The upstream's answer for its account and model health (an out-of-credit error is seen here first).
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
+          // A data operation's errors are the seller's own API answering: never rewritten as an
+          // inference account, rate-limit or health error, and marked as the provider's so the
+          // buyer never reads them as an Antseed payment step or service refusal.
+          const dataCall = dataServiceRoute(request) !== null;
+          if (dataCall) response = { ...response, headers: markDataProviderResponse(response.headers) };
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
-          this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
-          if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
+          // A data API refusing a client (4xx) says nothing about the seller's account or health.
+          if (!(dataCall && statusCode >= 400 && statusCode < 500)) {
+            this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          }
+          if (!streamedResponseStarted && !dataCall && isUpstreamAccountError(statusCode, upstreamError)) {
             debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
-          } else if (!streamedResponseStarted && statusCode === 429) {
+          } else if (!streamedResponseStarted && !dataCall && statusCode === 429) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
-          if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
+          if (!streamedResponseStarted && !dataCall && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
             response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
             statusCode = response.statusCode;
           }
@@ -1660,6 +1685,33 @@ export class SellerRequestHandler {
     }
   }
 
+  /**
+   * Free description of a data service (`GET /v1/data/<service>/openapi.json`): forward to the
+   * provider that serves it. The document is the seller's own; nothing is charged for it.
+   */
+  private async _handleDataDescription(request: SerializedHttpRequest, buyerPeerId: string, route: DataServiceRoute): Promise<SerializedHttpResponse> {
+    const failure = (statusCode: number, code: string, message: string): SerializedHttpResponse => ({
+      requestId: request.requestId,
+      statusCode,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'invalid_request_error', code } })),
+    });
+    // The same provider choice as the operations, so the description matches the API that serves them.
+    const provider = this.matchProvider(request);
+    if (!provider) return failure(404, 'model_not_found', `Data service "${route.service}" is not served by this peer.`);
+    setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
+    try {
+      const response = exposedDataResponse(await provider.handleRequest(request));
+      return { ...response, requestId: request.requestId, headers: markDataProviderResponse(response.headers) };
+    } catch (error) {
+      // The exception can quote the upstream (its account, its answer): it is logged here, as a
+      // provider exception on a paid request is, and the buyer only learns the request failed.
+      const message = error instanceof Error ? error.message : String(error);
+      debugWarn(`[SellerHandler] Data description exception: provider="${provider.name}" service="${route.service}" buyer=${buyerPeerId.slice(0, 12)}... ${message}`);
+      return failure(503, 'data_description_unavailable', PROVIDER_FAILURE_MESSAGE);
+    }
+  }
+
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
     const allServices = this._deps.providers.flatMap((p) => p.services);
     const now = Math.floor(Date.now() / 1000);
@@ -1711,9 +1763,15 @@ export class SellerRequestHandler {
     }
     const requestedProvider = this._extractRequestedProvider(request);
     const videoRoute = nativeVideoRoute(request);
+    const dataRoute = dataServiceRoute(request);
+    const routeProtocol = videoRoute?.protocol ?? dataRoute?.protocol;
     const providers = this._deps.providers;
+    // Any other request never goes to a provider that serves the service on data alone.
+    const dataOnly = (provider: Provider): boolean =>
+      isDataOnlyService(provider.serviceApiProtocols?.[requestedService]);
     const matchesService = (provider: Provider): boolean =>
-      provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
+      provider.services.includes(requestedService)
+      && (routeProtocol ? Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(routeProtocol)) : !dataOnly(provider));
 
     // Several upstreams can share a provider name (with the same terms, see
     // assertSameNameUpstreamsAgree); buyers merge their announcements with the
@@ -1820,6 +1878,9 @@ export class SellerRequestHandler {
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
       return named(routingServices(this._deps.providers, routingProtocol)[0]?.service);
     }
+    // A data request names its service in the path; its body is the operation's own.
+    const dataRoute = dataServiceRoute(request);
+    if (dataRoute) return named(dataRoute.service);
     const videoRoute = nativeVideoRoute(request);
     if (videoRoute?.action === 'retrieve') return named(requestService(request));
     const requested = billedRequestBody(request);
@@ -1910,7 +1971,8 @@ export class SellerRequestHandler {
     pricing: ProviderTokenPricing,
     unitModel: UnitBillingModelV1 | undefined,
   ): { cost: bigint; inputTokens: number; maxOutputTokens: number } | null {
-    const tokenEstimate = this._estimateMaxTokenRequestCostUsdc(request, pricing);
+    // A data operation's body is the seller's own API input: never read as tokens or output limits.
+    const tokenEstimate = dataServiceRoute(request) ? null : this._estimateMaxTokenRequestCostUsdc(request, pricing);
     const unitEstimate = unitModel
       ? this._estimateUnitRequestCostUsdc(requestBilling, unitModel)
       : null;
@@ -1981,6 +2043,12 @@ export class SellerRequestHandler {
     streamCallbacks?: ProviderStreamCallbacks,
     isDownload = false,
   ): Promise<SerializedHttpResponse> {
+    // A data call is one buffered request and response, whatever the provider can stream, so the
+    // seller marks and checks the whole answer before the buyer sees any of it. Its headers go
+    // through the same filter as every answer, but its body is the provider's own API answer and
+    // reaches the buyer as sent (only decoded): like a video download, it skips the cost rewrite,
+    // since a data API's `usage` or `cost` field is its own data, not the seller's upstream cost.
+    if (dataServiceRoute(request)) return exposedDataResponse(await provider.handleRequest(request));
     // Every provider's response goes through here, so no plugin can expose its
     // upstream's own headers or costs: the body's cost is the seller's price.
     const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>

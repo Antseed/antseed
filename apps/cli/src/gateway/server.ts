@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER, dataServiceRoute } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -129,10 +129,12 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
 ]
 
 interface CanonicalRoute {
-  /** The allowed route's path plus the request's query. */
+  /** The allowed route's path plus the request's query; a data route's own path and query, as sent. */
   path: string
   prefix: string
   paid: boolean
+  /** A data service route: its service, named in the path, is what the request buys. */
+  dataService?: string
   local: boolean
 }
 
@@ -384,10 +386,12 @@ export class GatewayServer {
     let parsed = parseJsonBody(body, contentType)
     // What the buyer routes by (`service ?? model`), so the allow list and
     // the request log see the model that is actually bought.
-    let model = effectiveRequestModel(parsed, body, contentType)
+    // A data operation's body is the seller's own API: the service it buys is the one in its path,
+    // and no field of the body is read as a model or preset.
+    let model = route.dataService ?? effectiveRequestModel(parsed, body, contentType)
 
     // `model: "@preset/<slug>"` runs the workspace's (or org's) preset.
-    const slug = presetSlug(model)
+    const slug = route.dataService ? null : presetSlug(model)
     const preset = slug ? this._options.store.findPresetBySlug(slug, key.workspaceId) : null
     if (slug) {
       if (!parsed) {
@@ -817,7 +821,7 @@ export class GatewayServer {
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
-          else if (request.model !== null && !contentType.startsWith('video/') && !contentType.startsWith('audio/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+          else if (request.model !== null && !contentType.startsWith('video/') && !contentType.startsWith('audio/') && !dataServiceRoute({ method: request.method, path: request.requestPath })) usageReader = readUsage(upstreamRes, (message) => this._log(message))
           const responseHeaders: http.OutgoingHttpHeaders = {}
           for (const [name, value] of Object.entries(upstreamRes.headers)) {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
@@ -1478,6 +1482,13 @@ function filterModelList(body: Buffer, policy: RoutingPolicy): Buffer {
 }
 
 function canonicalizeRoute(method: string, path: string): CanonicalRoute | null {
+  // A data service's operation keeps its own path, case and query: it is the seller's API. Its
+  // description (`GET` of the service root or of openapi.json) is free; an operation is paid.
+  const data = dataServiceRoute({ method, path })
+  if (data) {
+    const pathname = path.split('?', 1)[0]!
+    return { path, prefix: pathname, paid: data.action === 'call', local: false, dataService: data.service }
+  }
   const queryIndex = path.indexOf('?')
   const pathname = (queryIndex === -1 ? path : path.slice(0, queryIndex)).toLowerCase()
   const query = queryIndex === -1 ? '' : path.slice(queryIndex)

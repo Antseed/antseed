@@ -8,6 +8,9 @@ import {
   extractImageRequestFacts,
   extractSpeechRequestFacts,
   speechAudioDelivered,
+  dataServiceRoute,
+  dataServiceDelivered,
+  type DataServiceRoute,
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
@@ -31,7 +34,7 @@ import {
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
-import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { AUDIO_SPEECH_PROTOCOLS, DATA_SERVICE_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
 import { routingWireProtocol } from '@antseed/protocol/routing';
 
 const ZERO_TOKEN_USAGE: TokenUsage = {
@@ -47,7 +50,9 @@ export type BillingRequestFacts =
   | { kind: 'video'; video: NativeVideoFacts }
   | { kind: 'speech'; speech: SpeechRequestFacts }
   /** `candidateIds`: the ids the rank request sent; a ranking is billable only when it names one. */
-  | { kind: 'routing'; protocol: RoutingProtocol; candidateIds: string[] };
+  | { kind: 'routing'; protocol: RoutingProtocol; candidateIds: string[] }
+  /** `describe` reads the service's description and is never billed; `call` runs one operation. */
+  | { kind: 'data'; action: DataServiceRoute['action'] };
 
 export interface CapturedUnitBillingContext {
   context: UnitBillingContext;
@@ -162,11 +167,42 @@ const speechBillingAdapter: UnitBillingAdapter = {
   },
 };
 
+// Data services charge one completed request per delivered operation: a 2xx answer with a
+// body. Reading the service's description is free, and so is any refusal, error or empty
+// answer. Buyer and seller run the same function on the same bytes.
+const dataBillingAdapter: UnitBillingAdapter = {
+  name: 'data billing',
+  units: ['completed_requests'],
+  protocols: DATA_SERVICE_PROTOCOLS,
+  capture: (args) => {
+    const route = dataServiceRoute(args.request);
+    if (!route) throw new Error('Data billing requires a /v1/data/<service>/ request');
+    const units = route.action === 'call' ? { completed_requests: 1 } : {};
+    return {
+      context: {
+        sellerPeerId: args.sellerPeerId,
+        provider: args.provider,
+        service: args.service,
+        serviceApiProtocol: args.serviceApiProtocol,
+        unitLimits: units,
+      },
+      requestUsage: { units },
+      requestFacts: { kind: 'data', action: route.action },
+    };
+  },
+  measure: (response, requestFacts) => {
+    if (requestFacts.kind !== 'data') return wrongFacts('data billing', requestFacts);
+    if (requestFacts.action !== 'call') return { usage: { units: {} }, tokenUsage: ZERO_TOKEN_USAGE };
+    return { usage: { units: { completed_requests: dataServiceDelivered(response) ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+  },
+};
+
 const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
   imageBillingAdapter,
   routingBillingAdapter,
   videoBillingAdapter,
   speechBillingAdapter,
+  dataBillingAdapter,
 ];
 
 function adapterForProtocol(protocol: ServiceApiProtocol): UnitBillingAdapter | undefined {
@@ -177,10 +213,12 @@ function resolveUnitBillingAdapter(protocol: ServiceApiProtocol, model: UnitBill
   const protocolAdapter = adapterForProtocol(protocol);
   if (!protocolAdapter) throw new Error(`Unit billing is not supported for ${protocol}`);
   for (const component of model.components) {
-    const unitAdapter = UNIT_BILLING_ADAPTERS.find((adapter) => adapter.units.includes(component.unit));
+    // A unit may be billed by more than one adapter (completed requests: routing and data).
+    const unitAdapters = UNIT_BILLING_ADAPTERS.filter((adapter) => adapter.units.includes(component.unit));
+    const unitAdapter = unitAdapters[0];
     if (!unitAdapter) throw new Error(`No unit billing adapter for ${component.unit}`);
-    if (unitAdapter.protocols.length === 0) throw new Error(`${unitAdapter.name} is not implemented`);
-    if (unitAdapter !== protocolAdapter) throw new Error(`${component.unit} is not supported for ${protocol}`);
+    if (unitAdapters.every((adapter) => adapter.protocols.length === 0)) throw new Error(`${unitAdapter.name} is not implemented`);
+    if (!unitAdapters.includes(protocolAdapter)) throw new Error(`${component.unit} is not supported for ${protocol}`);
   }
   return protocolAdapter;
 }

@@ -31,5 +31,7 @@ describe('priceSummary', () => {
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null })).toBe('No price advertised')
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 15 })).toBe(`${formatPricePerMillion(15)} /M characters`)
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 0 })).toBe('Free')
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerRequest: 0 })).toBe('Free')
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerRequest: 0.005 })).toMatch(/ per request$/)
   })
 })

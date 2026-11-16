@@ -1,4 +1,4 @@
-import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
+import { DATA_SERVICE_PATH_PREFIX, dataServiceRoute, isDataProviderResponse, nativeVideoRoute, withDataService, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -44,6 +44,7 @@ import {
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
   speechOfferUsdPerCharacter,
+  dataOfferUsdPerRequest,
   speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
@@ -85,6 +86,7 @@ import {
   DEBUG,
   log,
   extractRequestedService,
+  rewritePeerPinnedDataService,
   summarizeRequestShape,
   summarizeErrorResponse,
   requestWantsStreaming,
@@ -588,6 +590,8 @@ function sameRoutingServiceTarget(a: RoutingServiceTarget | undefined, b: Routin
 
 /** Returns `request` with its body's model field rewritten to `serviceId`, or unchanged if nothing rewrote. */
 function withRoutedModel(request: SerializedHttpRequest, serviceId: string): SerializedHttpRequest {
+  // A data request names its service in the path. Its body is the operation's own and is never rewritten.
+  if (dataServiceRoute(request)) return withDataService(request, serviceId) ?? request
   const rewritten = overrideRoutedModelInBody(request.body, request.headers, serviceId)
   return rewritten.overridden
     ? { ...request, body: rewritten.body, headers: rewritten.headers }
@@ -823,6 +827,9 @@ function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): voi
   res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
 }
+
+/** Data operations that read and change nothing, so another seller may safely repeat them. */
+const SAFE_DATA_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 function isBuyerFault(result: DispatchFailure): boolean {
   return result.responseHeaders[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() === 'buyer'
@@ -2002,6 +2009,7 @@ export class BuyerProxy {
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
         speechUsdPerCharacter: speechOfferUsdPerCharacter(offer),
+        dataUsdPerRequest: requestProtocol === 'openapi-data' ? dataOfferUsdPerRequest(offer) : null,
       })
     }
     const now = this._now()
@@ -2077,9 +2085,11 @@ export class BuyerProxy {
       serviceId: this._healthServiceKey(candidate.serviceId),
       inputUsdPerMillion: candidate.inputUsdPerMillion,
       outputUsdPerMillion: candidate.outputUsdPerMillion,
-      requestUsd: candidate.speechUsdPerCharacter != null && speechCharacters !== null
-        ? candidate.speechUsdPerCharacter * speechCharacters
-        : candidate.minImageUsdPerImage,
+      requestUsd: candidate.dataUsdPerRequest != null
+        ? candidate.dataUsdPerRequest
+        : candidate.speechUsdPerCharacter != null && speechCharacters !== null
+          ? candidate.speechUsdPerCharacter * speechCharacters
+          : candidate.minImageUsdPerImage,
       coolingDown: isCooling(candidate),
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
@@ -4093,7 +4103,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", or "routers".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", "data", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -4238,6 +4248,9 @@ export class BuyerProxy {
     // Only proxy known API paths — reject everything else with 404
     const normalizedPath = path.split('?')[0]?.trim().toLowerCase() ?? '/'
     const nativeVideo = nativeVideoRoute({ method, path })
+    // A data operation's path is the seller's own API (`/v1/data/flights/messages` is not a chat),
+    // and its body is the operation's input: never read for routing options or a conversation.
+    const isDataRequest = dataServiceRoute({ method, path }) !== null
     const isKnownApiPath = nativeVideo !== null ||
       normalizedPath.startsWith('/v1/messages') ||
       normalizedPath.startsWith('/v1/chat/completions') ||
@@ -4246,6 +4259,7 @@ export class BuyerProxy {
       normalizedPath.startsWith('/v1/images/edits') ||
       normalizedPath === '/v1/audio/speech' ||
       normalizedPath.startsWith('/v1/systemone') ||
+      normalizedPath.startsWith(DATA_SERVICE_PATH_PREFIX) ||
       normalizedPath.startsWith('/v1/models')
     if (!isKnownApiPath) {
       res.writeHead(404, { 'content-type': 'application/json' })
@@ -4396,7 +4410,7 @@ export class BuyerProxy {
     // `routing` is reported only when a router serves the request.
     let routingOptions: RequestRoutingOptions = {}
     let invalidRouting: string | null = null
-    if (method === 'POST' && isCompletionRequestPath(path)) {
+    if (method === 'POST' && !isDataRequest && isCompletionRequestPath(path)) {
       const taken = takeRoutingOptions(serializedReq)
       if (taken.kind === 'options') {
         serializedReq = taken.request
@@ -4428,7 +4442,7 @@ export class BuyerProxy {
     // automatically selected routes become soft affinity, so later turns stay
     // on the same seller unless it is cooling, unavailable, or fails retryably.
     // Subagent sessions inherit their parent chat's route.
-    const isConversationRequest = method === 'POST' && isCompletionRequestPath(path)
+    const isConversationRequest = method === 'POST' && !isDataRequest && isCompletionRequestPath(path)
     const conversationBody = isConversationRequest
       ? parseRequestBodyObject(serializedReq.body, serializedReq.headers)
       : null
@@ -4748,7 +4762,12 @@ export class BuyerProxy {
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
     // substituted value. Tools connected to the buyer without a gateway can
     // carry the alias, so route changes apply without config rewrites.
-    const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
+    // A data service is named in the path. Its body is the operation's own:
+    // a `model` or `service` field there is the provider's, never a route.
+    const isDataRequest = dataServiceRoute(serializedReq) !== null
+    const aliasResult = isDataRequest
+      ? { body: serializedReq.body, headers: serializedReq.headers, aliasRequested: false, substituted: false }
+      : substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
       res.writeHead(400, { 'content-type': 'application/json' })
@@ -4775,7 +4794,7 @@ export class BuyerProxy {
     // does for alias-carrying configs; otherwise pinning a chat in the
     // desktop silently does nothing for intercepted apps.
     let chatPinOverrideApplied = false
-    if (systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
+    if (!isDataRequest && systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
       const pinOverride = overrideRoutedModelInBody(serializedReq.body, serializedReq.headers, chatPinnedModel)
       if (pinOverride.overridden) {
         serializedReq = { ...serializedReq, body: pinOverride.body, headers: pinOverride.headers }
@@ -4858,19 +4877,30 @@ export class BuyerProxy {
       : null
 
     const nativeVideo = nativeVideoRoute(request)
+    // A data operation other than a read may already have run upstream when its answer
+    // fails to arrive, and another seller cannot tell. It moves to another seller only
+    // after a refusal that comes before the operation runs.
+    const dataCall = dataServiceRoute(request)
+    const dataCallUnsafeToRetry = dataCall?.action === 'call' && !SAFE_DATA_METHODS.has(request.method.toUpperCase())
     let serializedReq = request
     const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
-    const {
-      body: servicePinBody,
-      headers: servicePinHeaders,
-      pinnedPeerId: bodyPinnedPeer,
-    } = rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
-    if (servicePinBody !== serializedReq.body) {
-      serializedReq = { ...serializedReq, body: servicePinBody, headers: servicePinHeaders }
-      if (bodyPinnedPeer) {
-        log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
+    let bodyPinnedPeer: string | null
+    if (dataCall) {
+      // A data request carries its `<peerId>@<service>` pin in the path, and its body is left alone.
+      const dataPin = rewritePeerPinnedDataService(serializedReq, dataCall)
+      serializedReq = dataPin.request
+      bodyPinnedPeer = dataPin.pinnedPeerId
+    } else {
+      const servicePin = rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
+      bodyPinnedPeer = servicePin.pinnedPeerId
+      if (servicePin.body !== serializedReq.body) {
+        serializedReq = { ...serializedReq, body: servicePin.body, headers: servicePin.headers }
       }
+    }
+    // Logged only when the pin changed the request (its path, or its body).
+    if (bodyPinnedPeer && serializedReq !== request) {
+      log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
     }
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
@@ -5194,7 +5224,7 @@ export class BuyerProxy {
               // this one usually takes; the last seller gets the full timeout. A
               // probe of a seller with no recent data waits no longer than the
               // seller it stands in for would.
-              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo
+              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo && !dataCallUnsafeToRetry
                 ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
                 : null,
               teeBinding,
@@ -5228,6 +5258,11 @@ export class BuyerProxy {
           // Never retry a video on another seller: a create may already have
           // started (and been charged), and follow-ups only exist on one seller.
           if (nativeVideo) return result
+          // A data operation that may have run is not sent again, to this seller or
+          // another: only a seller that does not serve it, or a payment the buyer could
+          // not make (both before the operation runs), lets another seller take it. A 429
+          // may come from the seller's API after a partial run, so it is returned too.
+          if (dataCallUnsafeToRetry && !result.modelNotFound && !isBuyerFault(result)) return result
           lastRetry = result
           if (!isBuyerFault(result) && !result.modelNotFound && result.statusCode !== 402) {
             const failure = classifyFailedAttempt(result)
@@ -5770,7 +5805,11 @@ export class BuyerProxy {
     // Forward through P2P
     const videoRoute = nativeVideoRoute(requestForPeer)
     // Video responses are JSON job objects or a streamed MP4, never SSE.
-    const wantsStreaming = clientWantsStreaming && !videoRoute
+    // A data call is one request and one buffered response: its body may carry
+    // a `stream` field of its own, which is the operation's and not a transport choice.
+    // A data call's answer is the seller's own API: judged by its status, never by inference answer shapes.
+    const dataCall = dataServiceRoute(requestForPeer) !== null
+    const wantsStreaming = clientWantsStreaming && !videoRoute && !dataCall
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
       const { protocol, resourceId } = videoRoute
@@ -5883,8 +5922,8 @@ export class BuyerProxy {
           responseForClient = adaptResponse(responseForClient)
         }
         responseForClient = adaptOpenAICompatibleErrorResponse(responseForClient, requestProtocol)
-        responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
-        if (responseForClient.statusCode === 402) {
+        if (!dataCall) responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
+        if (responseForClient.statusCode === 402 && !isDataProviderResponse(responseForClient)) {
           responseForClient = inject402PeerId(responseForClient, selectedPeer.peerId)
         }
 
@@ -5932,6 +5971,7 @@ export class BuyerProxy {
         const modelNotFound = !streamed
           && !isControlPlaneServicesPath(requestForPeer.path)
           && isModelNotFoundResponse(responseForClient)
+          && !isDataProviderResponse(responseForClient)
         if (modelNotFound) {
           this._onModelNotFound(selectedPeer.peerId, requestedService)
         }
@@ -5985,7 +6025,7 @@ export class BuyerProxy {
           requestForPeer.requestId,
           latencyMs,
         )
-        const answeredEmpty = !pinned && responseForClient.statusCode < 300
+        const answeredEmpty = !pinned && responseForClient.statusCode < 300 && !dataCall
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
         if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
@@ -6050,8 +6090,8 @@ export class BuyerProxy {
           response = adaptResponse(response)
         }
         response = adaptOpenAICompatibleErrorResponse(response, requestProtocol)
-        response = this._withFriendlyUploadLimitError(response, requestForPeer.body.length, requestedService)
-        if (response.statusCode === 402) {
+        if (!dataCall) response = this._withFriendlyUploadLimitError(response, requestForPeer.body.length, requestedService)
+        if (response.statusCode === 402 && !isDataProviderResponse(response)) {
           response = inject402PeerId(response, selectedPeer.peerId)
         }
         const latencyMs = Date.now() - startTime
@@ -6087,6 +6127,8 @@ export class BuyerProxy {
         const responseFault = responseFaultAttribution(response)
         const modelNotFound = !isControlPlaneServicesPath(requestForPeer.path)
           && isModelNotFoundResponse(response)
+          // A data provider's own model_not_found is its API's answer, not the seller refusing the service.
+          && !isDataProviderResponse(response)
         if (modelNotFound) {
           this._onModelNotFound(selectedPeer.peerId, requestedService)
         }
@@ -6107,7 +6149,7 @@ export class BuyerProxy {
         }
 
         // Check if retryable
-        const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
+        const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute && !dataCall
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
         if (emptyAnswer || shouldTryNextPeer(response.statusCode, {

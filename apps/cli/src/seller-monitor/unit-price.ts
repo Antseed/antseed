@@ -38,7 +38,7 @@ export function unitPriceOfRow(row: Record<string, unknown>, provider: string, s
 export function serviceKind(apiProtocols: readonly string[], capabilities: { outputs?: readonly string[]; video?: unknown } = {}): SellerServiceKind {
   const outputs = capabilities.outputs ?? []
   if (apiProtocols.some(isNativeVideoProtocol) || capabilities.video !== undefined || outputs.includes('video')) return 'video'
-  if (apiProtocols.includes('typesafe-systemone') || apiProtocols.includes('openai-audio-speech')) return 'other'
+  if (apiProtocols.includes('typesafe-systemone') || apiProtocols.includes('openai-audio-speech') || apiProtocols.includes('openapi-data')) return 'other'
   if (apiProtocols.includes('openai-images') || outputs.includes('image')) return 'image'
   return 'text'
 }

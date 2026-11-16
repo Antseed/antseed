@@ -213,6 +213,20 @@ test('peer services price each service from its own entry or the provider defaul
   ])
 })
 
+test('a service on data alone is priced per request, not by its provider token defaults', () => {
+  const services = peerServices({
+    peerId: PEER_A,
+    providers: ['openapi'],
+    providerPricing: { openapi: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: {} } } },
+    providerServiceApiProtocols: { openapi: { services: { flights: ['openapi-data'] } } },
+    providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.005 }] } } } } },
+  } as Record<string, unknown>)
+  const flights = services.find((entry) => entry.service === 'flights')!
+  assert.equal(flights.inputUsdPerMillion, null)
+  assert.equal(flights.outputUsdPerMillion, null)
+  assert.ok(Math.abs(flights.usdPerRequest! - 0.005) < 1e-12)
+})
+
 test('peer services and model offers carry a service’s own free-tier program', () => {
   const row = {
     ...PEERS_BODY.peers[0],
@@ -291,6 +305,23 @@ test('peer services, model offers and models carry the voices speech services ac
   ] }] }, [])
   assert.deepEqual(model!.voices, ['af_sky'])
   assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
+})
+
+test('data offers keep their per-request price and are free only when it is zero', () => {
+  const dataOffer = (peerId: string, components: Array<{ unit: string; priceUsd: number }>) => ({
+    peerId, provider: 'openapi', serviceId: 'flights', protocol: 'openapi-data',
+    unitBillingModels: { 'openapi-data': { version: 1, components } },
+  })
+  const [model] = mapNetworkModels({ data: [{ id: 'flights', type: 'data', peers: [
+    dataOffer(PEER_A, [{ unit: 'completed_requests', priceUsd: 0.005 }]),
+    dataOffer('b'.repeat(40), []),
+  ] }] }, [])
+  const [paid, free] = model!.offers
+  assert.ok(Math.abs(paid!.usdPerRequest! - 0.005) < 1e-12)
+  assert.equal(paid!.free, false)
+  assert.equal(free!.usdPerRequest, 0)
+  assert.equal(free!.free, true)
+  assert.equal(model!.free, true)
 })
 
 test('speech offers keep their per-character price and are free only when it is zero', () => {

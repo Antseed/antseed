@@ -2,7 +2,7 @@ import type { ServiceHealth, ServiceHealthReason, ServiceHealthSource, ServiceHe
 import { serviceHealthOf } from '../discovery/peer-metadata.js';
 import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
-import { isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
+import { isAudioSpeechProtocol, isDataServiceProtocol, isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { isLiveResponseOutOfCredit, isUpstreamOutOfCredit } from './upstream-credit.js';
 
@@ -830,7 +830,9 @@ function hasFreeCheck(provider?: Provider): boolean {
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
   return protocol !== 'openai-images' && !isRoutingProtocol(protocol) && !isNativeVideoProtocol(protocol)
-    && !isAudioSpeechProtocol(protocol);
+    && !isAudioSpeechProtocol(protocol)
+    // A data service's operations are the seller's own and may cost it money per call.
+    && !isDataServiceProtocol(protocol);
 }
 
 /**
