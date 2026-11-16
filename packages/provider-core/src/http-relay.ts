@@ -104,7 +104,8 @@ interface ResolvedUpstream {
 
 export interface RelayCallbacks {
   onResponse: (response: SerializedHttpResponse) => void;
-  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void;
+  /** A returned promise is awaited before the relay reads more of the upstream stream. */
+  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
@@ -274,7 +275,8 @@ export class HttpRelay {
 
   async handleRequest(request: SerializedHttpRequest): Promise<void> {
     // Validate service against pre-computed set (normalized at construction time).
-    const validationError = validateRequestService(request, this._validationServices);
+    const jsonBody = new JsonBody(request);
+    const validationError = validateRequestService(request, this._validationServices, jsonBody.read);
     if (validationError) {
       this._sendError(request.requestId, 403, validationError);
       return;
@@ -290,14 +292,14 @@ export class HttpRelay {
     this._activeCount++;
 
     try {
-      const service = this._upstreams.length > 1 ? serviceOfRequest(request) : '';
+      const service = this._upstreams.length > 1 ? serviceOfRequest(request, jsonBody) : '';
       const candidates = this._candidateUpstreams(service);
       for (const [position, { upstream, index }] of candidates.entries()) {
         const isLast = position === candidates.length - 1;
         let attempt: UpstreamAttempt | undefined;
         try {
           try {
-            attempt = await this._fetchUpstream(request, upstream);
+            attempt = await this._fetchUpstream(request, upstream, jsonBody);
           } catch (err) {
             if (isLast) throw err;
             this._coolDown(index, service, null);
@@ -367,7 +369,7 @@ export class HttpRelay {
     );
   }
 
-  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
+  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream, jsonBody: JsonBody): Promise<UpstreamAttempt> {
     // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
     const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
     const requestPath = `${pathname}${search}`;
@@ -424,7 +426,7 @@ export class HttpRelay {
         }
       } else {
         try {
-          const decoded = JSON.parse(new TextDecoder().decode(swappedRequest.body)) as Record<string, unknown>;
+          const decoded = jsonBody.read() as Record<string, unknown>;
           const transformed: Record<string, unknown> = { ...decoded };
 
           // Read from both "model" (upstream API compat) and "service" (native) fields
@@ -479,6 +481,8 @@ export class HttpRelay {
         }
       }
     }
+    // The body is written; what was parsed from it is not held while the upstream answers.
+    jsonBody.release();
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
@@ -494,8 +498,12 @@ export class HttpRelay {
 
     const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      let paused = false;
+      const timeout = setTimeout(() => {
+        if (!paused) controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const refreshTimeout = () => {
+        paused = false;
         if (!controller.signal.aborted) timeout.refresh();
       };
       try {
@@ -503,14 +511,18 @@ export class HttpRelay {
           redirect: this._config.redirect ?? 'error',
           method: swappedRequest.method,
           headers,
+          // A view, not a copy: fetch takes its own copy of the bytes.
           body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
-            ? Buffer.from(swappedRequest.body)
+            ? Buffer.from(swappedRequest.body.buffer, swappedRequest.body.byteOffset, swappedRequest.body.byteLength)
             : undefined,
           signal: controller.signal,
         });
         refreshTimeout();
         return {
           response, headers, url, signal: controller.signal, refreshTimeout,
+          pauseTimeout: () => {
+            paused = true;
+          },
           dispose: () => {
             clearTimeout(timeout);
             controller.abort();
@@ -580,7 +592,23 @@ export class HttpRelay {
       result = await fetchWithRetries();
     }
 
+    // The attempt's timeout handlers keep this scope reachable until the response is delivered,
+    // and nothing fetches again: let go of the body written for the upstream.
+    swappedRequest = { ...swappedRequest, body: new Uint8Array(0) };
     return result;
+  }
+
+  /**
+   * Delivers a chunk that closes a stream and waits for it to be taken. A delivery that rejects
+   * is dropped: the stream is ending either way, and there is no one left to tell.
+   */
+  private async _deliverClosingChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
+    const delivered = this._callbacks.onResponseChunk?.(chunk);
+    try {
+      await delivered;
+    } catch {
+      // The buyer is gone.
+    }
   }
 
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
@@ -612,15 +640,22 @@ export class HttpRelay {
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
           if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
-          this._callbacks.onResponseChunk?.({
+          // Waiting here leaves the rest of the stream with the upstream instead of in memory.
+          const delivered = this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
             done: false,
           });
+          if (delivered) {
+            // The upstream is not what is slow here: its deadline starts again once the buyer has the chunk.
+            attempt.pauseTimeout();
+            await delivered;
+            attempt.refreshTimeout();
+          }
         }
       } catch (err) {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
-        this._callbacks.onResponseChunk?.({
+        await this._deliverClosingChunk({
           requestId: request.requestId,
           // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
@@ -636,7 +671,7 @@ export class HttpRelay {
         console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
-      this._callbacks.onResponseChunk?.({
+      await this._deliverClosingChunk({
         requestId: request.requestId,
         data: new Uint8Array(0),
         done: true,
@@ -661,6 +696,8 @@ interface UpstreamAttempt {
   signal: AbortSignal;
   /** Activity resets the body timeout without capping a healthy stream's duration. */
   refreshTimeout: () => void;
+  /** Stop the body timeout until the next `refreshTimeout`, while nothing is being read from the upstream. */
+  pauseTimeout: () => void;
   /** Clear the deadline and abort any unread response body before discarding it. */
   dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
@@ -699,8 +736,35 @@ function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
   return contentType.includes('text/event-stream') || (acceptedSSE && !contentType && response.status >= 200 && response.status < 300);
 }
 
+/**
+ * A request's body read as JSON, parsed once for every reader of one relayed request. `release`
+ * drops what was parsed; a read after it (an upstream tried after a failover) parses again.
+ */
+class JsonBody {
+  private _parsed: { value: unknown } | { error: unknown } | undefined;
+
+  constructor(private readonly _request: Pick<SerializedHttpRequest, 'body'>) {}
+
+  /** The parsed body. Throws what `JSON.parse` threw when the body is not JSON. */
+  readonly read = (): unknown => {
+    if (!this._parsed) {
+      try {
+        this._parsed = { value: JSON.parse(new TextDecoder().decode(this._request.body)) as unknown };
+      } catch (error) {
+        this._parsed = { error };
+      }
+    }
+    if ('error' in this._parsed) throw this._parsed.error;
+    return this._parsed.value;
+  };
+
+  release(): void {
+    this._parsed = undefined;
+  }
+}
+
 /** Lowercase service named by a JSON or multipart request body, or '' when there is none. */
-function serviceOfRequest(request: SerializedHttpRequest): string {
+function serviceOfRequest(request: SerializedHttpRequest, jsonBody: JsonBody): string {
   if (request.method === 'GET' || request.method === 'HEAD') return '';
   const contentType = getHeader(request.headers, 'content-type');
   if (/^multipart\/form-data/i.test(contentType.trim())) {
@@ -711,7 +775,7 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
     return (fields.get('service') || fields.get('model') || '').toLowerCase();
   }
   try {
-    const decoded = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown> | null;
+    const decoded = jsonBody.read() as Record<string, unknown> | null;
     const service = decoded?.service ?? decoded?.model;
     return typeof service === 'string' ? service.trim().toLowerCase() : '';
   } catch {

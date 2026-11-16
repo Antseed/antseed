@@ -241,20 +241,14 @@
   background: #0B0B0B;
 }
 
-/* ---------- Antseed Desktop demo ---------- */
+/* ---------- Antseed Desktop screens ---------- */
 .vpnVisual {
-  flex: 1.2 1 440px;
+  flex: 1.6 1 520px;
   min-width: 0;
   display: flex;
   justify-content: center;
 }
 
-/* the compact HeroDemo scene is 660×924 */
-.vpnSlot {
-  width: 100%;
-  max-width: 400px;
-  aspect-ratio: 660 / 924;
-}
 
 @media (max-width: 640px) {
   .section {
@@ -278,10 +272,6 @@
   .visual,
   .vpnVisual {
     flex-basis: 100%;
-  }
-
-  .vpnSlot {
-    max-width: 300px;
   }
 
   .browserUrl {

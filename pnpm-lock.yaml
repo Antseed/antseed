@@ -372,6 +372,9 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.1(@types/node@22.7.5)(jiti@2.7.0)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
 
   apps/download-proxy:
     devDependencies:
