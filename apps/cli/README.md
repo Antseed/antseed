@@ -340,9 +340,11 @@ For production sellers, prefer a dedicated Base JSON-RPC endpoint over public de
 
 ### Graceful seller shutdown
 
-On SIGINT or SIGTERM, the seller stops advertising and rejects new requests with
-503 while allowing running requests, final payment authorizations, and outgoing
-transport buffers to drain. The default drain budget is 60 seconds:
+On SIGINT or SIGTERM, and on a restart from the seller dashboard, the seller stops advertising and rejects new requests with
+503 (new requests and new channel reserves) while allowing running requests,
+final payment authorizations (including ones waiting on a top-up being mined),
+and outgoing transport buffers to drain. A buyer that disconnects during the
+drain is not waited for; its channel closes on disconnect as usual. The default drain budget is 60 seconds:
 
 ```bash
 antseed seller start --shutdown-drain-timeout-ms 120000

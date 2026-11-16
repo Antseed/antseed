@@ -55,7 +55,9 @@ describe('seller graceful shutdown', () => {
     const draining = state.handler.drain(1000).then((completed) => { drained = completed; });
     state.send('rejected');
     await vi.waitFor(() => expect(state.frames.length).toBe(2));
-    expect(decodeHttpResponse(decodeFrame(state.frames[1]!)!.message.payload).statusCode).toBe(503);
+    const rejected = decodeHttpResponse(decodeFrame(state.frames[1]!)!.message.payload);
+    expect(rejected.statusCode).toBe(503);
+    expect(JSON.parse(new TextDecoder().decode(rejected.body)).error.code).toBe('seller_shutting_down');
     expect(drained).toBe(false);
     state.finish();
     await draining;
@@ -98,7 +100,12 @@ describe('seller graceful shutdown', () => {
         },
         clearMetadataRefreshTimer: () => {},
       },
-      _sellerPaymentManager: { beginDrain: () => events.push('reject-reserves'), drainPendingPayments: async () => { events.push('payments'); } },
+      _sellerPaymentManager: {
+        beginDrain: () => events.push('reject-reserves'),
+        drainPendingPayments: async () => { events.push('payments'); },
+        markConnectionsClosed: () => events.push('connections-closed'),
+        waitForRunningTopUps: async () => { events.push('top-ups'); return true; },
+      },
       _announcer: { stopPeriodicAnnounce: () => events.push('stop-advertising'), refreshMetadata: async () => {} },
       _sessionTracker: { finalizeAllSessions: async () => { events.push('finalize'); }, clearTimers: () => {} },
       _connectionManager: {
@@ -108,13 +115,18 @@ describe('seller graceful shutdown', () => {
     });
     const stopping = node.stop();
     expect(node.stop()).toBe(stopping);
-    expect(events).not.toContain('close');
+    await vi.waitFor(() => expect(events).toContain('requests'));
     expect(events).toContain('stop-advertising');
+    expect(events).toContain('reject-reserves');
+    expect(events).not.toContain('close');
     finishRequest();
     await stopping;
     expect(events.indexOf('payments')).toBeLessThan(events.indexOf('transport'));
     expect(events.indexOf('transport')).toBeLessThan(events.indexOf('finalize'));
     expect(events.indexOf('finalize')).toBeLessThan(events.indexOf('close'));
+    // A top-up being mined still gets its wait once connections are closed.
+    expect(events.indexOf('close')).toBeLessThan(events.indexOf('connections-closed'));
+    expect(events.indexOf('connections-closed')).toBeLessThan(events.indexOf('top-ups'));
   });
 
   it('waits for outgoing bytes rather than just provider completion', async () => {

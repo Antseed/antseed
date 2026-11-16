@@ -64,6 +64,7 @@ import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-al
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
 import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
+import { SELLER_SHUTDOWN_DRAIN_MS } from '../../../shutdown-timeouts.js'
 import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
 /** How long shutdown waits, after channels are finalized, for a gas refuel swap already sent to be mined and recorded. */
@@ -573,7 +574,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       const timeout = Number(value)
       if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2_147_483_647 || value.trim() === '') throw new Error('Shutdown drain timeout must be an integer between 0 and 2147483647')
       return timeout
-    }, 60_000)
+    }, SELLER_SHUTDOWN_DRAIN_MS)
     .option('--dht-port <number>', 'UDP port for DHT (default: 6881)', parseInt)
     .option('--signaling-port <number>', 'TCP port for P2P signaling (default: 6882)', parseInt)
     .option('--min-settle-delta <usdc>', 'minimum unsettled delta (USDC decimal, e.g. 0.002) before idle settle submits a tx')
