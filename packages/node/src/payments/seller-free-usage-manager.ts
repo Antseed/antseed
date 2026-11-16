@@ -9,6 +9,7 @@ import type {
 import { peerIdToAddress } from '../types/peer.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { FreeUsageClient } from './evm/free-usage-client.js';
+import type { SellerFreeTierLimiter } from './seller-free-tier-limiter.js';
 import {
   computeFreeUsageChannelId,
   FREE_USAGE_AUTH_TYPES,
@@ -67,7 +68,7 @@ const FREE_USAGE_METADATA_ABI = [
 ] as const;
 
 const DEFAULT_RECORD_BATCH_SIZE = 16;
-const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 15 * 60_000;
 
 function normalizeTokenCount(value: number): bigint {
   if (!Number.isFinite(value) || value <= 0) return 0n;
@@ -84,7 +85,11 @@ export class SellerFreeUsageManager {
   private readonly _sessions = new Map<string, SellerFreeUsageSession>();
   private readonly _buyerLocks = new Map<string, Promise<void>>();
 
-  constructor(identity: Identity, config: SellerFreeUsageConfig) {
+  constructor(
+    identity: Identity,
+    config: SellerFreeUsageConfig,
+    private readonly _freeTierLimiter: SellerFreeTierLimiter | null = null,
+  ) {
     this._signer = identity.wallet;
     this._sellerEvmAddr = identity.wallet.address;
     this._domain = makeFreeUsageDomain(config.chainId, config.freeUsageContractAddress);
@@ -102,9 +107,9 @@ export class SellerFreeUsageManager {
     return this._client;
   }
 
-  handleOpen(buyerPeerId: string, payload: FreeUsageOpenPayload, paymentMux: PaymentMux): void {
+  handleOpen(buyerPeerId: string, payload: FreeUsageOpenPayload, paymentMux: PaymentMux, remoteIp: string | null = null): void {
     const lock = (this._buyerLocks.get(buyerPeerId) ?? Promise.resolve()).then(async () => {
-      await this._handleOpenInner(buyerPeerId, payload, paymentMux);
+      await this._handleOpenInner(buyerPeerId, payload, paymentMux, remoteIp);
     });
     this._buyerLocks.set(buyerPeerId, lock.catch(() => {}));
     void lock.catch((err) => {
@@ -120,6 +125,11 @@ export class SellerFreeUsageManager {
     void lock.catch((err) => {
       debugWarn(`[SellerFreeUsage] UsageAuth failed for ${buyerPeerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /** Whether this buyer has a free usage channel open on its current connection. */
+  hasSession(buyerPeerId: string): boolean {
+    return this._sessions.has(buyerPeerId);
   }
 
   onPeerDisconnect(buyerPeerId: string): void {
@@ -201,6 +211,7 @@ export class SellerFreeUsageManager {
     buyerPeerId: string,
     payload: FreeUsageOpenPayload,
     paymentMux: PaymentMux,
+    remoteIp: string | null,
   ): Promise<void> {
     const buyerEvmAddr = peerIdToAddress(buyerPeerId);
     const expectedChannelId = computeFreeUsageChannelId(buyerEvmAddr, this._sellerEvmAddr, payload.salt);
@@ -219,6 +230,21 @@ export class SellerFreeUsageManager {
     );
     if (recovered.toLowerCase() !== buyerEvmAddr.toLowerCase()) {
       throw new Error(`invalid FreeUsageOpen signer recovered=${recovered} expected=${buyerEvmAddr}`);
+    }
+
+    // Check inside the buyer lock, immediately before spending gas. Opening
+    // does not consume quota; the inference handler accounts for requests.
+    // Storage errors propagate so admission fails closed without an open/ack.
+    // The open carries the buyer's delegations, so delegated stake counts
+    // before the first request; an older buyer's open falls back to those
+    // remembered from its requests.
+    const standing = (await this._freeTierLimiter?.resolveStanding(buyerPeerId, payload.freeTierDelegations)) ?? null;
+    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp, standing });
+    if (admission && !admission.allowed) {
+      throw new Error(
+        `free_tier_exhausted: limitedBy=${admission.limitedBy} ` +
+        `ip=${admission.remoteIp ?? 'unknown'} retryAfterMs=${admission.retryAfterMs}`,
+      );
     }
 
     const openPromise = this._openOnChain(buyerEvmAddr, payload);
@@ -360,16 +386,29 @@ export class SellerFreeUsageManager {
     opts: { retry?: boolean } = {},
   ): void {
     if (!session.pendingRecord || session.flushPromise) return;
+    if (opts.retry && session.deadline * 1000 <= Date.now()) {
+      // The contract rejects records after the channel deadline, so retrying can never succeed.
+      debugWarn(
+        `[SellerFreeUsage] Dropping unrecorded usage for ${buyerPeerId.slice(0, 12)}... ` +
+        `channel=${session.channelId.slice(0, 18)}... sequence=${session.pendingRecord.sequence}: channel expired`,
+      );
+      session.pendingRecord = null;
+      session.recordsSinceFlush = 0;
+      return;
+    }
     if (!opts.retry && session.recordsSinceFlush >= this._recordBatchSize) {
       this._clearFlushTimer(session);
       void this._flushPendingRecord(buyerPeerId, session);
       return;
     }
     if (session.flushTimer) return;
+    // Records revert on-chain after the channel deadline, so never wait past it.
+    const untilDeadlineMs = session.deadline * 1000 - Date.now() - 60_000;
+    const delayMs = Math.min(this._recordFlushIntervalMs, Math.max(1_000, untilDeadlineMs));
     session.flushTimer = setTimeout(() => {
       session.flushTimer = null;
       void this._flushPendingRecord(buyerPeerId, session);
-    }, this._recordFlushIntervalMs);
+    }, delayMs);
     (session.flushTimer as { unref?: () => void }).unref?.();
   }
 

@@ -85,6 +85,23 @@ test('accepts requests that stay within the announced list', () => {
   assert.deepEqual(unannounced, [])
 })
 
+test('flags fal-video fields outside the endpoint input names, except the model', () => {
+  const falPeer = makePeer({
+    providers: ['fal-video'],
+    providerServiceCapabilities: {
+      'fal-video': { services: { 'fal-ai/kling-video/v3/pro/image-to-video': { outputs: ['video'], supportedParameters: ['end_image_url', 'prompt', 'start_image_url'] } } },
+    },
+  })
+  const unannounced = findUnannouncedRequestParameters(
+    falPeer,
+    'fal-video',
+    'fal-ai/kling-video/v3/pro/image-to-video',
+    'fal-video',
+    makeRequest({ model: 'fal-ai/kling-video/v3/pro/image-to-video', prompt: 'an ant', image_url: 'data:' }),
+  )
+  assert.deepEqual(unannounced, ['image_url'])
+})
+
 test('never flags when the peer announces no supportedParameters', () => {
   const silentPeer = makePeer({
     providerServiceCapabilities: {
@@ -155,3 +172,4 @@ test('skips unparseable bodies and requests without a resolved service or protoc
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', null, 'openai-images', request), [])
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', 'gpt-image-1', null, request), [])
 })
+

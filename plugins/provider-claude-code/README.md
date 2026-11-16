@@ -6,9 +6,7 @@ Connect to the Anthropic API using Claude Code keychain credentials for local te
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-claude-code
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 

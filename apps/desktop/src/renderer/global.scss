@@ -1,41 +1,14 @@
 /* ===================================================================
-   AntSeed Desktop — Light / Dark Theme
+   Antseed Desktop — Light / Dark Theme
    Light theme is default. Add class "dark-theme" to <body> for dark.
    =================================================================== */
 
+@use './theme-tokens' as tokens;
+
 :root {
-  /* ---------- Light theme (default) ----------
-     Brand palette from the AntSeed Figma guideline: warm cream surfaces
-     (surface/0 #fbf9f4, surface/1 white), deep green primary (#008359)
-     with the brighter brand emerald (#10b981) reserved for fills. */
-  --bg-primary: #fbf9f4;
-  --bg-secondary: #fbf9f4;
-  --bg-surface: #f1efe8;
-  --bg-hover: #eef2ea;
-  --bg-card: #ffffff;
-  --bg-card-alt: #fdfcf8;
-  --bg-sidebar-active: #eef2ea;
-  --text-primary: #111714;
-  --text-secondary: #4b5450;
-  --text-muted: #6b7570;
-  --text-faint: #b7c0bb;
-  --accent: #008359;
-  --accent-green: #008359;
-  --brand: #10b981;
-  --accent-blue: #3b82f6;
-  --accent-yellow: #fbbf24;
-  --danger: #ef4444;
-  --border: #d4dbd7;
-  --border-strong: #b7c0bb;
-  --border-light: #e4e9e5;
-  --success-subtle-bg: #e9ffdd;
-  --success-subtle-border: #c0f6a2;
-  --success-subtle-text: #0a1e00;
-  --accent-rgb: 0, 131, 89;
-  --accent-green-rgb: 0, 131, 89;
-  --brand-rgb: 16, 185, 129;
-  --warning-rgb: 251, 191, 36;
-  --danger-rgb: 239, 68, 68;
+  /* Colour tokens live in _theme-tokens.scss (AI VPN v4 day and night). */
+  @include tokens.day-tokens;
+
   /* Typography (Figma guideline) — Geist throughout, three body sizes:
      16px/24 (400-700), 14px/20 (400-600), 12px/20 (400-500), and a
      12px/16 variant reserved for badges and the nav rail labels. */
@@ -56,79 +29,25 @@
   --space-11: 56px;
   --space-12: 64px;
 
-  --sidebar-width: 220px;
+  --sidebar-width: 232px;
   --radius: 16px;
   --radius-md: 12px;
   --radius-sm: 8px;
-
-  /* Shadow scale (Figma guideline): shadow/1 for resting cards,
-     shadow/2 for floating emphasis, shadow/popup for overlays. */
-  --shadow-sm: 0px 2px 8px rgba(17, 23, 20, 0.08);
-  --shadow-float: 0px 2px 10px rgba(17, 23, 20, 0.16);
-  --shadow: 0px 12px 32px rgba(17, 23, 20, 0.14);
 
   /* Motion — screen-change slides and anything that should feel like part of
      the same gesture. Duration must match VIEW_SLIDE_MS in ViewHost.tsx. */
   --motion-duration: 300ms;
   --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-
-  /* Chat specific */
-  --chat-user-bubble: #eef2ea;
-  --chat-user-bubble-border: #d4dbd7;
-  --chat-input-bg: #ffffff;
-  --chat-header-bg: #fbf9f4;
-  --chat-area-bg: #fdfcf8;
-  --drop-overlay-bg: rgba(251, 249, 244, 0.82);
-
-  /* Scrollbar */
-  --scrollbar-thumb: rgba(17, 23, 20, 0.18);
-  --scrollbar-thumb-hover: rgba(17, 23, 20, 0.3);
 }
 
 body.dark-theme {
-  --bg-primary: #1c1c1e;
-  --bg-secondary: #222224;
-  --bg-surface: #2f2f31;
-  --bg-hover: #363638;
-  --bg-card: #2a2a2c;
-  --bg-card-alt: #252527;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #8b949e;
-  --text-faint: #5f656b;
-  --bg-sidebar-active: rgba(52, 211, 153, 0.12);
-  --accent: #1fd87a;
-  --accent-green: #1fd87a;
-  /* The dark accent is a bright mint, so on-accent text must be dark —
-     white-on-mint fails contrast (shared primitives read this via
-     --as-accent-contrast for primary buttons). */
-  --accent-contrast: #06281a;
-  --brand: #10b981;
-  --accent-blue: #58a6ff;
-  --accent-yellow: #f2cc60;
-  --danger: #ff7b72;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.12);
-  --border-light: rgba(255, 255, 255, 0.04);
-  --success-subtle-bg: rgba(74, 222, 128, 0.12);
-  --success-subtle-border: rgba(74, 222, 128, 0.35);
-  --success-subtle-text: #bbf7d0;
-  --accent-rgb: 31, 216, 122;
-  --accent-green-rgb: 31, 216, 122;
-  --brand-rgb: 16, 185, 129;
-  --warning-rgb: 242, 204, 96;
-  --danger-rgb: 255, 123, 114;
-  --shadow: 0px 12px 32px rgba(0, 0, 0, 0.5);
-  --shadow-sm: 0px 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-float: 0px 2px 10px rgba(0, 0, 0, 0.4);
-  --chat-user-bubble: rgba(255, 255, 255, 0.06);
-  --chat-user-bubble-border: rgba(255, 255, 255, 0.08);
-  --chat-input-bg: #2a2a2c;
-  --chat-header-bg: #252527;
-  --chat-area-bg: #1c1c1e;
-  --drop-overlay-bg: rgba(28, 28, 30, 0.82);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+  @include tokens.night-tokens;
+}
+
+/* v4 primary actions are ink on paper, not the accent colour. */
+body .as-button--primary:not(:disabled) {
+  background: var(--btn-bg);
+  color: var(--btn-ink);
 }
 
 /* ===================================================================
@@ -173,64 +92,6 @@ input,
 select,
 textarea {
   font: inherit;
-}
-
-/* ===================================================================
-   App layout
-   =================================================================== */
-
-.app-container {
-  display: flex;
-  height: calc(100vh - 64px);
-}
-
-/* ===================================================================
-   Main content
-   =================================================================== */
-
-.main-content {
-  flex: 1;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  min-width: 0;
-  overflow: hidden;
-  background: var(--bg-primary);
-}
-
-.main-content.show-toolbar {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-/* ===================================================================
-   Page header (shared across non-chat views)
-   =================================================================== */
-
-.page-header {
-  padding: 16px;
-  /* Clear the floating credits pill pinned to the pane's top-right corner. */
-  padding-right: 104px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  /* The diagnostic screens live in the compact window — let the actions drop
-     below the title instead of colliding with it. */
-  flex-wrap: wrap;
-}
-
-.page-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-  margin-left: auto;
-}
-
-.page-header h2 {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
 }
 
 /* ===================================================================
@@ -325,8 +186,81 @@ textarea {
   }
 }
 
+/* Home <-> chat: the composer glides (ViewHost) while everything else fades.
+   Timings are the v4 design's: text .35s, the field 1s and it drifts 6%. */
+.view-host-glide {
+  background: var(--bg-primary);
+}
+
+.view-host-glide .view-pane {
+  background: transparent;
+}
+
+.view-pane-glide-out {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.view-pane-glide-in {
+  z-index: 2;
+}
+
+.view-pane-glide-out [data-composer] {
+  visibility: hidden;
+}
+
+.view-pane-glide-out [data-glide-fade] {
+  animation: glide-fade-out 0.35s ease both;
+}
+
+/* The chat rebuilt for the way out has no messages: it should barely show. */
+.view-pane-glide-out .view-chat {
+  animation: glide-fade-out 0.15s ease both;
+}
+
+.view-pane-glide-in [data-glide-fade] {
+  animation: glide-fade-in 0.35s ease both;
+}
+
+.view-pane-glide-out [data-glide-field] {
+  animation: glide-field-out 1s ease both;
+}
+
+.view-pane-glide-in [data-glide-field] {
+  animation: glide-field-in 1s ease both;
+}
+
+@keyframes glide-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes glide-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes glide-field-in {
+  from { opacity: 0; transform: translateY(6%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glide-field-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(6%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .view-host-sliding .view-pane {
+    animation: none;
+  }
+
+  .view-pane-glide-out {
+    display: none;
+  }
+
+  .view-pane-glide-in [data-glide-fade],
+  .view-pane-glide-in [data-glide-field] {
     animation: none;
   }
 
@@ -385,11 +319,6 @@ textarea {
   min-height: 0;
 }
 
-.view-desktop .panel-grid {
-  flex: 1;
-  min-height: 0;
-}
-
 .view-desktop .panel {
   display: flex;
   flex-direction: column;
@@ -420,62 +349,6 @@ textarea {
 }
 
 /* ===================================================================
-   API view overrides
-   =================================================================== */
-
-.view-api.view {
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.view-system-proxy.view {
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-/* ===================================================================
-   Badges
-   =================================================================== */
-
-.connection-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.badge-active {
-  background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-green);
-  border: 1px solid rgba(var(--accent-rgb), 0.2);
-}
-
-.badge-idle {
-  background: rgba(148, 163, 184, 0.06);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-}
-
-.badge-warn {
-  background: rgba(var(--warning-rgb), 0.08);
-  color: var(--accent-yellow);
-  border: 1px solid rgba(var(--warning-rgb), 0.2);
-}
-
-.badge-bad {
-  background: rgba(var(--danger-rgb), 0.08);
-  color: var(--danger);
-  border: 1px solid rgba(var(--danger-rgb), 0.2);
-}
-
-/* ===================================================================
    Stats / panels / tables (Overview, Peers, Connection, Config views)
    =================================================================== */
 
@@ -483,62 +356,6 @@ textarea {
   color: var(--text-secondary);
   margin-bottom: 10px;
   font-size: 12px;
-}
-
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 0 16px;
-}
-
-.stat-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  transition: border-color 0.15s ease;
-}
-
-.stat-card:hover {
-  border-color: var(--border-strong);
-}
-
-.stat-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-  font-weight: 500;
-}
-
-.stat-value {
-  font-size: 22px;
-  font-weight: 700;
-  margin-top: 6px;
-  line-height: 1.1;
-}
-
-.panel-grid {
-  display: grid;
-  gap: 12px;
-  padding: 0 16px;
-}
-
-.panel-grid.two-col {
-  grid-template-columns: 1fr 1fr;
-}
-
-/* The diagnostic screens open in the compact window preset (528px wide);
-   side-by-side panels don't fit there, so stack them. */
-@media (max-width: 720px) {
-  .panel-grid.two-col {
-    grid-template-columns: 1fr;
-  }
-}
-
-.panel-span-full {
-  grid-column: 1 / -1;
 }
 
 .panel {
@@ -550,42 +367,6 @@ textarea {
   pre {
     max-height: 400px;
   }
-}
-
-.panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.panel-head h3 {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  letter-spacing: 1.2px;
-}
-
-.panel-count {
-  background: var(--bg-surface);
-  color: var(--text-muted);
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 600;
-}
-
-/* ===================================================================
-   Tables
-   =================================================================== */
-
-.table-wrap {
-  overflow: auto;
-  border-radius: var(--radius-sm);
-}
-
-.table-wrap.compact {
-  max-height: 320px;
 }
 
 .table {
@@ -627,73 +408,6 @@ textarea {
   text-align: center;
   color: var(--text-muted);
   padding: 16px 8px;
-}
-
-.peer-status {
-  font-size: 11px;
-  font-weight: 500;
-  &.online { color: var(--accent-green); }
-  &.offline { color: var(--text-muted); }
-}
-
-/* ===================================================================
-   Plugin setup / control cards
-   =================================================================== */
-
-.plugin-setup-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: grid;
-  gap: 10px;
-}
-
-.plugin-setup-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.plugin-setup-head h3 {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-}
-
-.plugin-setup-status {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.plugin-setup-status strong {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.plugin-setup-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.control-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: grid;
-  gap: 8px;
-}
-
-.control-card h3 {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
 }
 
 /* ===================================================================
@@ -777,56 +491,6 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.status-running {
-  border-color: rgba(var(--accent-rgb), 0.3);
-  color: var(--accent-green);
-}
-
-.status-stopped {
-  border-color: rgba(var(--warning-rgb), 0.3);
-  color: var(--accent-yellow);
-}
-
-.filter-input {
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  padding: 6px 12px;
-  font-size: 12px;
-  width: 180px;
-}
-
-.filter-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.filter-input::placeholder {
-  color: var(--text-muted);
-}
-
-.btn-icon {
-  padding: 4px 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.btn-icon:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.btn-icon:focus-visible {
-  outline: none;
-  background: var(--bg-hover);
-}
-
 /* ===================================================================
    Logs / pre
    =================================================================== */
@@ -848,375 +512,6 @@ pre,
 .logs {
   min-height: 280px;
   height: 100%;
-}
-
-.log-count {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.log-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  min-width: 0;
-}
-
-.log-source-filters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.log-filter-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card-alt);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  padding: 0 8px;
-}
-
-.log-filter-chip:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.log-filter-chip.active {
-  border-color: var(--accent);
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.log-filter-chip span {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.log-search {
-  width: min(260px, 34vw);
-  height: 26px;
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card-alt);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 0 9px;
-}
-
-.log-search:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
-.log-search::placeholder {
-  color: var(--text-muted);
-}
-
-/* Two-line entries built for the narrow panel: a muted meta line (time +
-   source) with the message wrapped underneath it. */
-.log-entry {
-  margin-bottom: 6px;
-}
-
-.log-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.log-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.log-empty {
-  color: var(--text-muted);
-}
-
-.log-entry.stderr {
-  color: var(--danger);
-}
-
-.log-entry.system {
-  color: var(--accent-blue);
-}
-
-.log-entry .ts {
-  color: var(--text-muted);
-}
-
-.log-source {
-  color: var(--text-muted);
-  font-weight: 600;
-}
-
-@media (max-width: 760px) {
-  .log-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .log-search {
-    width: 100%;
-  }
-}
-
-/* ===================================================================
-   Sortable tables
-   =================================================================== */
-
-.sortable {
-  cursor: pointer;
-  user-select: none;
-  position: relative;
-}
-
-.sortable:hover {
-  color: var(--text-primary);
-}
-
-.sortable::after {
-  content: '';
-  margin-left: 4px;
-  font-size: 10px;
-  opacity: 0.4;
-}
-
-.sortable.sort-asc::after {
-  content: '\25B2';
-  opacity: 1;
-  color: var(--accent);
-}
-
-.sortable.sort-desc::after {
-  content: '\25BC';
-  opacity: 1;
-  color: var(--accent);
-}
-
-/* ===================================================================
-   Settings
-   =================================================================== */
-
-.settings-sections {
-  display: grid;
-  gap: 16px;
-  padding: 0 16px;
-  max-width: 720px;
-}
-
-.settings-panel {
-  padding: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0))
-    ,
-    var(--bg-card);
-}
-
-body.dark-theme .settings-panel {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0))
-    ,
-    var(--bg-card);
-}
-
-.settings-stack {
-  display: grid;
-  gap: 14px;
-}
-
-.settings-panel-hidden {
-  display: none;
-}
-
-.settings-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 320px);
-  gap: 8px;
-  align-items: center;
-}
-
-.settings-item-wide {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.settings-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.settings-kicker {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: var(--text-muted);
-}
-
-.settings-copy h4 {
-  font-size: 15px;
-  line-height: 1.2;
-  color: var(--text-primary);
-}
-
-.settings-copy p {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
-
-.form-label {
-  display: grid;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  letter-spacing: 0;
-}
-
-.settings-control {
-  width: 100%;
-}
-
-.form-input {
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  padding: 10px 12px;
-  font-size: 13px;
-}
-
-.form-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-select.form-input {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%239a9a96' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  padding-right: 28px;
-}
-
-.settings-switch {
-  justify-self: end;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 104px;
-  padding: 8px 10px;
-  border-radius: 999px;
-  border: none;
-  background: transparent;
-}
-
-.settings-switch:hover,
-.settings-switch:focus-visible {
-  background: transparent;
-}
-
-.settings-switch-track {
-  position: relative;
-  width: 40px;
-  height: 22px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.settings-switch-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  transition: transform 0.15s ease, background 0.15s ease;
-}
-
-.settings-switch-label {
-  min-width: 20px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  text-align: left;
-}
-
-.settings-switch.is-on .settings-switch-track {
-  background: rgba(var(--accent-rgb), 0.18);
-  border-color: rgba(var(--accent-rgb), 0.38);
-}
-
-.settings-switch.is-on .settings-switch-thumb {
-  transform: translateX(18px);
-  background: var(--accent-green);
-}
-
-.settings-message {
-  margin: 0;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-}
-
-.settings-message.success {
-  background: rgba(var(--accent-rgb), 0.08);
-  color: var(--accent-green);
-  border: 1px solid rgba(var(--accent-rgb), 0.2);
-}
-
-.settings-message.error {
-  background: rgba(var(--danger-rgb), 0.08);
-  color: var(--danger);
-  border: 1px solid rgba(var(--danger-rgb), 0.2);
-}
-
-.settings-footer {
-  display: grid;
-  gap: 12px;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-light);
-}
-
-.settings-note {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.settings-save-btn {
-  justify-self: start;
-  min-width: 140px;
-}
-
-@media (max-width: 900px) {
-  .settings-item,
-  .settings-item-wide {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .settings-switch {
-    justify-self: start;
-  }
 }
 
 /* ===================================================================
@@ -1275,7 +570,7 @@ select.form-input {
    The Modal primitive ships the dashboard's `--as-*` look (bordered
    header, boxed close button, generous padding). Restyle it once here
    with the app's tokens so every desktop modal — confirms, settings,
-   pickers — matches the VPR views without per-dialog overrides.
+   pickers — matches the app's views without per-dialog overrides.
    Selectors are nested under `.as-modal` / `.as-modal-overlay` so they
    outrank the primitive's own rules whatever the stylesheet order.
    =================================================================== */

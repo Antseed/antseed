@@ -94,7 +94,7 @@ function runWrapper(workspace: TempWorkspace, args: string[]): ReturnType<typeof
 }
 
 test('parseWrappedToolArgs', async (t) => {
-  await t.test('consumes AntSeed flags and forwards child args', () => {
+  await t.test('consumes Antseed flags and forwards child args', () => {
     const parsed = parseWrappedToolArgs([
       '--model',
       'gpt-oss-120b',
@@ -115,7 +115,7 @@ test('parseWrappedToolArgs', async (t) => {
     assert.deepEqual(parsed.childArgs, ['--model', 'child-model'])
   })
 
-  await t.test('rejects unsupported AntSeed wrapper flags', () => {
+  await t.test('rejects unsupported Antseed wrapper flags', () => {
     assert.throws(
       () => parseWrappedToolArgs(['--antseed-peer', 'peer-id']),
       /--antseed-peer is not supported by this wrapper/,
@@ -154,7 +154,7 @@ test('buildCodexConfigArgs uses ephemeral config overrides on the real Codex hom
 
   assert.equal(args.includes('--profile'), false)
   assert.equal(args.includes('CODEX_HOME'), false)
-  assert.ok(args.includes('model_providers.antseed.name="AntSeed"'))
+  assert.ok(args.includes('model_providers.antseed.name="Antseed"'))
   assert.ok(args.includes(`model_providers.antseed.base_url="${V1_PROXY_URL}"`))
   assert.ok(args.includes('model_providers.antseed.wire_api="responses"'))
   assert.ok(args.includes('model_providers.antseed.env_key="ANTSEED_API_KEY"'))
@@ -163,7 +163,7 @@ test('buildCodexConfigArgs uses ephemeral config overrides on the real Codex hom
   assert.ok(args.includes(`model_context_window=${ANTSEED_MODEL_CONTEXT_WINDOW}`))
 })
 
-test('buildOpenCodeConfigContent configures AntSeed provider and selected model', () => {
+test('buildOpenCodeConfigContent configures Antseed provider and selected model', () => {
   const model = 'gpt-oss-120b'
   const parsed = JSON.parse(buildOpenCodeConfigContent(V1_PROXY_URL, model)) as OpenCodeConfig
 
@@ -171,13 +171,13 @@ test('buildOpenCodeConfigContent configures AntSeed provider and selected model'
   assert.equal(parsed.provider.antseed.options.baseURL, V1_PROXY_URL)
   assert.equal(parsed.model, `antseed/${model}`)
   assert.deepEqual(parsed.provider.antseed.models[model], {
-    name: `${model} (via AntSeed)`,
+    name: `${model} (via Antseed)`,
     limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
   })
 })
 
 test('wrapped tool execution', async (t) => {
-  await t.test('codex receives AntSeed config overrides and forwarded child args', async () => {
+  await t.test('codex receives Antseed config overrides and forwarded child args', async () => {
     await withTempWorkspace(async (workspace) => {
       const codex = await createRecordingChildCli(workspace, 'codex')
 
@@ -194,7 +194,7 @@ test('wrapped tool execution', async (t) => {
 
       assert.equal(result.status, 0)
       assert.equal(String(result.stderr), '')
-      assert.match(String(result.stdout), /AntSeed proxy: http:\/\/localhost:8125\/v1/)
+      assert.match(String(result.stdout), /Antseed proxy: http:\/\/localhost:8125\/v1/)
       assert.ok(invocation.argv.includes('model_provider="antseed"'))
       assert.equal(invocation.argv.at(-1), '--version')
       assert.equal(invocation.env.ANTSEED_API_KEY, 'antseed')
@@ -217,7 +217,7 @@ test('wrapped tool execution', async (t) => {
 
       assert.equal(result.status, 0)
       assert.equal(String(result.stderr), '')
-      assert.match(String(result.stdout), /AntSeed proxy: http:\/\/localhost:8123/)
+      assert.match(String(result.stdout), /Antseed proxy: http:\/\/localhost:8123/)
       assert.deepEqual(invocation.argv, ['--model', 'claude-sonnet', '--print'])
       assert.equal(invocation.env.ANTHROPIC_BASE_URL, 'http://localhost:8123')
       assert.equal(invocation.env.ANTHROPIC_API_KEY, 'antseed')
@@ -241,7 +241,7 @@ test('wrapped tool execution', async (t) => {
 
       assert.equal(result.status, 0)
       assert.equal(String(result.stderr), '')
-      assert.match(String(result.stdout), /AntSeed proxy: http:\/\/localhost:8124\/v1/)
+      assert.match(String(result.stdout), /Antseed proxy: http:\/\/localhost:8124\/v1/)
       assert.deepEqual(invocation.argv, ['run'])
       assert.equal(invocation.opencodeConfig?.model, 'antseed/gpt-oss-120b')
       assert.ok(antseedProvider)

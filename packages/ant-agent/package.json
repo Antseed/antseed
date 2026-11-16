@@ -1,7 +1,7 @@
 {
   "name": "@antseed/ant-agent",
-  "version": "0.1.35",
-  "description": "Ant agent runtime for AntSeed — monetize knowledge with read-only, knowledge-augmented AI agents",
+  "version": "0.1.37",
+  "description": "Ant agent runtime for Antseed — monetize knowledge with read-only, knowledge-augmented AI agents",
   "type": "module",
   "files": [
     "dist"

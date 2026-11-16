@@ -16,6 +16,8 @@ interface IAntseedEmissionsGate {
     function minterEpochBudget(bytes32 minterId, uint256 epoch) external view returns (uint256);
     function controllerEpochBudget(address controller, uint256 epoch) external view returns (uint256);
     function emissionsReserve() external view returns (address);
+    function controllerMinterIds(address controller) external view returns (bytes32);
+    function minterEpochMinted(bytes32 minterId, uint256 epoch) external view returns (uint256);
     function claim(uint256 epoch, address recipient, uint256 amount) external;
     function claimRemainder(uint256 epoch, address reserveRecipient, uint256 amount)
         external

@@ -123,6 +123,11 @@ export function convertPersistedAttachmentPromptToBlocks(text: string): string |
     }
   }
 
+  // An uploaded video's tag is its only record: it becomes its attachment card again.
+  text = text.replace(/^<uploaded-video\b([^>]*)>$/gim, '<file$1></file>');
+  const withoutUploadTags = text.replace(/^<uploaded-image\b[^>]*>$/gim, '');
+  if (withoutUploadTags !== text) text = withoutUploadTags.trim();
+
   const filePattern = /<file\b([^>]*)>\n?([\s\S]*?)\n?<\/file>/gi;
   const blocks: ContentBlock[] = [];
   let lastIndex = 0;

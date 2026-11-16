@@ -1,0 +1,16 @@
+# Changes here can run code on install, in CI or in a release, steer the coding agents that work on this repo, or
+# move money. A maintainer reviews every change to them ("Require review from Code Owners" in branch protection).
+/.github/                 @kotevcode
+/.agents/                 @kotevcode
+/.claude/                 @kotevcode
+AGENTS.md                 @kotevcode
+CLAUDE.md                 @kotevcode
+/package.json             @kotevcode
+/pnpm-lock.yaml           @kotevcode
+/pnpm-workspace.yaml      @kotevcode
+/.npmrc                   @kotevcode
+/patches/                 @kotevcode
+/scripts/                 @kotevcode
+/flake.nix                @kotevcode
+/flake.lock               @kotevcode
+/packages/contracts/      @kotevcode

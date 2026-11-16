@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   encodeHttpRequest,
+  encodeHttpRequestPrefix,
   decodeHttpRequest,
   encodeHttpResponse,
+  encodeHttpResponsePrefix,
   decodeHttpResponse,
   encodeHttpResponseChunk,
   decodeHttpResponseChunk,
@@ -31,6 +33,31 @@ describe('http payload codec', () => {
       body: new TextEncoder().encode('{"error":"payment_required"}'),
     };
     expect(decodeHttpResponse(encodeHttpResponse(response))).toEqual(response);
+  });
+
+  it('encodes a response prefix followed by body bytes', () => {
+    const response = {
+      requestId: 'req-prefix',
+      statusCode: 200,
+      headers: { 'content-type': 'video/mp4' },
+      body: new Uint8Array([1, 2, 3]),
+    };
+    const prefix = encodeHttpResponsePrefix(response, response.body.length);
+    expect(new Uint8Array([...prefix, ...response.body])).toEqual(encodeHttpResponse(response));
+    expect(() => encodeHttpResponsePrefix(response, 2 ** 32)).toThrow(RangeError);
+  });
+
+  it('encodes a request prefix followed by body bytes', () => {
+    const request = {
+      requestId: 'req-prefix',
+      method: 'POST',
+      path: '/v1/messages?q=café',
+      headers: { 'content-type': 'application/json' },
+      body: new Uint8Array([1, 2, 3]),
+    };
+    const prefix = encodeHttpRequestPrefix(request, request.body.length);
+    expect(new Uint8Array([...prefix, ...request.body])).toEqual(encodeHttpRequest(request));
+    expect(() => encodeHttpRequestPrefix(request, 2 ** 32)).toThrow(RangeError);
   });
 
   it('round-trips response and request chunks', () => {

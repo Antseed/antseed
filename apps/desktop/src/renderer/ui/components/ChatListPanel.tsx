@@ -4,27 +4,48 @@ import {
   useRef,
   useEffect,
   useCallback,
+  type MouseEvent,
   type RefObject,
 } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { MoreVerticalIcon, Add01Icon, Search01Icon } from '@hugeicons/core-free-icons';
 import {
-  formatCompactTokens,
-  getPeerDisplayName,
-  getPeerGradient,
-  preferredPeerDisplayName,
-} from '../../core/peer-utils';
-import { displayModelLabel } from '../../modules/catalog/model-identity';
+  ArrowRight01Icon,
+  Folder01Icon,
+  GitBranchIcon,
+  MoreVerticalIcon,
+  PinIcon,
+  Search01Icon,
+} from '@hugeicons/core-free-icons';
+import { formatCompactTokens } from '../../core/peer-utils';
 import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
+import type { ConversationFlags } from '../../types/bridge';
+import { buildChatSections, compareByActivity, folderName, projectFolder, updatedAt, type ChatSection } from './chat-list-sections';
 import styles from './ChatListPanel.module.scss';
 
 type ConvRecord = Record<string, unknown>;
 
 const EMPTY_CONVERSATIONS: unknown[] = [];
-const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
-const RECENT_SESSION_CLOCK_MS = 60 * 1000;
+const COLLAPSED_SECTIONS_KEY = 'antseed.chatList.collapsedSections';
+
+
+function readCollapsedSections(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_SECTIONS_KEY) ?? '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedSections(keys: ReadonlySet<string>): void {
+  try {
+    window.localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...keys]));
+  } catch {
+    // Storage unavailable; sections open expanded next time.
+  }
+}
 
 function formatChatTime(timestamp: unknown): string {
   const ts = Number(timestamp);
@@ -37,59 +58,19 @@ function formatChatTime(timestamp: unknown): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function shortServiceName(service: unknown): string {
-  const raw = String(service || '').trim();
-  if (!raw) return '';
-  return displayModelLabel(raw.replace(/-20\d{6,}/, ''));
+/** The conversation's model as the gateway names it, else its raw id. */
+function modelName(service: unknown, modelLabelById: ReadonlyMap<string, string>): string {
+  const id = String(service || '').trim();
+  return id ? modelLabelById.get(id) ?? id : '';
 }
 
 function getConversationId(conv: ConvRecord): string {
   return String(conv.id ?? '');
 }
 
-function getConversationCreatedAt(conv: ConvRecord): number {
-  const createdAt = Number(conv.createdAt);
-  return Number.isFinite(createdAt) && createdAt > 0 ? createdAt : 0;
-}
-
-function getConversationUpdatedAt(conv: ConvRecord): number {
-  const updatedAt = Number(conv.updatedAt);
-  if (Number.isFinite(updatedAt) && updatedAt > 0) return updatedAt;
-  return getConversationCreatedAt(conv);
-}
-
-function compareConversationsByActivity(left: ConvRecord, right: ConvRecord): number {
-  const updatedDelta = getConversationUpdatedAt(right) - getConversationUpdatedAt(left);
-  if (updatedDelta !== 0) return updatedDelta;
-
-  const createdDelta = getConversationCreatedAt(right) - getConversationCreatedAt(left);
-  if (createdDelta !== 0) return createdDelta;
-
-  return getConversationId(left).localeCompare(getConversationId(right));
-}
-
-function isRecentConversation(conv: ConvRecord, now: number): boolean {
-  const updatedAt = getConversationUpdatedAt(conv);
-  return updatedAt > 0 && now - updatedAt <= RECENT_SESSION_WINDOW_MS;
-}
-
-function getConversationPeerName(
-  conv: ConvRecord,
-  peerDisplayNameById: ReadonlyMap<string, string>,
-): string {
-  // Image generation can deliberately use a different seller from the text
-  // route retained by the conversation. Prefer the seller that produced the
-  // latest response so the conversation row describes what actually ran.
-  const peerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-  if (!peerId) return 'Other';
-  return peerDisplayNameById.get(peerId)
-    || getPeerDisplayName(String(conv.peerLabel || ''))
-    || `${peerId.slice(0, 12)}...`;
-}
-
 function conversationMatchesSearch(
   conv: ConvRecord,
-  peerName: string,
+  modelLabel: string,
   query: string,
 ): boolean {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -98,26 +79,36 @@ function conversationMatchesSearch(
   const haystack = [
     conv.title,
     conv.service,
-    conv.provider,
-    conv.peerLabel,
-    conv.peerId,
-    conv.lastResponsePeerId,
     conv.workspacePath,
-    peerName,
+    modelLabel,
   ].map((value) => String(value || '').toLowerCase()).join(' ');
 
   return terms.every((term) => haystack.includes(term));
 }
 
+/** The menu sits inside its row, whose click opens the chat. Without this,
+ *  Delete would re-open the conversation it just removed. */
+function stopRowClick(event: MouseEvent<HTMLDivElement>) {
+  event.stopPropagation();
+}
+
 function ConvContextMenu({
   convId,
   convTitle,
+  pinned,
+  archived,
   anchorRef,
+  onDelete,
+  onSetFlags,
   onClose,
 }: {
   convId: string;
   convTitle: string;
+  pinned: boolean;
+  archived: boolean;
   anchorRef: RefObject<HTMLButtonElement | null>;
+  onDelete: (id: string) => void;
+  onSetFlags: (id: string, flags: ConversationFlags) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -128,7 +119,7 @@ function ConvContextMenu({
   const actions = useActions();
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
+    function handleClick(e: globalThis.MouseEvent) {
       if (
         menuRef.current && !menuRef.current.contains(e.target as Node) &&
         anchorRef.current && !anchorRef.current.contains(e.target as Node)
@@ -159,7 +150,7 @@ function ConvContextMenu({
 
   if (renaming) {
     return (
-      <div className={styles.contextMenu} ref={menuRef}>
+      <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
         <input
           ref={renameInputRef}
           className={styles.renameInput}
@@ -180,14 +171,35 @@ function ConvContextMenu({
   }
 
   return (
-    <div className={styles.contextMenu} ref={menuRef}>
-      <button className={styles.contextItem} onClick={() => setRenaming(true)}>
+    <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick} role="menu">
+      <button
+        className={styles.contextItem}
+        role="menuitem"
+        onClick={() => {
+          onSetFlags(convId, { pinned: !pinned });
+          onClose();
+        }}
+      >
+        {pinned ? 'Unpin' : 'Pin'}
+      </button>
+      <button
+        className={styles.contextItem}
+        role="menuitem"
+        onClick={() => {
+          onSetFlags(convId, { archived: !archived });
+          onClose();
+        }}
+      >
+        {archived ? 'Unarchive' : 'Archive'}
+      </button>
+      <button className={styles.contextItem} role="menuitem" onClick={() => setRenaming(true)}>
         Rename
       </button>
       <button
         className={`${styles.contextItem} ${styles.contextItemDanger}`}
+        role="menuitem"
         onClick={() => {
-          void actions.deleteConversation(convId);
+          onDelete(convId);
           onClose();
         }}
       >
@@ -202,12 +214,11 @@ function ConversationRow({
   activeConvId,
   sendingConvIds,
   approvalConvIds,
-  chatActiveChannels,
-  showRoutedPeer,
-  peerDisplayNameById,
-  peerIconUrlById,
+  modelLabelById,
+  defaultWorkspace,
   onSelectConv,
-  onCloseChannel,
+  onDeleteConv,
+  onSetFlags,
   menuOpenId,
   setMenuOpenId,
   menuBtnRefs,
@@ -216,12 +227,11 @@ function ConversationRow({
   activeConvId: string | null;
   sendingConvIds: ReadonlySet<string>;
   approvalConvIds: ReadonlySet<string>;
-  chatActiveChannels: Map<string, { reservedUsdc: string; peerName: string }>;
-  showRoutedPeer: boolean;
-  peerDisplayNameById: ReadonlyMap<string, string>;
-  peerIconUrlById: ReadonlyMap<string, string>;
+  modelLabelById: ReadonlyMap<string, string>;
+  defaultWorkspace: string;
   onSelectConv: (id: string) => void;
-  onCloseChannel: () => void;
+  onDeleteConv: (id: string) => void;
+  onSetFlags: (id: string, flags: ConversationFlags) => void;
   menuOpenId: string | null;
   setMenuOpenId: (id: string | null) => void;
   menuBtnRefs: RefObject<Map<string, HTMLButtonElement | null>>;
@@ -236,23 +246,25 @@ function ConversationRow({
   const costLabel = totalTokens > 0
     ? `$${formatUsdcAmount(totalCost)}/${formatCompactTokens(totalTokens)}`
     : '';
-  const convPeerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-  const peerName = getConversationPeerName(conv, peerDisplayNameById);
-  const session = convPeerId ? chatActiveChannels.get(convPeerId) : undefined;
-  const usedUsdc = Number(conv.totalEstimatedCostUsd) || 0;
-  const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
-  const avatarLetter = (peerName || '?').charAt(0).toUpperCase();
-  const avatarGradient = convPeerId
-    ? getPeerGradient(convPeerId)
-    : 'linear-gradient(180deg, #9a9a96, #6b6b68)';
-  const avatarIconUrl = convPeerId ? peerIconUrlById.get(convPeerId) ?? null : null;
-  const [avatarIconFailed, setAvatarIconFailed] = useState(false);
-  const showAvatarIcon = Boolean(avatarIconUrl) && !avatarIconFailed;
+  const modelLabel = modelName(conv.service, modelLabelById);
+  const timeLabel = formatChatTime(updatedAt(conv));
+  const pinned = Number(conv.pinnedAt) > 0;
+  const archived = Number(conv.archivedAt) > 0;
+  const folder = projectFolder(conv, defaultWorkspace);
+  const gitBranch = typeof conv.gitBranch === 'string' ? conv.gitBranch : '';
+  // Like Codex's hover card: the chat, its folder and its branch.
+  const tooltip = [
+    title,
+    folder ? `Folder: ${folderName(folder)}` : '',
+    gitBranch ? `Branch: ${gitBranch}` : '',
+    [modelLabel, costLabel, timeLabel].filter(Boolean).join(' · '),
+  ].filter(Boolean).join('\n');
 
   return (
     <div
-      className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}`}
+      className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}${archived ? ` ${styles.archivedItem}` : ''}`}
       onClick={() => onSelectConv(id)}
+      title={tooltip}
     >
       <div className={styles.convTop}>
         <div className={styles.convTitle}>{title}</div>
@@ -265,8 +277,14 @@ function ConversationRow({
           />
         )}
         <div className={styles.convRight}>
+          {gitBranch && (
+            <span className={styles.branchIcon} aria-label={`Branch ${gitBranch}`} role="img">
+              <HugeiconsIcon icon={GitBranchIcon} size={13} strokeWidth={1.7} />
+            </span>
+          )}
           <button
             className={styles.menuBtn}
+            aria-label="Conversation options"
             ref={(el) => { if (el) menuBtnRefs.current?.set(id, el); else menuBtnRefs.current?.delete(id); }}
             onClick={(e) => {
               e.stopPropagation();
@@ -277,51 +295,15 @@ function ConversationRow({
           </button>
         </div>
       </div>
-      <div className={styles.meta}>
-        {showRoutedPeer && (
-          <>
-            <span
-              className={`${styles.avatar}${showAvatarIcon ? ` ${styles.avatarIcon}` : ''}`}
-              style={showAvatarIcon ? undefined : { background: avatarGradient }}
-            >
-              {showAvatarIcon ? (
-                <img
-                  className={styles.avatarImage}
-                  src={avatarIconUrl ?? undefined}
-                  alt=""
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  onError={() => setAvatarIconFailed(true)}
-                />
-              ) : avatarLetter}
-            </span>
-            <span className={styles.peerName}>{peerName}</span>
-          </>
-        )}
-        {costLabel && <span className={styles.cost}>{costLabel}</span>}
-        <span className={styles.time}>{timeLabel}</span>
-      </div>
-      {session && (
-        <div className={styles.sessionStrip}>
-          <span className={styles.sessionInfo}>
-            Reserved ${formatUsdcAmount(Number(session.reservedUsdc) || 0)} · Used ${formatUsdcAmount(usedUsdc)}
-          </span>
-          <button
-            className={styles.sessionCloseBtn}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCloseChannel();
-            }}
-          >
-            Close
-          </button>
-        </div>
-      )}
       {menuOpenId === id && (
         <ConvContextMenu
           convId={id}
           convTitle={title}
+          pinned={pinned}
+          archived={archived}
           anchorRef={{ current: menuBtnRefs.current?.get(id) ?? null }}
+          onDelete={onDeleteConv}
+          onSetFlags={onSetFlags}
           onClose={() => setMenuOpenId(null)}
         />
       )}
@@ -333,16 +315,14 @@ function ChatSearchModal({
   conversations,
   activeConvId,
   sendingConvIds,
-  showRoutedPeer,
-  peerDisplayNameById,
+  modelLabelById,
   onSelectConv,
   onClose,
 }: {
   conversations: ConvRecord[];
   activeConvId: string | null;
   sendingConvIds: ReadonlySet<string>;
-  showRoutedPeer: boolean;
-  peerDisplayNameById: ReadonlyMap<string, string>;
+  modelLabelById: ReadonlyMap<string, string>;
   onSelectConv: (id: string) => void;
   onClose: () => void;
 }) {
@@ -363,13 +343,9 @@ function ChatSearchModal({
 
   const results = useMemo(() => {
     return conversations
-      .filter((conv) => conversationMatchesSearch(
-        conv,
-        getConversationPeerName(conv, peerDisplayNameById),
-        query,
-      ))
-      .sort(compareConversationsByActivity);
-  }, [conversations, peerDisplayNameById, query]);
+      .filter((conv) => conversationMatchesSearch(conv, modelName(conv.service, modelLabelById), query))
+      .sort(compareByActivity);
+  }, [conversations, modelLabelById, query]);
 
   return (
     <div
@@ -388,7 +364,7 @@ function ChatSearchModal({
         <header className={styles.searchHeader}>
           <div>
             <h2 id="chat-search-title">Conversations</h2>
-            <p>Search across every peer, session title, service, and workspace.</p>
+            <p>Search across every chat title, model and workspace.</p>
           </div>
           <button className={styles.searchClose} onClick={onClose} aria-label="Close chat search">
             ×
@@ -400,7 +376,7 @@ function ChatSearchModal({
           className={styles.searchInput}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search conversations, peers, services..."
+          placeholder="Search conversations and models..."
         />
 
         <div className={styles.searchSummary}>
@@ -414,14 +390,13 @@ function ChatSearchModal({
             results.map((conv) => {
               const id = getConversationId(conv);
               const title = String(conv.title || 'Untitled chat');
-              const peerName = getConversationPeerName(conv, peerDisplayNameById);
-              const serviceLabel = shortServiceName(conv.service);
+              const serviceLabel = modelName(conv.service, modelLabelById);
               const totalCost = Number(conv.totalEstimatedCostUsd) || 0;
               const totalTokens = Number(conv.totalTokens) || 0;
               const costLabel = totalTokens > 0
                 ? `$${formatUsdcAmount(totalCost)}/${formatCompactTokens(totalTokens)}`
                 : '';
-              const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
+              const timeLabel = formatChatTime(updatedAt(conv));
               const isActive = id === activeConvId;
               const isRunning = sendingConvIds.has(id);
 
@@ -446,7 +421,6 @@ function ChatSearchModal({
                     )}
                   </span>
                   <span className={styles.searchResultMeta}>
-                    {showRoutedPeer && <span>{peerName}</span>}
                     {serviceLabel && <span>{serviceLabel}</span>}
                     {costLabel && <span>{costLabel}</span>}
                     <span>{timeLabel}</span>
@@ -461,30 +435,28 @@ function ChatSearchModal({
   );
 }
 
-export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('../types').ViewName) => void } = {}) {
+/** The sidebar's Recent section: pinned chats, project folders, other chats and archived ones, with search, pin, archive, rename and delete. */
+export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
+  onOpenConversation: () => void;
+  /** The chat on screen was deleted, so there is nothing left to show. */
+  onOpenConversationDeleted: () => void;
+  /** Only the chat screen is "in" a conversation; Home starts a new one. */
+  highlightActive: boolean;
+}) {
   const {
     chatConversations,
     chatActiveConversation,
     chatSendingConversationIds,
     chatToolApprovalRequests,
-    chatActiveChannels,
-    discoverRows,
-    chatServiceOptions,
-    chatSelectedServiceValue,
-    chatSelectedPeerId,
-    vprFloatShowRoutedPeer,
+    chatModels,
+    chatWorkspaceDefaultPath,
   } = useUiSelector((state) => ({
+    chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatConversations: state.chatConversations,
     chatActiveConversation: state.chatActiveConversation,
     chatSendingConversationIds: state.chatSendingConversationIds,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
-    chatActiveChannels: state.chatActiveChannels,
-    chatActiveChannelCount: state.chatActiveChannels.size,
-    discoverRows: state.discoverRows,
-    chatServiceOptions: state.chatServiceOptions,
-    chatSelectedServiceValue: state.chatSelectedServiceValue,
-    chatSelectedPeerId: state.chatSelectedPeerId,
-    vprFloatShowRoutedPeer: state.vprFloatShowRoutedPeer,
+    chatModels: state.chatModels,
   }), shallowEqual);
   const actions = useActions();
   const conversations = Array.isArray(chatConversations) ? chatConversations : EMPTY_CONVERSATIONS;
@@ -502,164 +474,148 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
     return ids;
   }, [chatToolApprovalRequests]);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const [recentNow, setRecentNow] = useState(() => Date.now());
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  // Archived starts folded; projects start open.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => {
+    const stored = readCollapsedSections();
+    if (!stored.has('!archived')) stored.add('archived');
+    return stored;
+  });
+  const toggleSection = useCallback((key: string) => {
+    setCollapsedSections((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      // '!archived' records that Archived was opened on purpose.
+      if (key === 'archived') {
+        if (next.has('archived')) next.delete('!archived'); else next.add('!archived');
+      }
+      writeCollapsedSections(next);
+      return next;
+    });
+  }, []);
   const menuBtnRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setRecentNow(Date.now()), RECENT_SESSION_CLOCK_MS);
-    return () => window.clearInterval(timer);
-  }, []);
+  const modelLabelById = useMemo(
+    () => new Map(chatModels.map((model) => [model.id, model.label])),
+    [chatModels],
+  );
 
-  const peerDisplayNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    const rows = Array.isArray(discoverRows) ? discoverRows : [];
-
-    for (const row of rows) {
-      const peerId = String(row.peerId || '').trim();
-      if (!peerId || map.has(peerId)) continue;
-      const name = preferredPeerDisplayName(row.peerDisplayName, row.peerLabel);
-      if (name) map.set(peerId, name);
-    }
-
-    for (const conv of allConversations) {
-      const peerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-      if (!peerId || map.has(peerId)) continue;
-      const name = getPeerDisplayName(String(conv.peerLabel || ''));
-      if (name) map.set(peerId, name);
-    }
-
-    return map;
-  }, [allConversations, discoverRows]);
-
-  const peerIconUrlById = useMemo(() => {
-    const map = new Map<string, string>();
-    const rows = Array.isArray(discoverRows) ? discoverRows : [];
-    for (const row of rows) {
-      const peerId = String(row.peerId || '').trim();
-      if (!peerId || map.has(peerId) || !row.peerIconUrl) continue;
-      map.set(peerId, row.peerIconUrl);
-    }
-    return map;
-  }, [discoverRows]);
-
-  // Activity sort with "recent" (touched in the last 24 h) floated to the
-  // top so the active workstream stays one glance away; older chats sort
-  // by activity beneath them.
-  const sortedConversations = useMemo(() => {
-    return [...allConversations].sort((left, right) => {
-      const leftRecent = isRecentConversation(left, recentNow) ? 1 : 0;
-      const rightRecent = isRecentConversation(right, recentNow) ? 1 : 0;
-      if (leftRecent !== rightRecent) return rightRecent - leftRecent;
-      return compareConversationsByActivity(left, right);
-    });
-  }, [allConversations, recentNow]);
+  // Pinned, then one group per project folder, then other chats; each newest
+  // first. Archived chats sit folded below.
+  const sections = useMemo(
+    () => buildChatSections(allConversations, { defaultWorkspace: chatWorkspaceDefaultPath }),
+    [allConversations, chatWorkspaceDefaultPath],
+  );
+  // With nothing pinned, no projects and nothing archived, the list stays flat.
+  const flat = sections.length === 1 && sections[0]!.kind === 'chats';
 
   const handleSelectConv = useCallback((id: string) => {
     void actions.openConversation(id);
+    onOpenConversation();
+  }, [actions, onOpenConversation]);
+
+  // A pin, archive or delete that fails is undone; say why here, since the
+  // chat screen (which shows chat errors) may not be open.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const handleSetFlags = useCallback((id: string, flags: ConversationFlags) => {
+    setActionError(null);
+    void actions.setConversationFlags(id, flags).then(setActionError);
   }, [actions]);
 
-  const activeConversation = useMemo(
-    () => allConversations.find((conv) => getConversationId(conv) === chatActiveConversation) ?? null,
-    [allConversations, chatActiveConversation],
+  const renderRow = (conv: ConvRecord) => (
+    <ConversationRow
+      key={getConversationId(conv)}
+      conv={conv}
+      activeConvId={highlightActive ? chatActiveConversation : null}
+      sendingConvIds={sendingConvIds}
+      approvalConvIds={approvalConvIds}
+      modelLabelById={modelLabelById}
+      defaultWorkspace={chatWorkspaceDefaultPath}
+      onSelectConv={handleSelectConv}
+      onDeleteConv={handleDeleteConv}
+      onSetFlags={handleSetFlags}
+      menuOpenId={menuOpenId}
+      setMenuOpenId={setMenuOpenId}
+      menuBtnRefs={menuBtnRefs}
+    />
   );
 
-  const newChatTarget = useMemo(() => {
-    if (!activeConversation) return null;
-
-    const peerId = String(activeConversation.peerId || chatSelectedPeerId || '').trim();
-    if (!peerId) return null;
-
-    const serviceId = String(activeConversation.service || '').trim();
-    const provider = String(activeConversation.provider || '').trim();
-    const selectedForPeer = chatServiceOptions.find(
-      (option) => option.peerId === peerId && option.value === chatSelectedServiceValue,
+  const renderSection = (section: ChatSection) => {
+    const collapsed = collapsedSections.has(section.key);
+    const icon = section.kind === 'pinned' ? PinIcon : section.kind === 'project' ? Folder01Icon : null;
+    const activity = section.conversations.some((conv) => sendingConvIds.has(getConversationId(conv))
+      || approvalConvIds.has(getConversationId(conv)));
+    return (
+      <section key={section.key} className={styles.section} aria-label={section.label}>
+        <button
+          type="button"
+          className={`${styles.sectionHeader}${section.kind === 'archived' ? ` ${styles.sectionHeaderArchived}` : ''}`}
+          aria-expanded={!collapsed}
+          onClick={() => toggleSection(section.key)}
+          title={section.path ?? section.label}
+        >
+          <span className={`${styles.sectionChevron}${collapsed ? '' : ` ${styles.sectionChevronOpen}`}`} aria-hidden="true">
+            <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={2} />
+          </span>
+          {icon && <HugeiconsIcon icon={icon} size={13} strokeWidth={1.7} className={styles.sectionIcon} />}
+          <span className={styles.sectionLabel}>{section.label}</span>
+          {collapsed && activity && <span className={styles.runningDot} aria-label="Chat activity" />}
+          {(collapsed || section.kind === 'archived') && (
+            <span className={styles.sectionCount}>{section.conversations.length}</span>
+          )}
+        </button>
+        {!collapsed && section.conversations.map(renderRow)}
+      </section>
     );
-    const matchingOption = selectedForPeer ?? chatServiceOptions.find((option) => (
-      option.peerId === peerId
-      && (!serviceId || option.id === serviceId)
-      && (!provider || option.provider === provider)
-    )) ?? chatServiceOptions.find((option) => option.peerId === peerId && (!serviceId || option.id === serviceId));
+  };
 
-    if (matchingOption?.value) return { peerId, serviceValue: matchingOption.value };
-
-    const matchingRow = discoverRows.find((row) => (
-      row.peerId === peerId
-      && (!serviceId || row.serviceId === serviceId)
-      && (!provider || row.provider === provider)
-    )) ?? discoverRows.find((row) => row.peerId === peerId && (!serviceId || row.serviceId === serviceId));
-
-    return matchingRow?.selectionValue ? { peerId, serviceValue: matchingRow.selectionValue } : null;
-  }, [activeConversation, chatSelectedPeerId, chatServiceOptions, chatSelectedServiceValue, discoverRows]);
-
-  const handleCloseChannel = useCallback(() => {
-    // Channel management moved in-app: the activity view lists channels and
-    // opens the secure checkout page for the close signature.
-    onSelectView?.('activity');
-  }, [onSelectView]);
-
-  const handleStartNewChat = useCallback(() => {
-    actions.startNewChat();
-    if (newChatTarget) {
-      actions.handleServiceChange(newChatTarget.serviceValue, newChatTarget.peerId);
-    }
-  }, [actions, newChatTarget]);
+  // Where the user is now, for a delete that resolves after they moved on.
+  const placeRef = useRef({ highlightActive, chatActiveConversation });
+  placeRef.current = { highlightActive, chatActiveConversation };
+  const handleDeleteConv = useCallback((id: string) => {
+    const wasOnScreen = highlightActive && id === chatActiveConversation;
+    setActionError(null);
+    // Leave only once it's gone: a failure is shown in the chat, which must stay on screen.
+    void actions.deleteConversation(id).then((error) => {
+      setActionError(error);
+      // The delete left the chat view on an empty new chat; once the user has
+      // opened another chat or view meanwhile, they stay where they went.
+      const still = placeRef.current;
+      if (error === null && wasOnScreen && still.highlightActive && still.chatActiveConversation === null) onOpenConversationDeleted();
+    });
+  }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
 
   return (
     <aside className={styles.panel} aria-labelledby="chat-list-label">
-      <div className={styles.header} id="chat-list-label">
-        <span className={styles.headerText}>
-          <span>Conversations</span>
-          {allConversations.length > 0 && (
-            <span className={styles.count} aria-label={`${allConversations.length} total conversations`}>
-              {allConversations.length}
-            </span>
-          )}
-        </span>
-        <span className={styles.headerActions}>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={handleStartNewChat}
-            disabled={!newChatTarget}
-            aria-label="Start a new chat with the current peer and service"
-            title="Start a new chat with the current peer and service"
-          >
-            <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={1.9} />
-          </button>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={() => setChatSearchOpen(true)}
-            aria-label="Search conversations"
-            title="Search conversations"
-          >
-            <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
-          </button>
-        </span>
+      <div className={styles.header}>
+        <span id="chat-list-label">Recent</span>
+        <button
+          type="button"
+          className={styles.iconBtn}
+          onClick={() => setChatSearchOpen(true)}
+          aria-label="Search conversations"
+          title="Search conversations"
+        >
+          <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
+        </button>
       </div>
+      {/* The chat screen shows chat errors itself; elsewhere they show here. */}
+      {actionError && !highlightActive ? (
+        <div className={styles.actionError} role="alert">
+          <span className={styles.actionErrorDot} aria-hidden="true" />
+          <span className={styles.actionErrorText}>{actionError}</span>
+          <button type="button" className={styles.actionErrorDismiss} onClick={() => setActionError(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className={styles.list}>
-        {sortedConversations.length === 0 ? (
+        {sections.length === 0 ? (
           <div className={styles.empty}>No conversations yet</div>
+        ) : flat ? (
+          sections[0]!.conversations.map(renderRow)
         ) : (
-          sortedConversations.map((conv) => (
-            <ConversationRow
-              key={getConversationId(conv)}
-              conv={conv}
-              activeConvId={chatActiveConversation}
-              sendingConvIds={sendingConvIds}
-              approvalConvIds={approvalConvIds}
-              chatActiveChannels={chatActiveChannels}
-              showRoutedPeer={vprFloatShowRoutedPeer}
-              peerDisplayNameById={peerDisplayNameById}
-              peerIconUrlById={peerIconUrlById}
-              onSelectConv={handleSelectConv}
-              onCloseChannel={handleCloseChannel}
-              menuOpenId={menuOpenId}
-              setMenuOpenId={setMenuOpenId}
-              menuBtnRefs={menuBtnRefs}
-            />
-          ))
+          sections.map(renderSection)
         )}
       </div>
       {chatSearchOpen && (
@@ -667,8 +623,7 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
           conversations={allConversations}
           activeConvId={chatActiveConversation}
           sendingConvIds={sendingConvIds}
-          showRoutedPeer={vprFloatShowRoutedPeer}
-          peerDisplayNameById={peerDisplayNameById}
+          modelLabelById={modelLabelById}
           onSelectConv={handleSelectConv}
           onClose={() => setChatSearchOpen(false)}
         />

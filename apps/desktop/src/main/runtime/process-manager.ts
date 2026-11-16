@@ -1,14 +1,19 @@
+import { askProcessToStop, forceProcessToStop } from './stop-process.js';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { desktopSystemProxyCliDataDir } from '../dev-instance.js';
 import { WORKSPACE_APPS_DIR } from '../paths.js';
+import { ATTACH_ONLY_RUNTIME_DISABLED, isAttachOnly } from './attach-only.js';
+import { desktopTelemetryChildEnv } from '../telemetry/host-env.js';
 
 const { join, resolve } = path;
 
-export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
+export type RuntimeMode = 'gateway';
+
+/** Where the local gateway serves its API and console (dev instances set their own). */
+export const DEFAULT_LOCAL_GATEWAY_PORT = Number(process.env['ANTSEED_DESKTOP_GATEWAY_PORT']) || 8379;
 
 export interface RuntimeProcessState {
   mode: RuntimeMode;
@@ -21,19 +26,10 @@ export interface RuntimeProcessState {
 
 export interface StartOptions {
   mode: RuntimeMode;
-  router?: string;
-  dashboardPort?: number;
   configPath?: string;
   verbose?: boolean;
   env?: Record<string, string>;
-  // system-proxy-mode options
-  systemProxyPeerId?: string;
-  systemProxyPort?: number;
-  systemProxyProfiles?: string[];
-  systemProxyDefaultModel?: string;
-  systemProxyServedModels?: string[];
-  setSystemProxy?: boolean;
-  tunnelBuyerPort?: number;
+  gatewayPort?: number;
 }
 
 export interface DaemonStateSnapshot {
@@ -56,25 +52,7 @@ const RUNTIME_NATIVE_SCRIPT_RELATIVE = ['scripts', 'ensure-runtime-native-module
 const RUNTIME_NATIVE_MARKER_FILE = '.runtime-native-meta.json';
 const DEFAULT_CONFIG_PATH = join(homedir(), '.antseed', 'config.json');
 const DEFAULT_CONNECT_DATA_DIR = join(homedir(), '.antseed');
-const LEGACY_DESKTOP_DATA_ROOT = join(homedir(), '.antseed-desktop');
-const LEGACY_DESKTOP_CONNECT_DATA_DIR = join(LEGACY_DESKTOP_DATA_ROOT, 'connect');
 const CONNECT_DATA_DIR_ENV = 'ANTSEED_DESKTOP_CONNECT_DATA_DIR';
-
-function normalizeRouterIdentifier(value: string | undefined): string {
-  const raw = (value ?? 'local').trim().toLowerCase();
-  if (!raw) return 'local';
-
-  if (
-    raw === 'claude-code'
-    || raw === '@antseed/router-local'
-    || raw === 'antseed-router-local'
-    || raw === 'antseed-router-claude-code'
-  ) {
-    return 'local';
-  }
-
-  return raw;
-}
 
 function resolveAlignedNodeFromMarker(): string | null {
   const markerCandidates = [
@@ -316,6 +294,19 @@ type CliExecution = {
   cliCommand: string;
 };
 
+export function buildCliChildEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  isLocalDevScript: boolean,
+): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = { ...baseEnv, ...desktopTelemetryChildEnv() };
+  if (isLocalDevScript) {
+    delete childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'];
+  } else {
+    childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
+  }
+  return childEnv;
+}
+
 function resolveCliExecution(): CliExecution {
   const cliCommand = resolveCliCommand();
   const localCliPath = resolveLocalCliPath();
@@ -347,42 +338,9 @@ export function resolveCommandArgs(opts: StartOptions): string[] {
   args.push('--config', configPath);
 
   switch (opts.mode) {
-    case 'connect':
+    case 'gateway':
       args.push('--data-dir', resolveConnectDataDir());
-      args.push('buyer', 'start');
-      {
-        const router = normalizeRouterIdentifier(opts.router);
-        if (router !== 'local') {
-          args.push('--router', router);
-        }
-      }
-      break;
-    case 'system-proxy':
-      args.push('--data-dir', desktopSystemProxyCliDataDir() ?? resolveConnectDataDir());
-      args.push('system-proxy', 'start');
-      if (opts.systemProxyPeerId) {
-        args.push('--peer', opts.systemProxyPeerId);
-      }
-      if (opts.systemProxyPort) {
-        args.push('--port', String(opts.systemProxyPort));
-      }
-      for (const profile of opts.systemProxyProfiles ?? []) {
-        args.push('--profile', profile);
-      }
-      if (opts.systemProxyDefaultModel) {
-        args.push('--default-model', opts.systemProxyDefaultModel);
-      }
-      for (const model of opts.systemProxyServedModels ?? []) {
-        args.push('--served-model', model);
-      }
-      if (opts.setSystemProxy) {
-        args.push('--system-proxy');
-      }
-      break;
-    case 'tunnel':
-      args.push('--data-dir', resolveConnectDataDir());
-      args.push('tunnel', 'start');
-      if (opts.tunnelBuyerPort) args.push('--buyer-port', String(opts.tunnelBuyerPort));
+      args.push('gateway', 'start', '--port', String(opts.gatewayPort ?? DEFAULT_LOCAL_GATEWAY_PORT));
       break;
     default:
       throw new Error(`Unsupported runtime mode: ${String(opts.mode)}`);
@@ -391,15 +349,20 @@ export function resolveCommandArgs(opts: StartOptions): string[] {
   return args;
 }
 
+/**
+ * The gateway drains requests in flight (60s), then stops its buyer (up to 90s).
+ * Killed before that, it never signals the buyer, which runs on in its own
+ * process group and would be attached by the next start, even after a signer
+ * import. It exits at once when nothing is in flight.
+ */
+const GATEWAY_STOP_KILL_MS = 155_000;
+
 export class ProcessManager {
   private readonly processes = new Map<RuntimeMode, ChildProcessWithoutNullStreams>();
-  private readonly attachedModes = new Set<RuntimeMode>();
   private runtimeNativeAligned = false;
   private runtimeNativeAlignmentPromise: Promise<void> | null = null;
   private readonly states = new Map<RuntimeMode, RuntimeProcessState>([
-    ['connect', { mode: 'connect', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
-    ['system-proxy', { mode: 'system-proxy', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
-    ['tunnel', { mode: 'tunnel', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
+    ['gateway', { mode: 'gateway', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
   ]);
 
   constructor(
@@ -408,34 +371,6 @@ export class ProcessManager {
 
   getState(): RuntimeProcessState[] {
     return [...this.states.values()].map((s) => ({ ...s }));
-  }
-
-  attach(mode: RuntimeMode): RuntimeProcessState {
-    const state = this.states.get(mode)!;
-    this.attachedModes.add(mode);
-    state.running = true;
-    state.pid = null;
-    state.startedAt = Date.now();
-    state.lastExitCode = null;
-    state.lastError = null;
-    this.onLog(mode, 'system', `Attached to existing ${mode} runtime`);
-    return { ...state };
-  }
-
-  isAttached(mode: RuntimeMode): boolean {
-    return this.attachedModes.has(mode);
-  }
-
-  detach(mode: RuntimeMode, reason: string): RuntimeProcessState {
-    const state = this.states.get(mode)!;
-    if (!this.attachedModes.delete(mode)) {
-      return { ...state };
-    }
-    state.running = false;
-    state.pid = null;
-    state.lastError = reason;
-    this.onLog(mode, 'system', reason);
-    return { ...state };
   }
 
   getDaemonStateSnapshot(): DaemonStateSnapshot {
@@ -452,22 +387,24 @@ export class ProcessManager {
   }
 
   async start(opts: StartOptions): Promise<RuntimeProcessState> {
+    // An attach-only desktop only ever attaches to the testbench's buyer. Every
+    // spawn path (IPC, chat-triggered start, restarts) ends here, so this is
+    // the one place that keeps it from starting a second buyer or a seller.
+    if (isAttachOnly()) throw new Error(ATTACH_ONLY_RUNTIME_DISABLED);
     const mode = opts.mode;
     if (this.processes.has(mode)) {
       throw new Error(`${mode} is already running`);
     }
-    this.attachedModes.delete(mode);
 
     const cliExecution = resolveCliExecution();
     const args = resolveCommandArgs(opts);
     const executable = cliExecution.executable;
     const executableArgs = [...cliExecution.executableArgsPrefix, ...args];
     await this.ensureRuntimeNativeModules(mode, executable, cliExecution.isLocalDevScript);
-    const childEnv: NodeJS.ProcessEnv = { ...process.env };
-    // Desktop repairs the default router from its own app bundle. Do not let
-    // the child CLI try an npm-based plugin refresh/install on locked-down
-    // machines where npm may be unavailable or behind corporate TLS proxies.
-    childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
+    const childEnv = buildCliChildEnv(process.env, cliExecution.isLocalDevScript);
+    // Packaged desktop repairs trusted plugins from its own app bundle. Local
+    // development keeps plugin preparation enabled so newly added workspace
+    // plugins can be installed and exercised without a production bundle.
     for (const [key, value] of Object.entries(opts.env ?? {})) {
       if (typeof key === 'string' && key.trim().length > 0) {
         childEnv[key] = String(value);
@@ -548,27 +485,21 @@ export class ProcessManager {
       'system',
       `Started ${mode} with "${executable}" (pid=${String(child.pid ?? 'unknown')})`,
     );
-    if (mode === 'connect') {
+    if (mode === 'gateway') {
       const dataDir = resolveConnectDataDir();
       this.onLog(mode, 'system', `Connect data dir: ${dataDir}`);
-      if (dataDir === DEFAULT_CONNECT_DATA_DIR && existsSync(LEGACY_DESKTOP_CONNECT_DATA_DIR)) {
-        this.onLog(
-          mode,
-          'system',
-          `Legacy desktop connect data dir detected at ${LEGACY_DESKTOP_CONNECT_DATA_DIR}. Set ${CONNECT_DATA_DIR_ENV} to use it explicitly.`,
-        );
-      }
     }
     return { ...state };
   }
 
-  async runCliCommand(args: string[], mode: RuntimeMode = 'connect'): Promise<CliCommandResult> {
+  /** `logStdout: false` keeps stdout out of the runtime log (for output that carries secrets). */
+  async runCliCommand(args: string[], mode: RuntimeMode = 'gateway', options: { logStdout?: boolean } = {}): Promise<CliCommandResult> {
+    const logStdout = options.logStdout !== false;
     const cliExecution = resolveCliExecution();
     const executable = cliExecution.executable;
     const executableArgs = [...cliExecution.executableArgsPrefix, ...args];
 
-    const childEnv = { ...process.env };
-    childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
+    const childEnv = buildCliChildEnv(process.env, cliExecution.isLocalDevScript);
     if (executable === process.execPath) {
       childEnv['ELECTRON_RUN_AS_NODE'] = '1';
     } else {
@@ -598,6 +529,7 @@ export class ProcessManager {
 
       child.stdout.on('data', (chunk: string) => {
         stdout += chunk;
+        if (!logStdout) return;
         stdoutTail += chunk;
         const lines = stdoutTail.split(/\r?\n/);
         stdoutTail = lines.pop() ?? '';
@@ -643,7 +575,7 @@ export class ProcessManager {
         const exitCode = code ?? 1;
         if (exitCode !== 0) {
           const reason = signal ? `signal=${signal}` : `code=${String(exitCode)}`;
-          const detail = stderr.trim() || stdout.trim();
+          const detail = stderr.trim() || (logStdout ? stdout.trim() : '');
           rejectCommand(
             new Error(
               detail.length > 0
@@ -760,16 +692,11 @@ export class ProcessManager {
     });
   }
 
-  async stop(mode: RuntimeMode, preserve = false): Promise<RuntimeProcessState> {
+  async stop(mode: RuntimeMode): Promise<RuntimeProcessState> {
     const child = this.processes.get(mode);
     const state = this.states.get(mode)!;
-    this.attachedModes.delete(mode);
 
-    if (!child || preserve) {
-      if (child) {
-        this.processes.delete(mode);
-        child.unref();
-      }
+    if (!child) {
       state.running = false;
       state.pid = null;
       return { ...state };
@@ -788,24 +715,20 @@ export class ProcessManager {
       };
 
       const timeout = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, 5_000);
+        forceProcessToStop(child);
+      }, GATEWAY_STOP_KILL_MS);
       const forceKillTimeout = timeout;
-      const resolveTimeout = setTimeout(finish, 7_500);
+      const resolveTimeout = setTimeout(finish, GATEWAY_STOP_KILL_MS + 2_500);
 
       child.once('exit', finish);
 
-      child.kill('SIGTERM');
+      askProcessToStop(child);
     });
 
     return { ...state };
   }
 
   async stopAll(): Promise<void> {
-    await Promise.all([
-      this.stop('system-proxy'),
-      this.stop('connect'),
-      this.stop('tunnel'),
-    ]);
+    await this.stop('gateway');
   }
 }

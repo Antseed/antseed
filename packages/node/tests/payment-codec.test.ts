@@ -39,6 +39,8 @@ describe('payment codec round-trips', () => {
       openSig: '0x' + 'ef'.repeat(65),
     };
     expect(decodeFreeUsageOpen(encodeFreeUsageOpen(payload))).toEqual(payload);
+    const withDelegations = { ...payload, freeTierDelegations: 'delegations-header' };
+    expect(decodeFreeUsageOpen(encodeFreeUsageOpen(withDelegations))).toEqual(withDelegations);
   });
 
   it('rejects FreeUsageOpen with a non-finite deadline', () => {

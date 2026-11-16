@@ -16,8 +16,10 @@ const PINNED_YEAR = 2090;
 
 /* Every post's frontmatter points at the shared /og-image.jpg — not real
    cover art. Cards instead use the generated per-post covers in
-   /img/blog/covers (one SVG per slug, brand illustration language);
-   a real per-post frontmatter image overrides this. */
+   /img/blog/covers (one SVG per slug, brand illustration language).
+   A slug listed here keeps its card cover even when the post has its own
+   share image, since wide share images with headline text crop badly in
+   the card; other posts fall back to a real frontmatter image. */
 const DEFAULT_OG_IMAGE = '/og-image.jpg';
 
 const COVER_SLUGS = new Set([
@@ -35,12 +37,14 @@ const COVER_SLUGS = new Set([
   'anonymous-vs-private-ai',
   'trust-without-a-middleman',
   'dont-trust-the-tee-label',
+  'antseed-points',
 ]);
 
 function coverFor(permalink: string, frontMatterImage?: string): string {
-  if (frontMatterImage && frontMatterImage !== DEFAULT_OG_IMAGE) return frontMatterImage;
   const slug = permalink.replace(/\/$/, '').split('/').pop() ?? '';
-  return `/img/blog/covers/${COVER_SLUGS.has(slug) ? slug : 'default'}.svg`;
+  if (COVER_SLUGS.has(slug)) return `/img/blog/covers/${slug}.svg`;
+  if (frontMatterImage && frontMatterImage !== DEFAULT_OG_IMAGE) return frontMatterImage;
+  return '/img/blog/covers/default.svg';
 }
 
 function formatDate(iso: string): string | null {

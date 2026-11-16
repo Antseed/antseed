@@ -1467,7 +1467,10 @@ contract AntseedEmissionsGateTest is Test {
         usageAccounting.setMinimumAccountedPoolPower(0);
     }
 
-    function test_usageAccountingGasSnapshotsRecordUsageCases() public {
+    /// @dev Gas snapshots for this group live in AntseedUsageAccountingGas.t.sol.
+    ///      This case keeps the ordering assertions without writing the shared
+    ///      "usage-accounting" group, which two writers would make run-order dependent.
+    function test_usageAccountingRecordUsageCaseOrdering() public {
         _deployGate(4);
 
         sellerPools = new AntseedSellerPools(address(token), address(gate), address(identityRegistry), address(sellerAgentLookup));
@@ -1480,17 +1483,17 @@ contract AntseedEmissionsGateTest is Test {
         _warpGateEpoch(5);
         usageAccounting.accruePoints(keccak256("warm-pair"), buyer, seller, 10);
 
-        vm.startSnapshotGas("usage-accounting", "record-repeated-same-buyer-agent");
+        uint256 gasBefore = gasleft();
         usageAccounting.accruePoints(keccak256("repeat-pair"), buyer, seller, 10);
-        uint256 repeatedGas = vm.stopSnapshotGas();
+        uint256 repeatedGas = gasBefore - gasleft();
 
-        vm.startSnapshotGas("usage-accounting", "record-new-buyer-existing-agent");
+        gasBefore = gasleft();
         usageAccounting.accruePoints(keccak256("new-buyer"), secondBuyer, seller, 10);
-        uint256 newBuyerGas = vm.stopSnapshotGas();
+        uint256 newBuyerGas = gasBefore - gasleft();
 
-        vm.startSnapshotGas("usage-accounting", "record-new-agent-in-epoch");
+        gasBefore = gasleft();
         usageAccounting.accruePoints(keccak256("new-agent"), buyer, otherSeller, 10);
-        uint256 newAgentGas = vm.stopSnapshotGas();
+        uint256 newAgentGas = gasBefore - gasleft();
 
         assertGt(repeatedGas, 0);
         assertGt(newBuyerGas, repeatedGas);

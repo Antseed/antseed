@@ -6,7 +6,7 @@ import { canonicalModelKey } from '../../../packages/node/dist/model-identity.js
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models';
 const VENICE_URL = 'https://api.venice.ai/api/v1/models?type=all';
-const OUTPUT_URL = new URL('../src/shared/model-metadata.json', import.meta.url);
+const OUTPUT_URL = new URL('../../../packages/node/src/model-metadata.json', import.meta.url);
 const TAG_ORDER = [
   'Uncensored',
   'Coding',

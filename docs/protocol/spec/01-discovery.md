@@ -14,7 +14,7 @@ The network uses the BitTorrent Mainline DHT (BEP 5) as a decentralised director
 
 ### Topic Hashing
 
-Sellers announce a small fixed set of topics on the DHT — one subnet, the wildcard, the per-peer topic, and any capability topics. Service-level topics were intentionally removed: the signed metadata document carries the full service catalog (`providers[].services`, pricing, categories, protocols), so service filtering is metadata-driven and the announce cycle stays O(1) in the seller's service count regardless of how many services a provider exposes.
+Sellers announce a small set of topics on the DHT: one subnet, the wildcard, the per-peer topic, and any configured capability topics. Service-level topics were intentionally removed: the signed metadata document carries the full service catalog (`providers[].services`, pricing, categories, protocols), so service filtering is metadata-driven and the announce cycle stays O(1) in the seller's service count regardless of how many services a provider exposes.
 
 ```
 ANTSEED_WILDCARD_TOPIC           = "antseed:*"
@@ -64,11 +64,13 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 
 ### Metadata Version
 
-**Source:** `node/src/discovery/peer-metadata.ts`
+**Source:** `packages/protocol/src/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 12
+METADATA_VERSION = 16
 MIN_SUPPORTED_METADATA_VERSION = 10
+LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
+METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 ```
 
 ### Data Structures
@@ -78,7 +80,7 @@ MIN_SUPPORTED_METADATA_VERSION = 10
 | Field       | Type                    | Description                             |
 |-------------|-------------------------|-----------------------------------------|
 | peerId      | PeerId (string)         | 40 hex chars (20-byte EVM address)      |
-| version     | number                  | Supported range is 10 through `METADATA_VERSION` (12) |
+| version     | number                  | Supported range is 10 through `METADATA_VERSION` (14) |
 | displayName | string                  | Optional human-readable node label      |
 | publicAddress | string                | Optional public `host:port` buyers should dial instead of the raw DHT source address |
 | providers   | ProviderAnnouncement[]  | List of provider offerings              |
@@ -105,6 +107,8 @@ MIN_SUPPORTED_METADATA_VERSION = 10
 | serviceApiProtocols| object   | Optional per-service map `{ [service]: string[] }` of supported service API protocols |
 | serviceUnitBillingModels | object | v11+. Optional map `{ [service]: { [protocol]: UnitBillingModelV1 } }` for non-token usage such as `output_images` |
 | serviceCapabilities | object | v12+. Optional map `{ [service]: ServiceCapabilities }` with context/output limits, input/output modalities, reasoning, tool-use, structured-output, and supported-parameter hints |
+| serviceHealth | object | v13+. Optional map `{ [service]: ServiceHealth }` with the seller's own health check result (see below) |
+| servicePerformance | object | v14+. Optional map `{ [service]: ServicePerformance }`: how the service served the seller's buyers in the last hour (see below) |
 | maxConcurrency   | number   | Maximum concurrent requests (>= 1)                           |
 | currentLoad      | number   | Current number of active requests                            |
 
@@ -115,9 +119,51 @@ For a service using the `openai-images` API protocol, modality capabilities are 
 
 A seller MUST advertise `image` input only when the exact announced service can accept an image-bearing edit request through its configured provider adapter and upstream route. Support elsewhere in the upstream vendor's API, or through a different upstream model, does not make the announced service edit-capable. Buyers MUST NOT route `/v1/images/edits` to a service that omits `image` from its inputs.
 
+#### ServiceHealth (v13+)
+
+A seller keeps every configured service in `services` and reports its own health check result here. Reasons are fixed codes; upstream error text is never announced.
+
+| Field | Type | Description |
+|---|---|---|
+| status | `"unknown" \| "healthy" \| "failing"` | `failing` after `failureThreshold` failed checks in a row; `healthy` after a passed check |
+| checkedAt | number | Optional Unix ms of the evidence behind `status`, at most 8.64e15 |
+| source | `"probe" \| "traffic"` | Optional. `traffic` when a successful billable buyer request gave the evidence |
+| failingSince | number | Optional Unix ms of the first failure in the current failing streak, at most 8.64e15 (failing only) |
+| consecutiveFailures | number | Optional failed checks in a row, 0..65535 (failing only) |
+| reason | string | Optional code of the last failure (failing only): `timeout`, `rate_limited`, `out_of_credit`, `auth`, `model_unavailable`, `upstream_error`, `unreachable`, `init_failed` |
+| httpStatus | number | Optional upstream HTTP status of the last failed check (failing only) |
+
+Failed checks below the threshold change nothing announced: `status` and its evidence stay as they were.
+
+`status`, `source` and `reason` are sent as ids in the binary encoding, and buyers verify by re-encoding, so a buyer rejects a value it does not know. A new value therefore needs a new metadata version whose older documents map it to an existing value.
+
+Health is the seller's own claim. Buyers only use it to avoid a service, so they do not check it for consistency.
+
+#### ServicePerformance (v14+)
+
+The seller's own measurements of its buyer traffic over the last hour (`SERVICE_PERFORMANCE_WINDOW_MS`), per service. A service with no buyer requests in that hour has no entry. Health probes and native video jobs are not counted.
+
+| Field | Type | Description |
+|---|---|---|
+| requests | number | Buyer requests relayed upstream in the window, 0..2^32-1 |
+| successRate | number | Share answered without an upstream failure, 0..1, four decimals. Failures are the statuses `isUpstreamFailureStatus` counts (401, 402, 403, 404, 408, 429, 5xx), exceptions, and a stream that reports an error after a 200 start (an `error` event, an `error` object or `response.failed`); other client errors do not count |
+| firstTokenMsP50 | number | Optional median ms from receiving the request to the first event carrying generated output (text, reasoning or tool-call deltas of the OpenAI chat, OpenAI Responses and Anthropic Messages streams; start events, empty deltas and keepalives do not count), 0..2^32-1 |
+| firstTokenMsP90 | number | Optional 90th percentile of the same |
+| tokensPerSecondP50 | number | Optional median output tokens per second from the first generated token to the end, for successful streamed answers with at least 20 output tokens, 0..65535 |
+
+The seller keeps the window as 5-minute slices of running counts, so it covers the last 55 to 60 minutes and recording a request costs O(1). `requests` and `successRate` are exact. The percentiles come from log-scale histograms whose bins are 10% wide, so a reported value is within about 5% of the exact one. The summary is cached until a request arrives or a slice leaves the window, since sellers rebuild their metadata on every load change.
+
+Upstreams sharing a provider name offer a service on the same terms, so the seller measures per provider name and announces the same figures on each of them.
+
+Buyers use the figures as the prior for a seller they have no record of: the reported success rate replaces the default prior of 0.8 when `requests` is at least `MIN_REPORTED_REQUESTS` (10), capped at `MAX_REPORTED_SUCCESS_PRIOR` (0.95), and the reported first-token time and speed replace the typical values of sellers the buyer has measured. Like health, these are the seller's own claims; the cap and the buyer's own observations limit what an inflated report can gain.
+
+Buyers MUST NOT route automatically to a service whose status is `failing`, and SHOULD leave it out of model catalogs. When a seller serves a service through several providers, buyers and sellers SHOULD prefer a provider that is not failing it.
+
+A request pinned to that seller is still sent. When it fails upstream, the seller answers `503` with an error body whose `error.code` is `seller_self_health_failing`. The body carries `service`, `service_health`, `upstream_status` and, when the upstream sent one, its error code as `upstream_type`. The upstream's retry and rate-limit headers are kept; its error message is not forwarded. Buyers build the message shown to users from the structured fields, not from seller prose.
+
 ### Binary Encoding Format
 
-**Source:** `node/src/discovery/metadata-codec.ts`
+**Source:** `node/src/discovery/metadata/` — `wire.ts` (byte helpers), `fields/` (one module per block), `versions/vNN.ts` (each version's ordered list of blocks, built on the previous version's), `index.ts` (registry and negotiation). Adding a version means adding a field module and a version file; older versions keep their bytes.
 
 All multi-byte integers are big-endian. Strings are UTF-8 encoded.
 
@@ -167,6 +213,10 @@ Per provider (repeated providerCount times):
   Per unit billing entry:
     [service][protocolId:1][modelVersion:1][componentCount:1][components...]
     Components encode unit id, float32 USD price, and optional match key/value pairs.
+    Unit ids are positions in UNIT_BILLING_UNITS_V1: output_images=0, completed_requests=1, video_generations=2, video_seconds=3, input_characters=4 (v15+).
+    Match key ids are positions in UNIT_BILLING_MATCH_KEYS_V1: model=0, size=1, quality=2, resolution=3, aspect_ratio=4 and audio=5 (v16+), reference_video=6 (v17+).
+    A model carries at most 8 components through v15 and 64 in v16+. A seller serving an older version leaves out services that use a newer unit or match key or more components than it allows.
+    protocolId is the protocol's index in the append-only WELL_KNOWN_SERVICE_API_PROTOCOLS list.
   [serviceCapabilityEntryCount : 2 bytes uint16 ]    // v12+
   Per capability entry:
     [service][presenceBits:1][optional uint32 token limits][optional input bitset:1][optional output bitset:1][boolean value bits:1][optional supported parameters]
@@ -175,6 +225,17 @@ Per provider (repeated providerCount times):
     Input/output bitsets index into ["text","image","audio","video","pdf"].
     Supported parameters encode as [count:1] then per parameter [len:1][utf8],
     in code-unit sorted order so re-encoding decoded metadata is byte-stable.
+  [serviceHealthEntryCount : 2 bytes uint16 ]        // v13+
+  Per health entry (code-unit sorted by service):
+    [service][statusId:1][presenceBits:1][checkedAt:8?][sourceId:1?][failingSince:8?]
+    [consecutiveFailures:2?][reasonId:1?][httpStatus:2?]
+    Presence bits: checkedAt(0), source(1), failingSince(2), consecutiveFailures(3), reason(4), httpStatus(5).
+    Ids are positions in the append-only SERVICE_HEALTH_STATUSES, SERVICE_HEALTH_SOURCES and SERVICE_HEALTH_REASONS lists.
+  [servicePerformanceEntryCount : 2 bytes uint16 ]   // v14+
+  Per performance entry (code-unit sorted by service):
+    [service][requests:4][successRateBps:2][presenceBits:1][firstTokenMsP50:4?][firstTokenMsP90:4?][tokensPerSecondP50:2?]
+    successRateBps is successRate × 10000, at most 10000.
+    Presence bits: firstTokenMsP50(0), firstTokenMsP90(1), tokensPerSecondP50(2).
   [maxConcurrency: 2 bytes  uint16  big-endian ]
   [currentLoad   : 2 bytes  uint16  big-endian ]
 
@@ -217,7 +278,9 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 | v11 | accepted | accepted | rejected |
 | v12 | accepted | accepted | accepted |
 
-The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Deploy buyer support first, then seller binaries. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
+The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
+
+From v13, sellers negotiate the version. A seller signs one document per version it serves (`SERVED_METADATA_VERSIONS`, currently 12 to 16) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 
@@ -247,7 +310,9 @@ The body (everything except the trailing 65-byte signature) is the data that is 
 
 Additional validation rules enforced by `validateMetadata()`:
 
-- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (12).
+- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (14).
+- `serviceHealth` requires v13; each entry must reference an announced service and use known status, source and reason codes.
+- `servicePerformance` requires v14; each entry must reference an announced service, with `requests` and `successRate` in range and integer optional figures within their wire sizes.
 - `peerId` must be exactly 40 lowercase hex characters.
 - `region` must not be empty.
 - `displayName` is optional, but when present it must be non-empty and <= 64 chars.
@@ -350,7 +415,7 @@ The proof body is:
 The seller runs an HTTP server that exposes its current metadata:
 
 - **Listen address:** `0.0.0.0` on the configured port.
-- **Endpoint:** `GET /metadata`
+- **Endpoint:** `GET /metadata`, optionally with `x-antseed-metadata-version: <n>` (see Version Compatibility and Rollout)
 - **Success response:** `200` with `content-type: application/json` body containing JSON-serialized `PeerMetadata`.
 - **Not ready response:** `503` with `{"error": "metadata not available"}` when `getMetadata()` returns `null`.
 - **Unknown path:** `404` with `{"error": "not found"}`.
@@ -387,13 +452,16 @@ All peers returned by a DHT lookup are resolved in parallel, so a single slow or
 The `PeerLookup` class orchestrates the full discovery flow:
 
 1. Build lookup topic(s):
-   - all-peer lookup: `SHA1(subnetTopic(i))` for every subnet, plus `SHA1(ANTSEED_WILDCARD_TOPIC)` as a transition fallback
-   - service "lookup": there is no DHT-level service lookup. Service filtering happens against the signed metadata returned by `findAll()` — see `AntseedNode.discoverPeers(service)`.
+   - all-peer lookup: `SHA1(ANTSEED_WILDCARD_TOPIC)` first, then `SHA1(subnetTopic(i))` for each subnet sequentially
+   - service "lookup": there is no DHT-level service lookup. Service filtering happens against the signed metadata returned by `findAll()`. See `AntseedNode.discoverPeers(service)`.
    - capability lookup: `SHA1(capabilityTopic(capability[, name]))`
    - per-peer lookup (`findByPeerId`): `SHA1(peerTopic(peerId))`
 2. Query the DHT for the topic hash(es) to obtain `{host, port}` peer endpoints.
-   `DHTNode.lookupMany(hashes)` shares one temporary `peer` listener across all hashes so the 17-way subnet fan-out doesn't trip Node's default EventEmitter listener cap.
-   Per-infohash lookup failures are absorbed (return zero endpoints for that hash) so a misbehaving subnet does not abort the whole enumeration.
+   General enumeration calls `DHTNode.lookup()` for the wildcard, then each subnet
+   in sequence. A configured foreground budget limits how many subnets are
+   attempted; the next scan resumes from the rotating subnet cursor. Background
+   `findAllExhaustive()` completes a full sweep and can emit incremental results.
+   Endpoints are deduplicated by `host:port` before metadata resolution.
 3. For each peer (up to `maxResults`):
    a. Fetch metadata via the configured `MetadataResolver`.
    b. If `requireValidSignature` is `true`, verify the secp256k1 signature over the encoded body using ecrecover and compare the recovered address to the peer's `peerId`. Discard peers with invalid signatures.
@@ -418,13 +486,13 @@ The `PeerLookup` class orchestrates the full discovery flow:
 The `PeerAnnouncer` class handles the seller-side announcement lifecycle:
 
 1. Build a `PeerMetadata` object from the configured providers, current pricing, current load, and region.
-2. Set `version` to `METADATA_VERSION` (10) and `timestamp` to `Date.now()`.
+2. Set `version` to `METADATA_VERSION` (14) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth` and `servicePerformance`.
 3. Include configured seller contract, verification claims, and peer capabilities when present.
-4. Encode the body (without signature) via `encodeMetadataForSigning()`.
-5. Sign the body with the seller's secp256k1 private key (via EIP-191 personal_sign).
+4. For every served version, build that version's document (`getMetadataCodec(v).fromLatest()`) and encode its body (without signature) via `encodeMetadataForSigning()`.
+5. Sign each body with the seller's secp256k1 private key (via EIP-191 personal_sign).
 6. Announce DHT topics in parallel at the configured signaling port (constant in service count):
    - subnet topic (`subnetTopic(subnetOf(peerId))`)
-   - wildcard topic (`ANTSEED_WILDCARD_TOPIC`) — kept during the subnet rollout so older buyers still find this peer
+   - wildcard topic (`ANTSEED_WILDCARD_TOPIC`), kept during the subnet rollout so older buyers still find this peer
    - per-peer topic (`peerTopic(peerId)`)
    - capability topics when offerings are configured (one per offering plus one per unique capability name)
 
@@ -461,11 +529,11 @@ For generic router scoring outside this model-specific planning layer, the offic
 | price       | 0.30           | Lower price scores higher                |
 | latency     | 0.25           | Lower latency scores higher              |
 | capacity    | 0.20           | Preference for available capacity        |
-| reputation  | 0.10           | Higher on-chain reputation scores higher |
+| reputation  | 0.10           | Higher trust score scores higher         |
 | freshness   | 0.10           | Recently seen peers score higher         |
 | reliability | 0.05           | Lower failure rate and streak scores higher |
 
-Price, latency, and capacity are normalized across the eligible candidate pool. Reputation is a 0-100 effective reputation score normalized to 0-1: official routers compute it from on-chain settlement stats when available, then fall back to the optional `PeerInfo.reputationScore` field. These generic router-core weights are separate from the shared model-route ranking described above.
+Price, latency, and capacity are normalized across the eligible candidate pool. Reputation is a 0-100 score normalized to 0-1: official routers use the buyer-computed trust score (see [05-reputation](05-reputation.md)) when available, then fall back to the optional `PeerInfo.reputationScore` field. These generic router-core weights are separate from the shared model-route ranking described above.
 
 ---
 

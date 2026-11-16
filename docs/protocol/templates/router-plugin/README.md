@@ -119,7 +119,7 @@ interface Router {
 
 ## Links
 
-- [@antseed/node source](https://github.com/AntSeed/node)
-- [Router interface](https://github.com/AntSeed/node/tree/main/src/interfaces/buyer-router.ts)
-- [Official local router](https://github.com/AntSeed/router-local)
+- [@antseed/node source](https://github.com/Antseed/node)
+- [Router interface](https://github.com/Antseed/node/tree/main/src/interfaces/buyer-router.ts)
+- [Official local router](https://github.com/Antseed/router-local)
 - [Provider plugin template](../provider-plugin/)

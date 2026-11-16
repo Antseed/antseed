@@ -27,3 +27,21 @@ test('single-instance shutdown removes shared config patches', () => {
     else process.env[MULTI_INSTANCE_ENV] = previous;
   }
 });
+
+test('a testbench desktop never removes shared config patches, on stop or quit', () => {
+  const keys = ['ANTSEED_DESKTOP_ATTACH_ONLY', 'ANTSEED_DESKTOP_ISOLATED_PROFILE', MULTI_INSTANCE_ENV];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const flag of ['ANTSEED_DESKTOP_ATTACH_ONLY', 'ANTSEED_DESKTOP_ISOLATED_PROFILE']) {
+      for (const key of keys) delete process.env[key];
+      process.env[flag] = '1';
+      assert.equal(shouldRemoveSharedConfigPatches('disconnect'), false, `${flag}: explicit stop`);
+      assert.equal(shouldRemoveSharedConfigPatches('shutdown'), false, `${flag}: quit`);
+    }
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});

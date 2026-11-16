@@ -1,5 +1,6 @@
 import { estimateTokenCount } from 'tokenx';
 import type { SerializedHttpResponse, SerializedHttpResponseChunk } from './types.js';
+import { isSpeechAudio } from './speech-audio.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -67,6 +68,8 @@ export interface TokenUsage {
   /** Cached input tokens (prompt cache hits). Independent count, never overlaps freshInputTokens. */
   cachedInputTokens: number;
 }
+
+export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
 
 /** Plain API-shape facts parsed from image generation requests. */
 export interface ImageRequestFacts {
@@ -159,6 +162,12 @@ export function extractProviderResponseFacts(parsed: Record<string, unknown>): P
   };
 }
 
+/** The text fields an image is priced by, beside its service and count. */
+export const IMAGE_PRICE_ATTRIBUTES = ['size', 'quality', 'resolution'] as const;
+
+/** Every request field `extractImageRequestFacts` reads. A seller checks each is spelled exactly. */
+export const IMAGE_REQUEST_FIELDS: readonly string[] = ['model', 'service', ...IMAGE_PRICE_ATTRIBUTES, 'n', 'prompt'];
+
 export function extractImageRequestFacts(input: {
   path?: string;
   method?: string;
@@ -171,7 +180,7 @@ export function extractImageRequestFacts(input: {
     || normalizedPath === '/v1/images/edits';
 
   setStringAttr(facts, 'model', body.model ?? body.service);
-  for (const key of ['size', 'quality', 'resolution'] as const) {
+  for (const key of IMAGE_PRICE_ATTRIBUTES) {
     setStringAttr(facts, key, body[key] ?? body[toCamelCase(key)]);
   }
   if (isOpenAiImageEndpoint) {
@@ -192,8 +201,53 @@ export function extractImageRequestFacts(input: {
   return facts;
 }
 
+/** Every request field `extractSpeechRequestFacts` reads. A seller checks each is spelled exactly. */
+export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format'];
+
+/** What an OpenAI `POST /v1/audio/speech` request asks for. */
+export interface SpeechRequestFacts {
+  /** Unicode code points of `input`: the text read aloud, which speech services bill by. */
+  characters: number;
+  voice?: string;
+  responseFormat?: string;
+}
+
+/** Speech request facts from a JSON body, or null when `input` is missing or not text. */
+export function extractSpeechRequestFacts(body: Record<string, unknown> | null | undefined): SpeechRequestFacts | null {
+  const input = body?.input;
+  if (typeof input !== 'string' || input.length === 0) return null;
+  let characters = 0;
+  for (const _ of input) characters += 1;
+  return {
+    characters,
+    ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
+    ...(typeof body?.response_format === 'string' ? { responseFormat: body.response_format } : {}),
+  };
+}
+
+/** Case-insensitive header lookup (`name` in lowercase); '' when absent. */
+export function headerValue(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
+/**
+ * Whether a speech response delivered audio: a 2xx answer, not labelled JSON,
+ * SSE or text, whose bytes are audio a player can decode (see isSpeechAudio).
+ * Some upstreams label JSON errors `audio/mpeg`, so the status and the bytes
+ * decide, not the label. `responseFormat` is the request's, for headerless pcm.
+ */
+export function speechAudioDelivered(
+  response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>,
+  responseFormat?: string,
+): boolean {
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
+  const contentType = headerValue(response.headers, 'content-type').toLowerCase();
+  if (contentType.includes('json') || contentType.includes('text/event-stream') || contentType.startsWith('text/')) return false;
+  return isSpeechAudio(response.body, responseFormat);
+}
+
 /** Text fields larger than this are dropped — billing fields are all short. */
-const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
+export const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 
 /**
  * Extract the text (non-file) fields from a multipart/form-data body, e.g. the
@@ -228,9 +282,9 @@ export function parseMultipartFormFields(
     const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
     if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
       const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
-      const value = text.slice(headerEnd + 4, next);
-      if (name && !(name in fields) && value.length <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
-        fields[name] = decoder.decode(Uint8Array.from(value, (c) => c.charCodeAt(0)));
+      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
       }
     }
     index = next + 2;
@@ -247,8 +301,7 @@ export function extractRequestBodyFields(
   headers: Record<string, string>,
   body: Uint8Array,
 ): Record<string, unknown> | null {
-  const contentType = Object.entries(headers)
-    .find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const contentType = headerValue(headers, 'content-type');
   if (contentType && /^multipart\/form-data/i.test(contentType.trim())) {
     return parseMultipartFormFields(body, contentType);
   }

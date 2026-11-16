@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { canonicalModelKey } from '../src/model-identity.js';
 import {
   buildNetworkServiceOffers,
   selectLowestPricedCanonicalOffers,
+  withServiceCatalogMemo,
   type NetworkServiceCatalogPeer,
 } from '../src/discovery/service-catalog.js';
 
@@ -10,6 +12,63 @@ function peer(overrides: Partial<NetworkServiceCatalogPeer>): NetworkServiceCata
 }
 
 describe('network service catalog', () => {
+  const manyServices = () => peer({
+    capabilities: ['verifier.antseed-verifier'],
+    providerPricing: {
+      alpha: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'Model-A': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, 'model-b': { inputUsdPerMillion: 3, outputUsdPerMillion: 4 } } },
+      beta: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'model-a': { inputUsdPerMillion: 5, outputUsdPerMillion: 6 }, 'model-c': { inputUsdPerMillion: 7, outputUsdPerMillion: 8 } } },
+    },
+  });
+
+  it('builds only the services asked for, and the same offers as building all of them and filtering', () => {
+    const seller = manyServices();
+    const all = buildNetworkServiceOffers([seller]);
+    expect(all.map((offer) => `${offer.provider}/${offer.serviceId}`)).toEqual(['alpha/Model-A', 'alpha/model-b', 'beta/model-a', 'beta/model-c']);
+
+    const built: string[] = [];
+    const byModel = buildNetworkServiceOffers([seller], { modelKey: canonicalModelKey('model-a'), only: (provider, serviceId) => { built.push(`${provider}/${serviceId}`); return true; } });
+    expect(byModel).toEqual(all.filter((offer) => offer.serviceId.toLowerCase() === 'model-a'));
+    expect(built).toEqual(['alpha/Model-A', 'beta/model-a']);
+
+    expect(buildNetworkServiceOffers([seller], { only: (provider) => provider === 'beta' })).toEqual(all.filter((offer) => offer.provider === 'beta'));
+    expect(buildNetworkServiceOffers([seller], { modelKey: canonicalModelKey('unknown') })).toEqual([]);
+    // Each offer owns its list: changing one must not change another seller-wide.
+    expect(all[0]!.advertisedVerifierIds).not.toBe(all[1]!.advertisedVerifierIds);
+  });
+
+  it('gives the same offers inside a catalog memo, and forgets the sellers when it ends', () => {
+    const seller = manyServices();
+    const plain = buildNetworkServiceOffers([seller]);
+    const inside = withServiceCatalogMemo(() => ({
+      all: buildNetworkServiceOffers([seller]),
+      again: buildNetworkServiceOffers([seller]),
+      one: buildNetworkServiceOffers([seller], { modelKey: canonicalModelKey('model-a') }),
+      nested: withServiceCatalogMemo(() => buildNetworkServiceOffers([seller], { modelKey: canonicalModelKey('model-c') })),
+    }));
+    expect(inside.all).toEqual(plain);
+    expect(inside.again).toEqual(plain);
+    expect(inside.one).toEqual(plain.filter((offer) => offer.serviceId.toLowerCase() === 'model-a'));
+    expect(inside.nested.map((offer) => offer.serviceId)).toEqual(['model-c']);
+
+    // A seller that announces something new afterwards is read afresh.
+    seller.providerPricing!.alpha!.services!['model-d'] = { inputUsdPerMillion: 1, outputUsdPerMillion: 1 };
+    expect(buildNetworkServiceOffers([seller], { modelKey: canonicalModelKey('model-d') }).map((offer) => offer.serviceId)).toEqual(['model-d']);
+    expect(() => withServiceCatalogMemo(() => { throw new Error('stop'); })).toThrow('stop');
+    expect(withServiceCatalogMemo(() => buildNetworkServiceOffers([seller]).length)).toBe(5);
+  });
+
+  it('excludes routing and completed-request APIs without hiding ordinary images', () => {
+    const offers = buildNetworkServiceOffers([peer({
+      providers: ['mixed'], services: ['route', 'summary', 'image'],
+      providerServiceApiProtocols: { mixed: { services: { route: ['irp-suggest'], summary: ['typesafe-systemone'], image: ['openai-images'] } } },
+      providerServiceUnitBillingModels: { mixed: { services: {
+        summary: { 'typesafe-systemone': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+      } } },
+    })]);
+    expect(offers.map(offer => offer.serviceId)).toEqual(['image']);
+    expect(offers[0]?.minImageUsdPerImage).toBe(0.04);
+  });
   it('uses legacy services when provider pricing only announces defaults', () => {
     const offers = buildNetworkServiceOffers([peer({
       providers: ['openai'],

@@ -1,0 +1,77 @@
+{
+  "release": "003-kbf-verification",
+  "status": "active",
+  "sourceCommit": "696045b1761481fd35562e164d809e2043f367ee",
+  "contracts": {
+    "kbfVerification": {
+      "address": "0x4bdafcc48cc61aaf1ed2f5ebacc05ee305c80916",
+      "deploymentBlock": 53419391,
+      "transactionHash": "0x7ab57e0c461bbc41ceb215b4f77e4d4ff97e0e221570c8bb0f4507ab93679b11",
+      "runtimeCodeHash": "0xf05a5dc5c5c027a0d93959dfe4d9b8ba5979778277c43502cab3c13c6c097ab0",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "kbfVerificationPointsPolicy": {
+      "address": "0xb252c8c9f5d74114ac525ca8dbdbc5f028ec8c12",
+      "deploymentBlock": 53419392,
+      "transactionHash": "0x7c7ccb0d8b7cbd148d3d1265cdf69887812ade7c823dbdebff4ab8d148deacae",
+      "runtimeCodeHash": "0x3c7361a1034a5dcd8e97df9185d7252bae5391c62a51fc748c85ca8eea1dcd46",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x4BdAfcc48cc61Aaf1ed2f5EbaCc05Ee305C80916",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    }
+  },
+  "transactions": [
+    {
+      "action": "deploy AntseedKbfVerification",
+      "hash": "0x7ab57e0c461bbc41ceb215b4f77e4d4ff97e0e221570c8bb0f4507ab93679b11",
+      "blockNumber": 53419391,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedKbfVerificationPointsPolicy",
+      "hash": "0x7c7ccb0d8b7cbd148d3d1265cdf69887812ade7c823dbdebff4ab8d148deacae",
+      "blockNumber": 53419392,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
+    }
+  ],
+  "verificationConfiguration": {
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerClaimPolicy": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+    "poolCanTransfer": true,
+    "lastLockedEpoch": 21,
+    "releaseBps": 1000,
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
+    "verificationRegistry": {
+      "registry": "0xf33fC901BFa97326379A369401F4490E231B69B0",
+      "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+      "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
+      "deploymentNonce": 10338,
+      "address": "0x4BdAfcc48cc61Aaf1ed2f5EbaCc05Ee305C80916",
+      "policyAddress": "0xB252c8c9F5d74114ac525Ca8DBdBc5F028ec8C12",
+      "bonusBps": 0
+    }
+  },
+  "notes": "M003 deploys the KBF verification contract and its points policy only. The policy is not registered in the points policy registry by M003; the registry owner registers it separately, so verdicts change no seller points until then.",
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453
+}

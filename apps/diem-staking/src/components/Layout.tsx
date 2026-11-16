@@ -196,7 +196,7 @@ export function ClaimBanner() {
             This page handles everything: DIEM locking, withdrawal requests, USDC claims,
             and eligible $ANTS incentives. Open the Claim tab above with the same wallet
             you participate with — no separate app needed to claim. To spend your $ANTS on
-            AI models, download VPR, the AntSeed desktop app.
+            AI models, download VPR, the Antseed desktop app.
           </p>
           <div className="claim-path" aria-label="How to claim ANTS">
             <span><strong>1</strong> Connect wallet</span>
@@ -228,7 +228,7 @@ export function ClaimBanner() {
               )}
             </a>
             <a href={ANTSEED_URL} className="btn-ghost" target="_blank" rel="noopener noreferrer">
-              What is AntSeed?
+              What is Antseed?
             </a>
           </div>
         </div>
@@ -267,7 +267,7 @@ export function HowItWorks() {
         </Step>
         <Step num="02" label="Capacity" title="Support provider capacity">
           Locked DIEM is used as capacity support for connected provider infrastructure serving
-          AntSeed inference requests. Usage depends on buyer demand, uptime, pricing, and operations.
+          Antseed inference requests. Usage depends on buyer demand, uptime, pricing, and operations.
         </Step>
         <Step num="03" label="USDC" title="USDC allocations, if any">
           If paid requests are processed, eligible participants may receive USDC allocations after
@@ -277,7 +277,7 @@ export function HowItWorks() {
           $ANTS incentives may accrue by epoch if available under the Program rules. Claim
           them from the Claim tab on this page with the same wallet you lock with, then
           spend them on network services in{' '}
-          <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the AntSeed
+          <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the Antseed
           desktop app.
         </Step>
       </div>
@@ -334,15 +334,15 @@ export function DualCards() {
       <div className="dual">
         <a href={href} className="dual-card" target="_blank" rel="noopener noreferrer">
           <span className="tag">◆  VPR</span>
-          <h4>The AntSeed desktop app</h4>
+          <h4>The Antseed desktop app</h4>
           <p>Chat with Claude, GPT, and every open model. Generate images and video. All at provider cost. No subscription markup. Free to download.</p>
           <span className="arrow">{hasDirectInstaller(platform) ? `${label} →` : 'Download VPR →'}</span>
         </a>
         <a href={ANTSEED_URL} className="dual-card" target="_blank" rel="noopener noreferrer">
-          <span className="tag">◆  AntSeed</span>
+          <span className="tag">◆  Antseed</span>
           <h4>The P2P AI network</h4>
           <p>No central gatekeeper. No markup. Pay per token in USDC. Connect any agent, any coding tool, or just chat through VPR. Same network underneath.</p>
-          <span className="arrow">Explore AntSeed →</span>
+          <span className="arrow">Explore Antseed →</span>
         </a>
       </div>
     </section>
@@ -360,7 +360,7 @@ export function FAQ() {
           <summary>Where do USDC allocations come from?</summary>
           <div className="body">
             USDC allocations, if any, come from paid inference requests processed by the
-            connected provider infrastructure and settled through AntSeed smart contracts.
+            connected provider infrastructure and settled through Antseed smart contracts.
             After applicable operator fees and Program deductions, remaining USDC is allocated
             according to the Program rules. No allocation is guaranteed, and future usage may be zero.
           </div>
@@ -408,7 +408,7 @@ export function FAQ() {
             in the Program. Claim them directly from this page: open the Claim tab in the
             card above, connect your wallet, and claim any pending $ANTS. You can then use
             $ANTS on supported network services inside{' '}
-            <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the AntSeed
+            <a href={href} target="_blank" rel="noopener noreferrer">VPR</a>, the Antseed
             desktop app.
           </div>
         </details>

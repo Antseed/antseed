@@ -1,0 +1,124 @@
+{
+  "release": "003-verification-policy",
+  "status": "active",
+  "sourceCommit": "77c09da764f9767c229c2773cc30812e72ec1a88",
+  "effectiveEpoch": 29,
+  "contracts": {
+    "verificationResults": {
+      "address": "0x139ab1722a62a23371f491220902c460e9faeab2",
+      "deploymentBlock": 53514466,
+      "transactionHash": "0xf20d2aa8efe533f4cf5131948cdfa22bf9e9222a26aa437c4a4d2dfc3db7806f",
+      "runtimeCodeHash": "0x53767f1c84e0c865375207560ac07a428c2e79db02f91d6c9f6fe18a32af58db",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": false,
+      "constructorArguments": [
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "kbfAudits": {
+      "address": "0x86b92dc48ef7c5a12de6e44409e83c8ef36657ff",
+      "deploymentBlock": 53514467,
+      "transactionHash": "0x1f36ee44dc1e75e2a0f713eb44b893fc77a037138ae3488f844585323145d8dc",
+      "runtimeCodeHash": "0xd6e3ff95f002a36dfb12fe1539102584bd694caaa1280b55420584cf13d24c3f",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": false,
+      "constructorArguments": [
+        "0x139ab1722a62a23371f491220902c460E9fAeAb2",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "verificationPointsPolicy": {
+      "address": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f",
+      "deploymentBlock": 53534989,
+      "transactionHash": "0x95f7f663b89a74477fe50778df28007066c1174182d5f447d54cb15914583ad6",
+      "runtimeCodeHash": "0xb22266872ae22738eacec21b3bc8f8bd05ac7dc3efbe465442af10308439ed25",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x139ab1722a62a23371f491220902c460E9fAeAb2",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    }
+  },
+  "transactions": [
+    {
+      "action": "deploy AntseedVerificationPointsPolicy",
+      "hash": "0x95f7f663b89a74477fe50778df28007066c1174182d5f447d54cb15914583ad6",
+      "blockNumber": 53534989,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setPenaltyBps(uint256)",
+      "hash": "0x6c20af7faa4823d92ae37ab577ae9783a46c5ca84f85e0a8d5c18bae980220e3",
+      "blockNumber": 53535014,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f"
+    },
+    {
+      "action": "acceptOwnership()",
+      "hash": "0xe1c783d00e0ddc7fe1b2ae5a0304d4348667940919f157a7ba782918278a0b02",
+      "blockNumber": 53535044,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x139ab1722a62a23371f491220902c460e9faeab2"
+    },
+    {
+      "action": "acceptOwnership()",
+      "hash": "0xea13fec6811dca1325b17b2c2308538f13c4be7f975c9328acd6ea7dd136d3d4",
+      "blockNumber": 53535051,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x86b92dc48ef7c5a12de6e44409e83c8ef36657ff"
+    },
+    {
+      "action": "registerPolicy(address)",
+      "hash": "0x9dc4c013ac292bb01069a41c3473381698a3c1bf234fd3f23315c6f22d62584a",
+      "blockNumber": 53535067,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x212d2c1058b84507de248a147aafeb08fb19e3b6"
+    },
+    {
+      "action": "setBonusBps(uint256)",
+      "hash": "0x5dd759f664dff0854c81408c375ff9de93e2d7e09591d997d37a44a3dff8d31b",
+      "blockNumber": 53535482,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f"
+    }
+  ],
+  "verificationConfiguration": {
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerClaimPolicy": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+    "poolCanTransfer": true,
+    "lastLockedEpoch": 21,
+    "releaseBps": 1000,
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
+    "verificationRegistry": {
+      "registry": "0xf33fC901BFa97326379A369401F4490E231B69B0",
+      "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+      "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "emissionsGate": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd",
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
+      "deploymentNonce": 164,
+      "resultsAddress": "0x139ab1722a62a23371f491220902c460E9fAeAb2",
+      "kbfAddress": "0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff",
+      "policyAddress": "0xD58393a752b3b7bdBea6231E0e24C11403e9f32f",
+      "bonusBps": 200,
+      "penaltyBps": 400,
+      "policyRegistered": true
+    }
+  },
+  "notes": "Replaces only the verification points policy: the redeployed AntseedVerificationPointsPolicy applies one multiplier, from the seller agent's live verdicts, to both seller and buyer points, with a penalty that grows with the square of the DIFF count. The owner set penaltyBps 400 and bonusBps 200, accepted ownership of the results layer and the KBF audit, and registered the policy in the points policy registry. The earlier policy 0x4B586d4361783e9798881DC32c78Cf595a923095 was never registered and is retired.",
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453
+}

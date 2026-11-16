@@ -5,14 +5,14 @@
    =================================================================== */
 
 .page-header {
+  container: chat-header / inline-size;
+  position: relative;
+  z-index: 20;
   background: var(--chat-header-bg);
-  /* Extra right padding clears the shell's floating credits pill. */
-  padding: 6px 110px 0px 16px;
-  /* Constant height regardless of which controls are shown (6px padding +
-     36px model-dropdown trigger + 6px + border) — the search-only mode swaps
-     in a shorter bar and must not shrink the header. */
+  padding: 6px 16px;
   min-height: 49px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
@@ -27,40 +27,10 @@
 
 .page-header-left {
   display: flex;
+  flex: 1 1 200px;
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.panel-toggle {
-  appearance: none;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 0 2px;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  transition: color 0.15s;
-
-  &:hover {
-    color: var(--text-primary);
-  }
-
-  &:focus-visible {
-    color: var(--text-primary);
-    outline: 2px solid color-mix(in srgb, var(--text-muted) 45%, transparent);
-    outline-offset: 3px;
-  }
 }
 
 .service-switcher-anchor {
@@ -101,27 +71,16 @@
 
 .page-header-right {
   display: flex;
+  flex: 0 1 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
 }
 
 /* Thin layout with the message search open: search is the only header
    control, stretched across the full bar. */
-.page-header-right-search-only {
-  flex: 1 1 auto;
-
-  .message-search-bar {
-    flex: 1 1 auto;
-  }
-
-  .message-search-input {
-    width: auto;
-    flex: 1 1 auto;
-  }
-}
-
 .message-search-trigger,
 .message-search-button {
   display: inline-flex;
@@ -163,6 +122,7 @@
 
 .message-search-bar {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 5px;
   min-width: 0;
@@ -181,7 +141,7 @@
 
 .message-search-input {
   width: min(220px, 24vw);
-  min-width: 96px;
+  min-width: 0;
   border: 0;
   outline: none;
   background: transparent;
@@ -195,6 +155,7 @@
 }
 
 .message-search-count {
+  flex-shrink: 0;
   min-width: 42px;
   font-size: 11px;
   color: var(--text-muted);
@@ -204,141 +165,25 @@
 }
 
 .message-search-button {
+  flex-shrink: 0;
   width: 22px;
   height: 22px;
   padding: 0;
   border-radius: 6px;
 }
 
-.chat-routed-label {
-  font-size: 12px;
-  color: var(--text-muted);
-}
+@container chat-header (max-width: 540px) {
+  .page-header-right-searching {
+    flex-wrap: wrap;
 
-.chat-routed-peer {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--accent-green);
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+    .message-search-bar {
+      flex: 1 0 100%;
+    }
 
-.peer-service-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: 1px solid var(--border-light);
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-primary);
-  transition: background 0.15s;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.06);
+    .message-search-input {
+      flex: 1 1 auto;
+    }
   }
-}
-
-.header-label-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.peer-name {
-  font-weight: 500;
-  color: var(--accent-green);
-}
-
-/* Small text + icon buttons that sit after the service switcher in the
-   chat header. Two flavours:
-   - default  → neutral utility action (e.g. "Copy IDs")
-   - accent   → create action tinted accent-green (e.g. "New chat")
-   Sized to align with the service dropdown's height so the whole header
-   row reads as a single control cluster. Spacing comes from the parent
-   service-switcher's flex gap. */
-.header-action-button {
-  appearance: none;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--border-light);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease,
-    box-shadow 0.12s ease;
-
-  svg {
-    flex-shrink: 0;
-  }
-
-  &:hover {
-    background: var(--bg-hover, rgba(0, 0, 0, 0.04));
-    color: var(--text-primary);
-    border-color: var(--border);
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(var(--accent-green-rgb), 0.35);
-  }
-}
-
-/* Thin layout: no room for the label next to the model dropdown — the
-   New chat button collapses to just the plus glyph. */
-.header-action-button-icon-only {
-  width: 24px;
-  padding: 0;
-  justify-content: center;
-}
-
-.header-action-button-copy {
-  border: none;
-  border-color: var(--border-light);
-  background: transparent;
-  color: var(--text-muted);
-}
-
-/* Copied confirmation — lock to green while the toast is visible so the
-   user gets unambiguous feedback. */
-.header-action-button-copied {
-  color: var(--accent-green);
-  border-color: rgba(var(--accent-green-rgb), 0.4);
-  background: rgba(var(--accent-green-rgb), 0.08);
-
-  &:hover {
-    color: var(--accent-green);
-    border-color: rgba(var(--accent-green-rgb), 0.4);
-    background: rgba(var(--accent-green-rgb), 0.08);
-  }
-}
-
-.service-separator {
-  color: var(--text-muted);
-}
-
-.service-name {
-  color: var(--text-secondary);
-}
-
-.service-label {
-  font-size: 13px;
-  color: var(--text-muted);
 }
 
 /* ===================================================================
@@ -375,26 +220,19 @@
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  /* Room for the ant on the chat box, so the last answer ends above it. */
+  padding: 16px 16px 88px;
   display: flex;
   flex-direction: column;
   // gap: 16px;
   min-height: 0;
 
   > * {
-    max-width: 640px;
+    max-width: 720px;
     width: 100%;
     margin-left: auto;
     margin-right: auto;
   }
-}
-
-
-.chat-empty {
-  color: var(--text-muted);
-  font-size: 14px;
-  text-align: center;
-  padding: 40px 16px;
 }
 
 .scroll-to-latest-button {
@@ -429,7 +267,6 @@
   transform: rotate(180deg);
 }
 
-
 /* ===================================================================
    Chat input area
    =================================================================== */
@@ -442,7 +279,7 @@
   border-top: 0;
 
   > * {
-    max-width: 640px;
+    max-width: 720px;
     width: 100%;
     margin-left: auto;
     margin-right: auto;
@@ -469,22 +306,35 @@
 .chat-input-row {
   display: flex;
   flex-direction: column;
+  position: relative;
   background: var(--chat-input-bg);
   border: 1px solid var(--border);
-  border-top-left-radius: 24px;
-  border-top-right-radius: 24px;
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
   border-bottom: none;
-  padding: 14px 16px;
+  padding: 16px 16px 12px 18px;
   gap: 8px;
+  box-shadow: var(--shadow);
+}
+
+.chat-input-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* One row: a long model name ellipsizes instead of wrapping the pickers. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .chat-input-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 16px;
-  border-bottom-left-radius: 24px;
-  border-bottom-right-radius: 24px;
+  position: relative;
+  border-bottom-left-radius: 20px;
+  border-bottom-right-radius: 20px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
 }
@@ -493,6 +343,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 280px;
   background: var(--bg-card);
@@ -512,93 +363,6 @@
   font-family: var(--font-mono, monospace);
   direction: rtl;
   text-align: left;
-}
-
-
-.git-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: 320px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-muted);
-  padding: 6px 8px;
-  cursor: pointer;
-}
-
-/* .git-status-pill-clean {
-  border-color: rgba(31, 216, 122, 0.28);
-}
-
-.git-status-pill-dirty {
-  border-color: rgba(255, 184, 77, 0.32);
-}
-
-.git-status-pill-missing {
-  border-color: rgba(255, 255, 255, 0.1);
-  opacity: 0.78;
-} */
-
-.git-status-branch {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  font-size: 11px;
-  font-family: var(--font-mono, monospace);
-}
-
-.git-status-summary {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-.chat-image-attach-preview {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 4px 16px 8px;
-}
-
-.chat-image-attach-thumb {
-  width: 64px;
-  height: 64px;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-}
-
-.chat-image-remove-btn {
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  width: 20px;
-  height: 20px;
-  font-size: 10px;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  &:hover {
-    color: var(--text-primary);
-    background: var(--bg-surface);
-  }
 }
 
 .chat-attachment-tray {
@@ -681,15 +445,9 @@
   gap: 10px;
 }
 
-.chat-input-controls-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
 .permission-mode-picker {
   position: relative;
+  flex: none;
 }
 
 .permission-mode-button {
@@ -915,14 +673,14 @@
 }
 
 .chat-send-btn {
-  border-radius: 10px;
-  padding: 0 12px;
-  min-width: 40px;
+  border-radius: 99px;
+  padding: 0 10px;
+  min-width: 38px;
   width: auto;
-  height: 40px;
-  background: #1fd87a;
+  height: 38px;
+  background: var(--btn-bg);
   border: none !important;
-  color: #fff;
+  color: var(--btn-ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -931,7 +689,8 @@
   opacity: 1;
 
   &:hover {
-    background: #17c46e;
+    background: var(--btn-bg);
+    opacity: 0.88;
     border: none !important;
   }
 
@@ -959,6 +718,61 @@
   gap: 12px;
   padding: 24px;
   max-width: 100% !important;
+}
+
+.chat-welcome-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 560px;
+  margin-top: 8px;
+}
+
+.chat-welcome-note {
+  width: 100%;
+}
+
+/* The empty chat sits on the field's watercolor. */
+.chat-main-art {
+  background: url('../../../assets/v4/field/chat-day.jpg') center bottom / cover no-repeat;
+}
+
+:global(body.dark-theme) .chat-main-art {
+  background-image: url('../../../assets/v4/field/chat-night.jpg');
+}
+
+/* One-time note after the first prompt: chats moved from Home to here. */
+.chat-handoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-light);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.chat-handoff-dismiss {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .chat-welcome-subtitle {
@@ -1012,20 +826,6 @@
   }
 }
 
-.chat-error {
-  margin: 8px 16px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(var(--danger-rgb), 0.2);
-  background: rgba(var(--danger-rgb), 0.06);
-  color: var(--danger);
-  font-size: 12px;
-  line-height: 1.4;
-  max-width: fit-content;
-  margin-left: auto;
-  margin-right: auto;
-}
-
 .chat-warning {
   margin: 8px 16px;
   padding: 8px 12px;
@@ -1039,3 +839,6 @@
   margin-left: auto;
   margin-right: auto;
 }
+
+/* Calm notice for a request the gateway could not pay for: amber dot, one
+   line, text links — no alert box. */

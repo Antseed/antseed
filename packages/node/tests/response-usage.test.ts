@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseResponseUsage } from '../src/utils/response-usage.js';
+import { parseResponseUsage, readStreamEvents } from '../src/utils/response-usage.js';
 
 const enc = new TextEncoder();
 
@@ -71,8 +71,75 @@ describe('parseResponseUsage', () => {
     });
   });
 
+  describe('an event written over several data lines', () => {
+    const USAGE = { inputTokens: 3, outputTokens: 2, freshInputTokens: 3, cachedInputTokens: 0 };
+
+    it('joins the data lines of one event into one payload', () => {
+      const sse = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        '',
+        'data: {"choices":[],',
+        'data: "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n');
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('joins them across CRLF line endings and other fields of the event', () => {
+      const sse = 'event: message\r\ndata:{"choices":[],\r\nid: 7\r\ndata:"usage":{"prompt_tokens":3,"completion_tokens":2}}\r\n\r\n';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('reads an event whose usage object fills a line of its own', () => {
+      const sse = 'data: {"usage":\ndata: {"prompt_tokens":3,"completion_tokens":2}\ndata: }\n\n';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('reads the event at the end of a stream that has no closing blank line', () => {
+      const sse = 'data: {"choices":[],\ndata: "usage":{"prompt_tokens":3,"completion_tokens":2}}';
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+
+    it('still reads each line of a stream written with no blank lines between its events', () => {
+      const sse = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+        'data: [DONE]',
+      ].join('\n');
+      expect(parseResponseUsage(enc.encode(sse))).toEqual(USAGE);
+    });
+  });
+
   it('returns zeros when the body has no usage field', () => {
     const usage = parseResponseUsage(enc.encode(JSON.stringify({ model: 'foo' })));
     expect(usage).toEqual({ inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 });
+  });
+});
+
+describe('parseResponseUsage on data that is not an object', () => {
+  it('skips a null, a number or a list in a stream instead of failing', () => {
+    expect(parseResponseUsage(new TextEncoder().encode('data: null\n\ndata: 5\n\ndata: []\n\ndata: {"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'))).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+  });
+});
+
+describe('readStreamEvents', () => {
+  const read = (text: string) => [...readStreamEvents(text)];
+
+  it('reads each event with its names and the JSON its data lines carry, leaving out [DONE]', () => {
+    expect(read('event: delta\ndata: {"a":1}\n\ndata: [DONE]\n\n')).toEqual([{ names: ['delta'], values: [{ a: 1 }] }]);
+  });
+
+  it('joins the data lines of one event into one payload', () => {
+    expect(read('data: {"a":\ndata: 1}\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }]);
+  });
+
+  it('reads the lines of a stream with no blank lines one by one', () => {
+    expect(read('data: {"a":1}\ndata: {"b":2}\n')).toEqual([{ names: [], values: [{ a: 1 }, { b: 2 }] }]);
+  });
+
+  it('keeps an error event whose data is not JSON', () => {
+    expect(read('data: {"a":1}\n\nevent: error\ndata: upstream dropped\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }, { names: ['error'], values: [] }]);
   });
 });

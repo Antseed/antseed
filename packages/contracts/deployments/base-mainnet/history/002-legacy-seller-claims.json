@@ -1,0 +1,50 @@
+{
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453,
+  "release": "002-legacy-seller-claims",
+  "status": "active",
+  "sourceCommit": "277ade2c951845c50c9294f01872b7c7ee4ed89d",
+  "transactions": [
+    {
+      "action": "deploy AntseedLegacySellerClaimPolicy",
+      "hash": "0xc873e1aebda1c25c86c442304aadfc1bc55414ada1ca4b324316abeebbd6f2d2",
+      "blockNumber": 53232574,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setSellerClaimPolicy(address)",
+      "hash": "0x923a101a8fbbb5fa27450b1e5288fc658d93a0457db14bc2d3ad85a75f7f31a2",
+      "blockNumber": 53232575,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa065c0de80dbd3d824f7b584e231b76b9fefb261"
+    }
+  ],
+  "verificationConfiguration": {
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerClaimPolicy": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+    "poolCanTransfer": true,
+    "lastLockedEpoch": 21,
+    "releaseBps": 1000,
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
+  },
+  "contracts": {
+    "legacySellerClaimPolicy": {
+      "address": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+      "deploymentBlock": 53232574,
+      "transactionHash": "0xc873e1aebda1c25c86c442304aadfc1bc55414ada1ca4b324316abeebbd6f2d2",
+      "runtimeCodeHash": "0x852bd9737d98bfb67784ae683ca10bed0de97b8dcb19941cce00dba68abbae96",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
+        "21",
+        "1000",
+        "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
+      ],
+      "owner": null
+    }
+  }
+}

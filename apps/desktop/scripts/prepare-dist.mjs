@@ -11,8 +11,7 @@
  * directory, which causes electron-builder's asar packer to fail with
  * "must be under <appDir>" errors.
  *
- * Handles both top-level packages (e.g. antseed-dashboard) and scoped
- * packages (e.g. @antseed/node).
+ * Handles both top-level packages and scoped packages (e.g. @antseed/node).
  */
 
 import { readdirSync, lstatSync, readlinkSync, realpathSync, rmSync, cpSync, existsSync, mkdirSync, chmodSync, writeFileSync, readFileSync } from 'node:fs';
@@ -29,8 +28,11 @@ const nmDir = path.join(appDir, 'node_modules');
 
 /** Map of workspace package names to their real source directories. */
 const WORKSPACE_PACKAGES = {
+  '@antseed/ants': path.resolve(appDir, '..', 'ants'),
+  '@antseed/antseed-verifier': path.resolve(appDir, '..', '..', 'packages', 'antseed-verifier'),
   '@antseed/api-adapter': path.resolve(appDir, '..', '..', 'packages', 'api-adapter'),
   '@antseed/buyer-core': path.resolve(appDir, '..', '..', 'packages', 'buyer-core'),
+  '@antseed/connected-apps': path.resolve(appDir, '..', '..', 'packages', 'connected-apps'),
   '@antseed/node': path.resolve(appDir, '..', '..', 'packages', 'node'),
   '@antseed/payments': path.resolve(appDir, '..', 'payments'),
   '@antseed/protocol': path.resolve(appDir, '..', '..', 'packages', 'protocol'),
@@ -121,6 +123,22 @@ writeFileSync(
 
 console.log(`[prepare-dist] Bundled CLI -> ${bundleOutput}`);
 
+// --- 2b. Ship the gateway console next to the bundled CLI ---
+// @antseed/gateway-console resolves its web app as `new URL('./dist/', import.meta.url)`.
+// Bundled, import.meta.url is cli-dist/cli/index.js, so the gateway the app's
+// Public endpoint runs serves /console from cli-dist/cli/dist/. Without this
+// copy it answers "The gateway console is not built".
+const consoleSourceDir = path.resolve(appDir, '..', 'gateway-console', 'dist');
+const consoleDestDir = path.join(path.dirname(bundleOutput), 'dist');
+if (!existsSync(path.join(consoleSourceDir, 'index.html'))) {
+  throw new Error(
+    `[prepare-dist] Gateway console is not built (${consoleSourceDir}). `
+    + 'Run `pnpm --filter @antseed/gateway-console build` first.',
+  );
+}
+cpSync(consoleSourceDir, consoleDestDir, { recursive: true });
+console.log(`[prepare-dist] Copied gateway console -> ${consoleDestDir}`);
+
 // --- 3. Install Electron-compatible native module prebuilds ---
 // The native modules (better-sqlite3, etc.) may have been compiled for the
 // system node version, which differs from Electron's bundled node.
@@ -174,6 +192,7 @@ if (process.platform === 'darwin') {
 
 const BUNDLED_RUNTIME_DIR = path.join(appDir, 'bundled-runtime');
 const EXPLICITLY_BUNDLED_PACKAGES = new Set([
+  '@antseed/antseed-verifier',
   '@antseed/router-local',
   '@antseed/router-core',
   '@antseed/node',
@@ -294,18 +313,21 @@ function copyDepTree(name, parentSourceDir, parentDestDir, topDestRoot, visited)
   }
 }
 
-const nodePackageDir = findPackageDirFromRequire(desktopRequire, '@antseed/node');
-if (!nodePackageDir) {
-  console.warn('[prepare-dist] WARNING: could not locate @antseed/node — bundled runtime will be incomplete');
-} else {
-  const nodePkg = readPackageJson(nodePackageDir);
-  const visited = new Set();
-  // For top-level deps the "parent dest" is the runtime root itself — no
-  // sibling can collide at this layer because each direct dep name is unique.
-  for (const depName of Object.keys(nodePkg.dependencies ?? {})) {
-    copyDepTree(depName, nodePackageDir, BUNDLED_RUNTIME_DIR, BUNDLED_RUNTIME_DIR, visited);
+const runtimeRoots = ['@antseed/node', '@antseed/antseed-verifier'];
+const visited = new Set();
+for (const packageName of runtimeRoots) {
+  const packageDir = WORKSPACE_PACKAGES[packageName]
+    ?? findPackageDirFromRequire(desktopRequire, packageName);
+  if (!packageDir) {
+    console.warn(`[prepare-dist] WARNING: could not locate ${packageName} — bundled runtime will be incomplete`);
+    continue;
   }
-  console.log(`[prepare-dist] Bundled ${visited.size} runtime dep(s) for @antseed/node into ${BUNDLED_RUNTIME_DIR}`);
+  const pkg = readPackageJson(packageDir);
+  const packageDestDir = path.join(BUNDLED_RUNTIME_DIR, ...packageName.split('/'));
+  for (const depName of Object.keys(pkg?.dependencies ?? {})) {
+    copyDepTree(depName, packageDir, packageDestDir, BUNDLED_RUNTIME_DIR, visited);
+  }
 }
+console.log(`[prepare-dist] Bundled ${visited.size} runtime dep(s) for ${runtimeRoots.join(', ')} into ${BUNDLED_RUNTIME_DIR}`);
 
 console.log('[prepare-dist] Done.');

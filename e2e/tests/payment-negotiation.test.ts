@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { AntseedNode } from '@antseed/node';
-import type { SerializedHttpRequest, PeerInfo } from '@antseed/node';
+import type { SerializedHttpRequest } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockAnthropicProvider } from './helpers/mock-provider.js';
 import { tmpdir } from 'node:os';

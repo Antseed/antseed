@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations, type Migration } from '../src/storage/migrate.js';
+import { meteringMigrations } from '../src/storage/migrations/metering/index.js';
+import { verificationMigrations } from '../src/storage/migrations/verification/index.js';
 
 describe('runMigrations', () => {
   let db: Database.Database;
@@ -93,5 +95,44 @@ describe('runMigrations', () => {
     // Version 1 should be applied, version 2 should not
     const versions = db.prepare('SELECT version FROM schema_version').all() as { version: number }[];
     expect(versions.map(v => v.version)).toEqual([1]);
+  });
+
+  it('adds verification evidence storage without rewriting the base migration', () => {
+    runMigrations(db, verificationMigrations);
+
+    const columns = (db.pragma('table_info(response_auths)') as Array<{ name: string }>).map((column) => column.name);
+    expect(columns).toEqual(expect.arrayContaining(['request_preimage', 'response_preimage']));
+    const versions = db.prepare('SELECT version, name FROM schema_version ORDER BY version').all();
+    expect(versions).toEqual([
+      { version: 1, name: 'create_verification_tables' },
+      { version: 2, name: 'add_verification_evidence_storage' },
+    ]);
+  });
+
+  it('metering 6 and 7 add their columns once, also on a database a pre-release build migrated as 4 and 5', () => {
+    // Columns a pre-release build added under other version numbers.
+    runMigrations(db, meteringMigrations.filter((migration) => migration.version <= 3));
+    db.exec('ALTER TABLE metering_events ADD COLUMN service TEXT; ALTER TABLE metering_events ADD COLUMN error TEXT; ALTER TABLE metering_events ADD COLUMN cached_input_tokens INTEGER');
+    runMigrations(db, meteringMigrations);
+    const columns = (db.prepare('PRAGMA table_info(metering_events)').all() as { name: string }[]).map((column) => column.name);
+    expect(columns.filter((name) => ['service', 'error', 'cached_input_tokens'].includes(name))).toEqual(['service', 'error', 'cached_input_tokens']);
+    expect((db.prepare('SELECT version FROM schema_version ORDER BY version').all() as { version: number }[]).map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it('metering 10 adds the free-tier columns a pre-release build skipped by recording its own 4 and 5', () => {
+    runMigrations(db, meteringMigrations.filter((migration) => migration.version <= 3));
+    db.exec('ALTER TABLE metering_events ADD COLUMN service TEXT; ALTER TABLE metering_events ADD COLUMN error TEXT; ALTER TABLE metering_events ADD COLUMN cached_input_tokens INTEGER');
+    const record = db.prepare('INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, 0)');
+    record.run(4, 'add_event_service');
+    record.run(5, 'add_event_detail');
+    runMigrations(db, meteringMigrations);
+    const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name);
+    expect(columns('free_tier_usage')).toEqual(expect.arrayContaining(['staked', 'scope']));
+    expect(columns('free_tier_position_usage')).toEqual(expect.arrayContaining(['position_id', 'scope']));
+    // On a database that ran 004 and 005, 010 changes nothing.
+    const fresh = new Database(':memory:');
+    runMigrations(fresh, meteringMigrations);
+    expect((fresh.prepare('PRAGMA table_info(free_tier_usage)').all() as { name: string }[]).filter((column) => column.name === 'scope')).toHaveLength(1);
+    fresh.close();
   });
 });

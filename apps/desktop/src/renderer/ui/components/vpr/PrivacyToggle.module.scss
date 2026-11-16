@@ -1,0 +1,233 @@
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 38px;
+  padding: 3px;
+  border-radius: 99px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(14px) saturate(1.3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+}
+
+.segmentSmall {
+  height: 34px;
+  padding: 2px;
+  box-shadow: none;
+  backdrop-filter: none;
+  background: var(--bg-hover);
+  border-color: transparent;
+
+  .option {
+    height: 28px;
+    padding: 0 10px 0 8px;
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .icon {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  border: none;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.option:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.option:disabled {
+  cursor: default;
+}
+
+.activeAnonymous,
+.activeAnonymous:hover:not(:disabled) {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.activePrivate,
+.activePrivate:hover:not(:disabled) {
+  background: var(--tag-bg);
+  color: var(--leaf-ink);
+}
+
+// Asked for, still being applied to every connected app: outlined, not filled.
+.pending,
+.pending:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--border);
+  animation: privacy-pending 1.4s ease-in-out infinite;
+}
+
+@keyframes privacy-pending {
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending { animation: none; }
+}
+
+.icon {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  background-color: currentColor;
+}
+
+.iconAnonymous {
+  mask: url('../../../assets/v4/icons/mask-anonymous.svg') center / contain no-repeat;
+}
+
+.iconPrivate {
+  mask: url('../../../assets/v4/icons/mask-private.svg') center / contain no-repeat;
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 16px 13px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(18px);
+  text-align: left;
+}
+
+.notePrivate {
+  box-shadow: var(--shadow);
+}
+
+.badge {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  background: center / contain no-repeat;
+}
+
+.badgeAnonymous {
+  background-image: url('../../../assets/v4/icons/badge-anonymous.svg');
+}
+
+.badgePrivate {
+  background-image: url('../../../assets/v4/icons/badge-private.svg');
+}
+
+.noteText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 1.5;
+
+  b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+}
+
+.noteDismiss {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--surface-glass-border);
+  border-radius: 999px;
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+
+  &:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+}
+
+/* A dismissed note that flashes back after a switch, then fades. */
+.noteReminder {
+  animation: noteReminder 6s ease forwards;
+}
+
+@keyframes noteReminder {
+  0% { opacity: 0; transform: translateY(-4px); }
+  6% { opacity: 1; transform: none; }
+  85% { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.notePlain {
+  padding-left: 16px;
+}
+
+.switchDialog {
+  display: grid;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+
+  p {
+    margin: 0;
+  }
+
+  b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+}
+
+/* A quiet line between turns where Anonymous / Private changed. */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.dividerRule {
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.dividerText {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  text-align: center;
+
+  .badge {
+    width: 16px;
+    height: 16px;
+  }
+}

@@ -2,13 +2,29 @@ import type { ServiceApiProtocol } from './service-api.js';
 
 export const UNIT_BILLING_UNITS_V1 = [
   'output_images',
+  'completed_requests',
+  'video_generations',
+  'video_seconds',
+  /** Characters of text a speech service read aloud (`input` of `POST /v1/audio/speech`). */
+  'input_characters',
 ] as const;
 
+/**
+ * Request attributes a billing component can match. Wire ids follow this
+ * order, so new keys are appended. `aspect_ratio` and `audio` (`"true"` or
+ * `"false"`) price a video create by the options the upstream bills by; only
+ * metadata v16+ documents may name them. `reference_video` (`"true"` or
+ * `"false"`) is whether the create sends reference videos, which upstreams
+ * bill on top of the output; only metadata v17+ documents may name it.
+ */
 export const UNIT_BILLING_MATCH_KEYS_V1 = [
   'model',
   'size',
   'quality',
   'resolution',
+  'aspect_ratio',
+  'audio',
+  'reference_video',
 ] as const;
 
 export type UnitBillingUnitV1 = (typeof UNIT_BILLING_UNITS_V1)[number];
@@ -242,21 +258,26 @@ function normalizedUnitCount(usage: UnitBillingUsage, unit: UnitBillingUnitV1): 
   return value;
 }
 
+/** Whether a component applies to a request with these attributes: every `match` entry must equal one. */
+export function componentMatchesAttributes(
+  component: Pick<UnitBillingComponentV1, 'match'>,
+  attributes: UnitBillingContext['attributes'] = {},
+): boolean {
+  return (Object.entries(component.match ?? {}) as Array<[UnitBillingMatchKeyV1, string]>)
+    .every(([key, expected]) => attributes[key] === expected);
+}
+
 function componentMatchesContext(component: UnitBillingComponentV1, context: UnitBillingContext): boolean {
-  const match = component.match;
-  if (!match || Object.keys(match).length === 0) return true;
-  const requestAttributes = context.attributes ?? {};
-  for (const [key, expected] of Object.entries(match) as Array<[UnitBillingMatchKeyV1, string]>) {
-    if (requestAttributes[key] !== expected) return false;
-  }
-  return true;
+  return componentMatchesAttributes(component, context.attributes);
 }
 
 function validateUsageWithinRequestLimits(usage: UnitBillingUsage, context: UnitBillingContext): void {
-  const outputImageLimit = context.unitLimits?.output_images;
-  const outputImages = usage.units.output_images;
-  if (outputImageLimit !== undefined && outputImages !== undefined && outputImages > outputImageLimit) {
-    throw new Error(`Seller reported output_images=${outputImages} but request allowed ${outputImageLimit}`);
+  for (const unit of UNIT_BILLING_UNITS_V1) {
+    const limit = context.unitLimits?.[unit];
+    const count = usage.units[unit];
+    if (limit !== undefined && count !== undefined && count > limit) {
+      throw new Error(`Seller reported ${unit}=${count} but request allowed ${limit}`);
+    }
   }
 }
 

@@ -229,6 +229,16 @@ function syntheticSessionKeyFromBody(body: Record<string, unknown> | null): stri
 }
 
 /**
+ * The client tool's slug, from the same headers conversation identity reads,
+ * even when the request carries no session to key on.
+ */
+export function requestClientTool(headers: Record<string, string>): string {
+  const source = systemProxySource(headers)
+  const detectedTool = toolSessionHeader(headers)?.tool || detectTool(headers)
+  return source === 'public-tunnel' && detectedTool === 'cursor' ? 'cursor' : source || detectedTool
+}
+
+/**
  * Extract the conversation identity from a completion request, or null when
  * the tool sent nothing to key on. `parsedBody` is the request body as a JSON
  * object when available (callers usually have it parsed already).
@@ -263,6 +273,23 @@ export function extractConversationIdentity(
     parentSessionKey: parent.length > 0 ? parent : null,
     isUserThread: isUserThread(headers),
   }
+}
+
+/** Header some upstreams route a conversation to its prompt cache by (the Codex backend among them). */
+export const UPSTREAM_SESSION_HEADER = 'session_id'
+
+/**
+ * The request's headers with the conversation's key as `session_id`, unless
+ * the client sent one. Clients name their session id differently (see the top
+ * of this file), and a reverse proxy in front of a gateway may drop header
+ * names with underscores (Caddy does by default), so the buyer sets it itself.
+ */
+export function withUpstreamSessionHeader(
+  headers: Record<string, string>,
+  identity: ConversationIdentity,
+): Record<string, string> {
+  if (getHeader(headers, UPSTREAM_SESSION_HEADER).trim()) return headers
+  return { ...headers, [UPSTREAM_SESSION_HEADER]: identity.sessionKey }
 }
 
 function looksLikeMachineContext(text: string): boolean {

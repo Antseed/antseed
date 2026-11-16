@@ -1,5 +1,5 @@
 import type { PeerEndpoint, MetadataResolver } from './metadata-resolver.js';
-import type { PeerMetadata } from './peer-metadata.js';
+import { METADATA_VERSION, METADATA_VERSION_HEADER, type PeerMetadata } from './peer-metadata.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
 export const MAX_METADATA_HTTP_RESPONSE_SIZE = 256 * 1024;
@@ -89,7 +89,12 @@ export class HttpMetadataResolver implements MetadataResolver {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      // Ask for the newest metadata version this build understands; sellers
+      // that predate negotiation ignore the header and send v12.
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { [METADATA_VERSION_HEADER]: String(METADATA_VERSION) },
+      });
 
       if (!response.ok) {
         this.markEndpointFailure(endpointKey);

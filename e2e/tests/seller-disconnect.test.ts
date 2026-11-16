@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { AntseedNode } from '@antseed/node';
-import type { SerializedHttpRequest, SerializedHttpResponse, Provider, PeerInfo } from '@antseed/node';
+import type { SerializedHttpRequest, SerializedHttpResponse, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';

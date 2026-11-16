@@ -1,0 +1,360 @@
+/* ============================================================
+   LAUNCH HERO — headline, launcher card, model marquee, stats band
+   ============================================================ */
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 72px 0 0;
+  text-align: center;
+  background-color: var(--as-soil-1);
+  background-image:
+    linear-gradient(180deg, transparent 60%, var(--as-soil-1) 100%),
+    var(--as-dotgrid);
+  background-size: 100% 100%, var(--as-dotgrid-size);
+}
+
+/* the dot canvas (HeroDotCanvas, .heroCanvas) sits under everything */
+.hero > canvas {
+  z-index: -1;
+}
+
+.heroInner {
+  position: relative;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.title {
+  font-family: var(--as-font-display);
+  font-weight: 600;
+  font-size: clamp(40px, 5.5vw, 64px);
+  line-height: 1.05;
+  letter-spacing: -1px;
+  color: var(--as-heading);
+  margin: 0 0 20px;
+}
+
+.sub {
+  max-width: 640px;
+  margin: 0;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 500;
+  color: var(--as-text);
+}
+
+/* ---------- launcher card ---------- */
+.card {
+  margin-top: 36px;
+  width: 100%;
+  max-width: 600px;
+  box-sizing: border-box;
+  padding: 10px;
+  text-align: left;
+  background: var(--as-soil-1);
+  border: 1px solid var(--as-line);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px -24px rgba(0, 30, 18, 0.22);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--as-soil-0);
+  border-radius: 11px;
+}
+
+.tab {
+  flex: 1;
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-family: var(--as-font-app);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--as-text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--as-heading);
+}
+
+.tab[aria-selected='true'] {
+  background: var(--as-soil-1);
+  color: var(--as-heading);
+  box-shadow: 0 1px 2px rgba(0, 30, 18, 0.08), 0 0 0 1px rgba(0, 30, 18, 0.06);
+}
+
+/* Both panels share one cell, so the card is always as tall as the taller one. */
+.panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px 10px 10px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s ease, visibility 0.2s;
+}
+
+.panel[data-active] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.panelApp {
+  align-items: center;
+}
+
+/* the shared CommandChip, as a full-width ink command bar. When the card is
+   too narrow for one line, the command wraps between words, never clipped. */
+.card .command {
+  width: 100%;
+  height: auto;
+  min-height: 52px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  justify-content: flex-start;
+  white-space: normal;
+  text-align: left;
+  border-radius: 12px;
+  border-color: var(--as-ink);
+  background: var(--as-ink);
+}
+
+.card .command code {
+  flex: 1;
+  min-width: 0;
+  line-height: 20px;
+  overflow-wrap: break-word;
+}
+
+.panelNote {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--as-text-2);
+}
+
+.panelNote a {
+  font-size: 13px;
+}
+
+.panelCheck {
+  margin-top: -2px;
+}
+
+/* ---------- model marquee ---------- */
+.marquee {
+  position: relative;
+  margin-top: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+.track {
+  display: flex;
+  width: max-content;
+  animation: marquee 80s linear infinite;
+}
+
+.trackReverse {
+  animation-direction: reverse;
+  animation-duration: 95s;
+}
+
+.marquee:hover .track,
+.marquee[data-paused] .track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track { animation: none; }
+}
+
+.run {
+  display: flex;
+  gap: 14px;
+  padding-right: 14px;
+}
+
+.modelCard {
+  flex: none;
+  width: 290px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  background: var(--as-soil-1);
+  border: 1px solid var(--as-line);
+  border-radius: 14px;
+}
+
+.modelLogo {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--as-soil-0);
+  color: var(--as-heading);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modelText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.modelText strong {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--as-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modelText em {
+  font-style: normal;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--as-text-3);
+}
+
+.modelPrice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--as-font-data);
+}
+
+.modelPrice strong {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--as-green-dim);
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--as-green-deep);
+}
+
+.modelPrice > span {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--as-text-3);
+}
+
+.modelPrice small {
+  font-size: 10px;
+}
+
+/* ---------- stats band (HeroStatsRow on ink) ---------- */
+.statsBand {
+  position: relative;
+  margin-top: 32px;
+  padding: 22px 16px;
+  background: var(--as-ink);
+}
+
+.statsBand .stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.statsBand .stats > div {
+  padding: 0 12px;
+}
+
+.statsBand .stats > div + div {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.statsBand dd {
+  font-size: 30px;
+  line-height: 36px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: #FFFFFF;
+}
+
+.statsBand .stats > div:last-child dd {
+  color: var(--as-primary-4);
+}
+
+.statsBand dt {
+  margin-top: 2px;
+  font-family: var(--as-font-app);
+  font-size: 13px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+@media (max-width: 640px) {
+  .hero {
+    padding-top: 48px;
+  }
+
+  .card {
+    margin-top: 28px;
+  }
+
+  .marquee {
+    margin-top: 36px;
+    gap: 10px;
+  }
+
+  .modelCard {
+    width: 250px;
+    padding: 12px 14px;
+  }
+
+  .statsBand .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 18px;
+  }
+
+  .statsBand .stats > div + div {
+    border-left: 0;
+  }
+}

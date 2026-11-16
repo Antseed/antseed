@@ -134,7 +134,11 @@ export class BuyerFreeUsageManager {
     this._requestService.track(requestId, service);
   }
 
-  async prepareOpen(peer: BuyerPeerView, paymentMux: PaymentMux): Promise<void> {
+  /**
+   * Open a free usage channel with `peer`. `freeTierDelegations` is this
+   * buyer's delegations header, sent so the seller's admission counts delegated stake.
+   */
+  async prepareOpen(peer: BuyerPeerView, paymentMux: PaymentMux, freeTierDelegations?: string | null): Promise<void> {
     const existing = this._sessions.get(peer.peerId);
     const nowSec = Math.floor(Date.now() / 1000);
     if (existing && existing.deadline > nowSec + 30) return;
@@ -170,7 +174,7 @@ export class BuyerFreeUsageManager {
     };
     this._sessions.set(peer.peerId, session);
     try {
-      paymentMux.sendFreeUsageOpen({ channelId, salt, deadline, openSig });
+      paymentMux.sendFreeUsageOpen({ channelId, salt, deadline, openSig, ...(freeTierDelegations ? { freeTierDelegations } : {}) });
     } catch (err) {
       if (existing) {
         this._sessions.set(peer.peerId, existing);

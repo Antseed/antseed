@@ -1,4 +1,14 @@
-import { computeOnChainReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
+import {
+  detectRequestServiceApiProtocol,
+  isNativeVideoProtocol,
+  isServiceHealthFailing,
+  providerServiceHealthFor,
+  normalizedModelReputationScore,
+  type Router,
+  type PeerInfo,
+  type SerializedHttpRequest,
+  type ServiceApiProtocol,
+} from '@antseed/node';
 import {
   scoreCandidates,
   PeerMetricsTracker,
@@ -59,6 +69,9 @@ export class LocalRouter implements Router {
   selectPeer(req: SerializedHttpRequest, peers: PeerInfo[]): PeerInfo | null {
     const now = this._now();
     const requestedService = this._extractRequestedService(req);
+    // A native video request reaches only upstreams serving its protocol, so that route's health counts.
+    const requestProtocol = detectRequestServiceApiProtocol(req);
+    const routeProtocol = requestProtocol && isNativeVideoProtocol(requestProtocol) ? requestProtocol : undefined;
 
     const candidates: {
       peer: PeerInfo;
@@ -77,8 +90,8 @@ export class LocalRouter implements Router {
         continue;
       }
 
-      // Provider availability filter
-      const provider = this._selectProviderForPeer(peer, requestedService);
+      // Provider availability filter (automatic selection skips failing services)
+      const provider = this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocol });
       if (!provider) {
         continue;
       }
@@ -90,7 +103,7 @@ export class LocalRouter implements Router {
       }
 
       const max = this._resolveBuyerMaxPrice(provider, requestedService);
-      if (this._offerExceedsMaxPrice(offer, max)) {
+      if (this._maxPriceRejection(offer, max) !== null) {
         continue;
       }
 
@@ -134,26 +147,44 @@ export class LocalRouter implements Router {
   }
 
   allowsPeerForPricing(req: SerializedHttpRequest, peer: PeerInfo): boolean {
-    const requestedService = this._extractRequestedService(req);
-    const provider = this._selectProviderForPeer(peer, requestedService);
-    if (!provider) return false;
-
-    const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
-    if (!offer) return false;
-
-    const max = this._resolveBuyerMaxPrice(provider, requestedService);
-    return !this._offerExceedsMaxPrice(offer, max);
+    return this._pricingRejection(req, peer) === null;
   }
 
   allowsPeerForPolicy(req: SerializedHttpRequest, peer: PeerInfo): boolean {
-    if (this._effectiveReputation(peer) < this._minReputation) {
-      return false;
+    return this.explainPolicyRejection(req, peer) === null;
+  }
+
+  /**
+   * Human-readable reason `allowsPeerForPolicy` rejects this peer, or null
+   * when it is allowed. Used by route previews.
+   */
+  explainPolicyRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const reputation = this._effectiveReputation(peer);
+    if (reputation < this._minReputation) {
+      return `reputation ${Math.round(reputation)} below buyer minimum ${this._minReputation}`;
     }
-    return this.allowsPeerForPricing(req, peer);
+    return this._pricingRejection(req, peer);
+  }
+
+  /** Why `allowsPeerForPricing` rejects this peer, or null when it is allowed. */
+  private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const requestedService = this._extractRequestedService(req);
+    // A request naming its provider is priced through that provider.
+    const provider = this._namedProvider(req, peer) ?? this._selectProviderForPeer(peer, requestedService);
+    if (!provider) return 'no provider for this model';
+    const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
+    if (!offer) return 'no valid price advertised';
+    return this._maxPriceRejection(offer, this._resolveBuyerMaxPrice(provider, requestedService));
+  }
+
+  private _namedProvider(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const named = Object.entries(req.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1]?.trim().toLowerCase();
+    if (!named) return null;
+    return peer.providers.map((provider) => provider.trim()).find((provider) => provider.toLowerCase() === named) ?? null;
   }
 
   private _effectiveReputation(p: PeerInfo): number {
-    return computeOnChainReputationScore(p) ?? p.reputationScore ?? 0;
+    return normalizedModelReputationScore(p) ?? 0;
   }
 
   private _extractRequestedService(req: SerializedHttpRequest): string | null {
@@ -174,19 +205,46 @@ export class LocalRouter implements Router {
     }
   }
 
-  private _selectProviderForPeer(peer: PeerInfo, requestedService: string | null): string | null {
+  /**
+   * The provider to price and send `requestedService` through. A healthy one
+   * is preferred; only automatic selection (`automatic`) drops a service the
+   * seller's own health check reports failing on every provider that can
+   * serve it (for a native video request, every provider serving its
+   * protocol), so pricing and policy checks still allow a pinned request to
+   * reach it.
+   */
+  private _selectProviderForPeer(
+    peer: PeerInfo,
+    requestedService: string | null,
+    automatic?: { protocol?: ServiceApiProtocol },
+  ): string | null {
     const availableProviders = peer.providers
       .map((provider) => provider.trim())
       .filter((provider) => provider.length > 0);
 
-    if (requestedService && peer.providerPricing) {
-      for (const provider of availableProviders) {
-        const pricing = peer.providerPricing[provider];
-        if (pricing?.services?.[requestedService]) return provider;
-      }
-    }
-
-    return availableProviders[0] ?? null;
+    // The seller's own health check says this provider cannot serve it right now.
+    const isFailing = (provider: string): boolean => requestedService !== null
+      && isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, requestedService));
+    // Providers pricing the service itself come first, then those that list it
+    // at their default price. With neither, any provider may serve it.
+    const pricesService = (provider: string): boolean =>
+      requestedService !== null && Boolean(peer.providerPricing?.[provider]?.services?.[requestedService]);
+    const listsService = (provider: string): boolean => requestedService !== null && [
+      peer.providerServiceApiProtocols, peer.providerServiceCategories, peer.providerServiceCapabilities,
+      peer.providerServiceUnitBillingModels, peer.providerServiceHealth,
+    ].some((matrix) => Boolean(matrix?.[provider]?.services?.[requestedService]));
+    const ordered = [
+      ...availableProviders.filter(pricesService),
+      ...availableProviders.filter((provider) => !pricesService(provider) && listsService(provider)),
+    ];
+    const listed = ordered.length > 0 ? ordered : availableProviders;
+    // A native video request can only go through a provider serving its protocol.
+    const servesProtocol = (provider: string): boolean => automatic?.protocol !== undefined && requestedService !== null
+      && Boolean(peer.providerServiceApiProtocols?.[provider]?.services?.[requestedService]?.includes(automatic.protocol));
+    const candidates = listed.some(servesProtocol) ? listed.filter(servesProtocol) : listed;
+    const healthy = candidates.find((provider) => !isFailing(provider));
+    if (healthy) return healthy;
+    return automatic ? null : candidates[0] ?? null;
   }
 
   private _resolvePeerOfferPrice(
@@ -267,10 +325,24 @@ export class LocalRouter implements Router {
     );
   }
 
-  private _offerExceedsMaxPrice(offer: TokenPricingUsdPerMillion, max: TokenPricingUsdPerMillion): boolean {
+  /** Which of the offer's prices exceeds the buyer's cap, or null when none does. */
+  private _maxPriceRejection(offer: TokenPricingUsdPerMillion, max: TokenPricingUsdPerMillion): string | null {
     const maxCachedInput = max.cachedInputUsdPerMillion ?? max.inputUsdPerMillion;
-    return offer.inputUsdPerMillion > max.inputUsdPerMillion
-      || offer.outputUsdPerMillion > max.outputUsdPerMillion
-      || (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput);
+    if (offer.inputUsdPerMillion > max.inputUsdPerMillion) {
+      return `input price ${formatUsd(offer.inputUsdPerMillion)} over buyer cap ${formatUsd(max.inputUsdPerMillion)}`;
+    }
+    if (offer.outputUsdPerMillion > max.outputUsdPerMillion) {
+      return `output price ${formatUsd(offer.outputUsdPerMillion)} over buyer cap ${formatUsd(max.outputUsdPerMillion)}`;
+    }
+    if (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput) {
+      return `cached input price ${formatUsd(offer.cachedInputUsdPerMillion)} over buyer cap ${formatUsd(maxCachedInput)}`;
+    }
+    return null;
   }
+}
+
+/** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
+function formatUsd(value: number): string {
+  if (value > 0 && value < 0.01) return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`;
+  return `$${Math.round(value * 10_000) / 10_000}`;
 }

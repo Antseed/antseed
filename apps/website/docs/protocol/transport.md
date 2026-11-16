@@ -1,27 +1,27 @@
 ---
-sidebar_position: 3
 slug: /transport
 title: Transport
+description: Connection handshake, transport modes, binary framing, and every message type on the Antseed peer-to-peer wire.
 hide_title: true
 ---
 
 # Transport
 
-The transport layer handles peer-to-peer communication over direct, end-to-end encrypted connections. Between nodes the preferred transport is an encrypted TCP channel; WebRTC DataChannels (via `node-datachannel`) are used for peers that cannot open TCP sockets, such as browsers. All messages are transmitted as binary frames. Compatible with existing AI API formats, so existing tools work without modification.
+The transport layer carries all buyer-seller traffic over direct, authenticated peer-to-peer connections. Between nodes the preferred transport is encrypted TCP; WebRTC DataChannels (via `node-datachannel`) serve peers that cannot open TCP sockets. Every message is a binary frame, and proxied HTTP requests keep their original API format, so existing tools work without modification.
 
-## Transport Modes
+## Transport modes
 
 Transport selection is capability-driven; a node advertises what it supports in its signed discovery metadata.
 
 | Mode | Library | Description |
 |---|---|---|
-| encrypted TCP (`transport.tcp-enc.v1`) | Node.js net | **Preferred.** Direct TCP with a mutually authenticated, encrypted channel (X25519 + AES-256-GCM) |
-| plaintext TCP | Node.js net | Legacy fallback for peers that do not advertise encrypted TCP |
-| webrtc (`transport.webrtc.v1`) | node-datachannel | WebRTC DataChannel (DTLS) via TCP signaling, for peers that cannot use TCP directly |
+| Encrypted TCP (`transport.tcp-enc.v1`) | Node.js net | **Preferred.** Direct TCP with a mutually authenticated, encrypted channel: wallet-signed ephemeral X25519 keys, HKDF-SHA256, one AES-256-GCM key per direction |
+| Plaintext TCP | Node.js net | Legacy fallback for peers that do not advertise encrypted TCP |
+| WebRTC (`transport.webrtc.v1`) | node-datachannel | WebRTC DataChannel (DTLS) via TCP signaling, for peers that cannot use TCP directly |
 
-An initiator uses encrypted TCP whenever the peer supports it, WebRTC only for peers that advertise WebRTC but not encrypted TCP, and plaintext TCP only with legacy peers. Encrypted TCP is preferred partly because WebRTC DataChannel messages are capped at 256 KiB, below the protocol's frame sizes.
+An initiator uses encrypted TCP whenever the peer supports it, WebRTC only for peers that advertise WebRTC but not encrypted TCP, and plaintext TCP only with legacy peers. Once encryption is offered, a handshake timeout fails closed; it never downgrades to plaintext. Encrypted TCP is preferred partly because WebRTC DataChannel messages are capped at 256 KiB, below the protocol's frame sizes.
 
-## Seller Networking
+## Seller networking
 
 A seller must announce an address that buyers can reach from the public internet. The default seller signaling/TCP port is `6882`; the DHT port is `6881`. `seller.publicAddress` should point to the public hostname or IP and the externally reachable signaling port, not a LAN address such as `192.168.x.x` or `10.x.x.x`.
 
@@ -32,7 +32,7 @@ antseed seller doctor
 
 `antseed seller start` prints a prominent warning when `publicAddress` is empty or uses a loopback, private, link-local, unspecified, or multicast IP. `antseed seller doctor` classifies the configured address and attempts a bounded TCP connection from the seller machine. A successful local connection is useful but does **not** prove that inbound NAT traversal works; verify the same endpoint from a different network before considering the seller reachable.
 
-### Home or Office NAT
+### Home or office NAT
 
 1. Give the seller machine a stable LAN address.
 2. Forward the external TCP port (normally `6882`) on the router to the seller machine's signaling port.
@@ -42,64 +42,88 @@ antseed seller doctor
 
 Some routers do not support NAT loopback (hairpinning), so a local probe to the public address can fail even when external clients can connect. Conversely, a local listener can succeed while the router still blocks inbound traffic. Carrier-grade NAT (CGNAT) usually prevents port forwarding entirely; request a public IP from the ISP or use a VPS pattern instead.
 
-### VPS and Reverse Tunnels
+### VPS and reverse tunnels
 
 The simplest production deployment is a VPS with a public IP: allow inbound TCP on the announced port and run the seller there. If inference must remain on a private machine, expose its signaling port through a stable TCP reverse tunnel or gateway on a VPS, then announce the VPS hostname and public port. Configure the tunnel as a supervised service so it reconnects after restarts, and restrict firewall access to only the required ports.
 
 Do not announce SSH-only tunnels, private VPN addresses, or temporary tunnel hostnames that buyers cannot reach. Re-run `antseed seller doctor` and an external connection test after changing DNS, firewall, router, or tunnel settings.
 
-## Frame Protocol
+## Connection handshake
+
+Every connection opens with one signed JSON line before any binary frame. TCP connections send an `intro` line; WebRTC signaling sends `hello`. The line carries the sender's capabilities and an authentication envelope:
+
+```json title="intro line"
+{
+  "type": "intro",
+  "auth": { "peerId": "<peerId>", "ts": 1760000000000, "nonce": "<32 hex chars>", "sig": "<130 hex chars>", "v": 2 },
+  "capabilities": ["transport.tcp-enc.v1", "payments.cooperative-close.v1"],
+  "enc": { "pub": "<X25519 public key>", "sig": "<signature>" }
+}
+```
+
+- `sig` is an EIP-191 `personal_sign` over `antseed-msg-v1:` followed by `intro|<peerId>|<ts>|<nonce>`. Version 2 envelopes (`"v": 2`) also sign the capability list and the encryption public key (`…|caps=<JSON>|enc=<pub or ->`), so neither can be stripped or altered in transit.
+- The receiver recovers the signer with `ecrecover`, checks it matches `peerId`, rejects timestamps more than 30 seconds off its clock, and rejects nonces it has already seen.
+- The initial line must arrive within 10 seconds and is capped at 8 KiB.
+- With encrypted TCP, the `enc` offer carries a signed ephemeral X25519 key. The responder answers with a signed `enc-ack` line whose signature also covers the initiator's nonce, which gives mutual authentication. Everything after `enc-ack` is encrypted frames.
+- With WebRTC, peers that advertise `transport.signed-sdp.v1` sign the SDP hash, which binds the DTLS fingerprint to the wallet identity.
+
+## Frame format
 
 ```text title="frame header (9 bytes)"
 Offset  Size  Type          Field
-0       1     uint8         type (MessageType)
+0       1     uint8         type (message type)
 1       4     uint32 BE     messageId
 5       4     uint32 BE     payloadLength
 ```
 
-Max payload size: 64 MB. Frames exceeding this are rejected.
+The maximum payload is 64 MiB; larger frames are rejected. Proxy, keepalive, payment, verification, and sweep messages share this header and one connection. Payment payloads are JSON.
 
-## Message Types
+## Message types
 
-| Hex | Name | Purpose |
-|---|---|---|
-| 0x01 | HandshakeInit | Initiator -> Responder |
-| 0x02 | HandshakeAck | Responder -> Initiator |
-| 0x10 | Ping | Keepalive probe |
-| 0x11 | Pong | Keepalive response |
-| 0x20 | HttpRequest | Buyer -> Seller: proxy request |
-| 0x21 | HttpResponse | Seller -> Buyer: complete response |
-| 0x22 | HttpResponseChunk | Seller -> Buyer: streaming chunk |
-| 0x23 | HttpResponseEnd | Seller -> Buyer: final chunk |
-| 0x24 | HttpResponseError | Seller -> Buyer: error |
-| 0x25 | HttpRequestChunk | Buyer -> Seller: chunked upload body |
-| 0x26 | HttpRequestEnd | Buyer -> Seller: chunked upload end |
-| 0x50 | SpendingAuth | Buyer -> Seller: EIP-712 spending authorization |
-| 0x51 | AuthAck | Seller -> Buyer: reserve() confirmed |
-| 0x53 | SellerReceipt | Seller -> Buyer: running-total receipt |
-| 0x54 | BuyerAck | Buyer -> Seller: receipt acknowledgement |
-| 0x55 | TopUpRequest | Seller -> Buyer: request additional auth |
-| 0x56 | PaymentRequired | Seller -> Buyer: 402 payment terms |
-| 0xF0 | Disconnect | Graceful disconnect |
-| 0xFF | Error | Protocol-level error |
+This is the complete list from `packages/protocol/src/messages.ts`.
 
-## Handshake (EIP-191 Challenge-Response)
+| Hex | Name | Direction | Purpose |
+|---|---|---|---|
+| 0x10 | Ping | Either | Keepalive probe |
+| 0x11 | Pong | Either | Keepalive response |
+| 0x20 | HttpRequest | Buyer → seller | Proxied HTTP request |
+| 0x21 | HttpResponse | Seller → buyer | Complete response, or the head of a streamed response |
+| 0x22 | HttpResponseChunk | Seller → buyer | Streaming body chunk |
+| 0x23 | HttpResponseEnd | Seller → buyer | Final chunk |
+| 0x24 | HttpResponseError | Seller → buyer | Error response |
+| 0x25 | HttpRequestChunk | Buyer → seller | Chunked upload body (bodies over 240 KiB, sent in 8 KiB chunks) |
+| 0x26 | HttpRequestEnd | Buyer → seller | End of a chunked upload |
+| 0x27 | HttpResponseAck | Buyer → seller | Flow-control acknowledgement for large downloads such as video |
+| 0x28 | HttpRequestCancel | Buyer → seller | Cancel an in-flight download |
+| 0x50 | SpendingAuth | Buyer → seller | EIP-712 SpendingAuth, plus a ReserveAuth when opening or topping up a channel |
+| 0x51 | AuthAck | Seller → buyer | `reserve()` confirmed on-chain |
+| 0x52 | FreeUsageOpen | Buyer → seller | Open a zero-price usage channel |
+| 0x53 | FreeUsageAuth | Buyer → seller | Signed cumulative zero-price usage record |
+| 0x54 | FreeUsageAck | Seller → buyer | Free usage open or record accepted |
+| 0x55 | NeedFreeUsageAuth | Seller → buyer | Ask the buyer to sign usage for a completed free request |
+| 0x56 | PaymentRequired | Seller → buyer | Sent with an HTTP 402: payment terms, or the amount needed to continue an exhausted channel |
+| 0x58 | NeedAuth | Seller → buyer | Cost and usage of the last request, and the cumulative amount the buyer must sign next |
+| 0x59 | CloseChannelRequest | Buyer → seller | Ask the seller to close a channel now (cooperative close) |
+| 0x5A | CloseChannelResult | Seller → buyer | Close transaction hash, or a rejection code |
+| 0x80 | VerificationResponseAuth | Seller → buyer | Seller-signed hash commitment for a completed response |
+| 0xA0 | SweepRequest | Buyer → peers | Signed gasless deposit sweep for a relayer to submit |
+| 0xA1 | SweepReceipt | Relayer → buyer | Optional sweep progress report |
 
-```text title="handshake flow"
-Initiator                       Responder
-  │                               │
-  ├── HandshakeInit ─────────────>│
-  │   (evmAddress + nonce + sig)  │
-  │                               │
-  │<──── HandshakeAck ────────────┤
-  │   (evmAddress + nonce echo    │
-  │    + sig)                     │
-  │                               │
-  │   Both sides: Authenticated   │
-  └───────────────────────────────┘
-```
+Types 0x01-0x02 (HandshakeInit/HandshakeAck), 0x60-0x61 (reports), 0x70-0x72 (ratings), and 0xF0/0xFF (Disconnect/Error) are defined in the enum but not sent; the handshake is the signed `intro` line above. The range 0x90-0x9F is reserved.
 
-Each side sends a 32-byte random nonce signed with its secp256k1 private key via EIP-191 `personal_sign`. The responder echoes the initiator's nonce to prove it received the challenge. Verification uses `ecrecover` to confirm the signer matches the claimed EVM address. Handshake timeout: 10 seconds.
+## Capabilities
+
+Peers announce capability strings in the handshake and in signed discovery metadata. Optional features are used only when the other side advertises them.
+
+| Capability | Meaning |
+|---|---|
+| `transport.tcp-enc.v1` | Supports encrypted TCP |
+| `transport.webrtc.v1` | Has a working WebRTC stack and accepts `hello` signaling |
+| `transport.signed-sdp.v1` | Signs WebRTC SDP |
+| `payments.cooperative-close.v1` | Seller honours CloseChannelRequest (0x59/0x5A) |
+| `payments.relays-sweeps.v1` | Peer relays SweepRequest (0xA0) on-chain |
+| `verification.response-auth.v1` | Seller sends VerificationResponseAuth (0x80) |
+| `seller.model-health.v1` | Seller self-checks its models and stops advertising ones that fail |
 
 ## Keepalive
 
@@ -109,62 +133,21 @@ Each side sends a 32-byte random nonce signed with its secp256k1 private key via
 | Pong timeout | 5 seconds |
 | Max missed pongs | 3 (connection declared dead) |
 
-## Reconnection
+## Payment negotiation
 
-Exponential backoff with jitter: base delay 1s, max delay 30s, max 5 attempts. Formula: `min(baseDelay * 2^attempt + jitter, maxDelay)`. The buyer proxy handles transport reconnection independently from model-route failover. For model-only conversations, it softly prefers the seller that previously served the conversation and switches only when that route is unavailable, cooling down, policy-ineligible, or fails retryably. Explicit peer pins never switch automatically.
+When a buyer sends a request without an active channel, the seller answers with HTTP 402 and a PaymentRequired (0x56) frame carrying the seller's prices and a suggested amount. The buyer node handles this internally: it signs a ReserveAuth and a SpendingAuth, sends them in a SpendingAuth (0x50) frame, waits up to 30 seconds for AuthAck (0x51) after the seller's on-chain `reserve()`, then retries the original request.
 
-## Payment Messages
-
-Payment messages use the type range 0x50-0x5F. All payment payloads are JSON-encoded within the standard 9-byte binary frame.
-
-| Hex | Name | Direction | Purpose |
-|---|---|---|---|
-| 0x50 | SpendingAuth | Buyer → Seller | EIP-712 signed spending authorization |
-| 0x51 | AuthAck | Seller → Buyer | Seller confirms on-chain reserve() succeeded |
-| 0x53 | SellerReceipt | Seller → Buyer | Seller reports usage/charge during or after serve |
-| 0x54 | BuyerAck | Buyer → Seller | Buyer acknowledges receipt |
-| 0x55 | TopUpRequest | Seller → Buyer | Seller requests additional spending authorization |
-| 0x56 | PaymentRequired | Seller → Buyer | 402 trigger with payment terms |
-
-## PaymentMux
-
-Payment messages are multiplexed over the same peer connection as proxy traffic. The 9-byte frame header (`type`, `messageId`, `payloadLength`) is shared across all message types — proxy (0x20-0x24), keepalive (0x10-0x11), and payment (0x50-0x5F). No separate connection or out-of-band channel is required.
-
-The `messageId` field links payment messages to their originating proxy request. For example, a SpendingAuth (0x50) triggered by a specific HttpResponse carrying a 402 status uses the same `messageId` as that proxy exchange, allowing the seller to correlate the authorization with the pending request.
-
-## 402 Payment Negotiation
-
-When a buyer sends a request to a seller with no active spending authorization, the seller responds with HTTP 402 and a PaymentRequired (0x56) message. Two negotiation modes handle what happens next.
-
-### Auto Mode
-
-The buyer node intercepts the 402 internally — it never reaches the application. The node checks the buyer's on-chain balance, signs a SpendingAuth (EIP-712), and sends it to the seller via PaymentMux. The seller verifies the signature, calls `reserve()` on-chain, and responds with AuthAck. The buyer then retries the original request.
-
-```text title="auto mode flow"
+```text title="payment negotiation"
 Buyer                           Seller                          Chain
-  │                               │                               │
   ├── HttpRequest (0x20) ────────>│                               │
-  │                               │                               │
-  │<── PaymentRequired (0x55) ────┤                               │
-  │   (sellerEvmAddr, tokenRate,  │                               │
-  │    firstSignCap, suggested)   │                               │
-  │                               │                               │
-  │   [check balance, sign]       │                               │
-  │                               │                               │
+  │<── 402 + PaymentRequired (0x56)┤                               │
   ├── SpendingAuth (0x50) ───────>│                               │
-  │    (EIP-712 signature)        │                               │
-  │                               ├── reserve() ─────────────────>│
-  │                               │<── tx confirmed ──────────────┤
-  │                               │                               │
-  │<── AuthAck (0x51) ────────────┤                               │
-  │                               │                               │
-  ├── HttpRequest (0x20) ────────>│   [retry, serves normally]    │
+  │   (ReserveAuth + SpendingAuth)├── reserve() ─────────────────>│
+  │<── AuthAck (0x51) ────────────┤<── confirmed ─────────────────┤
+  ├── HttpRequest (0x20) ────────>│   retry, served normally      │
   │<── HttpResponse (0x21) ───────┤                               │
-  └───────────────────────────────┘                               │
+  │<── NeedAuth (0x58) ───────────┤   cost of that request        │
+  ├── SpendingAuth (0x50) ───────>│   new cumulative amount       │
 ```
 
-During serving, SellerReceipt (0x52) and BuyerAck (0x53) messages flow alongside proxy traffic for bilateral accounting. When usage exceeds 80% of the authorized `maxAmount`, the seller sends a TopUpRequest (0x54) to request additional authorization before the current one is exhausted.
-
-### Manual Mode
-
-The 402 and PaymentRequired payload propagate to the application (e.g., the desktop app). The user sees an approval card with the seller's terms. On approval, the application signs the SpendingAuth and encodes it as base64 in the `x-antseed-spending-auth` HTTP header on the retry request. The buyer node extracts the header before proxying and sends the SpendingAuth via PaymentMux (0x50). From there, the on-chain flow is identical to auto mode.
+After each served request the seller sends NeedAuth (0x58) with the request's cost and token usage; the buyer checks it and signs the new cumulative amount. An application can also supply a pre-signed authorization in the `x-antseed-spending-auth` header (base64), which the buyer node strips and forwards as a SpendingAuth frame. Channel economics, top-ups, and free usage are described in [Payments](/docs/payments).

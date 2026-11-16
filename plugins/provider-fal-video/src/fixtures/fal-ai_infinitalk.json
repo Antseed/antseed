@@ -1,0 +1,110 @@
+{
+  "paths": {
+    "/fal-ai/infinitalk": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InfinitalkInput"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "InfinitalkInput": {
+        "required": [
+          "image_url",
+          "audio_url",
+          "prompt"
+        ],
+        "x-fal-order-properties": [
+          "image_url",
+          "audio_url",
+          "prompt",
+          "num_frames",
+          "resolution",
+          "seed",
+          "acceleration",
+          "enable_safety_checker"
+        ],
+        "properties": {
+          "audio_url": {
+            "description": "The URL of the audio file.",
+            "examples": [
+              "https://v3.fal.media/files/penguin/PtiCYda53E9Dav25QmQYI_output.mp3"
+            ],
+            "title": "Audio URL",
+            "type": "string"
+          },
+          "acceleration": {
+            "description": "The acceleration level to use for generation.",
+            "title": "Acceleration",
+            "enum": [
+              "none",
+              "regular",
+              "high"
+            ],
+            "type": "string",
+            "default": "regular"
+          },
+          "resolution": {
+            "description": "Resolution of the video to generate. Must be either 480p or 720p.",
+            "title": "Resolution",
+            "enum": [
+              "480p",
+              "720p"
+            ],
+            "type": "string",
+            "default": "480p"
+          },
+          "seed": {
+            "description": "Random seed for reproducibility. If None, a random seed is chosen.",
+            "maximum": 4294967295,
+            "title": "Seed",
+            "minimum": 0,
+            "type": "integer",
+            "default": 42
+          },
+          "prompt": {
+            "description": "The text prompt to guide video generation.",
+            "examples": [
+              "A woman with colorful hair talking on a podcast."
+            ],
+            "title": "Prompt",
+            "type": "string"
+          },
+          "enable_safety_checker": {
+            "description": "Authorized callers may set false to request relaxed screening.",
+            "title": "Enable Safety Checker",
+            "type": "boolean",
+            "default": true
+          },
+          "image_url": {
+            "description": "URL of the input image. If the input image does not match the chosen aspect ratio, it is resized and center cropped.",
+            "examples": [
+              "https://v3.fal.media/files/koala/gmpc0QevDF9bBsL1EAYVF_1c637094161147559f0910a68275dc34.png"
+            ],
+            "title": "Image URL",
+            "type": "string"
+          },
+          "num_frames": {
+            "description": "Number of frames to generate. Must be between 41 to 721.",
+            "maximum": 721,
+            "title": "Number of Frames",
+            "minimum": 41,
+            "type": "integer",
+            "default": 145
+          }
+        },
+        "title": "InfiniTalkSingleAudioRequest",
+        "type": "object"
+      }
+    }
+  }
+}

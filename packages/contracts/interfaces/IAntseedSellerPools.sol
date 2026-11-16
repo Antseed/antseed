@@ -110,6 +110,7 @@ interface IAntseedSellerPools {
 
     function antsToken() external view returns (IERC20);
     function currentEpoch() external view returns (uint256);
+    function stakeActivationDelay() external view returns (uint256);
     function agentIdForSeller(address seller) external view returns (uint256);
     function positionWithdrawableEpoch(uint256 positionId) external view returns (uint64);
 

@@ -1,5 +1,9 @@
+@use '../../theme-tokens' as tokens;
+
 /* ===================================================================
-   SetupScreen — first-run screen: finding a free model on the network
+   SetupScreen — first-run screen: finding a free model on the network.
+   A glass card over the home's living field. The field is daylight art,
+   so this stays on the day palette whatever the saved theme is.
    =================================================================== */
 
 /* Nothing visible on top — just an invisible drag handle so the frameless
@@ -15,32 +19,55 @@
 }
 
 .container {
+  @include tokens.day-tokens;
   position: fixed;
   inset: 0;
-  display: flex;
-  justify-content: center;
-  background: var(--bg-primary);
   z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 44px 24px 24px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
-.content {
-  margin-top: 6%;
+.card {
+  position: relative;
+  width: min(100%, 560px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0;
-  max-width: 380px;
-  width: 100%;
+  padding: 28px 32px;
+  border-radius: 24px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: var(--shadow);
   text-align: center;
 }
 
-/* Ant mark + "VPR" wordmark — the setup screen's only branding. */
-.brand {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
+.logo {
+  display: block;
+  margin-bottom: clamp(12px, 3vh, 24px);
+  color: var(--text-primary);
+}
+
+.heading {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: clamp(26px, 4.4vh, 36px);
+  font-weight: 470;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+}
+
+.tagline {
+  margin: 10px 0 0;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.4;
+  opacity: 0.86;
 }
 
 /* ------------------------------------------------------------------ */
@@ -50,17 +77,16 @@
 .marquee {
   width: 100%;
   overflow: hidden;
-  margin-top: 18px;
+  margin: clamp(14px, 3vh, 24px) 0;
   /* Soft edges so logos fade in/out instead of being clipped. */
   mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
 }
 
 .marqueeTrack {
   display: flex;
   width: max-content;
-  gap: 28px;
-  padding: 4px 14px;
+  gap: 16px;
+  padding: 4px 8px;
   animation: marquee-drift 28s linear infinite;
 }
 
@@ -74,34 +100,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
   border-radius: 12px;
-  background: var(--bg-card);
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text-secondary);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .marqueeTrack {
-    animation: none;
-  }
-}
-
 /* ------------------------------------------------------------------ */
-/*  Footer — activity line, compact tallies, first-run note            */
+/*  Tallies and first-run note                                          */
 /* ------------------------------------------------------------------ */
-
-.footer {
-  position: absolute;
-  bottom: 20px;
-  left: 0;
-  right: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
 
 .statStrip {
   display: flex;
@@ -109,9 +118,9 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 0;
-  font-size: 11px;
-  line-height: 14px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -121,7 +130,7 @@
 }
 
 .statItemLive .statValue {
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-weight: 600;
   display: inline-block;
   animation: stat-pop 0.35s ease;
@@ -136,6 +145,13 @@
   opacity: 0.6;
 }
 
+.firstRunNote {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Current activity — what the buyer node is doing right now          */
 /* ------------------------------------------------------------------ */
@@ -147,9 +163,10 @@
   gap: 9px;
   /* Fixed height so phase swaps (and the ready state taking over)
      never shift the layout below. */
-  height: 20px;
-  font-size: 13px;
-  color: var(--text-secondary);
+  min-height: 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
   animation: rise-in 0.35s ease;
 }
 
@@ -168,6 +185,7 @@
 }
 
 .thinkingDots {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -176,7 +194,7 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: var(--accent-green);
+    background: var(--text-primary);
     animation: thinking-dot-pulse 1.2s ease-in-out infinite;
 
     &:nth-child(2) { animation-delay: 0.2s; }
@@ -192,11 +210,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  height: 20px;
-  font-size: 13px;
+  gap: 7px;
+  min-height: 20px;
+  font-size: 14px;
   font-weight: 500;
-  color: var(--accent-green);
+  color: var(--leaf-ink);
   animation: rise-in 0.4s ease;
 }
 
@@ -204,35 +222,41 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent-green);
+  background: var(--status-dot);
   flex-shrink: 0;
 }
 
 /* ------------------------------------------------------------------ */
-/*  First-run note (in the footer)                                     */
-/* ------------------------------------------------------------------ */
-
-.firstRunNote {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: center;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Network trouble hint                                               */
+/*  Network trouble hint: an amber dot and one calm line               */
 /* ------------------------------------------------------------------ */
 
 .networkHint {
-  max-width: 380px;
-  margin-top: 20px;
-  padding: 10px 14px;
-  font-size: 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 14px 0 0;
+  color: var(--text-primary);
+  font-size: 12.5px;
   line-height: 1.5;
-  color: #fbbf24;
   text-align: left;
-  background: rgba(251, 191, 36, 0.08);
-  border: 1px solid rgba(251, 191, 36, 0.2);
-  border-radius: 8px;
   animation: rise-in 0.4s ease;
+}
+
+.networkDot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-yellow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marqueeTrack,
+  .activity,
+  .ready,
+  .networkHint,
+  .statItemLive .statValue,
+  .thinkingDots span {
+    animation: none;
+  }
 }

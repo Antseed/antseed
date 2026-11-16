@@ -9,8 +9,8 @@ type ToolApprovalCardProps = {
   onDeny: () => void;
 };
 
-function getPeerLabel(request: ToolApprovalRequest): string {
-  return request.peerName || (request.peerId ? `${request.peerId.slice(0, 8)}…` : 'this peer');
+function getModelLabel(request: ToolApprovalRequest): string {
+  return request.modelName || request.modelId || 'this model';
 }
 
 function getToolLabel(toolName: string): string {
@@ -31,18 +31,18 @@ export function ToolApprovalCard({ request, pendingCount = 0, onAllowOnce, onAlw
   if (!request) return null;
 
   const queuedCount = Math.max(0, pendingCount - 1);
-  const peerLabel = getPeerLabel(request);
+  const modelLabel = getModelLabel(request);
   const toolLabel = getToolLabel(request.toolName);
   const subject = request.subject ? shortenSubject(request.subject, request.workspacePath) : '';
   const question = request.title;
   const permissionLabel = request.permissionLabel || `${toolLabel} requests`;
-  const alwaysAllowTitle = `Future ${permissionLabel} from ${peerLabel} will run without asking.`;
+  const alwaysAllowTitle = `Future ${permissionLabel} from ${modelLabel} will run without asking.`;
 
   return (
     <div className={styles.approval} role="group" aria-label={question}>
       <div className={styles.header}>
         <div className={styles.headerText}>
-          <span className={styles.kicker}>Tool approval · {peerLabel}</span>
+          <span className={styles.kicker}>Tool approval · {modelLabel}</span>
           <span className={styles.title}>{question}</span>
         </div>
         {queuedCount > 0 ? <span className={styles.queueBadge}>{queuedCount} queued</span> : null}
@@ -54,7 +54,7 @@ export function ToolApprovalCard({ request, pendingCount = 0, onAllowOnce, onAlw
       </div>
 
       {request.canAlwaysAllow ? (
-        <div className={styles.scopeNote}>Always allow means future <strong>{permissionLabel}</strong> from <strong>{peerLabel}</strong> will not ask again.</div>
+        <div className={styles.scopeNote}>Always allow means future <strong>{permissionLabel}</strong> from <strong>{modelLabel}</strong> will not ask again.</div>
       ) : null}
 
       <div className={styles.actions}>

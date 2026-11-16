@@ -1,0 +1,98 @@
+.panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.noteError {
+  color: var(--text-primary);
+}
+
+.pageHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.pageText {
+  flex: 1 1 280px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+.copyPrompt {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.copyPrompt:hover {
+  opacity: 0.88;
+}
+
+.noteRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.noteRow .note {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.openAgent {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 10px 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.openAgent:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.openAgent:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
+}
+
+.openAgent:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

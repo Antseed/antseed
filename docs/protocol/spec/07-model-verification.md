@@ -21,7 +21,7 @@ as well as an honest one, because delivery still happened.
 This is not hypothetical. "Real Money, Fake Models" audits shadow APIs claiming
 to serve official frontier models and finds utility, safety, and identity
 divergence between claimed and served behavior
-(https://arxiv.org/abs/2603.01919). AntSeed's model-verification layer is the
+(https://arxiv.org/abs/2603.01919). Antseed's model-verification layer is the
 protocol response to that failure mode: make served bytes attributable first,
 then run black-box identity checks over attributable evidence.
 
@@ -360,7 +360,7 @@ also limited: when multiple frontier models answer a probe set perfectly, that
 probe set has no discriminating power. KBF therefore depends on fresh, private,
 model-specific references, not only public probes checked into source control.
 
-An AntSeed KBF verifier MUST implement:
+An Antseed KBF verifier MUST implement:
 
 - domain-specific prompt templates;
 - domain-specific numeric ranges and tolerances;
@@ -423,7 +423,7 @@ boundaries, schema repair, and hidden-instruction resistance. This often
 fingerprints the **Seller stack** (base model plus wrapper), not only the base
 model.
 
-For AntSeed this is still valuable: Buyers care about the service they receive,
+For Antseed this is still valuable: Buyers care about the service they receive,
 including wrappers. For model-identity slashing, the verifier MUST distinguish
 "different wrapper" from "different claimed model" in the verdict reason.
 
@@ -475,7 +475,7 @@ https://arxiv.org/abs/2606.10794).
 
 ## Package Boundaries
 
-The implementation SHOULD be split into pure verifier logic and AntSeed runtime
+The implementation SHOULD be split into pure verifier logic and Antseed runtime
 orchestration.
 
 ### `@antseed/fingerprints`
@@ -584,7 +584,7 @@ separate from audit results.
 Public references and fingerprints are useful for tests, demos, interop,
 bootstrap, and network-wide reputation. They are weaker than private probes for
 adversarial production use because a Seller can learn them, but they are still
-strategically important: AntSeed SHOULD become the decentralized public
+strategically important: Antseed SHOULD become the decentralized public
 fingerprint swarm for model fingerprints, verifier references, staleness
 signals, and reproducible audit packs.
 
@@ -719,7 +719,7 @@ Generation rules:
 
 ## Buyer Audit Execution
 
-A Buyer audit is a normal AntSeed request sequence with extra local bookkeeping.
+A Buyer audit is a normal Antseed request sequence with extra local bookkeeping.
 The Seller should not be able to tell whether a request is user traffic or audit
 traffic.
 
@@ -883,7 +883,7 @@ Reference maintenance rules:
   models SHOULD be marked stale.
 
 Growing references is both a local Buyer capability and a network capability.
-From day one, AntSeed SHOULD support public signed fingerprint packs so the
+From day one, Antseed SHOULD support public signed fingerprint packs so the
 network can accumulate shared model fingerprints over time. Private Buyer
 references remain local and SHOULD NOT be published. On-chain storage of probe
 files is explicitly out of scope. Storing probes on-chain makes them public,
@@ -1086,7 +1086,7 @@ step 9, which does not depend on the Buyer's samples at all.
 | Min samples per verdict | `N` | 30 | Below this, no M2 verdict is emitted |
 | Distributional fail threshold | — | tuned on real traffic | Drives *local* flagging only |
 | Probe cadence (if M1 used) | — | 1 / 20 requests | M1 is deterrence/triage only |
-| KBF batch size | — | 10 probes | One AntSeed request per domain batch |
+| KBF batch size | — | 10 probes | One Antseed request per domain batch |
 | KBF min coverage | — | 0.5 | Below this, verdict is `UNDETERMINED` |
 | KBF CP confidence | — | 0.99 | Upper bound for reference self-error |
 | KBF alpha | — | 0.05 | One-sided binomial threshold for `DIFF` |

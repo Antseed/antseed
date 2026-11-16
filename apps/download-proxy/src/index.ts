@@ -1,5 +1,5 @@
 /**
- * AntSeed download proxy — a Cloudflare Worker on download.antseed.com.
+ * Antseed download proxy — a Cloudflare Worker on download.antseed.com.
  *
  * Serves the desktop installers from GitHub Releases through our own domain
  * so we can observe what a plain link to GitHub never reveals: whether a

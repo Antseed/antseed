@@ -115,6 +115,25 @@ export function transformRequest(
   };
 }
 
+/**
+ * Render a Chat Completions, Anthropic Messages or Responses request body as a plain
+ * OpenAI Chat Completions body, using the same normalizers as `transformRequest`.
+ * Unlike a transform for dispatch, no downstream-execution additions are made (no
+ * Responses agent instructions or synthetic tools), so the result describes exactly
+ * what the client asked for. Returns null for unsupported protocols.
+ */
+export function renderRequestBodyAsOpenAIChat(
+  from: ServiceApiProtocol,
+  body: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (from === 'openai-chat-completions') return structuredClone(body);
+  const normalize = REQUEST_NORMALIZERS[from];
+  if (!normalize) return null;
+  return renderCanonicalRequestToOpenAIChatBody(normalize(body), {
+    groupAssistantToolCallsWithPreviousMessage: from === 'anthropic-messages',
+  });
+}
+
 function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<string, unknown> | null {
   if (!Array.isArray(body.input)) return null;
 

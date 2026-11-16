@@ -198,6 +198,77 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     );
   });
 
+  it('keeps the settleable auth when the buyer offers one above the deposit, and adopts it once the chain shows a larger deposit', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    // 12M is above the 10M deposit: close() would revert InvalidAmount.
+    const above = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(above.status).toBe('closed');
+    expect(above.finalAmount).toBe('400000');
+  });
+
+  it('raises a stale reserve ceiling to the on-chain deposit before judging a close auth', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    // A top-up to 15M confirmed on-chain, but the seller never recorded it.
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+
+    const result = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(result.status).toBe('closed');
+    expect(result.finalAmount).toBe('12000000');
+    expect(store.getChannel(CHANNEL_ID)!.previousConsumption).toBe('15000000');
+  });
+
+  it('keeps a buyer close auth above a stale ceiling when the deposit read fails, and retries the read at once', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    const getSession = vi.spyOn(manager.channelsClient, 'getSession')
+      .mockRejectedValueOnce(new Error('rpc down'))
+      .mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+
+    const failed = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(failed).toMatchObject({ status: 'rejected', code: 'close_failed' });
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+
+    const closed = await manager.handleCloseChannelRequest(buyer.peerId, await buildCloseRequest(buyer, 12_000_000n), mux);
+    expect(closed.status).toBe('closed');
+    expect(closed.finalAmount).toBe('12000000');
+    expect(getSession.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shares one pending on-chain ceiling read between concurrent callers', async () => {
+    let release!: () => void;
+    const getSession = vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve({ ...onChainChannel(buyer, seller, 0n), deposit: 15_000_000n });
+    }));
+
+    const first = manager.refreshReserveMaxFromChain(CHANNEL_ID);
+    const second = manager.refreshReserveMaxFromChain(CHANNEL_ID);
+    release();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([15_000_000n, 15_000_000n]);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    // A third call inside the interval reads nothing and sees the raised ceiling.
+    await expect(manager.refreshReserveMaxFromChain(CHANNEL_ID)).resolves.toBe(15_000_000n);
+    expect(getSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('never brings back a channel it closed, even when a lagging node still reports it active', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    const closed = await manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    expect(closed.status).toBe('closed');
+    const getSession = vi.mocked(manager.channelsClient.getSession);
+    getSession.mockClear();
+
+    // A late auth for the closed channel: the stale node would say "active".
+    expect(await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 500_000n), mux)).toBe('rejected');
+    expect(getSession).not.toHaveBeenCalled();
+    expect(manager.hasSession(buyer.peerId)).toBe(false);
+    expect(store.getChannel(CHANNEL_ID)!.status).toBe(CHANNEL_STATUS.SETTLED);
+  });
+
   it('keeps the seller-held cumulative when the buyer offers a lower one', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 900_000n), mux);
     manager.recordSpend(CHANNEL_ID, 900_000n);
@@ -346,7 +417,7 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
       buyer.peerId,
       { version: 1, channelId: CHANNEL_ID },
       mux,
-      // The catch-up wait resolves immediately: no auth will arrive in a unit test.
+      // No buyer answers the NeedAuth here, so the close waits out the catch-up window.
     );
 
     expect(result.status).toBe('rejected');
@@ -358,6 +429,29 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(needAuth.channelId).toBe(CHANNEL_ID);
     expect(needAuth.requiredCumulativeAmount).toBe('750000');
   }, 10_000);
+
+  it('asks for the catch-up auth before waiting, so a buyer that answers gets its close', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 750_000n);
+
+    // The buyer never heard about the extra spend (e.g. a NeedAuth lost to a
+    // seller restart); it signs as soon as the seller asks.
+    mux.sendNeedAuth = (payload: unknown) => {
+      mux.sentNeedAuths.push(payload);
+      const required = BigInt((payload as { requiredCumulativeAmount: string }).requiredCumulativeAmount);
+      void buildSpendingAuth(buyer, required).then((auth) => manager.handleSpendingAuth(buyer.peerId, auth, mux));
+    };
+
+    const result = await manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+
+    expect(result.status).toBe('closed');
+    expect(result.finalAmount).toBe('750000');
+    expect(mux.sentNeedAuths).toHaveLength(1);
+  });
 
   it('accepts a buyer signature that covers the outstanding spend', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);

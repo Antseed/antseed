@@ -39,7 +39,6 @@ const baselineConfig = {
   },
   payments: {
     preferredMethod: 'crypto',
-    platformFeeRate: 0.05,
   },
   network: {
     bootstrapNodes: [],
