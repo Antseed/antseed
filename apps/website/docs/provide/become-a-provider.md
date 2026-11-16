@@ -17,7 +17,30 @@ Antseed is for providers who build differentiated services: TEE-secured inferenc
 - Node.js 20 or newer.
 - An upstream to serve from: an OpenAI-compatible API key, an Anthropic API key, or a local model server (Ollama or llama.cpp).
 - A little ETH on Base for the gas your seller spends on registration and settlement.
-- A machine with a public IP address, or a port you can forward to it.
+- A machine with a public IP address, or a port you can forward to it. See [Server requirements](#server-requirements) for its size.
+
+### Server requirements
+
+| | Minimum | Recommended for production |
+| --- | --- | --- |
+| CPU | 1 vCPU | 2 vCPUs |
+| Memory | 1 GiB | 4 GiB |
+| Disk | 10 GB | 20 GB or more |
+| Network | A public IP address or forwarded ports, with UDP 6881 and TCP 6882 open | The same |
+
+A seller passes requests on to its upstream, so it needs little CPU. An idle seller uses about 200 MB of memory. Under traffic its memory follows the size and number of requests in flight: a request stays in memory while it is served, and one request can be as large as 64 MiB. The disk holds your payment channels and metering history under `~/.antseed`, which grows with traffic.
+
+These figures are for the seller alone. If the same machine also runs your model server, add what that needs.
+
+On Linux, start a production seller with these variables in its environment. Without them glibc keeps the memory of freed request buffers, so the seller's memory stays at the highest point traffic ever pushed it to. The [TEE seller image](/docs/provide/tee) sets them itself.
+
+```bash
+MALLOC_ARENA_MAX=2
+MALLOC_MMAP_THRESHOLD_=131072
+MALLOC_TRIM_THRESHOLD_=131072
+```
+
+A TEE seller needs more memory than this. See [Server requirements for a TEE seller](/docs/provide/tee#server-requirements).
 
 ## 1. Install the CLI
 
