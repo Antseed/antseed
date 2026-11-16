@@ -530,8 +530,6 @@ async function main() {
           "DeployBaseMainnet",
           "--skip",
           "DeployBaseSepolia",
-          "--skip",
-          "DeployDiemStakingProxy",
         ],
         { cwd: contractsDir, timeout: 600_000 },
       );

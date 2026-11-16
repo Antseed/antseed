@@ -11,6 +11,7 @@ import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 import type { AnthropicGatewayModel } from './anthropic-thinking.js';
+import { PREFER_PEER_HEADER } from './auto-seller.js';
 
 /** pi-ai provider id for gateway models; never sent on the wire. */
 export const GATEWAY_PROVIDER_ID = 'antseed-gateway';
@@ -31,6 +32,8 @@ export type GatewayModelOptions = {
   reasoning?: boolean;
   /** The desktop chat, sent as its session id so the buyer keeps chats apart (two can open the same way). */
   conversationId?: string;
+  /** In Auto, the seller to prefer: a soft hint the buyer applies only among sellers the key allows. */
+  preferredPeerId?: string | null;
 };
 
 /** The desktop chat's session header (the buyer's `x-<tool>-session-id` convention). */
@@ -47,7 +50,7 @@ type GatewayChatModel =
  * explicit bearer header: the Anthropic SDK otherwise only sends `x-api-key`,
  * which the gateway does not accept.
  */
-export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow, reasoning = false, conversationId }: GatewayModelOptions): GatewayChatModel {
+export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow, reasoning = false, conversationId, preferredPeerId }: GatewayModelOptions): GatewayChatModel {
   // The OpenAI SDK appends /responses or /chat/completions to the base URL;
   // the Anthropic SDK appends /v1/messages itself.
   const baseUrl = protocol === 'anthropic-messages' ? endpoint.origin : `${endpoint.origin}/v1`;
@@ -61,7 +64,11 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: contextWindow ?? ANTSEED_MODEL_CONTEXT_WINDOW,
     maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-    headers: { ...gatewayRequestHeaders(endpoint), ...(conversationId ? { [DESKTOP_SESSION_HEADER]: conversationId } : {}) },
+    headers: {
+      ...gatewayRequestHeaders(endpoint),
+      ...(conversationId ? { [DESKTOP_SESSION_HEADER]: conversationId } : {}),
+      ...(preferredPeerId ? { [PREFER_PEER_HEADER]: preferredPeerId } : {}),
+    },
   };
 
   if (protocol === 'openai-chat-completions') {

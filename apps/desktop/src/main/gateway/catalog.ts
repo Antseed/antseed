@@ -36,26 +36,71 @@ function normalizeProtocol(value: string): string {
   return protocol === 'openai-completions' ? 'openai-chat-completions' : protocol;
 }
 
+/** The protocols one listed peer reports (`protocol`, then `protocols`), normalized. */
+function peerProtocols(peer: Record<string, unknown>): string[] {
+  return [
+    ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
+    ...strings(peer['protocols']),
+  ].map(normalizeProtocol);
+}
+
 /** Every protocol the gateway reports for an entry: `supported_protocols`, then the peers' own. */
 export function entryProtocols(entry: GatewayModelEntry, peers = records(entry['peers'])): string[] {
-  const reported = [
-    ...strings(entry['supported_protocols']),
-    ...peers.flatMap((peer) => [
-      ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
-      ...strings(peer['protocols']),
-    ]),
-  ];
-  return [...new Set(reported.map(normalizeProtocol))];
+  return [...new Set([...strings(entry['supported_protocols']).map(normalizeProtocol), ...peers.flatMap(peerProtocols)])];
+}
+
+/** Whether the entry lists `peerId` among the sellers of its model. */
+export function entryListsSeller(entry: GatewayModelEntry, peerId: string): boolean {
+  const wanted = normalizeSellerId(peerId);
+  return records(entry['peers']).some((peer) => typeof peer['peerId'] === 'string' && normalizeSellerId(peer['peerId']) === wanted);
+}
+
+/** The chat protocols one listed peer speaks natively for the entry. */
+function peerChatProtocols(peer: Record<string, unknown>): ChatServiceProtocol[] {
+  const spoken = new Set(peerProtocols(peer));
+  return PROTOCOL_PREFERENCE.filter((protocol) => spoken.has(protocol));
 }
 
 /**
- * The protocol the chat uses for an entry: anthropic-messages, then
- * openai-responses, then openai-chat-completions among those reported. An
- * entry that reports none (a plain OpenAI-compatible gateway) gets
- * chat-completions; one that reports only non-chat protocols gets null.
+ * The protocol the chat uses for an entry. A seller converts nothing when it is
+ * spoken to in its own protocol, and the buyer's conversion between protocols
+ * is lossy (tool calls, stop reasons), so the choice follows the sellers:
+ *
+ * - with a seller expected to answer (`peerId`: a pin, or Auto's preferred
+ *   seller) that the entry lists: that seller's own protocol;
+ * - otherwise: a protocol every listed seller speaks, so whichever one the
+ *   gateway routes to needs no conversion; failing that, the one the most
+ *   sellers speak.
+ *
+ * Ties go anthropic-messages, then openai-responses, then
+ * openai-chat-completions. An entry whose peers report no protocols falls back
+ * to the entry's own list; one that reports none at all (a plain
+ * OpenAI-compatible gateway) gets chat-completions, and one that reports only
+ * non-chat protocols gets null.
  */
-export function resolveEntryProtocol(entry: GatewayModelEntry, protocols = entryProtocols(entry)): ChatServiceProtocol | null {
+export function resolveEntryProtocol(
+  entry: GatewayModelEntry,
+  protocols = entryProtocols(entry),
+  peers = records(entry['peers']),
+  peerId: string | null = null,
+): ChatServiceProtocol | null {
   if (protocols.length === 0) return 'openai-chat-completions';
+  const peerProtocols = peers.map(peerChatProtocols).filter((spoken) => spoken.length > 0);
+
+  if (peerId) {
+    const pinned = normalizeSellerId(peerId);
+    const own = peers
+      .filter((peer) => typeof peer['peerId'] === 'string' && normalizeSellerId(peer['peerId']) === pinned)
+      .flatMap(peerChatProtocols);
+    const preferred = PROTOCOL_PREFERENCE.find((protocol) => own.includes(protocol));
+    if (preferred) return preferred;
+  }
+
+  if (peerProtocols.length > 0) {
+    const speakers = (protocol: ChatServiceProtocol): number => peerProtocols.filter((spoken) => spoken.includes(protocol)).length;
+    const [best] = [...PROTOCOL_PREFERENCE].sort((left, right) => speakers(right) - speakers(left));
+    if (best && speakers(best) > 0) return best;
+  }
   return PROTOCOL_PREFERENCE.find((protocol) => protocols.includes(protocol)) ?? null;
 }
 
@@ -121,6 +166,24 @@ function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string,
   return prices;
 }
 
+/**
+ * A video model's cheapest price across its sellers, as the listing prices
+ * each video offer (`videoUsdPerSecond`, plus `videoUsdPerVideo` for a fixed
+ * charge per video). Null when no seller lists one.
+ */
+export function minVideoPrice(peers: Array<Record<string, unknown>>): ChatModel['videoPrice'] | null {
+  let best: { perSecondUsd: number; perVideoUsd: number } | null = null;
+  for (const peer of peers) {
+    const perSecondUsd = finiteNumber(peer['videoUsdPerSecond']);
+    if (perSecondUsd === null || !(perSecondUsd > 0)) continue;
+    const perVideoUsd = finiteNumber(peer['videoUsdPerVideo']) ?? 0;
+    if (!best || perSecondUsd < best.perSecondUsd || (perSecondUsd === best.perSecondUsd && perVideoUsd < best.perVideoUsd)) {
+      best = { perSecondUsd, perVideoUsd };
+    }
+  }
+  return best;
+}
+
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
   for (const key of ['context_length', 'context_window']) {
     const value = Number(entry[key]);
@@ -179,8 +242,29 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   };
 }
 
+/** The entry's retail reference prices; only for a text model, whose sellers charge per token too. */
+function entryReferencePrice(entry: GatewayModelEntry, type: string): ChatModel['referencePrice'] | undefined {
+  if (type !== 'text') return undefined;
+  const reference = record(entry['reference_price']);
+  const price = (field: string): number | null => {
+    const value = finiteNumber(reference[field]);
+    return value !== null && value > 0 ? value : null;
+  };
+  const inputUsdPerMillion = price('input_usd_per_million');
+  const outputUsdPerMillion = price('output_usd_per_million');
+  return inputUsdPerMillion === null && outputUsdPerMillion === null ? undefined : { inputUsdPerMillion, outputUsdPerMillion };
+}
+
 /** How the listing will be routed: TEE-only routing (Private) changes what counts as free. */
-export type CatalogOptions = { teeOnly?: boolean };
+export type CatalogOptions = {
+  teeOnly?: boolean;
+  /**
+   * The seller the chat expects to answer: the one it is pinned to
+   * (`peer@model`), or in Auto the one it asks the gateway to prefer. Its own
+   * protocol is spoken.
+   */
+  sellerPeerId?: string | null;
+};
 
 export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = {}): ChatModel {
   // Normalized once; every projection below reads the same peer list.
@@ -192,18 +276,22 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
   const imageSellers = imageInputSellerIds(peers);
   const reasoningSellers = sellerIds(peers, peerReasons);
   const imagePrices = type === 'image' ? imageUsdBySeller(peers) : {};
+  const videoPrice = type === 'video' ? minVideoPrice(peers) : null;
+  const referencePrice = entryReferencePrice(entry, type);
   return {
     id: entry.id,
     label: name,
     type,
-    protocol: type === 'text' ? resolveEntryProtocol(entry, protocols) : null,
+    protocol: type === 'text' ? resolveEntryProtocol(entry, protocols, peers, options.sellerPeerId ?? null) : null,
     supportsImages: entrySupportsImages(entry, peers),
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(Object.keys(imagePrices).length > 0 ? { imageUsdBySeller: imagePrices } : {}),
+    ...(videoPrice ? { videoPrice } : {}),
     ...entryOfferSummary(entry, peers, options),
     ...(entryReasonsEverywhere(entry, peers) ? { reasoningEverySeller: true } : {}),
     ...(reasoningSellers.length > 0 ? { reasoningSellerIds: reasoningSellers } : {}),
+    ...(referencePrice ? { referencePrice } : {}),
   };
 }
 

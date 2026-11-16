@@ -64,6 +64,18 @@ describe('HttpRelay', () => {
     expect((opts.headers as Record<string, string>)['x-api-key']).toBe('sk-test-key');
   });
 
+  it('hands fetch a body it does not rewrite without copying it first', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } }));
+    const relay = new HttpRelay(makeConfig(), { onResponse: () => undefined });
+    const body = new TextEncoder().encode('not json');
+
+    await relay.handleRequest(makeRequest({ headers: { 'content-type': 'text/plain' }, body }));
+
+    const sent = (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as Buffer;
+    expect(sent.buffer).toBe(body.buffer);
+    expect(Buffer.from(sent).toString()).toBe('not json');
+  });
+
   it('rejects disallowed service', async () => {
     const responses: SerializedHttpResponse[] = [];
     const callbacks: RelayCallbacks = {
@@ -490,6 +502,35 @@ describe('HttpRelay', () => {
     expect(bodyText).toContain('World');
   });
 
+  it('waits for the chunks that close a stream and drops ones the buyer cannot take', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"text":"Hello"}\n\n'));
+      },
+      pull(controller) {
+        controller.error(new Error('upstream reset'));
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+
+    const events: string[] = [];
+    const relay = new HttpRelay(makeConfig(), {
+      onResponse: () => undefined,
+      onResponseChunk: async (chunk) => {
+        const name = chunk.done ? 'done' : new TextDecoder().decode(chunk.data).includes('event: error') ? 'error' : 'data';
+        events.push(`${name} begins`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`${name} ends`);
+        if (name !== 'data') throw new Error('buyer disconnected');
+      },
+    });
+
+    await expect(relay.handleRequest(makeRequest())).resolves.toBeUndefined();
+
+    expect(events).toEqual(['data begins', 'data ends', 'error begins', 'error ends', 'done begins', 'done ends']);
+    expect(relay.getActiveCount()).toBe(0);
+  });
+
   it('allows GET requests through service validation', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ object: 'list', data: [] }), { status: 200 }));
 
@@ -880,6 +921,26 @@ describe('HttpRelay', () => {
       ]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('kimi-k3.1-pro: primary upstream primary.example.com failed (HTTP 429); trying fallback backup.example.com'));
       expect(relay.getActiveCount()).toBe(0);
+    });
+
+    it('reads the request body as JSON once per upstream it is written for', async () => {
+      const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+      try {
+        const request = kimiRequest();
+        const decodes = () => decode.mock.calls.filter(([input]) => input === request.body).length;
+        fetchMock.mockResolvedValueOnce(ok());
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => undefined });
+
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(1);
+
+        decode.mockClear();
+        fetchMock.mockResolvedValueOnce(fail(503)).mockResolvedValueOnce(ok());
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(2);
+      } finally {
+        decode.mockRestore();
+      }
     });
 
     it('fails over on network errors', async () => {
