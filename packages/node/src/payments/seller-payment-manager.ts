@@ -319,8 +319,13 @@ export class SellerPaymentManager {
   private _lastTimedOutCloseRetryAt = 0;
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
-  /** Channel-ended calls in flight, and for those that failed since start: failures and when to try again. */
-  private readonly _channelEndedInFlight = new Set<string>();
+  /** Channel-ended calls in flight, by channel. */
+  private readonly _channelEndedInFlight = new Map<string, Promise<void>>();
+  /**
+   * `draining` starts no more channel-ended calls; `stopped` also keeps the
+   * ones still running from touching the channel store, which may be closed.
+   */
+  private _channelEndedState: 'running' | 'draining' | 'stopped' = 'running';
 
   constructor(
     identity: Identity,
@@ -513,25 +518,58 @@ export class SellerPaymentManager {
   private _deliverChannelEnded(notice: EndedChannelNotice): void {
     const onChannelEnded = this._config.onChannelEnded;
     const channelId = notice.sessionId;
-    if (!onChannelEnded || this._channelEndedInFlight.has(channelId)) return;
-    this._channelEndedInFlight.add(channelId);
-    void (async () => {
-      try {
-        // Never inside the caller's own channel bookkeeping.
-        await Promise.resolve();
-        // A channel stored before its contract was recorded: the one in use now.
-        const channelsAddress = notice.channelsAddress ?? (await this._resolvedAddresses!).channels;
-        await onChannelEnded(channelId, channelsAddress);
-        this._channelStore.removeEndedChannelNotice(channelId);
-      } catch (err) {
-        const failures = notice.failures + 1;
-        const delayMs = Math.min(CHANNEL_ENDED_RETRY_MIN_MS * 2 ** (failures - 1), CHANNEL_ENDED_RETRY_MAX_MS);
-        this._channelStore.deferEndedChannelNotice(channelId, failures, Date.now() + delayMs);
-        debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}... (attempt ${failures}, next in ${Math.round(delayMs / 1000)}s): ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
+    if (!onChannelEnded || this._channelEndedState !== 'running' || this._channelEndedInFlight.has(channelId)) return;
+    const delivery = this._callChannelEnded(notice, onChannelEnded)
+      .catch((err: unknown) => {
+        debugWarn(`[SellerPayment] Could not record the onChannelEnded outcome for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
         this._channelEndedInFlight.delete(channelId);
-      }
-    })();
+      });
+    this._channelEndedInFlight.set(channelId, delivery);
+  }
+
+  private async _callChannelEnded(
+    notice: EndedChannelNotice,
+    onChannelEnded: NonNullable<SellerPaymentConfig['onChannelEnded']>,
+  ): Promise<void> {
+    const channelId = notice.sessionId;
+    try {
+      // Never inside the caller's own channel bookkeeping.
+      await Promise.resolve();
+      // A channel stored before its contract was recorded: the one in use now.
+      const channelsAddress = notice.channelsAddress ?? (await this._resolvedAddresses!).channels;
+      await onChannelEnded(channelId, channelsAddress);
+    } catch (err) {
+      // Stopped meanwhile: the notice stays as stored, and the next start tries it again.
+      if (this._channelEndedState === 'stopped') return;
+      const failures = notice.failures + 1;
+      const delayMs = Math.min(CHANNEL_ENDED_RETRY_MIN_MS * 2 ** (failures - 1), CHANNEL_ENDED_RETRY_MAX_MS);
+      this._channelStore.deferEndedChannelNotice(channelId, failures, Date.now() + delayMs);
+      debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}... (attempt ${failures}, next in ${Math.round(delayMs / 1000)}s): ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (this._channelEndedState !== 'stopped') this._channelStore.removeEndedChannelNotice(channelId);
+  }
+
+  /**
+   * For shutdown, before the channel store closes: start no more
+   * channel-ended calls and wait up to `timeoutMs` for the ones running. A
+   * call still running after that leaves its notice stored for the next start
+   * and no longer touches the store. Resolves to whether every call finished.
+   */
+  async stopChannelEndedCalls(timeoutMs: number): Promise<boolean> {
+    this._channelEndedState = 'draining';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finished = await Promise.race([
+      Promise.all(this._channelEndedInFlight.values()).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    this._channelEndedState = 'stopped';
+    return finished;
   }
 
   /**
@@ -540,7 +578,7 @@ export class SellerPaymentManager {
    * running so they never keep later notices waiting.
    */
   private _retryChannelEnded(): void {
-    if (!this._config.onChannelEnded) return;
+    if (!this._config.onChannelEnded || this._channelEndedState !== 'running') return;
     const due = this._channelStore.getDueEndedChannelNotices(
       Date.now(),
       CHANNEL_ENDED_RETRY_BATCH + this._channelEndedInFlight.size,

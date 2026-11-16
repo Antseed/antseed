@@ -527,6 +527,11 @@ const BUYER_CHANNEL_RECONCILE_INTERVAL_MS = 5 * 60_000;
  * after it is kept in the channel store and resubmitted on the next start.
  */
 const SELLER_STOP_TOP_UP_WAIT_MS = 5_000;
+/**
+ * How long a stop waits for channel-ended calls still running. One that
+ * outlasts it keeps its stored notice and is made again on the next start.
+ */
+const SELLER_STOP_CHANNEL_ENDED_WAIT_MS = 5_000;
 
 /** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
 export interface ResponseAuthEvent {
@@ -966,6 +971,8 @@ export class AntseedNode extends EventEmitter {
     // it a moment to land now that no new work can arrive.
     if (this._sellerPaymentManager) {
       await this._sellerPaymentManager.waitForRunningTopUps(SELLER_STOP_TOP_UP_WAIT_MS);
+      // A channel-ended call still running would write to the channel store closed below.
+      await this._sellerPaymentManager.stopChannelEndedCalls(SELLER_STOP_CHANNEL_ENDED_WAIT_MS);
     }
 
     // Providers last among the seller's parts: no request can reach them now.

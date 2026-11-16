@@ -2989,6 +2989,69 @@ describe('SellerPaymentManager', () => {
       await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(0));
     });
 
+    it('waits at shutdown for a channel-ended call still running, which then clears its notice', async () => {
+      const channelId = makeChannelId(36);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      let finish!: () => void;
+      const onChannelEnded = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+      const mgr = makeFreshManager({ onChannelEnded });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }),
+      );
+
+      await mgr.validateHydratedChannels();
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledOnce());
+
+      let stopped = false;
+      const stopping = mgr.stopChannelEndedCalls(5_000).then((finished) => { stopped = true; return finished; });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(stopped).toBe(false);
+      finish();
+      expect(await stopping).toBe(true);
+      expect(store.countEndedChannelNotices()).toBe(0);
+    });
+
+    it.each(['succeeds', 'fails'])('leaves the store alone when a channel-ended call %s after shutdown stopped waiting for it', async (outcome) => {
+      const channelId = makeChannelId(37);
+      const laterId = makeChannelId(38);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      let finish!: () => void;
+      let fail!: (err: Error) => void;
+      const onChannelEnded = vi.fn(() => new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; }));
+      const mgr = makeFreshManager({ onChannelEnded });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }),
+      );
+      const unhandled = vi.fn();
+      process.on('unhandledRejection', unhandled);
+      try {
+        await mgr.validateHydratedChannels();
+        await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledOnce());
+
+        expect(await mgr.stopChannelEndedCalls(10)).toBe(false);
+        // The node closes the channel store next: any write from here on throws.
+        const closed = (): never => { throw new Error('The database connection is not open'); };
+        const remove = vi.spyOn(store, 'removeEndedChannelNotice').mockImplementation(closed);
+        const defer = vi.spyOn(store, 'deferEndedChannelNotice').mockImplementation(closed);
+
+        if (outcome === 'succeeds') finish(); else fail(new Error('rpc down'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(remove).not.toHaveBeenCalled();
+        expect(defer).not.toHaveBeenCalled();
+        expect(unhandled).not.toHaveBeenCalled();
+        // Still stored, for the next start.
+        expect(store.countEndedChannelNotices()).toBe(1);
+
+        // And no call starts once stopped.
+        store.addEndedChannelNotice(laterId, null);
+        await mgr.checkTimeouts();
+        expect(onChannelEnded).toHaveBeenCalledOnce();
+      } finally {
+        process.off('unhandledRejection', unhandled);
+      }
+    });
+
     it('keeps channel and reconciles when active on-chain with higher settled', async () => {
       const channelId = makeChannelId(32);
       seedChannel(store, channelId, buyerIdentity, sellerIdentity, { tokensDelivered: '100000' });

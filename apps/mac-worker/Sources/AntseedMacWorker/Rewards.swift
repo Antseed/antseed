@@ -82,12 +82,16 @@ extension Chain {
         guard current <= UInt64(Self.maxRewardEpochs) else {
             throw Failure.rpc("The pool's emissions contract reports \(current) epochs, more than any real schedule")
         }
+        // Independent of each other: read together.
+        async let transferRead = try? await ethCall(to: pool, data: Self.selector("antsTransferable()"))
+        async let feeRead = ethCall(to: pool, data: Self.selector("operatorFeeBps()"))
+        async let remainderRead = address(of: pool, "remainderRecipient()")
         // A pool without the view (or a read that fails) is taken as able to send: its claims say otherwise.
-        let transferable = (try? await ethCall(to: pool, data: Self.selector("antsTransferable()"))).map { abiDecimal($0.prefix(32)) != 0 } ?? true
-        let feeBps = abiDecimal(try await ethCall(to: pool, data: Self.selector("operatorFeeBps()")).prefix(32))
+        let transferable = await transferRead.map { abiDecimal($0.prefix(32)) != 0 } ?? true
+        let feeBps = abiDecimal(try await feeRead.prefix(32))
         var feeRecipient: String?
         if feeBps > 0 { feeRecipient = try await address(of: pool, "operatorFeeRecipient()") }
-        let remainder = try await address(of: pool, "remainderRecipient()")
+        let remainder = try await remainderRead
         return RewardsContext(
             emissions: emissions, epochs: Array(0..<Int(current)), antsTransferable: transferable,
             operatorFeeRecipient: feeRecipient, remainderRecipient: remainder
