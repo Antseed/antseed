@@ -1,7 +1,7 @@
 import type {
   FreeTierDelegation,
-  FreeTierMovedConversationsMode,
   SellerBuyerLimitsConfig,
+  SellerFreeTierProgramConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -231,8 +231,12 @@ export interface SellerAlertsCLIConfig {
   minSeverity?: 'info' | 'warning' | 'critical';
 }
 
-/** One free-tier program: base limits and the staked tiers above them. */
-export interface SellerFreeTierCLIConfig {
+/**
+ * One free-tier program: base limits, the staked tiers above them, and the
+ * free-request screening settings shared with the node's program.
+ */
+export interface SellerFreeTierCLIConfig
+  extends Pick<SellerFreeTierProgramConfig, 'newBuyerMaxInputTokens' | 'newBuyerRequests' | 'movedConversations'> {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
   maxRequestsPerAddress?: number;
   /** Maximum zero-priced requests accepted from one remote IP per window (IPv6 grouped by /64). */
@@ -250,19 +254,6 @@ export interface SellerFreeTierCLIConfig {
    * required: they are the allowance the tier multipliers apply to.
    */
   stakersOnly?: boolean;
-  /**
-   * Largest estimated input, in tokens, served free during a buyer address's
-   * first `newBuyerRequests` free requests in the window. Requires
-   * `maxRequestsPerAddress`. Buyers staked into a tier are not limited.
-   */
-  newBuyerMaxInputTokens?: number;
-  /** Free requests a buyer address counts as new for `newBuyerMaxInputTokens`. Default: 3. */
-  newBuyerRequests?: number;
-  /**
-   * Large free requests that carry on a conversation another buyer address
-   * started: `refuse` them, or only `log` them. Default: not checked.
-   */
-  movedConversations?: FreeTierMovedConversationsMode;
 }
 
 export interface SellerFreeTierStakeTierCLIConfig {

@@ -19,7 +19,7 @@ import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js
 /** A free request screening refused, or one the free tier counted. */
 type FreeTierOutcome =
   | { kind: 'refused'; refusal: FreeTierScreenRefusal }
-  | { kind: 'counted'; decision: FreeTierDecision; served: () => void };
+  | { kind: 'counted'; decision: FreeTierDecision };
 
 function describeFreeTierScreenRefusal(refusal: FreeTierScreenRefusal): string {
   return refusal.reason === 'new_buyer_context'
@@ -558,7 +558,6 @@ export class SellerRequestHandler {
           } else {
             const { decision } = outcome;
             coveredByAllowance = decision.allowed;
-            if (coveredByAllowance) outcome.served();
             debugLog(
               `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
               `${freeTierService} for ${decision.buyerAddress}`,
@@ -576,7 +575,6 @@ export class SellerRequestHandler {
           outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
             buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: false,
           });
-          if (outcome.kind === 'counted' && outcome.decision.allowed) outcome.served();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           debugWarn(`[SellerHandler] Free-tier accounting failed for ${buyerPeerId.slice(0, 12)}...: ${message}`);
@@ -1568,7 +1566,8 @@ export class SellerRequestHandler {
 
   /**
    * Resolve the buyer's staked standing, screen a free request, and count it
-   * unless screening refused it. Callers call `served` once it is served.
+   * unless screening refused it. An admitted request is recorded for
+   * conversation matching.
    */
   private async _screenAndConsumeFreeTier(
     limiter: SellerFreeTierLimiter,
@@ -1607,7 +1606,8 @@ export class SellerRequestHandler {
       standing,
       ...(input.paid ? { paid: true } : {}),
     });
-    return { kind: 'counted', decision, served: screen.served };
+    if (decision.allowed) screen.served();
+    return { kind: 'counted', decision };
   }
 
   private _sendJsonError(
