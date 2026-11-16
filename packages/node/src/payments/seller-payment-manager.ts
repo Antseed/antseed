@@ -2562,6 +2562,10 @@ export class SellerPaymentManager {
     // Requests still being served bill this channel; the buyer retries the
     // replacement once they are done.
     if (this.hasInFlightRequests(channel.peerId)) return false;
+    // Auths parked behind a mining top-up need the buyer lock this reserve
+    // holds, and the close must wait for them: closing here would deadlock
+    // or settle below what the buyer signed. The buyer retries once they land.
+    if (this._overCeilingAuths.has(channelId)) return false;
     const accepted = this._acceptedCumulative.get(channelId)
       ?? this._restorePersistedSpendingAuth(channel)
       ?? 0n;

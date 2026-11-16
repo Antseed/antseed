@@ -662,84 +662,100 @@ describe('SellerPaymentManager', () => {
     expect(manager.getCumulativeSpend(channelId) >= manager.getAcceptedCumulative(channelId)).toBe(false);
   });
 
-  it('closes on disconnect at the auth parked behind a mining top-up, not at the old ceiling', async () => {
-    const channelId = makeChannelId(96);
-    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true, reserveMaxAmount: '1000000',
-    }), mux);
-    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 900_000n, reserveMaxAmount: '1000000',
-    }), mux);
+  describe('disconnect while an auth is parked behind a mining top-up', () => {
+    /**
+     * A channel at 900k accepted with a top-up to 2M mining, a 1.5M auth
+     * parked until it lands, and the buyer just disconnected.
+     */
+    async function parkAuthThenDisconnect(channelId: string) {
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '1000000',
+      }), mux);
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        cumulativeAmount: 900_000n, reserveMaxAmount: '1000000',
+      }), mux);
 
-    let releaseTopUp!: () => void;
-    const topUpBlocker = new Promise<void>((resolve) => { releaseTopUp = resolve; });
-    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
-      await topUpBlocker;
-      return '0xtopup-hash';
+      let releaseTopUp!: () => void;
+      const topUpBlocker = new Promise<void>((resolve) => { releaseTopUp = resolve; });
+      const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
+        await topUpBlocker;
+        return '0xtopup-hash';
+      });
+      const topUp = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '03'.repeat(32),
+      }), mux);
+      while (topUpSpy.mock.calls.length === 0) await new Promise<void>((r) => setImmediate(r));
+
+      // The buyer signed for work above the old ceiling; the seller parks the
+      // auth until the top-up lands. Then the buyer disconnects.
+      const parked = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        cumulativeAmount: 1_500_000n, reserveMaxAmount: '1000000',
+      }), mux);
+      await new Promise<void>((r) => setImmediate(r));
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      await new Promise<void>((r) => setImmediate(r));
+
+      const landTopUp = async () => {
+        releaseTopUp();
+        await Promise.all([topUp, parked]);
+      };
+      return { landTopUp };
+    }
+
+    it('closes at the parked auth, not at the old ceiling', async () => {
+      const channelId = makeChannelId(96);
+      const { landTopUp } = await parkAuthThenDisconnect(channelId);
+
+      await landTopUp();
+      await vi.waitFor(() => {
+        expect(manager.channelsClient.close).toHaveBeenCalledOnce();
+      });
+
+      expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
     });
-    const topUpPromise = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '03'.repeat(32),
-    }), mux);
-    while (topUpSpy.mock.calls.length === 0) await new Promise<void>((r) => setImmediate(r));
 
-    // The buyer signed for work above the old ceiling; the seller parks the
-    // auth until the top-up lands. Then the buyer disconnects.
-    const parked = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 1_500_000n, reserveMaxAmount: '1000000',
-    }), mux);
-    await new Promise<void>((r) => setImmediate(r));
-    manager.onBuyerDisconnect(buyerIdentity.peerId);
-    await new Promise<void>((r) => setImmediate(r));
+    it('admits no new work on the channel while the close waits for the parked auth', async () => {
+      const channelId = makeChannelId(95);
+      const { landTopUp } = await parkAuthThenDisconnect(channelId);
 
-    releaseTopUp();
-    await Promise.all([topUpPromise, parked]);
-    await vi.waitFor(() => {
-      expect(manager.channelsClient.close).toHaveBeenCalledOnce();
+      // The close is waiting for the parked auth, not yet sent. The channel
+      // already counts as closing, so the request handler holds a billable
+      // request from a reconnected buyer until the close finishes.
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
+      expect(manager.hasClosingChannel(buyerIdentity.peerId)).toBe(true);
+      expect(await manager.waitForClosingChannel(buyerIdentity.peerId, 10)).toBe(false);
+
+      await landTopUp();
+      expect(await manager.waitForClosingChannel(buyerIdentity.peerId, 1_000)).toBe(true);
+      expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
     });
 
-    expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
-    expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
-  });
+    it('rejects a replacement reserve instead of holding the buyer lock the parked auth needs', async () => {
+      const channelId = makeChannelId(94);
+      const replacementChannelId = makeChannelId(93);
+      const { landTopUp } = await parkAuthThenDisconnect(channelId);
 
-  it('admits no new work on a channel while its disconnect close waits for parked auths', async () => {
-    const channelId = makeChannelId(95);
-    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true, reserveMaxAmount: '1000000',
-    }), mux);
-    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 900_000n, reserveMaxAmount: '1000000',
-    }), mux);
+      // The reconnected buyer opens a replacement channel. Joining the close
+      // with the buyer lock held would block the parked auth until the close
+      // gave up waiting and settled at the old amount.
+      const replacement = await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, replacementChannelId, {
+        isReserve: true, reserveMaxAmount: '1000000',
+      }), mux);
+      expect(replacement).toBe('rejected');
+      expect(manager.channelsClient.close).not.toHaveBeenCalled();
 
-    let releaseTopUp!: () => void;
-    const topUpBlocker = new Promise<void>((resolve) => { releaseTopUp = resolve; });
-    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
-      await topUpBlocker;
-      return '0xtopup-hash';
+      await landTopUp();
+      expect(await manager.waitForClosingChannel(buyerIdentity.peerId, 1_000)).toBe(true);
+      expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
+
+      // Once the old channel is closed, the buyer's retry opens the replacement.
+      await expect(manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, replacementChannelId, {
+        isReserve: true, reserveMaxAmount: '1000000',
+      }), mux)).resolves.toBe('reserved');
+      expect(manager.getChannelByPeer(buyerIdentity.peerId)?.sessionId).toBe(replacementChannelId);
     });
-    const topUpPromise = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true, reserveMaxAmount: '2000000', salt: '0x' + '04'.repeat(32),
-    }), mux);
-    while (topUpSpy.mock.calls.length === 0) await new Promise<void>((r) => setImmediate(r));
-    const parked = manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 1_500_000n, reserveMaxAmount: '1000000',
-    }), mux);
-    await new Promise<void>((r) => setImmediate(r));
-
-    manager.onBuyerDisconnect(buyerIdentity.peerId);
-    await new Promise<void>((r) => setImmediate(r));
-
-    // The close is waiting for the parked auth, not yet sent. The channel
-    // already counts as closing, so the request handler holds a billable
-    // request from a reconnected buyer until the close finishes.
-    expect(manager.channelsClient.close).not.toHaveBeenCalled();
-    expect(manager.hasClosingChannel(buyerIdentity.peerId)).toBe(true);
-    expect(await manager.waitForClosingChannel(buyerIdentity.peerId, 10)).toBe(false);
-
-    releaseTopUp();
-    await Promise.all([topUpPromise, parked]);
-    expect(await manager.waitForClosingChannel(buyerIdentity.peerId, 1_000)).toBe(true);
-    expect(vi.mocked(manager.channelsClient.close).mock.calls[0]![2]).toBe(1_500_000n);
-    expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
   });
 
   it('keeps an auth waiting through a top-up that lands while the one covering it is queued behind', async () => {
