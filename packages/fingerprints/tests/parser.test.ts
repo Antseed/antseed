@@ -198,6 +198,13 @@ describe('isKbfAnswersOnlyReply', () => {
     expect(isKbfAnswersOnlyReply(glmReplies.minimalClean.content)).toBe(true);
   });
 
+  it('accepts unlabelled answers, one per line, as parseKbfAnswers reads them', () => {
+    expect(parseKbfAnswers('126\n57\n-138.8 °C', 3)).toEqual([126, 57, -138.8]);
+    expect(isKbfAnswersOnlyReply('126\n57\n-138.8 °C')).toBe(true);
+    expect(isKbfAnswersOnlyReply('Here are the answers:\n3.14\n2.71')).toBe(true);
+    expect(isKbfAnswersOnlyReply('Let me think.\nThe first one is easy.\n126')).toBe(false);
+  });
+
   it('rejects a reply that reasons, whether it finished or stopped at the token limit', () => {
     expect(isKbfAnswersOnlyReply(glmReplies.reasonedComplete.content)).toBe(false);
     expect(isKbfAnswersOnlyReply(glmReplies.reasonedCutOff.content)).toBe(false);

@@ -300,6 +300,25 @@ describe('selectProbes', () => {
     expect(probes.map((probe) => probe.id)).not.toEqual(reference.probes.slice(0, 30).map((probe) => probe.id))
   })
 
+  it('asks a calibrated reference given its full size whole, in the batches it was calibrated on', async () => {
+    const reference = calibratedSet(3)
+    const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference, concurrency: 1, probeCount: 90 })
+    expect(result.batches.map((batch) => batch.probeIds)).toEqual(reference.calibration!.batches.map((batch) => batch.probeIds))
+    expect(result.evaluation.stats.selfHamming).toBe(3)
+    expect(result.evaluation.stats.selfTotal).toBe(90)
+  })
+
+  it('judges a subset of a calibrated reference on its self-test, which its batches do not change', async () => {
+    // The calibration counts one answer per probe, the self-test three; only the self-test holds for new batches.
+    const reference = calibratedSet(30)
+    const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference, concurrency: 1, probeCount: 30 })
+    expect(result.probeIds).toHaveLength(30)
+    expect(result.evaluation.stats.selfHamming).toBe(0)
+    expect(result.evaluation.stats.selfTotal).toBe(90)
+    const { power } = selectProbes(reference, { draw: () => 0, minimumPower: 0.9, probeCount: 30 })
+    expect(power).toBe(selectProbes({ ...reference, calibration: undefined }, { draw: () => 0, minimumPower: 0.9, probeCount: 30 }).power)
+  })
+
   it('audits a calibrated reference in the batches it was calibrated on, against the calibration', async () => {
     const reference = calibratedSet(3)
     const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference, concurrency: 1 })

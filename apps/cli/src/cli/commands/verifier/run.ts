@@ -1890,6 +1890,13 @@ export async function runVerifierRound(
           let lane = prepared
           try {
             if (await stopIfAuditorRemoved()) return await leaveRun(model, lane, 'auditor removed')
+            // A lane can wait for its slot into the next epoch: its questions and plan belong to this one,
+            // and submit refuses its results. The caller plans it again for the new epoch.
+            const now = await resolveEpoch()
+            if (now.epoch !== epoch) {
+              epochChangedTo = now.epoch
+              return await leaveRun(model, lane, 'epoch changed')
+            }
             const ready = await applyEpochCutoff(lane)
             if (!ready) return null
             lane = ready

@@ -139,7 +139,7 @@ If the npm registry can't be reached, `verifier run` warns and continues, and `v
 
 Releases that raise the compat number are published at the end of an epoch, so every auditor moves to the new rules at the same epoch start. A CI test pins a hash of the audit rules for each compat number: the model list, the split, the thresholds, the domain table, the prompt variants, the calibration and layout filter settings, and sample verdicts, parsed replies and scored answers. A change to those without a bump fails the build. A change to the audit code that none of the samples reaches still needs a manual bump.
 
-Three local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.referenceSelfTestRuns` (3) and `verifier.referenceLayoutFilterPasses` (2). Remove them from your config, or pass `--skip-version-check` for a test.
+Seven local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.referenceSelfTestRuns` (3), `verifier.referenceLayoutFilterPasses` (2), and the question set sizing `verifier.referenceMinimumProbeCount` (100), `verifier.referenceMaximumProbeCount` (500), `verifier.referenceProbeStep` (10) and `verifier.referenceMinimumStatisticalPower` (0.9). Remove them from your config, or pass `--skip-version-check` for a test.
 
 ### Price limit
 

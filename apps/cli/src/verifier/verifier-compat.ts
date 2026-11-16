@@ -89,6 +89,10 @@ export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): st
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
+    ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
+    ['referenceMaximumProbeCount', config?.referenceMaximumProbeCount, DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT],
+    ['referenceProbeStep', config?.referenceProbeStep, DEFAULT_REFERENCE_PROBE_STEP],
+    ['referenceMinimumStatisticalPower', config?.referenceMinimumStatisticalPower, DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER],
   ] as const
   return pinned.flatMap(([name, value, expected]) => (
     value === undefined || value === expected ? [] : [`verifier.${name} is ${value}; these rules use ${expected}`]

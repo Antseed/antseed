@@ -160,6 +160,8 @@ export function isKbfAnswersOnlyReply(responseText: string): boolean {
     if (TAGGED_NUMBER_LINE_RE.test(line)) continue;
     const lineMatch = ANSWER_LINE_RE.exec(line);
     if (!lineMatch) {
+      // An unlabelled answer (`126`, `-138.8 °C`), which `parseKbfAnswers` reads in line order.
+      if (isNumberOnlyLine(line)) continue;
       otherLines += 1;
       if (otherLines > 1) return false;
       continue;

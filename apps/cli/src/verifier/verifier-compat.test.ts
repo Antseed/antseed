@@ -3,6 +3,12 @@ import test from 'node:test'
 import { KBF_CALIBRATION_PASSES, KBF_DEFAULT_SELF_TEST_RUNS } from '@antseed/fingerprints'
 import { AUDITED_MODELS } from './audited-models.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES } from './model-reference.js'
+import {
+  DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
+  DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
+  DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER,
+  DEFAULT_REFERENCE_PROBE_STEP,
+} from './reference-sizing.js'
 import { VERIFIER_COMPAT, readCompat, verifierRuleOverrides, verifierRulesFingerprint, verifierRulesHash } from './verifier-compat.js'
 
 /**
@@ -73,6 +79,26 @@ test('config that changes the audit rules is named; the pinned values and unset 
   const overrides = verifierRuleOverrides({ closeCallExtensions: 1, referenceSelfTestRuns: 5, referenceLayoutFilterPasses: 1 })
   assert.equal(overrides.length, 3)
   assert.match(overrides[1]!, /referenceSelfTestRuns is 5/)
+})
+
+test('question set sizing set away from the pinned rules is named; the defaults are not', () => {
+  assert.deepEqual(verifierRuleOverrides({
+    referenceMinimumProbeCount: DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
+    referenceMaximumProbeCount: DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
+    referenceProbeStep: DEFAULT_REFERENCE_PROBE_STEP,
+    referenceMinimumStatisticalPower: DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER,
+  }), [])
+  const overrides = verifierRuleOverrides({
+    referenceMinimumProbeCount: 50,
+    referenceMaximumProbeCount: 200,
+    referenceProbeStep: 5,
+    referenceMinimumStatisticalPower: 0.1,
+  })
+  assert.equal(overrides.length, 4)
+  assert.match(overrides.join('; '), /referenceMinimumProbeCount is 50/)
+  assert.match(overrides.join('; '), /referenceMaximumProbeCount is 200/)
+  assert.match(overrides.join('; '), /referenceProbeStep is 5/)
+  assert.match(overrides.join('; '), /referenceMinimumStatisticalPower is 0\.1; these rules use 0\.9/)
 })
 
 test('a bumped compat without a pinned hash fails', () => {

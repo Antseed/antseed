@@ -390,6 +390,29 @@ test('an epoch change during a build keeps the audited model and returns epochCh
   assert.equal((await status(scenario)).queuedAudits, 0)
 }))
 
+test('a lane that waits for its audit slot past the epoch\'s end audits nothing and returns epochChanged', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.maxConcurrentModels = 1
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a']), seller('bb'.repeat(20), ['model-b'])])]
+  // Both question sets are ready; the first model to take the one audit slot holds it until the epoch ends.
+  let first: string | undefined
+  scenario.audit = async (model) => {
+    first ??= model
+    if (model === first) scenario.window = { ...scenario.window, epoch: '8' }
+  }
+
+  const outcome = await scenario.run()
+
+  assert.ok(first)
+  const audited = scenario.log.filter((entry) => entry.startsWith('audit ')).map((entry) => entry.split(' ')[1])
+  assert.deepEqual(audited, [first], scenario.log.join('\n'))
+  assert.equal(outcome.epochChanged, '8')
+  const waited = first === 'model-a' ? 'model-b' : 'model-a'
+  assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, waited), null)
+  const [manifest] = await runManifests(scenario)
+  assert.deepEqual(manifest!.modelOrder, [first])
+  assert.equal((await status(scenario)).queuedAudits, 0)
+}))
+
 test('an epoch change with nothing audited returns epochChanged and writes no manifest', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   scenario.build = async () => {
     scenario.window = { ...scenario.window, epoch: '8' }

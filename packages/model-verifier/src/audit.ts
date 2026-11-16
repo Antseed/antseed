@@ -112,7 +112,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   const startedAt = new Date().toISOString()
   const draw = options.randomInt ?? ((max: number) => randomInt(max))
   const model = options.model ?? options.reference.queryProfile.upstreamModel
-  const { probes: selected, power } = selectProbes(options.reference, {
+  const { probes: selected, power, calibrated } = selectProbes(options.reference, {
     draw,
     minimumPower: options.minimumPower ?? 0.9,
     ...(options.probeCount !== undefined ? { probeCount: options.probeCount } : {}),
@@ -141,7 +141,9 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
 
   const answers = records.flatMap((record) => record.answers)
   const transportFailed = records.flatMap((record) => record.answers.map(() => record.status === 'failed'))
-  const subset: KbfReferenceV1 = { ...options.reference, probes }
+  // Judged on the baseline its power was rated on: the calibration only for the batches it measured.
+  const { calibration: _calibration, ...uncalibrated } = options.reference
+  const subset: KbfReferenceV1 = calibrated ? { ...options.reference, probes } : { ...uncalibrated, probes }
   // A batch that never returned is a transport failure (null), not a wrong answer.
   const matchVector = computeMatchVector(answers, probes)
     .map((entry, index): MatchEntry => (transportFailed[index] ? null : entry))
@@ -196,16 +198,18 @@ function hintFor(reason: string): string {
  * Picks a fresh random probe subset and order for this audit. Without a fixed size it
  * grows in steps of ten until the subset's own reference baseline gives the required
  * statistical power, falling back to every probe. A calibrated reference is an epoch question
- * set whose limit was measured on its own batches, so without a fixed size it is asked whole and
- * in its stored order, in those batches.
+ * set whose limit was measured on its own batches, so without a fixed size, or with its full size,
+ * it is asked whole and in its stored order, in those batches. A fixed smaller size draws a subset
+ * whose batches the calibration never saw, so it is judged on the reference's self-test instead
+ * (`calibrated` is false).
  */
 export function selectProbes(
   reference: KbfReferenceV1,
   options: { draw: (max: number) => number; minimumPower: number; probeCount?: number },
-): { probes: KbfProbe[]; power: number } {
+): { probes: KbfProbe[]; power: number; calibrated: boolean } {
   const shuffled = shuffle(reference.probes, options.draw)
-  const powerOf = (probes: readonly KbfProbe[]): number => {
-    const selfTest = kbfAuditBaseline(reference, probes.map((probe) => probe.id))
+  const powerOf = (probes: readonly KbfProbe[], judgedOn: Pick<KbfReferenceV1, 'probes' | 'selfTest' | 'calibration'> = reference): number => {
+    const selfTest = kbfAuditBaseline(judgedOn, probes.map((probe) => probe.id))
     return computeBinomialPower({
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
@@ -215,6 +219,10 @@ export function selectProbes(
       cpConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
     }).power
   }
+  const calibrated = reference.calibration !== undefined
+  if (calibrated && (options.probeCount === undefined || options.probeCount === reference.probes.length)) {
+    return { probes: [...reference.probes], power: powerOf(reference.probes), calibrated }
+  }
   if (options.probeCount !== undefined) {
     const count = options.probeCount
     if (!Number.isInteger(count) || count < KBF_PROBES_PER_REQUEST || count % KBF_PROBES_PER_REQUEST !== 0
@@ -222,15 +230,14 @@ export function selectProbes(
       throw new Error(`probe count must be a multiple of ${KBF_PROBES_PER_REQUEST} up to ${shuffled.length}`)
     }
     const probes = shuffled.slice(0, count)
-    return { probes, power: powerOf(probes) }
+    return { probes, power: powerOf(probes, { probes: reference.probes, selfTest: reference.selfTest }), calibrated: false }
   }
-  if (reference.calibration) return { probes: [...reference.probes], power: powerOf(reference.probes) }
   for (let count = KBF_PROBES_PER_REQUEST; count <= shuffled.length; count += KBF_PROBES_PER_REQUEST) {
     const probes = shuffled.slice(0, count)
     const power = powerOf(probes)
-    if (power >= options.minimumPower) return { probes, power }
+    if (power >= options.minimumPower) return { probes, power, calibrated: false }
   }
-  return { probes: shuffled, power: powerOf(shuffled) }
+  return { probes: shuffled, power: powerOf(shuffled), calibrated: false }
 }
 
 async function runBatch(
