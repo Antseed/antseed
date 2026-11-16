@@ -45,6 +45,7 @@
     "build:tier1": "pnpm --filter=@antseed/provider-core --filter=@antseed/router-core --filter=@antseed/ant-agent --filter=@antseed/web-sdk --filter=@antseed/relay --filter=@antseed/antseed-verifier --filter=@antseed/model-verifier run build",
     "build:tier2": "pnpm --filter \"./plugins/*\" run build",
     "build:tier3": "pnpm --filter=@antseed/payments --filter=@antseed/ants --filter=@antseed/gateway-console run build",
+    "build:tier3:server": "pnpm --filter=@antseed/payments --filter=@antseed/ants run build:server",
     "build:tier4": "pnpm --filter=@antseed/cli run build && pnpm --filter=@antseed/desktop run build",
     "build:standalone": "pnpm --filter=@antseed/website run build",
     "test": "pnpm -r --filter=!@antseed/e2e run test && pnpm run test:e2e",
