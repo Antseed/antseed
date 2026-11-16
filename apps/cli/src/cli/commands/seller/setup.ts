@@ -80,8 +80,9 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
     case 'anthropic':
       return 'export ANTHROPIC_API_KEY=<key>';
     case 'openai':
-    case 'openai-responses':
       return 'export OPENAI_API_KEY=<key>';
+    case 'openai-responses':
+      return 'sign in to Codex on this machine (~/.codex/auth.json)';
     case 'claude-oauth':
       return 'configure Claude OAuth credentials for the selected plugin';
     case 'claude-code':

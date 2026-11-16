@@ -52,8 +52,8 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | Field | Description |
 |---|---|
 | `plugin` | Plugin name (`openai`, `anthropic`, `local-llm`, …) or an npm package name. Required. |
-| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video`, `fal-video` and `alibaba-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
-| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
+| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `openai-responses`, `local-llm`, `typesafe`, `venice-video`, `fal-video`, `fal-image`, `alibaba-video` and `irp-router` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
+| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the `anthropic` plugin and to the same plugins as `baseUrl`, except `openai-responses`, which signs in with the Codex auth file. |
 | `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
 | `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
