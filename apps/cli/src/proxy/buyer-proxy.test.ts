@@ -3529,6 +3529,8 @@ test('a data operation whose path ends like a chat path keeps its `routing` fiel
 
   // `routing`, `model`, `service` and `messages` are the provider's own fields here, not Antseed's.
   const raw = '{"routing":{"carrier":"LY"},  "model":"economy","service":"direct",\n"messages":[{"role":"user","content":"hi"}]}'
+  // The conversation store is shared with the other tests in this file, so compare before and after.
+  const conversationsBefore = (proxy as any)._conversations.list().length
   const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/messages', rawBody: raw }))
 
   assert.equal(res.statusCode, 200)
@@ -3537,7 +3539,7 @@ test('a data operation whose path ends like a chat path keeps its `routing` fiel
   assert.equal(sent[0]!.body.toString(), raw)
   // Not read as a chat: no conversation session key is added and none is stored.
   assert.equal(sent[0]!.headers['session_id'], undefined)
-  assert.deepEqual((proxy as any)._conversations.list(), [])
+  assert.equal((proxy as any)._conversations.list().length, conversationsBefore)
 })
 
 test('a data request with `stream: true` in its body is sent as one buffered request', async () => {
