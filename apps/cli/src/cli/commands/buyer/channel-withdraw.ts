@@ -2,7 +2,8 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
-import { CHANNEL_KIND, CHANNEL_STATUS } from '@antseed/node/payments';
+import { CHANNEL_KIND, CHANNEL_STATUS, readChannelStatesAt, type ChannelChainRecordStore } from '@antseed/node/payments';
+import type { AbstractProvider } from 'ethers';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
@@ -10,6 +11,7 @@ import {
   formatUsdc,
   loadCryptoContext,
   openChannelStore,
+  requireCryptoConfig,
   shortId,
 } from '../../payment-utils.js';
 
@@ -45,6 +47,21 @@ export function resolveBuyerChannelById(
   return matches[0]!;
 }
 
+const FULL_CHANNEL_ID_RE = /^0x[0-9a-f]{64}$/;
+
+/**
+ * The channel an on-chain exit names: a stored row by id or unique prefix, or
+ * a full 32-byte id the store has no row for. The chain can hold a reserve for
+ * a channel whose row is gone (another data directory, a lost store), and the
+ * contract's own `buyer` check decides whether this wallet may close it.
+ */
+export function resolveOnChainChannelId(channels: StoredChannel[], channelIdOrPrefix: string): string {
+  const query = normalizeChannelId(channelIdOrPrefix);
+  const known = channels.some((channel) => normalizeChannelId(channel.sessionId).startsWith(query));
+  if (!known && FULL_CHANNEL_ID_RE.test(query)) return query;
+  return resolveBuyerChannelById(channels, channelIdOrPrefix).sessionId;
+}
+
 export function secondsUntilChannelWithdrawReady(
   closeRequestedAtSeconds: bigint,
   nowSeconds: number,
@@ -59,6 +76,54 @@ function formatWait(seconds: number): string {
   const minutes = Math.ceil(seconds / 60);
   if (minutes <= 1) return 'about 1 minute';
   return `about ${minutes} minutes`;
+}
+
+/**
+ * After this command's own transaction (requestClose or withdraw) is
+ * confirmed, reads the channel at the head block and stores that record, so
+ * the running buyer and every host show the close at once rather than after
+ * the buyer's next read. The record goes on the buyer's row for the channel,
+ * whatever the case its id was given in (`channels`). A failure is ignored:
+ * that read will record it.
+ */
+export async function recordChannelAfterTransaction(options: {
+  provider: AbstractProvider;
+  channelsAddress: string;
+  channelId: string;
+  seller: string;
+  store: Pick<ChannelChainRecordStore, 'recordChainState'>;
+  channels?: ReadonlyArray<Pick<StoredChannel, 'sessionId'>>;
+  now?: () => number;
+}): Promise<boolean> {
+  try {
+    const readAt = (options.now ?? Date.now)();
+    const block = await options.provider.getBlockNumber();
+    const states = await readChannelStatesAt(options.provider, options.channelsAddress, [options.channelId], new Map([[options.channelId, options.seller]]), block);
+    const state = states.get(options.channelId);
+    const sessionId = options.channels?.find((row) => normalizeChannelId(row.sessionId) === normalizeChannelId(options.channelId))?.sessionId ?? options.channelId;
+    return state ? options.store.recordChainState(sessionId, { ...state, block, readAt }) : false;
+  } catch {
+    return false;
+  }
+}
+
+async function recordOwnTransaction(dataDir: string, config: Parameters<typeof requireCryptoConfig>[0], channelsClient: ReturnType<typeof createChannelsClient>, buyer: string, channelId: string, seller: string): Promise<void> {
+  let store: ReturnType<typeof openChannelStore> | null = null;
+  try {
+    store = openChannelStore(dataDir);
+    await recordChannelAfterTransaction({
+      provider: channelsClient.provider,
+      channelsAddress: requireCryptoConfig(config).channelsContractAddress,
+      channelId,
+      seller,
+      store,
+      channels: store.getBuyerPaymentChannels(buyer),
+    });
+  } catch {
+    // No store to write to: the buyer's next chain read records it.
+  } finally {
+    store?.close();
+  }
 }
 
 function openChannelStoreOrExit(dataDir: string): ReturnType<typeof openChannelStore> {
@@ -154,6 +219,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
         console.error(chalk.red(`Error: Local channel ${shortId(localChannel.sessionId, 18)} is ${localChannel.status}, not active.`));
         console.error(chalk.dim('Only active channels can be closed.'));
+        console.error(chalk.dim(`If the chain still holds it open: antseed buyer channels request-close ${localChannel.sessionId}`));
         process.exit(1);
       }
 
@@ -197,7 +263,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
 
   channelsCmd
     .command('request-close <channelId>')
-    .description('Request timeout close for an active buyer payment channel so reserved funds can be withdrawn after the grace period')
+    .description('Request timeout close for a buyer payment channel the chain holds open, so reserved funds can be withdrawn after the grace period. Takes a listed channel id or prefix, or the full id of a channel this data directory has no row for')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options) => {
       const json = channelsJsonRequested(options, channelsCmd);
@@ -206,31 +272,30 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const { wallet, address } = await loadCryptoContext(globalOpts.dataDir);
       const channelsClient = createChannelsClient(config);
 
-      let localChannel: StoredChannel;
+      let id: string;
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
-        localChannel = resolveBuyerChannelById(
-          store.getBuyerPaymentChannels(address),
-          channelId,
-        );
+        id = resolveOnChainChannelId(store.getBuyerPaymentChannels(address), channelId);
       } finally {
         store.close();
       }
 
-      if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
-        console.error(chalk.red(`Error: Local channel ${shortId(localChannel.sessionId, 18)} is ${localChannel.status}, not active.`));
-        console.error(chalk.dim('Only active channels can be timeout closed.'));
-        process.exit(1);
-      }
-
-      const spinner = ora(`Requesting timeout close for channel ${shortId(localChannel.sessionId, 18)}...`).start();
+      // No check of the local row: the buyer retires it when it gives up on
+      // the session, which leaves the channel open with its reserve locked,
+      // and a channel can hold a reserve with no row at all. The chain read
+      // below decides.
+      const spinner = ora(`Requesting timeout close for channel ${shortId(id, 18)}...`).start();
       try {
-        const onChain = await channelsClient.getSession(localChannel.sessionId);
-        if (onChain.buyer.toLowerCase() !== address.toLowerCase()) {
-          throw new Error(`Configured wallet ${address} is not the on-chain buyer for this channel.`);
+        const onChain = await channelsClient.getSession(id);
+        // Status first: a reserve that never landed reads as no channel at all, with no buyer.
+        if (onChain.status === 0) {
+          throw new Error('No channel with this id is recorded on-chain.');
         }
         if (onChain.status !== ON_CHAIN_STATUS_ACTIVE) {
           throw new Error(`On-chain channel is ${CHANNEL_STATUS_LABELS[onChain.status] ?? `status ${onChain.status}`}, not active.`);
+        }
+        if (onChain.buyer.toLowerCase() !== address.toLowerCase()) {
+          throw new Error(`Configured wallet ${address} is not the on-chain buyer for this channel.`);
         }
         if (onChain.closeRequestedAt > 0n) {
           const waitSeconds = secondsUntilChannelWithdrawReady(
@@ -240,7 +305,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
           spinner.stop();
           if (json) {
             console.log(JSON.stringify({
-              channelId: localChannel.sessionId,
+              channelId: id,
               alreadyRequested: true,
               closeRequestedAt: onChain.closeRequestedAt.toString(),
               withdrawReady: waitSeconds === 0,
@@ -248,18 +313,19 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
             }, null, 2));
             return;
           }
-          console.log(chalk.yellow(`Close was already requested for ${shortId(localChannel.sessionId, 18)}.`));
+          console.log(chalk.yellow(`Close was already requested for ${shortId(id, 18)}.`));
           console.log(waitSeconds === 0
-            ? chalk.green('It is ready to withdraw now: antseed buyer channels withdraw ' + localChannel.sessionId)
+            ? chalk.green('It is ready to withdraw now: antseed buyer channels withdraw ' + id)
             : chalk.dim(`Withdraw should be available in ${formatWait(waitSeconds)}.`));
           return;
         }
 
-        const txHash = await channelsClient.requestClose(wallet, localChannel.sessionId);
-        spinner.succeed(chalk.green(`Requested timeout close for ${shortId(localChannel.sessionId, 18)}`));
+        const txHash = await channelsClient.requestClose(wallet, id);
+        await recordOwnTransaction(globalOpts.dataDir, config, channelsClient, address, id, onChain.seller);
+        spinner.succeed(chalk.green(`Requested timeout close for ${shortId(id, 18)}`));
         if (json) {
           console.log(JSON.stringify({
-            channelId: localChannel.sessionId,
+            channelId: id,
             transaction: txHash,
             withdrawAfterSeconds: CHANNEL_CLOSE_GRACE_PERIOD_SECONDS,
           }, null, 2));
@@ -267,7 +333,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         }
         console.log(chalk.dim(`Transaction: ${txHash}`));
         console.log(chalk.dim(`Withdraw reserved funds after ${formatWait(CHANNEL_CLOSE_GRACE_PERIOD_SECONDS)}:`));
-        console.log(chalk.cyan(`  antseed buyer channels withdraw ${localChannel.sessionId}`));
+        console.log(chalk.cyan(`  antseed buyer channels withdraw ${id}`));
       } catch (err) {
         spinner.fail(chalk.red(`Close request failed: ${(err as Error).message}`));
         process.exit(1);
@@ -276,7 +342,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
 
   channelsCmd
     .command('withdraw <channelId>')
-    .description('Withdraw/release reserved buyer funds after a channel timeout close grace period has elapsed')
+    .description('Withdraw/release reserved buyer funds after a channel timeout close grace period has elapsed. Takes a listed channel id or prefix, or the full id of a channel this data directory has no row for')
     .option('--json', 'output as JSON', false)
     .action(async (channelId: string, options) => {
       const json = channelsJsonRequested(options, channelsCmd);
@@ -285,20 +351,21 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const { wallet, address } = await loadCryptoContext(globalOpts.dataDir);
       const channelsClient = createChannelsClient(config);
 
-      let localChannel: StoredChannel;
+      let id: string;
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
-        localChannel = resolveBuyerChannelById(
-          store.getBuyerPaymentChannels(address),
-          channelId,
-        );
+        id = resolveOnChainChannelId(store.getBuyerPaymentChannels(address), channelId);
       } finally {
         store.close();
       }
 
-      const spinner = ora(`Withdrawing reserved funds for channel ${shortId(localChannel.sessionId, 18)}...`).start();
+      const spinner = ora(`Withdrawing reserved funds for channel ${shortId(id, 18)}...`).start();
       try {
-        const onChain = await channelsClient.getSession(localChannel.sessionId);
+        const onChain = await channelsClient.getSession(id);
+        // Status first: an id the chain has never seen reads as no channel at all, with no buyer.
+        if (onChain.status === 0) {
+          throw new Error('No channel with this id is recorded on-chain.');
+        }
         if (onChain.buyer.toLowerCase() !== address.toLowerCase()) {
           throw new Error(`Configured wallet ${address} is not the on-chain buyer for this channel.`);
         }
@@ -306,7 +373,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
           throw new Error(`On-chain channel is ${CHANNEL_STATUS_LABELS[onChain.status] ?? `status ${onChain.status}`}; nothing active remains to withdraw.`);
         }
         if (onChain.closeRequestedAt <= 0n) {
-          throw new Error(`Close has not been requested yet. Run \`antseed buyer channels request-close ${localChannel.sessionId}\` first.`);
+          throw new Error(`Close has not been requested yet. Run \`antseed buyer channels request-close ${id}\` first.`);
         }
         const waitSeconds = secondsUntilChannelWithdrawReady(
           onChain.closeRequestedAt,
@@ -317,11 +384,12 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         }
 
         const refund = onChain.deposit > onChain.settled ? onChain.deposit - onChain.settled : 0n;
-        const txHash = await channelsClient.withdraw(wallet, localChannel.sessionId);
-        spinner.succeed(chalk.green(`Withdrew reserved funds for ${shortId(localChannel.sessionId, 18)}`));
+        const txHash = await channelsClient.withdraw(wallet, id);
+        await recordOwnTransaction(globalOpts.dataDir, config, channelsClient, address, id, onChain.seller);
+        spinner.succeed(chalk.green(`Withdrew reserved funds for ${shortId(id, 18)}`));
         if (json) {
           console.log(JSON.stringify({
-            channelId: localChannel.sessionId,
+            channelId: id,
             transaction: txHash,
             deposit: onChain.deposit.toString(),
             settled: onChain.settled.toString(),

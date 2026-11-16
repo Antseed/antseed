@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Alert, Badge, Button, LoadingRows } from '@antseed/ui'
 import { errorMessage } from '../api'
 import { href, linkHandler } from '../lib/router'
+import { staleHint } from '../lib/stale'
 
 /** Shared primitives and page blocks live in @antseed/ui; re-exported so pages import one module. */
 export {
@@ -57,12 +58,15 @@ export function Expiry({ at, format }: { at: number | null; format: (epochMs: nu
   return <>{format(at)}</>
 }
 
-export const STALE_CHAIN_HINT = 'Showing last known values — the chain RPC is busy.'
-
-/** A quiet note under chain-backed figures the gateway served from its last good read. */
-export function StaleHint({ stale }: { stale?: boolean }) {
-  if (!stale) return null
-  return <p className="gc-muted" role="status">{STALE_CHAIN_HINT}</p>
+/**
+ * A quiet note under chain-backed figures the gateway served from its last
+ * good read, naming the cause (`lib/stale.ts`): the chain RPC, or for the
+ * wallet the channel figures the buyer is still reading (`channelsStale`).
+ */
+export function StaleHint({ stale, channelsStale }: { stale?: boolean; channelsStale?: boolean }) {
+  const hint = staleHint({ stale, channelsStale })
+  if (!hint) return null
+  return <p className="gc-muted" role="status">{hint}</p>
 }
 
 /** A link to another console page that navigates client-side. */

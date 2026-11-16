@@ -250,7 +250,8 @@ The proxy serves a local control plane under `/_antseed/`:
 curl -s http://localhost:8377/_antseed/status     # DHT node count, peer count, uptime
 curl -s http://localhost:8377/_antseed/peers      # cached peers with pricing and reputation
 curl -s -X POST http://localhost:8377/_antseed/peers/refresh
-curl -s http://localhost:8377/_antseed/channels   # your open payment channels
+curl -s http://localhost:8377/_antseed/channels   # your open payment channels, each with the chain's record of it (onChain)
+curl -s 'http://localhost:8377/_antseed/channels?all=1'   # every channel, closed ones included, with your totals (onChain)
 ```
 
 For Prometheus metrics, see [Metrics](/docs/provide/metrics).

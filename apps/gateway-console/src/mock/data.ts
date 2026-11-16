@@ -204,11 +204,13 @@ export function seed() {
   ]
   const channels: Record<string, Channel[]> = {
     ws_default: [
-      { channelId: `0x${'c1'.repeat(32)}`, peerId: fakePeerId(1), sellerName: 'Fake Seller Alpha', status: 'active', reserved: '10.000000', spent: '3.412000', settled: '3.000000', openedAt: now - 2 * DAY, canCooperativeClose: true, closeRequestedAt: null },
+      { channelId: `0x${'c1'.repeat(32)}`, peerId: fakePeerId(1), sellerName: 'Fake Seller Alpha', status: 'active', reserved: '10.000000', spent: '3.412000', settled: '3.000000', held: '7.000000', unsettled: '0.412000', openedAt: now - 2 * DAY, canCooperativeClose: true, closeRequestedAt: null },
       // Its seller "fails" a cooperative close in the mock, to show the on-chain fallback.
-      { channelId: `0x${'c2'.repeat(32)}`, peerId: fakePeerId(2), sellerName: 'Fake Seller Beta', status: 'active', reserved: '5.000000', spent: '0.902000', settled: '0.500000', openedAt: now - DAY, canCooperativeClose: true, closeRequestedAt: null },
-      { channelId: `0x${'c3'.repeat(32)}`, peerId: fakePeerId(3), sellerName: null, status: 'closing', reserved: '1.000000', spent: '0.120000', settled: '0.120000', openedAt: now - 3 * DAY, canCooperativeClose: false, closeRequestedAt: now - 6 * 60_000 },
-      { channelId: `0x${'c4'.repeat(32)}`, peerId: fakePeerId(4), sellerName: 'Fake Seller Delta', status: 'withdrawable', reserved: '2.000000', spent: '0.450000', settled: '0.450000', openedAt: now - 5 * DAY, canCooperativeClose: false, closeRequestedAt: now - 40 * 60_000 },
+      { channelId: `0x${'c2'.repeat(32)}`, peerId: fakePeerId(2), sellerName: 'Fake Seller Beta', status: 'active', reserved: '5.000000', spent: '0.902000', settled: '0.500000', held: '4.500000', unsettled: '0.402000', openedAt: now - DAY, canCooperativeClose: true, closeRequestedAt: null },
+      { channelId: `0x${'c3'.repeat(32)}`, peerId: fakePeerId(3), sellerName: null, status: 'closing', reserved: '1.000000', spent: '0.120000', settled: '0.120000', held: '0.880000', unsettled: '0.000000', openedAt: now - 3 * DAY, canCooperativeClose: false, closeRequestedAt: now - 6 * 60_000 },
+      { channelId: `0x${'c4'.repeat(32)}`, peerId: fakePeerId(4), sellerName: 'Fake Seller Delta', status: 'withdrawable', reserved: '2.000000', spent: '0.450000', settled: '0.450000', held: '1.550000', unsettled: '0.000000', openedAt: now - 5 * DAY, canCooperativeClose: false, closeRequestedAt: now - 40 * 60_000 },
+      // A session the buyer gave up on (the seller answered channel_exhausted): signed in full, still open on chain.
+      { channelId: `0x${'c5'.repeat(32)}`, peerId: fakePeerId(5), sellerName: 'Fake Seller Gamma', status: 'active', reserved: '1.000000', spent: '1.000000', settled: '0.250000', held: '0.750000', unsettled: '0.750000', openedAt: now - 4 * DAY, canCooperativeClose: false, closeRequestedAt: null },
     ],
     ws_research: [],
   }

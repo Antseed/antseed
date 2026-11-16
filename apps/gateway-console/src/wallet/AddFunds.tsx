@@ -13,7 +13,7 @@ import {
 import { CopyButton } from '../components/ui'
 import { useOpenChannels } from '../lib/attention'
 import { contractAddress, explorerTxUrl } from '../lib/chain'
-import { pendingSpend } from '../lib/channels'
+import { authorizedNotCharged } from '../lib/channels'
 import { useDepositWatchHeartbeat } from '../lib/deposit-watch'
 import { useVisiblePolling } from '../lib/chain-polling'
 import { formatUsd, shortId, usdcToNumber } from '../lib/format'
@@ -131,7 +131,7 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   const value = Number(amount)
   const amountOk = Number.isFinite(value) && value >= 1
   const total = usdcToNumber(wallet.available) + usdcToNumber(wallet.reserved)
-  const owned = Math.max(0, total - (channels.data ? pendingSpend(channels.data) : 0)) + usdcToNumber(wallet.walletUsdc)
+  const owned = Math.max(0, total - (authorizedNotCharged(wallet, channels.data) ?? 0)) + usdcToNumber(wallet.walletUsdc)
   const firstDeposit = total === 0
   const usdc = contractAddress(chain, 'usdc')
   const line = statusLine(wallet.deposit, baseline.current)

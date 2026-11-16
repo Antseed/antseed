@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { runMigrations } from '../storage/migrate.js';
 import { channelMigrations } from '../storage/migrations/channels/index.js';
 import type { SpendingAuthMetadata, SpendingAuthServiceMetadata } from './evm/signatures.js';
+import type { BuyerChannelChainRow, ChannelChainRecord, ChannelChainRecordStore } from './channel-chain-record.js';
 
 // Channel constants/types + BuyerChannelStore interface moved to @antseed/buyer-core.
 export {
@@ -55,7 +56,7 @@ export interface BuyerServiceUsageTotal {
   requestCount: number;
 }
 
-export class ChannelStore {
+export class ChannelStore implements ChannelChainRecordStore {
   private _db: Database.Database;
 
   // ── Cached prepared statements (compiled once, reused every call) ──
@@ -97,6 +98,10 @@ export class ChannelStore {
     deleteServiceTotals: Database.Statement;
     insertServiceTotal: Database.Statement;
     getServiceTotals: Database.Statement;
+    getBuyerChainRows: Database.Statement;
+    recordChainState: Database.Statement;
+    markChainFinal: Database.Statement;
+    hasBuyerChannels: Database.Statement;
   };
 
   constructor(dataDir: string) {
@@ -164,6 +169,8 @@ export class ChannelStore {
           settled_at = @settledAt,
           settled_amount = @settledAmount,
           status = @status,
+          -- A row written as in use is read again: a reused channel id never stays final.
+          chain_final = CASE WHEN @status = 'active' THEN 0 ELSE chain_final END,
           latest_buyer_sig = @latestBuyerSig,
           latest_metadata_auth_sig = @latestSpendingAuthSig,
           latest_metadata = @latestMetadata,
@@ -285,6 +292,27 @@ export class ChannelStore {
       getServiceTotals: this._db.prepare(
         'SELECT * FROM payment_channel_service_totals WHERE session_id = ? ORDER BY service_id',
       ),
+      // Final rows are left out through idx_channels_role_buyer_chain_final.
+      getBuyerChainRows: this._db.prepare(`
+        SELECT session_id, seller_evm_addr, status, auth_max, settled_amount, deadline, payment_recovery,
+          chain_status, chain_deposit, chain_settled, chain_close_requested_at, chain_block, chain_read_at, chain_backfill
+        FROM payment_channels
+        WHERE role = ? AND buyer_evm_addr = ? AND chain_final = 0 AND channel_kind IN (?, ?)
+        ORDER BY created_at DESC
+      `),
+      markChainFinal: this._db.prepare('UPDATE payment_channels SET chain_final = 1 WHERE session_id = ?'),
+      hasBuyerChannels: this._db.prepare('SELECT 1 FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) LIMIT 1'),
+      // Never over a record from a later block; never "no record" over a record
+      // (channels are not deleted); never another state over a final one.
+      recordChainState: this._db.prepare(`
+        UPDATE payment_channels SET
+          chain_status = @status, chain_deposit = @deposit, chain_settled = @settled,
+          chain_close_requested_at = @closeRequestedAt, chain_block = @block, chain_read_at = @readAt
+        WHERE session_id = @sessionId
+          AND (chain_block IS NULL OR chain_block <= @block)
+          AND NOT (@status = 0 AND chain_status IS NOT NULL AND chain_status <> 0)
+          AND (chain_status IS NULL OR chain_status NOT IN (2, 3) OR chain_status = @status)
+      `),
     };
   }
 
@@ -752,6 +780,57 @@ export class ChannelStore {
     }));
   }
 
+  // ── Chain records (see channel-chain-record.ts) ───────────────
+
+  /** A buyer's paid and one-off channel rows that are not final yet, with their chain record (null: never read). */
+  getBuyerChannelChainRows(buyerEvmAddr: string): BuyerChannelChainRow[] {
+    const rows = this._stmts.getBuyerChainRows.all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChainRow[];
+    return rows.map(rowToChainRow);
+  }
+
+  /**
+   * A buyer's paid and one-off channels, newest first, each with its chain
+   * row, from one query: in one status through the buyer/status index (what
+   * routing reads on every request), or all of them.
+   */
+  getBuyerPaymentChannelsWithChain(buyerEvmAddr: string, status?: string): Array<{ channel: StoredChannel; chain: BuyerChannelChainRow }> {
+    const rows = (status === undefined
+      ? this._db.prepare(
+        'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+      ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF)
+      : this._stmts.getBuyerPaymentChannelsByStatus.all(CHANNEL_ROLE.BUYER, buyerEvmAddr, status, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF)) as Array<ChannelRow & ChainRow>;
+    return rows.map((row) => ({ channel: rowToChannel(row), chain: rowToChainRow(row) }));
+  }
+
+  /** Whether the buyer has any paid or one-off channel row, final ones included (through the buyer/status index). */
+  hasBuyerChannels(buyerEvmAddr: string): boolean {
+    return this._stmts.hasBuyerChannels.get(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) !== undefined;
+  }
+
+  /** Marks rows final: the chain can no longer change them for the buyer, so they are read and counted no more. */
+  markChainFinal(sessionIds: readonly string[]): void {
+    this._db.transaction((ids: readonly string[]) => {
+      for (const id of ids) this._stmts.markChainFinal.run(id);
+    })(sessionIds);
+  }
+
+  /**
+   * Stores the chain's record of a channel unless the row already holds one
+   * from a later block (a lagging read cannot undo a newer one). The session
+   * columns are never touched, and retiring a session never touches these.
+   */
+  recordChainState(sessionId: string, record: ChannelChainRecord): boolean {
+    return this._stmts.recordChainState.run({
+      sessionId,
+      status: record.status,
+      deposit: record.deposit.toString(),
+      settled: record.settled.toString(),
+      closeRequestedAt: Number(record.closeRequestedAt),
+      block: record.block,
+      readAt: record.readAt,
+    }).changes > 0;
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────
 
   close(): void {
@@ -760,6 +839,23 @@ export class ChannelStore {
 }
 
 // ── Row types ─────────────────────────────────────────────────
+
+interface ChainRow {
+  session_id: string;
+  seller_evm_addr: string;
+  status: string;
+  auth_max: string;
+  settled_amount: string | null;
+  deadline: number;
+  payment_recovery: string | null;
+  chain_status: number | null;
+  chain_deposit: string | null;
+  chain_settled: string | null;
+  chain_close_requested_at: number | null;
+  chain_block: number | null;
+  chain_read_at: number | null;
+  chain_backfill: number;
+}
 
 interface ChannelRow {
   payment_recovery: string | null;
@@ -812,6 +908,30 @@ interface ServiceTotalRow {
   cumulative_video_seconds: string;
   cumulative_input_characters: string;
   updated_at: number;
+}
+
+function rowToChainRow(row: ChainRow): BuyerChannelChainRow {
+  const recovery = row.payment_recovery ? JSON.parse(row.payment_recovery) as Partial<StoredChannel> : {};
+  return {
+    sessionId: row.session_id,
+    sellerEvmAddr: row.seller_evm_addr,
+    status: row.status,
+    authMax: row.auth_max,
+    settledAmount: row.settled_amount,
+    deadline: row.deadline,
+    latestReserveDeadline: recovery.latestReserveDeadline ?? null,
+    ...(recovery.reserveAuthPending !== undefined ? { reserveAuthPending: recovery.reserveAuthPending } : {}),
+    confirmedReserveAmount: recovery.confirmedReserveAmount ?? null,
+    backfill: row.chain_backfill === 1,
+    record: row.chain_status === null || row.chain_block === null ? null : {
+      status: row.chain_status,
+      deposit: BigInt(row.chain_deposit ?? '0'),
+      settled: BigInt(row.chain_settled ?? '0'),
+      closeRequestedAt: BigInt(row.chain_close_requested_at ?? 0),
+      block: row.chain_block,
+      readAt: row.chain_read_at ?? 0,
+    },
+  };
 }
 
 function rowToChannel(row: ChannelRow): StoredChannel {

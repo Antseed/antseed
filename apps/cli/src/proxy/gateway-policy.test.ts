@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
+import type { BuyerChannelChainRecorder, BuyerChannelTotals } from '@antseed/node/payments'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
@@ -549,6 +550,24 @@ test('balances reads chain state per identity and caches it', async (t) => {
   })
   await fetch(`${h.url}/_antseed/balances`, { headers })
   assert.equal(reads, 1)
+})
+
+test('balances carries the buyer\'s channel figures from its stored chain records, without waiting for the chain (#1463)', async (t) => {
+  const reader: BuyerBalanceReader = {
+    getBuyerBalance: async () => ({ available: 1_500_000n, reserved: 1_000_000n }),
+    getUSDCBalance: async () => 0n,
+    getBuyerCreditLimit: async () => 10_000_000n,
+    getOperator: async () => '0x0000000000000000000000000000000000000000',
+  }
+  // What the buyer's stored chain records give: a session it gave up on, still open with 0.40 signed and
+  // 1.00 held, read before this buyer started (no read since: stale). The figures never wait for the chain.
+  const totals: BuyerChannelTotals = { pending: 400_000n, held: 1_000_000n, unaccountedReserved: null, unread: 0, block: null, readAt: null, stale: true }
+  const channelChain = { totals: () => totals, refresh: () => new Promise<void>(() => {}) } as unknown as BuyerChannelChainRecorder
+  const h = await startHarness(t, [cheap], { balanceReader: reader, channelChain })
+  const res = await fetch(`${h.url}/_antseed/balances?identity=default`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET } })
+  const body = await res.json() as Record<string, unknown>
+  assert.deepEqual(body['channels'], { pending: '0.400000', held: '1.000000', unaccountedReserved: null, stale: true })
+  assert.equal(body['reserved'], '1.000000')
 })
 
 test('peers endpoint exposes the extra picker fields', async (t) => {

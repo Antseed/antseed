@@ -53,6 +53,8 @@ function optionalAddress(value: unknown): string | null {
 export function mapBalances(body: unknown): Omit<Wallet, 'buyerIdentity' | 'deposit'> {
   const raw = record(body)
   const creditLimit = raw['creditLimit']
+  // The buyer's channel figures, from the chain records it keeps; absent from a buyer that predates them.
+  const channels = raw['channels'] && typeof raw['channels'] === 'object' ? record(raw['channels']) : null
   return {
     address: typeof raw['address'] === 'string' ? raw['address'] : '',
     available: decimalUsdc(raw['available']),
@@ -60,6 +62,12 @@ export function mapBalances(body: unknown): Omit<Wallet, 'buyerIdentity' | 'depo
     walletUsdc: decimalUsdc(raw['walletUsdc']),
     creditLimit: creditLimit === null || creditLimit === undefined ? null : decimalUsdc(creditLimit),
     operator: optionalAddress(raw['operator']),
+    ...(channels ? {
+      pending: decimalUsdc(channels['pending']),
+      heldInChannels: decimalUsdc(channels['held']),
+      unaccounted: channels['unaccountedReserved'] === null || channels['unaccountedReserved'] === undefined ? null : decimalUsdc(channels['unaccountedReserved']),
+      channelsStale: channels['stale'] === true,
+    } : {}),
   }
 }
 
@@ -123,64 +131,116 @@ export function mapChannel(value: unknown): Channel | null {
     canCooperativeClose: raw['cooperativeCloseSupported'] === true && raw['live'] !== false && (status === 'active' || status === 'open'),
     closeRequestedAt: null,
     settled: null,
+    held: null,
+    unsettled: null,
   }
 }
 
-/** A channel's on-chain record (AntseedChannels `channels(id)`); status 0 = no record, 1 active, 2 settled, 3 timed out. */
-export interface ChannelChainState {
+/**
+ * A row's chain record as the buyer reports it (`onChain` on each
+ * `GET /_antseed/channels` row): AntseedChannels' own record, which the buyer
+ * keeps in its channel store, with what the channel holds and what of that
+ * the seller can still settle, worked out by the buyer. Amounts are base units.
+ */
+export interface ReportedChannelRecord {
+  /** 0 no record, 1 active, 2 settled, 3 timed out. */
   status: number
   deposit: bigint
   settled: bigint
+  /** Unix seconds of the requestClose; 0 when none. */
   closeRequestedAt: bigint
+  held: bigint
+  unsettled: bigint
 }
 
+const OPEN_LOCAL_STATUSES = new Set(['active', 'open'])
 
 /**
- * The buyer's channel store can lag the chain (a seller-side settle or close
- * is not always observed), and its `reserveCeiling` falls back to the
- * configured per-channel maximum for a channel it has not touched since it
- * started. Where the chain answered, its status and locked deposit win.
- * Status 0 (no record yet, e.g. a reserve still landing) keeps the local row
- * until its reserve deadline passes: the reserve can no longer land then, so
- * the row is 'expired' and holds nothing.
+ * A channel as the chain has it. The store's status only says whether the
+ * buyer still uses the session: a session it gave up on can still be an open
+ * channel holding a reserve, and a seller's settle or close is not always
+ * observed. Its `reserveCeiling` also falls back to the configured maximum.
+ * Where the buyer reports the chain's record, the record decides; a row with
+ * none keeps what the store says. Status 0 (no record on chain, e.g. a reserve
+ * still landing) keeps the local row until its reserve deadline passes: the
+ * reserve can no longer land then, so a row the buyer still calls open is
+ * 'expired' and holds nothing.
  */
-export function applyChannelChainState(channel: Channel, state: ChannelChainState | undefined, nowSeconds: number, deadline: number | null = null): Channel {
+export function applyChannelChainState(channel: Channel, state: ReportedChannelRecord | undefined, nowSeconds: number, deadline: number | null = null): Channel {
   if (!state) return channel
   if (state.status === 0) {
-    return deadline !== null && deadline > 0 && nowSeconds > deadline
+    return OPEN_LOCAL_STATUSES.has(channel.status) && deadline !== null && deadline > 0 && nowSeconds > deadline
       ? { ...channel, status: 'expired', reserved: '0.000000', canCooperativeClose: false }
       : channel
   }
-  let status = channel.status
+  const open = state.status === 1
+  const settled = baseUnitsToUsdc(state.settled)
+  // A retired row the seller settled in full holds nothing: it stays retired,
+  // not an open channel with nothing to close.
+  if (open && state.held === 0n && !OPEN_LOCAL_STATUSES.has(channel.status)) {
+    return { ...channel, reserved: '0.000000', settled, held: '0.000000', unsettled: '0.000000', canCooperativeClose: false }
+  }
+  // Open on-chain, whatever the store calls it. A retired row is not the live
+  // session, so it never offers the seller's close (`canCooperativeClose` is
+  // already false for it).
+  let status = OPEN_LOCAL_STATUSES.has(channel.status) ? channel.status : 'active'
   if (state.status === 2) status = 'settled'
   else if (state.status === 3) status = 'timedout'
   else if (state.closeRequestedAt > 0n) status = BigInt(nowSeconds) * 1000n < state.closeRequestedAt * 1000n + BigInt(CHANNEL_CLOSE_GRACE_MS) ? 'closing' : 'withdrawable'
-  const open = state.status === 1
   return {
     ...channel,
     status,
     reserved: open ? baseUnitsToUsdc(state.deposit) : '0.000000',
     canCooperativeClose: channel.canCooperativeClose && open && state.closeRequestedAt === 0n,
     closeRequestedAt: open && state.closeRequestedAt > 0n ? Number(state.closeRequestedAt) * 1000 : null,
-    settled: baseUnitsToUsdc(state.settled),
+    settled,
+    held: baseUnitsToUsdc(open ? state.held : 0n),
+    unsettled: baseUnitsToUsdc(open ? state.unsettled : 0n),
   }
 }
 
-/** Each buyer channel row's reserve `deadline` (unix seconds) and seller address, by channel id. */
-export function channelChainHints(body: unknown): { deadlines: Map<string, number>; sellers: Map<string, string> } {
+/** Each buyer channel row's reserve `deadline` (unix seconds), by channel id. */
+export function channelDeadlines(body: unknown): Map<string, number> {
   const rows = record(body)['channels']
   const deadlines = new Map<string, number>()
-  const sellers = new Map<string, string>()
   for (const row of Array.isArray(rows) ? rows : []) {
     const raw = record(row)
     const id = text(raw['channelId']) ?? text(raw['sessionId'])
-    if (!id) continue
     const deadline = count(raw['deadline'])
-    if (deadline !== null) deadlines.set(id, deadline)
-    const seller = text(raw['seller'])
-    if (seller) sellers.set(id, seller)
+    if (id && deadline !== null) deadlines.set(id, deadline)
   }
-  return { deadlines, sellers }
+  return deadlines
+}
+
+/**
+ * The record the buyer reports with each row (`onChain`), by channel id. Rows
+ * the chain has not been read for yet, and every row from a buyer that
+ * predates reporting records, are left out: they keep what the store says.
+ */
+export function channelChainStates(body: unknown): Map<string, ReportedChannelRecord> {
+  const states = new Map<string, ReportedChannelRecord>()
+  for (const row of Array.isArray(record(body)['channels']) ? record(body)['channels'] as unknown[] : []) {
+    const channel = record(row)
+    const id = text(channel['channelId']) ?? text(channel['sessionId'])
+    const onChain = record(channel['onChain'])
+    const status = onChain['status']
+    if (!id || typeof status !== 'number' || !Number.isInteger(status)) continue
+    try {
+      const deposit = BigInt(text(onChain['deposit']) ?? '0')
+      const settled = BigInt(text(onChain['settled']) ?? '0')
+      states.set(id, {
+        status,
+        deposit,
+        settled,
+        closeRequestedAt: BigInt(count(onChain['closeRequestedAt']) ?? 0),
+        held: BigInt(text(onChain['held']) ?? (status === 1 && deposit > settled ? (deposit - settled).toString() : '0')),
+        unsettled: BigInt(text(onChain['unsettled']) ?? '0'),
+      })
+    } catch {
+      // A malformed amount: the row keeps what the buyer's store says.
+    }
+  }
+  return states
 }
 
 export function mapChannels(body: unknown): Channel[] {

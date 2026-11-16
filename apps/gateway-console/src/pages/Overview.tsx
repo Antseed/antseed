@@ -155,7 +155,7 @@ export default function Overview() {
       )}
       {attention.withdrawable.count > 0 && (
         <Alert tone="warning" title={`${attention.withdrawable.count} channel${attention.withdrawable.count === 1 ? '' : 's'} ready to withdraw`} action={<PageLink to="wallet">Withdraw</PageLink>}>
-          About {formatUsd(attention.withdrawable.amount)} of unused reserve can return to the balance.
+          Up to {formatUsd(attention.withdrawable.amount)} the sellers have not settled can return to the balance.
         </Alert>
       )}
       {warnings.map((warning) => (

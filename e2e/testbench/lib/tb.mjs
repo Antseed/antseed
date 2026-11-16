@@ -5,7 +5,7 @@ import { chainReader, verifySettlement } from './chain.mjs';
 import { createRequire } from 'node:module';
 import { createCliRunner } from './cli-run.mjs';
 import { chainContracts } from './local-deploy.mjs';
-import { launchDesktop } from './desktop.mjs';
+import { launchDesktop, startTestbenchGateway } from './desktop.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
 import { createPrng, derive } from './prng.mjs';
@@ -62,6 +62,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
   };
   const proxy = async (path, init = {}) => fetch(`${manifest.proxyUrl}${path}`, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 120_000) });
   const desktops = [];
+  const gateways = [];
   const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
   const sellerDir = (id) => join(manifest.dir, 'sellers', id);
   const logsDir = manifest.dir ? join(manifest.dir, 'logs') : null;
@@ -120,6 +121,16 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       const ui = await launchDesktop({ repo, manifest, reportDir, event, trace });
       desktops.push(ui);
       return ui;
+    },
+    /**
+     * Starts a gateway on this testbench's buyer (never a second buyer), with `console` its console and console API
+     * too, stopped automatically after the run. Returns `{ url, key, stop }`; `key` is an API key it made for you.
+     */
+    async gateway({ console = false } = {}) {
+      assert(repo && reportDir, 'gateway() needs the repo and report directory');
+      const gateway = await startTestbenchGateway({ repo, manifest, reportDir, console });
+      gateways.push(gateway);
+      return gateway;
     },
     check(name, ok, detail) {
       checks.push({ name, ok: Boolean(ok), ...(detail !== undefined ? { detail } : {}) });
@@ -644,6 +655,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     },
     async dispose() {
       for (const ui of desktops.splice(0)) await ui.close();
+      for (const gateway of gateways.splice(0)) await gateway.stop();
       reader.close();
     },
   };

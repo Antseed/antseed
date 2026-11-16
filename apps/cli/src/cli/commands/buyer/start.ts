@@ -22,6 +22,7 @@ import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type D
 import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
+import { BuyerChannelChainRecorder, createChannelChainReader } from '@antseed/node/payments'
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
@@ -32,6 +33,8 @@ import { BuyerTelemetry } from '../../../telemetry/buyer.js'
 import { formatToolHints, toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
 
 const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
+/** How often `buyer start` reads the chain for each identity's open channels. */
+const CHANNEL_CHAIN_REFRESH_MS = 30_000
 
 interface LocalSeederInfo {
   dhtPort: number
@@ -493,6 +496,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             usdcAddress: chainConfig.usdcContractAddress,
           })
         : null
+      // The chain's record of each identity's channels, kept in the channel
+      // store next to the session status (`channel-chain-record.ts` in node).
+      const channelStore = paymentsConfig?.enabled ? node.channelChainRecordStore() : null
+      const channelChain = channelStore
+        ? new BuyerChannelChainRecorder({
+            store: channelStore,
+            read: createChannelChainReader({
+              provider: sharedChainProvider(chainConfig),
+              channelsAddress: chainConfig.channelsContractAddress,
+              depositsAddress: chainConfig.depositsContractAddress,
+            }),
+          })
+        : null
       const newDepositsClient = (): DepositsClient => new DepositsClient({
         rpcUrl: chainConfig.rpcUrl,
         ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
@@ -617,6 +633,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),
+        ...(channelChain ? { channelChain } : {}),
         ...(isSupervisedProcess()
           ? {
               onRestartRequested: async () => {
@@ -630,12 +647,14 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           : {}),
       })
       let ownsProxyListener = false
+      let stopChannelChain: (() => void) | null = null
       let depositWatcher: DepositWatcher | null = null
       let depositWatchHub: DepositWatchHub | null = null
       // Set before the proxy listens: a restart can be requested from then on,
       // and stops whatever has started by the time it runs.
       const shutdown = async (): Promise<void> => {
         nodeSpinner.start('Shutting down...')
+        stopChannelChain?.()
         depositWatcher?.stop()
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()
@@ -664,6 +683,15 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           await node.stop()
           process.exit(1)
         }
+      }
+
+      // Keep the stored chain records current: from start (which also reads,
+      // in steps, rows an upgrade left unread) every 30 s for each identity
+      // with a row left to read, spread over the interval; an identity with
+      // none has only its reserve read, every five minutes. Another daemon
+      // owning the port keeps its own.
+      if (channelChain && ownsProxyListener) {
+        stopChannelChain = channelChain.schedule(() => node.buyerIdentities().map(({ address }) => address), CHANNEL_CHAIN_REFRESH_MS)
       }
 
       buyerTelemetry.started({

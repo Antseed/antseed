@@ -19,7 +19,8 @@ import { qk, useChain, useWallet } from '../lib/queries'
 import { useOperator } from '../lib/operator'
 import { useNow } from '../lib/use-now'
 import {
-  channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isDepositPending, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
+  authorizedNotCharged, channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, formatHeld, formatReturns, isDepositPending, isEntireBalanceLocked, isOpenChannel,
+  unaccountedReserveNote, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
 } from '../lib/channels'
 import { AddFunds } from '../wallet/AddFunds'
 import { DepositConfirmationPage, DepositsPanel } from '../wallet/Deposits'
@@ -46,6 +47,10 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
   const toast = useToast()
   const chain = useChain()
   const channels = useQuery({ queryKey: qk.channels(workspaceId, all), queryFn: () => api.wallet.channels(workspaceId, all) })
+  // Reserve the chain holds that no listed channel explains (the buyer judges it).
+  const wallet = useWallet(workspaceId)
+  const operator = useOperator(workspaceId)
+  const unaccounted = unaccountedReserveNote(wallet.data, { gatewaySigns: operator.data?.relation === 'self' })
   const rows = channels.data ?? []
   const closing = rows.some((channel) => channel.status === 'closing')
   const now = useNow(closing)
@@ -57,6 +62,14 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
     void queryClient.invalidateQueries({ queryKey: ['channels', workspaceId] })
     void queryClient.invalidateQueries({ queryKey: qk.wallet(workspaceId) })
   }
+
+  // `?channels=1` (the desktop's "held in sessions" link): bring the channels into view once they load.
+  const focusChannels = useRef(new URLSearchParams(window.location.search).get('channels') === '1')
+  useEffect(() => {
+    if (!focusChannels.current || !channels.isSuccess) return
+    focusChannels.current = false
+    window.requestAnimationFrame(() => document.getElementById('gc-channels')?.scrollIntoView({ block: 'start' }))
+  }, [channels.isSuccess])
 
   // A countdown reaching zero turns the row into "ready to withdraw": re-read once it does.
   const nextReady = rows.map(withdrawableAt).filter((at): at is number => at !== null && at > now).sort((a, b) => a - b)[0]
@@ -89,12 +102,12 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
   const seller = (channel: Channel) => channel.sellerName ?? shortId(channel.peerId)
   return (
     <section id="gc-channels" className="gc-anchor">
-    <Panel flush title="Payment channels" description="Funds reserved with sellers. Closing a channel returns what was not spent."
+    <Panel flush title="Payment channels" description="Funds reserved with sellers. Closing a channel returns what the seller has not settled."
       actions={<Switch checked={all} onChange={setAll} label="Include closed" />}>
       {ready.count > 0 && (
         <Alert tone="warning" title={`${ready.count} channel${ready.count === 1 ? '' : 's'} ready to withdraw`}
           action={<Button size="sm" onClick={() => open(rows.find((channel) => channel.status === 'withdrawable')!)}>Withdraw</Button>}>
-          About {formatUsd(ready.amount)} of unused reserve can return to the balance. The authorized wallet signs the withdrawal.
+          Up to {formatUsd(ready.amount)} the sellers have not settled can return to the balance. The authorized wallet signs the withdrawal.
         </Alert>
       )}
       <QueryView query={channels}>
@@ -115,11 +128,18 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
               { key: 'status', header: 'Status', render: (channel) => <Badge tone={channelStatusTone(channel)}>{channelStatusLabel(channel, now)}</Badge> },
               { key: 'reserved', header: 'Reserved', align: 'right', render: (channel) => formatUsd(channel.reserved) },
               { key: 'spent', header: 'Spent', align: 'right', render: (channel) => formatUsd(channel.spent) },
-              { key: 'returns', header: 'Returns on close', align: 'right', secondary: true, optional: true, render: (channel) => (isOpenChannel(channel) ? formatUsd(unspent(channel)) : '—') },
+              { key: 'held', header: 'Held', align: 'right', render: (channel) => (isOpenChannel(channel) ? formatHeld(channel) : '—') },
+              { key: 'returns', header: 'Returns on close', align: 'right', secondary: true, optional: true, render: (channel) => (isOpenChannel(channel) ? formatReturns(channel) : '—') },
               { key: 'opened', header: 'Opened', secondary: true, render: (channel) => formatDateTime(channel.openedAt) },
             ]} />
         )}
       </QueryView>
+      {unaccounted && (
+        <p className="gc-panel-note gc-panel-note--status" role="status">
+          <span className="gc-attention" aria-hidden="true" />
+          <span>{unaccounted}</span>
+        </p>
+      )}
       {!canCooperate && rows.some((channel) => channel.canCooperativeClose) && (
         <p className="gc-fineprint gc-panel-note">Asking a seller to close needs an organization admin; you can still close on chain with the authorized wallet.</p>
       )}
@@ -174,7 +194,7 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
 
 function BalancePanel({ wallet, workspaceId, onWithdraw }: { wallet: WalletInfo; workspaceId: string; onWithdraw: () => void }) {
   const channels = useOpenChannels(workspaceId)
-  const pending = channels.data ? pendingSpend(channels.data) : null
+  const pending = authorizedNotCharged(wallet, channels.data)
   // Takes you to the channels and to the action: one open channel opens its menu (Close channel), several focus the first.
   // Scrolling alone looked like nothing happened when the table was already on screen.
   const showChannels = () => {
@@ -295,7 +315,7 @@ function WalletOverview() {
       <QueryView query={wallet} rows={2}>
         {(data) => (
           <>
-            <StaleHint stale={data.stale} />
+            <StaleHint stale={data.stale} channelsStale={data.channelsStale} />
             <BalancePanel wallet={data} workspaceId={workspace.id} onWithdraw={() => setDialog('withdraw')} />
             <OperatorPanel workspaceId={workspace.id} action={operatorAction} onActionChange={setOperatorAction} />
             {isWorkspaceAdmin(viewer) && <DepositsPanel workspaceId={workspace.id} />}
