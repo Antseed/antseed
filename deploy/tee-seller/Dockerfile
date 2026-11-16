@@ -42,10 +42,16 @@ LABEL "tee.launch_policy.allow_env_override"="ANTSEED_TEE_PEER_ID,ANTSEED_BASE_R
       "tee.launch_policy.log_redirect"="always"
 COPY --from=build /out/ /
 COPY launch.mjs state.mjs /home/nonroot/
+# The MALLOC_ settings make glibc give freed request buffers back to the OS. Without them a busy
+# seller's memory stays at the highest point traffic ever pushed it to. They are set here because
+# the operator can't: buyers reject any other variable in the app compose or launch policy.
 ENV HOME=/home/nonroot \
     NODE_ENV=production \
     ANTSEED_NO_UPDATE_CHECK=1 \
-    ANTSEED_VERIFIER_SDKS=antseed-verifier
+    ANTSEED_VERIFIER_SDKS=antseed-verifier \
+    MALLOC_ARENA_MAX=2 \
+    MALLOC_MMAP_THRESHOLD_=131072 \
+    MALLOC_TRIM_THRESHOLD_=131072
 USER 65532:65532
 VOLUME ["/var/lib/antseed"]
 # Signaling (TCP) and DHT (UDP). Google Confidential Space blocks every inbound port the image

@@ -455,6 +455,8 @@ h1.hero-title em { font-style: italic; color: var(--brand); }
 }
 .claim-note strong { color: var(--ink-soft); }
 .claim-note a { color: var(--brand-darker); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.catch-up-note { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; }
+.catch-up-note .stake-cta { margin: 0; }
 .unstake-flow-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 250px;
