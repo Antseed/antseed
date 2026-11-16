@@ -64,6 +64,7 @@ import { startIdleWatch, uncleanExitEvent, waitAtMost } from '../../../seller-al
 import { startSellerDashboard, type SellerDashboardServer } from '../../../seller-monitor/dashboard-server.js'
 import { previousDashboardPort, previousDashboardToken, removeDashboardLink, writeDashboardLink } from '../../../seller-monitor/dashboard-link.js'
 import { DEFAULT_SELLER_DASHBOARD_PORT } from './dashboard.js'
+import { SELLER_SHUTDOWN_DRAIN_MS } from '../../../shutdown-timeouts.js'
 import { patchSellerConfig } from '../../../seller-monitor/settings.js'
 
 /** How long shutdown waits, after channels are finalized, for a gas refuel swap already sent to be mined and recorded. */
@@ -569,6 +570,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
     .option('-r, --reserve <number>', 'runtime-only reserve floor override (does not write config file)', parseFloat)
     .option('--input-usd-per-million <number>', 'runtime-only input pricing override in USD per 1M tokens', parseFloat)
     .option('--output-usd-per-million <number>', 'runtime-only output pricing override in USD per 1M tokens', parseFloat)
+    .option('--shutdown-drain-timeout-ms <number>', 'maximum wait for active requests and final payment authorizations on shutdown', (value: string) => {
+      const timeout = Number(value)
+      if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2_147_483_647 || value.trim() === '') throw new Error('Shutdown drain timeout must be an integer between 0 and 2147483647')
+      return timeout
+    }, SELLER_SHUTDOWN_DRAIN_MS)
     .option('--dht-port <number>', 'UDP port for DHT (default: 6881)', parseInt)
     .option('--signaling-port <number>', 'TCP port for P2P signaling (default: 6882)', parseInt)
     .option('--min-settle-delta <usdc>', 'minimum unsettled delta (USDC decimal, e.g. 0.002) before idle settle submits a tx')
@@ -971,6 +977,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       const node = new AntseedNode({
         role: 'seller',
+        shutdownDrainTimeoutMs: options.shutdownDrainTimeoutMs as number,
         displayName: config.identity.displayName,
         ...(config.seller.publicAddress ? { publicAddress: config.seller.publicAddress } : {}),
         ...(effectiveSellerConfig.verifications ? { verifications: effectiveSellerConfig.verifications } : {}),

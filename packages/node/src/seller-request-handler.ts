@@ -272,6 +272,12 @@ export class SellerRequestHandler {
   /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
   private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set once shutdown begins: new requests get 503 while the ones in flight finish. */
+  private _draining = false;
+  /** Set when the drain deadline passed: late frames and billing are dropped. */
+  private _aborted = false;
+  /** Requests being served, which shutdown waits for. */
+  private readonly _pendingRequests = new Set<Promise<void>>();
   /** Request bodies in memory on every connection: uploads still arriving and requests being served. */
   private readonly _inFlightRequestBytes: ByteBudget;
 
@@ -281,6 +287,21 @@ export class SellerRequestHandler {
       deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
       deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
     ));
+  }
+
+  async drain(timeoutMs: number): Promise<boolean> {
+    this._draining = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const completed = await Promise.race([
+        Promise.allSettled([...this._pendingRequests]).then(() => true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+      this._aborted = !completed;
+      return completed;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
@@ -394,6 +415,7 @@ export class SellerRequestHandler {
             headers,
             body: request.body,
           });
+          if (this._aborted) return;
           mux.sendProxyResponse({
             requestId: request.requestId,
             statusCode: resp.statusCode,
@@ -401,6 +423,7 @@ export class SellerRequestHandler {
             body: resp.body,
           });
         } catch (err) {
+          if (this._aborted) return;
           const message = err instanceof Error ? err.message : String(err);
           mux.sendProxyResponse({
             requestId: request.requestId,
@@ -727,6 +750,7 @@ export class SellerRequestHandler {
           // that has queued later auths behind its per-buyer mutex) so we don't
           // 402 against a stale accepted cumulative.
           await spm.waitForPendingAuths(buyerPeerId);
+          if (this._aborted) return;
           // Re-read after the await — the session may have been evicted (timeout
           // checker, disconnect) while the on-chain top-up was confirming.
           const sendSessionExpired = (during: string): void => {
@@ -996,6 +1020,7 @@ export class SellerRequestHandler {
         headers: wireHeaders,
         body: wireBody,
       };
+      if (this._aborted) return;
 
       // Track active seller session at request start
       this._deps.sessionTracker?.getOrCreateSession(buyerPeerId, provider.name);
@@ -1074,6 +1099,7 @@ export class SellerRequestHandler {
           let response = await this._executeRequest(provider, request, sellerCost, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
+              if (this._aborted) return;
               markFreeAllowance(streamResponseStart.headers, coveredByAllowance);
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
               streamedResponseStarted = true;
@@ -1084,6 +1110,7 @@ export class SellerRequestHandler {
               mux.sendProxyResponse(streamResponseStart);
             },
             onResponseChunk: (chunk) => {
+              if (this._aborted) return;
               if (!streamedResponseStarted) return;
               if (!downloadHash) streamOutcome.observe(chunk.data);
               if (downloadHash) {
@@ -1101,6 +1128,7 @@ export class SellerRequestHandler {
               return mux.whenWritable();
             },
           }, isDownload);
+          if (this._aborted) return;
           if (!streamedResponseStarted) {
             response = { ...response, headers: { ...response.headers } };
             markFreeAllowance(response.headers, coveredByAllowance);
@@ -1168,6 +1196,7 @@ export class SellerRequestHandler {
             });
           }
         } catch (err) {
+          if (this._aborted) return;
           const message = err instanceof Error ? err.message : "Internal error";
           // An exception can quote the upstream's answer; content-free mode keeps only that it failed.
           failureMessage = isContentFreeLogging() ? 'provider call failed' : message;
@@ -1260,6 +1289,7 @@ export class SellerRequestHandler {
             ...(failureMessage ? { error: failureMessage } : {}),
           });
         }
+        if (this._aborted) return;
 
         // Record spend and send NeedAuth with cost data after every request.
         // The buyer validates the cost independently and responds with SpendingAuth.
@@ -1342,6 +1372,13 @@ export class SellerRequestHandler {
       }
     };
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+      if (this._draining) {
+        this._sendJsonError(
+          mux, request.requestId, 503, 'seller_shutting_down',
+          'Seller is shutting down; retry with another peer', { 'retry-after': '2' },
+        );
+        return;
+      }
       // The body stays in memory until the response is sent, so it counts until then.
       const bodyBytes = request.body.length;
       if (!this._inFlightRequestBytes.tryReserve(bodyBytes)) {
@@ -1352,9 +1389,13 @@ export class SellerRequestHandler {
         return;
       }
       const usageHold: BuyerUsageHold = { reservation: null, estimate: 0, tokens: 0 };
+      const operation = handleProxyRequest(request, usageHold);
+      // Shutdown waits for these (see drain).
+      this._pendingRequests.add(operation);
       try {
-        await handleProxyRequest(request, usageHold);
+        await operation;
       } finally {
+        this._pendingRequests.delete(operation);
         usageHold.reservation?.finish(usageHold.tokens);
         this._inFlightRequestBytes.release(bodyBytes);
       }
@@ -1997,7 +2038,7 @@ export class SellerRequestHandler {
   }
 
   private _scheduleMetadataRefresh(): void {
-    if (!this._deps.announcer || this._metadataRefreshTimer) {
+    if (this._draining || !this._deps.announcer || this._metadataRefreshTimer) {
       return;
     }
 

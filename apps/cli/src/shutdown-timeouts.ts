@@ -18,3 +18,10 @@ export const BUYER_STOP_TIMEOUT_MS = BUYER_SHUTDOWN_DEADLINE_MS + 15_000
 
 /** On shutdown, gateway requests in flight get this long to finish before they are closed. */
 export const GATEWAY_SHUTDOWN_DRAIN_MS = 60_000
+
+/**
+ * On shutdown (and a restart from the seller dashboard), seller requests in
+ * flight and their final SpendingAuths get this long before connections close.
+ * `antseed seller start --shutdown-drain-timeout-ms` overrides it.
+ */
+export const SELLER_SHUTDOWN_DRAIN_MS = 60_000

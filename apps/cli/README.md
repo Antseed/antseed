@@ -338,6 +338,24 @@ antseed buyer start --disable-metadata-v2-services
 
 For production sellers, prefer a dedicated Base JSON-RPC endpoint over public defaults. You can set it durably with `payments.crypto.rpcUrl`, at runtime with `ANTSEED_BASE_RPC_URL`, or for one run with `antseed seller start --base-rpc-url <url>`.
 
+### Graceful seller shutdown
+
+On SIGINT or SIGTERM, and on a restart from the seller dashboard, the seller stops advertising and rejects new requests with
+503 (new requests and new channel reserves) while allowing running requests,
+final payment authorizations (including ones waiting on a top-up being mined),
+and outgoing transport buffers to drain. A buyer that disconnects during the
+drain is not waited for; its channel closes on disconnect as usual. The default drain budget is 60 seconds:
+
+```bash
+antseed seller start --shutdown-drain-timeout-ms 120000
+```
+
+The SDK equivalent is `new AntseedNode({ role: 'seller', shutdownDrainTimeoutMs: 120000 })`.
+Set the timeout to `0` to skip waiting. Requests still running at the deadline are
+disconnected; forced termination (such as SIGKILL) cannot be drained. A service
+manager's termination timeout should exceed the drain budget and leave time for
+settlement and cleanup.
+
 ### Metadata v12 rollout
 
 This release announces metadata v12. Buyers supporting only older metadata versions drop v12 sellers from discovery, while updated buyers continue accepting older v10/v11 sellers. Upgrade buyer CLIs and desktop apps before upgrading sellers. Removing capability or unit-billing fields does not downgrade the metadata version; rollback requires running the older seller binary.

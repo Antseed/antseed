@@ -74,6 +74,8 @@ const DEFAULT_MIN_SETTLE_DELTA = BigInt(DEFAULT_MIN_SETTLE_DELTA_STR);
 const CLOSE_CATCH_UP_WAIT_MS = 5_000;
 /** How long an auth only a mining top-up covers waits for it (outside the buyer lock). */
 const OVER_CEILING_AUTH_WAIT_MS = 30_000;
+/** How often the shutdown drain rechecks that a buyer it waits on is still connected. */
+const DRAIN_POLL_MS = 250;
 /** How long an auth or request above the ceiling waits for a covering pending top-up to start. */
 const PENDING_TOP_UP_START_MS = 2_000;
 const PENDING_TOP_UP_POLL_MS = 50;
@@ -172,6 +174,7 @@ interface LatestAuth {
  * The seller tracks spending locally and settles/closes via the contract at session end.
  */
 export class SellerPaymentManager {
+  private _draining = false;
   private readonly _signer: AbstractSigner;
   private readonly _channelsClient: ChannelsClient;
   private readonly _config: SellerPaymentConfig;
@@ -782,6 +785,8 @@ export class SellerPaymentManager {
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
       if (existingCumulative === undefined) {
+        // No new channels (reserve or recovery) once shutdown has begun.
+        if (this._draining) return 'rejected';
         // Hex in another case names the same on-chain channel: it must not read
         // as an unknown channel, which would start over with nothing spent.
         const sameChannel = this._channelStore.getChannelIgnoringCase(channelId);
@@ -2879,6 +2884,45 @@ export class SellerPaymentManager {
       ...(pricing?.outputUsdPerMillion != null ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
       ...(pricing?.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
     };
+  }
+
+  /**
+   * Shutdown drain: wait (up to `timeoutMs`) until every connected buyer has
+   * signed for the work already served, including SpendingAuths parked behind
+   * a mining top-up. A buyer that disconnects stops being waited for: its
+   * channel is closed on disconnect at what it signed.
+   */
+  async drainPendingPayments(timeoutMs: number, isBuyerConnected: (peerId: string) => boolean = () => true): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + timeoutMs;
+    const remaining = () => Math.max(0, deadline - Date.now());
+    try {
+      const complete = await Promise.race([
+        (async () => {
+          await Promise.all([...this._buyerLocks.values()]);
+          const results = await Promise.all(this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER).map(async (channel) => {
+            const channelId = channel.sessionId;
+            await this._waitForOverCeilingAuths(channelId, remaining());
+            let reached = false;
+            while (!reached && remaining() > 0 && isBuyerConnected(channel.peerId)) {
+              reached = await this.awaitAcceptedAtLeast(channelId, this.getCumulativeSpend(channelId), Math.min(DRAIN_POLL_MS, remaining()));
+            }
+            await this.waitForPendingAuths(channel.peerId);
+            return reached || this.getAcceptedCumulative(channelId) >= this.getCumulativeSpend(channelId) || !isBuyerConnected(channel.peerId);
+          }));
+          return results.every(Boolean);
+        })(),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]);
+      if (!complete) debugWarn('[SellerPayment] Shutdown deadline reached before all final spending authorizations arrived');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Shutdown has begun: no new channel is reserved or recovered from here on. */
+  beginDrain(): void {
+    this._draining = true;
   }
 
   // ── Buyer-requested cooperative close ─────────────────────────

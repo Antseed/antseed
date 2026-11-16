@@ -375,6 +375,19 @@ export class PeerConnection extends EventEmitter {
     }
   }
 
+  async drainOutgoing(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const buffered = this._dataChannel?.isOpen()
+        ? this._dataChannel.bufferedAmount()
+        : this._rawSocket?.writableLength ?? 0;
+      if (buffered === 0) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(10, remaining)));
+    }
+  }
+
   /** Send a message through the active transport. */
   send(data: Uint8Array): void {
     if (this._state !== ConnectionState.Open && this._state !== ConnectionState.Authenticated) {

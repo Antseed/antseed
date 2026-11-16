@@ -191,6 +191,55 @@ describe('SellerPaymentManager', () => {
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
   });
 
+  it('waits for final spending authorization during drain, but respects the deadline', async () => {
+    const channelId = makeChannelId(72);
+    const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux);
+    manager.recordSpend(channelId, 100n);
+    let drained = false;
+    const draining = manager.drainPendingPayments(1000).then(() => { drained = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(drained).toBe(false);
+    const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 100n });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+    await draining;
+    expect(drained).toBe(true);
+    manager.recordSpend(channelId, 1n);
+    await manager.drainPendingPayments(5);
+    expect(manager.getCumulativeSpend(channelId)).toBe(101n);
+  });
+
+  it('stops waiting during drain for a buyer that disconnected', async () => {
+    const channelId = makeChannelId(73);
+    const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux);
+    manager.recordSpend(channelId, 100n);
+    let connected = true;
+    const startedAt = Date.now();
+    const draining = manager.drainPendingPayments(10_000, () => connected);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    connected = false;
+    await draining;
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it('rejects a new channel reserve once draining, but still accepts auths on open channels', async () => {
+    const openChannel = makeChannelId(74);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, openChannel, { isReserve: true }), mux);
+    manager.recordSpend(openChannel, 50n);
+    manager.beginDrain();
+
+    const otherBuyer = createTestIdentity();
+    const newChannel = makeChannelId(75);
+    const reserve = await buildSpendingAuth(otherBuyer, sellerIdentity, newChannel, { isReserve: true });
+    expect(await manager.handleSpendingAuth(otherBuyer.peerId, reserve, mux)).toBe('rejected');
+    expect(manager.channelsClient.reserve).toHaveBeenCalledOnce();
+
+    const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, openChannel, { cumulativeAmount: 50n });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('accepted');
+    expect(manager.getAcceptedCumulative(openChannel)).toBe(50n);
+  });
+
   it('reports a reserve that fails on-chain through onReserveFailed', async () => {
     const failures: ReserveFailure[] = [];
     const reporting = new SellerPaymentManager(sellerIdentity, {
