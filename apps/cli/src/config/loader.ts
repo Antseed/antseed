@@ -12,6 +12,7 @@ import type {
   DomainVerificationMethod,
   GithubVerificationConfig,
   SellerFallbackUpstreamConfig,
+  SellerFreeTierCLIConfig,
   SellerProviderConfig,
   SellerServiceConfig,
   TokenPricingUsdPerMillion,
@@ -478,7 +479,7 @@ function normalizeFreeTierProgram(value: Record<string, unknown>): NonNullable<A
     ...(value['newBuyerRequests'] !== undefined ? { newBuyerRequests: toFiniteOrNaN(value['newBuyerRequests']) } : {}),
     // Kept as given so validation reports an unknown mode instead of dropping it.
     ...(value['movedConversations'] !== undefined
-      ? { movedConversations: value['movedConversations'] as 'refuse' | 'log' }
+      ? { movedConversations: value['movedConversations'] as SellerFreeTierCLIConfig['movedConversations'] }
       : {}),
   };
 }

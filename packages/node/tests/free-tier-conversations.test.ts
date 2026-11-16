@@ -43,6 +43,15 @@ describe('FreeTierConversationTracker', () => {
       .toMatchObject({ owner: BUYER, messages: MOVED_MIN_MESSAGES });
   });
 
+  it('matches the same messages with their properties in another order', () => {
+    const tracker = new FreeTierConversationTracker();
+    const history = conversation(MOVED_MIN_MESSAGES);
+    tracker.record(BUYER, fingerprintConversation(history)!, 1_000);
+    const reordered = { messages: history.messages.map(({ role, content }) => ({ content, role })) };
+    expect(tracker.findMovedConversation(OTHER_BUYER, fingerprintConversation(reordered)!, 2_000))
+      .toMatchObject({ owner: BUYER, messages: MOVED_MIN_MESSAGES });
+  });
+
   it('ignores a few shared messages and a conversation past its time to live', () => {
     const tracker = new FreeTierConversationTracker();
     const short = fingerprintConversation(conversation(MOVED_MIN_MESSAGES - 1))!;

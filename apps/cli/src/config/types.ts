@@ -1,5 +1,6 @@
 import type {
   FreeTierDelegation,
+  FreeTierMovedConversationsMode,
   SellerBuyerLimitsConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
@@ -261,7 +262,7 @@ export interface SellerFreeTierCLIConfig {
    * Large free requests that carry on a conversation another buyer address
    * started: `refuse` them, or only `log` them. Default: not checked.
    */
-  movedConversations?: 'refuse' | 'log';
+  movedConversations?: FreeTierMovedConversationsMode;
 }
 
 export interface SellerFreeTierStakeTierCLIConfig {

@@ -52,11 +52,20 @@ export function fingerprintConversation(body: unknown): ConversationFingerprint 
   });
   const messages: ConversationFingerprint['messages'] = [];
   for (const item of conversation.slice(SKIPPED_LEADING_MESSAGES)) {
-    const text = JSON.stringify(item);
+    const text = canonicalJson(item);
     if (text === undefined || text.length < MIN_TRACKED_MESSAGE_CHARS) continue;
     messages.push({ digest: createHash('sha256').update(text).digest('base64').slice(0, 22), chars: text.length });
   }
   return messages.length > 0 ? { messages } : null;
+}
+
+/** JSON with object keys sorted at every level, so the same message serialized another way hashes the same. */
+function canonicalJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, nested: unknown) => {
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return nested;
+    const record = nested as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]]));
+  });
 }
 
 export class FreeTierConversationTracker {
