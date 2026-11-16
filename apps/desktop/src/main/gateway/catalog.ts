@@ -94,6 +94,34 @@ function imageInputSellerIds(peers: Array<Record<string, unknown>>): string[] {
     .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [normalizeSellerId(peer['peerId'])] : []));
 }
 
+/** Each seller's price per image, for the seller picker: the route preview prices tokens only. */
+function imageUsdBySeller(peers: Array<Record<string, unknown>>): Record<string, number> {
+  const prices: Record<string, number> = {};
+  for (const peer of peers) {
+    const price = finiteNumber(peer['minImageUsdPerImage']);
+    if (typeof peer['peerId'] === 'string' && price !== null && price >= 0) prices[normalizeSellerId(peer['peerId'])] = price;
+  }
+  return prices;
+}
+
+/**
+ * A video model's cheapest price across its sellers, as the listing prices
+ * each video offer (`videoUsdPerSecond`, plus `videoUsdPerVideo` for a fixed
+ * charge per video). Null when no seller lists one.
+ */
+export function minVideoPrice(peers: Array<Record<string, unknown>>): ChatModel['videoPrice'] | null {
+  let best: { perSecondUsd: number; perVideoUsd: number } | null = null;
+  for (const peer of peers) {
+    const perSecondUsd = finiteNumber(peer['videoUsdPerSecond']);
+    if (perSecondUsd === null || !(perSecondUsd > 0)) continue;
+    const perVideoUsd = finiteNumber(peer['videoUsdPerVideo']) ?? 0;
+    if (!best || perSecondUsd < best.perSecondUsd || (perSecondUsd === best.perSecondUsd && perVideoUsd < best.perVideoUsd)) {
+      best = { perSecondUsd, perVideoUsd };
+    }
+  }
+  return best;
+}
+
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
   for (const key of ['context_length', 'context_window']) {
     const value = Number(entry[key]);
@@ -152,6 +180,19 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   };
 }
 
+/** The entry's retail reference prices; only for a text model, whose sellers charge per token too. */
+function entryReferencePrice(entry: GatewayModelEntry, type: string): ChatModel['referencePrice'] | undefined {
+  if (type !== 'text') return undefined;
+  const reference = record(entry['reference_price']);
+  const price = (field: string): number | null => {
+    const value = finiteNumber(reference[field]);
+    return value !== null && value > 0 ? value : null;
+  };
+  const inputUsdPerMillion = price('input_usd_per_million');
+  const outputUsdPerMillion = price('output_usd_per_million');
+  return inputUsdPerMillion === null && outputUsdPerMillion === null ? undefined : { inputUsdPerMillion, outputUsdPerMillion };
+}
+
 /** How the listing will be routed: TEE-only routing (Private) changes what counts as free. */
 export type CatalogOptions = { teeOnly?: boolean };
 
@@ -163,6 +204,9 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
   const name = typeof entry['name'] === 'string' && entry['name'].trim() ? entry['name'].trim() : entry.id;
   const contextWindow = entryContextWindow(entry);
   const imageSellers = imageInputSellerIds(peers);
+  const imagePrices = type === 'image' ? imageUsdBySeller(peers) : {};
+  const videoPrice = type === 'video' ? minVideoPrice(peers) : null;
+  const referencePrice = entryReferencePrice(entry, type);
   return {
     id: entry.id,
     label: name,
@@ -171,7 +215,10 @@ export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = 
     supportsImages: entrySupportsImages(entry, peers),
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
+    ...(Object.keys(imagePrices).length > 0 ? { imageUsdBySeller: imagePrices } : {}),
+    ...(videoPrice ? { videoPrice } : {}),
     ...entryOfferSummary(entry, peers, options),
+    ...(referencePrice ? { referencePrice } : {}),
   };
 }
 
