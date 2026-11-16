@@ -55,6 +55,25 @@ export interface BuyerServiceUsageTotal {
   requestCount: number;
 }
 
+/** A channel that ended, for its listener to handle (see `SellerPaymentConfig.onChannelEnded`). */
+export interface EndedChannelNotice {
+  sessionId: string;
+  /** The AntseedChannels contract the channel was on, or null when that was not recorded. */
+  channelsAddress: string | null;
+  /** Attempts to handle it that failed so far. */
+  failures: number;
+}
+
+interface EndedNoticeRow {
+  session_id: string;
+  channels_address: string | null;
+  failures: number;
+}
+
+function rowToEndedNotice(row: EndedNoticeRow): EndedChannelNotice {
+  return { sessionId: row.session_id, channelsAddress: row.channels_address, failures: row.failures };
+}
+
 export class ChannelStore {
   private _db: Database.Database;
 
@@ -68,6 +87,11 @@ export class ChannelStore {
   ) => void;
   private readonly _replaceServiceTotalsTxn: (sessionId: string, totals: StoredChannelServiceTotal[]) => void;
   private readonly _commitAuthorizationTxn: (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => void;
+  private readonly _endChannelWithNoticeTxn: (
+    sessionId: string,
+    status: ChannelStatus,
+    settledAmount: string | undefined,
+  ) => EndedChannelNotice;
 
   private readonly _stmts: {
     upsert: Database.Statement;
@@ -87,6 +111,12 @@ export class ChannelStore {
     listAll: Database.Statement;
     getTimedOut: Database.Statement;
     getUnsettledByStatus: Database.Statement;
+    addEndedNotice: Database.Statement;
+    getEndedNotice: Database.Statement;
+    removeEndedNotice: Database.Statement;
+    deferEndedNotice: Database.Statement;
+    getDueEndedNotices: Database.Statement;
+    countEndedNotices: Database.Statement;
     insertReceipt: Database.Statement;
     getReceipts: Database.Statement;
     updateReceiptAck: Database.Statement;
@@ -135,6 +165,12 @@ export class ChannelStore {
       (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => {
         this.upsertChannel(channel);
         replaceServiceTotals(channel.sessionId, totals);
+      },
+    );
+    this._endChannelWithNoticeTxn = this._db.transaction(
+      (sessionId: string, status: ChannelStatus, settledAmount: string | undefined) => {
+        this.updateChannelStatus(sessionId, status, settledAmount);
+        return this.addEndedChannelNotice(sessionId, this.getChannel(sessionId)?.channelsAddress ?? null);
       },
     );
   }
@@ -228,6 +264,20 @@ export class ChannelStore {
       getUnsettledByStatus: this._db.prepare(
         'SELECT * FROM payment_channels WHERE role = ? AND status = ? AND settled_at IS NULL ORDER BY updated_at LIMIT ?',
       ),
+      addEndedNotice: this._db.prepare(
+        'INSERT OR IGNORE INTO ended_channel_notices (session_id, channels_address, created_at) VALUES (?, ?, ?)',
+      ),
+      getEndedNotice: this._db.prepare(
+        'SELECT session_id, channels_address, failures FROM ended_channel_notices WHERE session_id = ?',
+      ),
+      removeEndedNotice: this._db.prepare('DELETE FROM ended_channel_notices WHERE session_id = ?'),
+      deferEndedNotice: this._db.prepare(
+        'UPDATE ended_channel_notices SET failures = ?, not_before = ? WHERE session_id = ?',
+      ),
+      getDueEndedNotices: this._db.prepare(
+        'SELECT session_id, channels_address, failures FROM ended_channel_notices WHERE not_before <= ? ORDER BY not_before, created_at LIMIT ?',
+      ),
+      countEndedNotices: this._db.prepare('SELECT COUNT(*) AS count FROM ended_channel_notices'),
       insertReceipt: this._db.prepare(`
         INSERT INTO payment_receipts (
           session_id, running_total, request_count, response_hash,
@@ -321,6 +371,7 @@ export class ChannelStore {
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
         oneOffVideoJob: channel.oneOffVideoJob,
+        channelsAddress: channel.channelsAddress,
       }),
       oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,
@@ -551,6 +602,45 @@ export class ChannelStore {
   getUnsettledChannelsByStatus(role: ChannelRole, status: ChannelStatus, limit = 100): StoredChannel[] {
     const rows = this._stmts.getUnsettledByStatus.all(role, status, limit) as ChannelRow[];
     return rows.map(rowToChannel);
+  }
+
+  // ── Ended-channel notices ─────────────────────────────────────
+
+  /**
+   * Remember that `sessionId`, a channel of the AntseedChannels contract at
+   * `channelsAddress` (null when unknown), ended and its listener has not
+   * handled that yet. Returns the stored notice: the one already there, if any.
+   */
+  addEndedChannelNotice(sessionId: string, channelsAddress: string | null): EndedChannelNotice {
+    this._stmts.addEndedNotice.run(sessionId, channelsAddress, Date.now());
+    return rowToEndedNotice(this._stmts.getEndedNotice.get(sessionId) as EndedNoticeRow);
+  }
+
+  /**
+   * Give a channel its final status and store its ended-channel notice in one
+   * write, so a crash never leaves an ended channel nobody will be told about.
+   */
+  endChannelWithNotice(sessionId: string, status: ChannelStatus, settledAmount?: string): EndedChannelNotice {
+    return this._endChannelWithNoticeTxn(sessionId, status, settledAmount);
+  }
+
+  removeEndedChannelNotice(sessionId: string): void {
+    this._stmts.removeEndedNotice.run(sessionId);
+  }
+
+  /** Record a notice's failed attempts so far, and not to try it again before `notBefore`. */
+  deferEndedChannelNotice(sessionId: string, failures: number, notBefore: number): void {
+    this._stmts.deferEndedNotice.run(failures, notBefore, sessionId);
+  }
+
+  /** Up to `limit` notices to try at `now`, the one due longest first. */
+  getDueEndedChannelNotices(now: number, limit: number): EndedChannelNotice[] {
+    return (this._stmts.getDueEndedNotices.all(now, limit) as EndedNoticeRow[]).map(rowToEndedNotice);
+  }
+
+  /** Ended channels still to be handled, due or not. */
+  countEndedChannelNotices(): number {
+    return (this._stmts.countEndedNotices.get() as { count: number }).count;
   }
 
   // ── Receipt CRUD ──────────────────────────────────────────────

@@ -9,7 +9,7 @@ import {
   ZERO_METADATA,
 } from '@antseed/protocol/signatures';
 import { encodeSpendingAuth } from '@antseed/protocol/payment-codec';
-import { advanceUsageMetadata, normalizeRequestUsageDelta } from './channel-usage-accounting.js';
+import { advanceUsageMetadata, CountedRequestTracker, normalizeRequestUsageDelta } from './channel-usage-accounting.js';
 
 describe('normalizeRequestUsageDelta', () => {
   const delta = {
@@ -268,5 +268,22 @@ describe('advanceUsageMetadata service cap', () => {
     expect(bounded.services!.some((s) => s.serviceId === getServiceMetadataId('legacy-109'))).toBe(true);
     expect(bounded.services!.some((s) => s.serviceId === getServiceMetadataId('legacy-0'))).toBe(false);
     expect(boundServiceMetadata(bounded)).toBe(bounded);
+  });
+});
+
+describe('CountedRequestTracker', () => {
+  it('trims the oldest request but never one it is told to keep', () => {
+    const tracker = new CountedRequestTracker(3, (id) => id === 'worker');
+    tracker.mark('worker', 40n);
+    tracker.mark('a');
+    tracker.mark('b');
+    tracker.mark('c');
+    expect(tracker.has('worker')).toBe(true);
+    expect(tracker.unpaid('worker')).toBe(40n);
+    expect(tracker.has('a')).toBe(false);
+    expect(tracker.has('c')).toBe(true);
+    // Re-marking a tracked request does not trim another.
+    tracker.mark('c', 5n);
+    expect(tracker.has('b')).toBe(true);
   });
 });

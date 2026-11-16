@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -467,6 +467,51 @@ describe('ChannelStore', () => {
     store2.close();
     // Prevent double-close in afterEach
     store = new ChannelStore(tempDir);
+  });
+
+  it('keeps an ended-channel notice, its Channels contract and its wait until it is removed', () => {
+    const first = '0x' + '01'.repeat(32);
+    const second = '0x' + '02'.repeat(32);
+    const channels = '0x' + 'dd'.repeat(20);
+    expect(store.addEndedChannelNotice(first, channels)).toEqual({ sessionId: first, channelsAddress: channels, failures: 0 });
+    expect(store.addEndedChannelNotice(second, null)).toEqual({ sessionId: second, channelsAddress: null, failures: 0 });
+
+    const now = Date.now();
+    store.deferEndedChannelNotice(first, 2, now + 60_000);
+    // Adding it again keeps what is stored.
+    expect(store.addEndedChannelNotice(first, null)).toEqual({ sessionId: first, channelsAddress: channels, failures: 2 });
+    expect(store.getDueEndedChannelNotices(now, 10).map((notice) => notice.sessionId)).toEqual([second]);
+    // Once both are due, the one that never waited comes first.
+    expect(store.getDueEndedChannelNotices(now + 60_000, 10).map((notice) => notice.sessionId)).toEqual([second, first]);
+    expect(store.getDueEndedChannelNotices(now + 60_000, 1)).toHaveLength(1);
+
+    store.removeEndedChannelNotice(second);
+    expect(store.countEndedChannelNotices()).toBe(1);
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getDueEndedChannelNotices(now + 60_000, 10)).toEqual([{ sessionId: first, channelsAddress: channels, failures: 2 }]);
+  });
+
+  it('gives a channel its final status and its ended notice in one write, or neither', () => {
+    const channelsAddress = '0x' + 'dd'.repeat(20);
+    const sessionId = '0x' + 'aa'.repeat(32);
+    store.upsertChannel(makeChannel({ role: CHANNEL_ROLE.SELLER, channelsAddress }));
+
+    vi.spyOn(store, 'addEndedChannelNotice').mockImplementationOnce(() => { throw new Error('disk full'); });
+    expect(() => store.endChannelWithNotice(sessionId, CHANNEL_STATUS.SETTLED, '5')).toThrow('disk full');
+    expect(store.getChannel(sessionId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+    expect(store.countEndedChannelNotices()).toBe(0);
+
+    expect(store.endChannelWithNotice(sessionId, CHANNEL_STATUS.SETTLED, '5')).toEqual({ sessionId, channelsAddress, failures: 0 });
+    expect(store.getChannel(sessionId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+    expect(store.getChannel(sessionId)!.settledAmount).toBe('5');
+    expect(store.countEndedChannelNotices()).toBe(1);
+  });
+
+  it('keeps the Channels contract a seller channel was reserved on', () => {
+    const channelsAddress = '0x' + 'dd'.repeat(20);
+    store.upsertChannel(makeChannel({ role: CHANNEL_ROLE.SELLER, channelsAddress }));
+    expect(store.getChannel('0x' + 'aa'.repeat(32))!.channelsAddress).toBe(channelsAddress);
   });
 
   describe('getBuyerServiceUsageTotals', () => {

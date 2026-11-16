@@ -338,7 +338,10 @@ export class PeerAnnouncer {
 
     const capabilities = builtinPeerCapabilities(this.config.relaysSweeps === true);
     if (this.config.capabilities && this.config.capabilities.length > 0) {
-      capabilities.push(...this.config.capabilities);
+      // Duplicates fail metadata validation.
+      for (const capability of this.config.capabilities) {
+        if (!capabilities.includes(capability)) capabilities.push(capability);
+      }
     }
 
     const timestamp = Date.now();

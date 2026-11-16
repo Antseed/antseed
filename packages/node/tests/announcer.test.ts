@@ -139,6 +139,23 @@ describe('PeerAnnouncer capabilities', () => {
   });
 });
 
+describe('PeerAnnouncer configured capabilities', () => {
+  it('drops repeats and built-in duplicates instead of publishing invalid metadata', async () => {
+    const announcer = new PeerAnnouncer({
+      ...makeBaseConfig(),
+      capabilities: ['x-cap.v1', 'x-cap.v1', CONNECTION_CAPABILITY_TCP_ENC_V1],
+    });
+    await announcer.announce();
+    expect(announcer.getLatestMetadata()?.capabilities).toEqual([
+      CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+      CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
+      CONNECTION_CAPABILITY_SIGNED_SDP_V1,
+      CONNECTION_CAPABILITY_TCP_ENC_V1,
+      'x-cap.v1',
+    ]);
+  });
+});
+
 describe('PeerAnnouncer metadata versions', () => {
   it('announces current-version metadata carrying configured billing models', async () => {
     const base = makeBaseConfig();

@@ -1,0 +1,57 @@
+name: Mac app
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/mac-worker/**', 'apps/payments/web/**', '.github/workflows/mac-worker.yml']
+  pull_request:
+    branches: [main]
+    paths: ['apps/mac-worker/**', 'apps/payments/web/**', '.github/workflows/mac-worker.yml']
+
+jobs:
+  swift-test:
+    name: Swift tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Swift tests
+        working-directory: apps/mac-worker
+        run: swift test
+
+  build-app:
+    name: Build app (unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Build the payments page the app bundles
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @antseed/payments run build:web
+
+      - name: Build Antseed Colony (ad hoc signed)
+        working-directory: apps/mac-worker
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          REQUIRE_PAY_PAGE: '1'
+        run: |
+          scripts/build-app.sh
+          ditto -c -k --keepParent "build/Antseed Colony.app" build/Antseed-Colony-unsigned.zip
+
+      - name: Upload the app as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: antseed-colony-unsigned
+          path: apps/mac-worker/build/Antseed-Colony-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14

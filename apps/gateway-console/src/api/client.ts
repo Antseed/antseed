@@ -1,7 +1,7 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BillingProfile, BillingProfileInput, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
-  FreeTierSharing, FreeTierStake, PurchaseStatement, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, StatementSummary, UsageGroupBy, UsageReport, Wallet, Workspace,
+  FreeTierSharing, FreeTierStake, PurchaseStatement, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, SellerWorkers, Settings, TelegramChat, SpendLimits, StatementSummary, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -293,6 +293,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       status: () => get<SellerStatus>('/seller/status'),
       events: (limit = 100) => get<{ events: SellerEventView[] }>('/seller/events', { limit }),
       usage: (days = 14) => get<SellerUsage>('/seller/usage', { days }),
+      workers: () => get<SellerWorkers>('/seller/workers'),
       settings: () => get<SellerSettingsResponse>('/seller/settings'),
       updateSettings: (input: SellerSettingsPatch) => patch<SellerSettingsResponse & { changed: string[] }>('/seller/settings', input),
       /** Drops the settings saved from the dashboard over a read-only config.json. */

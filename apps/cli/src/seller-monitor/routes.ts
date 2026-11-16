@@ -40,6 +40,7 @@ export function sellerRouteRegistrar(options: SellerRouteOptions): ConsoleRegist
     })
     router.add('GET', '/seller/events', async ({ principal, query }) => { admin(principal); return { events: await monitor.events(boundedInt(query.get('limit'), 100, 500)) } })
     router.add('GET', '/seller/usage', async ({ principal, query }) => { admin(principal); return monitor.usage(boundedInt(query.get('days'), 14, 30)) })
+    router.add('GET', '/seller/workers', async ({ principal }) => { admin(principal); return monitor.workers() })
     router.add('GET', '/seller/logs', async ({ principal, query }) => {
       admin(principal)
       const from = Number(query.get('from'))

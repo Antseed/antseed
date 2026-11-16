@@ -59,6 +59,9 @@ export interface Provider {
   /** Optional per-service model capability hints advertised via discovery metadata. */
   serviceCapabilities?: Record<string, ServiceCapabilities>;
 
+  /** Optional peer capabilities the seller advertises because of this provider (e.g. `colony-pool-e2e.v2`). */
+  peerCapabilities?: string[];
+
   /** Maximum concurrent requests this provider can handle */
   maxConcurrency: number;
 
@@ -89,8 +92,20 @@ export interface Provider {
     callbacks: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse>;
 
+  /**
+   * Optional handler for free control routes under ANTSEED_PROVIDER_CONTROL_PATH
+   * (no payment, no metering, rate limited per buyer). Must not run inference.
+   */
+  handleControlRequest?(req: SerializedHttpRequest): Promise<SerializedHttpResponse>;
+
   /** Optional startup hook — validate credentials, warm caches, etc. */
   init?(): Promise<void>;
+
+  /**
+   * Optional shutdown hook: release what init() opened (listeners, files).
+   * AntseedNode.stop() calls it for every registered provider.
+   */
+  stop?(): Promise<void>;
 
   /** Return current and maximum concurrent request counts */
   getCapacity(): { current: number; max: number };
@@ -111,6 +126,37 @@ export interface Provider {
    * service of this provider.
    */
   checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+
+  /**
+   * Optional: called after a paid request is charged to the buyer's channel,
+   * with the amount charged. Free and allowance-covered requests are not
+   * reported. Lets a provider that fans requests out to several backends
+   * (e.g. a colony pool) attribute revenue to the backend that served it.
+   */
+  onRequestCharged?(charge: ProviderRequestCharge): void;
+
+  /**
+   * Optional: the node registers a listener here once it announces. The
+   * provider calls it after changing `services` in place (e.g. a colony pool
+   * whose capacity comes and goes) so the seller re-signs its metadata.
+   */
+  setServicesChangedListener?(listener: () => void): void;
+}
+
+export interface ProviderRequestCharge {
+  requestId: string;
+  /**
+   * The request object passed to `handleRequest(Stream)`, so a provider can
+   * tell apart requests from different buyers that reuse a request ID.
+   */
+  request?: SerializedHttpRequest;
+  service?: string;
+  /** Amount charged, in USDC base units (6 decimals). */
+  costUsdc: bigint;
+  inputTokens: number;
+  outputTokens: number;
+  freshInputTokens: number;
+  cachedInputTokens: number;
 }
 
 /**

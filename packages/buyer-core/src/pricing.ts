@@ -76,6 +76,19 @@ export function computeCostUsdc(
 }
 
 /**
+ * USDC cost of a usage report whose input count includes its cached tokens
+ * (OpenAI-style prompt_tokens): what a buyer and a colony worker both price an
+ * answer at, so they agree on what it owes.
+ */
+export function computeUsageCostUsdc(
+  usage: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint },
+  pricing: ServicePricing,
+): bigint {
+  const fresh = usage.inputTokens > usage.cachedInputTokens ? usage.inputTokens - usage.cachedInputTokens : 0n;
+  return computeCostUsdc(Number(fresh), Number(usage.outputTokens), pricing, Number(usage.cachedInputTokens));
+}
+
+/**
  * Estimate USDC cost from raw content bytes using tokenx token estimation.
  */
 export function estimateCostFromBytes(

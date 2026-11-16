@@ -19,6 +19,7 @@ import {
   UsageAccountingClient,
   UsageRewardsClient,
   WashTradingRegistryClient,
+  ColonyPoolClient,
   resolveLegacyContractAddresses,
 } from '@antseed/node/payments';
 import type { ProtocolPhase } from '../api-types.js';
@@ -55,6 +56,8 @@ export interface AntsChainConfig {
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
+  /** AntseedColonyPool contracts whose worker payouts this dashboard shows (config.json payments.crypto). */
+  colonyPoolAddresses?: string[];
 }
 
 export interface ResolvedStack {
@@ -88,6 +91,10 @@ export interface AntsContextOptions {
    * ChainRpcProvider): every client reads through it and `selectRpc` is a no-op.
    */
   provider?: AbstractProvider;
+  /** Persists the colony pools linked in this dashboard (all of them), so a restart still shows them. */
+  saveColonyPools?: (addresses: string[]) => Promise<void>;
+  /** Persists the Macs linked in this dashboard, per pool, so their older ANTS stay claimable after a restart. */
+  saveColonyPoolWorkers?: (workers: Record<string, string[]>) => Promise<void>;
 }
 
 function sameAddress(a?: string | null, b?: string | null): boolean {
@@ -125,15 +132,25 @@ export class AntsContext {
   private readonly injectedProvider: AbstractProvider | null;
   private indexerClient: Indexer | null | undefined;
   private rpcOrder: string[] | null = null;
+  saveColonyPools: ((addresses: string[]) => Promise<void>) | undefined;
+  saveColonyPoolWorkers: ((workers: Record<string, string[]>) => Promise<void>) | undefined;
+  /** The Macs linked in this dashboard, per pool (lowercase). */
+  private readonly colonyWorkers = new Map<string, string[]>();
+  /** Pools named in the configuration: shown always, never forgotten from the dashboard. */
+  private readonly configuredColonyPools: ReadonlySet<string>;
 
   constructor(options: AntsContextOptions) {
-    this.chain = options.chain;
+    // Its own copy: the pools linked through this dashboard are its own, though callers may share one chain config.
+    this.chain = { ...options.chain, ...(options.chain.colonyPoolAddresses ? { colonyPoolAddresses: [...options.chain.colonyPoolAddresses] } : {}) };
+    this.configuredColonyPools = new Set((options.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()));
     this.address = options.address;
     this.buyerAddress = options.buyerAddress ?? options.address;
     this.signer = options.signer;
     this.stackTtlMs = options.stackTtlMs ?? 60_000;
     this.probeRpc = options.probeRpc ?? probeRpcEndpoint;
     this.injectedProvider = options.provider ?? null;
+    this.saveColonyPools = options.saveColonyPools;
+    this.saveColonyPoolWorkers = options.saveColonyPoolWorkers;
   }
 
   /**
@@ -264,6 +281,42 @@ export class AntsContext {
   }
   usageAccounting(): UsageAccountingClient | null {
     return this.optional('usageAccounting', this.chain.usageAccountingAddress, (address) => new UsageAccountingClient(this.base(address)));
+  }
+  /** Colony pools: the configured ones plus any linked through this dashboard. */
+  colonyPoolAddresses(): string[] {
+    return [...new Set((this.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()))];
+  }
+  /** Show a newly linked pool from now on, and persist it through the host. */
+  async rememberColonyPool(address: string): Promise<void> {
+    this.chain.colonyPoolAddresses = [...(this.chain.colonyPoolAddresses ?? []), address];
+    await this.saveColonyPools?.(this.colonyPoolAddresses());
+  }
+  /** The Macs linked to a wallet from this dashboard on `pool`. */
+  colonyPoolWorkers(pool: string): string[] {
+    return this.colonyWorkers.get(pool.toLowerCase()) ?? [];
+  }
+  /** Remember a Mac linked on `pool`, and persist that through the host. */
+  async rememberColonyPoolWorker(pool: string, worker: string): Promise<void> {
+    const key = pool.toLowerCase();
+    const workers = this.colonyPoolWorkers(key);
+    if (workers.includes(worker.toLowerCase())) return;
+    this.colonyWorkers.set(key, [...workers, worker.toLowerCase()]);
+    await this.saveColonyPoolWorkers?.(Object.fromEntries(this.colonyWorkers));
+  }
+  /** Whether a pool was linked through this dashboard rather than configured. */
+  isLinkedColonyPool(address: string): boolean {
+    const pool = address.toLowerCase();
+    return this.colonyPoolAddresses().includes(pool) && !this.configuredColonyPools.has(pool);
+  }
+  /** Stop showing a pool linked through this dashboard, and persist that through the host. */
+  async forgetColonyPool(address: string): Promise<void> {
+    if (!this.isLinkedColonyPool(address)) throw new Error('Only a colony pool linked from this dashboard can be forgotten here');
+    const pool = address.toLowerCase();
+    this.chain.colonyPoolAddresses = (this.chain.colonyPoolAddresses ?? []).filter((entry) => entry.toLowerCase() !== pool);
+    await this.saveColonyPools?.(this.colonyPoolAddresses());
+  }
+  colonyPool(address: string): ColonyPoolClient {
+    return this.required('colonyPool', 'colonyPool', address, (pool) => new ColonyPoolClient(this.base(pool)));
   }
   usageRewards(): UsageRewardsClient | null {
     return this.optional('usageRewards', this.chain.usageRewardsAddress, (address) => new UsageRewardsClient(this.base(address)));

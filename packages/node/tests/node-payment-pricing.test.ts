@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WORKER_E2E_CAPABILITY } from '../src/colony-pool/worker-crypto.js';
 import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
@@ -158,6 +159,24 @@ describe('completed-request seller payments', () => {
       release();
       await Promise.all([first, second]);
     }
+  });
+  it('reports each paid charge to the provider that served it', async () => {
+    const harness = setup({}, false);
+    const onRequestCharged = vi.fn();
+    harness.provider.onRequestCharged = onRequestCharged;
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: 'hi' } }], usage: { prompt_tokens: 1000, completion_tokens: 500 } })),
+    }));
+    const response = await harness.send('chat-1', {
+      path: '/v1/chat/completions', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'image', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    expect(response.statusCode).toBe(200);
+    // 1000 × $10/M + 500 × $10/M = $0.015
+    expect(onRequestCharged).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'chat-1', service: 'image', costUsdc: 15_000n, inputTokens: 1000, outputTokens: 500,
+    }));
   });
   it('keeps legacy image charges and v1 reports unchanged on a mixed seller', async () => {
     const harness = setup();
@@ -1813,8 +1832,9 @@ describe('SellerRequestHandler payment pricing selection', () => {
   });
 
   describe('free allowance on a priced service', () => {
-    const send = async (covered: boolean) => {
+    const send = async (covered: boolean, colonyPool = false) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
+      if (colonyPool) provider.peerCapabilities = [WORKER_E2E_CAPABILITY];
       provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
       const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
@@ -1856,6 +1876,14 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(sendNeedAuth).not.toHaveBeenCalled();
       // The buyer pays nothing for it, and the body's price says the same.
       expect(JSON.parse(new TextDecoder().decode(response.body)).usage.estimated_cost).toBe(0);
+    });
+
+    it('never covers a colony pool\'s answer, which its worker is paid for only by the buyer', async () => {
+      const { provider, consume, response } = await send(true, true);
+      expect(consume).not.toHaveBeenCalled();
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+      expect(response.headers['x-antseed-free-tier']).toBeUndefined();
     });
 
     it('asks for payment, not a 429, once the allowance does not cover the buyer', async () => {
