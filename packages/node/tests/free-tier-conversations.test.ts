@@ -52,6 +52,16 @@ describe('FreeTierConversationTracker', () => {
       .toMatchObject({ owner: BUYER, messages: MOVED_MIN_MESSAGES });
   });
 
+  it('counts a message repeated within a request once', () => {
+    const tracker = new FreeTierConversationTracker();
+    const owned = conversation(1, 'shared');
+    tracker.record(BUYER, fingerprintConversation(owned)!, 1_000);
+    const sharedTurn = owned.messages.at(-1)!;
+    const repeated = { messages: [...conversation(0, 'other').messages, ...Array.from({ length: MOVED_MIN_MESSAGES }, () => sharedTurn)] };
+    expect(fingerprintConversation(repeated)?.messages).toHaveLength(1);
+    expect(tracker.findMovedConversation(OTHER_BUYER, fingerprintConversation(repeated)!, 2_000)).toBeNull();
+  });
+
   it('ignores a few shared messages and a conversation past its time to live', () => {
     const tracker = new FreeTierConversationTracker();
     const short = fingerprintConversation(conversation(MOVED_MIN_MESSAGES - 1))!;

@@ -11,11 +11,15 @@ import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
-import type { FreeTierDecision, FreeTierScreen, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
-import type { FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
+import type { FreeTierDecision, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+
+/** A free request screening refused, or one the free tier counted. */
+type FreeTierOutcome =
+  | { kind: 'refused'; refusal: FreeTierScreenRefusal }
+  | { kind: 'counted'; decision: FreeTierDecision; served: () => void };
 
 function describeFreeTierScreenRefusal(refusal: FreeTierScreenRefusal): string {
   return refusal.reason === 'new_buyer_context'
@@ -545,22 +549,16 @@ export class SellerRequestHandler {
       let coveredByAllowance = false;
       if (!isFreeService && !videoRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
         try {
-          const { standing, screen } = await this._screenFreeTier(freeTierLimiter, {
+          const outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
             buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: true,
           });
-          if (screen.refusal) {
+          if (outcome.kind === 'refused') {
             // A request screening refuses is paid as usual and leaves the allowance untouched.
             debugLog(`[SellerHandler] Free allowance does not cover ${freeTierService} for ${buyerPeerId.slice(0, 12)}...: screened out`);
           } else {
-            const decision = freeTierLimiter.consume({
-              buyerPeerId,
-              service: freeTierService,
-              remoteIp: conn.remoteAddress ?? null,
-              standing,
-              paid: true,
-            });
+            const { decision } = outcome;
             coveredByAllowance = decision.allowed;
-            if (coveredByAllowance) screen.served();
+            if (coveredByAllowance) outcome.served();
             debugLog(
               `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
               `${freeTierService} for ${decision.buyerAddress}`,
@@ -573,25 +571,12 @@ export class SellerRequestHandler {
       }
       const isServedFree = isFreeService || coveredByAllowance;
       if (isFreeTierRequest && freeTierLimiter?.appliesTo(freeTierService)) {
-        let outcome:
-          | { kind: 'refused'; refusal: FreeTierScreenRefusal }
-          | { kind: 'counted'; decision: FreeTierDecision };
+        let outcome: FreeTierOutcome;
         try {
-          const { standing, screen } = await this._screenFreeTier(freeTierLimiter, {
+          outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
             buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: false,
           });
-          if (screen.refusal) {
-            outcome = { kind: 'refused', refusal: screen.refusal };
-          } else {
-            const decision = freeTierLimiter.consume({
-              buyerPeerId,
-              service: freeTierService,
-              remoteIp: conn.remoteAddress ?? null,
-              standing,
-            });
-            if (decision.allowed) screen.served();
-            outcome = { kind: 'counted', decision };
-          }
+          if (outcome.kind === 'counted' && outcome.decision.allowed) outcome.served();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           debugWarn(`[SellerHandler] Free-tier accounting failed for ${buyerPeerId.slice(0, 12)}...: ${message}`);
@@ -1581,8 +1566,11 @@ export class SellerRequestHandler {
     this._deps.emit('provider:usage-missing', { provider, service });
   }
 
-  /** Resolve the buyer's staked standing and screen a free request before it is counted, logging what screening found. */
-  private async _screenFreeTier(
+  /**
+   * Resolve the buyer's staked standing, screen a free request, and count it
+   * unless screening refused it. Callers call `served` once it is served.
+   */
+  private async _screenAndConsumeFreeTier(
     limiter: SellerFreeTierLimiter,
     input: {
       buyerPeerId: string;
@@ -1592,7 +1580,7 @@ export class SellerRequestHandler {
       remoteAddress: string | null | undefined;
       paid: boolean;
     },
-  ): Promise<{ standing: FreeTierStakeStanding | null; screen: FreeTierScreen }> {
+  ): Promise<FreeTierOutcome> {
     const { buyerPeerId, service } = input;
     // No header means the buyer has no codes any more: '' forgets the remembered ones.
     const standing = await limiter.resolveStanding(buyerPeerId, input.delegationsHeader ?? '');
@@ -1611,7 +1599,15 @@ export class SellerRequestHandler {
     } else if (screen.wouldRefuse) {
       debugLog(`[SellerHandler] Free tier would refuse ${service} for ${buyerPeerId.slice(0, 12)}... ip=${ip} (log only): ${describeFreeTierScreenRefusal(screen.wouldRefuse)}`);
     }
-    return { standing, screen };
+    if (screen.refusal) return { kind: 'refused', refusal: screen.refusal };
+    const decision = limiter.consume({
+      buyerPeerId,
+      service,
+      remoteIp: input.remoteAddress ?? null,
+      standing,
+      ...(input.paid ? { paid: true } : {}),
+    });
+    return { kind: 'counted', decision, served: screen.served };
   }
 
   private _sendJsonError(

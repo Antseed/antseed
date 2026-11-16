@@ -51,10 +51,15 @@ export function fingerprintConversation(body: unknown): ConversationFingerprint 
     return role !== 'system' && role !== 'developer';
   });
   const messages: ConversationFingerprint['messages'] = [];
+  // A message repeated within one request counts once, so repeats can't add up to a match.
+  const seen = new Set<string>();
   for (const item of conversation.slice(SKIPPED_LEADING_MESSAGES)) {
     const text = canonicalJson(item);
     if (text === undefined || text.length < MIN_TRACKED_MESSAGE_CHARS) continue;
-    messages.push({ digest: createHash('sha256').update(text).digest('base64').slice(0, 22), chars: text.length });
+    const digest = createHash('sha256').update(text).digest('base64').slice(0, 22);
+    if (seen.has(digest)) continue;
+    seen.add(digest);
+    messages.push({ digest, chars: text.length });
   }
   return messages.length > 0 ? { messages } : null;
 }
