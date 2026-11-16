@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { formatElapsed, SLOW_MESSAGE, WalkingAnt } from './WalkingAnt';
+import {
+  antLine,
+  formatElapsed,
+  PHRASE_EVERY_MS,
+  SHOW_TIMER_AFTER_MS,
+  SLOW_AFTER_MS,
+  SLOW_MESSAGE,
+  WalkingAnt,
+} from './WalkingAnt';
 import { pickThinkingPhrase, THINKING_PHRASES } from './thinking-phrases';
 
 test('the ant has the original lines and at least 30 new ones, each short and unique', () => {
@@ -58,4 +66,24 @@ test('the elapsed timer reads seconds, then minutes', () => {
   assert.equal(formatElapsed(2_400), '2s');
   assert.equal(formatElapsed(59_999), '59s');
   assert.equal(formatElapsed(75_000), '1:15');
+});
+
+test('the old timings stay: a new line every 5 s, the timer from 2 s', () => {
+  assert.equal(PHRASE_EVERY_MS, 5_000);
+  assert.equal(SHOW_TIMER_AFTER_MS, 2_000);
+  assert.equal(SLOW_AFTER_MS, 30_000);
+});
+
+test('the line at each boundary: no timer, timer, slow note', () => {
+  assert.deepEqual(antLine({ elapsedMs: 1_999, phrase: 'gm' }), { slow: false, shown: 'gm...', spoken: 'Thinking...', timer: '' });
+  assert.deepEqual(antLine({ elapsedMs: 2_000, phrase: 'gm' }), { slow: false, shown: 'gm...', spoken: 'Thinking...', timer: ' · 2s' });
+  assert.deepEqual(antLine({ elapsedMs: 29_999, phaseLabel: 'Dialing peer', phrase: 'gm' }), { slow: false, shown: 'Dialing peer...', spoken: 'Dialing peer...', timer: ' · 29s' });
+  assert.deepEqual(antLine({ elapsedMs: 30_000, phaseLabel: 'Dialing peer', phrase: 'gm' }), { slow: true, shown: SLOW_MESSAGE, spoken: SLOW_MESSAGE, timer: ' · 30s' });
+});
+
+test('only the slow note may wrap; the short lines stay on one line as before', () => {
+  const meme = renderToStaticMarkup(<WalkingAnt initialPhrase="gm" startedAt={Date.now()} />);
+  const slow = renderToStaticMarkup(<WalkingAnt initialPhrase="gm" startedAt={Date.now() - 31_000} />);
+  assert.doesNotMatch(meme, /timer-wrap|timerWrap/);
+  assert.match(slow, /timer-wrap|timerWrap/);
 });

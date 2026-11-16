@@ -59,6 +59,12 @@
   white-space: nowrap;
 }
 
+/* The 30 s note is a full sentence: let it wrap in a narrow chat. */
+.timer-wrap {
+  min-width: 0;
+  white-space: normal;
+}
+
 @keyframes head-sway {
   from { transform: rotate(-1.5deg); }
   to   { transform: rotate(1.5deg); }

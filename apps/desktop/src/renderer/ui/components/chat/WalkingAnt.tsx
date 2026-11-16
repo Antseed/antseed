@@ -12,9 +12,9 @@ type WalkingAntProps = {
 };
 
 /** How often the meme changes while no real step is shown. */
-const PHRASE_EVERY_MS = 5_000;
+export const PHRASE_EVERY_MS = 5_000;
 /** The timer stays hidden for quick answers. */
-const SHOW_TIMER_AFTER_MS = 2_000;
+export const SHOW_TIMER_AFTER_MS = 2_000;
 /** Long enough that a working seller has usually started answering. */
 export const SLOW_AFTER_MS = 30_000;
 export const SLOW_MESSAGE = 'Still waiting on this provider. You can stop and try another model.';
@@ -25,6 +25,17 @@ export function formatElapsed(ms: number): string {
   const m = Math.floor(s / 60);
   const rem = s % 60;
   return `${m}:${String(rem).padStart(2, '0')}`;
+}
+
+/** What the ant's line says after `elapsedMs`: a meme or the real step, then the slow note after 30 s. */
+export function antLine({ elapsedMs, phaseLabel, phrase }: { elapsedMs: number; phaseLabel?: string | null; phrase: string }) {
+  const slow = elapsedMs >= SLOW_AFTER_MS;
+  return {
+    slow,
+    shown: slow ? SLOW_MESSAGE : `${phaseLabel ?? phrase}...`,
+    spoken: slow ? SLOW_MESSAGE : `${phaseLabel ?? 'Thinking'}...`,
+    timer: elapsedMs >= SHOW_TIMER_AFTER_MS ? ` · ${formatElapsed(elapsedMs)}` : '',
+  };
 }
 
 /**
@@ -61,9 +72,7 @@ export function WalkingAnt({ phaseLabel, startedAt, initialPhrase }: WalkingAntP
     return () => window.clearInterval(id);
   }, [phaseLabel]);
 
-  const slow = elapsed >= SLOW_AFTER_MS;
-  const label = slow ? SLOW_MESSAGE : `${phaseLabel ?? turnPhrase}...`;
-  const spoken = slow ? SLOW_MESSAGE : `${phaseLabel ?? 'Thinking'}...`;
+  const line = antLine({ elapsedMs: elapsed, phaseLabel, phrase: turnPhrase });
 
   /*
    * Original path 4 (legs) split into two independent paths:
@@ -88,7 +97,7 @@ export function WalkingAnt({ phaseLabel, startedAt, initialPhrase }: WalkingAntP
 
   return (
     <div className={styles.container}>
-      <span className={styles.srOnly} role="status">{spoken}</span>
+      <span className={styles.srOnly} role="status">{line.spoken}</span>
       <div className={styles.antWrap} aria-hidden="true">
         <svg
           className={styles.ant}
@@ -158,9 +167,9 @@ l-36 76 -57 15 c-127 36 -224 43 -349 26z" />
         </svg>
       </div>
 
-      <span className={styles.timer} aria-hidden="true">
-        {label}
-        {elapsed >= SHOW_TIMER_AFTER_MS ? ` · ${formatElapsed(elapsed)}` : null}
+      <span className={line.slow ? `${styles.timer} ${styles.timerWrap}` : styles.timer} aria-hidden="true">
+        {line.shown}
+        {line.timer}
       </span>
     </div>
   );
