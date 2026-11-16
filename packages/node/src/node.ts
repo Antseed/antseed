@@ -2764,6 +2764,7 @@ export class AntseedNode extends EventEmitter {
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
+        onReserveFailed: (failure) => this.emit('payment:reserve-failed', failure),
       };
       this._sellerPaymentManager = new SellerPaymentManager(
         this._identity,
