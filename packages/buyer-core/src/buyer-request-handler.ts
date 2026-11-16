@@ -27,7 +27,7 @@ import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
 import { isServiceHealthFailing, providerServiceHealthFor } from '@antseed/protocol/peer-metadata';
 import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
-import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { isDataOnlyService, isDataServiceProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
@@ -802,10 +802,7 @@ function selectProviderForService(
   const routeProtocol = videoRoute?.protocol ?? dataServiceRoute(request)?.protocol;
   const protocolsOf = (provider: string) => peer.providerServiceApiProtocols?.[provider]?.services[service];
   // Any other request never goes to a provider that serves the service on data alone.
-  const dataOnly = (provider: string): boolean => {
-    const protocols = protocolsOf(provider);
-    return Boolean(protocols?.length) && protocols!.every((protocol) => protocol === 'openapi-data');
-  };
+  const dataOnly = (provider: string): boolean => isDataOnlyService(protocolsOf(provider));
   const isEligible = (provider: string): boolean => providerOffersService(peer, provider, service)
     && (routeProtocol ? Boolean(protocolsOf(provider)?.includes(routeProtocol)) : !dataOnly(provider));
   const named = requestedProvider
@@ -1030,6 +1027,9 @@ function shouldExpectResponseAuth(
  * protocol is absent or free.
  */
 function isBillingRouteFree(route: SelectedBillingRoute): boolean {
+  // A data operation never charges tokens: its billing model alone says whether it is free,
+  // even when the same service sells chat at token prices. Same rule as the seller's.
+  if (isDataServiceProtocol(route.serviceApiProtocol) && route.unitModel) return isFreeUnitBillingModel(route.unitModel);
   return isZeroTokenPricing(route.tokenPricing)
     && (!route.unitModel || isFreeUnitBillingModel(route.unitModel));
 }

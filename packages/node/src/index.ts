@@ -147,6 +147,7 @@ export {
   AUDIO_SPEECH_PROTOCOLS,
   isAudioSpeechProtocol,
   DATA_SERVICE_PROTOCOLS,
+  isDataOnlyService,
   isDataServiceProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,

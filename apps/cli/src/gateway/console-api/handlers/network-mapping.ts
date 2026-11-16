@@ -1,5 +1,5 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance, verificationServiceKey, verificationServiceUrl } from '@antseed/node'
+import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isDataOnlyService, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance, verificationServiceKey, verificationServiceUrl } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
@@ -152,7 +152,7 @@ export function peerServices(row: Row): Peer['services'] {
       const perMillionCharacters = speechUsdPerMillionCharacters(billing, service)
       const perRequest = dataUsdPerRequest(billing)
       // A service on data alone is priced per request; provider token defaults do not apply to it.
-      const dataOnly = Array.isArray(apis) && apis.length > 0 && apis.every((api) => api === 'openapi-data')
+      const dataOnly = isDataOnlyService(apis)
       services.push({
         provider,
         service,

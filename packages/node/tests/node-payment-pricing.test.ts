@@ -1626,6 +1626,37 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it('serves a free data operation without a payment step when the same service sells chat at token prices', async () => {
+    const provider = makeProvider(3, 15, { name: 'openapi', services: ['flights'] });
+    provider.serviceApiProtocols = { flights: ['openai-chat-completions', 'openapi-data'] };
+    provider.serviceUnitBillingModels = { flights: { 'openapi-data': { version: 1, components: [] } } };
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ rows: [] })) }));
+
+    const sendPaymentRequired = vi.fn();
+    const sendNeedAuth = vi.fn();
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({ hasSession: () => false, getChannelByPeer: () => undefined, getPaymentRequirements: () => ({ minBudgetPerRequest: '0', suggestedAmount: '0' }) }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      emit: () => false,
+    });
+
+    const sentFrames: Uint8Array[] = [];
+    const conn = makeConn(sentFrames);
+    const { mux } = handler.handleConnection(conn, 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired } as any);
+
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-free-data', method: 'POST', path: '/v1/data/flights/search', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ from: 'TLV' })) }) });
+
+    expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(sendPaymentRequired).not.toHaveBeenCalled();
+    expect(sendNeedAuth).not.toHaveBeenCalled();
+    const responseFrames = sentFrames.map((f) => decodeFrame(f)).filter((d) => d?.message.type === MessageType.HttpResponse);
+    expect(responseFrames).toHaveLength(1);
+    expect(decodeHttpResponse(responseFrames[0]!.message.payload).statusCode).toBe(200);
+  });
+
   it('enforces the configured free tier before forwarding another free request', async () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));

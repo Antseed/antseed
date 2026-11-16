@@ -66,7 +66,7 @@ import { dataServiceRoute, markDataProviderResponse, nativeVideoAcceptance, nati
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { announcedProviderId } from './discovery/provider-id.js';
-import { isDataServiceProtocol, isNativeVideoProtocol } from '@antseed/protocol/service-api';
+import { isDataOnlyService, isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
   detectRequestServiceApiProtocol,
@@ -533,8 +533,11 @@ export class SellerRequestHandler {
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
       const isVideoRetrieve = videoRoute?.action === 'retrieve';
-      const isFreeService = isVideoRetrieve || isZeroTokenPricing(requestPricing)
-        && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
+      // A data operation never charges tokens: its billing model alone says whether it is free,
+      // even when the same service sells chat at token prices.
+      const isFreeService = isVideoRetrieve || (dataRoute && unitBillingModel
+        ? isFreeUnitBillingModel(unitBillingModel)
+        : isZeroTokenPricing(requestPricing) && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel)));
       // A video retrieve is paid by its job's create, never by the free tier:
       // status polls and downloads must not use up or report free usage.
       const isFreeTierRequest = isFreeService && !isVideoRetrieve;
@@ -1764,10 +1767,8 @@ export class SellerRequestHandler {
     const routeProtocol = videoRoute?.protocol ?? dataRoute?.protocol;
     const providers = this._deps.providers;
     // Any other request never goes to a provider that serves the service on data alone.
-    const dataOnly = (provider: Provider): boolean => {
-      const protocols = provider.serviceApiProtocols?.[requestedService];
-      return Boolean(protocols?.length) && protocols!.every(isDataServiceProtocol);
-    };
+    const dataOnly = (provider: Provider): boolean =>
+      isDataOnlyService(provider.serviceApiProtocols?.[requestedService]);
     const matchesService = (provider: Provider): boolean =>
       provider.services.includes(requestedService)
       && (routeProtocol ? Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(routeProtocol)) : !dataOnly(provider));

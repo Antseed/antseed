@@ -59,6 +59,11 @@ export function isAudioSpeechProtocol(value: unknown): value is AudioSpeechProto
 
 export type DataServiceProtocol = (typeof DATA_SERVICE_PROTOCOLS)[number];
 
+/** Whether a service's protocol list is nonempty and every entry is a data protocol. */
+export function isDataOnlyService(protocols: unknown): boolean {
+  return Array.isArray(protocols) && protocols.length > 0 && protocols.every(isDataServiceProtocol);
+}
+
 export function isDataServiceProtocol(value: unknown): value is DataServiceProtocol {
   return DATA_SERVICE_PROTOCOLS.includes(value as DataServiceProtocol);
 }

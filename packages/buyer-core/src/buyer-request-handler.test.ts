@@ -220,6 +220,26 @@ describe('BuyerRequestHandler data service 402', () => {
   });
 });
 
+describe('BuyerRequestHandler free data operation on a paid chat service', () => {
+  it('sends a free data operation without a payment step when the same service sells chat at token prices', async () => {
+    const { handler, handle402, sendProxyRequest, negotiator } = makeHandler([ACCEPTED]);
+    const trackFree = vi.fn();
+    Object.assign(negotiator, { trackFreeUsageRequestService: trackFree, prepareFreeUsageOpen: vi.fn(async () => {}) });
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('6'.repeat(40)),
+      providers: ['openapi'],
+      providerPricing: { openapi: { services: { flights: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } } } as never,
+      providerServiceApiProtocols: { openapi: { services: { flights: ['openai-chat-completions', 'openapi-data'] } } },
+      providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': { version: 1 as const, components: [] } } } } },
+    };
+
+    expect((await handler.sendRequest(peer, makeDataRequest())).statusCode).toBe(200);
+    expect(trackFree).toHaveBeenCalledOnce();
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+});
+
 describe('BuyerRequestHandler payment negotiation', () => {
   it.each([400, 409, 500, 503])('returns a non-payment response without negotiation (%s)', async (statusCode) => {
     const { handler, handle402, sendProxyRequest } = makeHandler([response(statusCode, { error: 'rejected' })]);
