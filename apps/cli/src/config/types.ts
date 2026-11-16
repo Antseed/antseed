@@ -1,6 +1,7 @@
 import type {
   FreeTierDelegation,
   SellerBuyerLimitsConfig,
+  SellerFreeTierProgramConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -230,8 +231,12 @@ export interface SellerAlertsCLIConfig {
   minSeverity?: 'info' | 'warning' | 'critical';
 }
 
-/** One free-tier program: base limits and the staked tiers above them. */
-export interface SellerFreeTierCLIConfig {
+/**
+ * One free-tier program: base limits, the staked tiers above them, and the
+ * free-request screening settings shared with the node's program.
+ */
+export interface SellerFreeTierCLIConfig
+  extends Pick<SellerFreeTierProgramConfig, 'newBuyerMaxInputTokens' | 'newBuyerRequests' | 'movedConversations'> {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
   maxRequestsPerAddress?: number;
   /** Maximum zero-priced requests accepted from one remote IP per window (IPv6 grouped by /64). */

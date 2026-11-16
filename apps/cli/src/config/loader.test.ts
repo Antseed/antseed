@@ -1255,7 +1255,15 @@ test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
 
 test('loadConfig preserves a service freeTier program and rejects invalid ones', async () => {
   const provider = (freeTier: unknown, plugin = 'openai') => ({ plugin, services: { 'free-model': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, freeTier } } });
-  const program = { maxRequestsPerAddress: 10, windowMs: 3_600_000, stakeTiers: [{ minPower: 520_000, multiplier: 5 }], stakersOnly: true };
+  const program = {
+    maxRequestsPerAddress: 10,
+    windowMs: 3_600_000,
+    stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+    stakersOnly: true,
+    newBuyerMaxInputTokens: 32_000,
+    newBuyerRequests: 5,
+    movedConversations: 'refuse',
+  };
   await withTempConfig(
     JSON.stringify({ seller: { providers: { openai: provider(program) } } }),
     async (configPath) => {
@@ -1268,6 +1276,10 @@ test('loadConfig preserves a service freeTier program and rejects invalid ones',
     [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
     [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
     ['unlimited', /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerIp: 1, newBuyerMaxInputTokens: 32_000 }, /freeTier\.newBuyerMaxInputTokens requires maxRequestsPerAddress/],
+    [{ maxRequestsPerAddress: 1, newBuyerMaxInputTokens: '32k' }, /freeTier\.newBuyerMaxInputTokens must be a positive safe integer/],
+    [{ maxRequestsPerAddress: 1, newBuyerRequests: 0 }, /freeTier\.newBuyerRequests must be a positive safe integer/],
+    [{ maxRequestsPerAddress: 1, movedConversations: 'block' }, /freeTier\.movedConversations must be one of: refuse, log/],
     [{ maxRequestsPerAddress: Number.MAX_SAFE_INTEGER, maxRequestsPerIp: Number.MAX_SAFE_INTEGER }, /services\.free-model\.freeTier is too large to advertise/],
   ] as const) {
     await withTempConfig(

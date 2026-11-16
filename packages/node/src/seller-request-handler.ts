@@ -11,10 +11,21 @@ import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
-import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import type { FreeTierDecision, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+
+/** A free request screening refused, or one the free tier counted. */
+type FreeTierOutcome =
+  | { kind: 'refused'; refusal: FreeTierScreenRefusal }
+  | { kind: 'counted'; decision: FreeTierDecision };
+
+function describeFreeTierScreenRefusal(refusal: FreeTierScreenRefusal): string {
+  return refusal.reason === 'new_buyer_context'
+    ? `new buyer context inputTokens~${refusal.inputTokens} > ${refusal.maxInputTokens}`
+    : `moved conversation from ${refusal.owner} (${refusal.messages} messages, ~${refusal.tokens} tokens)`;
+}
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
@@ -538,19 +549,20 @@ export class SellerRequestHandler {
       let coveredByAllowance = false;
       if (!isFreeService && !videoRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
         try {
-          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          const decision = freeTierLimiter.consume({
-            buyerPeerId,
-            service: freeTierService,
-            remoteIp: conn.remoteAddress ?? null,
-            standing,
-            paid: true,
+          const outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
+            buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: true,
           });
-          coveredByAllowance = decision.allowed;
-          debugLog(
-            `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
-            `${freeTierService} for ${decision.buyerAddress}`,
-          );
+          if (outcome.kind === 'refused') {
+            // A request screening refuses is paid as usual and leaves the allowance untouched.
+            debugLog(`[SellerHandler] Free allowance does not cover ${freeTierService} for ${buyerPeerId.slice(0, 12)}...: screened out`);
+          } else {
+            const { decision } = outcome;
+            coveredByAllowance = decision.allowed;
+            debugLog(
+              `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
+              `${freeTierService} for ${decision.buyerAddress}`,
+            );
+          }
         } catch (err) {
           // Failing to account leaves the request paid: it can only cost the buyer the listed price.
           debugWarn(`[SellerHandler] Free-allowance accounting failed for ${buyerPeerId.slice(0, 12)}..., charging as usual: ${err instanceof Error ? err.message : err}`);
@@ -558,15 +570,10 @@ export class SellerRequestHandler {
       }
       const isServedFree = isFreeService || coveredByAllowance;
       if (isFreeTierRequest && freeTierLimiter?.appliesTo(freeTierService)) {
-        let decision: FreeTierDecision;
+        let outcome: FreeTierOutcome;
         try {
-          // No header means the buyer has no codes any more: '' forgets the remembered ones.
-          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          decision = freeTierLimiter.consume({
-            buyerPeerId,
-            service: freeTierService,
-            remoteIp: conn.remoteAddress ?? null,
-            standing,
+          outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
+            buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: false,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -585,6 +592,23 @@ export class SellerRequestHandler {
           });
           return;
         }
+        if (outcome.kind === 'refused') {
+          const { refusal } = outcome;
+          const message = refusal.reason === 'new_buyer_context'
+            ? `This seller serves a new buyer's first ${refusal.requests} free requests up to ${refusal.maxInputTokens} input tokens; `
+              + `this one has about ${refusal.inputTokens}. Start with a shorter conversation, or use a paid model.`
+            : 'This conversation was started from another buyer identity, so this seller does not serve it free here. '
+              + 'Continue it from that identity, or use a paid model.';
+          this._sendJsonError(
+            mux,
+            request.requestId,
+            403,
+            refusal.reason === 'new_buyer_context' ? 'free_tier_new_buyer_context' : 'free_tier_moved_conversation',
+            message,
+          );
+          return;
+        }
+        const { decision } = outcome;
         if (!decision.allowed) {
           const limitedBy = decision.limitedBy ?? 'address';
           const program = decision.program;
@@ -1538,6 +1562,52 @@ export class SellerRequestHandler {
     if (this._usageMissingReported.has(key)) return;
     this._usageMissingReported.add(key);
     this._deps.emit('provider:usage-missing', { provider, service });
+  }
+
+  /**
+   * Resolve the buyer's staked standing, screen a free request, and count it
+   * unless screening refused it. An admitted request is recorded for
+   * conversation matching.
+   */
+  private async _screenAndConsumeFreeTier(
+    limiter: SellerFreeTierLimiter,
+    input: {
+      buyerPeerId: string;
+      service: string;
+      delegationsHeader: string | undefined;
+      body: Uint8Array;
+      remoteAddress: string | null | undefined;
+      paid: boolean;
+    },
+  ): Promise<FreeTierOutcome> {
+    const { buyerPeerId, service } = input;
+    // No header means the buyer has no codes any more: '' forgets the remembered ones.
+    const standing = await limiter.resolveStanding(buyerPeerId, input.delegationsHeader ?? '');
+    // Token estimation and parsing happen only when a check needs them.
+    const screen = limiter.screen({
+      buyerPeerId,
+      service,
+      standing,
+      paid: input.paid,
+      inputTokens: () => estimateTokensFromBytesSampled(input.body),
+      body: () => tryParseJsonObject(input.body),
+    });
+    const ip = input.remoteAddress ?? 'unknown';
+    if (screen.refusal) {
+      debugLog(`[SellerHandler] Free tier refused ${service} for ${buyerPeerId.slice(0, 12)}... ip=${ip}: ${describeFreeTierScreenRefusal(screen.refusal)}`);
+    } else if (screen.wouldRefuse) {
+      debugLog(`[SellerHandler] Free tier would refuse ${service} for ${buyerPeerId.slice(0, 12)}... ip=${ip} (log only): ${describeFreeTierScreenRefusal(screen.wouldRefuse)}`);
+    }
+    if (screen.refusal) return { kind: 'refused', refusal: screen.refusal };
+    const decision = limiter.consume({
+      buyerPeerId,
+      service,
+      remoteIp: input.remoteAddress ?? null,
+      standing,
+      ...(input.paid ? { paid: true } : {}),
+    });
+    if (decision.allowed) screen.served();
+    return { kind: 'counted', decision };
   }
 
   private _sendJsonError(
