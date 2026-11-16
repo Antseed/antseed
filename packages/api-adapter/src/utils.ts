@@ -511,6 +511,13 @@ export function createChatStreamParser(
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
   let finishReason: string | null = null;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  // Upstream `index` -> our tool call slot. Some OpenAI-compatible upstreams
+  // send parallel calls under one index (or none) and tell them apart only by
+  // `id`: an id seen before resumes its call, a new one starts a new call
+  // instead of appending to the last.
+  const slotByIndex = new Map<number, number>();
+  const slotById = new Map<string, number>();
+  let lastSlot: number | null = null;
 
   return {
     getId: () => id,
@@ -554,13 +561,24 @@ export function createChatStreamParser(
         for (const tcRaw of deltaToolCalls) {
           if (!tcRaw || typeof tcRaw !== 'object') continue;
           const tc = tcRaw as Record<string, unknown>;
-          const rawIdx = typeof tc.index === 'number' ? tc.index : 0;
-          const idx = Number.isFinite(rawIdx) ? Math.max(0, Math.floor(rawIdx)) : 0;
           const fn = tc.function && typeof tc.function === 'object'
             ? tc.function as Record<string, unknown> : {};
+          const incomingId = typeof tc.id === 'string' && tc.id.length > 0 ? tc.id : '';
+          const hasIndex = typeof tc.index === 'number' && Number.isFinite(tc.index);
+          const rawIdx = hasIndex ? Math.max(0, Math.floor(tc.index as number)) : null;
+          let idx = incomingId ? slotById.get(incomingId) : undefined;
+          if (idx === undefined) {
+            idx = rawIdx !== null ? slotByIndex.get(rawIdx) : (lastSlot ?? undefined);
+            const current = idx !== undefined ? toolCalls.get(idx) : undefined;
+            if (idx === undefined || (incomingId && current?.id && incomingId !== current.id)) {
+              idx = toolCalls.size;
+            }
+          }
+          if (incomingId) slotById.set(incomingId, idx);
+          if (rawIdx !== null) slotByIndex.set(rawIdx, idx);
+          lastSlot = idx;
           const existing = toolCalls.get(idx);
-          const tcId = typeof tc.id === 'string' && tc.id.length > 0
-            ? tc.id : (existing?.id ?? '');
+          const tcId = incomingId || (existing?.id ?? '');
           const tcName = typeof fn.name === 'string' && fn.name.length > 0
             ? fn.name : (existing?.name ?? '');
           const argsDelta = typeof fn.arguments === 'string' ? fn.arguments : '';
