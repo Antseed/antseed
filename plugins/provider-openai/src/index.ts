@@ -236,7 +236,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Allowed Services', type: 'string[]', required: false, description: 'Service allow-list' },
     { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Alias Map', type: 'string', required: false, description: 'JSON map of announced service → upstream model name (generic, works across all providers)' },
     { key: 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON', label: 'Image Edit Model Map', type: 'string', required: false, description: 'JSON map of announced image service → Venice native edit model' },
-    { key: 'OPENAI_PATH_REWRITE_JSON', label: 'Path Rewrite', type: 'string', required: false, description: 'JSON map of path prefix rewrites, e.g. {"/v1":"/v4"} for APIs that use a different version prefix' },
+    { key: 'OPENAI_PATH_REWRITE_JSON', label: 'Path Rewrite', type: 'string', required: false, description: 'JSON map of exact request paths to rewrite, e.g. {"/v1/chat/completions":"/v4/chat/completions"} for APIs that use a different version prefix' },
     { key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: 'Fallback Upstreams', type: 'string', required: false, description: 'JSON array of backup upstreams for the same services ({baseUrl, apiKey?, services?, serviceAliasMap?, pathRewrite?}), tried in order when the main upstream fails' },
   ],
 
