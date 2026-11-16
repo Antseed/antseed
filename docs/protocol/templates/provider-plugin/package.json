@@ -23,6 +23,6 @@
     "@types/node": "^20.11.0",
     "@antseed/node": "*",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "^7.0.2"
   }
 }

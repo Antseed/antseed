@@ -7,6 +7,12 @@ import { createPrng, derive } from './prng.mjs';
 const FIXTURE_PNG = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'pixel.png');
 export const MOCK_USAGE = { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 };
 export const NO_USAGE_MARKER = '[no-usage]';
+/**
+ * `[parallel-tools]` in a streamed prompt that offers tools: the user turn is answered with two parallel tool calls
+ * that share `index: 0` and differ only by `id`, as some OpenAI-compatible upstreams stream them. The turn after the
+ * tool results gets the usual text reply.
+ */
+export const PARALLEL_TOOLS_MARKER = '[parallel-tools]';
 const FIXED_IMAGE_INPUT_TOKENS = 10;
 const WORDS = 'the quick brown fox jumps over lazy dogs while seven agents argue about payment channels'.split(' ');
 const TAG = /\[req:([a-z0-9-]+)\]/i;
@@ -83,12 +89,32 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
+    // One Chat Completions stream chunk, for every streamed answer below.
+    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
 
     if (tagged && draw() < state.faults.fault500Rate) {
       await sleep(totalMs / 3);
       entry.status = '500';
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: 'mock upstream internal error', type: 'server_error' } }));
+      return;
+    }
+    const toolNames = (Array.isArray(body.tools) ? body.tools : []).map((tool) => tool?.function?.name).filter((name) => typeof name === 'string');
+    if (stream && content.includes(PARALLEL_TOOLS_MARKER) && toolNames.length > 0 && body.messages?.at(-1)?.role === 'user') {
+      // A read-only tool when one is offered, so a desktop chat runs both calls without an approval prompt.
+      const name = toolNames.includes('read') ? 'read' : toolNames[0];
+      await sleep(totalMs);
+      if (gone()) { entry.status = 'client-gone'; return; }
+      entry.started = true;
+      entry.toolCalls = 2;
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const call = (callId, path) => ({ index: 0, id: callId, type: 'function', function: { name, arguments: JSON.stringify({ path }) } });
+      response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call(`call_${tag}_a`, 'testbench-missing-a.txt')] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: { tool_calls: [call(`call_${tag}_b`, 'testbench-missing-b.txt')] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
+      if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
+      response.end('data: [DONE]\n\n');
+      entry.status = 'ok';
       return;
     }
     const disconnect = tagged && draw() < state.faults.disconnectRate;
@@ -108,7 +134,6 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     if (gone()) { entry.status = 'client-gone'; return; }
     entry.started = true;
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
     const pieces = load ? Math.max(2, Math.min(40, Math.ceil(text.length / 400))) : 1;
     const step = Math.ceil(text.length / pieces);
     const cutAt = disconnect ? Math.max(1, betweenInt(draw, [1, Math.max(1, pieces - 1)])) : -1;

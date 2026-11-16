@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MeteringStorage } from '../src/metering/storage.js';
 import { SellerFreeTierLimiter, normalizeRemoteIp } from '../src/payments/seller-free-tier-limiter.js';
 import { freeTierServiceScope, parseFreeTierProgram } from '../src/payments/free-tier-program.js';
+import { peerIdToAddress } from '../src/types/peer.js';
 import {
   FREE_TIER_DELEGATION_TYPES,
   encodeFreeTierDelegationsHeader,
@@ -179,6 +180,87 @@ describe('SellerFreeTierLimiter', () => {
       'flash-5.3: free requests a day: 100 per buyer address; staked (a day): 1,000,000 power → 1,000, 10,000,000 power → unlimited',
       'k3: free only for stakers, others pay; staked (a day): 45,000,000 power → 200',
     ]);
+  });
+
+  describe('screening', () => {
+    const tier5x = { minPower: 100, multiplier: 5 } as const;
+    const staked = { stakers: ['0x' + 'aa'.repeat(20)], power: 100n * 10n ** 18n, positionIds: [1] };
+    /** A conversation of six long turns, about 42,000 tokens. */
+    const history = {
+      messages: Array.from({ length: 9 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: `t${index}:${'x'.repeat(28_000)}` })),
+    };
+    const screenInput = (buyerPeerId: string, inputTokens: number, nowMs = 1_000) => ({
+      buyerPeerId,
+      service: 'free',
+      inputTokens: () => inputTokens,
+      body: () => history,
+      nowMs,
+    });
+
+    it('rejects invalid screening settings', () => {
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerIp: 10, newBuyerMaxInputTokens: 1_000 }))
+        .toThrow('newBuyerMaxInputTokens requires maxRequestsPerAddress');
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, newBuyerMaxInputTokens: 0 }))
+        .toThrow('newBuyerMaxInputTokens must be a positive safe integer');
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, newBuyerRequests: 1.5 }))
+        .toThrow('newBuyerRequests must be a positive safe integer');
+      expect(() => new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, movedConversations: 'drop' as never }))
+        .toThrow('movedConversations must be one of: refuse, log');
+    });
+
+    it('refuses a large context during a new buyer address’s first free requests', () => {
+      for (const storage of [persistentStorage(), null]) {
+        const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, windowMs: 60_000, newBuyerMaxInputTokens: 32_000, newBuyerRequests: 2 }, storage);
+        expect(limiter.screen(screenInput(BUYER, 40_000)).refusal)
+          .toEqual({ reason: 'new_buyer_context', inputTokens: 40_000, maxInputTokens: 32_000, requests: 2 });
+        expect(limiter.screen(screenInput(BUYER, 32_000)).refusal).toBeNull();
+        limiter.consume({ buyerPeerId: BUYER, service: 'free', nowMs: 1_000 });
+        limiter.consume({ buyerPeerId: BUYER, service: 'free', nowMs: 1_001 });
+        expect(limiter.screen(screenInput(BUYER, 40_000, 2_000)).refusal).toBeNull();
+        // Once the window moves past those requests the address is new again.
+        expect(limiter.screen(screenInput(BUYER, 40_000, 70_000)).refusal).toMatchObject({ reason: 'new_buyer_context' });
+        storage?.close();
+      }
+    });
+
+    it('never screens a buyer staked into a tier', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, stakeTiers: [tier5x], newBuyerMaxInputTokens: 1_000, movedConversations: 'refuse' });
+      const inputTokens = vi.fn(() => 40_000);
+      expect(limiter.screen({ ...screenInput(BUYER, 40_000), inputTokens, standing: staked }).refusal).toBeNull();
+      expect(inputTokens).not.toHaveBeenCalled();
+    });
+
+    it('refuses a long conversation moved from another buyer, and only after a served request recorded it', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, movedConversations: 'refuse' });
+      const first = limiter.screen(screenInput(BUYER, 42_000));
+      expect(first.refusal).toBeNull();
+      // Not served yet: nothing is attributed.
+      expect(limiter.screen(screenInput(OTHER_BUYER, 42_000)).refusal).toBeNull();
+      first.served();
+      const moved = limiter.screen(screenInput(OTHER_BUYER, 42_000, 2_000));
+      expect(moved.refusal).toMatchObject({ reason: 'moved_conversation', owner: peerIdToAddress(BUYER).toLowerCase() });
+      expect(moved.wouldRefuse).toBeNull();
+      expect(limiter.screen(screenInput(BUYER, 42_000, 2_000)).refusal).toBeNull();
+    });
+
+    it('only reports a moved conversation in log mode, and skips parsing small requests', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, movedConversations: 'log' });
+      limiter.screen(screenInput(BUYER, 42_000)).served();
+      const logged = limiter.screen(screenInput(OTHER_BUYER, 42_000, 2_000));
+      expect(logged.refusal).toBeNull();
+      expect(logged.wouldRefuse).toMatchObject({ reason: 'moved_conversation' });
+
+      const body = vi.fn(() => history);
+      expect(limiter.screen({ ...screenInput(OTHER_BUYER, 1_000), body }).wouldRefuse).toBeNull();
+      expect(body).not.toHaveBeenCalled();
+    });
+
+    it('describes the screening settings', () => {
+      const limiter = new SellerFreeTierLimiter({ maxRequestsPerAddress: 10, stakeTiers: [], newBuyerMaxInputTokens: 32_000, movedConversations: 'refuse' });
+      expect(limiter.describe()).toContain(
+        "free requests a day: 10 per buyer address; a new buyer's first 3 up to 32,000 input tokens; conversations moved from another buyer refused",
+      );
+    });
   });
 
   describe('staked tiers', () => {

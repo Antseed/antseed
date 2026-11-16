@@ -155,7 +155,7 @@ See [packages/node/README.md](packages/node/README.md) for the `Provider` and `R
 ## Tech Stack
 
 - **Development runtime**: Node.js 24 (pinned in `.nvmrc`), ES modules
-- **Language**: TypeScript 5.x, strict mode
+- **Language**: TypeScript 7.x, strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps
 - **Test**: vitest

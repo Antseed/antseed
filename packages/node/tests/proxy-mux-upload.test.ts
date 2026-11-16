@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_MAX_UPLOAD_BODY_BYTES, ProxyMux } from '../src/proxy/proxy-mux.js';
+import { ByteBudget, DEFAULT_MAX_UPLOAD_BODY_BYTES, ProxyMux } from '../src/proxy/proxy-mux.js';
 import {
   decodeHttpRequest,
   decodeHttpRequestChunk,
@@ -411,5 +411,69 @@ describe('ProxyMux upload limits — storage protection', () => {
 
     expect(sellerMux.pendingUploadCount()).toBe(0);
     expect(sellerMux.pendingUploadBytes()).toBe(0);
+  });
+});
+
+describe('ProxyMux shared upload budget', () => {
+  /** The frames a buyer sends for one chunked upload: header, chunks, end. */
+  function uploadFrames(requestId: string): Array<{ type: MessageType; messageId: number; payload: Uint8Array }> {
+    const frames: Uint8Array[] = [];
+    createMux((f) => frames.push(f)).sendProxyRequest(
+      { requestId, method: 'POST', path: '/img', headers: {}, body: new Uint8Array(ANTSEED_UPLOAD_THRESHOLD_BYTES + ANTSEED_UPLOAD_CHUNK_SIZE).fill(0xCC) },
+      () => {},
+      () => {},
+    );
+    return frames.map((frame) => {
+      const { type, payload } = decodeFrameHeader(frame);
+      return { type: type as MessageType, messageId: 0, payload };
+    });
+  }
+
+  function sellerMux(budget: ByteBudget) {
+    const responses: Array<{ statusCode: number; headers: Record<string, string> }> = [];
+    const mux = createMux((f) => {
+      const { type, payload } = decodeFrameHeader(f);
+      if (type === MessageType.HttpResponse) responses.push(decodeHttpResponse(payload));
+    }, { sharedUploadBudget: budget });
+    mux.onProxyRequest(() => {});
+    return { mux, responses };
+  }
+
+  it('turns away an upload on one connection when uploads on others have filled the budget', async () => {
+    // Room for one chunk and a half: the second connection's first chunk no longer fits.
+    const budget = new ByteBudget(Math.floor(ANTSEED_UPLOAD_CHUNK_SIZE * 1.5));
+    const first = sellerMux(budget);
+    const second = sellerMux(budget);
+
+    for (const frame of uploadFrames('up-1').slice(0, 2)) await first.mux.handleFrame(frame);
+    for (const frame of uploadFrames('up-2').slice(0, 2)) await second.mux.handleFrame(frame);
+
+    expect(first.responses).toEqual([]);
+    expect(second.responses).toHaveLength(1);
+    expect(second.responses[0]!.statusCode).toBe(503);
+    expect(second.responses[0]!.headers['retry-after']).toBe('1');
+    expect(second.mux.pendingUploadCount()).toBe(0);
+    expect(budget.usedBytes).toBe(ANTSEED_UPLOAD_CHUNK_SIZE);
+
+    // The first connection drops: its bytes are free for others again.
+    first.mux.abortPendingUploads();
+    expect(budget.usedBytes).toBe(0);
+  });
+
+  it('hands the bytes back when an upload completes', async () => {
+    const budget = new ByteBudget(1024 * 1024);
+    const { mux, responses } = sellerMux(budget);
+    const received: SerializedHttpRequest[] = [];
+    mux.onProxyRequest((request) => { received.push(request); });
+
+    const frames = uploadFrames('up-1');
+    for (const frame of frames.slice(0, -1)) await mux.handleFrame(frame);
+    // The last chunk arrives with the end frame.
+    expect(budget.usedBytes).toBe(ANTSEED_UPLOAD_THRESHOLD_BYTES);
+
+    await mux.handleFrame(frames.at(-1)!);
+    expect(received).toHaveLength(1);
+    expect(responses).toEqual([]);
+    expect(budget.usedBytes).toBe(0);
   });
 });
