@@ -44,7 +44,7 @@ import {
   type PaymentRequiredPayload,
 } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
-import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
+import { createResponseAuthPayload, createStreamingResponseHash, hashRequest } from './verification/response-auth.js';
 import { ANTSEED_STREAMING_RESPONSE_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
@@ -65,7 +65,7 @@ import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
-import { SERVICE_REQUIRED, billedRequestBody, type BilledRequestBody } from './requested-service.js';
+import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -322,7 +322,7 @@ export class SellerRequestHandler {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
-      const wireBody = request.body;
+      let wireBody = request.body;
       // Delegations are for this seller only: no route may pass them on to a provider or prover.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
@@ -975,6 +975,14 @@ export class SellerRequestHandler {
         }
       }
 
+      const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
+      // When the provider is handed a body the seller wrote, the buyer's is only needed for the hash
+      // response auth signs: it is hashed here, so both bodies are not held while the request is served.
+      let wireRequestHash: string | undefined;
+      if (wireBody !== request.body) {
+        if (buyerSupportsResponseAuth) wireRequestHash = hashRequest({ ...request, headers: wireHeaders, body: wireBody });
+        wireBody = new Uint8Array(0);
+      }
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
         headers: wireHeaders,
@@ -1294,8 +1302,6 @@ export class SellerRequestHandler {
           this._closeFailedVideoJob(videoRoute, responseForAuth, buyerPeerId);
         }
 
-        const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
-
         if (responseForAuth && buyerSupportsResponseAuth) {
           const channelId = oneOffChannelId ?? spm?.getChannelByPeer(buyerPeerId)?.sessionId ?? null;
           this._sendResponseAuthBestEffort(
@@ -1309,6 +1315,7 @@ export class SellerRequestHandler {
               responseStartedAt,
               responseCompletedAt: Date.now(),
               channelId,
+              requestHash: wireRequestHash,
             },
           );
         }
@@ -1832,16 +1839,12 @@ export class SellerRequestHandler {
     if (isZeroTokenPricing(pricing)) {
       return { cost: 0n, inputTokens: 0, maxOutputTokens: 0 };
     }
-    if (!this._isJsonRequest(request)) {
-      return null;
-    }
-    const body = tryParseJsonObject(request.body);
-    if (!body) {
+    const maxOutputTokens = this._requestedMaxOutputTokens(request);
+    if (maxOutputTokens === null) {
       return null;
     }
 
     const inputTokens = estimateTokensFromBytesSampled(request.body);
-    const maxOutputTokens = this._extractMaxOutputTokens(body);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -1862,39 +1865,20 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
-    return estimateTokensFromBytesSampled(request.body) + ((body && this._extractMaxOutputTokens(body)) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return estimateTokensFromBytesSampled(request.body) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
   }
 
-  private _extractMaxOutputTokens(body: Record<string, unknown>): number {
-    const candidates = [
-      body["max_tokens"],
-      body["max_completion_tokens"],
-      body["max_output_tokens"],
-      body["maxTokens"],
-      body["maxCompletionTokens"],
-      body["maxOutputTokens"],
-    ];
-
-    for (const value of candidates) {
-      const parsed = this._parsePositiveInteger(value);
-      if (parsed !== null) return parsed;
-    }
-    return 0;
-  }
-
-  private _parsePositiveInteger(value: unknown): number | null {
-    let numeric: number;
-    if (typeof value === 'number') {
-      numeric = value;
-    } else if (typeof value === 'string') {
-      numeric = Number(value);
-    } else {
-      return null;
-    }
-
-    if (!Number.isFinite(numeric) || numeric <= 0) return null;
-    return Math.floor(numeric);
+  /**
+   * The most output tokens a JSON request asks for (0 when it names no limit), or null when its body
+   * is not a JSON object. A body the seller wrote was read for this as it was written; any other is
+   * parsed here.
+   */
+  private _requestedMaxOutputTokens(request: SerializedHttpRequest): number | null {
+    if (!this._isJsonRequest(request)) return null;
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.maxOutputTokens !== undefined) return billed.maxOutputTokens;
+    const body = tryParseJsonObject(request.body);
+    return body ? requestedMaxOutputTokens(body) : null;
   }
 
   private async _executeRequest(
@@ -2028,11 +2012,14 @@ export class SellerRequestHandler {
       responseStartedAt: number;
       responseCompletedAt: number;
       channelId: string | null;
+      /** The request's hash, when its body was hashed already and is no longer held. */
+      requestHash?: string;
     },
   ): void {
     try {
       const payload = createResponseAuthPayload({
         request,
+        ...(context.requestHash ? { requestHash: context.requestHash } : {}),
         response,
         buyerPeerId: context.buyerPeerId,
         sellerPeerId: this._deps.identity.peerId,
