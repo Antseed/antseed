@@ -15,6 +15,9 @@ describe('startTestbenchGateway', () => {
   it('passes the gateway options to `gateway start`, where they belong', () => {
     const args = gatewayStartArgs({ entry: 'cli.js', manifest: { buyerDir: '/tb/buyer', buyerConfig: '/tb/config.json' }, buyerPort: 8401, port: 9001 });
     assert.deepEqual(args.slice(args.indexOf('gateway'), args.indexOf('gateway') + 4), ['gateway', 'start', '--no-buyer', '--no-console']);
+    // With the console, its pages and API are served too.
+    const withConsole = gatewayStartArgs({ entry: 'cli.js', manifest: { buyerDir: '/tb/buyer', buyerConfig: '/tb/config.json' }, buyerPort: 8401, port: 9001, console: true });
+    assert.deepEqual(withConsole.slice(withConsole.indexOf('gateway'), withConsole.indexOf('gateway') + 4), ['gateway', 'start', '--no-buyer', '--buyer-port']);
   });
 
   it('starts on a fresh buyer data dir with no gateway keys', { skip: !existsSync(cliEntry(repo)) && 'the CLI is not built', timeout: 120_000 }, async () => {

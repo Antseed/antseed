@@ -1,4 +1,4 @@
-import { channelHeldBaseUnits, channelRecoverableBaseUnits, isFundedCurrentChannel } from './vpr-activity-close';
+import { channelRecoverableBaseUnits, isFundedCurrentChannel } from './vpr-activity-close';
 
 /**
  * One answer to "can I use Antseed right now, and if not, what do I do?".
@@ -134,9 +134,18 @@ export function openFundingSessions(channels: FundingInputs['channels']): Fundin
   const sessions: FundingSession[] = [];
   for (const channel of channels) {
     if (!channel.onChainStateKnown || !isFundedCurrentChannel(channel)) continue;
+    let held = 0n;
+    try {
+      const deposit = BigInt(channel.onChainDeposit || '0');
+      const settled = BigInt(channel.onChainSettled || '0');
+      held = deposit > settled ? deposit - settled : 0n;
+    } catch {
+      continue;
+    }
+    if (held === 0n) continue;
     sessions.push({
       sellerName: sellerLabel(channel),
-      heldBaseUnits: channelHeldBaseUnits(channel),
+      heldBaseUnits: held,
       unusedBaseUnits: channelRecoverableBaseUnits(channel),
     });
   }

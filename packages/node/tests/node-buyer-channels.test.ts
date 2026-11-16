@@ -102,6 +102,20 @@ describe('buyer payment channel summaries', () => {
     expect(active.find((channel) => channel.channelId === 'video')).toMatchObject({ live: false, channelKind: CHANNEL_KIND.ONE_OFF });
     expect(node.getAllBuyerChannels().find((channel) => channel.channelId === 'settled-video')?.live).toBe(false);
   });
+
+  it('reads the active rows with their chain records in one indexed query, whatever the history (#1463)', () => {
+    // Routing reads the active channels on every request: a long history must not come with it.
+    for (let n = 0; n < 500; n += 1) store.upsertChannel(makeChannel(`old-${n}`, { status: CHANNEL_STATUS.GHOST }));
+    store.recordChainState('chat', { status: 1, deposit: 1_000_000n, settled: 250_000n, closeRequestedAt: 0n, block: 10, readAt: 1 });
+    const historyRead = vi.spyOn(store, 'getBuyerChannelChainRows');
+    const prepare = vi.spyOn((store as unknown as { _db: { prepare: (sql: string) => unknown } })._db, 'prepare');
+    const active = node.getActiveBuyerChannels();
+    expect(historyRead).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(active.map((channel) => channel.channelId).sort()).toEqual(['chat', 'pending-video', 'video']);
+    expect(active.find((channel) => channel.channelId === 'chat')?.onChain).toMatchObject({ status: 1, deposit: '1000000', settled: '250000', held: '750000', unsettled: '600000' });
+    expect(active.find((channel) => channel.channelId === 'video')?.onChain).toBeNull();
+  });
 });
 
 function buyerIdentity(): Identity {

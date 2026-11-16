@@ -111,9 +111,10 @@ async function freePort() {
  * desktop. The key is created first: a gateway without its console refuses to
  * start with no active keys. Never starts a second buyer. The gateway watches
  * the launcher (`parentPid`) and stops once it is gone, so a launcher killed
- * before its cleanup doesn't leave the gateway running.
+ * before its cleanup doesn't leave the gateway running. `console` also serves
+ * `/console` and its API (`/console/api`, read with a management token).
  */
-export async function startTestbenchGateway({ repo, manifest, reportDir, parentPid = process.pid }) {
+export async function startTestbenchGateway({ repo, manifest, reportDir, parentPid = process.pid, console = false }) {
   const buyerPort = Number(new URL(manifest.proxyUrl).port);
   const port = await freePort();
   const env = cliNodeEnv(process.env, manifest.home);
@@ -122,10 +123,10 @@ export async function startTestbenchGateway({ repo, manifest, reportDir, parentP
   const key = created.json?.apiKey;
   if (typeof key !== 'string' || !key) throw new Error(`could not create a gateway key for the desktop: ${created.stderr || created.stdout}`);
   const node = spawnCliNode({
-    who: 'desktop-gateway',
-    args: gatewayStartArgs({ entry, manifest, buyerPort, port }),
+    who: console ? 'console-gateway' : 'desktop-gateway',
+    args: gatewayStartArgs({ entry, manifest, buyerPort, port, console }),
     env: { ...env, ANTSEED_GATEWAY_PARENT_PID: String(parentPid) },
-    logPath: join(reportDir, 'desktop-gateway.log'),
+    logPath: join(reportDir, console ? 'console-gateway.log' : 'desktop-gateway.log'),
   });
   const url = `http://127.0.0.1:${port}`;
   const stop = () => stopWithGrace(node.child, {});
@@ -140,8 +141,8 @@ export async function startTestbenchGateway({ repo, manifest, reportDir, parentP
 }
 
 /** `gateway start` options (they belong to the `start` subcommand, not `gateway`). */
-export function gatewayStartArgs({ entry, manifest, buyerPort, port }) {
-  return [entry, '--data-dir', manifest.buyerDir, '--config', manifest.buyerConfig, 'gateway', 'start', '--no-buyer', '--no-console', '--buyer-port', String(buyerPort), '--port', String(port)];
+export function gatewayStartArgs({ entry, manifest, buyerPort, port, console = false }) {
+  return [entry, '--data-dir', manifest.buyerDir, '--config', manifest.buyerConfig, 'gateway', 'start', '--no-buyer', ...(console ? [] : ['--no-console']), '--buyer-port', String(buyerPort), '--port', String(port)];
 }
 
 /** Launches the built full desktop (its own buyer) on a prepared profile environment; see lib/mainnet.mjs. */

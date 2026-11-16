@@ -378,6 +378,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-ellipsis { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .gc-fineprint { color: var(--as-text-muted); font-size: 0.75rem; }
 .gc-panel-note { margin: 0; padding: 0.75rem 1rem; border-top: 1px solid var(--as-border); }
+.gc-panel-note--status { display: flex; align-items: baseline; gap: 0.5rem; .gc-attention { transform: translateY(-1px); } }
 .gc-warn { color: var(--as-warning); font-size: 0.8125rem; }
 .gc-link { color: var(--as-text-primary); font-weight: 500; text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 0.2em;
   &:hover { text-decoration-color: currentColor; }

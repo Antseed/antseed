@@ -960,7 +960,16 @@ const routes: Array<[string, string, Handler]> = [
     // ?balance=locked: nothing available, everything reserved in channels.
     const locked = new URLSearchParams(window.location.search).get('balance') === 'locked'
     const available = locked ? '0.000000' : ws.isDefault ? (landed ? '241.350000' : '231.540000') : '0.120000'
-    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available, reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: pendingDeposit && !landed && ws.isDefault ? '9.810000' : '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
+    // Reserved is what the open channels hold, plus ?reserve=unaccounted's $2.25 no channel explains.
+    const held = (db.channels[ws.id] ?? []).filter((c) => ['active', 'open', 'closing', 'withdrawable'].includes(c.status)).reduce((sum, c) => sum + Number(c.held ?? c.reserved), 0)
+    const unexplained = new URLSearchParams(window.location.search).get('reserve') === 'unaccounted' ? 2.25 : 0
+    // The buyer's channel figures: what open channels hold signed but unsettled, and what they hold.
+    const open = (db.channels[ws.id] ?? []).filter((c) => ['active', 'open', 'closing', 'withdrawable'].includes(c.status))
+    const pending = open.reduce((sum, c) => sum + Number(c.unsettled ?? 0), 0)
+    const figures = ws.isDefault
+      ? { pending: pending.toFixed(6), heldInChannels: held.toFixed(6), unaccounted: unexplained.toFixed(6), channelsStale: false }
+      : { pending: '0.000000', heldInChannels: '0.000000', unaccounted: '0.000000', channelsStale: false }
+    return { ...figures, buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available, reserved: ws.isDefault ? (held + unexplained).toFixed(6) : '0.000000', walletUsdc: pendingDeposit && !landed && ws.isDefault ? '9.810000' : '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
   }],
   ['POST', '/workspaces/:id/wallet/card-link', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { url: `https://antseed-pay.com/?address=${fakeAddress(1)}&currency=USD&amount=${body?.amountUsd ?? 10}&integration=${body?.provider === 'stripe' ? 'stripe' : 'crossmint'}` } }],
   ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
@@ -993,7 +1002,7 @@ const routes: Array<[string, string, Handler]> = [
     const list = db.channels[params['id']!] ?? []
     const ch = list.find((c) => (body.channelId ? c.channelId === body.channelId : c.peerId === body.peerId))
     if (ch?.sellerName === 'Fake Seller Beta') throw new MockError(502, 'buyer_error', `A channel close request is already in flight for ${String(body.peerId).slice(0, 12)}...`)
-    if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
+    if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000'; ch.held = '0.000000'; ch.unsettled = '0.000000' }
     return { ok: true }
   }],
   ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],

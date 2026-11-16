@@ -11,6 +11,9 @@ function publish(next: LaunchFailure): void {
   for (const listener of listeners) listener();
 }
 
+/** The gateway console's payment channels: the Wallet page, scrolled to them. */
+export const CONSOLE_CHANNELS_PATH = '/wallet?channels=1';
+
 /**
  * Opens a page of the gateway console in the browser. A failure (the local
  * gateway didn't start, the console link couldn't be made) is kept for the

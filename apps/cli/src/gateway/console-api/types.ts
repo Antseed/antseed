@@ -428,6 +428,18 @@ export interface Wallet {
   deposit: DepositWatch
   /** Last known values: the chain RPC is unreachable or rate limiting right now. */
   stale?: boolean
+  /**
+   * Signed to sellers but not settled yet, and still settleable: part of
+   * `reserved`, no longer the workspace's to spend. From the buyer's stored
+   * chain records of its channels; absent from older gateways.
+   */
+  pending?: Usdc
+  /** What the channels the chain holds open hold (deposit − settled). */
+  heldInChannels?: Usdc
+  /** Reserved but held by no channel the buyer has a row for; null when it could not be judged. */
+  unaccounted?: Usdc | null
+  /** No current chain read confirms the channel figures (some not read yet, or the chain is unreachable). */
+  channelsStale?: boolean
 }
 
 /**
@@ -585,7 +597,20 @@ export interface Channel {
   closeRequestedAt: number | null
   /** Already settled to the seller on chain; null when the chain was not read. `spent - settled` is authorized but not yet charged. */
   settled: Usdc | null
+  /**
+   * What the chain still holds for the channel (deposit − settled): what a
+   * withdraw returns if the seller settles nothing more. Null when the chain
+   * was not read; absent from older gateways.
+   */
+  held?: Usdc | null
+  /**
+   * Of `held`, what the seller can still settle with the authorizations it
+   * holds (signed − settled, capped at the deposit once no top-up can land).
+   * Null when the chain was not read.
+   */
+  unsettled?: Usdc | null
 }
+
 
 /** AntseedChannels' grace period between an on-chain close request and the withdrawal. */
 export const CHANNEL_CLOSE_GRACE_MS = 15 * 60_000

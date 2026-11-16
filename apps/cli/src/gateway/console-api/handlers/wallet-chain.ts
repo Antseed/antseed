@@ -5,8 +5,7 @@
  * read here: they come from the buyer's cached `GET /_antseed/balances`.
  */
 import { AntsContext, rewards, type AntsChainConfig, type RewardsView } from '@antseed/ants'
-import { ZeroAddress, type AbstractProvider } from 'ethers'
-import { readChannelStatesAt, type ChannelChainState } from '../../../proxy/channel-chain.js'
+import { ZeroAddress } from 'ethers'
 import { sharedChainProvider, type ChainRpcProvider } from '../../../proxy/chain-rpc.js'
 
 /** Rewards move once per epoch; five minutes keeps a page refresh from re-reading them. */
@@ -60,17 +59,4 @@ export function createRewardsReader(): (chain: AntsChainConfig, address: string)
     queue = run.catch(() => {})
     return run
   }
-}
-
-/**
- * On-chain records for `channelIds`, for a buyer that does not report them
- * itself (see `readChannelStatesAt`); ids that could not be read are left out.
- */
-export async function readChannelStates(
-  chain: AntsChainConfig,
-  channelIds: string[],
-  sellers: ReadonlyMap<string, string> = new Map(),
-  provider: AbstractProvider = gatewayChainProvider(chain),
-): Promise<Map<string, ChannelChainState>> {
-  return readChannelStatesAt(provider, chain.channelsContractAddress ?? '', channelIds, sellers)
 }

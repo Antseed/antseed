@@ -4,8 +4,8 @@ import { Alert, Button } from '@antseed/ui'
 import type { Channel, ChainInfo } from '../api/types'
 import { CopyButton } from '../components/ui'
 import { contractAddress } from '../lib/chain'
-import { CHANNEL_CLOSE_GRACE_MS, formatCountdown, unspent, withdrawableAt } from '../lib/channels'
-import { formatUsd, shortId } from '../lib/format'
+import { CHANNEL_CLOSE_GRACE_MS, formatCountdown, formatReturns, withdrawableAt } from '../lib/channels'
+import { shortId } from '../lib/format'
 import { OperatorPreflightError, operatorGate, useOperator, useOperatorRefresh } from '../lib/operator'
 import { CHANNELS_CLOSE_ABI } from './operator-abi'
 import { ConnectedWallet } from './ConnectWallet'
@@ -88,8 +88,8 @@ function Steps({ workspaceId, channel, chain, step, onDone, onAuthorize }: Chann
   return (
     <div className="gc-stack">
       {step === 'request'
-        ? <p className="gc-muted">The seller gets 15 minutes to settle what was spent. After that, withdraw the unused reserve (about {formatUsd(unspent(channel))}) back to the workspace balance. Both steps are signed by the authorized wallet {shortId(gate.operator)}, which pays the network fee in ETH on {chain.name}.</p>
-        : <p className="gc-muted">The grace period {at && at > Date.now() ? `ends in ${formatCountdown(at)}` : 'has ended'}. Withdrawing returns the unused reserve (about {formatUsd(unspent(channel))}) to the workspace balance; nothing leaves the workspace.</p>}
+        ? <p className="gc-muted">The seller gets 15 minutes to settle what it was authorized. After that, withdraw what it has not settled ({formatReturns(channel)}) back to the workspace balance. Both steps are signed by the authorized wallet {shortId(gate.operator)}, which pays the network fee in ETH on {chain.name}.</p>
+        : <p className="gc-muted">The grace period {at && at > Date.now() ? `ends in ${formatCountdown(at)}` : 'has ended'}. Withdrawing returns what the seller has not settled ({formatReturns(channel)}) to the workspace balance; nothing leaves the workspace.</p>}
       <TxFeedback chain={chain} runner={runner} done={step === 'request' ? 'Close requested. Withdraw the reserve in 15 minutes.' : 'Reserve returned to the balance.'} />
       <Button fullWidth disabled={runner.running} onClick={() => void submit()}>
         {runner.running ? 'Working…' : step === 'request' ? 'Request on-chain close' : 'Withdraw unused reserve'}

@@ -2,7 +2,8 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
-import { CHANNEL_KIND, CHANNEL_STATUS } from '@antseed/node/payments';
+import { CHANNEL_KIND, CHANNEL_STATUS, readChannelStatesAt, type ChannelChainRecordStore } from '@antseed/node/payments';
+import type { AbstractProvider } from 'ethers';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
@@ -10,6 +11,7 @@ import {
   formatUsdc,
   loadCryptoContext,
   openChannelStore,
+  requireCryptoConfig,
   shortId,
 } from '../../payment-utils.js';
 
@@ -74,6 +76,54 @@ function formatWait(seconds: number): string {
   const minutes = Math.ceil(seconds / 60);
   if (minutes <= 1) return 'about 1 minute';
   return `about ${minutes} minutes`;
+}
+
+/**
+ * After this command's own transaction (requestClose or withdraw) is
+ * confirmed, reads the channel at the head block and stores that record, so
+ * the running buyer and every host show the close at once rather than after
+ * the buyer's next read. The record goes on the buyer's row for the channel,
+ * whatever the case its id was given in (`channels`). A failure is ignored:
+ * that read will record it.
+ */
+export async function recordChannelAfterTransaction(options: {
+  provider: AbstractProvider;
+  channelsAddress: string;
+  channelId: string;
+  seller: string;
+  store: Pick<ChannelChainRecordStore, 'recordChainState'>;
+  channels?: ReadonlyArray<Pick<StoredChannel, 'sessionId'>>;
+  now?: () => number;
+}): Promise<boolean> {
+  try {
+    const readAt = (options.now ?? Date.now)();
+    const block = await options.provider.getBlockNumber();
+    const states = await readChannelStatesAt(options.provider, options.channelsAddress, [options.channelId], new Map([[options.channelId, options.seller]]), block);
+    const state = states.get(options.channelId);
+    const sessionId = options.channels?.find((row) => normalizeChannelId(row.sessionId) === normalizeChannelId(options.channelId))?.sessionId ?? options.channelId;
+    return state ? options.store.recordChainState(sessionId, { ...state, block, readAt }) : false;
+  } catch {
+    return false;
+  }
+}
+
+async function recordOwnTransaction(dataDir: string, config: Parameters<typeof requireCryptoConfig>[0], channelsClient: ReturnType<typeof createChannelsClient>, buyer: string, channelId: string, seller: string): Promise<void> {
+  let store: ReturnType<typeof openChannelStore> | null = null;
+  try {
+    store = openChannelStore(dataDir);
+    await recordChannelAfterTransaction({
+      provider: channelsClient.provider,
+      channelsAddress: requireCryptoConfig(config).channelsContractAddress,
+      channelId,
+      seller,
+      store,
+      channels: store.getBuyerPaymentChannels(buyer),
+    });
+  } catch {
+    // No store to write to: the buyer's next chain read records it.
+  } finally {
+    store?.close();
+  }
 }
 
 function openChannelStoreOrExit(dataDir: string): ReturnType<typeof openChannelStore> {
@@ -271,6 +321,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         }
 
         const txHash = await channelsClient.requestClose(wallet, id);
+        await recordOwnTransaction(globalOpts.dataDir, config, channelsClient, address, id, onChain.seller);
         spinner.succeed(chalk.green(`Requested timeout close for ${shortId(id, 18)}`));
         if (json) {
           console.log(JSON.stringify({
@@ -334,6 +385,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
 
         const refund = onChain.deposit > onChain.settled ? onChain.deposit - onChain.settled : 0n;
         const txHash = await channelsClient.withdraw(wallet, id);
+        await recordOwnTransaction(globalOpts.dataDir, config, channelsClient, address, id, onChain.seller);
         spinner.succeed(chalk.green(`Withdrew reserved funds for ${shortId(id, 18)}`));
         if (json) {
           console.log(JSON.stringify({

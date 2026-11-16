@@ -28,7 +28,7 @@ const MAX_CHANNEL_ROWS = 12
 
 // ─── Daemon reads ───
 
-/** The chain's record of a channel, as the daemon reports it with the row (`onChain` on `/_antseed/channels?all=1`). */
+/** The chain's record of a channel, as the daemon keeps it and reports it with the row (`onChain` on `/_antseed/channels`). */
 interface DaemonChannelOnChain {
   status: number
   deposit: string

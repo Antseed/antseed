@@ -46,7 +46,6 @@ import {
   speechOfferUsdPerCharacter,
   speechVoiceProblem,
   type AntseedNode,
-  type BuyerChannelSummary,
   type FaultAttribution,
   type BuyerSpendEvent,
   type ServiceHealth,
@@ -173,7 +172,7 @@ import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
-import type { BuyerChannelChainView, ChannelsOnChainView } from './channel-chain.js'
+import type { BuyerChannelChainRecorder, BuyerChannelTotals } from '@antseed/node/payments'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { nonLocalRequestReason } from './local-request-guard.js'
 import { loadConfig } from '../config/loader.js'
@@ -277,8 +276,12 @@ export interface BuyerProxyConfig {
   maxReserveAmountUsdc?: string
   /** Chain reads behind `GET /_antseed/balances`; absent when payments are disabled. */
   balanceReader?: BuyerBalanceReader
-  /** The chain's view of stored channels behind `GET /_antseed/channels?all=1`; absent when payments are disabled. */
-  channelChain?: BuyerChannelChainView
+  /**
+   * Keeps the chain's record of each identity's channels in the channel store
+   * (`buyer start` drives it), and gives the figures `GET /_antseed/balances`
+   * and `GET /_antseed/channels?all=1` report. Absent when payments are disabled.
+   */
+  channelChain?: BuyerChannelChainRecorder
   /**
    * Runs `buyer start`'s graceful shutdown for `POST /_antseed/restart`. The
    * handler exits the process (code 75) once shutdown completes.
@@ -320,6 +323,14 @@ export interface BuyerBalances {
   operator: string | null
   /** Present (true) when the chain could not be read and these are the last known values. */
   stale?: boolean
+  /**
+   * The buyer's channel figures from the chain records the channel store
+   * keeps (in USDC): signed but unsettled spend still settleable (`pending`),
+   * what open channels hold, the reserve no channel explains (null: not
+   * judged), and `stale` when no current chain read confirms them. Absent
+   * when payments are disabled.
+   */
+  channels?: { pending: string; held: string; unaccountedReserved: string | null; stale: boolean }
 }
 
 /** Exit code `POST /_antseed/restart` ends the process with, so a supervisor restarts it. */
@@ -333,8 +344,10 @@ const BALANCE_CACHE_TTL_MS = 15_000
 const BALANCE_REVALIDATE_MS = 45_000
 /** `fresh=1` re-reads the chain at most this often per address. */
 const BALANCE_FRESH_FLOOR_MS = 5_000
-/** The channel list never waits longer than this for the chain: hosts time the request out at 5 to 10 s. */
+/** A `fresh=1` read of the chain is waited for at most this long: hosts time the request out at 5 to 10 s. */
 const CHANNEL_CHAIN_MAX_WAIT_MS = 3_000
+/** On `/_antseed/balances` it is shorter: the gateway's key balance gives up on the buyer at 3 s. */
+const BALANCES_CHANNEL_CHAIN_WAIT_MS = 2_000
 const CONTROL_SECRET_RECHECK_MS = 1_000
 /** Floor between forced re-reads on a secret mismatch, so a stream of bad secrets can't hammer the disk. */
 const CONTROL_SECRET_FORCED_RECHECK_MS = 100
@@ -343,6 +356,44 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 
 /** Exact USDC decimal string from base units, e.g. 1500000n -> "1.500000". */
+/** Resolves when `promise` settles or `ms` passes, whichever is first. */
+async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([promise, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms) })])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * The buyer's channel figures as `GET /_antseed/channels?all=1` reports them
+ * (`onChain`), in base units: what its channels hold signed but unsettled,
+ * what open ones hold, the reserve none explains (null: not judged), and
+ * whether a current chain read confirms them.
+ */
+function channelTotalsJson(totals: BuyerChannelTotals) {
+  return {
+    pending: totals.pending.toString(),
+    heldByChannels: totals.held.toString(),
+    unaccountedReserved: totals.unaccountedReserved === null ? null : totals.unaccountedReserved.toString(),
+    unread: totals.unread,
+    stale: totals.stale,
+    block: totals.block,
+    readAt: totals.readAt,
+  }
+}
+
+/** The same figures as `GET /_antseed/balances` reports them (`channels`), in USDC like its other amounts. */
+function balanceChannelFigures(totals: BuyerChannelTotals) {
+  return {
+    pending: formatUsdcBaseUnits(totals.pending),
+    held: formatUsdcBaseUnits(totals.held),
+    unaccountedReserved: totals.unaccountedReserved === null ? null : formatUsdcBaseUnits(totals.unaccountedReserved),
+    stale: totals.stale,
+  }
+}
+
 function formatUsdcBaseUnits(amount: bigint): string {
   const sign = amount < 0n ? '-' : ''
   const abs = amount < 0n ? -amount : amount
@@ -1546,7 +1597,7 @@ export class BuyerProxy {
   private _controlSecretForcedAt = 0
   private _loggedUnauthenticatedPolicy = false
   private readonly _balanceReader: BuyerBalanceReader | null
-  private readonly _channelChain: BuyerChannelChainView | null
+  private readonly _channelChain: BuyerChannelChainRecorder | null
   /** Buyer addresses whose unaccounted reserve was already logged, with the amount. */
   private readonly _loggedUnaccountedReserve = new Map<string, string>()
   private readonly _balanceCache = new ChainReadCache()
@@ -2320,33 +2371,40 @@ export class BuyerProxy {
   }
 
   /**
-   * The chain's record of an identity's stored channels and its reserve
-   * against them, for `GET /_antseed/channels?all=1`. Null when payments are
-   * disabled or the identity has no address: the response then has no
-   * `onChain` fields, as before they existed.
+   * An identity's channel figures from the chain records the channel store
+   * keeps (pending spend, what open channels hold, reserve none explains).
+   * They never wait for the chain; with `fresh` (after a close) it is read
+   * again first, for at most 3 s. Null when payments are disabled or the
+   * identity has no address.
    */
-  private async _channelsOnChain(identity: string | null, channels: readonly BuyerChannelSummary[], fresh: boolean): Promise<ChannelsOnChainView | null> {
+  private async _channelTotals(identity: string | null, fresh: boolean, maxWaitMs = CHANNEL_CHAIN_MAX_WAIT_MS, floorMs?: number): Promise<BuyerChannelTotals | null> {
     const address = this._identityAddress(identity)
     if (!this._channelChain || !address) return null
-    const view = await this._channelChain.describe(address, channels, { fresh, maxWaitMs: CHANNEL_CHAIN_MAX_WAIT_MS })
-    const unaccounted = view.summary.unaccountedReserved
+    if (fresh) await waitAtMost(this._channelChain.refresh(address, { fresh: true, ...(floorMs !== undefined ? { floorMs } : {}) }).catch(() => undefined), maxWaitMs)
+    const totals = this._channelChain.totals(address)
+    const unaccounted = totals.unaccountedReserved
     const key = address.toLowerCase()
-    if (unaccounted !== null && BigInt(unaccounted) > 0n) {
-      if (this._loggedUnaccountedReserve.get(key) !== unaccounted) {
-        this._loggedUnaccountedReserve.set(key, unaccounted)
-        log(`${formatUsdcBaseUnits(BigInt(unaccounted))} USDC is reserved on-chain by a payment channel this buyer has no record of. `
+    if (unaccounted !== null && unaccounted > 0n) {
+      if (this._loggedUnaccountedReserve.get(key) !== unaccounted.toString()) {
+        this._loggedUnaccountedReserve.set(key, unaccounted.toString())
+        log(`${formatUsdcBaseUnits(unaccounted)} USDC is reserved on-chain by a payment channel this buyer has no record of. `
           + 'With its channel id: antseed buyer channels request-close <channelId>, then withdraw after the grace period.')
       }
     } else if (unaccounted !== null) {
       this._loggedUnaccountedReserve.delete(key)
     }
-    return view
+    return totals
   }
 
-  /** A channel of this identity just closed: the next channel view reads the chain again. */
-  private _invalidateChannelChain(identity: string | null): void {
+  /**
+   * A seller closed this channel of the identity: store its record, read at
+   * the head block, before the close is answered, so a list asked for next
+   * shows it ended (waited for at most `CHANNEL_CHAIN_MAX_WAIT_MS`).
+   */
+  private async _recordClosedChannel(identity: string | null, channelId: string): Promise<void> {
     const address = this._identityAddress(identity)
-    if (address) this._channelChain?.invalidate(address)
+    if (!this._channelChain || !address) return
+    await waitAtMost(this._channelChain.readChannels(address, [channelId]).catch(() => undefined), CHANNEL_CHAIN_MAX_WAIT_MS)
   }
 
   /** The wallet address of a resolved buyer identity (null: the default one); undefined when the node has none. */
@@ -2465,7 +2523,10 @@ export class BuyerProxy {
       return
     }
     try {
-      sendJson(res, 200, await this._readBalances(address, url.searchParams.get('fresh') === '1'))
+      const fresh = url.searchParams.get('fresh') === '1'
+      // Any key can ask for this one: a fresh channel read starts at most once per floor, like the balance read.
+      const [balances, totals] = await Promise.all([this._readBalances(address, fresh), this._channelTotals(identity, fresh, BALANCES_CHANNEL_CHAIN_WAIT_MS, BALANCE_FRESH_FLOOR_MS)])
+      sendJson(res, 200, totals ? { ...balances, channels: balanceChannelFigures(totals) } : balances)
     } catch (err) {
       sendJson(res, 502, { ok: false, error: `Balance read failed: ${err instanceof Error ? err.message : String(err)}` })
     }
@@ -3793,24 +3854,25 @@ export class BuyerProxy {
       const all = /[?&]all=1/.test(path)
       const identity = await this._controlPlaneIdentity(path)
       if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      // Every row carries the chain's stored record (`onChain`, null until read):
+      // the session status says whether the buyer still uses it, the record
+      // whether the channel is open. With `all=1` the buyer's totals ride along.
+      const totals = all ? await this._channelTotals(identity, /[?&]fresh=1/.test(path)) : null
       const channels = all
         ? this._node.getAllBuyerChannels(identity ?? undefined)
         : this._node.getActiveBuyerChannels(identity ?? undefined)
       const peers = await this._getPeers()
       const peersById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
-      // The store's status is a hint; with `all=1` the chain's record rides along (see channel-chain.ts).
-      const onChain = all ? await this._channelsOnChain(identity, channels, /[?&]fresh=1/.test(path)) : null
       const channelsWithCapabilities = channels.map((channel) => {
         const peer = peersById.get(channel.peerId)
         return {
           ...channel,
           sellerDisplayName: peer?.displayName?.trim() || null,
           cooperativeCloseSupported: peer ? peerSupportsCooperativeClose(peer) : false,
-          ...(onChain ? { onChain: onChain.channels.get(channel.channelId) ?? null } : {}),
         }
       })
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, channels: channelsWithCapabilities, ...(onChain ? { onChain: onChain.summary } : {}) }))
+      res.end(JSON.stringify({ ok: true, channels: channelsWithCapabilities, ...(totals ? { onChain: channelTotalsJson(totals) } : {}) }))
       return
     }
 
@@ -3936,7 +3998,7 @@ export class BuyerProxy {
           `Cooperative close of ${result.channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}...: ` +
           `${result.status}${result.code ? ` (${result.code})` : ''}`,
         )
-        if (result.status === 'closed') this._invalidateChannelChain(identity)
+        if (result.status === 'closed') await this._recordClosedChannel(identity, result.channelId)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, result }))
       } catch (err) {

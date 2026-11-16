@@ -47,7 +47,7 @@ import {
   sweepStaleStateTmpFiles,
   type BuyerProxyConfig,
 } from './buyer-proxy.js'
-import { BuyerChannelChainView } from './channel-chain.js'
+import type { BuyerChannelChainRecorder, BuyerChannelTotals } from '@antseed/node/payments'
 import {
   extractRequestedService,
   overrideRoutedModelInBody,
@@ -2297,68 +2297,75 @@ test('channels endpoint exposes cooperative-close support from peer capabilities
   )
 })
 
-test('channels?all=1 reports what the chain holds for each row, retired ones included, and the reserve no row accounts for', async () => {
+const CHANNEL_A = `0x${'a1'.repeat(32)}`
+const CHANNEL_B = `0x${'b2'.repeat(32)}`
+
+/**
+ * A buyer whose node reports `rows` (each with the chain record its store
+ * keeps) and a recorder standing in for the real one: its totals, and the
+ * fresh chain reads asked of it.
+ */
+function proxyWithStoredRecords(rows: Array<Record<string, unknown>>, totals: (reads: number) => BuyerChannelTotals) {
   const buyer = `0x${'b1'.repeat(20)}`
-  const seller = `0x${'51'.repeat(20)}`
-  const retiredAt = Date.now() - 60_000
   const proxy = makeBuyerProxyWithPeers([])
   const node = (proxy as any)._node
   node.buyerIdentities = () => [{ name: 'default', address: buyer }]
-  const rows = [
-    { channelId: '0xlive', peerId: 'a'.repeat(40), seller, buyer, status: 'active', updatedAt: retiredAt, deadline: 0 },
-    { channelId: '0xretired', peerId: 'b'.repeat(40), seller, buyer, status: 'ghost', updatedAt: retiredAt, deadline: 0 },
-    { channelId: '0xclosed', peerId: 'c'.repeat(40), seller, buyer, status: 'settled', updatedAt: retiredAt, deadline: 0 },
-  ]
   node.getAllBuyerChannels = () => rows
-  node.getActiveBuyerChannels = () => rows.filter((row) => row.status === 'active')
-  const asked: Array<{ buyer: string; ids: string[] }> = []
-  ;(proxy as any)._channelChain = new BuyerChannelChainView({
-    read: async (address, channels) => {
-      asked.push({ buyer: address, ids: channels.map((channel) => channel.channelId) })
-      return {
-        reserved: 2_500_000n,
-        channels: new Map([
-          ['0xlive', { status: 1, deposit: 1_000_000n, settled: 250_000n, closeRequestedAt: 0n }],
-          ['0xretired', { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 0n }],
-          ['0xclosed', { status: 2, deposit: 1_000_000n, settled: 600_000n, closeRequestedAt: 0n }],
-        ]),
-      }
-    },
-  })
+  node.getActiveBuyerChannels = () => rows.filter((row) => row['status'] === 'active')
+  const refreshed: Array<{ buyer: string; fresh: boolean }> = []
+  ;(proxy as any)._channelChain = {
+    totals: () => totals(refreshed.length),
+    refresh: async (address: string, options: { fresh?: boolean } = {}) => { refreshed.push({ buyer: address, fresh: options.fresh === true }) },
+  } as unknown as BuyerChannelChainRecorder
+  return { proxy, refreshed }
+}
 
+const stored = (status: number, deposit: string, settled: string) => ({ status, deposit, settled, closeRequestedAt: 0, block: 10, readAt: 1, held: '0', unsettled: '0' })
+const figures = (overrides: Partial<BuyerChannelTotals> = {}): BuyerChannelTotals => ({ pending: 1_000_000n, held: 1_750_000n, unaccountedReserved: null, unread: 0, block: null, readAt: null, stale: true, ...overrides })
+
+test('channels?all=1 reports the buyer\'s totals from its stored chain records at once, retired channels included (#1463)', async () => {
+  const { proxy, refreshed } = proxyWithStoredRecords([
+    { channelId: CHANNEL_A, peerId: 'a'.repeat(40), status: 'active', onChain: stored(1, '1000000', '250000') },
+    // Given up on: the seller answered that it is exhausted; still open on chain.
+    { channelId: CHANNEL_B, peerId: 'b'.repeat(40), status: 'ghost', onChain: stored(1, '1000000', '0') },
+  ], () => figures())
   const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/channels?all=1' }))
-  const body = JSON.parse(res.body) as {
-    channels: Array<{ channelId: string; status: string; onChain: { status: number; deposit: string; settled: string; closeRequestedAt: number; readAt: number } | null }>
-    onChain: { readAt: number; reserved: string; heldByChannels: string; unaccountedReserved: string }
-  }
-
+  const body = JSON.parse(res.body) as { channels: Array<{ status: string; onChain: { status: number } | null }>; onChain: Record<string, unknown> }
   assert.equal(res.statusCode, 200)
-  // The store's own status is unchanged: existing callers read the same rows as before.
-  assert.deepEqual(body.channels.map((channel) => [channel.channelId, channel.status]), [['0xlive', 'active'], ['0xretired', 'ghost'], ['0xclosed', 'settled']])
-  assert.deepEqual(
-    body.channels.map((channel) => [channel.onChain?.status, channel.onChain?.deposit, channel.onChain?.settled, channel.onChain?.closeRequestedAt]),
-    [[1, '1000000', '250000', 0], [1, '1000000', '0', 0], [2, '1000000', '600000', 0]],
-  )
-  assert.ok(body.channels.every((channel) => typeof channel.onChain?.readAt === 'number'))
-  // 0.75 + 1.00 held by the two open channels; 0.75 of the 2.50 reserve has no row.
-  assert.deepEqual([body.onChain.reserved, body.onChain.heldByChannels, body.onChain.unaccountedReserved], ['2500000', '1750000', '750000'])
-  assert.equal(asked[0]?.buyer, buyer)
-  assert.deepEqual(asked[0]?.ids, ['0xclosed', '0xlive', '0xretired'])
+  // The store's session status is unchanged; each row carries its stored record.
+  assert.deepEqual(body.channels.map((channel) => [channel.status, channel.onChain?.status]), [['active', 1], ['ghost', 1]])
+  assert.deepEqual(body.onChain, { pending: '1000000', heldByChannels: '1750000', unaccountedReserved: null, unread: 0, stale: true, block: null, readAt: null })
+  // Answered from the store: no chain read was waited for.
+  assert.deepEqual(refreshed, [])
+})
 
-  // Without all=1 the route is as it was: the store's active rows, no chain fields, no chain read.
-  const before = asked.length
+test('channels without all=1 carry each row\'s stored record, no totals and no chain read', async () => {
+  const { proxy, refreshed } = proxyWithStoredRecords([
+    { channelId: CHANNEL_A, peerId: 'a'.repeat(40), status: 'active', onChain: null },
+    { channelId: CHANNEL_B, peerId: 'b'.repeat(40), status: 'ghost', onChain: null },
+  ], () => figures())
   const active = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/channels' }))).body) as Record<string, unknown>
   assert.equal('onChain' in active, false)
-  assert.deepEqual((active['channels'] as Array<Record<string, unknown>>).map((channel) => [channel['channelId'], 'onChain' in channel]), [['0xlive', false]])
-  assert.equal(asked.length, before)
+  assert.deepEqual((active['channels'] as Array<Record<string, unknown>>).map((channel) => [channel['channelId'], channel['onChain']]), [[CHANNEL_A, null]])
+  assert.deepEqual(refreshed, [])
+})
+
+test('channels?all=1&fresh=1 reads the chain again before answering, after a close', async () => {
+  const { proxy, refreshed } = proxyWithStoredRecords(
+    [{ channelId: CHANNEL_A, peerId: 'a'.repeat(40), status: 'active', onChain: stored(1, '1000000', '0') }],
+    (reads) => figures(reads > 0 ? { block: 11, stale: false } : {}),
+  )
+  const body = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/channels?all=1&fresh=1' }))).body) as { onChain: Record<string, unknown> }
+  assert.deepEqual(refreshed, [{ buyer: `0x${'b1'.repeat(20)}`, fresh: true }])
+  assert.deepEqual([body.onChain['block'], body.onChain['stale']], [11, false])
 })
 
 test('channels?all=1 has no chain fields when payments are disabled', async () => {
   const proxy = makeBuyerProxyWithPeers([])
-  ;(proxy as any)._node.getAllBuyerChannels = () => [{ channelId: '0xlive', peerId: 'a'.repeat(40), status: 'active' }]
+  ;(proxy as any)._node.getAllBuyerChannels = () => [{ channelId: '0xlive', peerId: 'a'.repeat(40), status: 'active', onChain: null }]
   const body = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/channels?all=1' }))).body) as Record<string, unknown>
   assert.equal('onChain' in body, false)
-  assert.deepEqual(body['channels'], [{ channelId: '0xlive', peerId: 'a'.repeat(40), status: 'active', sellerDisplayName: null, cooperativeCloseSupported: false }])
+  assert.deepEqual(body['channels'], [{ channelId: '0xlive', peerId: 'a'.repeat(40), status: 'active', onChain: null, sellerDisplayName: null, cooperativeCloseSupported: false }])
 })
 
 test('selectCandidatePeersForRouting excludes peers when requested service is not in provider metadata', () => {

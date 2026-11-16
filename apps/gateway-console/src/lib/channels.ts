@@ -7,8 +7,8 @@
  *      (AntseedChannels.withdraw), which returns to the workspace balance.
  * Both transactions must come from the workspace's authorized wallet.
  */
-import type { Channel, Usdc } from '../api/types'
-import { usdcToNumber } from './format'
+import type { Channel, Usdc, Wallet } from '../api/types'
+import { formatUsd, usdcToNumber } from './format'
 
 /** AntseedChannels' grace period between a close request and the withdrawal (mirrors the gateway's CHANNEL_CLOSE_GRACE_MS). */
 export const CHANNEL_CLOSE_GRACE_MS = 15 * 60_000
@@ -55,6 +55,7 @@ export function channelStatusLabel(channel: Channel, now = Date.now()): string {
   return channel.status
 }
 
+
 export type BadgeTone = 'success' | 'warning' | 'info' | 'neutral'
 
 export function channelStatusTone(channel: Pick<Channel, 'status'>): BadgeTone {
@@ -64,25 +65,93 @@ export function channelStatusTone(channel: Pick<Channel, 'status'>): BadgeTone {
   return 'neutral'
 }
 
-/** Unspent reserve that comes back on close: reserved minus spent, never negative. */
-export function unspent(channel: Pick<Channel, 'reserved' | 'spent'>): number {
-  return Math.max(0, usdcToNumber(channel.reserved) - usdcToNumber(channel.spent))
+type ChannelAmounts = Pick<Channel, 'reserved' | 'spent' | 'held' | 'unsettled'>
+
+/**
+ * What closing a channel returns to the balance, as a range. A withdraw
+ * returns what the chain holds (deposit − settled), less whatever the seller
+ * settles first with the authorizations it holds: `max` if it settles
+ * nothing more, `min` if it settles all of them. Before the chain is read
+ * (or from an older gateway) both are reserved minus spent.
+ */
+export function returnsOnClose(channel: ChannelAmounts): { min: number; max: number } {
+  if (channel.held === null || channel.held === undefined) {
+    const left = Math.max(0, usdcToNumber(channel.reserved) - usdcToNumber(channel.spent))
+    return { min: left, max: left }
+  }
+  const max = usdcToNumber(channel.held)
+  if (channel.unsettled === null || channel.unsettled === undefined) return { min: 0, max }
+  return { min: Math.max(0, max - usdcToNumber(channel.unsettled)), max }
 }
 
-/** Channels whose grace period ended, and what withdrawing them returns. */
-export function withdrawableSummary(channels: Channel[]): { count: number; amount: number } {
-  const ready = channels.filter((channel) => channel.status === 'withdrawable')
-  return { count: ready.length, amount: ready.reduce((sum, channel) => sum + unspent(channel), 0) }
+/** What certainly comes back on close: nothing the seller can still settle. */
+export function unspent(channel: ChannelAmounts): number {
+  return returnsOnClose(channel).min
+}
+
+/** "$0.70", "up to $1.00" or "$0.70–$1.00". */
+export function formatReturns(channel: ChannelAmounts): string {
+  const { min, max } = returnsOnClose(channel)
+  if (max - min < 0.005) return formatUsd(max)
+  return min < 0.005 ? `up to ${formatUsd(max)}` : `${formatUsd(min)}–${formatUsd(max)}`
 }
 
 /**
- * Spend the buyer authorized but the seller has not settled on chain yet: it
- * is charged from the channel's reserve at the next settlement. A channel the
- * chain was not read for counts as nothing settled, which overstates pending
- * (conservative), as the desktop does.
+ * What the chain holds for an open channel: "$1.00", or "$0.75 unsettled"
+ * when the buyer signed all of it away and the seller has not settled it
+ * yet. "—" before the chain is read.
+ */
+export function formatHeld(channel: Pick<Channel, 'held' | 'unsettled'>): string {
+  if (channel.held === null || channel.held === undefined) return '—'
+  const held = usdcToNumber(channel.held)
+  const unsettled = channel.unsettled === null || channel.unsettled === undefined ? null : usdcToNumber(channel.unsettled)
+  return held > 0 && unsettled !== null && unsettled >= held ? `${formatUsd(held)} unsettled` : formatUsd(held)
+}
+
+/** Channels whose grace period ended, and the most withdrawing them returns. */
+export function withdrawableSummary(channels: Channel[]): { count: number; amount: number } {
+  const ready = channels.filter((channel) => channel.status === 'withdrawable')
+  return { count: ready.length, amount: ready.reduce((sum, channel) => sum + returnsOnClose(channel).max, 0) }
+}
+
+/**
+ * Spend the buyer authorized but the seller has not settled on chain yet,
+ * summed over the listed channels: for a gateway that does not send the
+ * buyer's own figure (`Wallet.pending`, see `authorizedNotCharged`). Each
+ * channel counts what the seller can still settle (`unsettled`); one the
+ * chain was not read for counts as nothing settled (conservative).
  */
 export function pendingSpend(channels: Channel[]): number {
-  return channels.filter(isOpenChannel).reduce((sum, channel) => sum + Math.max(0, usdcToNumber(channel.spent) - usdcToNumber(channel.settled ?? '0')), 0)
+  return channels.filter(isOpenChannel).reduce((sum, channel) => {
+    if (channel.unsettled !== null && channel.unsettled !== undefined) return sum + usdcToNumber(channel.unsettled)
+    return sum + Math.max(0, usdcToNumber(channel.spent) - usdcToNumber(channel.settled ?? '0'))
+  }, 0)
+}
+
+/**
+ * Signed but not yet charged: the buyer's own figure from its stored chain
+ * records, the same one the desktop's balance uses; from an older gateway
+ * that does not send it, the sum over the listed channels. Null while unknown.
+ */
+export function authorizedNotCharged(wallet: Pick<Wallet, 'pending'>, channels: Channel[] | undefined): number | null {
+  if (wallet.pending !== undefined) return usdcToNumber(wallet.pending)
+  return channels ? pendingSpend(channels) : null
+}
+
+/**
+ * One calm line for reserve the chain holds that no listed channel explains,
+ * with the next step; null when there is none (or the buyer could not judge).
+ * Only the workspace's authorized wallet can close a channel. The CLI on the
+ * gateway host signs with the wallet the gateway holds, so it is the next
+ * step only when that wallet is its own authorized wallet (`gatewaySigns`).
+ */
+export function unaccountedReserveNote(reserve: Pick<Wallet, 'unaccounted'> | null | undefined, { gatewaySigns = false }: { gatewaySigns?: boolean } = {}): string | null {
+  const amount = usdcToNumber(reserve?.unaccounted ?? null)
+  if (!reserve || amount < 0.005) return null
+  const held = `${formatUsd(amount)} of the reserve is held by a channel this workspace's buyer has no record of. With its channel id (a block explorer lists it),`
+  return gatewaySigns
+    ? `${held} run on the gateway host: antseed buyer channels request-close <channelId>, then withdraw 15 minutes later.`
+    : `${held} the authorized wallet closes it on chain: requestClose on the payment channels contract, then withdraw 15 minutes later.`
 }
 
 /** Nothing available and nothing waiting in the wallet, yet funds sit in channels: closing them frees it. */

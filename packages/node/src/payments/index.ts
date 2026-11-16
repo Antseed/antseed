@@ -169,6 +169,32 @@ export type {
 
 // Channel persistence
 export { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS } from './channel-store.js';
+export {
+  BuyerChannelChainRecorder,
+  CHAIN_BACKFILL_BATCH,
+  CHAIN_CHANNEL_STATUS,
+  DOUBTFUL_RECORD_REREAD_MS,
+  RESERVE_LANDING_GRACE_SECS,
+  RESERVE_ONLY_READ_MS,
+  buyerChannelTotals,
+  chainReadDue,
+  chainRecordFinal,
+  channelFigures,
+  createChannelChainReader,
+  heldOnChain,
+  lastReserveDeadline,
+  readChannelStatesAt,
+  unsettledOnChain,
+  type BuyerChannelChainRow,
+  type BuyerChannelTotals,
+  type ChannelChainPass,
+  type ChannelChainRead,
+  type ChannelChainReader,
+  type ChannelChainRecord,
+  type ChannelChainRecordStore,
+  type ChannelChainState,
+  type ChannelFigures,
+} from './channel-chain-record.js';
 export type { ChannelKind, ChannelRole, ChannelStatus, StoredChannel, StoredReceipt } from './channel-store.js';
 
 // Buyer payment manager

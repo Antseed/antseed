@@ -18,7 +18,7 @@ import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
 import { gatewayResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
-import { openGatewayConsole } from '../../../modules/app/console-launch';
+import { CONSOLE_CHANNELS_PATH, openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
@@ -663,7 +663,8 @@ function LocalDepositView({ onSelectView }: Props) {
         <div className={`${styles.stack} ${styles.chooseStack}`}>
           <BalanceSummaryCard
             values={balanceValues}
-            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
+            onShowSessions={() => { void openGatewayConsole(CONSOLE_CHANNELS_PATH); }}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void openGatewayConsole(CONSOLE_CHANNELS_PATH); }} />}
           />
 
           <div className={styles.primaryMethods}>

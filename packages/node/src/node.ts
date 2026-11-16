@@ -112,6 +112,7 @@ import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
+import { channelFigures, type BuyerChannelChainRow, type ChannelChainRecordStore } from "./payments/channel-chain-record.js";
 import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
 import { SellerPoolsClient } from "./payments/evm/seller-pools-client.js";
 import { FreeTierStakeResolver } from "./payments/free-tier-stake-resolver.js";
@@ -237,7 +238,28 @@ export type BuyerChannelSummary = {
   requestCount: number;
   tokensDelivered: string;
   outputTokens: string;
+  /**
+   * The chain's stored record of the channel (`payments/channel-chain-record.ts`),
+   * whatever the session `status` says; null when the chain was never read for it.
+   * Amounts are USDC base units, times unix seconds (`closeRequestedAt`) or ms (`readAt`).
+   */
+  onChain: BuyerChannelOnChain | null;
 };
+
+export interface BuyerChannelOnChain {
+  /** 0 no record, 1 active, 2 settled, 3 timed out. */
+  status: number;
+  deposit: string;
+  settled: string;
+  closeRequestedAt: number;
+  /** The block the record was read at, and when. */
+  block: number;
+  readAt: number;
+  /** What the chain holds for it while open: deposit − settled. */
+  held: string;
+  /** Signed but not settled that the seller can still settle (capped at the deposit once no top-up can land). */
+  unsettled: string;
+}
 
 export interface NodePaymentsConfig {
   /** Enable seller-side payment channels and automatic settlement. */
@@ -1722,19 +1744,28 @@ export class AntseedNode extends EventEmitter {
   getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    return this._channelStore.getBuyerPaymentChannelsByStatus(buyerAddress, CHANNEL_STATUS.ACTIVE)
-      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
+    // One indexed read of the active rows, chain records included: routing calls this on every request.
+    return this._channelStore.getBuyerPaymentChannelsWithChain(buyerAddress, CHANNEL_STATUS.ACTIVE)
+      .map(({ channel, chain }) => this._buyerChannelSummary(channel, paymentManager, chain));
   }
 
   /** All buyer channels (any local status), used for history views. */
   getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    return this._channelStore.getBuyerPaymentChannels(buyerAddress)
-      .map((channel) => this._buyerChannelSummary(channel, paymentManager));
+    return this._channelStore.getBuyerPaymentChannelsWithChain(buyerAddress)
+      .map(({ channel, chain }) => this._buyerChannelSummary(channel, paymentManager, chain));
   }
 
-  private _buyerChannelSummary(c: StoredChannel, paymentManager: BuyerPaymentManager | null): BuyerChannelSummary {
+  /**
+   * The store where the buyer keeps the chain's record of its channels
+   * (`payments/channel-chain-record.ts`); null before the node opened it.
+   */
+  channelChainRecordStore(): ChannelChainRecordStore | null {
+    return this._channelStore;
+  }
+
+  private _buyerChannelSummary(c: StoredChannel, paymentManager: BuyerPaymentManager | null, chain: BuyerChannelChainRow | undefined): BuyerChannelSummary {
     const active = c.status === CHANNEL_STATUS.ACTIVE;
     const oneOff = c.channelKind === CHANNEL_KIND.ONE_OFF;
     // Only the session the buyer is using with this seller is live; older
@@ -1763,6 +1794,7 @@ export class AntseedNode extends EventEmitter {
       // Buyer rows overload previousConsumption as cumulative output tokens
       // (see getBuyerUsageTotals).
       outputTokens: c.previousConsumption,
+      onChain: chain?.record ? buyerChannelOnChain(chain) : null,
     };
   }
 
@@ -3300,4 +3332,19 @@ export function announcedServiceHealth(provider: Provider): Record<string, Servi
     health[service] = serviceHealthOf(provider.serviceHealth, service) ?? { status: 'failing', reason: 'init_failed' };
   }
   return health;
+}
+
+function buyerChannelOnChain(row: BuyerChannelChainRow): BuyerChannelOnChain {
+  const record = row.record!;
+  const figures = channelFigures(row, Math.floor(Date.now() / 1000));
+  return {
+    status: record.status,
+    deposit: record.deposit.toString(),
+    settled: record.settled.toString(),
+    closeRequestedAt: Number(record.closeRequestedAt),
+    block: record.block,
+    readAt: record.readAt,
+    held: figures.held.toString(),
+    unsettled: figures.pending.toString(),
+  };
 }

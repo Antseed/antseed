@@ -89,13 +89,15 @@ let buyer: FakeBuyer
 let closeResult: Record<string, unknown> = { version: 1, channelId: '0xchannel', status: 'closed' }
 /** What the buyer answers `GET /_antseed/channels` with, when a test sets it; otherwise a buyer that reports no chain state. */
 let channelsBody: Record<string, unknown> | null = null
+/** The channel figures the buyer adds to `GET /_antseed/balances`, when a test sets them. */
+let balanceChannels: Record<string, unknown> | null = null
 
 before(async () => {
   buyer = await startFakeBuyer({
     'GET /_antseed/balances': (req) => {
       const identity = new URL(req.url, 'http://x').searchParams.get('identity')
       const wallet = identity === 'team-a' ? TEAM_WALLET : DEFAULT_WALLET
-      return { body: { address: wallet.address, available: '12.5', reserved: '1.25', walletUsdc: '0', creditLimit: '100', operator: OPERATOR } }
+      return { body: { address: wallet.address, available: '12.5', reserved: '1.25', walletUsdc: '0', creditLimit: '100', operator: OPERATOR, ...(balanceChannels ? { channels: balanceChannels } : {}) } }
     },
     'GET /_antseed/deposits/status': () => ({
       body: {
@@ -135,7 +137,6 @@ function setup(extra: WalletRouteOverrides = {}, now: () => number = () => 1_700
     walletAddress: async (name) => (name === 'default' ? DEFAULT_WALLET.address : name === 'team-a' ? TEAM_WALLET.address : null),
     payBaseUrl: () => DEFAULT_ANTSEED_PAY_URL,
     resolveChain: async () => CHAIN,
-    readChannelStates: async () => new Map(),
     ...extra,
   })
   return router
@@ -245,6 +246,18 @@ test('GET wallet merges balances and the deposit watcher', async () => {
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/balances?identity=team-a'))
 })
 
+test('GET wallet reports the buyer\'s channel figures: pending spend, what channels hold, the reserve none explains (#1463)', async (t) => {
+  balanceChannels = { pending: '0.4', held: '1', unaccountedReserved: '4.69', stale: false }
+  t.after(() => { balanceChannels = null })
+  const router = setup()
+  const wallet = await call(router, 'GET', '/workspaces/ws_default/wallet', member) as ConsoleWallet
+  assert.deepEqual([wallet.pending, wallet.heldInChannels, wallet.unaccounted, wallet.channelsStale, wallet.stale], ['0.400000', '1.000000', '4.690000', false, undefined])
+  // Not judged yet, and not confirmed by a current chain read: said apart from the RPC's own stale, which stays unset.
+  balanceChannels = { pending: '0', held: '0', unaccountedReserved: null, stale: true }
+  const unjudged = await call(router, 'GET', '/workspaces/ws_default/wallet', member) as ConsoleWallet
+  assert.deepEqual([unjudged.unaccounted, unjudged.channelsStale, unjudged.stale], [null, true, undefined])
+})
+
 test('GET wallet checks workspace access and existence', async () => {
   const router = setup()
   await rejectsWith(call(router, 'GET', '/workspaces/ws_team/wallet', outsider), 403)
@@ -273,102 +286,79 @@ test('POST wallet/watch drives the default watcher and refuses other wallets', a
 test('channel mapping', () => {
   assert.equal(mapChannel({ peerId: PEER_A }), null)
   const mapped = mapChannel({ sessionId: '0xs', sellerPeerId: PEER_A, latestCumulativeAmount: '10', status: 'open', cooperativeCloseSupported: true })
-  assert.deepEqual(mapped, { channelId: '0xs', peerId: PEER_A, sellerName: null, status: 'open', reserved: '0.000000', spent: '0.000010', openedAt: null, canCooperativeClose: true, closeRequestedAt: null, settled: null })
+  assert.deepEqual(mapped, { channelId: '0xs', peerId: PEER_A, sellerName: null, status: 'open', reserved: '0.000000', spent: '0.000010', openedAt: null, canCooperativeClose: true, closeRequestedAt: null, settled: null, held: null, unsettled: null })
   // A row the buyer is no longer using cannot be closed by the seller.
   assert.equal(mapChannel({ channelId: '0xs', peerId: PEER_A, status: 'active', cooperativeCloseSupported: true, live: false })?.canCooperativeClose, false)
   assert.equal(mapChannel({ channelId: '0xs', peerId: PEER_A, status: 'active', cooperativeCloseSupported: true, live: true })?.canCooperativeClose, true)
 })
 
-test('GET channels passes all=1 and the identity', async () => {
+test('GET channels passes all=1 and the identity, and fresh after a close', async () => {
   const router = setup()
   const channels = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&identity=team-a'))
+  // A buyer that reports no chain record: the rows are as its store has them.
   assert.deepEqual(channels, [
-    { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'active', reserved: '5.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: true, closeRequestedAt: null, settled: null },
-    { channelId: '0xold', peerId: PEER_A, sellerName: null, status: 'settled', reserved: '0.000000', spent: '0.000042', openedAt: null, canCooperativeClose: false, closeRequestedAt: null, settled: null },
+    { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'active', reserved: '5.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: true, closeRequestedAt: null, settled: null, held: null, unsettled: null },
+    { channelId: '0xold', peerId: PEER_A, sellerName: null, status: 'settled', reserved: '0.000000', spent: '0.000042', openedAt: null, canCooperativeClose: false, closeRequestedAt: null, settled: null, held: null, unsettled: null },
   ])
   // The open view asks for every row too: a row the buyer retired can still be open on-chain.
   await call(router, 'GET', '/workspaces/ws_default/channels', member)
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&identity=default'))
+  // After a close request or withdrawal: the buyer reads the chain again first.
   await call(router, 'GET', '/workspaces/ws_default/channels?fresh=1', member)
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&fresh=1&identity=default'))
   await rejectsWith(call(router, 'GET', '/workspaces/ws_team/channels', outsider), 403)
 })
 
-test('GET channels takes status and reserve from the chain over the buyer store', async () => {
-  const reads: string[][] = []
-  const router = setup({
-    readChannelStates: async (_chain, ids) => {
-      reads.push(ids)
-      return new Map([['0xchannel', { status: 2, deposit: 5_000_000n, settled: 1_000_000n, closeRequestedAt: 0n }]])
-    },
-  })
-  // Settled on-chain: gone from the open view, listed as settled with all=1.
-  assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
-  const all = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
-  assert.deepEqual(all[0], { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'settled', reserved: '0.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: false, closeRequestedAt: null, settled: '1.000000' })
-  // Only rows the buyer calls open are read, and the read is cached.
-  assert.deepEqual(reads, [['0xchannel']])
-})
+/** A chain record as the buyer reports it with a row, held and unsettled worked out by the buyer. */
+const chainRecord = (status: number, deposit: string, settled: string, extra: Record<string, unknown> = {}) => {
+  const held = status === 1 && BigInt(deposit) > BigInt(settled) ? (BigInt(deposit) - BigInt(settled)).toString() : '0'
+  return { status, deposit, settled, closeRequestedAt: 0, block: 10, readAt: 1_700_000_000_000, held, unsettled: '0', ...extra }
+}
 
-test('GET channels shows the on-chain deposit, and keeps the buyer rows when the chain fails', async () => {
-  const live = setup({ readChannelStates: async () => new Map([['0xchannel', { status: 1, deposit: 2_000_000n, settled: 0n, closeRequestedAt: 0n }]]) })
-  const [open] = await call(live, 'GET', '/workspaces/ws_team/channels', member) as Channel[]
-  assert.equal(open?.reserved, '2.000000')
-  assert.equal(open?.canCooperativeClose, true)
-  const down = setup({ readChannelStates: async () => { throw new Error('rpc down') } })
-  const [kept] = await call(down, 'GET', '/workspaces/ws_team/channels', member) as Channel[]
-  assert.equal(kept?.status, 'active')
-  assert.equal(kept?.reserved, '5.000000')
-})
-
-test('GET channels lists a channel the buyer retired while the chain holds it open, from the record the buyer reports', async (t) => {
-  const onChain = (status: number, deposit: string, settled: string, closeRequestedAt = 0) => ({ status, deposit, settled, closeRequestedAt, readAt: 1_700_000_000_000 })
+test('GET channels lists a channel the buyer retired while the chain holds it open, with what it holds, closable on chain (#1463)', async (t) => {
   channelsBody = {
     ok: true,
-    onChain: { readAt: 1_700_000_000_000, reserved: '3000000', heldByChannels: '3000000', unaccountedReserved: '0' },
     channels: [
-      { channelId: '0xlive', peerId: PEER_A, reserveCeiling: '5000000', cumulativeSigned: '10', status: 'active', live: true, cooperativeCloseSupported: true, onChain: onChain(1, '1000000', '0') },
-      // Retired by the buyer (it gave up on the session), still open with its reserve locked.
-      { channelId: '0xghost', peerId: PEER_A, reserveCeiling: null, cumulativeSigned: '1000000', status: 'ghost', live: false, cooperativeCloseSupported: true, onChain: onChain(1, '1000000', '0') },
-      { channelId: '0xclosing', peerId: PEER_A, reserveCeiling: null, cumulativeSigned: '0', status: 'settled', live: false, cooperativeCloseSupported: true, onChain: onChain(1, '1000000', '0', 1_699_999_999) },
-      // Really closed, and one that never opened: both stay history.
-      { channelId: '0xsettled', peerId: PEER_A, cumulativeSigned: '5', status: 'active', onChain: onChain(2, '1000000', '5') },
-      { channelId: '0xnever', peerId: PEER_A, cumulativeSigned: '0', status: 'ghost', deadline: 1_600_000_000, onChain: onChain(0, '0', '0') },
-      // The buyer could not read this one: the store's word stands.
+      { channelId: '0xlive', peerId: PEER_A, reserveCeiling: '5000000', cumulativeSigned: '10', status: 'active', live: true, cooperativeCloseSupported: true, onChain: chainRecord(1, '1000000', '0', { unsettled: '10' }) },
+      // Retired by the buyer (the seller answered that it is exhausted): signed in full, still open, its reserve locked.
+      { channelId: '0xghost', peerId: PEER_A, reserveCeiling: null, cumulativeSigned: '1000000', status: 'ghost', live: false, cooperativeCloseSupported: true, onChain: chainRecord(1, '1000000', '250000', { unsettled: '750000' }) },
+      { channelId: '0xclosing', peerId: PEER_A, reserveCeiling: null, cumulativeSigned: '0', status: 'settled', live: false, cooperativeCloseSupported: true, onChain: chainRecord(1, '1000000', '0', { closeRequestedAt: 1_699_999_999 }) },
+      // Really closed, though the store still calls it active; and one that never opened.
+      { channelId: '0xsettled', peerId: PEER_A, cumulativeSigned: '5', status: 'active', onChain: chainRecord(2, '1000000', '5') },
+      { channelId: '0xnever', peerId: PEER_A, cumulativeSigned: '0', status: 'ghost', deadline: 1_600_000_000, onChain: chainRecord(0, '0', '0') },
+      // Not read yet: the store's word stands.
       { channelId: '0xunread', peerId: PEER_A, cumulativeSigned: '0', status: 'ghost', onChain: null },
     ],
   }
   t.after(() => { channelsBody = null })
-  let ownReads = 0
-  const router = setup({ readChannelStates: async () => { ownReads += 1; return new Map() } })
+  const router = setup()
   const open = await call(router, 'GET', '/workspaces/ws_team/channels', member) as Channel[]
-  assert.deepEqual(open.map((channel) => [channel.channelId, channel.status, channel.reserved, channel.canCooperativeClose]), [
-    ['0xlive', 'active', '1.000000', true],
+  assert.deepEqual(open.map((channel) => [channel.channelId, channel.status, channel.reserved, channel.held, channel.unsettled, channel.canCooperativeClose]), [
+    ['0xlive', 'active', '1.000000', '1.000000', '0.000010', true],
     // Not the live session, so only the on-chain close is offered for it.
-    ['0xghost', 'active', '1.000000', false],
-    ['0xclosing', 'closing', '1.000000', false],
+    ['0xghost', 'active', '1.000000', '0.750000', '0.750000', false],
+    ['0xclosing', 'closing', '1.000000', '1.000000', '0.000000', false],
   ])
   const all = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
   assert.deepEqual(all.map((channel) => [channel.channelId, channel.status]), [
     ['0xlive', 'active'], ['0xghost', 'active'], ['0xclosing', 'closing'], ['0xsettled', 'settled'], ['0xnever', 'ghost'], ['0xunread', 'ghost'],
   ])
-  // The buyer's record is the one chain view: the gateway reads nothing itself.
-  assert.equal(ownReads, 0)
 })
 
 test('applyChannelChainState maps close requests and ignores unknown channels', () => {
   const base = mapChannel({ channelId: '0xc', peerId: PEER_A, status: 'active', reserveCeiling: '1000000', cooperativeCloseSupported: true })!
+  const state = (status: number, deposit: bigint, settled: bigint, closeRequestedAt = 0n) => ({ status, deposit, settled, closeRequestedAt, held: status === 1 ? deposit - settled : 0n, unsettled: 0n })
   assert.equal(applyChannelChainState(base, undefined, 0), base)
-  assert.equal(applyChannelChainState(base, { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }, 0), base)
-  assert.equal(applyChannelChainState(base, { status: 3, deposit: 1n, settled: 0n, closeRequestedAt: 0n }, 0).status, 'timedout')
-  const closing = applyChannelChainState(base, { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 1000n }, 1000 + 899)
+  assert.equal(applyChannelChainState(base, state(0, 0n, 0n), 0), base)
+  assert.equal(applyChannelChainState(base, state(3, 1n, 0n), 0).status, 'timedout')
+  const closing = applyChannelChainState(base, state(1, 1_000_000n, 0n, 1000n), 1000 + 899)
   assert.equal(closing.status, 'closing')
   assert.equal(closing.closeRequestedAt, 1_000_000)
   assert.equal(closing.canCooperativeClose, false)
-  assert.equal(applyChannelChainState(base, { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 1000n }, 1000 + 900).status, 'withdrawable')
+  assert.equal(applyChannelChainState(base, state(1, 1_000_000n, 0n, 1000n), 1000 + 900).status, 'withdrawable')
   // No on-chain record: kept while the reserve can still land, expired after its deadline.
-  const none = { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }
+  const none = state(0, 0n, 0n)
   assert.equal(applyChannelChainState(base, none, 500, 1000), base)
   const expired = applyChannelChainState(base, none, 1001, 1000)
   assert.equal(expired.status, 'expired')
@@ -376,24 +366,42 @@ test('applyChannelChainState maps close requests and ignores unknown channels', 
   assert.equal(expired.canCooperativeClose, false)
   // A row the buyer retired: open when the chain holds it open, unchanged when the chain has no record.
   const retired = mapChannel({ channelId: '0xc', peerId: PEER_A, status: 'ghost', cooperativeCloseSupported: true })!
-  const revived = applyChannelChainState(retired, { status: 1, deposit: 1_000_000n, settled: 250_000n, closeRequestedAt: 0n }, 0)
-  assert.deepEqual([revived.status, revived.reserved, revived.settled, revived.canCooperativeClose], ['active', '1.000000', '0.250000', false])
+  const revived = applyChannelChainState(retired, { ...state(1, 1_000_000n, 250_000n), unsettled: 750_000n }, 0)
+  assert.deepEqual([revived.status, revived.reserved, revived.settled, revived.held, revived.unsettled, revived.canCooperativeClose], ['active', '1.000000', '0.250000', '0.750000', '0.750000', false])
   assert.equal(applyChannelChainState(retired, none, 1001, 1000), retired)
 })
 
-test('GET channels hides a row the chain never recorded once its deadline passed', async () => {
-  const sellerArgs: Array<ReadonlyMap<string, string>> = []
-  const router = setup({
-    readChannelStates: async (_chain, _ids, sellers) => {
-      sellerArgs.push(sellers)
-      return new Map([['0xchannel', { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }]])
-    },
-  })
+test('a retired row the seller settled in full stays retired, not an open channel with nothing to close', () => {
+  const settledState = { status: 1, deposit: 1_000_000n, settled: 1_000_000n, closeRequestedAt: 0n, held: 0n, unsettled: 0n }
+  const retired = mapChannel({ channelId: '0xc', peerId: PEER_A, status: 'settled', cumulativeSigned: '1000000' })!
+  const mapped = applyChannelChainState(retired, settledState, 0)
+  assert.deepEqual([mapped.status, mapped.reserved, mapped.held, mapped.unsettled], ['settled', '0.000000', '0.000000', '0.000000'])
+  // The live row keeps its status: a seller settling up to the reserve does not end the session.
+  const live = mapChannel({ channelId: '0xc', peerId: PEER_A, status: 'active', cumulativeSigned: '1000000' })!
+  assert.equal(applyChannelChainState(live, settledState, 0).status, 'active')
+})
+
+test('GET channels hides a retired row the seller settled in full from the open view', async (t) => {
+  channelsBody = {
+    ok: true,
+    channels: [{ channelId: '0xdone', peerId: PEER_A, cumulativeSigned: '1000000', status: 'ghost', onChain: chainRecord(1, '1000000', '1000000') }],
+  }
+  t.after(() => { channelsBody = null })
+  const router = setup()
+  assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
+  assert.deepEqual((await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]).map((channel) => channel.status), ['ghost'])
+})
+
+test('GET channels hides a row the chain never recorded once its deadline passed', async (t) => {
+  channelsBody = {
+    ok: true,
+    channels: [{ channelId: '0xchannel', peerId: PEER_A, reserveCeiling: '5000000', cumulativeSigned: '0', status: 'active', deadline: 1_600_000_000, onChain: chainRecord(0, '0', '0') }],
+  }
+  t.after(() => { channelsBody = null })
+  const router = setup()
   assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
   const [expired] = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
   assert.equal(expired?.status, 'expired')
-  // The seller address goes along, so a facade seller's channel is looked up behind the facade.
-  assert.equal(sellerArgs[0]?.get('0xchannel'), OPERATOR)
 })
 
 test('POST channels/close names the chosen channel and waits past the seller timeout', async () => {

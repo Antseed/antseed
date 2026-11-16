@@ -10,6 +10,7 @@ export {
   type BuyerUsageChannelPoint,
   type BuyerUsageServicePoint,
   type BuyerChannelSummary,
+  type BuyerChannelOnChain,
   type NodeRequestOptions,
   type BuyerIdentitySummary,
   type ResponseAuthEvent,
