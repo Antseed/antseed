@@ -248,6 +248,8 @@ export class SellerPaymentManager {
   private readonly _topUpRestoreDeferred = new Set<string>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  /** SpendingAuths parked above the ceiling until a mining top-up lands, per channel. */
+  private readonly _overCeilingAuths = new Map<string, Set<Promise<unknown>>>();
   /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
   private _connectionsClosed = false;
   private readonly _topUpsWanted = new Set<string>();
@@ -503,13 +505,22 @@ export class SellerPaymentManager {
    * submitted, not the one they asked for — persist that, not `amount`.
    */
   private _submitClose(channelId: string, amount: bigint, submit: () => Promise<string>): Promise<CloseResult> {
+    return this._registerClose(channelId, () => submit().then(
+      (txHash: string) => ({ closed: true as const, amount, txHash }),
+      (error: unknown) => ({ closed: false as const, error }),
+    ));
+  }
+
+  /**
+   * Run `start` as the channel's one close operation, or join the one in
+   * flight. While it is registered, the channel counts as closing: requests
+   * wait for it and a retained channel is not reactivated.
+   */
+  private _registerClose(channelId: string, start: () => Promise<CloseResult>): Promise<CloseResult> {
     const existing = this._closingChannels.get(channelId);
     if (existing) return existing;
 
-    const operation: Promise<CloseResult> = submit().then(
-      (txHash: string) => ({ closed: true as const, amount, txHash }),
-      (error: unknown) => ({ closed: false as const, error }),
-    );
+    const operation = start();
     this._closingChannels.set(channelId, operation);
     void operation.finally(() => {
       if (this._closingChannels.get(channelId) === operation) {
@@ -651,18 +662,74 @@ export class SellerPaymentManager {
       }
       return outcome;
     };
-    let result = await runLocked(true);
+    const first = await runLocked(true);
+    if (first !== 'awaiting-top-up') return first;
     // Only a top-up that is mining covers this auth: wait for it with the
     // lock released, so this buyer's other auths and requests keep moving,
     // then judge the auth again against the new ceiling. The one that lands
     // can be a lower one, with the top-up this auth needs queued behind it:
     // keep waiting, within the same budget.
     const deadline = Date.now() + OVER_CEILING_AUTH_WAIT_MS;
-    while (result === 'awaiting-top-up') {
-      await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
-      result = await runLocked(Date.now() < deadline);
+    const parked = (async () => {
+      let result: SpendingAuthOutcome = first;
+      while (result === 'awaiting-top-up') {
+        await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
+        result = await runLocked(Date.now() < deadline);
+      }
+      return result;
+    })();
+    // A close must not settle below an auth the buyer already signed: it
+    // waits for the parked ones (see _waitForOverCeilingAuths).
+    const channelKey = payload.channelId;
+    let set = this._overCeilingAuths.get(channelKey);
+    if (!set) this._overCeilingAuths.set(channelKey, set = new Set());
+    set.add(parked);
+    try {
+      return await parked;
+    } finally {
+      set.delete(parked);
+      if (set.size === 0 && this._overCeilingAuths.get(channelKey) === set) this._overCeilingAuths.delete(channelKey);
     }
-    return result;
+  }
+
+  /**
+   * Close a channel whose buyer has SpendingAuths parked behind a mining
+   * top-up: wait for them to be judged, then close at the latest accepted
+   * auth. Runs as the registered close operation, so no new request is
+   * admitted on the channel while it waits.
+   */
+  private async _closeAfterParkedAuths(channelId: string, retries: number): Promise<CloseResult> {
+    await this._waitForOverCeilingAuths(channelId, OVER_CEILING_AUTH_WAIT_MS);
+    const { amount, metadata, sig } = this._getSettleParams(channelId);
+    debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} after parked auths (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+    try {
+      const txHash = await this._channelsClient.close(this._signer, channelId, amount, metadata, sig);
+      return { closed: true, amount, txHash };
+    } catch (error) {
+      return { closed: false, error };
+    }
+  }
+
+  /**
+   * Wait (up to `timeoutMs`) for the SpendingAuths parked above the ceiling
+   * of a channel until a mining top-up lands. A close on buyer disconnect
+   * runs while a top-up is mining; settling before those auths are accepted
+   * would close at the old ceiling and leave delivered work unpaid.
+   */
+  private async _waitForOverCeilingAuths(channelId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const parked = this._overCeilingAuths.get(channelId);
+      const remaining = deadline - Date.now();
+      if (!parked || parked.size === 0 || remaining <= 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); });
+      try {
+        await Promise.race([Promise.allSettled([...parked]), timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
   }
 
   /**
@@ -2190,12 +2257,19 @@ export class SellerPaymentManager {
       debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
       this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
     } else {
-      debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
-      const closeResult = await this._submitClose(
-        channelId,
-        amount,
-        () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
-      );
+      // Auths parked behind a mining top-up are part of what the buyer
+      // signed: close only once they are judged (_closeAfterParkedAuths).
+      const hasParkedAuths = this._overCeilingAuths.has(channelId);
+      if (!hasParkedAuths) {
+        debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+      }
+      const closeResult = await (hasParkedAuths
+        ? this._registerClose(channelId, () => this._closeAfterParkedAuths(channelId, retries))
+        : this._submitClose(
+          channelId,
+          amount,
+          () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
+        ));
       if (closeResult.closed) {
         this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
         this._closeRetryCount.delete(channelId);
@@ -2509,6 +2583,10 @@ export class SellerPaymentManager {
     // Requests still being served bill this channel; the buyer retries the
     // replacement once they are done.
     if (this.hasInFlightRequests(channel.peerId)) return false;
+    // Auths parked behind a mining top-up need the buyer lock this reserve
+    // holds, and the close must wait for them: closing here would deadlock
+    // or settle below what the buyer signed. The buyer retries once they land.
+    if (this._overCeilingAuths.has(channelId)) return false;
     const accepted = this._acceptedCumulative.get(channelId)
       ?? this._restorePersistedSpendingAuth(channel)
       ?? 0n;
