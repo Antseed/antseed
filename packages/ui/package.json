@@ -9,7 +9,10 @@
   ],
   "exports": {
     ".": "./src/index.ts",
-    "./styles": "./src/styles/index.scss"
+    "./styles": {
+      "types": "./src/styles/index.scss.d.ts",
+      "default": "./src/styles/index.scss"
+    }
   },
   "scripts": {
     "build": "tsc --noEmit",
@@ -23,7 +26,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "sass": "^1.97.3",
-    "typescript": "^5.6.0"
+    "typescript": "catalog:"
   },
   "dependencies": {
     "aria-hidden": "^1.2.6",

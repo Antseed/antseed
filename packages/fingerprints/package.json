@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0"
   }
 }
