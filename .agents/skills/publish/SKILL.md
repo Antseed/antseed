@@ -137,7 +137,7 @@ The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committe
 ## Important notes
 
 - The old flow (local `pnpm publish` from the `antseed-publish` worktree) is retired; CI owns publishing. If an emergency ever forces a local publish, it must be `pnpm publish` (never `npm publish`) and the version bumps must still land on main.
-- Private packages (`e2e`, `@antseed/desktop`, `@antseed/website`, `@antseed/diem-staking`, `@antseed/ui`) are never published; pnpm skips them automatically.
+- Private packages (`e2e`, `@antseed/desktop`, `@antseed/website`, `@antseed/ui`) are never published; pnpm skips them automatically.
 - Update this skill and the workflow's `--filter` set if a new public package appears.
 
 ## Publishable packages (for reference)
