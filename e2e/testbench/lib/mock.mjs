@@ -89,6 +89,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
+    // One Chat Completions stream chunk, for every streamed answer below.
+    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
 
     if (tagged && draw() < state.faults.fault500Rate) {
       await sleep(totalMs / 3);
@@ -106,7 +108,6 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       entry.started = true;
       entry.toolCalls = 2;
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-      const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
       const call = (callId, path) => ({ index: 0, id: callId, type: 'function', function: { name, arguments: JSON.stringify({ path }) } });
       response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call(`call_${tag}_a`, 'testbench-missing-a.txt')] }, finish_reason: null }]));
       response.write(chunk([{ index: 0, delta: { tool_calls: [call(`call_${tag}_b`, 'testbench-missing-b.txt')] }, finish_reason: null }]));
@@ -133,7 +134,6 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     if (gone()) { entry.status = 'client-gone'; return; }
     entry.started = true;
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
     const pieces = load ? Math.max(2, Math.min(40, Math.ceil(text.length / 400))) : 1;
     const step = Math.ceil(text.length / pieces);
     const cutAt = disconnect ? Math.max(1, betweenInt(draw, [1, Math.max(1, pieces - 1)])) : -1;

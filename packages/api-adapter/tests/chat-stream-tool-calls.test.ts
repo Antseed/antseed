@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createStreamingAdapter } from '../src/stream-transform.js';
+import { createChatStreamParser } from '../src/utils.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -90,5 +91,27 @@ describe('chat stream parallel tool calls', () => {
       chatChunk([call('call_b', ARGS_B.slice(0, 10))]),
       chatChunk([call(undefined, ARGS_B.slice(10))], 'tool_calls'),
     ])).toEqual(EXPECTED);
+  });
+
+  it('resumes a call whose id returns after another call under the same index', () => {
+    const finished: Array<{ index: number; id: string; arguments: string }> = [];
+    const starts: string[] = [];
+    const parser = createChatStreamParser({
+      onText: () => undefined,
+      onToolCallStart: (_index, id) => { starts.push(id); },
+      onToolCallDelta: () => undefined,
+      onFinish: (info) => { finished.push(...info.toolCalls); },
+    });
+    const frames = [
+      chatChunk([call('call_a', ARGS_A.slice(0, 20), 0)]),
+      chatChunk([call('call_b', ARGS_B.slice(0, 10), 0)]),
+      chatChunk([{ index: 0, id: 'call_a', function: { arguments: ARGS_A.slice(20) } }]),
+      chatChunk([{ index: 0, id: 'call_b', function: { arguments: ARGS_B.slice(10) } }], 'tool_calls'),
+    ];
+    for (const frame of frames) parser.feed(encoder.encode(frame), false);
+    parser.feed(encoder.encode('data: [DONE]\n\n'), true);
+
+    expect(starts).toEqual(['call_a', 'call_b']);
+    expect(finished.map(({ id, arguments: args }) => ({ id, input: JSON.parse(args) }))).toEqual(EXPECTED);
   });
 });
