@@ -361,6 +361,9 @@ const SERVICE_SHAPE = {
     windowMs: true,
     stakeTiers: true,
     stakersOnly: true,
+    newBuyerMaxInputTokens: true,
+    newBuyerRequests: true,
+    movedConversations: true,
   } satisfies FieldShapes<SellerFreeTierCLIConfig>,
 } satisfies FieldShapes<SellerServiceConfig>;
 
@@ -510,6 +513,9 @@ const DYNAMIC_KEYS = new Set([
   'seller.freeTier.maxRequestsPerAddress',
   'seller.freeTier.maxRequestsPerIp',
   'seller.freeTier.windowMs',
+  'seller.freeTier.newBuyerMaxInputTokens',
+  'seller.freeTier.newBuyerRequests',
+  'seller.freeTier.movedConversations',
   'seller.freeUsage.recordBatchSize',
   'seller.freeUsage.recordFlushIntervalMs',
   'seller.restrictedCountries',

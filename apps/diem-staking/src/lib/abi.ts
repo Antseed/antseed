@@ -16,6 +16,9 @@ export const DIEM_STAKING_PROXY_ABI = parseAbi([
   'function userLastClaimedEpoch(address user) view returns (uint32)',
   'function userEpochClaimed(address user, uint32 rewardEpoch) view returns (bool)',
   'function pendingAntsForEpoch(address user, uint32 rewardEpoch) view returns (uint256)',
+  'function syncBacklog() view returns (uint32 finalized, uint32 synced, uint32 remaining)',
+  'function userPointsBacklog(address account) view returns (uint32 userEpoch, uint32 synced, uint32 remaining)',
+  'function MAX_EPOCHS_PER_CAPTURE() view returns (uint32)',
 
   'function currentUnstakeBatch() view returns (uint32)',
   'function oldestUnclaimedUnstakeBatch() view returns (uint32)',
@@ -33,6 +36,7 @@ export const DIEM_STAKING_PROXY_ABI = parseAbi([
   'function claimUsdc()',
   'function claimAnts(uint32[] rewardEpochs)',
   'function syncRewardEpochs(uint32 maxEpochs)',
+  'function catchUpPoints(uint32 numEpochs)',
 
   'event UsdcDistributed(uint256 amount)',
   'event RewardEpochClosed(uint32 indexed rewardEpochId, uint256 revenuePerTokenAtEnd, uint256 totalPoints)',

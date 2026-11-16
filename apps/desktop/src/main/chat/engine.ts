@@ -47,7 +47,8 @@ import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
 import type { PiChatEngine } from './engine-types.js';
-import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
+import { entryListsSeller, findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, type ChatModel } from '../gateway/catalog.js';
+import { previewFirstSeller } from './auto-seller.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
@@ -202,17 +203,53 @@ export function registerPiChatHandlers({
 
   // ── Models ──
 
-  const resolveModel = async (endpoint: GatewayEndpoint, modelId: string): Promise<ResolvedChatModel> => {
+  /** How long a first Auto send waits for the route preview before sending without a preferred seller. */
+  const AUTO_PREVIEW_WAIT_MS = 3_000;
+
+  const previewFirstSellerWithin = async (endpoint: GatewayEndpoint, modelId: string): Promise<string | null> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        fetchRoutePreview(endpoint, modelId).then(previewFirstSeller),
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), AUTO_PREVIEW_WAIT_MS); }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const resolveModel = async (
+    endpoint: GatewayEndpoint,
+    modelId: string,
+    lastSeller: string | null = null,
+  ): Promise<ResolvedChatModel> => {
     try {
       const entries = await fetchGatewayModelEntries(endpoint);
       lastEntries = entries;
       // A pinned `peer@model` is described by its model's entry, found by
       // any of its ids since the listed one can change between reads.
       const entry = findGatewayEntry(entries, modelId) ?? undefined;
-      return { model: entry ? toChatModel(entry) : null, offers: entryOffers(entry) };
+      // The seller expected to answer: the pinned one; in Auto, the chat's
+      // last seller while it still sells this model, else Auto's first pick.
+      // Its own protocol is spoken, so the reply needs no conversion.
+      const { peerId: pinnedPeerId } = splitPinnedModel(modelId);
+      let preferredPeerId: string | null = null;
+      if (!pinnedPeerId && entry && toChatModel(entry).type === 'text') {
+        preferredPeerId = lastSeller && entryListsSeller(entry, lastSeller)
+          ? lastSeller
+          : await previewFirstSellerWithin(endpoint, modelId);
+        if (preferredPeerId && !entryListsSeller(entry, preferredPeerId)) preferredPeerId = null;
+      }
+      return {
+        model: entry ? toChatModel(entry, { sellerPeerId: pinnedPeerId ?? preferredPeerId }) : null,
+        offers: entryOffers(entry),
+        preferredPeerId,
+      };
     } catch (error) {
       appendSystemLog(`Gateway model list unavailable; sending "${modelId}" as a plain chat model: ${asErrorMessage(error)}`);
-      return { model: null, offers: [] };
+      return { model: null, offers: [], preferredPeerId: null };
     }
   };
 

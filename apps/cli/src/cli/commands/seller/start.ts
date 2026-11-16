@@ -29,6 +29,7 @@ import {
   type Provider,
   type Prover,
   type ConfigField,
+  type ReserveFailure,
   resolveChainConfig,
   loadOrCreateIdentity,
 } from '@antseed/node'
@@ -897,6 +898,19 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxUploadBodyBytes !== undefined) {
         console.log(chalk.dim(`  max upload body bytes: ${maxUploadBodyBytes}`))
       }
+      const maxInFlightRequestBytes = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_IN_FLIGHT_REQUEST_BYTES'])
+        ?? effectiveSellerConfig.maxInFlightRequestBytes
+      if (maxInFlightRequestBytes !== undefined) {
+        console.log(chalk.dim(`  max request bytes in flight: ${maxInFlightRequestBytes}`))
+      }
+      // ANTSEED_BLOCKED_BUYERS (comma-separated) replaces seller.blockedBuyers.
+      const blockedBuyersEnv = process.env['ANTSEED_BLOCKED_BUYERS']
+      const blockedBuyers = blockedBuyersEnv !== undefined
+        ? blockedBuyersEnv.split(',').map((id) => id.trim()).filter(Boolean)
+        : effectiveSellerConfig.blockedBuyers ?? []
+      if (blockedBuyers.length > 0) {
+        console.log(chalk.dim(`  blocked buyers: ${blockedBuyers.length}`))
+      }
       const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
         ?? effectiveSellerConfig.maxInboundConnections
       if (maxInboundConnections !== undefined) {
@@ -978,6 +992,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           signalingPort: options.signalingPort as number | undefined,
         }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
+        ...(maxInFlightRequestBytes !== undefined ? { maxInFlightRequestBytes } : {}),
+        ...(blockedBuyers.length > 0 ? { blockedBuyers } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
         ...(announceProviderIds ? { announceProviderIds } : {}),
@@ -1323,6 +1339,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Billing by estimate works, but only an upstream that reports usage bills exactly.
       node.on('provider:usage-missing', ({ provider, service }: { provider: string; service: string }) => {
         console.log(chalk.yellow(`Upstream ${provider}/${service} sent an answer with no usage figure; such answers are billed by an estimate of their tokens.`))
+      })
+      // A buyer whose opening reserve fails is never told; without this line a stalled chain write looks like a healthy seller.
+      node.on('payment:reserve-failed', ({ buyerPeerId, channelId, error }: ReserveFailure) => {
+        const reason = redactUrlsIn(error).replace(/\s+/g, ' ').slice(0, 300)
+        console.log(chalk.yellow(`Could not open a payment channel on-chain for buyer ${buyerPeerId.slice(0, 12)}… (channel ${channelId.slice(0, 10)}…): ${reason}`))
       })
       node.on('connection', scheduleDaemonStateWrite)
       node.on('session:updated', scheduleDaemonStateWrite)
