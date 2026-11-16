@@ -31,18 +31,22 @@ function anthropicToolInputs(frames: string[]): Array<{ id: string; input: unkno
   }
   for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode('data: [DONE]\n\n'), done: true })) sse += decoder.decode(out.data);
 
-  const blocks = new Map<number, { id: string; json: string }>();
+  const blocks = new Map<number, { id: string; json: string; stopped?: boolean }>();
   const results: Array<{ id: string; input: unknown }> = [];
   for (const event of sse.split('\n\n')) {
     const line = event.split('\n').find((candidate) => candidate.startsWith('data: '));
     if (!line) continue;
     const data = JSON.parse(line.slice(6));
     if (data.type === 'content_block_start' && data.content_block.type === 'tool_use') {
+      if (blocks.has(data.index)) throw new Error(`block ${data.index} started twice`);
       blocks.set(data.index, { id: data.content_block.id, json: '' });
     } else if (data.type === 'content_block_delta' && data.delta.type === 'input_json_delta') {
-      blocks.get(data.index)!.json += data.delta.partial_json;
+      const block = blocks.get(data.index);
+      if (!block || block.stopped) throw new Error(`input_json_delta for block ${data.index} after it stopped`);
+      block.json += data.delta.partial_json;
     } else if (data.type === 'content_block_stop' && blocks.has(data.index)) {
       const block = blocks.get(data.index)!;
+      block.stopped = true;
       results.push({ id: block.id, input: JSON.parse(block.json) });
     }
   }
@@ -113,5 +117,33 @@ describe('chat stream parallel tool calls', () => {
 
     expect(starts).toEqual(['call_a', 'call_b']);
     expect(finished.map(({ id, arguments: args }) => ({ id, input: JSON.parse(args) }))).toEqual(EXPECTED);
+  });
+
+  it('keeps interleaved calls whole when converting to Anthropic Messages', () => {
+    expect(anthropicToolInputs([
+      chatChunk([call('call_a', ARGS_A.slice(0, 20), 0)]),
+      chatChunk([call('call_b', ARGS_B.slice(0, 10), 0)]),
+      chatChunk([{ index: 0, id: 'call_a', function: { arguments: ARGS_A.slice(20) } }]),
+      chatChunk([{ index: 0, id: 'call_b', function: { arguments: ARGS_B.slice(10) } }], 'tool_calls'),
+    ])).toEqual(EXPECTED);
+  });
+
+  it('keeps calls interleaved under distinct indexes whole when converting to Anthropic Messages', () => {
+    expect(anthropicToolInputs([
+      chatChunk([call('call_a', ARGS_A.slice(0, 20), 0)]),
+      chatChunk([call('call_b', ARGS_B.slice(0, 10), 1)]),
+      chatChunk([call(undefined, ARGS_A.slice(20), 0)]),
+      chatChunk([call(undefined, ARGS_B.slice(10), 1)], 'tool_calls'),
+    ])).toEqual(EXPECTED);
+  });
+
+  it('streams calls that arrive one after another without holding any back', () => {
+    const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'anthropic-messages' })!;
+    const first = decoder.decode(adapter.adaptChunk({ requestId: 'r', data: encoder.encode(chatChunk([call('call_a', ARGS_A, 0)])), done: false })[0]!.data);
+    const second = decoder.decode(adapter.adaptChunk({ requestId: 'r', data: encoder.encode(chatChunk([call('call_b', ARGS_B, 1)])), done: false })[0]!.data);
+    expect(first).toContain('"partial_json"');
+    // The second call starts at once: the first one's arguments are whole, so its block stops first.
+    expect(second.indexOf('content_block_stop')).toBeLessThan(second.indexOf('"id":"call_b"'));
+    expect(second).toContain(JSON.stringify(ARGS_B).slice(1, -1));
   });
 });
