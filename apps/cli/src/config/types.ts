@@ -288,6 +288,8 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Most request body bytes held at once across all buyers; past it a request gets a retryable 503. Default: 256 MiB. */
+  maxInFlightRequestBytes?: number;
   /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
   maxInboundConnections?: number;
   /**
@@ -301,7 +303,7 @@ export interface SellerCLIConfig {
    * pinned request naming a provider the peer doesn't announce, are still in use.
    */
   announceProviderIds?: boolean;
-  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  /** Close a buyer's connection after this long with no traffic and no paid channel open on it; 0 keeps idle connections. Default: 30 minutes. */
   inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
