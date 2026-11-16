@@ -17,6 +17,15 @@ route the request and does not rewrite it, whatever fields it has.
 | `GET /v1/data/<service>/openapi.json` | Returns the seller's description of the service | Free |
 | `<METHOD> /v1/data/<service>/<operation path>` | Runs one operation. The path, the query string and the body are passed on as sent; the proxy and the seller add their own `x-antseed-*` headers | One completed request for a 2xx answer with a body |
 
+An operation's path is the seller's own API, so the seller passes it on with its percent escapes
+(`/v1/data/flights/airports/New%20York`, an encoded service name) and a trailing slash
+(`/v1/data/flights/search/`). It refuses, with `400 invalid_request_path` and before any payment
+step, a path that could reach another operation than the one billed: a dot segment (`.` or `..`),
+one that is encoded (`%2e%2e`), an encoded slash or backslash (`%2F`, `%5C`), any of these encoded
+twice (`%252F`), an encoded control character, a malformed escape, a `;`, or an empty segment
+anywhere but at the end. The query string is not checked. Paths of every other service keep the
+strict rule: no percent escapes, empty segments or dot segments at all.
+
 `GET /v1/data/<service>` is the same as `GET /v1/data/<service>/openapi.json`. Both are always
 the free description, so an operation of the seller's own API at `GET /` or `GET /openapi.json`
 cannot be sold through this path.

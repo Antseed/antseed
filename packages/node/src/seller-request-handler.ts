@@ -77,7 +77,7 @@ import { exposedResponseHeaders } from './utils/response-headers.js';
 import { exposedDataResponse } from './utils/data-response.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { usageForBilling } from '@antseed/buyer-core';
-import { isCanonicalRequestPath } from './proxy/request-path.js';
+import { isCanonicalRequestPath, isUnambiguousDataRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
@@ -168,6 +168,7 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  */
 /** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+const INVALID_DATA_PATH_MESSAGE = 'A data request path must be unambiguous: no dot segments, encoded slashes or dots, malformed escapes or empty segments before the end.';
 
 /**
  * The service a request is priced and billed as, or why it names none: as read from the body, with
@@ -366,6 +367,10 @@ export class SellerRequestHandler {
 
       // A data service's description is free: answered before any payment step.
       const dataRoute = dataServiceRoute(request);
+      if (dataRoute && !isUnambiguousDataRequestPath(request.path)) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', INVALID_DATA_PATH_MESSAGE);
+        return;
+      }
       if (dataRoute?.action === 'describe') {
         mux.sendProxyResponse(await this._handleDataDescription(request, buyerPeerId, dataRoute));
         return;
@@ -442,8 +447,9 @@ export class SellerRequestHandler {
         return;
       }
 
-      // Everything below bills and routes by this path as written.
-      if (!isCanonicalRequestPath(request.path)) {
+      // Everything below bills and routes by this path as written. A data operation's path was
+      // checked above: it is the seller's own API, whose parameters may be encoded.
+      if (!dataRoute && !isCanonicalRequestPath(request.path)) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', 'The request path must be in normal form: no dot segments, empty segments or percent escapes.');
         return;
       }

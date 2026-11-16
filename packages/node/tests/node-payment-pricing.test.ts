@@ -3075,6 +3075,38 @@ describe('data service seller payments', () => {
     expect(response.headers['content-length']).toBeUndefined();
   });
 
+  it('serves an encoded parameter, an encoded service name and a trailing slash, with the path as sent', async () => {
+    const harness = setup();
+    const paths = ['/v1/data/flights/airports/New%20York', '/v1/data/fl%69ghts/search?limit=5', '/v1/data/flights/search/'];
+    for (const [index, path] of paths.entries()) {
+      const response = await harness.send(`ok-${index}`, { method: index === 0 ? 'GET' : 'POST', path, ...(index === 0 ? { body: new Uint8Array() } : {}) });
+      expect(response.statusCode).toBe(200);
+    }
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls.map(call => call[0].path)).toEqual(paths);
+    expect(harness.spm.recordSpend).toHaveBeenCalledTimes(3);
+  });
+
+  it('refuses a data path that could reach another operation, before any payment step', async () => {
+    const harness = setup({ hasSession: () => false });
+    const paths = [
+      '/v1/data/flights/../admin', '/v1/data/flights/%2e%2e/admin', '/v1/data/flights/a%2Fb',
+      '/v1/data/flights/a%252Fb', '/v1/data/flights//search', '/v1/data/fl%69ghts/..%2Fopenapi.json',
+    ];
+    for (const [index, path] of paths.entries()) {
+      const response = await harness.send(`bad-${index}`, { path });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({ error: { code: 'invalid_request_path' } });
+    }
+    // The description path is checked too.
+    const describe = await harness.send('bad-describe', { method: 'GET', path: '/v1/data/flights%2F..%2Fadmin/openapi.json', body: new Uint8Array() });
+    expect(describe.statusCode).toBe(400);
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    // An inference path keeps the strict check: an escape there is still refused.
+    const chat = await harness.send('chat', { path: '/v1/chat/compl%65tions', body: new TextEncoder().encode('{"model":"chat","messages":[]}') });
+    expect(chat.statusCode).toBe(400);
+  });
+
   it("passes a data answer's cost fields on byte for byte, and filters its headers like any answer", async () => {
     const harness = setup();
     // Shaped like an inference answer whose upstream cost a seller removes; for a data API these are its own fields.
