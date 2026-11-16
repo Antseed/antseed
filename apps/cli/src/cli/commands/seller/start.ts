@@ -901,6 +901,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxInFlightRequestBytes !== undefined) {
         console.log(chalk.dim(`  max request bytes in flight: ${maxInFlightRequestBytes}`))
       }
+      // ANTSEED_BLOCKED_BUYERS (comma-separated) replaces seller.blockedBuyers.
+      const blockedBuyersEnv = process.env['ANTSEED_BLOCKED_BUYERS']
+      const blockedBuyers = blockedBuyersEnv !== undefined
+        ? blockedBuyersEnv.split(',').map((id) => id.trim()).filter(Boolean)
+        : effectiveSellerConfig.blockedBuyers ?? []
+      if (blockedBuyers.length > 0) {
+        console.log(chalk.dim(`  blocked buyers: ${blockedBuyers.length}`))
+      }
       const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
         ?? effectiveSellerConfig.maxInboundConnections
       if (maxInboundConnections !== undefined) {
@@ -983,6 +991,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInFlightRequestBytes !== undefined ? { maxInFlightRequestBytes } : {}),
+        ...(blockedBuyers.length > 0 ? { blockedBuyers } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
         ...(announceProviderIds ? { announceProviderIds } : {}),

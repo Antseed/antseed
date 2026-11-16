@@ -295,6 +295,8 @@ export interface SellerCLIConfig {
   maxUploadBodyBytes?: number;
   /** Most request body bytes held at once across all buyers; past it a request gets a retryable 503. Default: 256 MiB. */
   maxInFlightRequestBytes?: number;
+  /** Buyer peer IDs (40 hex characters, with or without 0x) this seller refuses with 403 `buyer_blocked`. */
+  blockedBuyers?: string[];
   /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
   maxInboundConnections?: number;
   /**
