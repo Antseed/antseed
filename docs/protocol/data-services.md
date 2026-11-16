@@ -49,6 +49,12 @@ rewrite a data API's `401`, `403`, `413` or `429`, and do not judge a `2xx` by t
 body. A `402` from the provider is its own error; only the seller's `payment_required` answer
 starts a payment step.
 
+The seller never rewrites a data answer's body: a `usage` or `cost` field in it is the API's
+own data, so it is not replaced with the seller's price as an inference answer's is. A body the
+provider sent compressed (gzip, deflate or br) is decoded, since the encoding header is not passed
+on. Its headers pass the same filter as every answer: `content-type`, `content-disposition`,
+`content-language`, `cache-control`, `retry-after` and `x-antseed-*`.
+
 ## Billing
 
 Data services bill `completed_requests`, the unit model routing uses (see
