@@ -1126,6 +1126,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         try { return baseUrl ? new URL(baseUrl).host : null } catch { return null }
       }
       const upstreamAlerts = new UpstreamAlerts(alerts, { hostOf: upstreamHost })
+      // A buyer only sees "unavailable on this seller"; the operator sees what the upstream said.
+      node.on('provider:error-masked', ({ provider, service, reason, statusCode, detail }: { provider: string; service: string; reason: string; statusCode: number; detail: string }) => {
+        console.log(chalk.yellow(`Upstream error on ${provider}/${service} answered ${statusCode} to the buyer (${reason}): ${detail}`))
+      })
 
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
