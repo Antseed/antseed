@@ -434,7 +434,7 @@ export type CatchUpState =
  * A wallet that stays locked without touching the contract for that long is
  * stuck until it calls catchUpPoints; this reports when that is needed.
  */
-export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpState; refetch: () => void } {
+export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpState; refetch: () => Promise<unknown> } {
   const { address } = useAccount();
   const deployed = useProxyDeployed();
   const enabled = deployed && !!address;
@@ -458,12 +458,14 @@ export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpStat
     if (cap == null || pool == null || user == null) return { status: 'none' };
 
     const poolBehind = pool[2];
-    const userBehind = stakedDiem != null && stakedDiem > 0n ? user[2] : 0;
+    const hasStake = stakedDiem != null && stakedDiem > 0n;
 
-    // catchUpPoints(n) first syncs up to n pool epochs, then moves the wallet
-    // up to n epochs, so n = both backlogs clears both in one call.
-    if (userBehind > cap) {
-      const epochsBehind = userBehind + poolBehind;
+    // updateRewards syncs the pool first and then captures the wallet's points
+    // up to the new synced epoch, so a wallet with a stake is limited by the
+    // sum of both backlogs. catchUpPoints(n) also syncs up to n pool epochs
+    // before moving the wallet up to n epochs, so n = the sum clears both.
+    if (hasStake && user[2] + poolBehind > cap) {
+      const epochsBehind = user[2] + poolBehind;
       return {
         status: 'needed',
         kind: 'user',
@@ -482,5 +484,5 @@ export function useCatchUpState(stakedDiem: bigint | null): { state: CatchUpStat
     return { status: 'none' };
   }, [data, stakedDiem]);
 
-  return { state, refetch: () => { void refetch(); } };
+  return { state, refetch };
 }

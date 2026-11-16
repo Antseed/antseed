@@ -746,9 +746,11 @@ function CatchUpNotice({
   onDone,
 }: {
   state: Extract<CatchUpState, { status: 'needed' }>;
-  onDone: () => void;
+  onDone: () => Promise<unknown>;
 }) {
   const catchUp = useCatchUp();
+  const [refreshing, setRefreshing] = useState(false);
+  const busy = catchUp.isPending || refreshing;
   const remainingAfter = state.epochsBehind - state.epochsThisTx;
   return (
     <div className="claim-note catch-up-note">
@@ -760,16 +762,25 @@ function CatchUpNotice({
       </span>
       <button
         className="stake-cta"
-        disabled={catchUp.isPending}
+        disabled={busy}
         onClick={async () => {
           try {
             await catchUp.run(state.kind, state.epochsThisTx);
+          } catch {
+            // The error shows below the button.
           } finally {
-            onDone();
+            // Keep the button disabled until the backlog is read again, so the
+            // same batch is never offered twice.
+            setRefreshing(true);
+            try {
+              await onDone();
+            } finally {
+              setRefreshing(false);
+            }
           }
         }}
       >
-        {catchUp.isPending ? 'Updating…' : `Update ${state.epochsThisTx} epochs →`}
+        {busy ? 'Updating…' : `Update ${state.epochsThisTx} epochs →`}
       </button>
       {catchUp.error && <div style={{ color: '#c62828' }}>{errorText(catchUp.error)}</div>}
     </div>

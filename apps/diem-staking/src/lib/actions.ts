@@ -2,8 +2,8 @@
 // Each hook returns a `run(args)` function the UI invokes on button click,
 // plus `isPending` for spinner state and `error` for inline display.
 
-import { useCallback } from 'react';
-import { useWriteContract } from 'wagmi';
+import { useCallback, useState } from 'react';
+import { usePublicClient, useWriteContract } from 'wagmi';
 import { parseEther, maxUint256 } from 'viem';
 
 import { DIEM_TOKEN, DIEM_STAKING_PROXY } from './addresses';
@@ -139,22 +139,41 @@ export function useClaimAnts() {
  * Clear a reward-epoch backlog that blocks every write. `catchUpPoints`
  * processes the caller's own epochs (and syncs the pool first);
  * `syncRewardEpochs` only syncs the pool, for wallets with nothing locked.
+ * Resolves only once the transaction is mined successfully, so the caller can
+ * refetch the backlog and offer the next batch without a duplicate submit.
  */
 export function useCatchUp() {
   const { writeContractAsync, isPending, error, reset } = useWriteContract();
   const { ensureDiemNetwork, isSwitchingChain } = useDiemNetwork();
+  const publicClient = usePublicClient({ chainId: DIEM_CHAIN_ID });
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [receiptError, setReceiptError] = useState<Error | null>(null);
   const run = useCallback(
     async (kind: 'user' | 'pool', numEpochs: number) => {
+      setReceiptError(null);
       await ensureDiemNetwork();
-      return writeContractAsync({
+      const hash = await writeContractAsync({
         address: DIEM_STAKING_PROXY,
         abi: DIEM_STAKING_PROXY_ABI,
         functionName: kind === 'user' ? 'catchUpPoints' : 'syncRewardEpochs',
         chainId: DIEM_CHAIN_ID,
         args: [numEpochs],
       });
+      if (!publicClient) throw new Error('No Base RPC client available');
+      setIsConfirming(true);
+      try {
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        if (receipt.status !== 'success') {
+          const err = new Error('Update transaction reverted');
+          setReceiptError(err);
+          throw err;
+        }
+        return hash;
+      } finally {
+        setIsConfirming(false);
+      }
     },
-    [ensureDiemNetwork, writeContractAsync],
+    [ensureDiemNetwork, publicClient, writeContractAsync],
   );
-  return { run, isPending: isPending || isSwitchingChain, error, reset };
+  return { run, isPending: isPending || isSwitchingChain || isConfirming, error: error ?? receiptError, reset };
 }
