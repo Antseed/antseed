@@ -12,7 +12,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Wallet } from 'ethers';
 import { BuyerPaymentManager } from '../../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../../src/payments/buyer-payment-negotiator.js';
 import { SellerPaymentManager } from '../../src/payments/seller-payment-manager.js';
@@ -25,8 +24,8 @@ import { BuyerRequestHandler } from '../../src/buyer-request-handler.js';
 import { SellerRequestHandler } from '../../src/seller-request-handler.js';
 import { ResourceOwnershipStore } from '../../src/resources/resource-ownership-store.js';
 import { connectionPair, wireFrames } from './framed-connection.js';
-import { toPeerId, type PeerInfo } from '../../src/types/peer.js';
-import type { Identity } from '../../src/p2p/identity.js';
+import type { PeerInfo } from '../../src/types/peer.js';
+import { identityFromPrivateKeyHex, type Identity } from '../../src/p2p/identity.js';
 import type { Provider } from '../../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../../src/types/http.js';
 import type { SpendingAuthPayload } from '../../src/types/protocol.js';
@@ -37,8 +36,7 @@ export type { ChainChannel };
 const FIRST_SIGN_CAP = 1_000_000n;
 
 function identity(): Identity {
-  const wallet = new Wallet('0x' + randomBytes(32).toString('hex'));
-  return { wallet, peerId: toPeerId(wallet.address.slice(2).toLowerCase()), privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex') };
+  return identityFromPrivateKeyHex(randomBytes(32).toString('hex'));
 }
 
 export interface Usage { promptTokens: number; cachedTokens: number; completionTokens: number }
@@ -166,13 +164,13 @@ export function setupBuyerSellerStack(options: BuyerSellerStackOptions): BuyerSe
     registerPaymentMux: () => {},
   });
 
-  const peer = {
+  const peer: PeerInfo = {
     peerId: sellerIdentity.peerId,
     lastSeen: Date.now(),
     providers: [providerName],
     providerServiceApiProtocols: { [providerName]: { services: { [service]: ['openai-chat-completions'] } } },
     ...options.announced,
-  } as unknown as PeerInfo;
+  };
 
   const chat = (requestId: string, svc = service): SerializedHttpRequest => ({
     requestId,

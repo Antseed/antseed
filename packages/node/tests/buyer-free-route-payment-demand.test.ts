@@ -63,7 +63,7 @@ describe('buyer on a route chosen as free that the seller bills', () => {
       announced: {
         providerPricing: { venice: { defaults: FREE, services: { 'chat-model': FREE, 'paid-model': BILLED } } },
         providerServiceApiProtocols: { venice: { services: { 'chat-model': ['openai-chat-completions'], 'paid-model': ['openai-chat-completions'] } } },
-      } as never,
+      },
       usage: USAGE,
       maxPerRequestUsdc: MAX_PER_REQUEST,
       maxReserveAmountUsdc: MAX_RESERVE,
