@@ -131,6 +131,7 @@ interface NodeConfig {
   dhtPort?: number;           // Default: 6881 for seller, 0 (OS-assigned) for buyer
   signalingPort?: number;     // Default: 6882 for seller
   maxUploadBodyBytes?: number; // Default: 64 MiB per request
+  maxInFlightRequestBytes?: number; // Default: 256 MiB across all buyers
   bootstrapNodes?: Array<{ host: string; port: number }>;
   payments?: {
     enabled?: boolean;
@@ -153,6 +154,7 @@ interface NodeConfig {
 | `dhtPort` | `6881` / `0` | UDP port for DHT. Seller defaults to 6881, buyer uses OS-assigned |
 | `signalingPort` | `6882` | TCP port for P2P signaling and incoming connections (seller only) |
 | `maxUploadBodyBytes` | `64 MiB` | Maximum request body a seller accepts per proxied upload. Raise this for large Codex-style `/v1/responses` payloads while keeping the aggregate pending-upload budget bounded. |
+| `maxInFlightRequestBytes` | `256 MiB` | Most request body bytes a seller holds at once across all buyers, uploads still arriving included. Past it a request gets a retryable `503`. Never below `maxUploadBodyBytes`. |
 | `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure |
 | `payments` | disabled | Optional seller-side payment channel + settlement lifecycle wiring |
 

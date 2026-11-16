@@ -28,18 +28,28 @@ export interface MetadataVersionSpec extends MetadataLayout {
   fromLatest?: (latest: PeerMetadata) => PeerMetadata;
 }
 
+export interface MetadataEncodeOptions {
+  /**
+   * Ordering for signed service maps. "legacy-locale" (the default) is the
+   * historical host-locale `localeCompare` order, so existing signed bytes
+   * are unchanged; "code-unit" is the deterministic order the
+   * compatibility-aware verifier also accepts (issue #1678).
+   */
+  serviceOrder?: "legacy-locale" | "code-unit";
+}
+
 export interface MetadataVersionCodec {
   readonly version: number;
   /** Whether sellers still sign and serve this version. */
   readonly servable: boolean;
   /** Signed bytes: everything except the trailing signature. */
-  encodeBody(metadata: PeerMetadata): Uint8Array;
+  encodeBody(metadata: PeerMetadata, options?: MetadataEncodeOptions): Uint8Array;
   decode(data: Uint8Array): PeerMetadata;
   /** This version's document built from the seller's newest metadata. */
   fromLatest(latest: PeerMetadata): PeerMetadata;
   /** Whether this version carries the given provider field. */
   carriesProviderField(key: keyof ProviderAnnouncement): boolean;
-  /** Protocols, billing units and capability options this version's documents may name. */
+  /** Protocols, billing units and capability options documents may name. */
   readonly vocabulary: MetadataVocabulary;
 }
 
@@ -81,7 +91,12 @@ export function defineMetadataVersion(spec: MetadataVersionSpec): MetadataVersio
     servable: spec.servable,
     vocabulary: spec.vocabulary,
 
-    encodeBody(metadata) {
+    encodeBody(metadata, options) {
+      // Signing keeps the historical host-locale order by default so existing
+      // signed bytes are unchanged; verification may request code-unit order
+      // for its compatibility candidate (issue #1678).
+      const encodeCtx: MetadataFieldContext =
+        options?.serviceOrder === "code-unit" ? { ...ctx, serviceOrder: "code-unit" } : ctx;
       const writer = new MetadataWriter();
       writer.u8(spec.version);
       writer.bytes(hexToBytes(metadata.peerId));
@@ -89,9 +104,9 @@ export function defineMetadataVersion(spec: MetadataVersionSpec): MetadataVersio
       writer.u64(metadata.timestamp);
       writer.u8(metadata.providers.length);
       for (const provider of metadata.providers) {
-        for (const field of spec.providerFields) field.encode(writer, provider, ctx);
+        for (const field of spec.providerFields) field.encode(writer, provider, encodeCtx);
       }
-      for (const field of spec.peerFields) field.encode(writer, metadata, ctx);
+      for (const field of spec.peerFields) field.encode(writer, metadata, encodeCtx);
       return writer.finish();
     },
 

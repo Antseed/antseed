@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import test from 'node:test'
 import { Contract, Interface, isError } from 'ethers'
 import { startFakeChainRpc } from './chain-rpc-test-support.js'
@@ -213,4 +214,71 @@ test('redactUrlsIn masks every http(s) URL inside a message and leaves the rest'
   const masked = redactUrlsIn(message)
   assert.equal(masked, 'server response 401 Unauthorized (request={  }, info={ "requestUrl": "https://lb.drpc.live/…", "responseStatus": "401" }) after https://fallback.example.test/… tried')
   assert.equal(redactUrlsIn('no answer from the chain'), 'no answer from the chain')
+})
+
+test('moves to the next endpoint when a response keeps trickling in past the deadline', { timeout: 30_000 }, async (t) => {
+  // Every response starts but never finishes: a byte arrives every 200 ms, so the socket never goes quiet.
+  const trickles: ReturnType<typeof setInterval>[] = []
+  const stalled = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    trickles.push(setInterval(() => res.write(' '), 200))
+  })
+  await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    trickles.forEach(clearInterval)
+    stalled.closeAllConnections()
+    stalled.close()
+  })
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const address = stalled.address()
+  assert.ok(address && typeof address === 'object')
+  const provider = new ChainRpcProvider([`http://127.0.0.1:${address.port}`, rpc.url], 8453)
+  t.after(() => provider.destroy())
+
+  const startedAt = Date.now()
+  assert.equal(await provider.send('eth_getCode', [addresses[0], 'latest']), '0x6080604052')
+  assert.ok(Date.now() - startedAt < 15_000, 'the stalled endpoint is given up at its 10 s deadline')
+})
+
+test('sends credentials in an RPC URL as Basic auth', async (t) => {
+  const seen: Array<string | undefined> = []
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x100' }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const provider = new ChainRpcProvider([`http://rpc-user:p%40ss@127.0.0.1:${address.port}`], 8453)
+  t.after(() => provider.destroy())
+
+  assert.equal(await provider.send('eth_blockNumber', []), '0x100')
+  assert.deepEqual(seen, [`Basic ${Buffer.from('rpc-user:p@ss').toString('base64')}`])
+})
+
+test('never follows a redirect: the endpoint is skipped and the RPC body is not resent', async (t) => {
+  let redirected = 0
+  const target = createServer((_req, res) => { redirected += 1; res.end('{}') })
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve))
+  t.after(() => target.close())
+  const targetAddress = target.address()
+  assert.ok(targetAddress && typeof targetAddress === 'object')
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}/` })
+    res.end()
+  })
+  await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve))
+  t.after(() => redirecting.close())
+  const address = redirecting.address()
+  assert.ok(address && typeof address === 'object')
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([`http://127.0.0.1:${address.port}`, rpc.url], 8453)
+  t.after(() => provider.destroy())
+
+  assert.equal(await provider.send('eth_getCode', [addresses[0], 'latest']), '0x6080604052')
+  assert.equal(redirected, 0)
 })

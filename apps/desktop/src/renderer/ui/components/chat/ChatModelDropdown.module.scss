@@ -486,6 +486,48 @@
   text-overflow: ellipsis;
 }
 
+/* A seller's saving against the reference price, after its price. */
+.item-saving {
+  margin-left: 6px;
+  color: var(--accent-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Price chips (soft `Badge`s from @antseed/ui) end the row: only their layout and label colour here.
+   A shared minimum width starts each chip at the same place down the list. */
+.picker-prices {
+  display: flex;
+  flex: none;
+  gap: 6px;
+
+  > * {
+    justify-content: flex-start;
+    min-width: 5rem;
+    padding-inline: 0.5rem;
+  }
+}
+
+/* A row's tags, right-aligned just before its price chips. */
+.picker-row-tags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The tick's place, kept on every row. */
+.picker-check {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
+}
+
+.picker-price-label {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 .picker-tags {
   display: flex;
   flex: none;
@@ -493,98 +535,7 @@
   gap: 4px;
 }
 
-.picker-card {
-  position: fixed;
-  z-index: 210;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow);
-  pointer-events: none;
-}
-
-.picker-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.picker-card-mark {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-secondary);
-}
-
-.picker-card-title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.picker-card-name {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.picker-card-byline {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.picker-card-id {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.picker-card-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.picker-card-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-
-  strong {
-    color: var(--text-primary);
-    font-size: 13px;
-    font-weight: 600;
-  }
-}
-
-/* The price is the longest figure: a row of its own. */
-.picker-card-price {
-  grid-column: 1 / -1;
-}
-
-/* Without room for the card, a second line carries what it would show. */
+/* A narrow menu: a second line carries the row's details. */
 .picker-row-tall {
   padding-top: 7px;
   padding-bottom: 7px;
