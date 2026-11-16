@@ -27,8 +27,8 @@ The static web app for the DIEM Provider Capacity Program at diemantseed.com. Us
 - `vpr.ts` says it mirrors the website's `useLatestDesktopDownload.ts`, but the website now links download.antseed.com while `vpr.ts` reads the GitHub API. Asset-name rules can drift.
 - `POOL_GENESIS_UNIX` (`hooks.ts`) is a constant, not a log query. A new proxy deployment needs a new value, or the historical rate is wrong.
 - Wallet transactions once followed a wallet left on Ethereum mainnet. Keep `ensureDiemNetwork()` before every `writeContractAsync`.
-- No tests. `build` runs `tsc --noEmit` first, so a type error fails it.
+- Tests cover only pure logic in `src/lib` (vitest, `*.test.ts`), such as the reward-epoch catch-up plan in `catch-up.ts`. Keep logic that decides what a wallet may send there, outside React and wagmi, so it can be tested. `build` runs `tsc --noEmit` first, so a type error fails it.
 
 **Ask first:** the proxy or token address, ABI changes, any Program copy, terms or metadata in `index.html`, the WalletConnect project id or RPC list.
 
-**Prove it:** `pnpm --filter @antseed/diem-staking typecheck` and `pnpm --filter @antseed/diem-staking build`. Wallet flows by hand against a fork or with a test wallet; there is no automated check.
+**Prove it:** `pnpm --filter @antseed/diem-staking test`, `typecheck` and `build`. Wallet flows by hand against a fork or with a test wallet; components and hooks have no automated check.
