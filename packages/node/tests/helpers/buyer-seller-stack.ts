@@ -30,9 +30,9 @@ import type { Identity } from '../../src/p2p/identity.js';
 import type { Provider } from '../../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../../src/types/http.js';
 import type { SpendingAuthPayload } from '../../src/types/protocol.js';
-import { computeChannelId } from '@antseed/protocol/signatures';
+import { fakeChannelChain, type ChainChannel } from './fake-channel-chain.js';
 
-export interface ChainChannel { deposit: bigint; settled: bigint; status: number }
+export type { ChainChannel };
 
 const FIRST_SIGN_CAP = 1_000_000n;
 
@@ -100,49 +100,10 @@ export function setupBuyerSellerStack(options: BuyerSellerStackOptions): BuyerSe
   buyer.setSigner(buyerIdentity.wallet);
   const seller = new SellerPaymentManager(sellerIdentity, { ...common, dataDir: join(directory, 'seller'), minBudgetPerRequest: '10000' }, sellerStore);
 
-  const chain = new Map<string, ChainChannel>();
-  const channelOf = (channelId: string): ChainChannel => {
-    const channel = chain.get(channelId);
-    if (!channel) throw new Error('execution reverted: ChannelNotFound');
-    return channel;
-  };
-  vi.spyOn(seller.channelsClient, 'getFirstSignCap').mockResolvedValue(FIRST_SIGN_CAP);
-  vi.spyOn(seller.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
-  const reserve = vi.spyOn(seller.channelsClient, 'reserve').mockImplementation(async (_signer, buyerAddr, salt, maxAmount) => {
-    if (maxAmount > FIRST_SIGN_CAP) throw new Error('execution reverted: FirstSignCapExceeded');
-    const channelId = computeChannelId(buyerAddr, sellerIdentity.wallet.address, salt);
-    if (chain.has(channelId)) throw new Error('execution reverted: ChannelExists');
-    chain.set(channelId, { deposit: maxAmount, settled: 0n, status: 1 });
-    return '0xreserve';
-  }) as unknown as ReturnType<typeof vi.fn>;
-  vi.spyOn(seller.channelsClient, 'topUp').mockImplementation(async (_signer, channelId, cumulative, _meta, _sig, newMax) => {
-    const channel = channelOf(channelId);
-    if (cumulative > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-    if (cumulative > channel.settled) channel.settled = cumulative;
-    if (channel.settled * 10_000n < channel.deposit * 8_500n) throw new Error('execution reverted: TopUpThresholdNotMet');
-    channel.deposit = newMax;
-    return '0xtopup';
-  });
-  vi.spyOn(seller.channelsClient, 'close').mockImplementation(async (_signer, channelId, finalAmount) => {
-    const channel = channelOf(channelId);
-    if (channel.status !== 1) throw new Error('execution reverted: ChannelNotActive');
-    if (finalAmount < channel.settled) throw new Error('execution reverted: FinalAmountBelowSettled');
-    if (finalAmount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-    channel.settled = finalAmount;
-    channel.status = 2;
-    return '0xclose';
-  });
-  vi.spyOn(seller.channelsClient, 'settle').mockImplementation(async (_signer, channelId, amount) => {
-    channelOf(channelId).settled = amount;
-    return '0xsettle';
-  });
-  vi.spyOn(seller.channelsClient, 'getSession').mockImplementation(async (channelId) => {
-    const channel = chain.get(channelId) ?? { deposit: 0n, settled: 0n, status: 0 };
-    return {
-      buyer: buyerIdentity.wallet.address, seller: sellerIdentity.wallet.address,
-      deposit: channel.deposit, settled: channel.settled, metadataHash: '0x' + '00'.repeat(32),
-      deadline: 0n, settledAt: 0n, closeRequestedAt: 0n, status: channel.status,
-    };
+  const { chain, reserve } = fakeChannelChain(seller.channelsClient, {
+    buyerAddress: buyerIdentity.wallet.address,
+    sellerAddress: sellerIdentity.wallet.address,
+    firstSignCap: FIRST_SIGN_CAP,
   });
 
   const { usage } = options;
@@ -168,7 +129,7 @@ export function setupBuyerSellerStack(options: BuyerSellerStackOptions): BuyerSe
         },
       })),
     })),
-  } as unknown as Provider;
+  };
 
   const { buyerSide, sellerSide } = connectionPair();
   const sellerPayment = new PaymentMux(sellerSide);

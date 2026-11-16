@@ -16,6 +16,7 @@ import { BuyerRequestHandler } from '../src/buyer-request-handler.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { connectionPair, wireFrames } from './helpers/framed-connection.js';
+import { fakeChannelChain, type ChainChannel } from './helpers/fake-channel-chain.js';
 import { ConnectionState } from '../src/types/connection.js';
 import { toPeerId, type PeerInfo } from '../src/types/peer.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -23,9 +24,7 @@ import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { NeedAuthPayload, SpendingAuthPayload } from '../src/types/protocol.js';
-import { computeChannelId } from '@antseed/protocol/signatures';
 
-interface ChainChannel { deposit: bigint; settled: bigint; status: number }
 
 /**
  * End-to-end one-off video channel flow over the real buyer and seller stacks.
@@ -151,53 +150,16 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     }, sellerStore);
 
     // Every on-chain channel, keyed by channelId, shared by both sides through the same ChannelsClient.
-    const chain = new Map<string, ChainChannel>();
-    const channelOf = (channelId: string): ChainChannel => {
-      const channel = chain.get(channelId);
-      if (!channel) throw new Error('execution reverted: ChannelNotFound');
-      return channel;
-    };
     let releaseTopUp: (() => void) | null = null;
     const topUpBehavior = options.topUpBehavior ?? 'land';
-    vi.spyOn(seller.channelsClient, 'getFirstSignCap').mockResolvedValue(FIRST_SIGN_CAP);
-    vi.spyOn(seller.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
-    const reserve = vi.spyOn(seller.channelsClient, 'reserve').mockImplementation(async (_signer, buyerAddr, salt, maxAmount) => {
-      if (maxAmount > FIRST_SIGN_CAP) throw new Error('execution reverted: FirstSignCapExceeded');
-      const channelId = computeChannelId(buyerAddr, sellerIdentity.wallet.address, salt);
-      if (chain.has(channelId)) throw new Error('execution reverted: ChannelExists');
-      chain.set(channelId, { deposit: maxAmount, settled: 0n, status: 1 });
-      return '0xreserve';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    const topUp = vi.spyOn(seller.channelsClient, 'topUp').mockImplementation(async (_signer, channelId, cumulative, _meta, _sig, newMax) => {
-      if (topUpBehavior === 'revert') throw new Error('execution reverted: InsufficientBalance');
-      if (topUpBehavior === 'slow') await new Promise<void>((resolve) => { releaseTopUp = resolve; });
-      const channel = channelOf(channelId);
-      if (cumulative > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-      if (cumulative > channel.settled) channel.settled = cumulative;
-      if (channel.settled * 10_000n < channel.deposit * 8_500n) throw new Error('execution reverted: TopUpThresholdNotMet');
-      channel.deposit = newMax;
-      return '0xtopup';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    const close = vi.spyOn(seller.channelsClient, 'close').mockImplementation(async (_signer, channelId, finalAmount) => {
-      const channel = channelOf(channelId);
-      if (channel.status !== 1) throw new Error('execution reverted: ChannelNotActive');
-      if (finalAmount < channel.settled) throw new Error('execution reverted: FinalAmountBelowSettled');
-      if (finalAmount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-      channel.settled = finalAmount;
-      channel.status = 2;
-      return '0xclose';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    vi.spyOn(seller.channelsClient, 'settle').mockImplementation(async (_signer, channelId, amount) => {
-      channelOf(channelId).settled = amount;
-      return '0xsettle';
-    });
-    vi.spyOn(seller.channelsClient, 'getSession').mockImplementation(async (channelId) => {
-      const channel = chain.get(channelId) ?? { deposit: 0n, settled: 0n, status: 0 };
-      return {
-        buyer: buyerIdentity.wallet.address, seller: sellerIdentity.wallet.address,
-        deposit: channel.deposit, settled: channel.settled, metadataHash: '0x' + '00'.repeat(32),
-        deadline: 0n, settledAt: 0n, closeRequestedAt: 0n, status: channel.status,
-      };
+    const { chain, reserve, topUp, close } = fakeChannelChain(seller.channelsClient, {
+      buyerAddress: buyerIdentity.wallet.address,
+      sellerAddress: sellerIdentity.wallet.address,
+      firstSignCap: FIRST_SIGN_CAP,
+      beforeTopUp: async () => {
+        if (topUpBehavior === 'revert') throw new Error('execution reverted: InsufficientBalance');
+        if (topUpBehavior === 'slow') await new Promise<void>((resolve) => { releaseTopUp = resolve; });
+      },
     });
 
     const providerCreates: SerializedHttpRequest[] = [];
