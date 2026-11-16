@@ -72,8 +72,15 @@ describe('data-service payment flow over buyer proxy', () => {
     await vi.waitFor(() => expect(bpm.getCumulativeAmount(discoveredSeller.peerId)).toBe(10_000n));
     expect(bpm.getVerifiedCost(discoveredSeller.peerId)).toBe(10_000n);
 
+    // An encoded parameter and a trailing slash are the operation's own path: served and billed.
+    const encoded = await fetch(`${base}/airports/New%20York/`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: 'TLV' }),
+    });
+    expect(encoded.status, await encoded.clone().text()).toBe(200);
+    await vi.waitFor(() => expect(bpm.getVerifiedCost(discoveredSeller.peerId)).toBe(15_000n));
+
     // The seller receives the bare service in the path and the operation's body unchanged.
-    expect(operations.map((entry) => entry.path)).toEqual(['/search?limit=5', '/search?limit=5', '/search?limit=5']);
+    expect(operations.map((entry) => entry.path)).toEqual(['/search?limit=5', '/search?limit=5', '/search?limit=5', '/airports/New%20York/']);
     expect(JSON.parse(operations[0]!.body)).toEqual({ from: 'TLV', to: 'LIS', model: 'economy' });
   }, 60_000);
 });
