@@ -38,6 +38,25 @@ export function antLine({ elapsedMs, phaseLabel, phrase }: { elapsedMs: number; 
   };
 }
 
+/** Calls `tick` every second; returns the function that stops it. */
+export function startAntClock(tick: () => void): () => void {
+  const id = setInterval(tick, 1000);
+  return () => clearInterval(id);
+}
+
+type PhraseUpdate = (next: (current: string) => string) => void;
+
+/** Swaps the meme for a different one every `PHRASE_EVERY_MS`; returns the function that stops it. */
+export function startPhraseRotation(setPhrase: PhraseUpdate): () => void {
+  const id = setInterval(() => setPhrase((current) => pickThinkingPhrase(current)), PHRASE_EVERY_MS);
+  return () => clearInterval(id);
+}
+
+/** Leaving a real step (paying, switching mode) brings a fresh meme. */
+export function rerollsOnPhaseExit(prev: string | null | undefined, next: string | null | undefined): boolean {
+  return Boolean(prev) && !next;
+}
+
 /**
  * A request is on its way and no tokens have arrived yet: a small ant walks
  * beside a rotating meme, or the request's real step when there is one.
@@ -50,27 +69,18 @@ export function WalkingAnt({ phaseLabel, startedAt, initialPhrase }: WalkingAntP
   const [turnPhrase, setTurnPhrase] = useState(() => initialPhrase ?? pickThinkingPhrase());
   const prevPhaseRef = useRef<string | null | undefined>(phaseLabel);
 
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+  useEffect(() => startAntClock(() => setNow(Date.now())), []);
   const elapsed = Math.max(0, now - (startedAt ?? mountedAt));
 
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phaseLabel;
-    if (prev && !phaseLabel) {
+    if (rerollsOnPhaseExit(prev, phaseLabel)) {
       setTurnPhrase((current) => pickThinkingPhrase(current));
     }
   }, [phaseLabel]);
 
-  useEffect(() => {
-    if (phaseLabel) return;
-    const id = window.setInterval(() => {
-      setTurnPhrase((current) => pickThinkingPhrase(current));
-    }, PHRASE_EVERY_MS);
-    return () => window.clearInterval(id);
-  }, [phaseLabel]);
+  useEffect(() => (phaseLabel ? undefined : startPhraseRotation(setTurnPhrase)), [phaseLabel]);
 
   const line = antLine({ elapsedMs: elapsed, phaseLabel, phrase: turnPhrase });
 

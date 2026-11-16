@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { afterEach, test, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   antLine,
   formatElapsed,
+  rerollsOnPhaseExit,
+  startAntClock,
+  startPhraseRotation,
   PHRASE_EVERY_MS,
   SHOW_TIMER_AFTER_MS,
   SLOW_AFTER_MS,
@@ -86,4 +89,47 @@ test('only the slow note may wrap; the short lines stay on one line as before', 
   const slow = renderToStaticMarkup(<WalkingAnt initialPhrase="gm" startedAt={Date.now() - 31_000} />);
   assert.doesNotMatch(meme, /timer-wrap|timerWrap/);
   assert.match(slow, /timer-wrap|timerWrap/);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+test('the clock ticks every second and stops when the ant leaves', () => {
+  vi.useFakeTimers();
+  let ticks = 0;
+  const stop = startAntClock(() => { ticks += 1; });
+  vi.advanceTimersByTime(999);
+  assert.equal(ticks, 0);
+  vi.advanceTimersByTime(2_001);
+  assert.equal(ticks, 3);
+  stop();
+  vi.advanceTimersByTime(10_000);
+  assert.equal(ticks, 3, 'a stopped clock must not tick');
+});
+
+test('the meme changes to a different one every 5 s and stops when told', () => {
+  vi.useFakeTimers();
+  let phrase = 'gm';
+  const seen: string[] = [];
+  const stop = startPhraseRotation((next) => { phrase = next(phrase); seen.push(phrase); });
+  vi.advanceTimersByTime(4_999);
+  assert.equal(seen.length, 0);
+  vi.advanceTimersByTime(1);
+  assert.equal(seen.length, 1);
+  assert.notEqual(seen[0], 'gm');
+  vi.advanceTimersByTime(10_000);
+  assert.equal(seen.length, 3);
+  assert.notEqual(seen[2], seen[1]);
+  stop();
+  vi.advanceTimersByTime(20_000);
+  assert.equal(seen.length, 3, 'a stopped rotation must not change the line');
+});
+
+test('a fresh meme comes only when a real step ends', () => {
+  assert.equal(rerollsOnPhaseExit('Dialing peer', null), true);
+  assert.equal(rerollsOnPhaseExit('Dialing peer', undefined), true);
+  assert.equal(rerollsOnPhaseExit(null, 'Dialing peer'), false);
+  assert.equal(rerollsOnPhaseExit('Dialing peer', 'Payment ready'), false);
+  assert.equal(rerollsOnPhaseExit(null, null), false);
 });
