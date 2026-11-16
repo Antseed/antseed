@@ -10,6 +10,7 @@ import { DEPOSITS_ABI, ERC20_ABI } from '@antseed/wallet-config/abis';
 import type { BalanceData, PaymentConfig } from '../types';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
 import { formatUsd, parseUsd, truncateAddress } from '../utils/format';
+import { waitForAllowance } from '../utils/allowance';
 import { ConnectWalletAction } from './ConnectWalletAction';
 
 const MIN_FIRST_DEPOSIT = 1; // USDC — matches AntseedDeposits.MIN_BUYER_DEPOSIT
@@ -30,7 +31,7 @@ interface PayCheckoutDepositProps {
   onDeposited: (txHash: string | null) => void;
 }
 
-type Step = 'idle' | 'approving' | 'checking-allowance' | 'depositing';
+type Step = 'idle' | 'approving' | 'checking-allowance' | 'allowance-unconfirmed' | 'depositing';
 
 /**
  * Checkout-style deposit: one primary "Pay" button that runs the whole
@@ -45,6 +46,7 @@ export function PayCheckoutDeposit({ config, balance, buyerAddress, amount, onDe
   const [step, setStep] = useState<Step>('idle');
   const [error, setError] = useState<string | null>(null);
   const autoDepositFired = useRef(false);
+  const [allowanceCheck, setAllowanceCheck] = useState(0);
 
   const {
     expectedChainId,
@@ -143,15 +145,43 @@ export function PayCheckoutDeposit({ config, balance, buyerAddress, amount, onDe
   useEffect(() => {
     if (step !== 'approving' || !approveConfirmed) return;
     setStep('checking-allowance');
-    void refetchAllowance();
-  }, [step, approveConfirmed, refetchAllowance]);
+  }, [step, approveConfirmed]);
 
+  // The RPC node answering the read can lag behind the approval's block (or
+  // the read can fail), so re-read with backoff instead of trusting one read.
+  // If it never covers the amount, stop and offer "Check again".
   useEffect(() => {
-    if (step !== 'checking-allowance' || !hasAllowance || autoDepositFired.current) return;
-    autoDepositFired.current = true;
-    fireDeposit();
+    if (step !== 'checking-allowance') return;
+    let cancelled = false;
+    void waitForAllowance({
+      read: async () => {
+        const result = await refetchAllowance();
+        return result.isError ? undefined : result.data;
+      },
+      required: usdcAmount,
+      isCancelled: () => cancelled,
+    }).then((outcome) => {
+      if (cancelled || outcome === 'cancelled') return;
+      if (outcome === 'covered') {
+        if (autoDepositFired.current) return;
+        autoDepositFired.current = true;
+        fireDeposit();
+        return;
+      }
+      setStep('allowance-unconfirmed');
+      setError(outcome === 'failed'
+        ? 'Could not check your USDC approval. Check again in a moment.'
+        : 'Your USDC approval has not shown up on the network yet. Check again in a moment.');
+    });
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, hasAllowance]);
+  }, [step, allowanceCheck]);
+
+  function handleCheckAgain() {
+    setError(null);
+    setStep('checking-allowance');
+    setAllowanceCheck((n) => n + 1);
+  }
 
   useEffect(() => {
     if (step !== 'depositing' || !depositConfirmed) return;
@@ -230,12 +260,14 @@ export function PayCheckoutDeposit({ config, balance, buyerAddress, amount, onDe
     );
   }
 
-  const isWorking = step !== 'idle';
-  const showSteps = needsApproval || step === 'approving' || step === 'checking-allowance' || step === 'depositing';
+  const awaitingAllowance = step === 'allowance-unconfirmed';
+  const isWorking = step !== 'idle' && !awaitingAllowance;
+  const showSteps = needsApproval || step !== 'idle';
   const stepOneDone = hasAllowance || step === 'depositing';
-  const stepOneActive = step === 'approving' || step === 'checking-allowance';
+  const stepOneActive = step === 'approving' || step === 'checking-allowance' || awaitingAllowance;
 
   const payLabel = (() => {
+    if (awaitingAllowance) return 'Check again';
     if (isSwitchingChain) return `Switching to ${targetChainName}…`;
     if (wrongChain) return `Switch to ${targetChainName}`;
     if (step === 'approving') return 'Approve in your wallet…';
@@ -275,8 +307,8 @@ export function PayCheckoutDeposit({ config, balance, buyerAddress, amount, onDe
       <button
         type="button"
         className="pc-pay-button"
-        onClick={() => void handlePay()}
-        disabled={isWorking || isSwitchingChain || (!wrongChain && !isValidAmount)}
+        onClick={() => (awaitingAllowance ? handleCheckAgain() : void handlePay())}
+        disabled={awaitingAllowance ? false : isWorking || isSwitchingChain || (!wrongChain && !isValidAmount)}
       >
         {isWorking && <span className="pc-pay-spinner" aria-hidden="true" />}
         {payLabel}
