@@ -26,6 +26,8 @@ export const meta = {
 };
 
 export const topology = {
+  // cli: the seller's restart and the buyer's peer cache are those of the shipped `antseed` processes.
+  mode: 'cli',
   sellers: [{
     id: 'seller',
     providers: {
@@ -49,7 +51,10 @@ function recordedPrice(peer) {
   return null;
 }
 
-const isFree = (price) => price != null && Object.values(price).every((value) => typeof value !== 'number' || value === 0);
+/** Free as announced: both token prices present and 0, and no other price above 0. */
+const isFree = (price) => price != null
+  && price.inputUsdPerMillion === 0 && price.outputUsdPerMillion === 0
+  && Object.values(price).every((value) => typeof value !== 'number' || value === 0);
 
 export async function run(tb) {
   const seller = tb.seller('seller');
@@ -58,7 +63,7 @@ export async function run(tb) {
   const routeAsRecorded = async () => {
     const price = recordedPrice((await tb.peers()).find((entry) => entry.peerId === seller.peerId));
     const status = await (await tb.request('/_antseed/status')).json;
-    return { price, free: isFree(price), peersUpdatedAt: status?.peersUpdatedAt ?? null };
+    return { price, free: isFree(price), peersUpdatedAt: status?.peersUpdatedAt };
   };
 
   tb.check('fresh testbench: nothing signed yet', (await signedNow()) === 0n, String(await signedNow()));
@@ -77,7 +82,7 @@ export async function run(tb) {
   tb.metric('recordedWhenSending', sending.price);
   tb.check(
     'the buyer still records the route as free when it sends (it has not refreshed the seller yet)',
-    sending.free && sending.peersUpdatedAt === before.peersUpdatedAt,
+    sending.free && typeof before.peersUpdatedAt === 'number' && sending.peersUpdatedAt === before.peersUpdatedAt,
     { recorded: sending.price, peersUpdatedAt: { before: before.peersUpdatedAt, sending: sending.peersUpdatedAt } },
   );
 
@@ -88,7 +93,7 @@ export async function run(tb) {
         body: { model: `${seller.peerId}@${ROUTE}`, messages: [{ role: 'user', content: `[req:r${index + 1}] request ${index + 1} on the route` }] },
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
-      replies.push(reply.status === 200 ? { status: 200 } : { status: reply.status, body: reply.text.slice(0, 600) });
+      replies.push(reply.status === 200 ? { status: 200 } : { status: reply.status, guardReason: reply.text.includes('announces as free'), body: reply.text.slice(0, 600) });
     } catch (error) {
       replies.push({ status: 'no answer', body: String(error?.message ?? error).slice(0, 240) });
     }
@@ -97,10 +102,11 @@ export async function run(tb) {
   // The proxy answers before the buyer stores that request's SpendingAuth: let it land before reading the channel.
   // Only a buyer that paid gets here, and anything it signed fails the check below, so a slow store is not an error.
   if (served > 0 && (await channelsNow()).length > 0) {
-    await tb.waitForPaidChannels('seller', { requests: served, signed: 1n, timeoutMs: 8_000 }).catch(() => {});
+    await tb.waitForPaidChannels('seller', { requests: served, signed: BigInt(served) * usageCost(RAISED, USAGE), timeoutMs: 8_000 }).catch(() => {});
   }
   const signed = await signedNow();
   const channels = await channelsNow();
+  const after = await routeAsRecorded();
   tb.metric('sellerPricePerRequestMicroUsdc', String(usageCost(RAISED, USAGE)));
   tb.metric('replies', replies);
   tb.metric('servedOnRoute', served);
@@ -110,6 +116,13 @@ export async function run(tb) {
   // Close before judging, so a failing run leaves no reserve locked.
   await tb.closeAll();
 
+  // A refresh during the requests would let a fixed buyer pay the new price, correctly: name that cause, not the bug.
+  tb.check(
+    'the buyer did not refresh the seller while it sent the requests',
+    after.peersUpdatedAt === before.peersUpdatedAt,
+    { peersUpdatedAt: { before: before.peersUpdatedAt, after: after.peersUpdatedAt }, recorded: after.price },
+  );
+
   tb.check(
     'the buyer signed nothing and opened no channel on a route it recorded as free',
     signed === 0n && channels.length === 0,
@@ -118,7 +131,7 @@ export async function run(tb) {
   // 409 with the buyer's reason: the seller asked for payment for a service it announces as free.
   tb.check(
     'every request on the route was answered: the buyer refused each payment demand (409)',
-    replies.every((reply) => reply.status === 409 && reply.body.includes('announces as free')),
+    replies.every((reply) => reply.status === 409 && reply.guardReason),
     replies,
   );
   // Every channel settled on-chain at exactly what the buyer signed, and no reserve is left locked.

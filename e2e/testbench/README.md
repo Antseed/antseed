@@ -455,7 +455,7 @@ For agents: with `ANTSEED_TESTBENCH_SHARE_DEBUG_PORT=N`, the shared desktop list
 
 The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `tb`; you rarely need it directly.
 
-`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/crash`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?}`, `GET /sellers/:id/deliveries`, `GET|POST /sellers/:id/top-up-hold {action: 'arm' | 'drop'}`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
+`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/crash`, `POST /sellers/:id/start {refreshBuyer?}`, `POST /sellers/:id/pricing {provider, defaults?, services?}` (seller stopped), `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?}`, `GET /sellers/:id/deliveries`, `GET|POST /sellers/:id/top-up-hold {action: 'arm' | 'drop'}`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
 
 ## Fork cache
 
