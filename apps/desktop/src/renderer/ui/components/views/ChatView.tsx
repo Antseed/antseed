@@ -255,6 +255,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatSendingConversationIds: state.chatSendingConversationIds,
     chatStreamingMessage: state.chatStreamingMessage,
     chatThinkingPhase: state.chatThinkingPhase,
+    chatThinkingStartedAt: state.chatThinkingStartedAt,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatWorkspaceLocked: state.chatWorkspaceLocked,
@@ -1115,7 +1116,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {imageRequestInProgress ? (
               <ImageGenerationPlaceholder editing={snap.chatThinkingPhase === 'Editing image'} />
             ) : showThinkingIndicator ? (
-              <WalkingAnt phaseLabel={snap.chatThinkingPhase} />
+              <WalkingAnt phaseLabel={snap.chatThinkingPhase} startedAt={snap.chatThinkingStartedAt} />
             ) : null}
             {snap.chatError && <ChatNote>{snap.chatError}</ChatNote>}
             {/* The welcome screen's privacy note shows a failed switch; an open chat shows it here. */}

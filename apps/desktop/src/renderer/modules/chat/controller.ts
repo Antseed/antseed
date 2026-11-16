@@ -620,6 +620,7 @@ export function initChatModule({
     uiState.chatSendingConversationIds = sendingConversationIds.size === 0 ? [] : Array.from(sendingConversationIds);
     uiState.chatSending = sending;
     uiState.chatSendingConversationId = conversationSending ? activeConvId : null;
+    uiState.chatThinkingStartedAt = conversationSending ? streamStartedAtByConversation.get(activeConvId!) ?? null : null;
     uiState.chatInputDisabled = sending;
     uiState.chatSendDisabled = sending;
     uiState.chatAbortVisible = sending;
@@ -1889,6 +1890,9 @@ export function initChatModule({
       }
       if (isConversationSending(data.conversationId)) {
         streamStartedAtByConversation.set(data.conversationId, Date.now());
+        if (data.conversationId === uiState.chatActiveConversation) {
+          uiState.chatThinkingStartedAt = streamStartedAtByConversation.get(data.conversationId) ?? null;
+        }
         notifyUiStateChanged();
       }
       if (!hasConversationStreamingMessage(data.conversationId)) {

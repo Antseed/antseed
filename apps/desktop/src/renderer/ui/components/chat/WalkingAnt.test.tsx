@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { formatElapsed, WalkingAnt } from './WalkingAnt';
+import { formatElapsed, SLOW_MESSAGE, WalkingAnt } from './WalkingAnt';
 import { pickThinkingPhrase, THINKING_PHRASES } from './thinking-phrases';
 
 test('the ant has the original lines and at least 30 new ones, each short and unique', () => {
@@ -27,8 +27,8 @@ test('a re-roll never repeats the line on screen', () => {
 test('the ant shows a meme but screen readers hear only "Thinking"', () => {
   const markup = renderToStaticMarkup(<WalkingAnt initialPhrase="Planting seeds" />);
   assert.match(markup, /<svg/);
-  assert.match(markup, /role="status"[^>]*>Thinking…</);
-  assert.match(markup, /aria-hidden="true"[^>]*>Planting seeds…/);
+  assert.match(markup, /role="status"[^>]*>Thinking\.\.\.</);
+  assert.match(markup, /aria-hidden="true"[^>]*>Planting seeds\.\.\./);
   assert.doesNotMatch(markup, /role="status"[^>]*>Planting seeds/);
 });
 
@@ -36,13 +36,22 @@ test('a real step of the request replaces the meme and is announced', () => {
   const markup = renderToStaticMarkup(
     <WalkingAnt initialPhrase="Planting seeds" phaseLabel="Signing SpendingAuth" />,
   );
-  assert.match(markup, /role="status"[^>]*>Signing SpendingAuth…</);
+  assert.match(markup, /role="status"[^>]*>Signing SpendingAuth\.\.\.</);
   assert.doesNotMatch(markup, /Planting seeds/);
 });
 
-test('a step that already ends in an ellipsis gets no second one', () => {
-  const markup = renderToStaticMarkup(<WalkingAnt phaseLabel="Switching to Private…" />);
-  assert.doesNotMatch(markup, /……/);
+test('the timer counts from when the request started, as before', () => {
+  const fresh = renderToStaticMarkup(<WalkingAnt initialPhrase="Planting seeds" startedAt={Date.now() - 12_400} />);
+  assert.match(fresh, />Planting seeds\.\.\.(<!-- -->)? · 12s</);
+
+  const quick = renderToStaticMarkup(<WalkingAnt initialPhrase="Planting seeds" startedAt={Date.now() - 500} />);
+  assert.doesNotMatch(quick, / · \d/, 'no timer in the first two seconds');
+});
+
+test('after 30 seconds the ant says the provider is slow, also to screen readers', () => {
+  const markup = renderToStaticMarkup(<WalkingAnt initialPhrase="Planting seeds" startedAt={Date.now() - 31_000} />);
+  assert.ok(markup.includes(`role="status">${SLOW_MESSAGE}<`), markup);
+  assert.doesNotMatch(markup, /Planting seeds/);
 });
 
 test('the elapsed timer reads seconds, then minutes', () => {

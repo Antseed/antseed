@@ -5,6 +5,8 @@ import { pickThinkingPhrase } from './thinking-phrases';
 type WalkingAntProps = {
   /** A real step of the request (paying, switching mode); shown instead of a meme. */
   phaseLabel?: string | null;
+  /** When the request started (ms); the timer counts from it, or from when the ant appeared. */
+  startedAt?: number | null;
   /** Seeds the first meme; tests pass it to get stable markup. */
   initialPhrase?: string;
 };
@@ -25,26 +27,23 @@ export function formatElapsed(ms: number): string {
   return `${m}:${String(rem).padStart(2, '0')}`;
 }
 
-function withEllipsis(text: string): string {
-  return /[.…]$/.test(text) ? text : `${text}…`;
-}
-
 /**
  * A request is on its way and no tokens have arrived yet: a small ant walks
  * beside a rotating meme, or the request's real step when there is one.
  * Screen readers hear only the steady "Thinking" or the real step, never the
  * memes.
  */
-export function WalkingAnt({ phaseLabel, initialPhrase }: WalkingAntProps) {
-  const [elapsed, setElapsed] = useState(0);
+export function WalkingAnt({ phaseLabel, startedAt, initialPhrase }: WalkingAntProps) {
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(mountedAt);
   const [turnPhrase, setTurnPhrase] = useState(() => initialPhrase ?? pickThinkingPhrase());
   const prevPhaseRef = useRef<string | null | undefined>(phaseLabel);
 
   useEffect(() => {
-    const startedAt = Date.now();
-    const id = window.setInterval(() => setElapsed(Date.now() - startedAt), 1000);
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+  const elapsed = Math.max(0, now - (startedAt ?? mountedAt));
 
   useEffect(() => {
     const prev = prevPhaseRef.current;
@@ -63,8 +62,8 @@ export function WalkingAnt({ phaseLabel, initialPhrase }: WalkingAntProps) {
   }, [phaseLabel]);
 
   const slow = elapsed >= SLOW_AFTER_MS;
-  const label = slow ? SLOW_MESSAGE : withEllipsis(phaseLabel ?? turnPhrase);
-  const spoken = slow ? SLOW_MESSAGE : withEllipsis(phaseLabel ?? 'Thinking');
+  const label = slow ? SLOW_MESSAGE : `${phaseLabel ?? turnPhrase}...`;
+  const spoken = slow ? SLOW_MESSAGE : `${phaseLabel ?? 'Thinking'}...`;
 
   /*
    * Original path 4 (legs) split into two independent paths:
