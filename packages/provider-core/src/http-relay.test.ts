@@ -502,6 +502,35 @@ describe('HttpRelay', () => {
     expect(bodyText).toContain('World');
   });
 
+  it('waits for the chunks that close a stream and drops ones the buyer cannot take', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"text":"Hello"}\n\n'));
+      },
+      pull(controller) {
+        controller.error(new Error('upstream reset'));
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+
+    const events: string[] = [];
+    const relay = new HttpRelay(makeConfig(), {
+      onResponse: () => undefined,
+      onResponseChunk: async (chunk) => {
+        const name = chunk.done ? 'done' : new TextDecoder().decode(chunk.data).includes('event: error') ? 'error' : 'data';
+        events.push(`${name} begins`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`${name} ends`);
+        if (name !== 'data') throw new Error('buyer disconnected');
+      },
+    });
+
+    await expect(relay.handleRequest(makeRequest())).resolves.toBeUndefined();
+
+    expect(events).toEqual(['data begins', 'data ends', 'error begins', 'error ends', 'done begins', 'done ends']);
+    expect(relay.getActiveCount()).toBe(0);
+  });
+
   it('allows GET requests through service validation', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ object: 'list', data: [] }), { status: 200 }));
 
