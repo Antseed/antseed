@@ -141,18 +141,18 @@ export function peerServices(row: Row): Peer['services'] {
       const tags = tagged[service]
       const apis = spoken[service]
       const billing = asRecord(asRecord(unitModels[provider])['services'])[service]
+      // A service on data alone is priced per request; provider token defaults do not apply to it.
+      const dataOnly = isDataOnlyService(apis)
       const paid = isPricedService({
-        inputUsdPerMillion: num(price['inputUsdPerMillion']),
-        outputUsdPerMillion: num(price['outputUsdPerMillion']),
-        cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
+        inputUsdPerMillion: dataOnly ? null : num(price['inputUsdPerMillion']),
+        outputUsdPerMillion: dataOnly ? null : num(price['outputUsdPerMillion']),
+        cachedInputUsdPerMillion: dataOnly ? null : num(price['cachedInputUsdPerMillion']),
         unitBillingModels: billing && typeof billing === 'object' ? billing as Record<string, { components?: Array<{ priceUsd: number }> }> : null,
       })
       const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
       const voices = speechVoices(asRecord(asRecord(serviceCapabilities[provider])['services'])[service])
       const perMillionCharacters = speechUsdPerMillionCharacters(billing, service)
       const perRequest = dataUsdPerRequest(billing)
-      // A service on data alone is priced per request; provider token defaults do not apply to it.
-      const dataOnly = isDataOnlyService(apis)
       services.push({
         provider,
         service,

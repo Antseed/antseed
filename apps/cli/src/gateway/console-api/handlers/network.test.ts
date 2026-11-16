@@ -227,6 +227,20 @@ test('a service on data alone is priced per request, not by its provider token d
   assert.ok(Math.abs(flights.usdPerRequest! - 0.005) < 1e-12)
 })
 
+test('a free service on data alone is not paid, whatever its provider token defaults', () => {
+  const services = peerServices({
+    peerId: PEER_A,
+    providers: ['openapi'],
+    providerPricing: { openapi: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 }, services: { flights: {} } } },
+    providerServiceApiProtocols: { openapi: { services: { flights: ['openapi-data'] } } },
+    providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': { version: 1, components: [] } } } } },
+  } as Record<string, unknown>)
+  const flights = services.find((entry) => entry.service === 'flights')!
+  assert.equal(flights.paid, false)
+  assert.equal(flights.usdPerRequest, 0)
+  assert.equal(flights.inputUsdPerMillion, null)
+})
+
 test('peer services and model offers carry a service’s own free-tier program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

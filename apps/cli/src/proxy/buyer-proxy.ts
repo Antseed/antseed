@@ -4522,15 +4522,17 @@ export class BuyerProxy {
     // under a router it stands for the automatic alias, unless this chat is pinned. The request
     // is only rewritten once the router path is certain (below), so a request that goes direct
     // keeps its connect-time model.
-    const systemRoutedAsAlias = routerSelection !== null && systemRoutedModel && storedConversation?.peerSource !== 'user'
+    // A data request's service is named in its path and is never a router alias, whatever its name.
+    const dataCallRequest = dataServiceRoute(serializedReq) !== null
+    const systemRoutedAsAlias = !dataCallRequest && routerSelection !== null && systemRoutedModel && storedConversation?.peerSource !== 'user'
     const rawService = systemRoutedAsAlias ? ROUTED_MODEL_ALIAS : extractRequestedService(serializedReq)
     // `<routerPeer>@<routingServiceId>`: the request names a routing service as
     // its model, so that router picks the model and seller for this request.
     const routerPinSource = rawService === ROUTED_MODEL_ALIAS
       ? aliasTarget
       : systemRoutedModel && userChatPin ? userChatPin : rawService
-    const pinnedRouter = await this._resolvePinnedRouter(routerPinSource)
-    const autoRequested = routerSelection !== null
+    const pinnedRouter = dataCallRequest ? null : await this._resolvePinnedRouter(routerPinSource)
+    const autoRequested = !dataCallRequest && routerSelection !== null
       && rawService === ROUTED_MODEL_ALIAS
     const chatModelPin = storedConversation?.peerSource === 'user' ? chatPinnedModel : null
     if (autoRequested && chatModelPin) {
@@ -5922,7 +5924,7 @@ export class BuyerProxy {
           responseForClient = adaptResponse(responseForClient)
         }
         responseForClient = adaptOpenAICompatibleErrorResponse(responseForClient, requestProtocol)
-        if (!dataCall) responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
+        responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
         if (responseForClient.statusCode === 402 && !isDataProviderResponse(responseForClient)) {
           responseForClient = inject402PeerId(responseForClient, selectedPeer.peerId)
         }
@@ -6025,7 +6027,7 @@ export class BuyerProxy {
           requestForPeer.requestId,
           latencyMs,
         )
-        const answeredEmpty = !pinned && responseForClient.statusCode < 300 && !dataCall
+        const answeredEmpty = !pinned && responseForClient.statusCode < 300
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
         if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {

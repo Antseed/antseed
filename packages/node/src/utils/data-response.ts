@@ -1,4 +1,12 @@
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+
+/** The content encodings a data answer is decoded from. */
+const CONTENT_DECODERS = new Map<string, (body: Uint8Array) => Buffer>([
+  ['gzip', gunzipSync],
+  ['x-gzip', gunzipSync],
+  ['deflate', inflateSync],
+  ['br', brotliDecompressSync],
+]);
 import { exposedResponseHeaders } from './response-headers.js';
 
 /**
@@ -19,10 +27,7 @@ export function exposedDataResponse<T extends { headers: Record<string, string>;
   const asSent = { ...response, headers: { ...headers, [encodingHeader![0]]: encodingHeader![1] } };
   let body: Uint8Array = response.body;
   for (const encoding of [...encodings].reverse()) {
-    const decode = encoding === 'gzip' || encoding === 'x-gzip' ? gunzipSync
-      : encoding === 'deflate' ? inflateSync
-      : encoding === 'br' ? brotliDecompressSync
-      : null;
+    const decode = CONTENT_DECODERS.get(encoding);
     if (!decode) return asSent;
     try {
       body = new Uint8Array(decode(body));
