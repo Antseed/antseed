@@ -24,11 +24,9 @@ import { VerificationMux } from '../../src/verification/verification-mux.js';
 import { BuyerRequestHandler } from '../../src/buyer-request-handler.js';
 import { SellerRequestHandler } from '../../src/seller-request-handler.js';
 import { ResourceOwnershipStore } from '../../src/resources/resource-ownership-store.js';
-import { FrameDecoder } from '../../src/p2p/message-protocol.js';
-import { ConnectionState } from '../../src/types/connection.js';
+import { connectionPair, wireFrames } from './framed-connection.js';
 import { toPeerId, type PeerInfo } from '../../src/types/peer.js';
 import type { Identity } from '../../src/p2p/identity.js';
-import type { PeerConnection } from '../../src/p2p/connection-manager.js';
 import type { Provider } from '../../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../../src/types/http.js';
 import type { SpendingAuthPayload } from '../../src/types/protocol.js';
@@ -41,44 +39,6 @@ const FIRST_SIGN_CAP = 1_000_000n;
 function identity(): Identity {
   const wallet = new Wallet('0x' + randomBytes(32).toString('hex'));
   return { wallet, peerId: toPeerId(wallet.address.slice(2).toLowerCase()), privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex') };
-}
-
-type Listener = (...args: any[]) => void;
-
-function connectionPair(): { buyerSide: PeerConnection; sellerSide: PeerConnection } {
-  const make = () => {
-    const listeners = new Map<string, Set<Listener>>();
-    const end: any = {
-      state: ConnectionState.Open,
-      remoteAddress: '203.0.113.9',
-      hasRemoteCapability: () => false,
-      on(event: string, listener: Listener) {
-        if (!listeners.has(event)) listeners.set(event, new Set());
-        listeners.get(event)!.add(listener);
-      },
-      off(event: string, listener: Listener) { listeners.get(event)?.delete(listener); },
-      emitMessage(data: Uint8Array) { for (const listener of listeners.get('message') ?? []) listener(data); },
-      send: (_data: Uint8Array) => {},
-    };
-    return end;
-  };
-  const buyerSide = make();
-  const sellerSide = make();
-  buyerSide.send = (data: Uint8Array) => { const copy = data.slice(); setImmediate(() => sellerSide.emitMessage(copy)); };
-  sellerSide.send = (data: Uint8Array) => { const copy = data.slice(); setImmediate(() => buyerSide.emitMessage(copy)); };
-  return { buyerSide, sellerSide };
-}
-
-function wireFrames(conn: PeerConnection, muxes: { proxy: { handleFrame(frame: any): Promise<unknown> }; payment: PaymentMux; verification: VerificationMux }): void {
-  const decoder = new FrameDecoder();
-  conn.on('message', (data: Uint8Array) => {
-    for (const frame of decoder.feed(data)) {
-      const target = PaymentMux.isPaymentMessage(frame.type)
-        ? muxes.payment
-        : VerificationMux.isVerificationMessage(frame.type) ? muxes.verification : muxes.proxy;
-      void target.handleFrame(frame).catch(() => {});
-    }
-  });
 }
 
 export interface Usage { promptTokens: number; cachedTokens: number; completionTokens: number }

@@ -15,7 +15,7 @@ import { VerificationMux } from '../src/verification/verification-mux.js';
 import { BuyerRequestHandler } from '../src/buyer-request-handler.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
-import { FrameDecoder } from '../src/p2p/message-protocol.js';
+import { connectionPair, wireFrames } from './helpers/framed-connection.js';
 import { ConnectionState } from '../src/types/connection.js';
 import { toPeerId, type PeerInfo } from '../src/types/peer.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -56,59 +56,6 @@ function identity(): Identity {
     peerId: toPeerId(wallet.address.slice(2).toLowerCase()),
     privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex'),
   };
-}
-
-type Listener = (...args: any[]) => void;
-
-/**
- * Two ends of an in-memory framed connection. Delivery is async like a real socket. With `coalesce`, all that
- * one end sends before the other end reads arrives as a single chunk, as on a byte-stream transport.
- */
-function connectionPair(coalesce = false): { buyerSide: PeerConnection; sellerSide: PeerConnection } {
-  const make = () => {
-    const listeners = new Map<string, Set<Listener>>();
-    const end: any = {
-      state: ConnectionState.Open,
-      remoteAddress: '203.0.113.9',
-      hasRemoteCapability: () => false,
-      on(event: string, listener: Listener) {
-        if (!listeners.has(event)) listeners.set(event, new Set());
-        listeners.get(event)!.add(listener);
-      },
-      off(event: string, listener: Listener) { listeners.get(event)?.delete(listener); },
-      emitMessage(data: Uint8Array) { for (const listener of listeners.get('message') ?? []) listener(data); },
-      send: (_data: Uint8Array) => {},
-      /** The connection reports a new state to its listeners, as a real one does when it closes. */
-      emitState(state: ConnectionState) { for (const listener of listeners.get('stateChange') ?? []) listener(state); },
-    };
-    return end;
-  };
-  const buyerSide = make();
-  const sellerSide = make();
-  const sendTo = (target: any) => {
-    let unread: Uint8Array[] = [];
-    return (data: Uint8Array) => {
-      const copy = data.slice();
-      if (!coalesce) return void setImmediate(() => target.emitMessage(copy));
-      if (unread.push(copy) === 1) setImmediate(() => { const chunk = Buffer.concat(unread); unread = []; target.emitMessage(chunk); });
-    };
-  };
-  buyerSide.send = sendTo(sellerSide);
-  sellerSide.send = sendTo(buyerSide);
-  return { buyerSide, sellerSide };
-}
-
-/** Route incoming frames the same way AntseedNode._wireConnection does. */
-function wireFrames(conn: PeerConnection, muxes: { proxy: { handleFrame(frame: any): Promise<unknown> }; payment: PaymentMux; verification: VerificationMux }): void {
-  const decoder = new FrameDecoder();
-  conn.on('message', (data: Uint8Array) => {
-    for (const frame of decoder.feed(data)) {
-      const target = PaymentMux.isPaymentMessage(frame.type)
-        ? muxes.payment
-        : VerificationMux.isVerificationMessage(frame.type) ? muxes.verification : muxes.proxy;
-      void target.handleFrame(frame).catch(() => {});
-    }
-  });
 }
 
 interface Harness {
