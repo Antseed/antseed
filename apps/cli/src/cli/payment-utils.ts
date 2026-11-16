@@ -7,6 +7,7 @@ import {
   DepositRelayClient,
   loadOrCreateIdentity,
   reconcileStoredChannels,
+  getChainConfig,
   resolveChainConfig,
   resolveContractStack,
   resolveLegacyContractAddresses,
@@ -300,11 +301,17 @@ export function createIdentityClient(config: AntseedConfig, overrides?: CryptoCo
   if (!crypto.identityRegistryAddress) {
     throw new Error('No identity registry address configured. Set payments.crypto.identityRegistryAddress in your config file.');
   }
+  // The built-in deploy block only describes the built-in registry address.
+  const builtIn = getChainConfig(crypto.chainId);
+  const deployBlock = builtIn.identityRegistryAddress?.toLowerCase() === crypto.identityRegistryAddress.toLowerCase()
+    ? builtIn.identityRegistryDeployBlock
+    : undefined;
   return new IdentityClient({
     rpcUrl: crypto.rpcUrl,
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.identityRegistryAddress,
     evmChainId: crypto.evmChainId,
+    ...(deployBlock !== undefined ? { deployBlock } : {}),
   });
 }
 

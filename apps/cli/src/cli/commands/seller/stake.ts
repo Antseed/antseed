@@ -14,6 +14,7 @@ import {
   createLegacyStakingClient,
 } from '../../payment-utils.js';
 import { registerSellerStarterCommand, runPoolStake } from './pool.js';
+import { recoveryProgressText, resolveLegacyStakeAgentId } from './agent-id.js';
 
 type GlobalOptions = ReturnType<typeof getGlobalOptions>;
 
@@ -49,12 +50,12 @@ async function runLegacyStake(
       process.exit(1);
     }
 
-    // Look up agentId from staking contract, or use --agent-id for first-time staking
-    let agentId = await stakingClient.getAgentId(address);
-    if (agentId === 0 && options.agentId) {
-      agentId = options.agentId;
-    }
-    if (agentId === 0) {
+    // The staking contract's agentId, else --agent-id, else the one this wallet holds in the registry
+    const agentId = await resolveLegacyStakeAgentId(
+      await stakingClient.getAgentId(address), options.agentId, identityClient, address,
+      (progress) => { spinner.text = recoveryProgressText(progress); },
+    );
+    if (!agentId) {
       spinner.fail(chalk.red('No agentId found. Pass --agent-id <id> from your antseed seller register output.'));
       process.exit(1);
     }
