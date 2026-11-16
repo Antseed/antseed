@@ -86,6 +86,21 @@ const TOKEN_LIKE_PATTERN = /[A-Za-z0-9_\-.]{24,}/g;
 const MAX_LOGGED_MESSAGE_CHARS = 200;
 
 /**
+ * The message of an upstream error body: `error.message`, or `error` when it
+ * is a string. Not JSON (or cut off at the read limit): the raw text. An error
+ * object without a message has none.
+ */
+function upstreamErrorMessage(body: string): string {
+  const error = tryParseJsonObject(new TextEncoder().encode(body))?.['error'];
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return error ? '' : body;
+}
+
+/**
  * The upstream error behind a 503 a buyer got, for the seller's own log: the
  * status, the error type and, outside content-free mode, the message with
  * anything token-like redacted.
@@ -94,11 +109,7 @@ export function describeUpstreamError(statusCode: number, body: string): string 
   const code = upstreamErrorCode(body);
   const head = code ? `HTTP ${statusCode} ${code}` : `HTTP ${statusCode}`;
   if (isContentFreeLogging()) return head;
-  const error = tryParseJsonObject(new TextEncoder().encode(body))?.['error'];
-  const nested = error && typeof error === 'object' ? (error as { message?: unknown }).message : undefined;
-  // Not JSON (or cut off at the read limit): the raw text is the message.
-  const message = typeof nested === 'string' ? nested : typeof error === 'string' ? error : error ? '' : body;
-  const text = message.replace(TOKEN_LIKE_PATTERN, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, MAX_LOGGED_MESSAGE_CHARS);
+  const text = upstreamErrorMessage(body).replace(TOKEN_LIKE_PATTERN, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, MAX_LOGGED_MESSAGE_CHARS);
   return text ? `${head}: ${text}` : head;
 }
 
