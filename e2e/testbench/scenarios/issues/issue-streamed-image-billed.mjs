@@ -1,10 +1,10 @@
 export const meta = {
-  description: 'An image request priced per image is billed for the images it delivers: one that asks for the answer as a stream of events, which per-image billing cannot count, is refused before the upstream is called, and the images served are settled exactly.',
+  description: 'An image request priced per image is billed for the final images it delivers, whether it is answered as JSON or as a stream of events with partial previews, and what was signed is settled exactly.',
   targets: ['local', 'fork'],
   requires: ['mockControl'],
 };
 
-const IMAGE_MODEL = 'gpt-image-1';
+const IMAGE_MODEL = 'qwen-image';
 const IMAGE_PRICE_USD = 0.04;
 const IMAGE_PRICE = BigInt(Math.round(IMAGE_PRICE_USD * 1_000_000));
 
@@ -66,13 +66,15 @@ export async function run(tb) {
     body: streamed.status === 200 ? undefined : streamed.text.slice(0, 300),
   };
   // One check first, so a failure shows the whole case at once.
-  tb.check('every image the upstream served was paid for', servedStreamed === 0 || signedForStreamed >= IMAGE_PRICE * BigInt(Math.max(1, completed.length)), observed);
-  tb.check('the streamed image request was refused before the upstream was called', streamed.status === 400 && servedStreamed === 0 && completed.length === 0, observed);
-  tb.check('nothing was signed for the refused request', signedForStreamed === 0n, observed);
+  tb.check('every image the upstream served was paid for', servedStreamed === 1 && completed.length === 1 && signedForStreamed >= IMAGE_PRICE, observed);
+  tb.check('the streamed image arrived as a stream, with its partial previews before the final image', streamed.status === 200 && /text\/event-stream/.test(observed.contentType ?? '')
+    && events.filter((name) => name === 'image_generation.partial_image').length === 2 && events.at(-1) === 'image_generation.completed', observed);
+  // The partial previews are not billed: one image's price, plus at most its tokens, never a second image.
+  tb.check('the stream was charged as one image, not for its partial previews', signedForStreamed >= IMAGE_PRICE && signedForStreamed < 2n * IMAGE_PRICE, observed);
 
   await tb.closeAll();
   const expected = await tb.signedBySeller();
   const settlement = await tb.assertSettlementMatchesSigned(expected);
   tb.metric('settledMicroUsdc', settlement.totalPaidMicroUsdc);
-  tb.check('settled amount equals what the image served as JSON was charged', BigInt(settlement.totalPaidMicroUsdc) === signedAfterPlain, { settled: settlement.totalPaidMicroUsdc, expected: String(signedAfterPlain) });
+  tb.check('settled amount equals what both images were charged', BigInt(settlement.totalPaidMicroUsdc) === signedAfterPlain + signedForStreamed, { settled: settlement.totalPaidMicroUsdc, expected: String(signedAfterPlain + signedForStreamed) });
 }

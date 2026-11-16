@@ -5,6 +5,7 @@ import type {
   TokenUsage,
 } from '@antseed/api-adapter';
 import { buyerFault } from './errors.js';
+import { parseResponseUsage, readStreamEvents } from './response-usage.js';
 import {
   extractImageRequestFacts,
   extractSpeechRequestFacts,
@@ -12,8 +13,7 @@ import {
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
-  looseFormParts,
-  type LooseFormPart,
+  isDeliveredImageOutput,
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
@@ -136,36 +136,6 @@ const videoBillingAdapter: UnitBillingAdapter = {
   measure: extractVideoResponseUsage,
 };
 
-/**
- * A field name the way some parser reads it: compatibility forms (full-width
- * letters), invisible and control characters, letter case (Unicode folds
- * such as the long s), a `[...]` suffix (or the brackets around a name that
- * starts with one), padding and separators set aside.
- */
-function foldFieldName(key: string): string {
-  const folded = key.normalize('NFKC').replace(/[\p{Cf}\p{Cc}]/gu, '').replace(/^[\s[\]]+/, '').toUpperCase().toLowerCase();
-  const bracket = folded.search(/[[\]]/);
-  return (bracket === -1 ? folded : folded.slice(0, bracket)).replace(/[\s_.-]/g, '');
-}
-
-/** The values of every top-level field of a body that some parser reads as `name`. */
-function fieldValues(body: Record<string, unknown> | null | undefined, name: string): unknown[] {
-  if (!body) return [];
-  const target = foldFieldName(name);
-  return Object.entries(body).filter(([key]) => foldFieldName(key) === target).map(([, value]) => value);
-}
-
-/**
- * Whether a form asks for a streamed answer. Its fields are text, and not every
- * reader takes "false" as false, so the only stream field it may carry is a
- * text part named exactly `stream` that says exactly `false`: the default,
- * which a seller leaves out of the form it hands its provider.
- */
-function formAsksStream(parts: LooseFormPart[]): boolean {
-  return parts.some((part) => part.names.some((name) => foldFieldName(name) === 'stream')
-    && !(part.names.length === 1 && part.names[0] === 'stream' && !part.file && part.value === 'false'));
-}
-
 // Speech is billed by the characters of `input`, and only when audio came back:
 // a refused voice or any other error answer is free.
 const speechBillingAdapter: UnitBillingAdapter = {
@@ -173,11 +143,10 @@ const speechBillingAdapter: UnitBillingAdapter = {
   units: ['input_characters'],
   protocols: AUDIO_SPEECH_PROTOCOLS,
   capture: (args) => {
-    const body = parseJsonObject(args.request.body);
-    const speech = extractSpeechRequestFacts(body);
+    const speech = extractSpeechRequestFacts(parseJsonObject(args.request.body));
     if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
     // Delivery is proved by audio bytes; a stream of events is not read as audio, so it could not be billed.
-    if (fieldValues(body, 'stream_format').some((value) => value !== null && value !== 'audio')) {
+    if (speech.eventStream) {
       throw buyerFault('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"', 'invalid-request');
     }
     return {
@@ -247,15 +216,6 @@ export function captureUnitBillingContext(args: CaptureUnitBillingArgs): Capture
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
-  // This capture also stands in for token-billed protocols (chat), whose streams are billed by tokens.
-  // Images are counted in a JSON answer; a streamed one is not read, so it could not be billed.
-  if (args.serviceApiProtocol === 'openai-images') {
-    // A body is read both ways, whatever its content type says, as some reader may read it either way.
-    const form = looseFormParts(args.request.headers, args.request.body);
-    const asksStream = (form !== null && formAsksStream(form))
-      || fieldValues(parseJsonObject(args.request.body), 'stream').some((value) => value !== null && value !== false);
-    if (asksStream) throw buyerFault('Image billing requires the answer as JSON: send the request without "stream"', 'invalid-request');
-  }
   const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
@@ -329,7 +289,7 @@ function extractImageResponseUsage(
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
     ? extractProviderResponseFacts(parsed)
-    : { tokenUsage: ZERO_TOKEN_USAGE };
+    : streamedImageFacts(response.body);
   const billableOutputImages = capOutputImagesToRequest(
     responseFacts.outputImages,
     requestFacts.image.requestedImages,
@@ -342,6 +302,27 @@ function extractImageResponseUsage(
     },
     tokenUsage: responseFacts.tokenUsage,
   };
+}
+
+// The events of a streamed image answer that carry a final image; partial images are previews, not billed.
+const COMPLETED_IMAGE_EVENTS = new Set(['image_generation.completed', 'image_edit.completed']);
+
+/**
+ * The images and tokens of an answer streamed as server-sent events, in OpenAI's image events:
+ * each completed event's `data.type` (never the `event:` line alone) names one final image, which
+ * counts only when it carries one. Tokens are read as for any streamed answer, the largest figure
+ * of any event, so a stream of several final images may report fewer tokens than it used.
+ */
+function streamedImageFacts(body: Uint8Array): ProviderResponseFacts {
+  let outputImages = 0;
+  for (const event of readStreamEvents(new TextDecoder().decode(body))) {
+    // An event is one image at most, and only when its data is one JSON object: data lines that
+    // parse only one by one are not an event a client can read.
+    const [value] = event.values;
+    if (event.values.length === 1 && isDeliveredImageOutput(value) && COMPLETED_IMAGE_EVENTS.has((value as { type?: unknown }).type as string)) outputImages += 1;
+  }
+  // No completed image reads as no image count at all, as a non-JSON answer always has.
+  return { tokenUsage: parseResponseUsage(body), ...(outputImages > 0 ? { outputImages } : {}) };
 }
 
 export function computeFinalUnitBilling(
