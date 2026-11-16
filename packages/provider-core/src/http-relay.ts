@@ -104,7 +104,8 @@ interface ResolvedUpstream {
 
 export interface RelayCallbacks {
   onResponse: (response: SerializedHttpResponse) => void;
-  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void;
+  /** A returned promise is awaited before the relay reads more of the upstream stream. */
+  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
@@ -612,11 +613,16 @@ export class HttpRelay {
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
           if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
-          this._callbacks.onResponseChunk?.({
+          // Waiting here leaves the rest of the stream with the upstream instead of in memory.
+          const delivered = this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
             done: false,
           });
+          if (delivered) {
+            await delivered;
+            attempt.refreshTimeout();
+          }
         }
       } catch (err) {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;

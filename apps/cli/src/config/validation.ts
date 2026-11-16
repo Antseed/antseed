@@ -433,6 +433,13 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (
+    config.seller.maxInFlightRequestBytes !== undefined &&
+    (!Number.isInteger(config.seller.maxInFlightRequestBytes) || config.seller.maxInFlightRequestBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
+  ) {
+    errors.push('seller.maxInFlightRequestBytes must be an integer >= 1048576');
+  }
+
+  if (
     config.seller.maxInboundConnections !== undefined &&
     (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
   ) {
