@@ -326,6 +326,8 @@ export interface ColonyState {
     /** ANTS the pool owes the payout wallet outright rather than by epoch (its operator fee, or an epoch nobody earned in); claimOwedAnts sends them. Counted in `ants`. */
     outrightAnts?: string;
   } | null;
+  /** False when the Mac app could not read the pool for this answer: `claim` is then its last read, to show but not to claim from. */
+  claimFresh?: boolean;
 }
 
 /** A worker's signed setPayout authorization (AntseedColonyPool.setPayout). */

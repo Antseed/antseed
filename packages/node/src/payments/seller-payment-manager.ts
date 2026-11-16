@@ -491,7 +491,7 @@ export class SellerPaymentManager {
     status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT = CHANNEL_STATUS.SETTLED,
     settledAmount?: string,
   ): void {
-    this._channelStore.updateChannelStatus(channelId, status, settledAmount);
+    const notice = this._endChannel(channelId, status, settledAmount);
     this._acceptedCumulative.delete(channelId);
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
@@ -505,13 +505,22 @@ export class SellerPaymentManager {
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
-    this._notifyChannelEnded(channelId);
+    if (notice) this._deliverChannelEnded(notice);
   }
 
-  private _notifyChannelEnded(channelId: string): void {
-    if (!this._config.onChannelEnded) return;
-    const channelsAddress = this._channelStore.getChannel(channelId)?.channelsAddress ?? null;
-    this._deliverChannelEnded(this._channelStore.addEndedChannelNotice(channelId, channelsAddress));
+  /**
+   * Store an ended channel's final status and, with a listener, its notice in
+   * the same write. The notice is for `_deliverChannelEnded` once the caller's
+   * own bookkeeping is done.
+   */
+  private _endChannel(
+    channelId: string,
+    status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT,
+    settledAmount?: string,
+  ): EndedChannelNotice | null {
+    if (this._config.onChannelEnded) return this._channelStore.endChannelWithNotice(channelId, status, settledAmount);
+    this._channelStore.updateChannelStatus(channelId, status, settledAmount);
+    return null;
   }
 
   /** Call the listener for a stored notice; the notice stays, to be tried again, until a call succeeds. */
@@ -2549,9 +2558,9 @@ export class SellerPaymentManager {
         if (!state.exists || state.status === CHANNEL_STATUS.TIMEOUT) {
           // Withdrawn by the buyer: nothing left for the seller to close.
           const settled = state.exists ? state.channel.settled : 0n;
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
+          const notice = this._endChannel(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
           this._timedOutCloseAttempts.delete(channelId);
-          this._notifyChannelEnded(channelId);
+          if (notice) this._deliverChannelEnded(notice);
           continue;
         }
         if (state.status !== CHANNEL_STATUS.ACTIVE) {

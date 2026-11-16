@@ -1,12 +1,14 @@
 import { concat, getBytes, keccak256, toBeHex, toUtf8Bytes, Wallet, zeroPadValue } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import {
+  envelopeRecipients,
   generateWorkerEncryptionKey,
   inspectRequest,
   isSealedRequest,
   isWorkerAttestation,
   modelFilesDigest,
   openRequest,
+  parsedEnvelopeRecipients,
   ResponseOpener,
   sealRequest,
   verifyWorkerAttestation,
@@ -299,6 +301,20 @@ describe('worker end-to-end encryption for several recipients', () => {
   }
   const sealFor = (workers: ReturnType<typeof recipients>, binding?: Parameters<typeof sealRequest>[0]['buyer'], body = enc({ model: 'qwen', messages: [{ role: 'user', content: 'secret prompt' }] })) =>
     sealRequest({ body, recipients: workers.map((w) => ({ worker: w.wallet.address, key: w.key.publicKey })), ...(binding ? { buyer: binding } : {}) });
+
+  it('reads an envelope’s recipients from its body, parsed or not, and none from anything else', async () => {
+    const workers = recipients(2);
+    const sealed = await sealFor(workers);
+    const named = workers.map((w) => w.wallet.address);
+    expect(envelopeRecipients(sealed.body)).toEqual(named);
+    expect(parsedEnvelopeRecipients(JSON.parse(dec(sealed.body)))).toEqual(named);
+    expect(parsedEnvelopeRecipients({ antseed_e2e: { recipients: [{ worker: named[0] }, { worker: 7 }, null, 'x'] } })).toEqual([named[0]]);
+    for (const other of [null, undefined, 5, 'text', [], {}, { antseed_e2e: null }, { antseed_e2e: { recipients: {} } }]) {
+      expect(parsedEnvelopeRecipients(other)).toEqual([]);
+    }
+    expect(envelopeRecipients(enc('not json {'))).toEqual([]);
+    expect(envelopeRecipients(new TextEncoder().encode('null'))).toEqual([]);
+  });
 
   it('lets each recipient open the request, bound to the buyer, and answer under its own key', async () => {
     const { binding, buyer } = setup();

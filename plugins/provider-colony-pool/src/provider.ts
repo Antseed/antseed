@@ -9,7 +9,7 @@ import type {
   ServiceCapabilities,
 } from '@antseed/node';
 import {
-  envelopeRecipients,
+  parsedEnvelopeRecipients,
   WORKER_ASSIGN_PATH,
   WORKER_E2E_CAPABILITY,
   WORKER_UNAVAILABLE_CODE,
@@ -43,16 +43,21 @@ function errorResponse(requestId: string, statusCode: number, message: string, c
   };
 }
 
-/** The model a request names, and how many workers an assignment asks for. */
-function routeOf(req: SerializedHttpRequest): { model: string | null; recipients: number } {
+/** A request's body as parsed JSON; null when it is not JSON. */
+function parsedBody(req: SerializedHttpRequest): unknown {
   try {
-    const body = JSON.parse(new TextDecoder().decode(req.body)) as { model?: unknown; recipients?: unknown };
-    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
-    const recipients = typeof body.recipients === 'number' && Number.isInteger(body.recipients) ? body.recipients : 1;
-    return { model, recipients };
+    return JSON.parse(new TextDecoder().decode(req.body));
   } catch {
-    return { model: null, recipients: 1 };
+    return null;
   }
+}
+
+/** The model a parsed request body names, and how many workers an assignment asks for. */
+function routeOf(parsed: unknown): { model: string | null; recipients: number } {
+  const body = (parsed ?? {}) as { model?: unknown; recipients?: unknown };
+  const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
+  const recipients = typeof body.recipients === 'number' && Number.isInteger(body.recipients) ? body.recipients : 1;
+  return { model, recipients };
 }
 
 /**
@@ -128,7 +133,7 @@ export class ColonyPoolProvider implements Provider {
     if (req.method !== 'POST' || req.path.split('?')[0] !== WORKER_ASSIGN_PATH) {
       return errorResponse(req.requestId, 404, `Unknown colony pool route ${req.method} ${req.path}`);
     }
-    const { model, recipients } = routeOf(req);
+    const { model, recipients } = routeOf(parsedBody(req));
     if (!model) return errorResponse(req.requestId, 400, 'Request body must name a model');
     try {
       const workers = this.pool.assign(model, recipients);
@@ -184,9 +189,11 @@ export class ColonyPoolProvider implements Provider {
   }
 
   private forward(req: SerializedHttpRequest, callbacks: ProviderStreamCallbacks | null): Promise<SerializedHttpResponse> {
-    const { model: service } = routeOf(req);
+    // Parsed once: a sealed request's body is as large as the prompt it carries.
+    const body = parsedBody(req);
+    const { model: service } = routeOf(body);
     if (!service) return Promise.resolve(errorResponse(req.requestId, 400, 'Request body must name a model'));
-    const recipients = envelopeRecipients(req.body);
+    const recipients = parsedEnvelopeRecipients(body);
     if (recipients.length === 0) {
       if (req.requestId.startsWith(HEALTH_PROBE_PREFIX)) return this.probe(req, service);
       return Promise.resolve(errorResponse(

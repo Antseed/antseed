@@ -484,6 +484,18 @@ describe('colony pool', () => {
     expect(JSON.parse(dec(response.body)).error.code).toBe('e2e_required');
   });
 
+  it('answers 400 to a body that names no model, whatever it holds', async () => {
+    await setup();
+    startWorker();
+    await waitFor(() => provider.services.includes(SERVICE));
+    const bodies = [new TextEncoder().encode('not json {'), new TextEncoder().encode('null'), enc([SERVICE]), enc({ model: '  ' }), enc({ antseed_e2e: { recipients: [] } })];
+    for (const body of bodies) {
+      const response = await provider.handleRequest({ ...plainRequest('plain-2', false), body });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(dec(response.body)).error.message).toBe('Request body must name a model');
+    }
+  });
+
   it('seals the seller health probe itself and returns the plaintext result', async () => {
     await setup();
     startWorker();

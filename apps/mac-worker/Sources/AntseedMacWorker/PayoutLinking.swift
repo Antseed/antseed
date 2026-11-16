@@ -22,15 +22,17 @@ final class WorkerPayoutController: ObservableObject {
     private let config: WorkerConfig
     private let keys: WorkerKeys
     private let log: (String) -> Void
+    private let session: URLSession
     /// `--link-payout` signs once per launch, not on every reconnect.
     private var linkRequested = false
     /// The pool contract the published state is for: reads that finish after a switch are dropped.
     private var pool: String?
 
-    init(config: WorkerConfig, keys: WorkerKeys, log: @escaping (String) -> Void) {
+    init(config: WorkerConfig, keys: WorkerKeys, log: @escaping (String) -> Void, session: URLSession = .shared) {
         self.config = config
         self.keys = keys
         self.log = log
+        self.session = session
         self.pendingLink = (try? Data(contentsOf: config.dataDirectory.appendingPathComponent(Self.pendingLinkFile)))
             .flatMap { try? JSONDecoder().decode(PayoutAuthorization.self, from: $0) }
     }
@@ -62,28 +64,33 @@ final class WorkerPayoutController: ObservableObject {
     }
 
     /// `refresh`, finished before it returns: the rewards page reads the result right after.
-    func refreshNow(pool: String?) async {
-        guard !config.rpcURLs.isEmpty, let pool, isCurrent(pool) else { return }
+    /// False when the payout wallet or the rewards could not be read: what is published is then
+    /// an earlier read, which the page must not choose a claim's transactions from.
+    @discardableResult
+    func refreshNow(pool: String?) async -> Bool {
+        guard !config.rpcURLs.isEmpty, let pool, isCurrent(pool) else { return false }
         let read: String?
         do {
-            read = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
+            read = try await chain.payoutOf(worker: address, pool: pool)
         } catch {
-            return
+            return false
         }
-        guard isCurrent(pool) else { return }
+        guard isCurrent(pool) else { return false }
         payout = read
         if let link = pendingLink,
            link.pool.lowercased() != pool.lowercased() || link.payout.lowercased() == payout?.lowercased()
             || link.deadline <= UInt64(Date().timeIntervalSince1970) {
             setPendingLink(nil)
         }
-        await refreshRewards(pool: pool)
+        return await refreshRewards(pool: pool)
     }
 
-    /// Read what the pool owes the payout wallet (this Mac's key until one is linked).
-    func refreshRewards(pool: String?) async {
-        guard !config.rpcURLs.isEmpty, let pool, isCurrent(pool) else { return }
-        let chain = Chain(rpcURLs: config.rpcURLs, timeout: 10)
+    private var chain: Chain { Chain(rpcURLs: config.rpcURLs, timeout: 10, session: session) }
+
+    /// Read what the pool owes the payout wallet (this Mac's key until one is linked); false when the read failed.
+    private func refreshRewards(pool: String) async -> Bool {
+        guard isCurrent(pool) else { return false }
+        let chain = self.chain
         let linked = payout.flatMap { $0.lowercased() == address.lowercased() ? nil : $0 }
         do {
             let context = try await chain.rewardsContext(pool: pool)
@@ -97,12 +104,13 @@ final class WorkerPayoutController: ObservableObject {
             } else {
                 read = try await chain.colonyRewards(pool: pool, account: address, context: context)
             }
-            guard isCurrent(pool) else { return }
+            guard isCurrent(pool) else { return false }
             rewards = read
             rewardsError = nil
+            return true
         } catch {
-            guard isCurrent(pool) else { return }
-            rewardsError = "Could not read rewards: \(error.localizedDescription)"
+            if isCurrent(pool) { rewardsError = "Could not read rewards: \(error.localizedDescription)" }
+            return false
         }
     }
 
@@ -143,7 +151,7 @@ final class WorkerPayoutController: ObservableObject {
         }
         linkError = nil
         do {
-            let chain = Chain(rpcURLs: config.rpcURLs, timeout: 10)
+            let chain = self.chain
             let chainId = try await chain.chainId()
             let nonce = try await chain.payoutNonce(worker: address, pool: pool)
             let deadline = UInt64(Date().timeIntervalSince1970) + 7 * 24 * 3600

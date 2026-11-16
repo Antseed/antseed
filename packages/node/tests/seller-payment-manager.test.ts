@@ -2989,6 +2989,30 @@ describe('SellerPaymentManager', () => {
       await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(0));
     });
 
+    it('never leaves a channel ended in the store without its notice: a failed write is found again after a restart', async () => {
+      const channelId = makeChannelId(39);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+      const onChannelEnded = vi.fn();
+      const ended = makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 });
+
+      const mgr = makeFreshManager({ onChannelEnded });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(ended);
+      // The process dies writing the notice: the status written with it is gone too.
+      const failedWrite = vi.spyOn(store, 'addEndedChannelNotice').mockImplementationOnce(() => { throw new Error('killed'); });
+      await mgr.validateHydratedChannels();
+      expect(failedWrite).toHaveBeenCalledOnce();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+      expect(store.countEndedChannelNotices()).toBe(0);
+      expect(onChannelEnded).not.toHaveBeenCalled();
+
+      const restarted = makeFreshManager({ onChannelEnded });
+      vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(ended);
+      await restarted.validateHydratedChannels();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      await vi.waitFor(() => expect(onChannelEnded).toHaveBeenCalledWith(channelId, CONTRACT_ADDR));
+      await vi.waitFor(() => expect(store.countEndedChannelNotices()).toBe(0));
+    });
+
     it('waits at shutdown for a channel-ended call still running, which then clears its notice', async () => {
       const channelId = makeChannelId(36);
       seedChannel(store, channelId, buyerIdentity, sellerIdentity);

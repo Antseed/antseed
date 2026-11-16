@@ -87,6 +87,11 @@ export class ChannelStore {
   ) => void;
   private readonly _replaceServiceTotalsTxn: (sessionId: string, totals: StoredChannelServiceTotal[]) => void;
   private readonly _commitAuthorizationTxn: (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => void;
+  private readonly _endChannelWithNoticeTxn: (
+    sessionId: string,
+    status: ChannelStatus,
+    settledAmount: string | undefined,
+  ) => EndedChannelNotice;
 
   private readonly _stmts: {
     upsert: Database.Statement;
@@ -159,6 +164,12 @@ export class ChannelStore {
       (channel: StoredChannel, totals: StoredChannelServiceTotal[]) => {
         this.upsertChannel(channel);
         replaceServiceTotals(channel.sessionId, totals);
+      },
+    );
+    this._endChannelWithNoticeTxn = this._db.transaction(
+      (sessionId: string, status: ChannelStatus, settledAmount: string | undefined) => {
+        this.updateChannelStatus(sessionId, status, settledAmount);
+        return this.addEndedChannelNotice(sessionId, this.getChannel(sessionId)?.channelsAddress ?? null);
       },
     );
   }
@@ -591,6 +602,14 @@ export class ChannelStore {
   addEndedChannelNotice(sessionId: string, channelsAddress: string | null): EndedChannelNotice {
     this._stmts.addEndedNotice.run(sessionId, channelsAddress, Date.now());
     return rowToEndedNotice(this._stmts.getEndedNotice.get(sessionId) as EndedNoticeRow);
+  }
+
+  /**
+   * Give a channel its final status and store its ended-channel notice in one
+   * write, so a crash never leaves an ended channel nobody will be told about.
+   */
+  endChannelWithNotice(sessionId: string, status: ChannelStatus, settledAmount?: string): EndedChannelNotice {
+    return this._endChannelWithNoticeTxn(sessionId, status, settledAmount);
   }
 
   removeEndedChannelNotice(sessionId: string): void {

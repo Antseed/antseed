@@ -251,13 +251,17 @@ export interface RequestEnvelope {
   pay?: WorkerPayment;
 }
 
-/** The recipients a request envelope names, in order (empty for anything else). */
+/** The recipients the request envelope in a parsed JSON body names, in order (empty for anything else). */
+export function parsedEnvelopeRecipients(parsed: unknown): string[] {
+  const recipients = (parsed as { antseed_e2e?: { recipients?: unknown } } | null | undefined)?.antseed_e2e?.recipients;
+  if (!Array.isArray(recipients)) return [];
+  return recipients.map((r) => (r as { worker?: unknown })?.worker).filter((w): w is string => typeof w === 'string');
+}
+
+/** `parsedEnvelopeRecipients` of a body still to parse. */
 export function envelopeRecipients(body: Uint8Array): string[] {
   try {
-    const parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as { antseed_e2e?: { recipients?: unknown } };
-    const recipients = parsed.antseed_e2e?.recipients;
-    if (!Array.isArray(recipients)) return [];
-    return recipients.map((r) => (r as { worker?: unknown })?.worker).filter((w): w is string => typeof w === 'string');
+    return parsedEnvelopeRecipients(JSON.parse(Buffer.from(body).toString('utf-8')));
   } catch {
     return [];
   }

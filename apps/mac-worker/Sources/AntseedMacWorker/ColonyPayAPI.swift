@@ -34,8 +34,7 @@ final class ColonyPayAPI {
         case ("GET", "/api/config"):
             return .json(200, await payConfig())
         case ("GET", "/api/colony"):
-            await payouts.refreshNow(pool: pool())
-            return .json(200, colonyState())
+            return .json(200, colonyState(claimFresh: await payouts.refreshNow(pool: pool())))
         case ("POST", "/api/colony/link"):
             guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
                   let wallet = body["payout"] as? String else { return .error(400, "Missing payout") }
@@ -68,7 +67,9 @@ final class ColonyPayAPI {
         ]
     }
 
-    private func colonyState() -> [String: Any] {
+    /// `claimFresh` is whether `claim` was read from the chain for this answer; when not, it is the
+    /// last read, good to show but not to choose a claim's transactions from.
+    private func colonyState(claimFresh: Bool) -> [String: Any] {
         let claim: Any = payouts.rewards.map {
             [
                 "usdc": ColonyRewards.integerString($0.usdc), "ants": ColonyRewards.integerString($0.ants),
@@ -76,6 +77,6 @@ final class ColonyPayAPI {
                 "antsTransferable": $0.antsTransferable, "outrightAnts": ColonyRewards.integerString($0.outrightAnts),
             ] as [String: Any]
         } ?? NSNull()
-        return ["pool": pool() ?? NSNull(), "worker": workerAddress, "payout": payouts.payout ?? NSNull(), "claim": claim]
+        return ["pool": pool() ?? NSNull(), "worker": workerAddress, "payout": payouts.payout ?? NSNull(), "claim": claim, "claimFresh": claimFresh]
     }
 }
