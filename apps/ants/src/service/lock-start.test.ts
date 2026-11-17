@@ -235,6 +235,18 @@ describe('lock history reads', () => {
     expect(slashReads()).toHaveLength(0);
   });
 
+  it('leaves starts unknown when the epoch turns while the pool\'s slash is read', async () => {
+    // Chunked or single-call reads can straddle a boundary: here the slash reads land in epoch 11.
+    mockPool(toggleSegments, { 2: Math.floor(5_000 * 103 / 104), 4: Math.floor(5_000 * 100 / 104) });
+    const pool = vi.mocked(multicallRead).getMockImplementation()!;
+    vi.mocked(multicallRead).mockImplementation(async (provider, requests, options) => {
+      const answers = await pool(provider, requests, options);
+      if (requests.some(request => request.method === 'earlyExitSlashBps')) chainEpoch = 11;
+      return answers;
+    });
+    expect(await startsAt([2, 4, 5], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, null], [4, null], [5, null]]));
+  });
+
   it('does not read the slash while the ambiguous change is still pending', async () => {
     // Epoch 8: the checkpoint at 9 takes effect next epoch, so the pool's slash still describes the old lock.
     mockPool(toggleSegments, { 2: Math.floor(5_000 * 12 / 16) });
