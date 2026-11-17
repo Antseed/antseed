@@ -59,33 +59,60 @@ function chatAnswerText(body: Uint8Array): string | null {
   return answer;
 }
 
-/** A parsed chat request written without its attachments' contents, and how many attachments it had. */
-function withoutAttachments(request: Record<string, unknown>): { text: Uint8Array; attachments: number } {
+/**
+ * Image parts: OpenAI Chat (`image_url`), OpenAI Responses (`input_image`) and Anthropic Messages
+ * (`image`). An upstream resizes an image before it reads it, so its tokens stay near the flat
+ * allowance however large its encoding is. Audio, files and documents can be long, and their tokens
+ * grow with them.
+ */
+const IMAGE_PARTS = new Set(['image_url', 'input_image', 'image']);
+
+/** Whether a value is an attachment part of one of `parts`. The request object itself never is. */
+const isPart = (value: unknown, parts: ReadonlySet<string>): value is { type: string } =>
+  isRecord(value) && typeof value.type === 'string' && parts.has(value.type);
+
+/** A parsed chat request written without the contents of its `parts`, and how many it had. */
+function withoutParts(request: Record<string, unknown>, parts: ReadonlySet<string>): { text: Uint8Array; attachments: number } {
   let attachments = 0;
   const text = JSON.stringify(request, function (key: string, value: unknown) {
-    if (key === '' || !isRecord(value) || typeof value.type !== 'string' || !ATTACHMENT_PARTS.has(value.type)) return value;
+    if (key === '' || !isPart(value, parts)) return value;
     attachments += 1;
     return { type: value.type };
   });
   return { text: encoder.encode(text), attachments };
 }
 
+/** Whether a parsed request holds any part of `parts`, below the request object itself. Walks without recursion. */
+function hasPart(request: Record<string, unknown>, parts: ReadonlySet<string>): boolean {
+  const pending: unknown[] = Object.values(request);
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (isPart(value, parts)) return true;
+    // One push per item: spreading a long array into push() can exceed the argument limit.
+    if (Array.isArray(value)) for (const item of value) pending.push(item);
+    else if (isRecord(value)) for (const item of Object.values(value)) pending.push(item);
+  }
+  return false;
+}
+
 /** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
 export function estimatePromptTokens(requestBody: Uint8Array): number {
   const request = parseJsonObject(requestBody);
   if (!request) return estimateTokensFromBytes(requestBody);
-  const { text, attachments } = withoutAttachments(request);
+  const { text, attachments } = withoutParts(request, ATTACHMENT_PARTS);
   return estimateTokensFromBytes(text) + attachments * ATTACHMENT_TOKENS;
 }
 
 /**
- * `estimatePromptTokens` for pre-request checks on a request body already parsed: the text is
- * estimated from samples (`estimateTokensFromBytesSampled`), so a large conversation costs bounded CPU.
- * Attachments count their flat allowance, never their encoded bytes: a chat with a few base64
- * screenshots is megabytes of body but only thousands of tokens upstream.
+ * The prompt tokens of a chat request, for checks before it goes upstream (buyer limits, whether a
+ * reserve covers it): `request` is `body` parsed. Each image counts the flat allowance, never its
+ * base64, which is megabytes of body but not of tokens; everything else, audio, files and documents
+ * included, counts by its bytes as before, so an estimate never drops below what those can cost. The
+ * text is sampled (`estimateTokensFromBytesSampled`), and a body without images is not written again.
  */
-export function estimateParsedPromptTokensSampled(request: Record<string, unknown>): number {
-  const { text, attachments } = withoutAttachments(request);
+export function estimatePromptTokensForChecks(request: Record<string, unknown>, body: Uint8Array): number {
+  if (!hasPart(request, IMAGE_PARTS)) return estimateTokensFromBytesSampled(body);
+  const { text, attachments } = withoutParts(request, IMAGE_PARTS);
   return estimateTokensFromBytesSampled(text) + attachments * ATTACHMENT_TOKENS;
 }
 

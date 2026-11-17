@@ -2016,8 +2016,8 @@ export class SellerRequestHandler {
 
   /**
    * The prompt tokens of a request, for checks before it goes upstream. A JSON body the seller wrote
-   * was estimated as it was read, with each attachment (an inline image, audio or file) counted as a
-   * flat allowance: its base64 is megabytes of body but not of tokens. Any other body counts its bytes.
+   * was estimated as it was read, with each inline image counted as a flat allowance: its base64 is
+   * megabytes of body but not of tokens. Any other body counts its bytes.
    */
   private _estimatedPromptTokens(request: SerializedHttpRequest): number {
     const billed = this._requestedServices.get(request);

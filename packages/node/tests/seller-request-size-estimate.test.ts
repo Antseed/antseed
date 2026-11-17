@@ -115,6 +115,14 @@ const SCREENSHOT_PARTS: Array<[string, Record<string, unknown>]> = [
   ['an Anthropic image', { type: 'image', source: { type: 'base64', media_type: 'image/png', data: SCREENSHOT } }],
 ];
 
+/** Attachments whose tokens grow with their length: they keep counting by their bytes. */
+const LONG_ATTACHMENT_PARTS: Array<[string, Record<string, unknown>]> = [
+  ['an OpenAI Chat file', { type: 'file', file: { file_data: `data:application/pdf;base64,${SCREENSHOT}`, filename: 'report.pdf' } }],
+  ['OpenAI Chat audio', { type: 'input_audio', input_audio: { data: SCREENSHOT, format: 'wav' } }],
+  ['a Responses file', { type: 'input_file', file_data: `data:application/pdf;base64,${SCREENSHOT}`, filename: 'report.pdf' }],
+  ['an Anthropic document', { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: SCREENSHOT } }],
+];
+
 describe('seller pre-request size estimate', () => {
   describe('buyer limits', () => {
     it.each(SCREENSHOT_PARTS)('admits a short chat with %s, counting the image as an attachment, not its base64 bytes', async (_shape, part) => {
@@ -123,6 +131,10 @@ describe('seller pre-request size estimate', () => {
 
     it('still refuses a text prompt over the limit', async () => {
       expect(await serve(LONG_TEXT, { limiter: limiter() })).toBe(429);
+    });
+
+    it.each(LONG_ATTACHMENT_PARTS)('still counts %s by its size', async (_shape, part) => {
+      expect(await serve(withScreenshot(part), { limiter: limiter() })).toBe(429);
     });
   });
 
@@ -135,6 +147,10 @@ describe('seller pre-request size estimate', () => {
 
     it('still refuses a text prompt the reserve cannot cover', async () => {
       expect(await serve(LONG_TEXT, reserve)).toBe(402);
+    });
+
+    it.each(LONG_ATTACHMENT_PARTS)('still refuses %s the reserve cannot cover', async (_shape, part) => {
+      expect(await serve(withScreenshot(part), reserve)).toBe(402);
     });
   });
 });
