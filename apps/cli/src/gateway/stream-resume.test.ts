@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import * as http from 'node:http'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -282,28 +283,29 @@ test('a slow retry holds the buyer back while the recorded part replays', async 
   const big = Buffer.alloc(256 * 1024, 'a')
   stream.detach(first)
   for (let i = 0; i < 16; i++) stream.append(big)
-  const server = http.createServer((_req, res) => stream.resume(res))
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const port = (server.address() as { port: number }).port
+  // A retry whose writes stay blocked until it is told to drain, whatever the socket buffers would take.
+  const retry = Object.assign(new EventEmitter(), {
+    blocked: true,
+    received: 0,
+    writes: 0,
+    writableFinished: false,
+    writeHead() { return retry },
+    write(chunk: Buffer) { retry.writes++; retry.received += chunk.length; return !retry.blocked },
+    end() { retry.writableFinished = true; retry.emit('finish') },
+    destroy() { retry.emit('close') },
+  })
   try {
-    let received = 0
-    let response: http.IncomingMessage | null = null
-    const req = http.get({ hostname: '127.0.0.1', port, path: '/' }, (res) => {
-      response = res
-      // Read nothing yet: the client is slow.
-      res.pause()
-      res.on('data', (chunk: Buffer) => { received += chunk.length })
-    })
-    await waitFor(() => response !== null)
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    stream.resume(retry as unknown as http.ServerResponse)
+    await waitFor(() => retry.writes === 1)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(retry.writes, 1, 'the replay waits for the blocked write')
     assert.equal(source.paused, true, 'the buyer is held back while the replay waits for the client')
-    response!.resume()
-    await waitFor(() => received === 16 * big.length)
+    retry.blocked = false
+    retry.emit('drain')
+    await waitFor(() => retry.received === 16 * big.length)
     await waitFor(() => source.paused === false)
-    req.destroy()
   } finally {
     stream.dispose()
-    await new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()) })
     cleanup()
   }
 })

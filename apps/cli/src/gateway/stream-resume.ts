@@ -5,6 +5,7 @@ import type * as http from 'node:http'
 import { join } from 'node:path'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
 import { errorMessage } from './errors.js'
+import { processExists } from './process-exists.js'
 
 /** How long a dropped stream keeps generating, waiting for its client's retry. */
 export const STREAM_RESUME_GRACE_MS = 30_000
@@ -99,7 +100,7 @@ export class StreamResumeStore {
     for (const entry of readdirSync(this._options.dir)) {
       const pid = Number(/^(\d+)-[0-9a-f]+$/.exec(entry)?.[1] ?? NaN)
       // Our own pid on another folder is an earlier process that had it (a restarted container).
-      if (Number.isInteger(pid) && pid !== this._pid && processRunning(pid)) continue
+      if (Number.isInteger(pid) && pid !== this._pid && processExists(pid)) continue
       rmSync(join(this._options.dir, entry), { recursive: true, force: true })
     }
     mkdirSync(this._dir, { mode: 0o700 })
@@ -479,14 +480,4 @@ function writeTo(res: http.ServerResponse, chunk: Buffer): Promise<boolean> {
     res.once('drain', onDrain)
     res.once('close', onClose)
   })
-}
-
-/** Whether a process with this pid is running (a signal-0 probe; EPERM means it runs as another user). */
-function processRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
-  }
 }
