@@ -9,6 +9,7 @@ import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED } from '../src/types/protocol.js';
 import { ANTSEED_ATTEST_PATH, type Prover, type SellerRequest } from '../src/interfaces/plugin.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
+import { captureUnitBillingContext, estimateUnitRequestCost } from '../src/billing/unit.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -431,6 +432,8 @@ describe('charges for requests whose fields every reader reads alike', () => {
         { unit: 'output_images', priceUsd: 0.01, match: { quality: 'low' } },
         { unit: 'output_images', priceUsd: 0.04, match: { quality: 'high' } },
         { unit: 'output_images', priceUsd: 0.02, match: { quality: 'auto' } },
+        { unit: 'output_images', priceUsd: 0.012, match: { input_images: '1' } },
+        { unit: 'output_images', priceUsd: 0.024, match: { input_images: '2' } },
       ] } } },
     });
     const received: Array<{ headers: Record<string, string>; body: Uint8Array }> = [];
@@ -476,6 +479,49 @@ describe('charges for requests whose fields every reader reads alike', () => {
       { model: ['image-model'], quality: ['high'], n: ['2'] },
       { model: ['image-model'], quality: ['low'], n: ['2'] },
     ]);
+  });
+
+  it('charges an edit for the image files it sends, and calls no provider for a count it does not price', async () => {
+    const { serve, received, charges } = imageSeller();
+    const image = (name: string): Part => [`Content-Disposition: form-data; name="${name}"; filename="a.png"\r\nContent-Type: image/png`, 'PNG'];
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image[]'), image('mask')]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([104_000n, 128_000n]);
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toHaveLength(2);
+    expect(received).toHaveLength(2);
+
+    // The provider reads the path in any letter case, so billing does too.
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toEqual([104_000n, 128_000n, 104_000n]);
+    expect(received).toHaveLength(3);
+  });
+
+  it.each<[string, string]>([
+    ['an unquoted name', 'Content-Disposition: form-data; name=image; filename="a.png"'],
+    ['upper-case parameter names', 'Content-Disposition: form-data; NAME="image"; FILENAME="a.png"'],
+    ['an extended filename', "Content-Disposition: form-data; name=\"image\"; filename*=UTF-8''a.png"],
+  ])('counts an edit image with %s alike on buyer and seller', async (_name, disposition) => {
+    const { serve, charges } = imageSeller();
+    const request = form([text('model', 'image-model'), text('quality', 'high'), [`${disposition}\r\nContent-Type: image/png`, 'PNG']]);
+    // What the buyer prices from the body it sends, before the seller writes it again.
+    const buyer = captureUnitBillingContext({
+      sellerPeerId: 'a'.repeat(40), provider: 'images', service: 'image-model', serviceApiProtocol: 'openai-images',
+      request: { requestId: 'buyer', method: 'POST', path: '/v1/images/edits', ...request },
+    });
+    expect(buyer.context.attributes?.input_images).toBe('1');
+    const model = { version: 1 as const, components: [
+      { unit: 'output_images' as const, priceUsd: 0.04, match: { quality: 'high' } },
+      { unit: 'output_images' as const, priceUsd: 0.012, match: { input_images: '1' } },
+    ] };
+    expect(estimateUnitRequestCost(model, buyer.context, buyer.requestUsage)).toBe(52_000n);
+    expect(await serve('/v1/images/edits', request)).toEqual({ status: 200 });
+    expect(charges()).toEqual([52_000n]);
   });
 
   it.each<[string, Part[], string]>([

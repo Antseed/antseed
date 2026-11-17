@@ -50,6 +50,7 @@ import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
+import { sellerCachedPriceProblems } from '../../../config/validation.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
@@ -839,8 +840,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         console.log(
           chalk.dim(
             `  ${providerName} pricing defaults (USD/1M): input=${provider.pricing.defaults.inputUsdPerMillion}, output=${provider.pricing.defaults.outputUsdPerMillion}`
+            + (provider.pricing.defaults.cachedInputUsdPerMillion != null ? `, cached input=${provider.pricing.defaults.cachedInputUsdPerMillion}` : '')
           )
         )
+      }
+      // Buyers skip these offers; the seller still starts so its other models keep serving.
+      const selectedProviders = Object.fromEntries(selectedProviderNames.map((name) => [name, effectiveSellerConfig.providers[name]!]))
+      for (const problem of sellerCachedPriceProblems(selectedProviders)) {
+        console.log(chalk.yellow(`  Warning: ${problem}`))
       }
       const minBudgetPerRequest = config.payments.minBudgetPerRequest ?? '10000'
       console.log(chalk.dim(`  min budget per request: ${minBudgetPerRequest} base units`))

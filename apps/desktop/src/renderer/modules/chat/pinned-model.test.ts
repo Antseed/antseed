@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, modelReasons, routeModeOf, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const PEER = 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12';
 
@@ -23,6 +23,15 @@ test('a pinned chat can send images when its seller takes them, even if not ever
   expect(modelAcceptsImages(mixed, 'vision-model')).toBe(false);
   expect(modelAcceptsImages(mixed, `${'b'.repeat(40)}@vision-model`)).toBe(false);
   expect(modelAcceptsImages({ supportsImages: true }, 'vision-model')).toBe(true);
+});
+
+test('a chat asks for thinking when every seller reasons, or the pinned one does', () => {
+  const mixed = { reasoningSellerIds: [PEER] };
+  expect(modelReasons(mixed, `${PEER}@claude-haiku-5-5`)).toBe(true);
+  expect(modelReasons(mixed, 'claude-haiku-5-5')).toBe(false);
+  expect(modelReasons(mixed, `${'b'.repeat(40)}@claude-haiku-5-5`)).toBe(false);
+  expect(modelReasons({ reasoningEverySeller: true }, 'claude-haiku-5-5')).toBe(true);
+  expect(modelReasons({}, 'claude-haiku-5-5')).toBe(false);
 });
 
 test('imageModelCanEdit: one capable seller is enough unless another seller is pinned', () => {

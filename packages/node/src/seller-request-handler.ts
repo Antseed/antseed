@@ -503,7 +503,10 @@ export class SellerRequestHandler {
         requestBilling = this._captureSellerBillingContext(provider, request);
         unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
         const facts = requestBilling?.requestFacts;
-        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+        // Refused before payment when the request names options the model can't price (a video's
+        // duration, an edit's number of input images).
+        const priceUpFront = facts?.kind === 'video' ? facts.video.action === 'create' : facts?.kind === 'image' && facts.image.inputImages !== undefined;
+        if (requestBilling && priceUpFront && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
@@ -1277,6 +1280,13 @@ export class SellerRequestHandler {
             unitCostUsdc = finalBilling.costUsdc;
           }
 
+        // A failed request is never charged: the buyer got an error, not an answer,
+        // even when the error body carries a usage figure or a unit adapter prices it.
+        if (statusCode >= 400) {
+          responseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+          unitCostUsdc = 0n;
+        }
+
         // Record metering
         const finishedAt = Date.now();
         const latencyMs = finishedAt - startTime;
@@ -1980,7 +1990,7 @@ export class SellerRequestHandler {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytesSampled(request.body);
+    const inputTokens = this._estimatedPromptTokens(request);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -2001,7 +2011,18 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    return estimateTokensFromBytesSampled(request.body) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return this._estimatedPromptTokens(request) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+  }
+
+  /**
+   * The prompt tokens of a request, for checks before it goes upstream. A JSON body the seller wrote
+   * was estimated as it was read, with each inline image counted as a flat allowance: its base64 is
+   * megabytes of body but not of tokens. Any other body counts its bytes.
+   */
+  private _estimatedPromptTokens(request: SerializedHttpRequest): number {
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.promptTokens !== undefined) return billed.promptTokens;
+    return estimateTokensFromBytesSampled(request.body);
   }
 
   /**

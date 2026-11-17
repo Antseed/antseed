@@ -377,7 +377,7 @@ describe("unit billing runtime", () => {
 
     expect(captured.context).toMatchObject({
       serviceApiProtocol: "openai-images",
-      attributes: { model: "gpt-image-2", size: "1024x1024", quality: "auto" },
+      attributes: { model: "gpt-image-2", size: "1024x1024", quality: "auto", input_images: "1" },
       unitLimits: { output_images: 2 },
     });
     expect(captured.requestFacts).toEqual({
@@ -387,6 +387,7 @@ describe("unit billing runtime", () => {
         size: "1024x1024",
         quality: "auto",
         requestedImages: 2,
+        inputImages: 1,
         promptTokens: 4,
       },
     });

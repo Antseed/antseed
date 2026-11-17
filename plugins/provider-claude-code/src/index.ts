@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider, ServiceApiProtocol } from '@antseed/node';
-import { BaseProvider, parseServiceAliasMap, parseServiceCapabilitiesJson, parseServicePricingJson } from '@antseed/provider-core';
+import { BaseProvider, parseServiceAliasMap, parseServiceCapabilitiesJson, parseServicePricingJson, anthropicMessagesRelay } from '@antseed/provider-core';
 import { ClaudeCodeTokenProvider } from './claude-code-token.js';
 
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
@@ -67,6 +67,7 @@ const plugin: AntseedProviderPlugin = {
       ...(serviceApiProtocols ? { serviceApiProtocols } : {}),
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
       relay: {
+        ...anthropicMessagesRelay,
         baseUrl: 'https://api.anthropic.com',
         authHeaderName: 'authorization',
         authHeaderValue: '',

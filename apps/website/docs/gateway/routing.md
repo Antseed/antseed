@@ -23,7 +23,7 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 | **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
 | **Free sellers first** | Rank free providers ahead of paid ones |
 | **Which models may be used** | **Any model**, or **Only these models**. Requests for other models get `403 model_not_allowed`. |
-| **Price limits** | Maximum input, output and cached-input price per million tokens, and price per image |
+| **Price limits** | Maximum input, output and cached-input price per million tokens, and price per image. Without a cached-input limit, the input limit also caps a seller's cached-input price. |
 | **Fallback chains** | For a model, an ordered list of providers to try first. **Strict** allows only those providers. |
 
 **Start from…** in the editor offers starting points: **Cheapest**, **Most trusted** (trust 70+, ranked by trust), **TEE only**, or only the providers of one seller list.
