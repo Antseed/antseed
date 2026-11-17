@@ -57,6 +57,20 @@ describe('image edit prices by input images', () => {
     expect(captured.context.attributes?.input_images).toBe('1');
   });
 
+  it('reads part names the way sellers do: unquoted, in any case, or with an extended filename', () => {
+    const part = (disposition: string) => `--${BOUNDARY}\r\n${disposition}\r\nContent-Type: image/png\r\n\r\npng\r\n`;
+    const body = new TextEncoder().encode([
+      `--${BOUNDARY}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image\r\n`,
+      part('Content-Disposition: form-data; name=image; filename="a.png"'),
+      part('Content-Disposition: form-data; NAME="image[]"; FILENAME="b.png"'),
+      part("content-disposition: form-data; name=\"mask\"; filename*=UTF-8''m.png"),
+      // Another header quoting a disposition is not the part's own.
+      part('X-Note: content-disposition: form-data; name="image"; filename="x.png"\r\nContent-Disposition: form-data; name="prompt"'),
+      `--${BOUNDARY}--\r\n`,
+    ].join(''));
+    expect(capture('/v1/images/edits', body).context.attributes?.input_images).toBe('3');
+  });
+
   it('reads the part name, not the tail of filename', () => {
     const body = new TextEncoder().encode(`--${BOUNDARY}\r\nContent-Disposition: form-data; filename="image"; name="photo"\r\n\r\npng\r\n--${BOUNDARY}--\r\n`);
     expect(capture('/v1/images/edits', body).context.attributes?.input_images).toBeUndefined();

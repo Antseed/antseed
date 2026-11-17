@@ -78,7 +78,7 @@ export interface ImageRequestFacts {
   quality?: string;
   resolution?: string;
   requestedImages?: number;
-  /** Image files an edit sends (see countImageEditFiles); unset for a generation. */
+  /** Image files an edit sends (see parseMultipartForm); unset for a generation. */
   inputImages?: number;
   /** Estimated token count of the text prompt only — input images never contribute. */
   promptTokens?: number;
@@ -268,8 +268,12 @@ export function parseMultipartFormFields(
 
 /**
  * A multipart/form-data body's text fields (as parseMultipartFormFields reads
- * them) and how many image files it sends for an image edit (see
- * countImageEditFiles), in one pass; null when the content type names no boundary.
+ * them) and, in the same pass, how many image files it sends for an OpenAI
+ * `/v1/images/edits` request: file parts named `image`, `image[]` or `mask`.
+ * Upstreams bill each as input, so the count prices the edit (the
+ * `input_images` match key). Parts are named the way sellers read them
+ * (parseFormDataDisposition), so buyer and seller count alike. Null when the
+ * content type names no boundary.
  */
 export function parseMultipartForm(
   body: Uint8Array,
@@ -292,17 +296,6 @@ export function parseMultipartForm(
 
 /** The multipart file fields an OpenAI image edit sends images in: the images to edit and the mask. */
 export const IMAGE_EDIT_FILE_FIELDS: readonly string[] = ['image', 'image[]', 'mask'];
-
-/**
- * How many image files a multipart OpenAI `/v1/images/edits` body sends: file
- * parts named `image`, `image[]` or `mask`. Upstreams bill each as input, so it
- * prices the edit (the `input_images` match key). 0 for any other body.
- */
-export function countImageEditFiles(headers: Record<string, string>, body: Uint8Array): number {
-  const contentType = headerValue(headers, 'content-type');
-  if (!isMultipartFormData(contentType)) return 0;
-  return parseMultipartForm(body, contentType)?.imageEditFiles ?? 0;
-}
 
 /** Whether a content type is multipart/form-data. */
 export function isMultipartFormData(contentType: string): boolean {
@@ -346,20 +339,58 @@ function forEachMultipartPart(
     if (headerEnd === -1) break;
     const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
     if (next === -1) break;
-    const headerBlock = text.slice(index, headerEnd);
-    const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
-    if (dispositionParams !== undefined) {
-      visit({
-        // `name=` as its own parameter, never the tail of `filename=`.
-        name: /(?:^|;)\s*name="([^"]*)"/.exec(dispositionParams)?.[1] ?? '',
-        isFile: /filename\s*=/i.test(dispositionParams),
-        start: headerEnd + 4,
-        end: next,
-      });
+    // The part's own Content-Disposition header line, read the way sellers read it.
+    const disposition = text.slice(index, headerEnd).split('\r\n')
+      .map((line) => /^content-disposition:(.*)$/i.exec(line)?.[1]?.trim())
+      .find((value) => value !== undefined);
+    const params = disposition === undefined ? undefined : parseFormDataDisposition(disposition);
+    const name = params?.get('name');
+    if (params && name !== undefined) {
+      visit({ name, isFile: params.has('filename') || params.has('filename*'), start: headerEnd + 4, end: next });
     }
     index = next + 2;
   }
   return true;
+}
+
+/**
+ * The parameters of a `form-data` disposition, keys in lower case; undefined unless every byte is
+ * read and no key repeats. Written by hand so that no regex runs over buyer-controlled lengths.
+ */
+export function parseFormDataDisposition(value: string): Map<string, string> | undefined {
+  if (!/^form-data(?:[ \t;]|$)/i.test(value)) return undefined;
+  const params = new Map<string, string>();
+  let i = 'form-data'.length;
+  const skipBlanks = () => { while (value[i] === ' ' || value[i] === '\t') i += 1; };
+  for (;;) {
+    skipBlanks();
+    if (i >= value.length) return params;
+    if (value[i] !== ';') return undefined;
+    i += 1;
+    skipBlanks();
+    if (i >= value.length) return params;
+    const start = i;
+    while (i < value.length && /[A-Za-z0-9*_-]/.test(value[i]!)) i += 1;
+    const key = value.slice(start, i).toLowerCase();
+    if (key === '' || value[i] !== '=' || params.has(key)) return undefined;
+    i += 1;
+    let text = '';
+    if (value[i] === '"') {
+      for (i += 1; ; i += 1) {
+        if (i >= value.length) return undefined;
+        if (value[i] === '\\' && (value[i + 1] === '"' || value[i + 1] === '\\')) i += 1;
+        else if (value[i] === '"') break;
+        text += value[i];
+      }
+      i += 1;
+    } else {
+      const from = i;
+      while (i < value.length && value[i] !== ';' && value[i] !== ' ' && value[i] !== '\t') i += 1;
+      text = value.slice(from, i);
+      if (text === '' || /["\\]/.test(text)) return undefined;
+    }
+    params.set(key, text);
+  }
 }
 
 /**

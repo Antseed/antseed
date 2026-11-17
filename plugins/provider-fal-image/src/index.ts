@@ -1,6 +1,6 @@
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, SerializedHttpResponse, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
-import { requestBodyFields, validateServiceCapabilityFields } from '@antseed/node';
-import { countImageEditFiles, parseJsonObject } from '@antseed/api-adapter';
+import { validateServiceCapabilityFields } from '@antseed/node';
+import { parseJsonObject, parseMultipartForm } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
   FAL_SCHEMA_URL,
@@ -211,7 +211,8 @@ async function readEditForm(request: SerializedHttpRequest): Promise<{ fields: R
   // The seller priced this request from its own reading of the text fields, which
   // skips oversized ones and keeps the first of a name. Anything read differently
   // (a padded quality, a repeated field) could buy a dearer edit than the one billed.
-  const billed = requestBodyFields(request) ?? {};
+  const billedForm = parseMultipartForm(request.body, contentType);
+  const billed = billedForm?.fields ?? {};
   const fields: Record<string, string> = {};
   const images: Blob[] = [];
   let mask: Blob | undefined;
@@ -228,7 +229,7 @@ async function readEditForm(request: SerializedHttpRequest): Promise<{ fields: R
   }
   if (images.length === 0) throw new RequestError(400, 'Image edits require one or more image files.', 'image');
   // fal bills each image sent as input, and the seller priced the edit by its own count of them.
-  if (images.length + (mask ? 1 : 0) !== countImageEditFiles(request.headers, request.body)) {
+  if (images.length + (mask ? 1 : 0) !== (billedForm?.imageEditFiles ?? 0)) {
     throw new RequestError(400, 'The image files could not be read the way the edit was priced.', 'image');
   }
   return { fields, images, ...(mask ? { mask } : {}) };
